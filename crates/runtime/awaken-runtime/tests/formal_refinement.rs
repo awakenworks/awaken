@@ -179,6 +179,7 @@ struct TraceTool {
     trace: TracingCoordinator,
     capability: ToolRecoveryCapability,
     invocations: Arc<AtomicUsize>,
+    preparations: AtomicUsize,
 }
 
 #[async_trait::async_trait]
@@ -189,6 +190,11 @@ impl RawTool for TraceTool {
 
     fn recovery_capability(&self) -> ToolRecoveryCapability {
         self.capability
+    }
+
+    fn execution_domain(&self) -> awaken_tool_contract::tool_batch::ToolExecutionDomain {
+        self.preparations.fetch_add(1, Ordering::SeqCst);
+        Default::default()
     }
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
@@ -214,6 +220,7 @@ fn trace_tool_with_capability(
             trace: trace.clone(),
             capability,
             invocations: invocations.clone(),
+            preparations: AtomicUsize::new(0),
         }),
         invocations,
     )
@@ -1158,6 +1165,10 @@ async fn replay_safe_crash_recovery_produces_a_refinement_trace() {
 
 #[tokio::test]
 async fn never_replay_crash_recovery_is_fail_closed() {
+    // REC0: the original policy rejects reentry before domain preparation,
+    // which can perform lazy Sandbox I/O. Zero invoke alone cannot catch that
+    // regression. The same TraceTool records both boundaries, without a new
+    // recovery executor or policy preview.
     let trace = TracingCoordinator::default();
     let policy = ToolRecoveryPolicy::default();
     let call = tool_call("never_call", "never_tool");
@@ -1165,7 +1176,9 @@ async fn never_replay_crash_recovery_is_fail_closed() {
 
     let snapshot = snapshot(&["never_tool"]);
     let (tool, invocations) = trace_tool("never_tool", &trace);
-    let runtime = Runtime::new().with_llm(Arc::new(TextOnly)).with_tool(tool);
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(TextOnly))
+        .with_tool(tool.clone());
     register_snapshot(&runtime, &snapshot);
 
     let outcome = runtime
@@ -1179,6 +1192,11 @@ async fn never_replay_crash_recovery_is_fail_closed() {
         .expect("never-replay recovery fails closed without invoking");
     assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(invocations.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        tool.preparations.load(Ordering::SeqCst),
+        0,
+        "REC0 zero metadata I/O"
+    );
     let batch = trace
         .latest_batch()
         .expect("recovered batch remains durable");

@@ -135,9 +135,12 @@ async fn lost_hand_result_keeps_opaque_occupied_but_exact_contained_exit_retires
             ToolExecutionDomain::ControlledProcess {
                 provider_ref: "kubernetes-sandbox".into(),
                 execution_ref: serde_json::to_string(&sandbox_binding).unwrap(),
+                resource_origin: None,
             }
         } else {
-            ToolExecutionDomain::Opaque {}
+            ToolExecutionDomain::Opaque {
+                resource_origin: None,
+            }
         };
         let clock = Arc::new(awaken_lease_testkit::ManualClock::new(100));
         let store = awaken_dispatch::MemoryDispatchStore::new(clock.clone());

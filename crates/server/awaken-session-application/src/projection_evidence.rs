@@ -6,7 +6,7 @@
 // @formal reason: publishes nothing; the Managed projector still re-reads and compares the same
 // @formal reason: prefixes before its CAS publication. Warm/cold, read-order and prefix-race projection
 // @formal reason: tests cover behavior; reducer TCB linked to the paired-publication obligation.
-//! Read-only committed evidence for protocol Session projections.
+//! Read-only committed evidence for Session projections.
 //!
 //! The Managed adapter used to gather this itself, straight from the Runtime.
 //! It now reads through the Session application, which in turn sees only the
@@ -30,26 +30,18 @@ impl SessionApplication {
         self.runtime().projection()
     }
 
-    /// Read one logical Thread prefix through the parent Session partition.
-    /// A prefix for a different Thread is a Runtime fault, never data.
+    /// Read one logical Thread prefix through the explicit parent Session
+    /// partition, optionally selecting an original Run. A foreign Thread or
+    /// selected Run is a Runtime fault, never a fallback to the latest Run.
     pub async fn projection_thread_snapshot(
         &self,
         session_id: &awaken_session_types::SessionId,
         thread_id: &str,
+        selected_run: Option<&awaken_agent_contract::RunId>,
     ) -> Result<Option<RunRecoverySnapshot>, RunError> {
-        let snapshot = self
-            .projection_source()
-            .projection_thread_snapshot(session_id, thread_id)
-            .await?;
-        if snapshot
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.thread_id.0 != thread_id)
-        {
-            return Err(RunError::internal(
-                "Runtime returned a recovery snapshot for a different Session Thread",
-            ));
-        }
-        Ok(snapshot)
+        self.projection_source()
+            .projection_thread_snapshot(session_id, thread_id, selected_run)
+            .await
     }
 
     /// Collect one deterministic coordinated-Thread prefix. Callers compare two
@@ -69,7 +61,7 @@ impl SessionApplication {
         for link in &links {
             // A link may commit before its child has a first Run.
             if let Some(snapshot) = self
-                .projection_thread_snapshot(session_id, &link.thread_id.0)
+                .projection_thread_snapshot(session_id, &link.thread_id.0, None)
                 .await?
             {
                 snapshots.insert(link.thread_id.0.clone(), snapshot);
@@ -98,7 +90,7 @@ impl SessionApplication {
         // concurrent commit must never be paired with a newer root prefix that
         // already makes later facts listable.
         let root = self
-            .projection_thread_snapshot(session_id, session_id.as_str())
+            .projection_thread_snapshot(session_id, session_id.as_str(), None)
             .await?;
         let mut outcome_terminals = Vec::new();
         let mut outcome_query_incomplete = false;

@@ -1268,12 +1268,21 @@ pub awaken_agent_contract::thread::read::recovery::AnswerableTicketError::Owner:
 pub enum awaken_agent_contract::thread::read::recovery::CurrentRunError
 pub awaken_agent_contract::thread::read::recovery::CurrentRunError::LatestOmitted
 pub awaken_agent_contract::thread::read::recovery::CurrentRunError::LatestStateMissing(awaken_agent_contract::agent::run::Id)
+pub awaken_agent_contract::thread::read::recovery::CurrentRunError::RunRecordSelection(awaken_agent_contract::thread::read::recovery::RunRecordSelectionError)
 pub enum awaken_agent_contract::thread::read::recovery::RecoveryError
 pub awaken_agent_contract::thread::read::recovery::RecoveryError::Rejected(alloc::string::String)
 pub enum awaken_agent_contract::thread::read::recovery::ResumeTicketRecoveryError
 pub awaken_agent_contract::thread::read::recovery::ResumeTicketRecoveryError::Decode(serde_json::error::Error)
 pub awaken_agent_contract::thread::read::recovery::ResumeTicketRecoveryError::RunMismatch
 pub awaken_agent_contract::thread::read::recovery::ResumeTicketRecoveryError::ThreadMismatch
+pub enum awaken_agent_contract::thread::read::recovery::RunRecordSelectionError
+pub awaken_agent_contract::thread::read::recovery::RunRecordSelectionError::BlankRunId
+pub awaken_agent_contract::thread::read::recovery::RunRecordSelectionError::BlankThreadId
+pub awaken_agent_contract::thread::read::recovery::RunRecordSelectionError::ForeignThread
+pub awaken_agent_contract::thread::read::recovery::RunRecordSelectionError::ForeignThread::actual: awaken_agent_contract::agent::thread::Id
+pub awaken_agent_contract::thread::read::recovery::RunRecordSelectionError::ForeignThread::expected: awaken_agent_contract::agent::thread::Id
+pub awaken_agent_contract::thread::read::recovery::RunRecordSelectionError::ForeignThread::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_agent_contract::thread::read::recovery::RunRecordSelectionError::MultipleRunRecords(awaken_agent_contract::agent::run::Id)
 pub enum awaken_agent_contract::thread::read::recovery::RunTicketSelection<'a>
 pub awaken_agent_contract::thread::read::recovery::RunTicketSelection::Absent
 pub awaken_agent_contract::thread::read::recovery::RunTicketSelection::Multiple
@@ -1298,6 +1307,7 @@ pub fn awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot::answe
 pub fn awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot::ticket_for_run(&self, &awaken_agent_contract::agent::run::Id) -> awaken_agent_contract::thread::read::recovery::RunTicketSelection<'_>
 impl awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot
 pub fn awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot::current_run(&self) -> core::result::Result<core::option::Option<&awaken_agent_contract::agent::run::Record>, awaken_agent_contract::thread::read::recovery::CurrentRunError>
+pub fn awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot::run_record(&self, &awaken_agent_contract::agent::run::Id) -> core::result::Result<core::option::Option<&awaken_agent_contract::agent::run::Record>, awaken_agent_contract::thread::read::recovery::RunRecordSelectionError>
 impl awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot
 pub fn awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot::lifecycle_events_after(&self, awaken_agent_contract::thread::read::lifecycle::RunLifecycleCursor, usize) -> core::result::Result<awaken_agent_contract::thread::read::lifecycle::RunLifecyclePage, awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeedError>
 pub struct awaken_agent_contract::thread::read::recovery::RunResumeTicket

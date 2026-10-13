@@ -19,7 +19,7 @@ pub use projection_evidence::{
     CommittedEvidenceError, CommittedSessionFacts, ProjectionThreadSnapshots,
     SessionProjectionReadTimings, committed_lifecycle_prefix, outcome_terminal_commit_cursor,
 };
-pub use projection_source::SessionProjectionSource;
+pub use projection_source::{SessionProjectionSource, select_recovery_snapshot_run};
 pub use roles::*;
 use std::sync::Arc;
 

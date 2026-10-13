@@ -136,7 +136,7 @@ pub trait SessionRootReads: Send + Sync {
     ) -> Result<Option<DeletedSessionEventAdmissions>, SessionRepositoryError>;
 }
 
-/// Read the evidence a Session projection is built from.
+/// Read committed evidence for Session projection and exact-Run observations.
 ///
 /// Consumer: a protocol's committed projection refresh, cold rehydration and
 /// Session projection reads.
@@ -154,6 +154,7 @@ pub trait SessionProjectionReads: Send + Sync {
         &self,
         session_id: &SessionId,
         thread_id: &str,
+        selected_run: Option<&awaken_agent_contract::RunId>,
     ) -> Result<Option<RunRecoverySnapshot>, RunError>;
 
     /// See [`SessionApplication::projection_coordinated_prefix`].
@@ -572,8 +573,10 @@ impl SessionProjectionReads for SessionApplication {
         &self,
         session_id: &SessionId,
         thread_id: &str,
+        selected_run: Option<&awaken_agent_contract::RunId>,
     ) -> Result<Option<RunRecoverySnapshot>, RunError> {
-        SessionApplication::projection_thread_snapshot(self, session_id, thread_id).await
+        SessionApplication::projection_thread_snapshot(self, session_id, thread_id, selected_run)
+            .await
     }
 
     async fn projection_coordinated_prefix(

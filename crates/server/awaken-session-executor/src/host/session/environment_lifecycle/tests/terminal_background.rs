@@ -38,11 +38,16 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
             environment: environment.clone(),
         });
     });
-    let activity_generation = host
+    let (activity_generation, origin) = host
         .realizer
-        .resident_environment_activity_generation_id(thread, &environment)
+        .resident_environment_activity_identity(thread, &environment)
         .expect("C1 exact Resident activity projection");
     assert_eq!(activity_generation, durable_generation.id(), "E1");
+    assert_eq!(
+        origin.as_ref().unwrap().as_str(),
+        durable_generation.id(),
+        "E1 original Bound resource origin, not the mutable effect id"
+    );
 
     let release = Arc::new(tokio::sync::Notify::new());
     let background = host.resources.memory.background();
@@ -89,6 +94,48 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
             .await,
         "E4 exact durable activity release admits quiescence"
     );
+    // O1 the reference is read from the actual Bound generation even if the
+    // mutable effect changes. O2 a foreign Arc fails instead of borrowing its
+    // desired key. O3 legacy activity fallback remains usable but cannot
+    // manufacture the new provenance reference or historical Create evidence.
+    host.installed_sessions.update_realization(thread, |r| {
+        let SessionEnvironmentOwner::Resident(owned) = &mut r.environment_owner else {
+            panic!("O1 Resident")
+        };
+        let BoundSessionEnvironmentIdentity::Durable { effect_id, .. } = &mut owned.identity else {
+            panic!("O1 durable")
+        };
+        *effect_id = "later-adopt-effect".into();
+    });
+    let (_, after_adopt) = host
+        .realizer
+        .resident_environment_activity_identity(thread, &environment)
+        .unwrap();
+    assert_eq!(after_adopt, origin, "O1 original generation survives Adopt");
+    let foreign = super::environment(&provider, "foreign-origin").await;
+    assert!(
+        host.realizer
+            .resident_environment_activity_identity(thread, &foreign)
+            .is_err(),
+        "O2 exact Resident Arc required"
+    );
+    host.installed_sessions.update_realization(thread, |r| {
+        let SessionEnvironmentOwner::Resident(owned) = &mut r.environment_owner else {
+            panic!("O3 Resident")
+        };
+        owned.identity = BoundSessionEnvironmentIdentity::LegacyDirect(
+            crate::environment_owner::LegacyDirectEnvironmentProvenance::DurableBinding {
+                binding: owned.binding.clone(),
+                effect: crate::environment_owner::LegacyEnvironmentEffect::Absent,
+            },
+        );
+    });
+    let (legacy_activity, unknown_origin) = host
+        .realizer
+        .resident_environment_activity_identity(thread, &environment)
+        .unwrap();
+    assert_eq!(legacy_activity, physical_id, "O3 old activity key");
+    assert!(unknown_origin.is_none(), "O3 no generation/source backfill");
 }
 
 #[tokio::test(start_paused = true)]

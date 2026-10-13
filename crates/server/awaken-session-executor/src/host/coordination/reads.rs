@@ -526,6 +526,7 @@ mod tests {
 
     #[tokio::test]
     async fn child_recovery_snapshot_reuses_the_parent_commit_consistency_boundary() {
+        use awaken_session_execution_contract::SessionProjectionSource as _;
         // Constraint/Invariant: the authoritative inputs and ownership boundaries
         // documented here remain the only decision source; no parallel path is admitted.
         // Decision rule: execute every reachable cause partition documented here and
@@ -543,6 +544,11 @@ mod tests {
         // compatibility cache; C4 the caller supplies an exact present/absent
         // Run id. E7 exact recovery reuses the same prefix for the present Run
         // and fails closed for the absent Run.
+        // C5 the pure projection selector is None/exact older/absent while a
+        // later Run commits in the same logical child. E8 None preserves latest,
+        // exact preserves the older claimed Run AND all historical facts, absent
+        // stays None; E9 none of these reads prepares or installs an Environment.
+        // R3=C5(None|older|absent) => E8,E9 with the same parent partition.
         //
         // | Rule | C1 | C2 | C3 | Effects       |
         // | R1   | N  | -  | -  | E1            |
@@ -562,6 +568,18 @@ mod tests {
                 .expect("R1 parent-partition read"),
             None,
             "R1/E1"
+        );
+        assert!(
+            crate::ManagedHost::new(host.clone())
+                .projection_thread_snapshot(
+                    &awaken_session_types::SessionId::from(session_id),
+                    &child_id.0,
+                    None
+                )
+                .await
+                .unwrap()
+                .is_none(),
+            "R1/E1 pure selector keeps missing history absent"
         );
         assert!(
             !host
@@ -758,6 +776,114 @@ mod tests {
                 .await
                 .expect("R2 child partition probe"),
             "R2/E4-E5 child truth remains physically in the parent partition"
+        );
+
+        parent_commit
+            .commit(awaken_agent_contract::ThreadCommit::assemble(
+                child_id.clone(),
+                RunDisposition::ended(
+                    child_run.clone(),
+                    awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+                ),
+                true,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ))
+            .await
+            .expect("R3 settle the original child before the next Run");
+        let next_run = RunId("snapshot-next-child-run".into());
+        parent_commit
+            .commit(awaken_agent_contract::ThreadCommit::assemble(
+                child_id.clone(),
+                RunDisposition::running(next_run.clone()),
+                true,
+                vec![Message::text(
+                    MessageId("snapshot-next-user".into()),
+                    Role::User,
+                    "next child question",
+                )],
+                vec![StateCommand::set(
+                    Scope::Run,
+                    MergePolicy::Disjoint,
+                    "next-run-state",
+                    serde_json::json!(true),
+                )],
+                Vec::new(),
+            ))
+            .await
+            .expect("R3 newer Run in the original parent partition");
+        let parent = awaken_session_types::SessionId::from(session_id);
+        let latest = managed
+            .projection_thread_snapshot(&parent, &child_id.0, None)
+            .await
+            .unwrap()
+            .unwrap();
+        let older = managed
+            .projection_thread_snapshot(&parent, &child_id.0, Some(&child_run))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            latest.claimed_run_id, next_run,
+            "R3/E8 None keeps latest selection"
+        );
+        assert_eq!(
+            older.claimed_run_id, child_run,
+            "R3/E8 exact selection never falls back to latest"
+        );
+        assert_eq!(
+            older.latest_run_id,
+            Some(next_run),
+            "R3/E8 latest remains a separate coordinate"
+        );
+        assert_eq!(older.runs.len(), 2, "R3/E8 both retained Runs");
+        assert_eq!(
+            older.messages, latest.messages,
+            "R3/E8 all transcript history"
+        );
+        assert_eq!(older.state, latest.state, "R3/E8 all state history");
+        assert_eq!(
+            older.message_commit_cursors, latest.message_commit_cursors,
+            "R3/E8 original message coordinates"
+        );
+        assert_eq!(
+            older.state_commit_cursors, latest.state_commit_cursors,
+            "R3/E8 original state coordinates"
+        );
+        assert_eq!(
+            older.next_commit_ordinal, 3,
+            "R3/E8 original selected Run ordinal"
+        );
+        assert_eq!(
+            latest.next_commit_ordinal, 1,
+            "R3/E8 newer selected Run ordinal"
+        );
+        assert!(
+            managed
+                .projection_thread_snapshot(
+                    &parent,
+                    &child_id.0,
+                    Some(&RunId("snapshot-absent-run".into()))
+                )
+                .await
+                .unwrap()
+                .is_none(),
+            "R3/E8 absent is not latest"
+        );
+        for thread in [session_id, child_id.0.as_str()] {
+            assert!(
+                host.realizer.session_environment(thread).await.is_none(),
+                "R3/E9 pure reads never prepare/install an Environment"
+            );
+        }
+        assert!(
+            !host
+                .authority
+                .durable_thread_exists(&child_id.0)
+                .await
+                .unwrap(),
+            "R3/E8-E9 no child physical partition"
         );
     }
 }

@@ -102,9 +102,8 @@ impl SessionApplication {
             .await?
             .ok_or_else(|| RunError::bad_request("settled Agent Run was not committed"))?;
         let state = snapshot
-            .runs
-            .iter()
-            .find(|run| run.id == command.source_run_id)
+            .run_record(&command.source_run_id)
+            .map_err(|error| RunError::internal(error.to_string()))?
             .map(|run| run.state.clone())
             .ok_or_else(|| RunError::bad_request("settled Agent Run is absent from its Thread"))?;
         if session_agent_run_boundary(&state).is_none() {
@@ -553,9 +552,10 @@ impl SessionAgentCoordination for SessionApplication {
                 )
             })?;
         if snapshot.latest_run_id.as_ref() != Some(run_id)
-            || !snapshot.runs.iter().any(|run| {
-                run.id == *run_id && matches!(run.state, RunState::Running | RunState::Awaiting)
-            })
+            || !snapshot
+                .run_record(run_id)
+                .map_err(|error| RunError::internal(error.to_string()))?
+                .is_some_and(|run| matches!(run.state, RunState::Running | RunState::Awaiting))
         {
             return Err(RunError::bad_request(
                 "model-request admission does not identify the latest live Run",

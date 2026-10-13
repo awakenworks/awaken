@@ -283,16 +283,24 @@ impl SessionApplication {
     ) -> Result<SessionEventProjectionAnchor, RunError> {
         let thread_reads = self.runtime().thread_reads();
 
-        thread_reads
+        let snapshot = thread_reads
             .session_thread_run_recovery_snapshot(session_id, thread_id, run_id)
-            .await?
-            .filter(|snapshot| snapshot.runs.iter().any(|run| &run.id == run_id))
-            .map(|snapshot| SessionEventProjectionAnchor {
-                source_commit_cursor: snapshot.store_cursor,
-            })
-            .ok_or_else(|| {
-                RunError::unavailable("committed Session Event Run owner is not yet recoverable")
-            })
+            .await?;
+        match snapshot {
+            Some(snapshot)
+                if snapshot
+                    .run_record(run_id)
+                    .map_err(|error| RunError::internal(error.to_string()))?
+                    .is_some() =>
+            {
+                Ok(SessionEventProjectionAnchor {
+                    source_commit_cursor: snapshot.store_cursor,
+                })
+            }
+            _ => Err(RunError::unavailable(
+                "committed Session Event Run owner is not yet recoverable",
+            )),
+        }
     }
 
     /// Recover the canonical disposable projection, reserve one stable User

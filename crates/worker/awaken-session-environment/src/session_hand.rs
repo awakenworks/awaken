@@ -38,13 +38,18 @@ impl SessionAgentLauncher {
         use awaken_tool_contract::tool_batch::ToolExecutionDomain;
         match self {
             Self::Container { sandbox } => Ok(sandbox.owned_process_binding().await?.map_or(
-                ToolExecutionDomain::Opaque {},
+                ToolExecutionDomain::Opaque {
+                    resource_origin: None,
+                },
                 |execution_ref| ToolExecutionDomain::ControlledProcess {
                     provider_ref: "kubernetes-sandbox".into(),
                     execution_ref,
+                    resource_origin: None,
                 },
             )),
-            Self::Workdir(_) | Self::Namespace(_) => Ok(ToolExecutionDomain::Opaque {}),
+            Self::Workdir(_) | Self::Namespace(_) => Ok(ToolExecutionDomain::Opaque {
+                resource_origin: None,
+            }),
         }
     }
 

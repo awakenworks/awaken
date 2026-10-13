@@ -92,9 +92,8 @@ pub(super) fn verify_committed_step(
         ));
     }
     let committed_state = committed
-        .runs
-        .iter()
-        .find(|run| &run.id == run_id && &run.thread_id == thread_id)
+        .run_record(run_id)
+        .map_err(|error| HostError::internal(error.to_string()))?
         .map(|run| &run.state)
         .ok_or_else(|| HostError::internal("committed step proof has no Run record"))?;
     if committed_state != returned_state {
@@ -267,6 +266,9 @@ mod committed_step_proof_tests {
         // | P8   | C7           | E2     |
         // | P9   | C8           | E2     |
         // | P10  | C9           | E2     |
+        // P4 also crosses exact unique/absent/equal-duplicate/conflicting and
+        // blank/foreign owner records. All malformed selections fail through
+        // the shared SDK law before any completion receipt can be issued.
         let thread = ThreadId("thread-proof".into());
         let run = RunId("run-proof".into());
         let state = RunState::Ended(EndCause::NaturalEnd);
@@ -312,6 +314,21 @@ mod committed_step_proof_tests {
         let mut missing_run = snapshot();
         missing_run.runs.clear();
         cases.push(("P4", missing_run, state.clone(), 1, expected.clone()));
+        for defect in 0..4 {
+            let mut invalid = snapshot();
+            match defect {
+                0 | 1 => {
+                    let mut duplicate = invalid.runs[0].clone();
+                    if defect == 1 {
+                        duplicate.state = RunState::Awaiting;
+                    }
+                    invalid.runs.push(duplicate);
+                }
+                2 => invalid.runs[0].thread_id = ThreadId("foreign".into()),
+                _ => invalid.runs[0].thread_id = ThreadId(" ".into()),
+            }
+            cases.push(("P4", invalid, state.clone(), 1, expected.clone()));
+        }
         cases.push((
             "P5",
             snapshot(),

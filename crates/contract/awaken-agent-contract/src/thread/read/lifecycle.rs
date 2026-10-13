@@ -266,15 +266,22 @@ impl crate::thread::read::recovery::RunRecoverySnapshot {
                 next_cursor: cursor,
             });
         }
-        let runs = self
-            .runs
-            .iter()
-            .map(|run| (&run.id, run))
-            .collect::<HashMap<_, _>>();
+        let mut runs = HashMap::new();
+        for run in &self.runs {
+            runs.entry(&run.id)
+                .and_modify(|(_, repeated)| *repeated = true)
+                .or_insert((run, false));
+        }
         let page = project_lifecycle_records(self.events.iter(), cursor, limit, |run_id| {
-            runs.get(run_id)
-                .filter(|run| run.thread_id == self.thread_id)
-                .map(|run| run.thread_id.clone())
+            let indexed = runs.get(run_id);
+            self.select_run_record(
+                run_id,
+                indexed.map(|(run, _)| *run),
+                indexed.is_some_and(|(_, repeated)| *repeated),
+            )
+            .ok()
+            .flatten()
+            .map(|run| run.thread_id.clone())
         })?;
         if page
             .events
@@ -575,7 +582,10 @@ mod tests {
         // R1 Awaiting -> Rescheduled -> Running after a cursor still means
         // Resumed: rescheduling is not the preceding RunStateChanged fact.
         // R2 missing/foreign Run owner, malformed state/reason, or a fact beyond
-        // the snapshot fence -> error, never a partial page. R3 limit zero ->
+        // the snapshot fence -> error, never a partial page. Equal/conflicting
+        // duplicate or blank selected owners share the exact SDK selection
+        // kernel and map to this feed's original UnknownRun failure.
+        // R3 limit zero ->
         // no materialization, even for each corrupt input. No global feed exists
         // in this value-level adapter, so unrelated Session history cannot enter.
         let id = RunId("r0".into());
@@ -606,14 +616,22 @@ mod tests {
                 RunLifecycleEventKind::Resumed
             ]
         );
-        for cause in 0..5 {
+        for cause in 0..8 {
             let mut corrupt = snapshot.clone();
             match cause {
                 0 => corrupt.runs.clear(),
                 1 => corrupt.runs[0].thread_id = ThreadId("foreign".into()),
                 2 => corrupt.events[0].payload["state"] = serde_json::json!("invalid"),
                 3 => corrupt.events[0].payload["await_reason"] = serde_json::json!("invalid"),
-                _ => corrupt.store_cursor = 0,
+                4 => corrupt.store_cursor = 0,
+                5 => corrupt.runs[0].thread_id = ThreadId(" ".into()),
+                _ => {
+                    let mut duplicate = corrupt.runs[0].clone();
+                    if cause == 7 {
+                        duplicate.state = RunState::Awaiting;
+                    }
+                    corrupt.runs.push(duplicate);
+                }
             }
             assert!(
                 corrupt
@@ -627,6 +645,42 @@ mod tests {
             assert!(empty.events.is_empty(), "R3 cause={cause}");
             assert_eq!(empty.next_cursor, RunLifecycleCursor(9));
         }
+        // R4 index construction remains O(R), lookup O(1); unassociated bad
+        // rows do not eagerly reorder the original audit/page errors. R5 the
+        // later event becomes selected only after the earlier page's limit.
+        let mut later = snapshot.clone();
+        let invalid = RunRecord {
+            id: RunId("later-invalid".into()),
+            thread_id: ThreadId("foreign".into()),
+            state: RunState::Running,
+        };
+        later.runs.extend([invalid.clone(), invalid.clone()]);
+        assert!(
+            later
+                .lifecycle_events_after(RunLifecycleCursor(0), 1)
+                .is_ok(),
+            "R4 unassociated invalid index entry is not this page's error"
+        );
+        later
+            .events
+            .push(state_event(4000, &invalid.id, RunState::Running));
+        later.store_cursor = 4;
+        assert_eq!(
+            later
+                .lifecycle_events_after(RunLifecycleCursor(0), 3)
+                .unwrap()
+                .events
+                .len(),
+            3,
+            "R5 logical limit precedes later lookup failure"
+        );
+        assert!(
+            matches!(
+                later.lifecycle_events_after(RunLifecycleCursor(3000), 1),
+                Err(RunLifecycleFeedError::UnknownRun { sequence: 4000 })
+            ),
+            "R5 duplicate/foreign selected entry is rejected at its original event"
+        );
     }
 
     #[test]
