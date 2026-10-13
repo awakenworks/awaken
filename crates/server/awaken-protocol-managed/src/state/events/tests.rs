@@ -14,6 +14,7 @@ use awaken_session_execution_contract::{
     SessionCoordinationReads as _, StreamingRunRuntime as _, ThreadReadRuntime as _,
 };
 use awaken_session_types::SessionId;
+mod activation_failure_time;
 mod budget_reach;
 mod cancelled_model;
 mod damaged_await_health;
