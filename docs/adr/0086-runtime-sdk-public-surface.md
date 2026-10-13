@@ -262,3 +262,35 @@ reviewable series; the series that empties `sdk-standalone` removes the rule's e
 - "ADR-0051 tenancy semantics" (header) → ADR-0051 is Superseded by
   [ADR-0063](0063-resource-input-identity-configuration-pinning-and-lifecycle.md);
   this ADR leaves the tenancy semantics of ADR-0063 unchanged.
+
+
+### 2026-10-14: Explicit SDK publication qualification
+
+Publishable SDK members are selected from their existing `product = "sdk"` and
+Cargo `publish` metadata, using the public-API selector shared by the snapshot
+check and the explicit SDK qualifier. The current deep public paths remain part
+of their reviewed snapshots; qualification does not reshape or hide them.
+
+`check_sdk_consumer.py` retains its independent seven-task path by default.
+`--qualify-package` separately requests standard Cargo package verification for
+all publishable SDK members, default and all features, on
+`x86_64-unknown-linux-gnu`. A registry dependency blocker fails the complete
+selection; excluding the provider or skipping verification cannot qualify it.
+The explicit `--target` argv needs its own actual receipt, rather than borrowing
+an earlier host-default build.
+
+`--qualify-semver --baseline-rev
+50b3f3e22dbfe1d91dd6ee6fef8ee8dfc8e15940` compares both explicit feature subjects
+on that Linux target against the first pre-release source contract. This
+immutable baseline is an ancestor distinct from the tested HEAD, not a previous
+published release. The existing tool manifest owns the pinned SemVer tool;
+ordinary API snapshots do not require that optional tool, while an explicit
+qualification refuses unknown or mismatching observations.
+
+The quality workflow's dispatch selection is `none` by default, with explicit
+`package` or `semver` choices. The canonical Native 13-group gate and its record
+remain unchanged. SDK logs and archive hashes are evidence of their exact
+source/feature/target subject. They do not prove registry publication, the full
+artifact closure of the seven-task consumer, or cross-platform compatibility.
+The controlled-IO test suite runs only under `--self-test`; real qualification
+retains the ordinary lightweight admission-rule check.

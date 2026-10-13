@@ -516,6 +516,28 @@ def workflow_gate_errors(workflows: dict[str, str]) -> list[str]:
     for marker in required_quality:
         if not full_job or marker not in full_job.group(0):
             errors.append(f"quality workflow does not require: {marker}")
+    # Explicit SDK qualification is a dispatch-only supplement, not a second
+    # full-gate manifest. Its caller supplies the one first Source baseline.
+    choice = re.search(r"^      sdk_qualification:\n(?:(?!^      \S).|\n)*", quality, re.MULTILINE)
+    for marker in ("type: choice", "default: none", "options: [none, package, semver]"):
+        if not choice or marker not in choice.group(0):
+            errors.append("SDK qualification must be explicit dispatch none/package/semver with default none")
+    for label, option, command in (
+        ("Qualify complete SDK package archives", "package",
+         "python3 scripts/ci/check_sdk_consumer.py --qualify-package"),
+        ("Qualify complete SDK pre-release source SemVer", "semver",
+         "python3 scripts/ci/check_sdk_consumer.py --qualify-semver --baseline-rev 50b3f3e22dbfe1d91dd6ee6fef8ee8dfc8e15940"),
+    ):
+        step = re.search(r"^      - name: " + re.escape(label) + r"\n(?:(?!^      - ).|\n)*",
+                         full_job.group(0) if full_job else "", re.MULTILINE)
+        condition = "if: github.event_name == 'workflow_dispatch' && inputs.sdk_qualification == '" + option + "'"
+        if (not step or "        " + condition not in step.group(0).splitlines()
+                or "        run: " + command not in step.group(0).splitlines()
+                or quality.count("run: " + command + "\n") != 1):
+            errors.append("SDK qualification must invoke its exact opted-in source-bound command once: " + option)
+        elif (step.start() < full_job.group(0).find("- name: Bind evidence to the exact workflow SHA")
+              or step.end() > full_job.group(0).find("- name: Run the one complete repository gate")):
+            errors.append("SDK qualification must follow Source binding and precede the unchanged Native gate")
     evidence_step = re.search(
         r"^      - name: Retain exact-SHA quality evidence\n"
         r"(?:(?!^      - ).|\n)*",
@@ -1699,6 +1721,41 @@ def self_test() -> None:
     }
     check_all_text = (ROOT / "scripts/ci/check-all.sh").read_text(encoding="utf-8")
     assert not workflow_gate_errors(workflows), "W1"
+    # WSDK cause/effect: dispatch choice none/package/semver defaults none;
+    # each exact SDK command has one matching dispatch condition and follows
+    # exact SHA binding, before the unchanged mandatory Native gate. Accept only
+    # all causes together. Missing optin/baseline, modified command, duplicate,
+    # late/early execution or suppressed failure is rejected. Ordinary events
+    # never select qualification; this table does not run a fake Cargo/build.
+    quality_source = workflows[QUALITY_WORKFLOW]
+    for original, changed_text in (
+        ("default: none", "default: package"),
+        ("options: [none, package, semver]", "options: [package, semver]"),
+        ("inputs.sdk_qualification == 'package'", "inputs.sdk_qualification != 'none'"),
+        ("github.event_name == 'workflow_dispatch' && inputs.sdk_qualification == 'semver'",
+         "inputs.sdk_qualification == 'semver'"),
+        ("--qualify-package\n", "--qualify-package || true\n"),
+        ("--baseline-rev 50b3f3e22dbfe1d91dd6ee6fef8ee8dfc8e15940", "--baseline-rev HEAD"),
+    ):
+        changed = dict(workflows)
+        changed[QUALITY_WORKFLOW] = quality_source.replace(original, changed_text, 1)
+        assert any("SDK qualification" in e for e in workflow_gate_errors(changed)), "WSDK refusal"
+    package_step = re.search(
+        r"^      - name: Qualify complete SDK package archives\n(?:(?!^      - ).|\n)*",
+        quality_source, re.MULTILINE,
+    ).group(0)
+    for broken in (
+        quality_source.replace(package_step, package_step + package_step, 1),
+        quality_source.replace(package_step, "", 1).replace(
+            "      - name: Bind evidence to the exact workflow SHA\n",
+            package_step + "      - name: Bind evidence to the exact workflow SHA\n", 1),
+        quality_source.replace(package_step, "", 1).replace(
+            "      - name: Compare representative ordinary Cargo builds\n",
+            package_step + "      - name: Compare representative ordinary Cargo builds\n", 1),
+    ):
+        changed = dict(workflows)
+        changed[QUALITY_WORKFLOW] = broken
+        assert any("SDK qualification" in e for e in workflow_gate_errors(changed)), "WSDK duplicate/order"
     assert not workflow_command_copy_errors(workflows, check_all_text), \
         "W13 the live workflows spell every gate command the way the manifest does"
     # W13 a workflow other than the canonical pair keeps its own spelling of a
