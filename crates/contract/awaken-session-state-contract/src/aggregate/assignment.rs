@@ -1,3 +1,7 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: Assignment claim, renewal, expiry and capacity recovery mutate this Session candidate
+// @formal reason: under the original epoch/generation laws before root CAS. This classification does
+// @formal reason: not extend those laws to external Worker execution or delivery.
 use super::realization_lease_generation_authorizes;
 use super::{
     McpAttachmentError, SessionAggregateCommandError, SessionAssignmentOperations,

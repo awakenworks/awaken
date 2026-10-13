@@ -1,3 +1,7 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: This aggregate owns the mutable Session candidate, immutable read snapshot and
+// @formal reason: revision-bound mutation compilation. Its caller retains authorization and root CAS;
+// @formal reason: the product classification does not substitute for those commit/effect checks.
 //! Controlled Session working aggregate; the compatible DTO is its read snapshot.
 
 use crate::*;

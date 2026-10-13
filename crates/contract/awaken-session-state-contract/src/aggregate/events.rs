@@ -1,3 +1,7 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: Detached event admission, exact-prefix observations and terminal settlement mutate
+// @formal reason: the same revision-bound Session root. Replay and ordering remain covered by the
+// @formal reason: existing transition checks and tests; external dispatch is not proved by this link.
 use super::{
     SessionCleanupError, SessionEventBatch, SessionEventBatchError, SessionEventCommand,
     SessionEventProjectionAnchor, SessionEventsOperations, SessionRevision,
