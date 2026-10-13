@@ -50,6 +50,11 @@ fn install(host: &SharedHost, lease: SessionRealizationLease) {
 
 #[tokio::test]
 async fn provider_fence_source_decision_table_preserves_exact_live_authority() {
+    // Receiver consolidation: every row now calls the original
+    // ExecutionAuthority directly. Exact/stale Worker, Session, operation and
+    // expiry coordinates still decide capture and GO; removing the Holding
+    // forwarding method cannot add a grant or change these original effects.
+
     // Causes: C1 registered/direct topology; C2 Worker live/zero/closed;
     // C3 Session live/expired/closed/uninstalled/absent; C4 captured slot's two
     // allocation identities unchanged; C5 exact owner/incarnation/epoch and
@@ -102,7 +107,8 @@ async fn provider_fence_source_decision_table_preserves_exact_live_authority() {
             install(&host, lease());
             let source = host
                 .realizer
-                .session_environment_effect_fence_source("session", &initial)
+                .execution
+                .provider_effect_authority("session", &initial)
                 .unwrap();
             assert_eq!(source.current_effect_fence(&initial).unwrap(), initial);
             let mut asserted = initial.clone();
@@ -243,7 +249,8 @@ async fn provider_fence_source_capture_rejects_absent_slot_and_invalid_identity(
     let valid = lease().sandbox_effect_fence("create").unwrap();
     assert!(
         host.realizer
-            .session_environment_effect_fence_source("session", &valid)
+            .execution
+            .provider_effect_authority("session", &valid)
             .is_err()
     );
     assert!(host.installed_sessions.read("session", |_| ()).is_none());
@@ -285,7 +292,8 @@ async fn provider_fence_source_capture_rejects_absent_slot_and_invalid_identity(
         }
         assert!(
             host.realizer
-                .session_environment_effect_fence_source("session", &initial)
+                .execution
+                .provider_effect_authority("session", &initial)
                 .is_err(),
             "{rule}"
         );
@@ -303,7 +311,8 @@ async fn provider_fence_source_cannot_retain_the_host_or_authorize_after_its_dro
     let initial = lease().sandbox_effect_fence("create").unwrap();
     let source = host
         .realizer
-        .session_environment_effect_fence_source("session", &initial)
+        .execution
+        .provider_effect_authority("session", &initial)
         .unwrap();
     drop(host);
     assert!(source.current_effect_fence(&initial).is_err());
@@ -350,7 +359,8 @@ async fn provider_fence_source_waiting_for_worker_rechecks_slot_after_revocation
         let initial = lease().sandbox_effect_fence("create").unwrap();
         let source = host
             .realizer
-            .session_environment_effect_fence_source("session", &initial)
+            .execution
+            .provider_effect_authority("session", &initial)
             .unwrap();
         std::thread::scope(|scope| {
             let guard = worker.gate.lock().unwrap();
@@ -594,7 +604,7 @@ async fn adoption_forwards_original_authority_across_observation_and_provider_wa
                 .from_binding(&binding);
                 let initial = lease().sandbox_effect_fence(intent.effect_id()).unwrap();
                 let effect = AuthorizedSessionEnvironmentEffect {
-                    provider_authority: Some(Arc::new(host.realizer.session_environment_effect_fence_source("session", &initial).unwrap())),
+                    provider_authority: Some(Arc::new(host.realizer.execution.provider_effect_authority("session", &initial).unwrap())),
                     provider_fence: Some(initial),
                     authorization:
                         awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized { intent: Box::new(intent) },
@@ -713,7 +723,8 @@ async fn provider_fence_source_is_wired_across_preparation_and_provider_awaits()
         let initial = lease().sandbox_effect_fence("create").unwrap();
         let authority = (rule != "provider_unfenced").then(|| {
             host.realizer
-                .session_environment_effect_fence_source("session", &initial)
+                .execution
+                .provider_effect_authority("session", &initial)
                 .unwrap()
         });
         if rule == "initial_closed" {
@@ -844,7 +855,8 @@ async fn environment_receipt_refreshes_only_the_captured_live_generation() {
             let initial = lease().sandbox_effect_fence(intent.effect_id()).unwrap();
             let authority = host
                 .realizer
-                .session_environment_effect_fence_source("session", &initial)
+                .execution
+                .provider_effect_authority("session", &initial)
                 .unwrap();
             let effect = AuthorizedSessionEnvironmentEffect {
                 authorization:

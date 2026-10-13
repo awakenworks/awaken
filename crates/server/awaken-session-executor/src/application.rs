@@ -15,7 +15,6 @@
 
 mod agent_filesystem_context;
 pub(crate) mod attempt_context;
-mod execution_authority;
 mod realization_renewal;
 mod resource_transition;
 
@@ -240,7 +239,7 @@ impl crate::SharedHost {
         session_id: &str,
         lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<(), crate::HostError> {
-        let changed = self.authorize_worker_effect(|| {
+        let changed = self.realizer.execution.authorize_worker_effect(|| {
             self.installed_sessions.update_realization(session_id, |r| {
                 if !r.install_lease(crate::installed_session::test_observed_lease(lease)) {
                     return Err(crate::HostError::internal(
@@ -925,7 +924,7 @@ impl crate::SharedHost {
         if let Some(preparation) = &preparation {
             preparation.validate()?;
         }
-        self.authorize_worker_effect(|| {
+        self.realizer.execution.authorize_worker_effect(|| {
             sessions.update(thread, |slot| {
                 // Revalidate fallible coordinates and stage the existing owner
                 // transition under the final slot lock. No correlated field is
