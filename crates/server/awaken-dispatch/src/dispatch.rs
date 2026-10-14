@@ -16,8 +16,27 @@ pub use awaken_dispatch_contract::dispatch::*;
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
 use awaken_dispatch_contract::{PhysicalAttemptSlot, PhysicalAttemptTransition};
 
+/// Compile entry inventory from the same locked dispatch row as admission.
+/// This retains the original identity and adds no execution/closure authority.
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+pub(crate) fn physical_admission_operation(
+    claim: &RunClaim,
+    binding: Option<&AttemptExecutionBinding>,
+    request: &RunDispatch,
+) -> awaken_dispatch_contract::DispatchOperation {
+    awaken_dispatch_contract::DispatchOperation::AttemptAdmitted {
+        attempt: PhysicalAttempt {
+            claim: claim.clone(),
+            binding: binding.cloned(),
+            thread_id: Some(request.thread_id().clone()),
+            session_thread_id: request.session_thread_id.clone(),
+            closing: false,
+        },
+    }
+}
+
 /// One private stored alternative in the original operation storage. The public
-/// diagnostics enum keeps its five unchanged variants and codec. No second
+/// diagnostics enum retains delivery facts and physical admission. No second
 /// history or fake delivery transition carries independent closure facts.
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -51,6 +70,12 @@ impl StoredDispatchOperation {
     #[cfg(any(feature = "durable", test))]
     pub(crate) fn decode(encoded: &str) -> Result<Self, DispatchError> {
         let operation: Self = serde_json::from_str(encoded).map_err(DispatchError::unavailable)?;
+        if let Self::Diagnostic(awaken_dispatch_contract::DispatchOperation::AttemptAdmitted {
+            attempt,
+        }) = &operation
+        {
+            attempt.validate_admission()?;
+        }
         if let Some(fact) = operation.physical_fact() {
             fact.validate()?;
         }

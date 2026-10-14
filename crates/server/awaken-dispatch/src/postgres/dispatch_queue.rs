@@ -61,7 +61,7 @@ impl PostgresDispatchStore {
 
         let current = sqlx::query(&format!(
             "SELECT status, lease_owner, lease_epoch, lease_until, \
-             active_attempt_owner, active_attempt_epoch, retired_attempt_epoch, active_attempt_binding, worker_assignment, active_attempt_closing \
+             active_attempt_owner, active_attempt_epoch, retired_attempt_epoch, active_attempt_binding, worker_assignment, active_attempt_closing, request \
              FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
         ))
         .bind(&claim.run_id.0)
@@ -140,6 +140,10 @@ impl PostgresDispatchStore {
             transition,
             PhysicalAttemptTransition::Install | PhysicalAttemptTransition::Replace
         ) {
+            let Json(request): Json<RunDispatch> =
+                current.try_get("request").map_err(store_error)?;
+            let operation = crate::dispatch::physical_admission_operation(claim, binding, &request);
+            insert_operation(&mut tx, operation).await?;
             sqlx::query(&format!(
                 "UPDATE {p}_dispatch SET active_attempt_owner = $2, \
                      active_attempt_epoch = $3, active_attempt_binding = $4, active_attempt_closing = FALSE WHERE run_id = $1"
