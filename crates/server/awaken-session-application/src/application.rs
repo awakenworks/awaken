@@ -8,6 +8,7 @@
 // @formal entrypoint session_run.execution_requires_dispatch_work_and_realization_owner
 // @formal entrypoint session_time.root_observations_are_revision_bound_and_replay_stable
 // @formal entrypoint session_work.only_a_claimed_nonterminal_run_may_revive_stopped_work
+use awaken_session_application_contract::process_local_executable_projection_admission;
 use awaken_session_state_contract::{
     SessionEnvironmentEffectAuthorization, SessionEnvironmentEffectIntent,
     SessionEnvironmentReceipt, SessionEnvironmentReceiptError,
@@ -523,9 +524,7 @@ impl SessionApplication {
             .map_err(|_| "Session lifecycle notifier is already installed")
     }
 
-    pub(crate) fn worker_observation_source(
-        &self,
-    ) -> Option<&dyn awaken_worker_contract::WorkerObservationSource> {
+    pub(crate) fn worker_observation_source(&self) -> Option<&dyn WorkerObservationSource> {
         self.execution_admission.workers.get().map(Arc::as_ref)
     }
 
@@ -557,10 +556,7 @@ impl SessionApplication {
     ) -> Result<awaken_session_application_contract::ExecutableProjectionAdmission, String> {
         match self.executable_projection_refresh.as_ref() {
             Some(refresh) => refresh.refresh().await,
-            None => Ok(
-                awaken_session_application_contract::process_local_executable_projection_admission(
-                ),
-            ),
+            None => Ok(process_local_executable_projection_admission()),
         }
     }
 
