@@ -1452,6 +1452,7 @@ pub awaken_runtime_contract::resolved::ToolDescriptor::recovery_policy: awaken_t
 impl awaken_runtime_contract::resolved::ToolDescriptor
 pub fn awaken_runtime_contract::resolved::ToolDescriptor::client_executed(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, serde_json::value::Value) -> Self
 pub fn awaken_runtime_contract::resolved::ToolDescriptor::content_hash(&self) -> alloc::string::String
+pub fn awaken_runtime_contract::resolved::ToolDescriptor::content_namespace(&self) -> &str
 pub fn awaken_runtime_contract::resolved::ToolDescriptor::for_args<A: schemars::JsonSchema>(&str, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_contract::resolved::ToolDescriptor::for_tool<T: awaken_tool_contract::tool::Tool>(&str) -> Self
 pub fn awaken_runtime_contract::resolved::ToolDescriptor::model_parameters(&self) -> serde_json::value::Value

@@ -50,17 +50,43 @@ const fn rehydration_publication_decision(
     has_frozen_revision: bool,
     profile_available: bool,
 ) -> RehydrationPublicationDecision {
-    if profile_available {
-        RehydrationPublicationDecision::Available
-    } else {
-        match (purpose, has_frozen_revision) {
-            (RehydrationPurpose::Interactive, true) => {
-                RehydrationPublicationDecision::RejectMissingExact
+    match (profile_available, has_frozen_revision, purpose) {
+        (true, _, _) => RehydrationPublicationDecision::Available,
+        (false, false, _) => RehydrationPublicationDecision::Unpinned,
+        (false, true, RehydrationPurpose::Interactive) => {
+            RehydrationPublicationDecision::RejectMissingExact
+        }
+        (false, true, _) => RehydrationPublicationDecision::NonInteractiveFrozenProjection,
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn rehydration_publication_decision_table_is_exact() {
+    // The three causes form all twelve rows: profile availability dominates;
+    // otherwise only a pinned interactive recovery rejects. This executes the
+    // existing Kani decision surface on native platforms as well.
+    for purpose in [
+        RehydrationPurpose::Interactive,
+        RehydrationPurpose::CollectionRead,
+        RehydrationPurpose::FrozenControl,
+    ] {
+        for pinned in [false, true] {
+            for available in [false, true] {
+                let expected = if available {
+                    RehydrationPublicationDecision::Available
+                } else if !pinned {
+                    RehydrationPublicationDecision::Unpinned
+                } else if purpose == RehydrationPurpose::Interactive {
+                    RehydrationPublicationDecision::RejectMissingExact
+                } else {
+                    RehydrationPublicationDecision::NonInteractiveFrozenProjection
+                };
+                assert_eq!(
+                    rehydration_publication_decision(purpose, pinned, available),
+                    expected
+                );
             }
-            (RehydrationPurpose::CollectionRead | RehydrationPurpose::FrozenControl, true) => {
-                RehydrationPublicationDecision::NonInteractiveFrozenProjection
-            }
-            (_, false) => RehydrationPublicationDecision::Unpinned,
         }
     }
 }
