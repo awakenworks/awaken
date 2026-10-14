@@ -9,6 +9,9 @@
 //! resumes through delivered input (#4); and an expired lease is recovered.
 
 mod harness;
+#[path = "../../../runtime/awaken-runtime/tests/harness/run_input.rs"]
+mod run_input;
+use run_input::MarkPlugin;
 
 use awaken_time::system_clock;
 use std::sync::Arc;
@@ -2441,12 +2444,15 @@ async fn daemon_performs_a_scheduled_action_to_completion() {
     let (runtime, ran) = schedule_runtime();
     let store = Arc::new(MemoryDispatchStore::new(system_clock()));
     let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
-    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit, system_clock());
+    // RI10 real claimed execution and automatic ScheduledAction must retain
+    // the same original go window across both inferences, without input append
+    // or a second model/physical driver. Original effect/settlement checks stay.
+    let (probe, inputs) = MarkPlugin::recording();
+    let original = activation("run-1");
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit, system_clock())
+        .with_context(RuntimeRunContext::new().with_session_plugin(probe));
 
-    let state = ingress
-        .submit_background(activation("run-1"))
-        .await
-        .unwrap();
+    let state = ingress.submit_background(original.clone()).await.unwrap();
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(
         ran.load(Ordering::SeqCst),
@@ -2457,6 +2463,11 @@ async fn daemon_performs_a_scheduled_action_to_completion() {
         store.dispatch_count(),
         0,
         "the run settled Done, not Awaiting"
+    );
+    assert_eq!(
+        *inputs.lock().unwrap(),
+        vec![original.input.clone(), original.input],
+        "RI10 initial and same-drive scheduled windows"
     );
 }
 
@@ -2495,7 +2506,13 @@ async fn a_recovered_scheduled_action_is_performed() {
         .unwrap();
 
     // A live worker recovers it after the lease expires and performs the action.
-    let worker = DispatchWorker::new(runtime, store.clone(), commit, "live-worker");
+    // RI11 the recovered ScheduledAction branch supplies the durable request's
+    // exact go window to Native continuation. The original committed await and
+    // expired claim remain the authority; this adds only a read-only hook.
+    let (probe, inputs) = MarkPlugin::recording();
+    let original = activation("run-1");
+    let worker = DispatchWorker::new(runtime, store.clone(), commit, "live-worker")
+        .with_context(RuntimeRunContext::new().with_session_plugin(probe));
     let processed = worker.tick(harness::at(&clock, 100)).await.unwrap();
     assert_eq!(
         processed,
@@ -2510,6 +2527,11 @@ async fn a_recovered_scheduled_action_is_performed() {
         "the recovered action ran once"
     );
     assert_eq!(store.dispatch_count(), 0, "settled Done after recovery");
+    assert_eq!(
+        *inputs.lock().unwrap(),
+        vec![original.input],
+        "RI11 recovered supplied window"
+    );
 }
 
 #[tokio::test]

@@ -26,6 +26,10 @@ use awaken_agent_contract::thread::commit::coordinator::{
     Coordinator as CommitCoordinator, Error as CommitError,
 };
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
+#[path = "harness/run_input.rs"]
+mod run_input;
+use run_input::MarkPlugin;
+
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::delegation::{
@@ -1535,10 +1539,12 @@ async fn resuming_a_delegation_done_folds_the_reply_and_completes() {
 
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     // The executor was resumed with the awaiting handle and the user's input.
-    let resumed = executor.resumed_with.lock().unwrap();
-    assert_eq!(resumed.len(), 1);
-    assert_eq!(resumed[0].0, serde_json::json!({ "task": "remote-42" }));
-    assert_eq!(resumed[0].1, ResumeResult::Input("more please".into()));
+    {
+        let resumed = executor.resumed_with.lock().unwrap();
+        assert_eq!(resumed.len(), 1);
+        assert_eq!(resumed[0].0, serde_json::json!({ "task": "remote-42" }));
+        assert_eq!(resumed[0].1, ResumeResult::Input("more please".into()));
+    }
     assert!(
         commit
             .committed()
@@ -1552,6 +1558,42 @@ async fn resuming_a_delegation_done_folds_the_reply_and_completes() {
         commit
             .resume_ticket_for(&RunId("run-1".to_string()))
             .is_none()
+    );
+    // RI7 a cold supplied-activation parent continues after its actual child
+    // result through resume_delegation -> drive_resumed. The original window
+    // remains go, while more please is the child resume payload, not run_input.
+    let executor = Arc::new(MockRunDelegationService::new(
+        Step::Awaiting(serde_json::json!({"task":"remote-42"})),
+        Step::Done("delegate finished".into(), 0),
+    ));
+    let (_old_runtime, commit) = await_on_delegation(executor.clone()).await;
+    let runtime = Runtime::new()
+        .with_run_delegation(executor.clone())
+        .with_llm(Arc::new(DelegateThenText {
+            calls: AtomicUsize::new(1),
+        }));
+    let (probe, inputs) = MarkPlugin::recording();
+    let original = activation();
+    let state = awaken_runtime_contract::execution::RunAttemptExecutor::resume(
+        &runtime,
+        original.clone(),
+        resume_command("more please"),
+        RuntimeRunContext::new()
+            .with_store(commit.clone())
+            .with_session_plugin(probe),
+    )
+    .await
+    .unwrap();
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+    assert_eq!(
+        *inputs.lock().unwrap(),
+        vec![original.input],
+        "RI7 parent original window"
+    );
+    assert_eq!(
+        executor.resumed_with.lock().unwrap().len(),
+        1,
+        "RI7 one actual child continuation"
     );
 }
 
