@@ -176,6 +176,43 @@ The versioned `agent_toolset_20260401` has exactly eight built-in names: `bash`,
 credential, egress, usage, and Billing seams; the Managed adapter only selects
 it through the official toolset policy.
 
+Web execution settings remain in the neutral
+`ToolPolicyOverride.configuration` value, separately from provider bindings and
+options in `plugin_config`. Installed provider capabilities and prepared
+configuration do not authorize an individual fetch. The Web extension checks
+the requested URL against every frozen source and domain restriction before
+resolving credentials or dispatching provider I/O. Supporting providers must
+enforce domains on every redirect hop or disable redirects; unsupported
+combinations fail during assembly. Fallback remains limited to
+`UnavailableBeforeDispatch`.
+
+Every host fetch validates an HTTP(S) URL with a host before credential delivery,
+including requests with no additional execution policy.
+
+URL evidence is a versioned, rebuildable view of the committed conversation,
+not another persistent authorization authority. User messages, matched tool
+calls/results, and frozen descriptor ownership supply its facts. A name alone
+cannot classify a third-party or client tool as an intrinsic Web capability.
+Thread State reading, transcript observation, and pure request admission are
+separate operations; missing required evidence or an unsupported evidence
+format refuses the fetch. The private admitted request only enforces ordering
+inside the process and carries no cross-process authorization.
+
+The existing `AfterTool` outcome captures the original frozen tool ownership and
+an equality fingerprint of its successful call and output. The same derived
+State key holds these witnesses. `BeforeInference` promotes URLs only from a
+matching conversation call/result pair; an outcome alone cannot authorize a
+fetch in the same inference. Errors, mismatched results and historical results
+without their original witness contribute no tool-source evidence. Recovery
+cannot classify those historical results from the current descriptor catalog.
+
+The current `max_content_tokens` behavior is an independent compatibility issue:
+the nearest configured value wins rather than taking the minimum, and execution
+truncates text at a UTF-8 byte boundary, with the existing PDF URL exception.
+Source/domain composition and boundary refactoring do not silently change those
+scalar or truncation semantics. A token-count or minimum-limit correction needs
+its own change and tests.
+
 `glob` and `grep` share one capability-relative walker rooted in the
 `ConfinedPath` directory handle. The compatibility floor follows the published
 Go toolset: Glob applies `*`, `?`, character classes, and segment-level `**` to

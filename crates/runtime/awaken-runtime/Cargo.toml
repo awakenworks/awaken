@@ -39,6 +39,7 @@ tracing = "0.1"
 tempfile = "3"
 
 [dev-dependencies]
+awaken-ext-builtin-tools.workspace = true
 awaken-lease-testkit.workspace = true
 schemars = "1"
 awaken-ext-background-task.workspace = true
