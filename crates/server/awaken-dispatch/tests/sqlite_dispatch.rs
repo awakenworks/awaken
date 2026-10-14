@@ -8,6 +8,97 @@
 mod harness;
 
 #[tokio::test]
+async fn admission_append_failure_rolls_back_and_cold_replay_retains_entry() {
+    use awaken_dispatch::{
+        AttemptAdmission, DispatchCursor, DispatchOperationalFeed, SqliteDispatchStore,
+    };
+    // Cause/effect rules: E1 log INSERT fails -> admission errors, empty slot,
+    // no entry; E2 same claim after fault removal -> one entry and exact slot;
+    // E3 cold reopen + response-loss retry -> AlreadyApplied, original entry
+    // unchanged. Neither E2 nor E3 is evidence of process or effect closure.
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("admission.db");
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = SqliteDispatchStore::open(path.to_str().unwrap(), clock.clock())
+        .await
+        .unwrap();
+    let (claim, binding, _) =
+        harness::attempt_binding::bound_claim(&store, "entry-cold", &clock).await;
+    let connection = awaken_sqlite_pool::EmbeddedSqlite::file(&path)
+        .open()
+        .await
+        .unwrap();
+    sqlx::query("CREATE TRIGGER test_reject_admission_insert BEFORE INSERT ON runtime_dispatch_operation WHEN json_extract(NEW.operation, '$.type') = 'attempt_admitted' BEGIN SELECT RAISE(ABORT, 'test admission append failure'); END").execute(&connection).await.unwrap();
+    assert!(
+        store.begin_attempt(&claim, Some(&binding)).await.is_err(),
+        "E1 append is part of admission"
+    );
+    assert_eq!(
+        store.load_physical_attempt(&claim.run_id).await.unwrap(),
+        None,
+        "E1 rollback slot"
+    );
+    let before = store
+        .events_after(DispatchCursor::default(), usize::MAX, Some(&claim.run_id))
+        .await
+        .unwrap();
+    assert!(
+        before.events.iter().all(
+            |event| serde_json::to_value(&event.operation).unwrap()["type"] != "attempt_admitted"
+        ),
+        "E1 zero entry"
+    );
+    sqlx::query("DROP TRIGGER test_reject_admission_insert")
+        .execute(&connection)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.begin_attempt(&claim, Some(&binding)).await.unwrap(),
+        AttemptAdmission::Applied,
+        "E2"
+    );
+    let original = store
+        .events_after(DispatchCursor::default(), usize::MAX, Some(&claim.run_id))
+        .await
+        .unwrap();
+    assert_eq!(
+        original.events.len(),
+        before.events.len() + 1,
+        "E2 exactly one entry"
+    );
+    let physical = store
+        .load_physical_attempt(&claim.run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    drop(store);
+    let reopened = SqliteDispatchStore::open(path.to_str().unwrap(), clock.clock())
+        .await
+        .unwrap();
+    assert_eq!(
+        reopened
+            .begin_attempt(&claim, Some(&binding))
+            .await
+            .unwrap(),
+        AttemptAdmission::AlreadyApplied,
+        "E3 retry"
+    );
+    assert_eq!(
+        reopened.load_physical_attempt(&claim.run_id).await.unwrap(),
+        Some(physical),
+        "E3 exact frozen tuple"
+    );
+    assert_eq!(
+        reopened
+            .events_after(DispatchCursor::default(), usize::MAX, Some(&claim.run_id))
+            .await
+            .unwrap(),
+        original,
+        "E3 original cursor, time and entry"
+    );
+}
+
+#[tokio::test]
 async fn ordinary_ack_append_failure_rolls_back_and_cold_replay_retains_original_subject() {
     use awaken_dispatch::{
         AttemptAdmission, AttemptPhysicalFact, AttemptReturnCause, DispatchCursor,

@@ -89,6 +89,17 @@ pub struct PhysicalAttempt {
 }
 
 impl PhysicalAttempt {
+    /// Validate retained entry identity, without interpreting it as closure.
+    pub fn validate_admission(&self) -> Result<(), DispatchError> {
+        self.validate_subject("invalid retained physical admission identity")?;
+        if self.closing || self.thread_id.is_none() || self.claim.epoch == 0 {
+            return Err(DispatchError::Rejected(
+                "retained admission requires an open exact epoch and Thread".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Intrinsic subject data shared by return and independent-closure records.
     /// This validates identity only; no recorded data grants execution or stop.
     fn validate_subject(&self, invalid_subject: &str) -> Result<(), DispatchError> {

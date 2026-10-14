@@ -45,7 +45,7 @@ pub async fn bound_claim(
 
 /// Shared decision table, executed against all three stores and Any delegation.
 pub async fn assert_binding_lifecycle(
-    store: &impl ConformanceDispatch,
+    store: &(impl ConformanceDispatch + awaken_dispatch::DispatchOperationalFeed),
     clock: &dyn awaken_dispatch_testkit::ConformanceClock,
 ) {
     // C1 exact registered Worker tuple (not merely its owner string); C2 empty,
@@ -139,6 +139,34 @@ pub async fn assert_binding_lifecycle(
             );
         }
     }
+    // B10 cause/effect rule: successful physical admission must be retained in
+    // the same durable operation prefix before executor entry. Exact retries
+    // and rejected binding changes above add no admission; the one record
+    // preserves the exact provider/Worker/Thread tuple. This is entry evidence,
+    // never closure evidence or permission to replay the provider effect.
+    let entries = store
+        .events_after(
+            awaken_dispatch::DispatchCursor::default(),
+            usize::MAX,
+            Some(&a.run_id),
+        )
+        .await
+        .unwrap()
+        .events
+        .into_iter()
+        .map(|event| serde_json::to_value(event.operation).unwrap())
+        .filter(|operation| operation["type"] == "attempt_admitted")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        entries.len(),
+        1,
+        "B10 every admitted attempt is retained once"
+    );
+    assert_eq!(
+        entries[0]["attempt"],
+        serde_json::to_value(&expected_a).unwrap(),
+        "B10 exact entry tuple"
+    );
     clock.set(0);
     store.renew_lease(&a, 0).await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -222,6 +250,33 @@ pub async fn assert_binding_lifecycle(
         store.handoff_attempt(&c, Some(&binding_c)).await.unwrap(),
         A::Replaced,
         "B7"
+    );
+    // B11 a durable handoff retains the successor entry as well as each old
+    // admitted identity; later closure must account for every original claim.
+    let admissions = store
+        .events_after(
+            awaken_dispatch::DispatchCursor::default(),
+            usize::MAX,
+            Some(&c.run_id),
+        )
+        .await
+        .unwrap()
+        .events
+        .into_iter()
+        .filter_map(|event| match event.operation {
+            awaken_dispatch::DispatchOperation::AttemptAdmitted { attempt } => Some(attempt),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        admissions.iter().map(|a| &a.claim).collect::<Vec<_>>(),
+        vec![&a, &b, &c],
+        "B11 complete admission order"
+    );
+    assert_eq!(
+        admissions[2].binding.as_ref(),
+        Some(&binding_c),
+        "B11 immutable successor binding"
     );
     assert_eq!(
         store.load_physical_attempt(&c.run_id).await.unwrap(),
