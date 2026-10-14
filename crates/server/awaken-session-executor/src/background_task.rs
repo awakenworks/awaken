@@ -1327,7 +1327,20 @@ mod tests {
         }
     }
 
-    struct RecordingAfterToolPlugin(Arc<AtomicUsize>);
+    #[derive(Clone)]
+    pub(super) struct RecordingAfterToolPlugin(
+        pub(super) Arc<AtomicUsize>,
+        pub(super) ToolConcurrency,
+    );
+
+    impl awaken_runtime_contract::plugin::ToolConcurrencyConstraint for RecordingAfterToolPlugin {
+        fn id(&self) -> &str {
+            "test.after-tool"
+        }
+        fn constrain(&self, _call: &awaken_tool_contract::tool::ToolCall) -> ToolConcurrency {
+            self.1.clone()
+        }
+    }
 
     impl awaken_runtime_contract::plugin::Plugin for RecordingAfterToolPlugin {
         fn manifest(&self) -> awaken_runtime_contract::plugin::PluginManifest {
@@ -1335,6 +1348,9 @@ mod tests {
                 id: "test.after-tool".into(),
                 bound: awaken_runtime_contract::plugin::CapabilityBound {
                     phase_hooks: vec![awaken_runtime_contract::plugin::PhaseHookPoint::AfterTool],
+                    tool_constraints: awaken_runtime_contract::plugin::IdBound::Exact(vec![
+                        "test.after-tool".into(),
+                    ]),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -1347,6 +1363,7 @@ mod tests {
             contributions
                 .phase_hooks
                 .push(Arc::new(RecordingAfterTool(self.0.clone())));
+            contributions.register_tool_constraint(Arc::new(self.clone()));
             contributions
         }
     }
@@ -1397,6 +1414,14 @@ mod tests {
         // LocalCommitQueries read seam; the Memory store remains the observable
         // stale compatibility projection. Rules: R1=C1=>E1; R2=C2=>E2;
         // R3=C2+C3=>E3; R4=C2+C4=>E4; R5=C2+C5=>E5; R6=C2+C6=>E6.
+        // C7 a plugin adds Write(shared) to the intrinsic Parallel target.
+        // R7 the original frozen Task policy matches Prepared facts, so R2-R6
+        // still execute exactly once; constraints never become State authority.
+        let claim = ToolConcurrency::Resources(vec![
+            awaken_tool_contract::tool::ToolResourceAccess::Write(
+                awaken_tool_contract::tool::ToolResource::new("plugin-test", "shared"),
+            ),
+        ]);
         let supervisor = Arc::new(BackgroundTaskSupervisor::new(
             "worker-test",
             awaken_time::system_clock(),
@@ -1414,7 +1439,10 @@ mod tests {
         let runtime = Arc::new(
             Runtime::new()
                 .with_plugin(plugin)
-                .with_plugin(Arc::new(RecordingAfterToolPlugin(after_tool_calls.clone())))
+                .with_plugin(Arc::new(RecordingAfterToolPlugin(
+                    after_tool_calls.clone(),
+                    claim.clone(),
+                )))
                 .with_tool(counter.clone()),
         );
         let process_projection = Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new(
@@ -1480,7 +1508,7 @@ mod tests {
                 BackgroundTaskSupervisor::lease_ms(),
                 TaskExecutionPolicy {
                     recovery: ToolRecoveryPolicy::default(),
-                    concurrency: ToolConcurrency::Parallel,
+                    concurrency: claim,
                 },
             )
             .expect("claim");
@@ -1543,6 +1571,8 @@ mod tests {
     #[derive(Default)]
     pub(super) struct RemoteTaskTool {
         pub(super) starts: AtomicUsize,
+        pub(super) invokes: AtomicUsize,
+        pub(super) ordinary_invoke: bool,
         pub(super) polls: AtomicUsize,
         pub(super) cancels: AtomicUsize,
         pub(super) effect_gate: Option<Arc<tokio::sync::Semaphore>>,
@@ -1583,8 +1613,14 @@ mod tests {
             "remote"
         }
 
-        async fn invoke(&self, _call: ToolCall) -> Result<ToolOutput, ToolError> {
-            panic!("durable detached target must use start_task")
+        async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+            assert!(
+                self.ordinary_invoke,
+                "durable detached target must use start_task"
+            );
+            self.before_effect().await;
+            self.invokes.fetch_add(1, Ordering::SeqCst);
+            Ok(ToolOutput::ok(call.call_id, "ordinary complete"))
         }
 
         fn durable_tasks(&self) -> Option<&dyn DurableTaskTool> {

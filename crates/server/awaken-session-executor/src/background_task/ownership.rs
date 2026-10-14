@@ -88,7 +88,7 @@ mod tests {
     use awaken_tool_contract::tool::{ToolCall, ToolError, ToolRecoveryPolicy};
     use awaken_tool_contract::{ToolConcurrency, ToolExecutionAdmission, ToolExecutionPermit};
 
-    use super::super::tests::{RemoteTaskTool, remote_snapshot};
+    use super::super::tests::{RecordingAfterToolPlugin, RemoteTaskTool, remote_snapshot};
     use crate::background::BackgroundRuns;
 
     #[test]
@@ -275,6 +275,7 @@ mod tests {
     struct ObservedAdmission {
         inner: Arc<dyn ToolExecutionAdmission>,
         entered: Arc<tokio::sync::Notify>,
+        claims: Arc<std::sync::Mutex<Vec<ToolConcurrency>>>,
     }
 
     #[async_trait::async_trait]
@@ -285,6 +286,7 @@ mod tests {
         ) -> Result<Box<dyn ToolExecutionPermit>, ToolError> {
             // Observe entry only; the real shared admission still owns conflict
             // decisions and permits. No competing test scheduler is introduced.
+            self.claims.lock().unwrap().push(claim.clone());
             self.entered.notify_one();
             self.inner.clone().acquire(claim).await
         }
@@ -300,40 +302,78 @@ mod tests {
         // the production observer context and Runtime's single executor gate.
         // This checks invalidation before the gate's read; it does not claim an
         // atomic transaction spanning that read and a third-party network effect.
-        for boundary in 0..3 {
+        // C3 the plugin narrows a Parallel target to Write(shared); the held
+        // permit is that resource claim rather than Serial. R3 all four actions
+        // pass the complete claim to the same real admission before the original
+        // post-wait ownership check. R4 invoke is an ordinary configured target;
+        // start/poll/cancel keep the original durable target and handle.
+        for (boundary, constrained) in
+            (0..4).flat_map(|boundary| [(boundary, false), (boundary, true)])
+        {
             for change in 0..5 {
                 let supervisor = Arc::new(BackgroundTaskSupervisor::new(
                     "worker",
                     awaken_time::system_clock(),
                 ));
-                let remote = Arc::new(RemoteTaskTool::default());
-                let runtime = Arc::new(Runtime::new().with_tool(remote.clone()).with_plugin(
-                    Arc::new(BackgroundTaskPlugin::with_supervisor(
-                        BackgroundTaskConfig {
-                            tools: BTreeSet::from(["remote".into()]),
-                            ..Default::default()
-                        },
-                        supervisor.clone(),
-                    )),
-                ));
+                let remote = Arc::new(RemoteTaskTool {
+                    ordinary_invoke: boundary == 3,
+                    ..Default::default()
+                });
+                let resource_claim = ToolConcurrency::Resources(vec![
+                    awaken_tool_contract::tool::ToolResourceAccess::Write(
+                        awaken_tool_contract::tool::ToolResource::new("plugin-test", "shared"),
+                    ),
+                ]);
+                let claim = if constrained {
+                    resource_claim.clone()
+                } else {
+                    ToolConcurrency::Parallel
+                };
+                let held_claim = if constrained {
+                    resource_claim
+                } else {
+                    ToolConcurrency::Serial
+                };
+                let mut snapshot = remote_snapshot();
+                snapshot
+                    .resolved_spec
+                    .plugin_ids
+                    .push("test.after-tool".into());
+                if boundary == 3 {
+                    snapshot.resolved_spec.tool_descriptors[0].kind =
+                        awaken_runtime_contract::resolved::ToolKind::Regular;
+                }
+                let runtime = Arc::new(
+                    Runtime::new()
+                        .with_tool(remote.clone())
+                        .with_plugin(Arc::new(BackgroundTaskPlugin::with_supervisor(
+                            BackgroundTaskConfig {
+                                tools: BTreeSet::from(["remote".into()]),
+                                ..Default::default()
+                            },
+                            supervisor.clone(),
+                        )))
+                        .with_plugin(Arc::new(RecordingAfterToolPlugin(
+                            Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                            claim.clone(),
+                        ))),
+                );
                 let commit = local_commit();
                 let background = Arc::new(BackgroundRuns::new());
                 let admission = background.tool_execution_admission("session", "generation");
-                let held = admission
-                    .clone()
-                    .acquire(ToolConcurrency::Serial)
-                    .await
-                    .unwrap();
+                let held = admission.clone().acquire(held_claim).await.unwrap();
                 let entered = Arc::new(tokio::sync::Notify::new());
+                let claims = Arc::new(std::sync::Mutex::new(Vec::new()));
                 let context = RuntimeRunContext::new().with_tool_execution_admission(Arc::new(
                     ObservedAdmission {
                         inner: admission,
                         entered: entered.clone(),
+                        claims: claims.clone(),
                     },
                 ));
                 let observer = BackgroundTaskTerminalObserver::new(
                     runtime.clone(),
-                    remote_snapshot(),
+                    snapshot.clone(),
                     context,
                     commit
                         .committed_authority()
@@ -344,13 +384,13 @@ mod tests {
                     "generation".into(),
                     None,
                 );
-                let mut task = task(boundary, &supervisor);
+                let mut task = task(if boundary == 3 { 0 } else { boundary }, &supervisor);
                 persist(&commit, &task, "initial").await;
                 let fence = task.tenure().unwrap();
                 let token = supervisor.register(&task.id, &fence).unwrap();
                 let prepared = PreparedToolExecutor::new(
                     runtime,
-                    &remote_snapshot(),
+                    &snapshot,
                     observer.execution_context(&task, token),
                 )
                 .unwrap();
@@ -376,7 +416,7 @@ mod tests {
                             )
                             .await
                             .map(|_| ()),
-                        _ => prepared
+                        2 => prepared
                             .cancel_task(
                                 &run,
                                 thread,
@@ -387,13 +427,30 @@ mod tests {
                             )
                             .await
                             .map(|_| ()),
+                        _ => prepared
+                            .invoke(&run, thread, "invoke".into(), call, &state)
+                            .await
+                            .map(|_| ()),
                     }
                 });
                 tokio::time::timeout(Duration::from_secs(2), entered.notified())
                     .await
                     .unwrap();
+                assert_eq!(
+                    claims.lock().unwrap().as_slice(),
+                    &[claim],
+                    "R3 complete admitted claim"
+                );
+                assert_eq!(
+                    remote.starts.load(Ordering::SeqCst)
+                        + remote.polls.load(Ordering::SeqCst)
+                        + remote.cancels.load(Ordering::SeqCst)
+                        + remote.invokes.load(Ordering::SeqCst),
+                    0,
+                    "R3 resource waiter has entered no effect"
+                );
                 match change {
-                    1 if boundary == 0 => task.request_cancel().unwrap(),
+                    1 if boundary == 0 || boundary == 3 => task.request_cancel().unwrap(),
                     1 => {
                         let expiry = task.attempt().unwrap().lease_expires_at_ms;
                         task.reclaim("replacement", expiry, BackgroundTaskSupervisor::lease_ms())
@@ -438,6 +495,10 @@ mod tests {
                 assert_eq!(
                     remote.cancels.load(Ordering::SeqCst),
                     usize::from(change == 0 && boundary == 2)
+                );
+                assert_eq!(
+                    remote.invokes.load(Ordering::SeqCst),
+                    usize::from(change == 0 && boundary == 3)
                 );
             }
         }
