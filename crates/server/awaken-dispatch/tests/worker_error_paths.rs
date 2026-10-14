@@ -10,6 +10,8 @@
 //! 3. a chain of consecutive ScheduledActions is performed to completion in ONE
 //!    `drive_claimed`, via the worker's `while state == Awaiting` loop.
 
+use awaken_dispatch::DispatchAttemptRecordReads as _;
+
 mod harness;
 #[path = "../../../runtime/awaken-runtime/tests/harness/run_input.rs"]
 mod run_input;

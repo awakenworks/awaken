@@ -229,6 +229,7 @@ mod tests {
     use crate::host::worker_resolver::test_support::{AdoptionModel, claim, test_activation};
     use async_trait::async_trait;
     use awaken_agent_contract::agent::{run::EndCause, thread::Id as ThreadId};
+    use awaken_dispatch_contract::DispatchAttemptRecordReads as _;
     use awaken_dispatch_contract::{
         DispatchClaims, DispatchCommitAuthority, DispatchControlReads, DispatchExecution,
         DispatchReads, SessionRunReservations,

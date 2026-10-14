@@ -541,15 +541,6 @@ impl DispatchControlReads for AnyCoordinatorDispatch {
         delegate_owner!(self, load_physical_attempt(run_id))
     }
 
-    async fn attempt_closure_records_after(
-        &self,
-        cursor: DispatchCursor,
-        limit: usize,
-        run: Option<&RunId>,
-    ) -> Result<awaken_dispatch_contract::AttemptClosurePage, DispatchError> {
-        delegate_owner!(self, attempt_closure_records_after(cursor, limit, run))
-    }
-
     async fn completion_events_after(
         &self,
         after_sequence: u64,
@@ -644,5 +635,17 @@ impl SessionContinuationOutbox for AnyCoordinatorDispatch {
         self.owner
             .relay_and_enqueue(input, request, admission)
             .await
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_dispatch_contract::DispatchAttemptRecordReads for AnyCoordinatorDispatch {
+    async fn attempt_closure_records_after(
+        &self,
+        cursor: DispatchCursor,
+        limit: usize,
+        run: Option<&RunId>,
+    ) -> Result<awaken_dispatch_contract::AttemptClosurePage, DispatchError> {
+        delegate_owner!(self, attempt_closure_records_after(cursor, limit, run))
     }
 }

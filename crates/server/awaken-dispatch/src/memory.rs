@@ -1463,16 +1463,6 @@ impl awaken_dispatch_contract::DispatchControlReads for MemoryDispatchStore {
             .map(Option::flatten)
     }
 
-    async fn attempt_closure_records_after(
-        &self,
-        cursor: DispatchCursor,
-        limit: usize,
-        run: Option<&RunId>,
-    ) -> Result<crate::AttemptClosurePage, DispatchError> {
-        self.read_retained_attempt_closures(cursor, limit, run)
-            .await
-    }
-
     async fn completion_events_after(
         &self,
         after_sequence: u64,
@@ -1814,5 +1804,18 @@ mod admission_observation_tests {
             matches!(store.observe_session_run_admission(&RunId("missing".into())).await,
             Err(DispatchError::Unavailable(message)) if message == "dispatch store poisoned")
         );
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_dispatch_contract::DispatchAttemptRecordReads for MemoryDispatchStore {
+    async fn attempt_closure_records_after(
+        &self,
+        cursor: DispatchCursor,
+        limit: usize,
+        run: Option<&RunId>,
+    ) -> Result<crate::AttemptClosurePage, DispatchError> {
+        self.read_retained_attempt_closures(cursor, limit, run)
+            .await
     }
 }

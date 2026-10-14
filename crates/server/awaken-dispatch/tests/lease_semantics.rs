@@ -22,6 +22,8 @@
 //! 6. a reclaimed opaque ACP Run is terminally Indeterminate and its prompt is
 //!    never sent again without an official idempotent receipt.
 
+use awaken_dispatch::DispatchAttemptRecordReads as _;
+
 mod harness;
 
 use awaken_dispatch::ControlDispatch;

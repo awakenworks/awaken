@@ -15,6 +15,8 @@
 //! committed terminal state — against real storage. Skips when no Postgres is
 //! reachable.
 
+use awaken_dispatch::DispatchAttemptRecordReads as _;
+
 mod harness;
 
 use awaken_time::system_clock;

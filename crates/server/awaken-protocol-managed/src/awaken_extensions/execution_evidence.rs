@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionExecutionEvidence {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<awaken_session_execution_contract::SessionExecutionRecoveryObservation>,
     pub session_id: String,
     pub session_revision: u64,
     pub agent_id: String,
@@ -76,6 +78,7 @@ mod tests {
         // identity is lost; E2 historical unknown is not invented; E3 schema
         // drift fails closed. Rules R1=W1=>E1, R2=W2=>E2, R3=W3=>E3.
         let evidence = SessionExecutionEvidence {
+            recovery: None,
             session_id: "session-1".into(),
             session_revision: 4,
             agent_id: "agent-1".into(),
@@ -155,6 +158,7 @@ mod tests {
 
         async fn read(Path(session_id): Path<String>) -> Json<SessionExecutionEvidence> {
             Json(SessionExecutionEvidence {
+                recovery: None,
                 session_id,
                 session_revision: 1,
                 agent_id: "agent".into(),

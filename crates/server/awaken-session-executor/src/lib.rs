@@ -601,6 +601,18 @@ impl awaken_session_execution_contract::CoordinationRuntime for ManagedHost {
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::SessionCoordinationReads for ManagedHost {
+    async fn execution_recovery_observation(
+        &self,
+        session: &awaken_session_state_contract::PersistedSession,
+    ) -> awaken_session_execution_contract::SessionExecutionRecoveryObservation {
+        let Ok(source) = self.host.coordinator_dispatch() else {
+            return awaken_session_execution_contract::SessionExecutionRecoveryObservation::NotProven {
+                reason: awaken_session_execution_contract::SessionExecutionRecoveryGap::HistoryUnavailable,
+            };
+        };
+        awaken_dispatch_execution::read_execution_recovery(source.as_ref(), self, session).await
+    }
+
     async fn coordinated_admission_receipt(
         &self,
         command: awaken_session_execution_contract::CoordinatedAdmissionRef<'_>,

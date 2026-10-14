@@ -133,3 +133,13 @@ mod mcp_attachment {
         )
     }
 }
+
+pub use session::{
+    SessionExecutionClosureReference, SessionExecutionRecoveryGap,
+    SessionExecutionRecoveryObservation,
+};
+
+pub use session::{
+    SessionExecutionObservation, SessionModelRequestObservation, SessionRunExecutionObservation,
+    SessionToolUseObservation,
+};

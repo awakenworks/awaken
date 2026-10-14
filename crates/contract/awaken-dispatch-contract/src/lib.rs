@@ -92,3 +92,5 @@ pub use worker_transport::{
 };
 
 pub use dispatch::InboxRead;
+
+pub use dispatch::DispatchAttemptRecordReads;

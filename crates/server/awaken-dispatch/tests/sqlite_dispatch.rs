@@ -5,6 +5,8 @@
 //! checks, plus an end-to-end durable submit -> await -> resume entirely on SQLite
 //! (dispatch queue *and* commit boundary).
 
+use awaken_dispatch::DispatchAttemptRecordReads as _;
+
 mod harness;
 
 #[tokio::test]
