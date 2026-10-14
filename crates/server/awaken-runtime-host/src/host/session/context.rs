@@ -11,8 +11,7 @@ mod extensions;
 mod plan;
 mod resources;
 
-use crate::host::SessionCtx;
-use crate::host::session_ctx::RuntimeContextPurpose;
+use crate::host::{SessionCtx, session_ctx::RuntimeContextPurpose};
 use crate::{HostError, SharedHost};
 use std::sync::Arc;
 
@@ -57,7 +56,13 @@ pub(super) async fn construct(
         recover_revoked_legacy,
     )
     .await?;
-    let prepared = assembly::assemble(host, thread, resources, requested_purpose).await?;
+    // Assembly's typed extension futures are larger than this stage's output.
+    // Keep their storage out of the enclosing construction future: nested polls
+    // otherwise exhaust the default stack before Memory recovery can start.
+    // The same future runs under the caller's lifecycle guard; only install
+    // below publishes the completed context.
+    let assembly = assembly::assemble(host, thread, resources, requested_purpose);
+    let prepared = Box::pin(assembly).await?;
     install(host, thread, prepared).await
 }
 
