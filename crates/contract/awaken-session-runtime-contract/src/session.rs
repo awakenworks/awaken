@@ -795,3 +795,15 @@ mod kani_proofs {
         std::mem::forget(ended);
     }
 }
+
+mod execution_recovery;
+pub use execution_recovery::{
+    SessionExecutionClosureReference, SessionExecutionRecoveryGap,
+    SessionExecutionRecoveryObservation,
+};
+
+mod execution_observation;
+pub use execution_observation::{
+    SessionExecutionObservation, SessionModelRequestObservation, SessionRunExecutionObservation,
+    SessionToolUseObservation,
+};

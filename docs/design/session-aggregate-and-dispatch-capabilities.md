@@ -47,6 +47,16 @@ This inventory is distinct from the existing ordinary-return and independent
 closure meanings, and grants neither replay nor stop authority. Old streams
 without retained entries remain incomplete evidence for whole-execution recovery.
 
+Session execution observation asks the existing `SessionCoordinationReads` role
+for recovery evidence. Its Execution implementation joins the operational feed
+and original records from one canonical Dispatch instance. The existing committed
+`SessionProjectionSource` supplies each Thread's history; no new history or cache
+authority is introduced. `DispatchAttemptRecordReads` owns the original retained
+query, reused by Control and this execution query. Public diagnostic pages keep
+their existing projection. Admission, ordinary return and independent closure
+remain distinct evidence classes; the Session contract contains only original
+record coordinates and does not depend upward on Dispatch.
+
 Local composition constructs `AnyCoordinatorDispatch` from an owner implementing
 `DurableDispatch`, then uses `DispatchBinding::local`. Its cached Worker view
 retains the exact queue owner. Remote composition uses

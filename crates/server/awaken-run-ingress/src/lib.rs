@@ -351,3 +351,5 @@ mod supersession_epoch_tests {
         ));
     }
 }
+
+pub use awaken_run_ingress_contract::DispatchAttemptRecordReads;

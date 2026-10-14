@@ -1,5 +1,6 @@
 // @formal evidence session_execution.one_physical_attempt_per_thread
 use super::*;
+use awaken_run_ingress::DispatchAttemptRecordReads as _;
 use awaken_run_ingress::{
     ApplicationError, AttemptExecutionBinding, RunClaim, WorkerExecutionBindingSource,
 };

@@ -953,3 +953,15 @@ Validation belongs to the shared binding lifecycle decision table (entry,
 exact retries, foreign binding refusal and handoff) and durable transaction
 failure/restart tests. This source change alone does not establish Flow successor
 admission, complete historical recovery or deployed automatic coding acceptance.
+
+### Canonical observation roles preserve the public diagnostic projection
+
+The retained attempt-record query is extracted unchanged from Control reads into
+the smallest Dispatch contract leaf, `DispatchAttemptRecordReads`. Execution's
+existing coordination-read implementation reads that leaf and the operational
+feed from one canonical instance, using the current committed projection port
+for Thread history. Session consumes the resulting neutral recovery observation
+through its existing Runtime read role. There is no upward Session-to-Dispatch
+contract dependency or contract bundle. The existing pages retain their separate
+public/internal semantics and original cursors; unsupported readers report
+unproven evidence and cannot silently supply affirmative closure.

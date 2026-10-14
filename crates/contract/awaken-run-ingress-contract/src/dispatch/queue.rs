@@ -590,9 +590,24 @@ pub trait DispatchControlClaims: Send + Sync {
     ) -> Result<Option<Claimed>, DispatchError>;
 }
 
+/// Original physical-attempt records; a read role, never closure authority.
+#[async_trait]
+pub trait DispatchAttemptRecordReads: Send + Sync {
+    /// Read retained ordinary acknowledgements and independent closure facts from the one original operation
+    /// storage. Missing records remain unknown; these are not an inventory of
+    /// all old execution or a cleanup/placement grant. Filtering precedes the
+    /// logical page limit and the original global cursor is retained.
+    async fn attempt_closure_records_after(
+        &self,
+        cursor: crate::DispatchCursor,
+        limit: usize,
+        run: Option<&RunId>,
+    ) -> Result<AttemptClosurePage, DispatchError>;
+}
+
 /// Coordinator bounded recovery, attempt, completion and demand reads.
 #[async_trait]
-pub trait DispatchControlReads: Send + Sync {
+pub trait DispatchControlReads: DispatchAttemptRecordReads {
     /// Read one exact persisted binding only while `claim` remains the current
     /// owner. This query grants no material and changes no delivery state.
     async fn current_credential_binding(
@@ -609,17 +624,6 @@ pub trait DispatchControlReads: Send + Sync {
         &self,
         run_id: &RunId,
     ) -> Result<Option<PhysicalAttempt>, DispatchError>;
-
-    /// Read retained ordinary acknowledgements and independent closure facts from the one original operation
-    /// storage. Missing records remain unknown; these are not an inventory of
-    /// all old execution or a cleanup/placement grant. Filtering precedes the
-    /// logical page limit and the original global cursor is retained.
-    async fn attempt_closure_records_after(
-        &self,
-        cursor: crate::DispatchCursor,
-        limit: usize,
-        run: Option<&RunId>,
-    ) -> Result<AttemptClosurePage, DispatchError>;
 
     /// Return durable applied-`Done` facts after `after_sequence`, in ascending
     /// sequence order, capped at `limit`.
