@@ -1322,22 +1322,14 @@ fn configured_container_acp_capability_source(
     )))
 }
 
-async fn start_admin_surface(
-    admin_listen: Option<String>,
-    lifecycle: Arc<WorkerSupervisor>,
-) -> Option<tokio::task::JoinHandle<()>> {
+async fn start_admin_surface(admin_listen: Option<String>) -> Option<admin::WorkerAdminSurface> {
     let admin_addr = admin_listen?;
     match tokio::net::TcpListener::bind(&admin_addr).await {
         Ok(listener) => {
-            let router = admin::worker_admin_router_with_lifecycle(lifecycle);
             eprintln!(
                 "awaken-worker admin surface on {admin_addr} (/readyz /metrics /admin/drain)"
             );
-            Some(tokio::spawn(async move {
-                if let Err(error) = axum::serve(listener, router).await {
-                    eprintln!("awaken-worker admin server exited: {error}");
-                }
-            }))
+            Some(admin::WorkerAdminSurface::start(listener))
         }
         Err(error) => {
             eprintln!("awaken-worker admin surface disabled (bind {admin_addr}: {error})");
@@ -1432,6 +1424,11 @@ impl WorkerNode {
         let upstream = self.upstream;
         let bootstrap_control = WorkerControlClient::new(upstream.clone());
         let incarnation_id = lifecycle::select_incarnation_id(self.preselected_incarnation_id)?;
+        // Registration and dependency construction can wait for another service.
+        // Serve process liveness now; the same router remains unready until the
+        // existing Supervisor and pool are installed below. Its guard also
+        // closes the listener on every early return or unwind.
+        let admin_surface = start_admin_surface(self.admin_listen).await;
         let mut shutdown = std::pin::pin!(shutdown);
         let mut registration_wait_attempts = 0_u64;
         let registration_receipt = loop {
@@ -1801,11 +1798,9 @@ impl WorkerNode {
         );
         eprintln!("awaken-worker registered with {upstream_url}");
 
-        // The cloud-native admin surface on a SEPARATE port from any data path: an
-        // orchestrator gates routing on `/readyz` and calls `POST /admin/drain` in a
-        // `preStop` hook before SIGTERM. Best-effort — a bind failure is logged but does
-        // not stop the worker draining runs (the core job).
-        let admin_task = start_admin_surface(self.admin_listen, lifecycle.clone()).await;
+        if let Some(surface) = &admin_surface {
+            surface.bind_lifecycle(lifecycle.clone())?;
+        }
 
         // Authority loss is an irreversible boundary for this incarnation. The
         // heartbeat task has already fenced local claim admission; terminate the
@@ -1939,9 +1934,6 @@ impl WorkerNode {
             // let StatefulSet restart a second process under the same UID.
             // This never emits a stop receipt or releases retained evidence.
             await_registered_kubernetes_pod_replacement(&identity.worker_id).await;
-        }
-        if let Some(admin_task) = admin_task {
-            admin_task.abort();
         }
         shutdown?;
         if authority_lost {

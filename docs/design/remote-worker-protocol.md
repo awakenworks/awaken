@@ -54,6 +54,32 @@ Worker
 
 ## Dynamic behavior
 
+### Process health during registration
+
+The Worker serves its existing admin listener before the first Coordinator
+registration request. Process liveness is available while registration or
+registered dependency construction is pending; readiness remains unavailable
+until the canonical WorkerSupervisor and its accepting pool are installed.
+No health response grants Registry, claim, preparation or execution authority.
+
+Unchanged owners are WorkerControlClient registration/retry, WorkerSupervisor
+readiness/drain, and the exact Kubernetes process replacement/retention ports.
+WorkerNode changes only the admin listener's startup and shutdown ordering.
+The existing admin router receives a one-time binding to the original
+WorkerSupervisor; no second readiness state or lifecycle machine is added.
+The new private listener guard aborts serving on every return, including
+pre-registration shutdown and failed registered construction. During ordinary
+drain the same listener continues to serve liveness while the Supervisor owns
+quiescence, replacement intent and withdrawal.
+
+The call sequence is configuration validation -> admin listener -> retry the
+same registration identity -> construct the registered dependencies -> start
+the existing pool -> bind that Supervisor to the same router -> ordinary drain
+and withdrawal -> release the listener. Dependency outage therefore produces
+live=200 and ready=503, rather than an absent liveness port that provokes a
+same-UID container restart. Source tests cover the real HTTP startup gap and
+the original lifecycle; Kubernetes replacement remains a separate live gate.
+
 ### Session placement
 
 ```text

@@ -195,20 +195,15 @@ impl ManagedState {
         >,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
-        Self::from_application(
-            Arc::new(
-                awaken_session_application::SessionApplicationBuilder::fixture(
-                    runtime,
-                    mcp_realizer.unwrap_or_else(|| Arc::new(UnsupportedMcpAttachmentRealizer)),
-                    awaken_session_application::SessionPersistence::new(sessions_repo, clock),
-                    environments.clone(),
-                )
-                .build()
-                .expect("valid fixture Session application"),
-            ),
-            environments,
-            awaken_data_governance_contract::CapturePolicy::default(),
+        let application = awaken_session_application::SessionApplicationBuilder::fixture(
+            runtime,
+            mcp_realizer.unwrap_or_else(|| Arc::new(UnsupportedMcpAttachmentRealizer)),
+            awaken_session_application::SessionPersistence::new(sessions_repo, clock),
+            environments.clone(),
         )
+        .build()
+        .expect("valid fixture Session application");
+        Self::from_application(application.into(), environments, Default::default())
     }
 
     /// Wire a projection sink (a webhook dispatcher) so committed session lifecycle
