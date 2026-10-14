@@ -93,13 +93,9 @@ fn call_concurrency(
     {
         ToolConcurrency::Serial
     } else {
-        tool_execution::tool_concurrency(runtime, env, context, call)
+        return tool_execution::tool_concurrency(runtime, env, context, call);
     };
-    env.tool_constraints()
-        .iter()
-        .fold(intrinsic, |claim, constraint| {
-            claim.narrowed_with(constraint.constrain(call))
-        })
+    tool_execution::constrain_tool_concurrency(intrinsic, env.tool_constraints(), call)
 }
 
 fn requires_sequential_dispatch(resolved: &ResolvedRun, call: &ToolCall) -> bool {
