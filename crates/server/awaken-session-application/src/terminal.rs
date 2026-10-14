@@ -184,12 +184,6 @@ mod publication_error_tests {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ArchiveCleanupCompletion {
-    Recoverable,
-    Required,
-}
-
 fn pending_event_batch_error() -> SessionPreparationError {
     SessionPreparationError::Rejected(RunError::unavailable_classified(
         "session_event_batch_pending",
@@ -222,26 +216,6 @@ impl SessionDeleteCommand {
             requested_at_unix_s: Some(requested_at_unix_s),
         }
     }
-}
-
-/// Release only a Frozen WorkUnit root whose initial realization has never
-/// admitted effects. The archive CAS rechecks every fact; a completed Run
-/// or an adapter's status read cannot authorize terminating live execution.
-pub(crate) async fn release_unattempted_profiled_session(
-    application: &SessionApplication,
-    session_id: &str,
-    archived_at: &str,
-    fact: ManagedLifecycleFact,
-) -> Result<SessionDispositionMutation, SessionPreparationError> {
-    application
-        .terminate_session_with_admission(
-            &awaken_session_types::SessionId::from(session_id),
-            archived_at,
-            fact,
-            ArchiveAdmission::UnattemptedProfiledPreparation,
-            ArchiveCleanupCompletion::Required,
-        )
-        .await
 }
 
 impl SessionApplication {
@@ -481,7 +455,6 @@ impl SessionApplication {
             archived_at,
             fact,
             ArchiveAdmission::IdleOnly,
-            ArchiveCleanupCompletion::Recoverable,
         )
         .await
     }
@@ -503,7 +476,6 @@ impl SessionApplication {
             archived_at,
             fact,
             ArchiveAdmission::ForceTerminal,
-            ArchiveCleanupCompletion::Required,
         )
         .await
     }
@@ -524,18 +496,16 @@ impl SessionApplication {
             archived_at,
             fact,
             ArchiveAdmission::TerminalOnly,
-            ArchiveCleanupCompletion::Required,
         )
         .await
     }
 
-    async fn terminate_session_with_admission(
+    pub(crate) async fn terminate_session_with_admission(
         &self,
         session_id: &awaken_session_types::SessionId,
         archived_at: &str,
         fact: ManagedLifecycleFact,
         admission: ArchiveAdmission,
-        cleanup_completion: ArchiveCleanupCompletion,
     ) -> Result<SessionDispositionMutation, SessionPreparationError> {
         let transition = self
             .commit_archive(session_id, archived_at, fact, admission)
@@ -553,8 +523,8 @@ impl SessionApplication {
         let cleanup = self
             .release_terminal_resources(&transition.owner_scope, session_id.as_str())
             .await;
-        match (cleanup_completion, cleanup) {
-            (ArchiveCleanupCompletion::Required, Ok(Some(session))) => {
+        match (admission != ArchiveAdmission::IdleOnly, cleanup) {
+            (true, Ok(Some(session))) => {
                 if !session
                     .verified_terminal_cleanup()
                     .map_err(super::resource_reconciliation::internal)?
@@ -565,16 +535,15 @@ impl SessionApplication {
                     ));
                 }
             }
-            (ArchiveCleanupCompletion::Required, Ok(None)) => {}
-            (ArchiveCleanupCompletion::Required, Err(error)) => return Err(error),
-            (ArchiveCleanupCompletion::Recoverable, Err(error)) => {
+            (true, Err(error)) => return Err(error),
+            (false, Err(error)) => {
                 tracing::warn!(
                     session = session_id.as_str(),
                     error = ?error,
                     "Session archive cleanup remains pending for lifecycle recovery"
                 );
             }
-            (ArchiveCleanupCompletion::Recoverable, Ok(_)) => {}
+            (true, Ok(None)) | (false, Ok(_)) => {}
         }
         Ok(transition)
     }
@@ -635,6 +604,7 @@ impl SessionApplication {
                     session.into_snapshot(),
                 ));
             }
+            let admission = admission.resolve(session.execution);
             let command_record = archive_idempotency_record(
                 &owner_scope,
                 session_id,
@@ -675,6 +645,9 @@ impl SessionApplication {
             admission
                 .validate_execution(&session)
                 .map_err(SessionPreparationError::Rejected)?;
+            if admission == ArchiveAdmission::FailedProfiledExecution {
+                crate::run_events::validate_failed_profiled_execution(self, &session).await?;
+            }
             let archive_time = self.clock.now_ms();
             session
                 .lifecycle()

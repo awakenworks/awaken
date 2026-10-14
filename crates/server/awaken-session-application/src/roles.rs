@@ -308,8 +308,8 @@ pub trait SessionTermination: Send + Sync {
         fact: ManagedLifecycleFact,
     ) -> Result<SessionDispositionMutation, SessionPreparationError>;
 
-    /// Release a never-attempted Frozen preparation through the shared archive kernel.
-    async fn release_unattempted_profiled_session(
+    /// Release a Frozen preparation or exact failed primary execution through the shared archive kernel.
+    async fn release_profiled_session(
         &self,
         session_id: &str,
         archived_at: &str,
@@ -792,14 +792,19 @@ impl SessionTermination for SessionApplication {
         SessionApplication::release_terminal_session(self, session_id, archived_at, fact).await
     }
 
-    async fn release_unattempted_profiled_session(
+    async fn release_profiled_session(
         &self,
         session_id: &str,
         archived_at: &str,
         fact: ManagedLifecycleFact,
     ) -> Result<SessionDispositionMutation, SessionPreparationError> {
-        crate::terminal::release_unattempted_profiled_session(self, session_id, archived_at, fact)
-            .await
+        self.terminate_session_with_admission(
+            &awaken_session_types::SessionId::from(session_id),
+            archived_at,
+            fact,
+            awaken_session_state_contract::SessionArchiveAdmission::ProfiledRelease,
+        )
+        .await
     }
 
     async fn delete_session(

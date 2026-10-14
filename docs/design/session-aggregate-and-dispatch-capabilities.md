@@ -184,3 +184,17 @@ and fingerprints retain the same definitions. Callers name SDK MCP targets,
 Session ids and provisioning checkpoint values at their actual owners rather
 than importing them through a second contract. Creation replay tests cross exact
 replay, a Resource-only change, an MCP-only change and corrupt Resource identity.
+
+Profiled release uses the existing archive CAS and terminal cleanup driver. An
+unattempted Frozen preparation retains its existing admission. A Frozen WorkUnit
+whose execution projection is still Running may instead request archive when its
+current committed primary Run ended in error or cancellation, its original Run
+activity receipt matches the current root epoch, and no other activity, delegate
+or incomplete Event batch is retained. The application rereads these authorities
+on each CAS attempt. Ordinary archive remains idle-only; managed and interactive
+Sessions cannot borrow this admission. Missing or conflicting evidence refuses
+archive. Archive fences future entry but grants neither effect closure nor
+successor admission. The private release response still requires the exact
+verified cleanup receipt; pending cleanup retains the original cleanup obligation
+and returns no successful release. No route, persisted Session field, recovery
+queue or product WorkUnit state is added.

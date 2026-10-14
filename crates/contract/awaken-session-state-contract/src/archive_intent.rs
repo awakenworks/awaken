@@ -35,15 +35,35 @@ pub enum SessionArchiveAdmission {
     IdleOnly,
     TerminalOnly,
     UnattemptedProfiledPreparation,
+    ProfiledRelease,
+    FailedProfiledExecution,
     ForceTerminal,
 }
 
 impl SessionArchiveAdmission {
+    pub const fn for_profiled_release(execution: crate::SessionExecutionState) -> Self {
+        if matches!(execution, crate::SessionExecutionState::Preparing) {
+            Self::UnattemptedProfiledPreparation
+        } else {
+            Self::FailedProfiledExecution
+        }
+    }
+
+    pub const fn resolve(self, execution: crate::SessionExecutionState) -> Self {
+        if matches!(self, Self::ProfiledRelease) {
+            Self::for_profiled_release(execution)
+        } else {
+            self
+        }
+    }
+
     pub const fn as_identity_str(self) -> &'static str {
         match self {
             Self::IdleOnly => "idle_only",
             Self::TerminalOnly => "terminal_only",
             Self::UnattemptedProfiledPreparation => "unattempted_profiled_preparation",
+            Self::ProfiledRelease => "profiled_release",
+            Self::FailedProfiledExecution => "failed_profiled_execution",
             Self::ForceTerminal => "force_terminal",
         }
     }
@@ -55,7 +75,7 @@ impl SessionArchiveAdmission {
         session: &PersistedSession,
     ) -> Result<(), awaken_session_types::RunError> {
         use crate::SessionExecutionState;
-        let refusal = match self {
+        let refusal = match self.resolve(session.execution) {
             Self::IdleOnly if session.execution != SessionExecutionState::Idle => {
                 Some("only an idle Session may be archived")
             }
@@ -66,6 +86,16 @@ impl SessionArchiveAdmission {
                 if !crate::session_is_unattempted_profiled_preparation(session) =>
             {
                 Some("profiled preparation release requires an unattempted frozen Session")
+            }
+            Self::FailedProfiledExecution
+                if session.execution != SessionExecutionState::Running
+                    || session.frozen_baseline().is_none_or(|baseline| {
+                        baseline.mutation_policy
+                            != awaken_session_configuration_contract::resource::SessionMutationPolicy::Frozen
+                            || !baseline.delegate_ids.is_empty()
+                    }) =>
+            {
+                Some("failed profiled release requires a Frozen primary execution")
             }
             _ => None,
         };
@@ -189,6 +219,38 @@ pub fn session_terminal_cleanup_affinity_for(
     } else {
         SessionTerminalCleanupAffinity::Retained
     }
+}
+
+/// Select only the immutable unsuccessful current primary Run from its owner
+/// prefix. This is logical archive admission, never independent effect closure.
+pub fn failed_profiled_run_for_archive<'a>(
+    session: &PersistedSession,
+    snapshot: &'a awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
+) -> Option<&'a awaken_agent_contract::agent::run::Record> {
+    use awaken_agent_contract::agent::run::{EndCause, RunState};
+    let run = snapshot.current_run().ok()??;
+    (snapshot.thread_id.0 == session.session_id.as_str()
+        && matches!(
+            run.state,
+            RunState::Ended(EndCause::Error(_) | EndCause::Cancelled)
+        ))
+    .then_some(run)
+}
+
+/// Exact original activity membership, rechecked against the root being archived.
+/// A different root revision needs another read/CAS; later or concurrent activity
+/// can never borrow the old Run's terminal outcome.
+pub fn failed_profiled_activity_matches(
+    session: &PersistedSession,
+    observed: &PersistedSession,
+    epoch: awaken_lease_contract::fence::Epoch,
+) -> bool {
+    observed.revision == session.revision
+        && epoch.get() == session.activity_epoch
+        && session
+            .active_activity_epochs
+            .iter()
+            .all(|active| *active == epoch.get())
 }
 
 #[cfg(test)]

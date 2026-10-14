@@ -44,7 +44,7 @@ fn only_the_exact_committed_unattempted_archive_receipt_projects_no_create() {
             .unwrap(),
             "W2 before admission"
         );
-        app.release_unattempted_profiled_session(id, "2026-10-10T00:00:00Z", fact(id))
+        app.release_profiled_session(id, "2026-10-10T00:00:00Z", fact(id))
             .await
             .unwrap();
         let root = repo.get(&SessionId::from(id)).await.unwrap();

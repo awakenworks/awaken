@@ -61,7 +61,7 @@ async fn seed_expired_cleanup_affinity(
     runtime.fail_quiesce_once.store(true, Ordering::SeqCst);
     if witness {
         let _pending = app
-            .release_unattempted_profiled_session(id, "2026-10-10T00:00:00Z", fact(id))
+            .release_profiled_session(id, "2026-10-10T00:00:00Z", fact(id))
             .await;
     } else {
         app.terminate_session(id, "2026-10-10T00:00:00Z", fact(id))
