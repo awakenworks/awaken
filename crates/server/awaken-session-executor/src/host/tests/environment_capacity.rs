@@ -229,6 +229,19 @@ fn executor(
                 crate::resource_staging::ResourceStaging {
                     sessions: sessions.clone(),
                     bundle_source: None,
+                    file_content_source: Arc::new(
+                        awaken_resource_contract::UnavailableFileContentSource,
+                    ),
+                    memory_repository: crate::memory_stores::MemoryStores::open(
+                        None,
+                        awaken_time::system_clock(),
+                    )
+                    .fs_handle(),
+                    resource_validator: None,
+                    repository_binding_verifier: None,
+                    fetches_resources_upstream: false,
+                    credential_materializer: None,
+                    memory_reference_encoder: None,
                 },
                 None,
             ),

@@ -11,6 +11,10 @@ use awaken_session_configuration_contract::resource::ResolvedSkillBinding;
 use awaken_session_realization_contract::ResourceOperationFence;
 
 impl ResourceStaging {
+    /// Resolve the exact Skill bytes selected by one aggregate-authored
+    /// Resource generation. Both dispatch-only semantic recovery and complete
+    /// physical requirement compilation enter here, so a cold replica cannot
+    /// invent a second catalog or hash-validation path.
     pub(crate) async fn load_pinned(
         &self,
         workspace: &str,
@@ -18,6 +22,12 @@ impl ResourceStaging {
         claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization: Option<(&str, u64, &session_resource::SessionRealizationLease)>,
     ) -> Result<Vec<SkillVersion>, SkillStoreError> {
+        let realization = if self.fetches_resources_upstream {
+            realization
+        } else {
+            None
+        };
+
         if bindings.is_empty() {
             return Ok(Vec::new());
         }

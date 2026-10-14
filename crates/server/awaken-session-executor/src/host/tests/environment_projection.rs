@@ -254,7 +254,7 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
             std::time::Duration::ZERO,
         )
         .into_session_provider();
-    let verifier = Arc::new(SequencedRepositoryTransport(AtomicUsize::new(0)));
+    let verifier = Arc::new(SequencedRepositoryTransport::default());
     let host = ((raw_host).with_session_execution(
         crate::host::test_resource_execution().with_repository_binding_verifier(verifier.clone()),
     ))
@@ -347,7 +347,7 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
         .await
         .expect_err("L2 fails before projection mutation");
     assert!(error.message.contains("/repo"), "L1/L2: {error:?}");
-    assert_eq!(verifier.0.load(Ordering::SeqCst), 0, "L1/L2 verifier");
+    assert_eq!(verifier.calls.load(Ordering::SeqCst), 0, "L1/L2 verifier");
     assert_eq!(
         host.realizer
             .staging

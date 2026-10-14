@@ -3,15 +3,7 @@ use awaken_resource_contract::RepositoryBindingVerifierError;
 use awaken_session_types::RunError;
 
 pub(super) fn repository_binding_run_error(error: RepositoryBindingVerifierError) -> RunError {
-    let message = error.to_string();
-    match error {
-        RepositoryBindingVerifierError::InvalidRequest { .. }
-        | RepositoryBindingVerifierError::Denied { .. }
-        | RepositoryBindingVerifierError::Conflict { .. } => RunError::bad_request(message),
-        RepositoryBindingVerifierError::AuthorityUnavailable { .. }
-        | RepositoryBindingVerifierError::Indeterminate { .. } => RunError::unavailable(message),
-        RepositoryBindingVerifierError::CorruptAuthority { .. } => RunError::internal(message),
-    }
+    crate::host_error::to_run_error(crate::provisioning::repository_binding_host_error(error))
 }
 
 #[cfg(test)]
@@ -21,34 +13,54 @@ fn repository_binding_failure_controls_run_retry_semantics() {
     // authority outage or unknown read -> Unavailable; corrupt authority ->
     // Internal. RunError has no conflict kind, so a stale selection remains a
     // caller-correctable request failure rather than a retryable outage.
+    // R1..R6 below cover every verifier cause through the sole Host classifier
+    // and existing Run projection. Effects include the literal public code,
+    // message and Display, so consolidation cannot erase retry or text semantics.
+    // This pure mapping has no IO, lock, state mutation or poison precondition.
     use awaken_session_types::RunErrorKind as K;
     let cases = [
         (
             RepositoryBindingVerifierError::InvalidRequest { detail: "x".into() },
             K::BadRequest,
+            "invalid_request",
+            "invalid Repository binding request: x",
         ),
         (
             RepositoryBindingVerifierError::Denied { detail: "x".into() },
             K::BadRequest,
+            "invalid_request",
+            "Repository binding was denied: x",
         ),
         (
             RepositoryBindingVerifierError::Conflict { detail: "x".into() },
             K::BadRequest,
+            "invalid_request",
+            "Repository binding authority changed concurrently: x",
         ),
         (
             RepositoryBindingVerifierError::AuthorityUnavailable { detail: "x".into() },
             K::Unavailable,
+            "unavailable",
+            "Repository binding authority is unavailable: x",
         ),
         (
             RepositoryBindingVerifierError::Indeterminate { detail: "x".into() },
             K::Unavailable,
+            "unavailable",
+            "Repository binding decision is indeterminate: x",
         ),
         (
             RepositoryBindingVerifierError::CorruptAuthority { detail: "x".into() },
             K::Internal,
+            "internal",
+            "Repository binding authority returned corrupt data: x",
         ),
     ];
-    for (error, expected) in cases {
-        assert_eq!(repository_binding_run_error(error).kind, expected);
+    for (error, expected, code, message) in cases {
+        let actual = repository_binding_run_error(error);
+        assert_eq!(actual.kind, expected);
+        assert_eq!(actual.code, code);
+        assert_eq!(actual.message, message);
+        assert_eq!(actual.to_string(), format!("run failed: {message}"));
     }
 }

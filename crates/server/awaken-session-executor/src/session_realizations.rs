@@ -1,3 +1,6 @@
+// @formal surface requirement=session.managed_worker.work_authority
+// @formal reason: this view keeps Frozen inputs readonly and publishes resource
+// @formal reason: requirements through the original slot lock and realization lease.
 //! The realizer's view of the Sessions installed in this process.
 //!
 //! The host keeps each installed Session as three layers under one lock:
@@ -54,6 +57,18 @@ pub(crate) trait SessionRealizationSource: Send + Sync {
         create: bool,
         visit: &mut dyn FnMut(SessionRealizationAccess<'_>),
     ) -> Result<(), InstalledSessionsPoisoned>;
+
+    /// Publish one completed requirements compilation under the original slot
+    /// lock. Frozen inputs remain readonly to ordinary visit callbacks.
+    fn publish_resource_requirements(
+        &self,
+        session: &str,
+        workspace: &str,
+        asserted: Option<&awaken_session_configuration_contract::resource::SessionRealizationLease>,
+        compiled: crate::staged_resources::CompiledEffectiveInputs,
+        versions: Vec<awaken_resource_contract::SkillVersion>,
+        effect_key: String,
+    ) -> Result<(), awaken_session_types::RunError>;
 }
 
 /// A writer panicked while holding the installed Sessions' lock.
@@ -65,6 +80,20 @@ pub(crate) struct InstalledSessionsPoisoned;
 pub(crate) struct SessionRealizations(Arc<dyn SessionRealizationSource>);
 
 impl SessionRealizations {
+    pub(crate) fn publish_resource_requirements(
+        &self,
+        session: &str,
+        workspace: &str,
+        asserted: Option<&awaken_session_configuration_contract::resource::SessionRealizationLease>,
+        compiled: crate::staged_resources::CompiledEffectiveInputs,
+        versions: Vec<awaken_resource_contract::SkillVersion>,
+        effect_key: String,
+    ) -> Result<(), awaken_session_types::RunError> {
+        self.0.publish_resource_requirements(
+            session, workspace, asserted, compiled, versions, effect_key,
+        )
+    }
+
     pub(crate) fn new(source: Arc<dyn SessionRealizationSource>) -> Self {
         Self(source)
     }
@@ -184,6 +213,15 @@ impl SessionRealizations {
         session: &str,
     ) -> Option<awaken_runtime_contract::ExecutableAgentSnapshot> {
         self.frozen(session).published_snapshot.clone()
+    }
+
+    /// Read the current frozen Workspace; unknown flat-protocol Sessions keep
+    /// the selected process fallback without creating or publishing a slot.
+    pub(crate) fn workspace(&self, session: &str, fallback: &str) -> String {
+        self.frozen(session)
+            .workspace
+            .clone()
+            .unwrap_or_else(|| fallback.to_owned())
     }
 
     /// The Session's current frozen inputs, taken out of the lock as one

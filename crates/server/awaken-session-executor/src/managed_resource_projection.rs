@@ -16,33 +16,11 @@ use crate::managed_input_layout::{
     binding_layout_projection, managed_mount_access, resolved_input_layout_projection,
 };
 use crate::skill_delivery::skill_store_run_error;
+use crate::staged_resources::{CompiledEffectiveInputs, EnvironmentResourceReconciliation};
 
 mod repository_error;
 mod transition;
 use repository_error::repository_binding_run_error;
-
-/// One compiled projection from the frozen Session manifest. Standard mounts
-/// and optional automatic-memory candidates travel together so installation
-/// cannot publish one generation with bindings from another.
-pub(crate) struct CompiledEffectiveInputs {
-    pub(crate) staged: crate::staged_resources::StagedResources,
-    pub(crate) memory_bindings:
-        std::collections::HashMap<String, std::sync::Arc<crate::memory_binding::MemoryBinding>>,
-}
-fn validate_preparation_publication(
-    realization: &crate::session_realizations::SessionRealization,
-    asserted: Option<&session_resource::SessionRealizationLease>,
-) -> Result<(), RunError> {
-    if realization.resource_preparation.is_some()
-        && !asserted.is_some_and(|lease| realization.resource_preparation_authorized(lease))
-    {
-        return Err(RunError::unavailable_classified(
-            "session_realization_authority_lost",
-            "Resource preparation cannot publish after realization authority ended",
-        ));
-    }
-    Ok(())
-}
 
 fn resource_requirement_effect_key(
     transition: &session_resource::SessionResourceTransition,
@@ -63,136 +41,6 @@ fn resource_requirement_effect_key(
 }
 
 impl crate::ManagedHost {
-    /// Realize an already-resolved, secret-free manifest. The pinned Memory/
-    /// Repository configuration in `inputs` remains authoritative; the per-item
-    /// validation in `stage_resolved_input` checks only current ownership/state
-    /// and the frozen version's integrity. No Agent binding or current config is
-    /// configured here.
-    async fn compile_effective_inputs(
-        &self,
-        thread: &str,
-        workspace: &str,
-        inputs: &session_resource::ResolvedSessionResources,
-        claim: Option<&awaken_dispatch_contract::RunClaim>,
-        realization: Option<(&str, u64, &session_resource::SessionRealizationLease)>,
-    ) -> Result<CompiledEffectiveInputs, RunError> {
-        let realizations = self.host.installed_sessions.realizations();
-        let mut all = crate::staged_resources::StagedResources::default();
-        let mut memory_bindings = std::collections::HashMap::new();
-        let environment = realizations.frozen(thread).environment_projection.clone();
-        for input in inputs.inputs() {
-            let one = self
-                .stage_resolved_input(workspace, input, claim, realization, environment.as_ref())
-                .await?;
-            // Read this exact projection before merging it. Two bindings may
-            // legally reference the same store with different access, and a
-            // prior mount must never become the authority for the later one.
-            let materialization_reference = one.mounts.iter().find_map(|mount| {
-                if let awaken_provisioning_contract::MountSource::MemoryStore {
-                    materialization_reference,
-                    ..
-                } = &mount.source
-                {
-                    materialization_reference.clone()
-                } else {
-                    None
-                }
-            });
-            if let Some((binding_id, memory)) = self
-                .compile_memory_binding(thread, workspace, input, materialization_reference)
-                .await?
-            {
-                memory_bindings.insert(binding_id, memory);
-            }
-            all.mounts.extend(one.mounts);
-            all.prompts.extend(one.prompts);
-            all.resource_prompts.extend(one.resource_prompts);
-            all.binding_checks.extend(one.binding_checks);
-            all.repositories.extend(one.repositories);
-        }
-
-        Ok(CompiledEffectiveInputs {
-            staged: all,
-            memory_bindings,
-        })
-    }
-
-    /// Compile the one Memory-specific leaf shared by ordinary Session staging
-    /// and post-commit recovery from a frozen dispatch. The caller owns Resource
-    /// selection and may install the result into a resident Session slot; this
-    /// leaf only binds one already-resolved input and never opens an Environment.
-    pub(crate) async fn compile_memory_binding(
-        &self,
-        session_thread: &str,
-        workspace: &str,
-        input: &session_resource::ResolvedInput,
-        materialization_reference: Option<String>,
-    ) -> Result<Option<(String, Arc<crate::memory_binding::MemoryBinding>)>, RunError> {
-        let session_resource::ResolvedInputSource::MemoryStore {
-            memory_store_id,
-            config,
-        } = &input.source
-        else {
-            return Ok(None);
-        };
-        let writable = input.access == awaken_resource_contract::ResourceAccess::ReadWrite;
-        if let Some(reference) = &materialization_reference {
-            // Remote Memory claim decision table: active + exact config =>
-            // snapshot preflight succeeds; archived/config-changed/stale claim
-            // fails before the mounter reuses a prior projection.
-            self.host
-                .memory_repository()
-                .snapshot_heads(reference)
-                .await
-                .map_err(|error| RunError::bad_request(error.to_string()))?;
-        }
-        let handle = self.host.platform_memory_handle(
-            materialization_reference
-                .clone()
-                .unwrap_or_else(|| memory_store_id.to_string()),
-            writable,
-        );
-        let resource_validator = if materialization_reference.is_some() {
-            None
-        } else {
-            Some(
-                self.host
-                    .session_execution
-                    .resource_validator
-                    .as_ref()
-                    .ok_or_else(|| {
-                        RunError::bad_request(
-                            "Memory extraction requires a configured resource binding validator",
-                        )
-                    })?
-                    .clone(),
-            )
-        };
-        Ok(Some((
-            input.binding_id.to_string(),
-            Arc::new(crate::memory_binding::MemoryBinding::new(
-                session_thread,
-                workspace,
-                handle,
-                resource_validator,
-                config,
-                writable,
-            )),
-        )))
-    }
-
-    /// Publish the completed active generation. Callers must have completed the
-    /// exact aggregate-authored physical transition before entering this edge;
-    /// desired-only staging is deliberately unable to reach it.
-    fn publish_active_resource_manifest(
-        &self,
-        thread: &str,
-        manifest: session_resource::SessionResourceManifest,
-    ) {
-        let staging = &self.host.realizer.staging;
-        staging.register_thread_resource_manifest(thread, manifest);
-    }
-
     /// Install one already-resolved Session resource manifest. This is shared by
     /// managed Session creation and cold durable workers; neither path reads Agent
     /// defaults or selects a newer mutable-resource configuration.
@@ -208,24 +56,7 @@ impl crate::ManagedHost {
         // Skill projection writes. Per-item validation below remains the final
         // effect-edge fence for defense in depth.
         self.validate_effective_resource_layout(thread, resources)?;
-        self.stage_resource_manifest_after_preflight(
-            thread,
-            workspace,
-            resource_revision,
-            resources,
-            claim,
-        )
-        .await
-    }
 
-    async fn stage_resource_manifest_after_preflight(
-        &self,
-        thread: &str,
-        workspace: &str,
-        resource_revision: u64,
-        resources: &session_resource::ResolvedSessionResources,
-        claim: Option<&awaken_dispatch_contract::RunClaim>,
-    ) -> Result<(), RunError> {
         let desired = session_resource::SessionResourceManifest::at_revision(
             workspace,
             resource_revision,
@@ -242,7 +73,10 @@ impl crate::ManagedHost {
             claim,
             None,
         );
-        self.stage_resource_requirements(thread, &desired, claim, None, effect_key)
+        self.host
+            .realizer
+            .staging
+            .stage_resource_requirements(thread, &desired, claim, None, effect_key)
             .await
     }
 
@@ -258,8 +92,9 @@ impl crate::ManagedHost {
         realization_lease: Option<&session_resource::SessionRealizationLease>,
         prospective_environment_binding: bool,
     ) -> Result<(), RunError> {
-        let realizations = self.host.installed_sessions.realizations();
-        let installed = self.host.realizer.staging.thread_resource_manifest(thread);
+        let staging = &self.host.realizer.staging;
+        let realizations = &staging.sessions;
+        let installed = staging.thread_resource_manifest(thread);
         if installed.as_ref().is_some_and(|installed| {
             installed != transition.previous() && installed != transition.desired()
         }) {
@@ -284,110 +119,32 @@ impl crate::ManagedHost {
             // loader here, but deliberately leave the physical effect key and
             // all provider requirements absent so adoption still owns the sole
             // complete compilation edge.
-            let versions = self
-                .load_pinned_skill_requirements(
-                    transition.desired(),
+            let versions = staging
+                .load_pinned(
+                    transition.desired().workspace_id.as_str(),
+                    transition.desired().resources.skills(),
                     claim,
                     realization_lease.map(|lease| (thread, transition.desired().revision, lease)),
                 )
-                .await?;
-            self.host.installed_sessions.update(thread, |slot| {
-                validate_preparation_publication(&slot.realization, realization_lease)?;
-                slot.realization.skills = Some(versions);
+                .await
+                .map_err(skill_store_run_error)?;
+            realizations.update_realization(thread, |r| {
+                r.validate_preparation_publication(realization_lease)?;
+                r.skills = Some(versions);
                 Ok(())
             })?;
             return Ok(());
         }
         let effect_key = resource_requirement_effect_key(transition, claim, realization_lease);
-        self.stage_resource_requirements(
-            thread,
-            transition.desired(),
-            claim,
-            realization_lease.map(|lease| (thread, transition.desired().revision, lease)),
-            effect_key,
-        )
-        .await
-    }
-
-    async fn stage_resource_requirements(
-        &self,
-        thread: &str,
-        desired: &session_resource::SessionResourceManifest,
-        claim: Option<&awaken_dispatch_contract::RunClaim>,
-        realization: Option<(&str, u64, &session_resource::SessionRealizationLease)>,
-        effect_key: String,
-    ) -> Result<(), RunError> {
-        let realizations = self.host.installed_sessions.realizations();
-        // Unclaimed replay may reuse the exact already-compiled cold
-        // requirements. Claimed staging intentionally revalidates immutable
-        // bytes/configuration on every ingress operation before refreshing the
-        // same cache entry.
-        if claim.is_none()
-            && realizations
-                .read_realization(thread, |r| {
-                    r.staged_resource_effect_key.as_deref() == Some(effect_key.as_str())
-                })
-                .unwrap_or(false)
-        {
-            return Ok(());
-        }
-        let workspace = desired.workspace_id.as_str();
-        let resources = &desired.resources;
-        let versions = self
-            .load_pinned_skill_requirements(desired, claim, realization)
-            .await?;
-        let compiled = self
-            .compile_effective_inputs(thread, workspace, resources, claim, realization)
-            .await?;
-        // Publish only after every fallible Resource/Skill read has succeeded.
-        // The slot then exposes one complete set of cold requirements; failed
-        // compilation leaves no Workspace, prompt, binding, or active-manifest
-        // residue. Only the exact physical transition publishes the manifest.
-        self.host.installed_sessions.update(thread, |slot| {
-            // The lease check and correlated cache publication share the slot
-            // lock with renewal rejection. Neither a late read nor cancellation
-            // may publish requirements after that rejection has linearized.
-            validate_preparation_publication(
-                &slot.realization,
-                realization.map(|(_, _, lease)| lease),
-            )?;
-            slot.replace_frozen_with(|next| next.workspace = Some(workspace.to_owned()));
-            slot.realization.resources = compiled.staged;
-            slot.realization.memory_bindings = compiled.memory_bindings;
-            slot.realization.memory = None;
-            slot.realization.skills = Some(versions);
-            slot.realization.staged_resource_effect_key = Some(effect_key);
-            Ok(())
-        })?;
-        Ok(())
-    }
-
-    /// Resolve the exact Skill bytes selected by one aggregate-authored
-    /// Resource generation. Both dispatch-only semantic recovery and complete
-    /// physical requirement compilation enter here, so a cold replica cannot
-    /// invent a second catalog or hash-validation path.
-    async fn load_pinned_skill_requirements(
-        &self,
-        desired: &session_resource::SessionResourceManifest,
-        claim: Option<&awaken_dispatch_contract::RunClaim>,
-        realization: Option<(&str, u64, &session_resource::SessionRealizationLease)>,
-    ) -> Result<Vec<awaken_resource_contract::SkillVersion>, RunError> {
-        let skill_realization = if self.host.authority.fetches_resources_upstream() {
-            realization
-        } else {
-            None
-        };
-        self.host
-            .realizer
-            .staging
-            .load_pinned(
-                desired.workspace_id.as_str(),
-                desired.resources.skills(),
+        staging
+            .stage_resource_requirements(
+                thread,
+                transition.desired(),
                 claim,
-                skill_realization,
+                realization_lease.map(|lease| (thread, transition.desired().revision, lease)),
+                effect_key,
             )
             .await
-            .map_err(skill_store_run_error)
     }
 
     pub(crate) async fn validate_thread_resource_bindings(
@@ -415,7 +172,8 @@ impl crate::ManagedHost {
                     config_version,
                 } => {
                     self.host
-                        .session_execution
+                        .realizer
+                        .staging
                         .verify_memory_binding(&workspace, &memory_store_id, config_version)
                         .await?
                 }
@@ -426,7 +184,8 @@ impl crate::ManagedHost {
                     ..
                 } => self
                     .host
-                    .session_execution
+                    .realizer
+                    .staging
                     .repository_binding_verifier
                     .as_ref()
                     .ok_or_else(|| {
@@ -483,6 +242,9 @@ impl crate::ManagedHost {
     /// absent here: ordinary callers enter through lifecycle -> resource, while
     /// Environment creation/adoption already holding lifecycle enters through
     /// the resource-locking suffix above.
+    /// Publish the completed active generation. Callers must have completed the
+    /// exact aggregate-authored physical transition before entering this edge;
+    /// desired-only staging is deliberately unable to reach it.
     async fn apply_session_inputs_body(
         &self,
         thread: &str,
@@ -490,7 +252,8 @@ impl crate::ManagedHost {
         claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization_lease: Option<&session_resource::SessionRealizationLease>,
     ) -> Result<(), RunError> {
-        let sessions = &self.host.realizer.environments.sessions;
+        let staging = &self.host.realizer.staging;
+        let sessions = &staging.sessions;
         let previous_manifest = transition.previous();
         let desired_manifest = transition.desired();
         let inputs = &desired_manifest.resources;
@@ -561,7 +324,7 @@ impl crate::ManagedHost {
         // requirements cache. A lost aggregate acknowledgement may resend A→B
         // after this process completed B. Memory must compare against B while
         // the remaining Resource effects still replay the authored A→B command.
-        let installed_manifest = self.host.realizer.staging.thread_resource_manifest(thread);
+        let installed_manifest = staging.thread_resource_manifest(thread);
         let old_memory: Vec<_> = installed_manifest
             .as_ref()
             .unwrap_or(previous_manifest)
@@ -594,7 +357,7 @@ impl crate::ManagedHost {
         if live_environment.is_some()
             && transition.previous() == transition.desired()
             && installed_manifest.as_ref() == Some(&desired_manifest)
-            && reconciliation == crate::staged_resources::EnvironmentResourceReconciliation::None
+            && reconciliation == EnvironmentResourceReconciliation::None
         {
             return Ok(());
         }
@@ -619,13 +382,13 @@ impl crate::ManagedHost {
         }
         if live_environment.is_some()
             && transition.previous() == transition.desired()
-            && reconciliation == crate::staged_resources::EnvironmentResourceReconciliation::None
+            && reconciliation == EnvironmentResourceReconciliation::None
         {
             // Preparation already staged the exact desired requirements. A
             // same-generation adoption is continuity, not a replacement: the
             // provider adoption hook reattaches Namespace mounts and no Resource
             // path may be removed before terminal publication/cleanup.
-            self.publish_active_resource_manifest(thread, desired_manifest);
+            staging.register_thread_resource_manifest(thread, desired_manifest);
             return Ok(());
         }
         let mut previous_mounts = previous_manifest
@@ -657,7 +420,7 @@ impl crate::ManagedHost {
                 )
             })
             .collect::<Vec<_>>();
-        if reconciliation == crate::staged_resources::EnvironmentResourceReconciliation::Fresh {
+        if reconciliation == EnvironmentResourceReconciliation::Fresh {
             previous_mounts.extend(
                 desired_mounts
                     .iter()
@@ -738,40 +501,15 @@ impl crate::ManagedHost {
             }
         }
         let effect_key = resource_requirement_effect_key(transition, claim, realization_lease);
-        let cache_matches = sessions
-            .read_realization(thread, |r| {
-                r.staged_resource_effect_key.as_deref() == Some(effect_key.as_str())
-            })
-            .unwrap_or(false);
-        if !cache_matches {
-            // Cache misses converge on the same cold-requirements compiler used
-            // by complete projection staging. This is the only Skill/Resource
-            // read and requirements-publication owner; the physical body below
-            // consumes its result and publishes only completion.
-            self.stage_resource_requirements(
+        let compiled = staging
+            .retained_resource_requirements(
                 thread,
                 &desired_manifest,
                 claim,
-                realization_lease.map(|lease| (thread, desired_manifest.revision, lease)),
-                effect_key.clone(),
+                realization_lease,
+                &effect_key,
             )
             .await?;
-        }
-        let compiled = sessions
-            .read_realization(thread, |r| {
-                (r.staged_resource_effect_key.as_deref() == Some(effect_key.as_str())).then(|| {
-                    CompiledEffectiveInputs {
-                        staged: r.resources.clone(),
-                        memory_bindings: r.memory_bindings.clone(),
-                    }
-                })
-            })
-            .flatten()
-            .ok_or_else(|| {
-                RunError::internal(
-                    "Session Resource requirements were not retained under the exact transition",
-                )
-            })?;
         if live_environment.is_none() {
             // Cold requirements are now available for provider create-time
             // mount selection. The desired manifest becomes visible only after
@@ -795,8 +533,7 @@ impl crate::ManagedHost {
             let reconcile_skills = previous_manifest.resources.skills()
                 != desired_manifest.resources.skills()
                 || installed_manifest.is_none()
-                || reconciliation
-                    != crate::staged_resources::EnvironmentResourceReconciliation::None;
+                || reconciliation != EnvironmentResourceReconciliation::None;
             // Transition replay cause/effect table:
             // C1 desired path differs from the aggregate's previous generation;
             // C2 reservation CAS succeeds; C3 physical removal/attach/Git
@@ -835,8 +572,7 @@ impl crate::ManagedHost {
                     }
                 }
             }
-            if reconciliation == crate::staged_resources::EnvironmentResourceReconciliation::Adopted
-            {
+            if reconciliation == EnvironmentResourceReconciliation::Adopted {
                 environment
                     .projection()
                     .reconcile_adopted_mounts(&self.host.thread_session_mounts(thread))
@@ -844,8 +580,7 @@ impl crate::ManagedHost {
                     .map_err(|error| RunError::internal(error.to_string()))?;
             }
             if projection_change.installs_desired()
-                || reconciliation
-                    != crate::staged_resources::EnvironmentResourceReconciliation::None
+                || reconciliation != EnvironmentResourceReconciliation::None
             {
                 // Physical Skill installation belongs to this same Resource
                 // completion edge for eager, lazy and adopted Environments.
@@ -870,8 +605,7 @@ impl crate::ManagedHost {
                             input.source,
                             session_resource::ResolvedInputSource::MemoryStore { .. }
                         ))
-                        || (reconciliation
-                            == crate::staged_resources::EnvironmentResourceReconciliation::None
+                        || (reconciliation == EnvironmentResourceReconciliation::None
                             && previous_manifest
                                 .resources
                                 .inputs()
@@ -897,10 +631,8 @@ impl crate::ManagedHost {
                                         "compiled Resource mount `{path}` is missing"
                                     ))
                                 })?;
-                            if reconciliation
-                                == crate::staged_resources::EnvironmentResourceReconciliation::Adopted
-                                || (reconciliation
-                                    == crate::staged_resources::EnvironmentResourceReconciliation::Fresh
+                            if reconciliation == EnvironmentResourceReconciliation::Adopted
+                                || (reconciliation == EnvironmentResourceReconciliation::Fresh
                                     && crate::provisioning::resource_mount_is_create_time(mount))
                             {
                                 continue;
@@ -912,14 +644,20 @@ impl crate::ManagedHost {
                                 .map_err(|error| RunError::internal(error.to_string()))?;
                         }
                         session_resource::ResolvedInputSource::Repository { .. } => {
-                            let retain = reconciliation == crate::staged_resources::EnvironmentResourceReconciliation::Adopted
-                                && previous_manifest.resources.inputs().iter().any(|previous| previous == input);
+                            let retain = reconciliation
+                                == EnvironmentResourceReconciliation::Adopted
+                                && previous_manifest
+                                    .resources
+                                    .inputs()
+                                    .iter()
+                                    .any(|previous| previous == input);
                             let repository = new
                                 .repository_at_path(&path)
                                 .map_err(|error| RunError::internal(error.to_string()))?;
-                            self.host
+                            staging
                                 .realize_repository_activation(
                                     thread,
+                                    self.host.local_workspace(),
                                     repository,
                                     &new.binding_checks,
                                     environment.repositories().as_ref(),
@@ -936,13 +674,12 @@ impl crate::ManagedHost {
                 }
             }
         }
-        self.publish_active_resource_manifest(thread, desired_manifest);
+        staging.register_thread_resource_manifest(thread, desired_manifest);
         if let Some(update) = projection_update {
             update.commit();
         }
         sessions.update_realization(thread, |r| {
-            r.environment_resource_reconciliation =
-                crate::staged_resources::EnvironmentResourceReconciliation::None;
+            r.environment_resource_reconciliation = EnvironmentResourceReconciliation::None;
         });
         self.host.realizer.evict_session_for_rebuild(thread).await;
         Ok(())
@@ -950,6 +687,595 @@ impl crate::ManagedHost {
 }
 
 impl crate::resource_staging::ResourceStaging {
+    pub(crate) async fn retained_resource_requirements(
+        &self,
+        thread: &str,
+        desired: &session_resource::SessionResourceManifest,
+        claim: Option<&awaken_dispatch_contract::RunClaim>,
+        realization_lease: Option<&session_resource::SessionRealizationLease>,
+        effect_key: &str,
+    ) -> Result<CompiledEffectiveInputs, RunError> {
+        let sessions = &self.sessions;
+        let cache_matches = sessions
+            .read_realization(thread, |r| {
+                r.staged_resource_effect_key.as_deref() == Some(effect_key)
+            })
+            .unwrap_or(false);
+        if !cache_matches {
+            // Cache misses converge on the same cold-requirements compiler used
+            // by complete projection staging. This is the only Skill/Resource
+            // read and requirements-publication owner; the physical body below
+            // consumes its result and publishes only completion.
+            self.stage_resource_requirements(
+                thread,
+                desired,
+                claim,
+                realization_lease.map(|lease| (thread, desired.revision, lease)),
+                effect_key.to_owned(),
+            )
+            .await?;
+        }
+        sessions
+            .read_realization(thread, |r| {
+                (r.staged_resource_effect_key.as_deref() == Some(effect_key)).then(|| {
+                    CompiledEffectiveInputs {
+                        staged: r.resources.clone(),
+                        memory_bindings: r.memory_bindings.clone(),
+                    }
+                })
+            })
+            .flatten()
+            .ok_or_else(|| {
+                RunError::internal(
+                    "Session Resource requirements were not retained under the exact transition",
+                )
+            })
+    }
+
+    /// Compile the one Memory-specific leaf shared by ordinary Session staging
+    /// and post-commit recovery from a frozen dispatch. The caller owns Resource
+    /// selection and may install the result into a resident Session slot; this
+    /// leaf only binds one already-resolved input and never opens an Environment.
+    pub(crate) async fn compile_memory_binding(
+        &self,
+        session_thread: &str,
+        workspace: &str,
+        input: &session_resource::ResolvedInput,
+        materialization_reference: Option<String>,
+    ) -> Result<Option<(String, Arc<crate::memory_binding::MemoryBinding>)>, RunError> {
+        let session_resource::ResolvedInputSource::MemoryStore {
+            memory_store_id,
+            config,
+        } = &input.source
+        else {
+            return Ok(None);
+        };
+        let writable = input.access == awaken_resource_contract::ResourceAccess::ReadWrite;
+        if let Some(reference) = &materialization_reference {
+            // Remote Memory claim decision table: active + exact config =>
+            // snapshot preflight succeeds; archived/config-changed/stale claim
+            // fails before the mounter reuses a prior projection.
+            self.memory_repository
+                .snapshot_heads(reference)
+                .await
+                .map_err(|error| RunError::bad_request(error.to_string()))?;
+        }
+        let handle = Arc::new(crate::memory_binding::PlatformMemoryHandle::new(
+            self.memory_repository.clone(),
+            materialization_reference
+                .clone()
+                .unwrap_or_else(|| memory_store_id.to_string()),
+            writable,
+        ));
+        let resource_validator = if materialization_reference.is_some() {
+            None
+        } else {
+            Some(
+                self.resource_validator
+                    .as_ref()
+                    .ok_or_else(|| {
+                        RunError::bad_request(
+                            "Memory extraction requires a configured resource binding validator",
+                        )
+                    })?
+                    .clone(),
+            )
+        };
+        Ok(Some((
+            input.binding_id.to_string(),
+            Arc::new(crate::memory_binding::MemoryBinding::new(
+                session_thread,
+                workspace,
+                handle,
+                resource_validator,
+                config,
+                writable,
+            )),
+        )))
+    }
+    pub(crate) async fn stage_resource_requirements(
+        &self,
+        thread: &str,
+        desired: &session_resource::SessionResourceManifest,
+        claim: Option<&awaken_dispatch_contract::RunClaim>,
+        realization: Option<(&str, u64, &session_resource::SessionRealizationLease)>,
+        effect_key: String,
+    ) -> Result<(), RunError> {
+        let realizations = &self.sessions;
+        // Unclaimed replay may reuse the exact already-compiled cold
+        // requirements. Claimed staging intentionally revalidates immutable
+        // bytes/configuration on every ingress operation before refreshing the
+        // same cache entry.
+        if claim.is_none()
+            && realizations
+                .read_realization(thread, |r| {
+                    r.staged_resource_effect_key.as_deref() == Some(effect_key.as_str())
+                })
+                .unwrap_or(false)
+        {
+            return Ok(());
+        }
+        let workspace = desired.workspace_id.as_str();
+        let resources = &desired.resources;
+        let versions = self
+            .load_pinned(workspace, resources.skills(), claim, realization)
+            .await
+            .map_err(skill_store_run_error)?;
+        // Realize an already-resolved, secret-free manifest. The pinned Memory/
+        // Repository configuration in `inputs` remains authoritative; the per-item
+        // validation in `stage_resolved_input` checks only current ownership/state
+        // and the frozen version's integrity. No Agent binding or current config is
+        // configured here.
+
+        let mut all = crate::staged_resources::StagedResources::default();
+        let mut memory_bindings = std::collections::HashMap::new();
+        let environment = realizations.frozen(thread).environment_projection.clone();
+        for input in resources.inputs() {
+            let one = self
+                .stage_resolved_input(workspace, input, claim, realization, environment.as_ref())
+                .await?;
+            // Read this exact projection before merging it. Two bindings may
+            // legally reference the same store with different access, and a
+            // prior mount must never become the authority for the later one.
+            let materialization_reference = one.mounts.iter().find_map(|mount| {
+                if let awaken_provisioning_contract::MountSource::MemoryStore {
+                    materialization_reference,
+                    ..
+                } = &mount.source
+                {
+                    materialization_reference.clone()
+                } else {
+                    None
+                }
+            });
+            if let Some((binding_id, memory)) = self
+                .compile_memory_binding(thread, workspace, input, materialization_reference)
+                .await?
+            {
+                memory_bindings.insert(binding_id, memory);
+            }
+            all.mounts.extend(one.mounts);
+            all.prompts.extend(one.prompts);
+            all.resource_prompts.extend(one.resource_prompts);
+            all.binding_checks.extend(one.binding_checks);
+            all.repositories.extend(one.repositories);
+        }
+
+        let compiled = CompiledEffectiveInputs {
+            staged: all,
+            memory_bindings,
+        };
+
+        // Publish only after every fallible Resource/Skill read has succeeded.
+        // The slot then exposes one complete set of cold requirements; failed
+        // compilation leaves no Workspace, prompt, binding, or active-manifest
+        // residue. Only the exact physical transition publishes the manifest.
+        realizations.publish_resource_requirements(
+            thread,
+            workspace,
+            realization.map(|(_, _, lease)| lease),
+            compiled,
+            versions,
+            effect_key,
+        )?;
+        Ok(())
+    }
+
+    /// Compile one frozen Managed input into the provisioning vocabulary. This
+    /// projection owns protocol paths and secret-free credential pins; the
+    /// Repository effect edge owns the one typed material translation. Sandbox
+    /// adapters consume only the resulting neutral requirements.
+    pub(crate) async fn stage_resolved_input(
+        &self,
+        workspace: &str,
+        input: &session_resource::ResolvedInput,
+        claim: Option<&awaken_dispatch_contract::RunClaim>,
+        realization: Option<(&str, u64, &session_resource::SessionRealizationLease)>,
+        environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
+    ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError> {
+        let authority = if let (Some((session_id, resource_revision, lease)), true) =
+            (realization, self.fetches_resources_upstream)
+        {
+            Some(ResourceOperationFence::SessionMaterialization(
+                awaken_session_realization_contract::SessionResourceMaterializationIntent::try_new(
+                    session_id,
+                    resource_revision,
+                    input.clone(),
+                    lease.clone(),
+                )
+                .map_err(awaken_session_types::RunError::bad_request)?,
+            ))
+        } else {
+            claim.map(|claim| ResourceOperationFence::Run(claim.clone()))
+        };
+        self.stage_resolved_input_with_resource_authority(
+            workspace,
+            input,
+            authority.as_ref(),
+            realization,
+            environment,
+        )
+        .await
+    }
+    /// Compile the exact Repository input carried by a terminal publication
+    /// command through the same path as ordinary Session staging. A remote lease
+    /// selects the HTTP authority verifier; a local command needs no mutable
+    /// catalog re-read. Path, access, credential pin, transport, and
+    /// realization-plan projection stay canonical here.
+    pub(crate) async fn stage_terminal_repository_publication_input(
+        &self,
+        workspace: &str,
+        command: &awaken_session_state_contract::SessionRepositoryPublicationCommand,
+        lease: &session_resource::SessionRealizationLease,
+    ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError> {
+        command
+            .intent
+            .validate()
+            .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
+        let input = &command.intent.input;
+        let fence = ResourceOperationFence::RepositoryPublication {
+            command: Box::new(command.clone()),
+            lease: lease.clone(),
+        };
+        let staged = self
+            .stage_resolved_input_with_resource_authority(
+                workspace,
+                input,
+                Some(&fence),
+                None,
+                None,
+            )
+            .await?;
+        if staged.repositories.len() != 1
+            || staged.binding_checks.len() != 1
+            || !matches!(
+                staged.binding_checks.first(),
+                Some(crate::staged_resources::ResourceBindingCheck::Repository { .. })
+            )
+        {
+            return Err(RunError::internal(
+                "terminal Repository publication did not compile one exact activation",
+            ));
+        }
+        Ok(staged)
+    }
+    async fn stage_resolved_input_with_resource_authority(
+        &self,
+        workspace: &str,
+        input: &session_resource::ResolvedInput,
+        resource_authority: Option<&ResourceOperationFence>,
+        realization: Option<(&str, u64, &session_resource::SessionRealizationLease)>,
+        environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
+    ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError> {
+        use awaken_session_configuration_contract::resource::ResolvedInputSource;
+        use awaken_session_types::RunError;
+
+        let claim = resource_authority.and_then(|authority| match authority {
+            ResourceOperationFence::Run(claim) => Some(claim),
+            _ => None,
+        });
+        let mut staged = crate::staged_resources::StagedResources::default();
+        staged
+            .resource_prompts
+            .push(ResourcePromptProjection::try_from_input(input)?);
+        let (mut projected_mount, projected_repository_access) =
+            match resolved_input_layout_projection(input) {
+                ManagedLayoutProjection::Mount(mount) => (Some(mount), None),
+                ManagedLayoutProjection::Repository { access, .. } => (None, Some(access)),
+            };
+
+        match &input.source {
+            ResolvedInputSource::File { file_id } => {
+                // Ordinary staging already chose the exact Run or Session fence.
+                // Terminal publication admits only Repository inputs above.
+                let content = self
+                    .file_content_source
+                    .read(
+                        workspace,
+                        file_id.as_str(),
+                        &awaken_resource_contract::FileReadPurpose::SessionResource,
+                        resource_authority,
+                    )
+                    .await
+                    .map_err(|error| RunError::internal(error.to_string()))?
+                    .ok_or_else(|| {
+                        RunError::bad_request(format!(
+                            "file resource `{file_id}` not found in this workspace"
+                        ))
+                    })?;
+                let actual = awaken_resource_contract::content_id(&content.bytes);
+                if actual != content.content_id {
+                    return Err(RunError::bad_request(format!(
+                        "file resource `{file_id}` content hash mismatch (realized `{actual}`)"
+                    )));
+                }
+                staged.mounts.push(
+                    projected_mount
+                        .take()
+                        .expect("File input has projected mount metadata")
+                        .requirement(awaken_provisioning_contract::MountSource::InlineBytes {
+                            contents: content.bytes,
+                            content_hash: Some(content.content_id),
+                        }),
+                );
+            }
+            ResolvedInputSource::MemoryStore {
+                memory_store_id,
+                config,
+            } => {
+                let materialization_reference = match (
+                    self.fetches_resources_upstream,
+                    claim,
+                    realization,
+                ) {
+                    (true, _, Some(_)) => {
+                        let Some(ResourceOperationFence::SessionMaterialization(intent)) =
+                            resource_authority
+                        else {
+                            return Err(RunError::internal(
+                                "remote Memory realization lost its admitted Resource fence",
+                            ));
+                        };
+                        Some(
+                            awaken_resource_contract::MemoryMaterializationReferenceEncoder::<
+                                awaken_session_realization_contract::SessionResourceMaterializationIntent,
+                            >::encode(
+                                self.memory_reference_encoder.as_deref()
+                                    .ok_or_else(|| {
+                                        RunError::internal(
+                                            "remote Memory materialization encoder is not configured",
+                                        )
+                                    })?,
+                                workspace,
+                                memory_store_id.as_str(),
+                                config.version,
+                                input.access,
+                                intent,
+                            )
+                            .map_err(|error| RunError::internal(error.to_string()))?,
+                        )
+                    }
+                    (true, Some(claim), None) => Some(
+                        awaken_resource_contract::MemoryMaterializationReferenceEncoder::<
+                            awaken_dispatch_contract::RunClaim,
+                        >::encode(
+                            self.memory_reference_encoder.as_deref().ok_or_else(|| {
+                                RunError::internal(
+                                    "remote Memory materialization encoder is not configured",
+                                )
+                            })?,
+                            workspace,
+                            memory_store_id.as_str(),
+                            config.version,
+                            input.access,
+                            claim,
+                        )
+                        .map_err(|error| RunError::internal(error.to_string()))?,
+                    ),
+                    (true, None, None) => {
+                        return Err(RunError::bad_request(
+                            "remote Memory materialization requires a dispatch claim or Session realization lease",
+                        ));
+                    }
+                    (false, _, _) => None,
+                };
+                if materialization_reference.is_none() {
+                    self.verify_memory_binding(workspace, memory_store_id.as_str(), config.version)
+                        .await?;
+                    staged.binding_checks.push(
+                        crate::staged_resources::ResourceBindingCheck::MemoryStore {
+                            memory_store_id: memory_store_id.to_string(),
+                            config_version: config.version,
+                        },
+                    );
+                }
+                // The worker realizes one governed store directory through its
+                // MemoryMounter. Resources never receives a principal,
+                // role, API key, or policy: the outer authorization/ACL seam has
+                // already selected workspace, store, and maximum access.
+                staged.mounts.push(
+                    projected_mount
+                        .take()
+                        .expect("Memory input has projected mount metadata")
+                        .requirement(awaken_provisioning_contract::MountSource::MemoryStore {
+                            store_id: memory_store_id.to_string(),
+                            materialization_reference,
+                            write_consistency:
+                                crate::managed_input_layout::projected_memory_write_consistency(
+                                    managed_mount_access(input.access),
+                                    environment.map(|projection| &projection.idle_retention),
+                                ),
+                        }),
+                );
+            }
+            ResolvedInputSource::Repository {
+                repository_id,
+                config,
+                credential: credential_pin,
+            } => {
+                let mount_access = projected_repository_access
+                    .expect("Repository input has Repository layout metadata");
+                // Historical aggregates may carry a path that predates the
+                // current provider profile. Reject the exact durable value
+                // before verifier, credential, transport, or Git work.
+                awaken_provisioning_contract::validate_repository_mount_path(&input.mount_path)
+                    .map_err(|error| {
+                        RunError::bad_request(format!(
+                            "repository `{repository_id}` cannot be realized: {error}"
+                        ))
+                    })?;
+                let transport = match (resource_authority, self.fetches_resources_upstream) {
+                    (Some(ResourceOperationFence::RepositoryPublication { .. }), false) => {
+                        Ok(awaken_resource_contract::RepositoryTransport::Direct)
+                    }
+                    (authority, _) => {
+                        self.repository_binding_verifier
+                            .as_ref()
+                            .ok_or_else(|| {
+                                RunError::bad_request(
+                                    "repository resources require a configured binding verifier",
+                                )
+                            })?
+                            .verify(workspace, repository_id.as_str(), config.version, authority)
+                            .await
+                    }
+                }
+                .map_err(repository_binding_run_error)?;
+                staged.binding_checks.push(
+                    crate::staged_resources::ResourceBindingCheck::Repository {
+                        repository_id: repository_id.to_string(),
+                        config_version: config.version,
+                        remote_url: config.remote_url.clone(),
+                        credential_binding: config.credential_binding.clone(),
+                        authority: resource_authority.cloned().map(Box::new),
+                    },
+                );
+                // Coordinator staging has no Run claim and cannot authorize a
+                // Platform-held Git transport. Retain the exact binding check
+                // and immutable Session input; the claiming Worker recompiles
+                // it through the existing Gateway authorizer. No executable
+                // direct Repository activation may escape this stage.
+                if resource_authority.is_none()
+                    && let (Some(binding), Some(pin)) = (&config.credential_binding, credential_pin)
+                    && pin.selected_plaintext_holder.boundary
+                        == awaken_runtime_contract::PlaintextBoundary::Platform
+                {
+                    pin.validate_for_repository(binding, &config.remote_url)
+                        .map_err(|error| {
+                            RunError::bad_request(format!(
+                                "repository `{repository_id}` credential: {error}"
+                            ))
+                        })?;
+                    return Ok(staged);
+                }
+                let (transport_url, credential_pin) = match (
+                    &config.credential_binding,
+                    credential_pin,
+                ) {
+                    (Some(binding), Some(pin)) => {
+                        pin.validate_for_repository(binding, &config.remote_url)
+                            .map_err(|error| {
+                                RunError::bad_request(format!(
+                                    "repository `{repository_id}` credential: {error}"
+                                ))
+                            })?;
+                        match pin.selected_plaintext_holder.boundary {
+                            awaken_runtime_contract::PlaintextBoundary::Worker => {
+                                return Err(RunError::bad_request(format!(
+                                    "repository `{repository_id}` credential cannot be held by the Runtime Host or Worker"
+                                )));
+                            }
+                            awaken_runtime_contract::PlaintextBoundary::Platform => match transport {
+                                awaken_resource_contract::RepositoryTransport::GatewayMediated {
+                                    remote_url,
+                                    ..
+                                } => (remote_url, Some(pin.as_ref().clone())),
+                                awaken_resource_contract::RepositoryTransport::Direct => {
+                                    return Err(RunError::bad_request(format!(
+                                        "repository `{repository_id}` Platform credential requires Gateway mediation"
+                                    )));
+                                }
+                            },
+                            awaken_runtime_contract::PlaintextBoundary::Workload => {
+                                if !matches!(transport, awaken_resource_contract::RepositoryTransport::Direct) {
+                                    return Err(RunError::bad_request(format!(
+                                        "repository `{repository_id}` Sandbox credential cannot use a mediated transport"
+                                    )));
+                                }
+                                (config.remote_url.clone(), Some(pin.as_ref().clone()))
+                            }
+                        }
+                    }
+                    (None, None) => match transport {
+                        awaken_resource_contract::RepositoryTransport::Direct => {
+                            (config.remote_url.clone(), None)
+                        }
+                        awaken_resource_contract::RepositoryTransport::GatewayMediated {
+                            ..
+                        } => {
+                            return Err(RunError::bad_request(format!(
+                                "repository `{repository_id}` has a mediated transport without a credential pin"
+                            )));
+                        }
+                    },
+                    (Some(_), None) => {
+                        return Err(RunError::bad_request(format!(
+                            "repository `{repository_id}` credential binding has no exact Session pin"
+                        )));
+                    }
+                    (None, Some(_)) => {
+                        return Err(RunError::bad_request(format!(
+                            "repository `{repository_id}` has a credential pin without a binding"
+                        )));
+                    }
+                };
+                let plan = awaken_provisioning_contract::RepositoryRealizationPlan {
+                    repository_id: repository_id.to_string(),
+                    // `ResolvedInput.mount_path` is the durable Managed-wire truth.
+                    // Never turn `/repo` into `/workspace/repo` in an ephemeral
+                    // adapter projection: either every provider supports the exact
+                    // path or the shared realization contract rejects it.
+                    mount_path: input.mount_path.clone(),
+                    source_remote_url: config.remote_url.clone(),
+                    transport_url,
+                    initial_branch: config.initial_branch.clone(),
+                    initial_commit: config.initial_commit.clone(),
+                    access: mount_access,
+                };
+                plan.validate_mount_path().map_err(|error| {
+                    RunError::bad_request(format!(
+                        "repository `{repository_id}` cannot be realized: {error}"
+                    ))
+                })?;
+                staged
+                    .repositories
+                    .push(crate::staged_resources::RepositoryActivation {
+                        plan,
+                        credential_pin,
+                    });
+            }
+        }
+        Ok(staged)
+    }
+    /// One live Memory binding verification used at both staging and activation.
+    pub(crate) async fn verify_memory_binding(
+        &self,
+        workspace: &str,
+        id: &str,
+        version: awaken_resource_contract::ConfigVersion,
+    ) -> Result<(), awaken_session_types::RunError> {
+        self.resource_validator
+            .as_ref()
+            .ok_or_else(|| {
+                awaken_session_types::RunError::bad_request(
+                    "memory resources require a configured resource binding validator",
+                )
+            })?
+            .verify_memory_binding(workspace, id, version)
+            .await
+            .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))
+    }
+
     fn validate_managed_layout_inputs(
         &self,
         thread: &str,
@@ -1192,392 +1518,5 @@ impl crate::ManagedHost {
         staging
             .validate_resource_layout(thread, resources, provider, None, None, None)
             .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))
-    }
-
-    /// Compile one frozen Managed input into the provisioning vocabulary. This
-    /// projection owns protocol paths and secret-free credential pins; the
-    /// Repository effect edge owns the one typed material translation. Sandbox
-    /// adapters consume only the resulting neutral requirements.
-    pub(super) async fn stage_resolved_input(
-        &self,
-        workspace: &str,
-        input: &session_resource::ResolvedInput,
-        claim: Option<&awaken_dispatch_contract::RunClaim>,
-        realization: Option<(&str, u64, &session_resource::SessionRealizationLease)>,
-        environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
-    ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError> {
-        let authority = if let (Some((session_id, resource_revision, lease)), true) = (
-            realization,
-            self.host.authority.fetches_resources_upstream(),
-        ) {
-            Some(ResourceOperationFence::SessionMaterialization(
-                awaken_session_realization_contract::SessionResourceMaterializationIntent::try_new(
-                    session_id,
-                    resource_revision,
-                    input.clone(),
-                    lease.clone(),
-                )
-                .map_err(awaken_session_types::RunError::bad_request)?,
-            ))
-        } else {
-            claim.map(|claim| ResourceOperationFence::Run(claim.clone()))
-        };
-        self.stage_resolved_input_with_resource_authority(
-            workspace,
-            input,
-            authority.as_ref(),
-            realization,
-            environment,
-        )
-        .await
-    }
-
-    /// Compile the exact Repository input carried by a terminal publication
-    /// command through the same path as ordinary Session staging. A remote lease
-    /// selects the HTTP authority verifier; a local command needs no mutable
-    /// catalog re-read. Path, access, credential pin, transport, and
-    /// realization-plan projection stay canonical here.
-    pub(super) async fn stage_terminal_repository_publication_input(
-        &self,
-        workspace: &str,
-        command: &awaken_session_state_contract::SessionRepositoryPublicationCommand,
-        lease: &session_resource::SessionRealizationLease,
-    ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError> {
-        command
-            .intent
-            .validate()
-            .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
-        let input = &command.intent.input;
-        if !matches!(
-            input.source,
-            session_resource::ResolvedInputSource::Repository { .. }
-        ) {
-            return Err(awaken_session_types::RunError::bad_request(
-                "terminal Repository publication input is not a Repository",
-            ));
-        }
-        let fence = ResourceOperationFence::RepositoryPublication {
-            command: Box::new(command.clone()),
-            lease: lease.clone(),
-        };
-        self.stage_resolved_input_with_resource_authority(
-            workspace,
-            input,
-            Some(&fence),
-            None,
-            None,
-        )
-        .await
-    }
-
-    async fn stage_resolved_input_with_resource_authority(
-        &self,
-        workspace: &str,
-        input: &session_resource::ResolvedInput,
-        resource_authority: Option<&ResourceOperationFence>,
-        realization: Option<(&str, u64, &session_resource::SessionRealizationLease)>,
-        environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
-    ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError> {
-        use awaken_session_configuration_contract::resource::ResolvedInputSource;
-        use awaken_session_types::RunError;
-
-        let execution = &self.host.session_execution;
-        let claim = resource_authority.and_then(|authority| match authority {
-            ResourceOperationFence::Run(claim) => Some(claim),
-            _ => None,
-        });
-        let mut staged = crate::staged_resources::StagedResources::default();
-        staged
-            .resource_prompts
-            .push(ResourcePromptProjection::try_from_input(input)?);
-        let (mut projected_mount, projected_repository_access) =
-            match resolved_input_layout_projection(input) {
-                ManagedLayoutProjection::Mount(mount) => (Some(mount), None),
-                ManagedLayoutProjection::Repository { access, .. } => (None, Some(access)),
-            };
-
-        match &input.source {
-            ResolvedInputSource::File { file_id } => {
-                // Ordinary staging already chose the exact Run or Session fence.
-                // Terminal publication admits only Repository inputs above.
-                let content = self
-                    .host
-                    .resources
-                    .file_content_source
-                    .read(
-                        workspace,
-                        file_id.as_str(),
-                        &awaken_resource_contract::FileReadPurpose::SessionResource,
-                        resource_authority,
-                    )
-                    .await
-                    .map_err(|error| RunError::internal(error.to_string()))?
-                    .ok_or_else(|| {
-                        RunError::bad_request(format!(
-                            "file resource `{file_id}` not found in this workspace"
-                        ))
-                    })?;
-                let actual = awaken_resource_contract::content_id(&content.bytes);
-                if actual != content.content_id {
-                    return Err(RunError::bad_request(format!(
-                        "file resource `{file_id}` content hash mismatch (realized `{actual}`)"
-                    )));
-                }
-                staged.mounts.push(
-                    projected_mount
-                        .take()
-                        .expect("File input has projected mount metadata")
-                        .requirement(awaken_provisioning_contract::MountSource::InlineBytes {
-                            contents: content.bytes,
-                            content_hash: Some(content.content_id),
-                        }),
-                );
-            }
-            ResolvedInputSource::MemoryStore {
-                memory_store_id,
-                config,
-            } => {
-                let materialization_reference = match (
-                    self.host.authority.fetches_resources_upstream(),
-                    claim,
-                    realization,
-                ) {
-                    (true, _, Some(_)) => {
-                        let Some(ResourceOperationFence::SessionMaterialization(intent)) =
-                            resource_authority
-                        else {
-                            return Err(RunError::internal(
-                                "remote Memory realization lost its admitted Resource fence",
-                            ));
-                        };
-                        Some(
-                            awaken_resource_contract::MemoryMaterializationReferenceEncoder::<
-                                awaken_session_realization_contract::SessionResourceMaterializationIntent,
-                            >::encode(
-                                self.host
-                                    .authority
-                                    .memory_reference_encoder()
-                                    .ok_or_else(|| {
-                                        RunError::internal(
-                                            "remote Memory materialization encoder is not configured",
-                                        )
-                                    })?,
-                                workspace,
-                                memory_store_id.as_str(),
-                                config.version,
-                                input.access,
-                                intent,
-                            )
-                            .map_err(|error| RunError::internal(error.to_string()))?,
-                        )
-                    }
-                    (true, Some(claim), None) => Some(
-                        awaken_resource_contract::MemoryMaterializationReferenceEncoder::<
-                            awaken_dispatch_contract::RunClaim,
-                        >::encode(
-                            self.host
-                                .authority
-                                .memory_reference_encoder()
-                                .ok_or_else(|| {
-                                    RunError::internal(
-                                        "remote Memory materialization encoder is not configured",
-                                    )
-                                })?,
-                            workspace,
-                            memory_store_id.as_str(),
-                            config.version,
-                            input.access,
-                            claim,
-                        )
-                        .map_err(|error| RunError::internal(error.to_string()))?,
-                    ),
-                    (true, None, None) => {
-                        return Err(RunError::bad_request(
-                            "remote Memory materialization requires a dispatch claim or Session realization lease",
-                        ));
-                    }
-                    (false, _, _) => None,
-                };
-                if materialization_reference.is_none() {
-                    execution
-                        .verify_memory_binding(workspace, memory_store_id.as_str(), config.version)
-                        .await?;
-                    staged.binding_checks.push(
-                        crate::staged_resources::ResourceBindingCheck::MemoryStore {
-                            memory_store_id: memory_store_id.to_string(),
-                            config_version: config.version,
-                        },
-                    );
-                }
-                // The worker realizes one governed store directory through its
-                // MemoryMounter. Resources never receives a principal,
-                // role, API key, or policy: the outer authorization/ACL seam has
-                // already selected workspace, store, and maximum access.
-                staged.mounts.push(
-                    projected_mount
-                        .take()
-                        .expect("Memory input has projected mount metadata")
-                        .requirement(awaken_provisioning_contract::MountSource::MemoryStore {
-                            store_id: memory_store_id.to_string(),
-                            materialization_reference,
-                            write_consistency:
-                                crate::managed_input_layout::projected_memory_write_consistency(
-                                    managed_mount_access(input.access),
-                                    environment.map(|projection| &projection.idle_retention),
-                                ),
-                        }),
-                );
-            }
-            ResolvedInputSource::Repository {
-                repository_id,
-                config,
-                credential: credential_pin,
-            } => {
-                let mount_access = projected_repository_access
-                    .expect("Repository input has Repository layout metadata");
-                // Historical aggregates may carry a path that predates the
-                // current provider profile. Reject the exact durable value
-                // before verifier, credential, transport, or Git work.
-                awaken_provisioning_contract::validate_repository_mount_path(&input.mount_path)
-                    .map_err(|error| {
-                        RunError::bad_request(format!(
-                            "repository `{repository_id}` cannot be realized: {error}"
-                        ))
-                    })?;
-                let transport =
-                    match (
-                        resource_authority,
-                        self.host.authority.fetches_resources_upstream(),
-                    ) {
-                        (Some(ResourceOperationFence::RepositoryPublication { .. }), false) => {
-                            Ok(awaken_resource_contract::RepositoryTransport::Direct)
-                        }
-                        (authority, _) => execution
-                            .repository_binding_verifier
-                            .as_ref()
-                            .ok_or_else(|| {
-                                RunError::bad_request(
-                                    "repository resources require a configured binding verifier",
-                                )
-                            })?
-                            .verify(workspace, repository_id.as_str(), config.version, authority)
-                            .await,
-                    }
-                    .map_err(repository_binding_run_error)?;
-                staged.binding_checks.push(
-                    crate::staged_resources::ResourceBindingCheck::Repository {
-                        repository_id: repository_id.to_string(),
-                        config_version: config.version,
-                        remote_url: config.remote_url.clone(),
-                        credential_binding: config.credential_binding.clone(),
-                        authority: resource_authority.cloned().map(Box::new),
-                    },
-                );
-                // Coordinator staging has no Run claim and cannot authorize a
-                // Platform-held Git transport. Retain the exact binding check
-                // and immutable Session input; the claiming Worker recompiles
-                // it through the existing Gateway authorizer. No executable
-                // direct Repository activation may escape this stage.
-                if resource_authority.is_none()
-                    && let (Some(binding), Some(pin)) = (&config.credential_binding, credential_pin)
-                    && pin.selected_plaintext_holder.boundary
-                        == awaken_runtime_contract::PlaintextBoundary::Platform
-                {
-                    pin.validate_for_repository(binding, &config.remote_url)
-                        .map_err(|error| {
-                            RunError::bad_request(format!(
-                                "repository `{repository_id}` credential: {error}"
-                            ))
-                        })?;
-                    return Ok(staged);
-                }
-                let (transport_url, credential_pin) = match (
-                    &config.credential_binding,
-                    credential_pin,
-                ) {
-                    (Some(binding), Some(pin)) => {
-                        pin.validate_for_repository(binding, &config.remote_url)
-                            .map_err(|error| {
-                                RunError::bad_request(format!(
-                                    "repository `{repository_id}` credential: {error}"
-                                ))
-                            })?;
-                        match pin.selected_plaintext_holder.boundary {
-                            awaken_runtime_contract::PlaintextBoundary::Worker => {
-                                return Err(RunError::bad_request(format!(
-                                    "repository `{repository_id}` credential cannot be held by the Runtime Host or Worker"
-                                )));
-                            }
-                            awaken_runtime_contract::PlaintextBoundary::Platform => match transport {
-                                awaken_resource_contract::RepositoryTransport::GatewayMediated {
-                                    remote_url,
-                                    ..
-                                } => (remote_url, Some(pin.as_ref().clone())),
-                                awaken_resource_contract::RepositoryTransport::Direct => {
-                                    return Err(RunError::bad_request(format!(
-                                        "repository `{repository_id}` Platform credential requires Gateway mediation"
-                                    )));
-                                }
-                            },
-                            awaken_runtime_contract::PlaintextBoundary::Workload => {
-                                if !matches!(transport, awaken_resource_contract::RepositoryTransport::Direct) {
-                                    return Err(RunError::bad_request(format!(
-                                        "repository `{repository_id}` Sandbox credential cannot use a mediated transport"
-                                    )));
-                                }
-                                (config.remote_url.clone(), Some(pin.as_ref().clone()))
-                            }
-                        }
-                    }
-                    (None, None) => match transport {
-                        awaken_resource_contract::RepositoryTransport::Direct => {
-                            (config.remote_url.clone(), None)
-                        }
-                        awaken_resource_contract::RepositoryTransport::GatewayMediated {
-                            ..
-                        } => {
-                            return Err(RunError::bad_request(format!(
-                                "repository `{repository_id}` has a mediated transport without a credential pin"
-                            )));
-                        }
-                    },
-                    (Some(_), None) => {
-                        return Err(RunError::bad_request(format!(
-                            "repository `{repository_id}` credential binding has no exact Session pin"
-                        )));
-                    }
-                    (None, Some(_)) => {
-                        return Err(RunError::bad_request(format!(
-                            "repository `{repository_id}` has a credential pin without a binding"
-                        )));
-                    }
-                };
-                let plan = awaken_provisioning_contract::RepositoryRealizationPlan {
-                    repository_id: repository_id.to_string(),
-                    // `ResolvedInput.mount_path` is the durable Managed-wire truth.
-                    // Never turn `/repo` into `/workspace/repo` in an ephemeral
-                    // adapter projection: either every provider supports the exact
-                    // path or the shared realization contract rejects it.
-                    mount_path: input.mount_path.clone(),
-                    source_remote_url: config.remote_url.clone(),
-                    transport_url,
-                    initial_branch: config.initial_branch.clone(),
-                    initial_commit: config.initial_commit.clone(),
-                    access: mount_access,
-                };
-                plan.validate_mount_path().map_err(|error| {
-                    RunError::bad_request(format!(
-                        "repository `{repository_id}` cannot be realized: {error}"
-                    ))
-                })?;
-                staged
-                    .repositories
-                    .push(crate::staged_resources::RepositoryActivation {
-                        plan,
-                        credential_pin,
-                    });
-            }
-        }
-        Ok(staged)
     }
 }

@@ -18,6 +18,20 @@ pub(crate) struct ResourceStaging {
     pub(crate) sessions: crate::session_realizations::SessionRealizations,
     /// Exact immutable bytes only; this grants no catalog/authoring access.
     pub(crate) bundle_source: Option<Arc<dyn SkillBundleSource<ResourceOperationFence>>>,
+    pub(crate) file_content_source:
+        Arc<dyn awaken_resource_contract::FileContentSource<ResourceOperationFence>>,
+    pub(crate) memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
+    pub(crate) resource_validator:
+        Option<Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>>,
+    pub(crate) repository_binding_verifier: Option<
+        Arc<dyn awaken_resource_contract::RepositoryBindingVerifier<ResourceOperationFence>>,
+    >,
+    pub(crate) fetches_resources_upstream: bool,
+    /// The same exact materializer selected for the Host, used only at a Git effect.
+    pub(crate) credential_materializer:
+        Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
+    pub(crate) memory_reference_encoder:
+        Option<Arc<dyn crate::memory_binding::RuntimeMemoryReferenceEncoder>>,
 }
 
 impl ResourceStaging {

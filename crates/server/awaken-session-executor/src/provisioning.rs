@@ -1,10 +1,9 @@
 // @formal entrypoint resource_catalog.artifact_publication_receipt_requires_exact_publication_identity
 // @formal entrypoint sandbox.workspace_path_projection_is_one_logical_root_and_never_discloses_provider_host_paths
-//! Session provisioning + capability advertisement on [`SharedHost`]: the sandbox
-//! spec (with staged resource mounts, ADR-0038), the per-thread resource staging +
-//! blob store accessor, and the tool/skill/delegate sets advertised on a managed
-//! session. Split out of `host.rs` to keep that file under the length limit; these
-//! are the same `SharedHost` (fields are `pub(crate)`).
+//! Session provisioning and capability advertisement. ResourceStaging owns the
+//! neutral sandbox projection and Repository effects; SharedHost composes the
+//! artifact harvester and advertises managed tool/skill/delegate sets. The staged
+//! resource mounts retain ADR-0038's one physical projection.
 
 use crate::staged_resources::{RepositoryActivation, ResourceBindingCheck, StagedResources};
 use awaken_session_configuration_contract::resource as session_resource;
@@ -23,7 +22,7 @@ pub(crate) enum RepositoryPublicationActivationError {
     Failed(crate::host_error::HostError),
 }
 
-fn repository_binding_host_error(
+pub(crate) fn repository_binding_host_error(
     error: RepositoryBindingVerifierError,
 ) -> crate::host_error::HostError {
     let message = error.to_string();
@@ -431,326 +430,6 @@ impl SharedHost {
         }
     }
 
-    /// Realize a thread's resolved Repository inputs into its freshly-created
-    /// environment. The narrow port receives only a secret-free plan and an ephemeral
-    /// transport credential after authorization/config resolution. A failure aborts
-    /// activation so the Session cannot run believing a working tree exists.
-    #[cfg(test)]
-    pub(crate) async fn realize_thread_repositories(
-        &self,
-        thread: &str,
-        realizer: &dyn pc::RepositoryRealizer,
-    ) -> Result<(), crate::host_error::HostError> {
-        let resources = self.realizer.staging.thread_resources_snapshot(thread);
-        for repository in &resources.repositories {
-            self.realize_repository_activation(
-                thread,
-                repository,
-                &resources.binding_checks,
-                realizer,
-                pc::RepositoryRealizationIntent::Initialize,
-            )
-            .await?;
-        }
-        Ok(())
-    }
-
-    /// Execute one Repository clone edge through the same operation-scoped
-    /// credential path used by initial activation and hot Resource replacement.
-    pub(crate) async fn realize_repository_activation(
-        &self,
-        thread: &str,
-        repository: &RepositoryActivation,
-        binding_checks: &[ResourceBindingCheck],
-        realizer: &dyn pc::RepositoryRealizer,
-        intent: pc::RepositoryRealizationIntent,
-    ) -> Result<(), crate::host_error::HostError> {
-        repository
-            .plan
-            .validate_mount_path()
-            .map_err(|error| crate::host_error::HostError::internal(error.to_string()))?;
-        let credential = self
-            .repository_operation_credential(thread, repository, binding_checks, None)
-            .await?;
-        realizer
-            .realize_repository(&repository.plan, credential.as_ref(), intent)
-            .await
-            .map_err(|error| crate::host_error::HostError::internal(error.to_string()))
-    }
-
-    /// Materialize only the credential required by this Git effect. A direct
-    /// Sandbox-held pin repeats exact source revision, Workspace, descriptor
-    /// expiry/target/material, holder, and Repository id/version binding checks.
-    /// A Platform-held pin refreshes its short Gateway capability and cannot
-    /// downgrade to direct material. The returned owned value is dropped after
-    /// the realizer call and is never written back to `RepositoryActivation`.
-    async fn repository_operation_credential(
-        &self,
-        thread: &str,
-        repository: &RepositoryActivation,
-        binding_checks: &[ResourceBindingCheck],
-        publication_fence: Option<&(
-            awaken_session_state_contract::SessionRepositoryPublicationCommand,
-            session_resource::SessionRealizationLease,
-        )>,
-    ) -> Result<Option<pc::RepositoryHttpBasicCredential>, crate::host_error::HostError> {
-        let pin = repository.credential_pin.as_ref();
-        if pin.is_none() && publication_fence.is_none() {
-            return Ok(None);
-        }
-        let mut matching = binding_checks.iter().filter_map(|check| match check {
-            ResourceBindingCheck::Repository {
-                repository_id,
-                config_version,
-                remote_url,
-                credential_binding,
-                authority,
-            } if repository_id == &repository.plan.repository_id => Some((
-                *config_version,
-                remote_url.as_str(),
-                credential_binding.as_deref(),
-                authority.as_deref(),
-            )),
-            _ => None,
-        });
-        let Some((config_version, remote_url, credential_binding, authority)) = matching.next()
-        else {
-            return Err(crate::host_error::HostError::internal(
-                "protected Repository has no exact binding check",
-            ));
-        };
-        if matching.next().is_some() {
-            return Err(crate::host_error::HostError::internal(
-                "protected Repository has ambiguous binding checks",
-            ));
-        }
-        if let Some(pin) = pin {
-            let credential_binding = credential_binding.ok_or_else(|| {
-                crate::host_error::HostError::internal(
-                    "protected Repository credential pin has no authored binding",
-                )
-            })?;
-            pin.validate_for_repository(credential_binding, remote_url)
-                .map_err(|error| crate::host_error::HostError::internal(error.to_string()))?;
-        }
-        if repository.plan.source_remote_url != remote_url {
-            return Err(crate::host_error::HostError::internal(
-                "Repository changed its frozen source URL",
-            ));
-        }
-        let publication_authority = publication_fence.map(|(command, lease)| {
-            ResourceOperationFence::RepositoryPublication {
-                command: Box::new(command.clone()),
-                lease: lease.clone(),
-            }
-        });
-        let publication_transport = match (
-            publication_authority.as_ref(),
-            self.authority.fetches_resources_upstream(),
-        ) {
-            (Some(fence), true) => {
-                let verifier = self
-                    .session_execution
-                    .repository_binding_verifier
-                    .clone()
-                    .ok_or_else(|| {
-                        crate::host_error::HostError::internal(
-                            "terminal Repository publication has no binding verifier",
-                        )
-                    })?;
-                Some(
-                    verifier
-                        .verify(
-                            &self.thread_workspace(thread),
-                            &repository.plan.repository_id,
-                            config_version,
-                            Some(fence),
-                        )
-                        .await
-                        .map_err(repository_binding_host_error)?,
-                )
-            }
-            // Local topology already compiled this exact command through the
-            // frozen terminal projection. It has no Gateway capability to mint
-            // and must not re-read the mutable Repository Registry here.
-            (Some(_), false) => Some(awaken_resource_contract::RepositoryTransport::Direct),
-            (None, _) => None,
-        };
-        let Some(pin) = pin else {
-            return match publication_transport {
-                Some(awaken_resource_contract::RepositoryTransport::Direct)
-                    if repository.plan.transport_url == repository.plan.source_remote_url =>
-                {
-                    Ok(None)
-                }
-                Some(awaken_resource_contract::RepositoryTransport::Direct) => {
-                    Err(crate::host_error::HostError::internal(
-                        "direct Repository changed its frozen transport URL",
-                    ))
-                }
-                Some(awaken_resource_contract::RepositoryTransport::GatewayMediated { .. }) => {
-                    Err(crate::host_error::HostError::internal(
-                        "Repository has a mediated transport without a credential pin",
-                    ))
-                }
-                None => Ok(None),
-            };
-        };
-        match pin.selected_plaintext_holder.boundary {
-            awaken_runtime_contract::PlaintextBoundary::Worker => {
-                Err(crate::host_error::HostError::internal(
-                    "Runtime Host or Worker cannot hold a Repository transport credential",
-                ))
-            }
-            awaken_runtime_contract::PlaintextBoundary::Workload => {
-                if publication_transport.as_ref().is_some_and(|transport| {
-                    !matches!(
-                        transport,
-                        awaken_resource_contract::RepositoryTransport::Direct
-                    )
-                }) {
-                    return Err(crate::host_error::HostError::internal(
-                        "Sandbox-held Repository credential cannot use a mediated transport",
-                    ));
-                }
-                if repository.plan.transport_url != remote_url {
-                    return Err(crate::host_error::HostError::internal(
-                        "direct Repository changed its frozen transport URL",
-                    ));
-                }
-                let materializer = self.exec.credential_materializer.as_ref().ok_or_else(|| {
-                    crate::host_error::HostError::internal(
-                        "repository credential requires a configured credential materializer",
-                    )
-                })?;
-                let workspace = self.thread_workspace(thread);
-                let material = materializer
-                    .resolve_for_workspace(
-                        &pin.access,
-                        &pin.selected_plaintext_holder,
-                        awaken_credential_contract::CredentialRealizationKind::ProcessProtocolField,
-                        &workspace,
-                        &(&repository.plan.repository_id, config_version),
-                    )
-                    .await
-                    .map_err(|error| crate::host_error::HostError::internal(error.to_string()))?
-                    .material;
-                repository_http_basic_credential(material)
-                    .map(Some)
-                    .map_err(crate::host_error::HostError::internal)
-            }
-            awaken_runtime_contract::PlaintextBoundary::Platform => {
-                let workspace = self.thread_workspace(thread);
-                let transport = match publication_transport {
-                    Some(transport) => transport,
-                    None => {
-                        let verifier = self
-                            .session_execution
-                            .repository_binding_verifier
-                            .clone()
-                            .ok_or_else(|| {
-                            crate::host_error::HostError::internal(
-                                "Gateway-mediated Repository has no binding verifier",
-                            )
-                        })?;
-                        verifier
-                            .verify(
-                                &workspace,
-                                &repository.plan.repository_id,
-                                config_version,
-                                authority,
-                            )
-                            .await
-                            .map_err(repository_binding_host_error)?
-                    }
-                };
-                match transport {
-                    awaken_resource_contract::RepositoryTransport::GatewayMediated {
-                        remote_url,
-                        capability,
-                        ..
-                    } if remote_url == repository.plan.transport_url => {
-                        Ok(Some(pc::RepositoryHttpBasicCredential::gateway_capability(
-                            capability.expose().to_owned(),
-                        )))
-                    }
-                    awaken_resource_contract::RepositoryTransport::GatewayMediated { .. } => {
-                        Err(crate::host_error::HostError::internal(
-                            "Gateway-mediated Repository changed its frozen remote URL",
-                        ))
-                    }
-                    awaken_resource_contract::RepositoryTransport::Direct => {
-                        Err(crate::host_error::HostError::internal(
-                            "Gateway-mediated Repository cannot fall back to direct credentials",
-                        ))
-                    }
-                }
-            }
-        }
-    }
-
-    /// Publish one exact, already-compiled Repository activation. The caller
-    /// supplies the activation and binding checks derived from the frozen intent;
-    /// this method never selects from the thread's current Resource set and never
-    /// loops over unrelated repositories. Credential realization remains the same
-    /// operation-scoped edge used by clone and replacement.
-    pub(crate) async fn publish_repository_activation(
-        &self,
-        thread: &str,
-        repository: &RepositoryActivation,
-        binding_checks: &[ResourceBindingCheck],
-        realizer: &dyn pc::RepositoryRealizer,
-        expectation: &pc::RepositoryPublicationExpectation,
-        publication_fence: Option<&(
-            awaken_session_state_contract::SessionRepositoryPublicationCommand,
-            session_resource::SessionRealizationLease,
-        )>,
-    ) -> Result<pc::RepositoryPublicationReceipt, RepositoryPublicationActivationError> {
-        repository.plan.validate_mount_path().map_err(|error| {
-            RepositoryPublicationActivationError::Failed(crate::host_error::HostError::internal(
-                error.to_string(),
-            ))
-        })?;
-        expectation.validate().map_err(|error| {
-            RepositoryPublicationActivationError::Failed(crate::host_error::HostError::internal(
-                error.to_string(),
-            ))
-        })?;
-        if repository.plan.access == pc::MountAccess::ReadOnly {
-            return Err(RepositoryPublicationActivationError::Failed(
-                crate::host_error::HostError::internal("read-only repository cannot be published"),
-            ));
-        }
-        let credential = self
-            .repository_operation_credential(thread, repository, binding_checks, publication_fence)
-            .await
-            .map_err(RepositoryPublicationActivationError::Failed)?;
-        let receipt = realizer
-            .publish_repository(&repository.plan, expectation, credential.as_ref())
-            .await
-            .map_err(|error| match error {
-                pc::RepositoryPublicationError::Rejected(rejection) => {
-                    RepositoryPublicationActivationError::Rejected(rejection)
-                }
-                pc::RepositoryPublicationError::Unavailable(error) => {
-                    RepositoryPublicationActivationError::Failed(
-                        crate::host_error::HostError::unavailable_classified(
-                            "repository_publication_transport_unavailable",
-                            error.to_string(),
-                        ),
-                    )
-                }
-            })?;
-        receipt
-            .verify(&repository.plan, expectation)
-            .map_err(|error| {
-                RepositoryPublicationActivationError::Failed(
-                    crate::host_error::HostError::internal(error.to_string()),
-                )
-            })?;
-        Ok(receipt)
-    }
-
     /// Persist every Agent-authored output before the environment can be disposed.
     /// The `(Session, logical path, content)` harvest key makes retries idempotent;
     /// Files API reads only this durable catalog and never scan the Sandbox.
@@ -1080,6 +759,338 @@ impl crate::environment_holding::EnvironmentHolding {
 }
 
 impl crate::resource_staging::ResourceStaging {
+    /// Realize a thread's resolved Repository inputs into its freshly-created
+    /// environment. The narrow port receives only a secret-free plan and an ephemeral
+    /// transport credential after authorization/config resolution. A failure aborts
+    /// activation so the Session cannot run believing a working tree exists.
+    #[cfg(test)]
+    pub(crate) async fn realize_thread_repositories(
+        &self,
+        thread: &str,
+        fallback_workspace: &str,
+        realizer: &dyn pc::RepositoryRealizer,
+    ) -> Result<(), crate::host_error::HostError> {
+        let resources = self.thread_resources_snapshot(thread);
+        for repository in &resources.repositories {
+            self.realize_repository_activation(
+                thread,
+                fallback_workspace,
+                repository,
+                &resources.binding_checks,
+                realizer,
+                pc::RepositoryRealizationIntent::Initialize,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Execute one Repository clone edge through the same operation-scoped
+    /// credential path used by initial activation and hot Resource replacement.
+    pub(crate) async fn realize_repository_activation(
+        &self,
+        thread: &str,
+        fallback_workspace: &str,
+        repository: &RepositoryActivation,
+        binding_checks: &[ResourceBindingCheck],
+        realizer: &dyn pc::RepositoryRealizer,
+        intent: pc::RepositoryRealizationIntent,
+    ) -> Result<(), crate::host_error::HostError> {
+        repository
+            .plan
+            .validate_mount_path()
+            .map_err(|error| crate::host_error::HostError::internal(error.to_string()))?;
+        let credential = self
+            .repository_operation_credential(
+                thread,
+                fallback_workspace,
+                repository,
+                binding_checks,
+                None,
+            )
+            .await?;
+        realizer
+            .realize_repository(&repository.plan, credential.as_ref(), intent)
+            .await
+            .map_err(|error| crate::host_error::HostError::internal(error.to_string()))
+    }
+
+    /// Materialize only the credential required by this Git effect. A direct
+    /// Sandbox-held pin repeats exact source revision, Workspace, descriptor
+    /// expiry/target/material, holder, and Repository id/version binding checks.
+    /// A Platform-held pin refreshes its short Gateway capability and cannot
+    /// downgrade to direct material. The returned owned value is dropped after
+    /// the realizer call and is never written back to `RepositoryActivation`.
+    async fn repository_operation_credential(
+        &self,
+        thread: &str,
+        fallback_workspace: &str,
+        repository: &RepositoryActivation,
+        binding_checks: &[ResourceBindingCheck],
+        publication_fence: Option<&(
+            awaken_session_state_contract::SessionRepositoryPublicationCommand,
+            session_resource::SessionRealizationLease,
+        )>,
+    ) -> Result<Option<pc::RepositoryHttpBasicCredential>, crate::host_error::HostError> {
+        let pin = repository.credential_pin.as_ref();
+        if pin.is_none() && publication_fence.is_none() {
+            return Ok(None);
+        }
+        let mut matching = binding_checks.iter().filter_map(|check| match check {
+            ResourceBindingCheck::Repository {
+                repository_id,
+                config_version,
+                remote_url,
+                credential_binding,
+                authority,
+            } if repository_id == &repository.plan.repository_id => Some((
+                *config_version,
+                remote_url.as_str(),
+                credential_binding.as_deref(),
+                authority.as_deref(),
+            )),
+            _ => None,
+        });
+        let Some((config_version, remote_url, credential_binding, authority)) = matching.next()
+        else {
+            return Err(crate::host_error::HostError::internal(
+                "protected Repository has no exact binding check",
+            ));
+        };
+        if matching.next().is_some() {
+            return Err(crate::host_error::HostError::internal(
+                "protected Repository has ambiguous binding checks",
+            ));
+        }
+        if let Some(pin) = pin {
+            let credential_binding = credential_binding.ok_or_else(|| {
+                crate::host_error::HostError::internal(
+                    "protected Repository credential pin has no authored binding",
+                )
+            })?;
+            pin.validate_for_repository(credential_binding, remote_url)
+                .map_err(|error| crate::host_error::HostError::internal(error.to_string()))?;
+        }
+        if repository.plan.source_remote_url != remote_url {
+            return Err(crate::host_error::HostError::internal(
+                "Repository changed its frozen source URL",
+            ));
+        }
+        let publication_authority = publication_fence.map(|(command, lease)| {
+            ResourceOperationFence::RepositoryPublication {
+                command: Box::new(command.clone()),
+                lease: lease.clone(),
+            }
+        });
+        let publication_transport = match (
+            publication_authority.as_ref(),
+            self.fetches_resources_upstream,
+        ) {
+            (Some(fence), true) => {
+                let verifier = self.repository_binding_verifier.clone().ok_or_else(|| {
+                    crate::host_error::HostError::internal(
+                        "terminal Repository publication has no binding verifier",
+                    )
+                })?;
+                Some(
+                    verifier
+                        .verify(
+                            &self.sessions.workspace(thread, fallback_workspace),
+                            &repository.plan.repository_id,
+                            config_version,
+                            Some(fence),
+                        )
+                        .await
+                        .map_err(repository_binding_host_error)?,
+                )
+            }
+            // Local topology already compiled this exact command through the
+            // frozen terminal projection. It has no Gateway capability to mint
+            // and must not re-read the mutable Repository Registry here.
+            (Some(_), false) => Some(awaken_resource_contract::RepositoryTransport::Direct),
+            (None, _) => None,
+        };
+        let Some(pin) = pin else {
+            return match publication_transport {
+                Some(awaken_resource_contract::RepositoryTransport::Direct)
+                    if repository.plan.transport_url == repository.plan.source_remote_url =>
+                {
+                    Ok(None)
+                }
+                Some(awaken_resource_contract::RepositoryTransport::Direct) => {
+                    Err(crate::host_error::HostError::internal(
+                        "direct Repository changed its frozen transport URL",
+                    ))
+                }
+                Some(awaken_resource_contract::RepositoryTransport::GatewayMediated { .. }) => {
+                    Err(crate::host_error::HostError::internal(
+                        "Repository has a mediated transport without a credential pin",
+                    ))
+                }
+                None => Ok(None),
+            };
+        };
+        match pin.selected_plaintext_holder.boundary {
+            awaken_runtime_contract::PlaintextBoundary::Worker => {
+                Err(crate::host_error::HostError::internal(
+                    "Runtime Host or Worker cannot hold a Repository transport credential",
+                ))
+            }
+            awaken_runtime_contract::PlaintextBoundary::Workload => {
+                if publication_transport.as_ref().is_some_and(|transport| {
+                    !matches!(
+                        transport,
+                        awaken_resource_contract::RepositoryTransport::Direct
+                    )
+                }) {
+                    return Err(crate::host_error::HostError::internal(
+                        "Sandbox-held Repository credential cannot use a mediated transport",
+                    ));
+                }
+                if repository.plan.transport_url != remote_url {
+                    return Err(crate::host_error::HostError::internal(
+                        "direct Repository changed its frozen transport URL",
+                    ));
+                }
+                let materializer = self.credential_materializer.as_ref().ok_or_else(|| {
+                    crate::host_error::HostError::internal(
+                        "repository credential requires a configured credential materializer",
+                    )
+                })?;
+                let workspace = self.sessions.workspace(thread, fallback_workspace);
+                let material = materializer
+                    .resolve_for_workspace(
+                        &pin.access,
+                        &pin.selected_plaintext_holder,
+                        awaken_credential_contract::CredentialRealizationKind::ProcessProtocolField,
+                        &workspace,
+                        &(&repository.plan.repository_id, config_version),
+                    )
+                    .await
+                    .map_err(|error| crate::host_error::HostError::internal(error.to_string()))?
+                    .material;
+                repository_http_basic_credential(material)
+                    .map(Some)
+                    .map_err(crate::host_error::HostError::internal)
+            }
+            awaken_runtime_contract::PlaintextBoundary::Platform => {
+                let workspace = self.sessions.workspace(thread, fallback_workspace);
+                let transport = match publication_transport {
+                    Some(transport) => transport,
+                    None => {
+                        let verifier =
+                            self.repository_binding_verifier.clone().ok_or_else(|| {
+                                crate::host_error::HostError::internal(
+                                    "Gateway-mediated Repository has no binding verifier",
+                                )
+                            })?;
+                        verifier
+                            .verify(
+                                &workspace,
+                                &repository.plan.repository_id,
+                                config_version,
+                                authority,
+                            )
+                            .await
+                            .map_err(repository_binding_host_error)?
+                    }
+                };
+                match transport {
+                    awaken_resource_contract::RepositoryTransport::GatewayMediated {
+                        remote_url,
+                        capability,
+                        ..
+                    } if remote_url == repository.plan.transport_url => {
+                        Ok(Some(pc::RepositoryHttpBasicCredential::gateway_capability(
+                            capability.expose().to_owned(),
+                        )))
+                    }
+                    awaken_resource_contract::RepositoryTransport::GatewayMediated { .. } => {
+                        Err(crate::host_error::HostError::internal(
+                            "Gateway-mediated Repository changed its frozen remote URL",
+                        ))
+                    }
+                    awaken_resource_contract::RepositoryTransport::Direct => {
+                        Err(crate::host_error::HostError::internal(
+                            "Gateway-mediated Repository cannot fall back to direct credentials",
+                        ))
+                    }
+                }
+            }
+        }
+    }
+
+    /// Publish one exact, already-compiled Repository activation. The caller
+    /// supplies the activation and binding checks derived from the frozen intent;
+    /// this method never selects from the thread's current Resource set and never
+    /// loops over unrelated repositories. Credential realization remains the same
+    /// operation-scoped edge used by clone and replacement.
+    // Keep exact effect coordinates and the deferred Workspace fallback explicit.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn publish_repository_activation(
+        &self,
+        thread: &str,
+        fallback_workspace: &str,
+        repository: &RepositoryActivation,
+        binding_checks: &[ResourceBindingCheck],
+        realizer: &dyn pc::RepositoryRealizer,
+        expectation: &pc::RepositoryPublicationExpectation,
+        publication_fence: Option<&(
+            awaken_session_state_contract::SessionRepositoryPublicationCommand,
+            session_resource::SessionRealizationLease,
+        )>,
+    ) -> Result<pc::RepositoryPublicationReceipt, RepositoryPublicationActivationError> {
+        repository.plan.validate_mount_path().map_err(|error| {
+            RepositoryPublicationActivationError::Failed(crate::host_error::HostError::internal(
+                error.to_string(),
+            ))
+        })?;
+        expectation.validate().map_err(|error| {
+            RepositoryPublicationActivationError::Failed(crate::host_error::HostError::internal(
+                error.to_string(),
+            ))
+        })?;
+        if repository.plan.access == pc::MountAccess::ReadOnly {
+            return Err(RepositoryPublicationActivationError::Failed(
+                crate::host_error::HostError::internal("read-only repository cannot be published"),
+            ));
+        }
+        let credential = self
+            .repository_operation_credential(
+                thread,
+                fallback_workspace,
+                repository,
+                binding_checks,
+                publication_fence,
+            )
+            .await
+            .map_err(RepositoryPublicationActivationError::Failed)?;
+        let receipt = realizer
+            .publish_repository(&repository.plan, expectation, credential.as_ref())
+            .await
+            .map_err(|error| match error {
+                pc::RepositoryPublicationError::Rejected(rejection) => {
+                    RepositoryPublicationActivationError::Rejected(rejection)
+                }
+                pc::RepositoryPublicationError::Unavailable(error) => {
+                    RepositoryPublicationActivationError::Failed(
+                        crate::host_error::HostError::unavailable_classified(
+                            "repository_publication_transport_unavailable",
+                            error.to_string(),
+                        ),
+                    )
+                }
+            })?;
+        receipt
+            .verify(&repository.plan, expectation)
+            .map_err(|error| {
+                RepositoryPublicationActivationError::Failed(
+                    crate::host_error::HostError::internal(error.to_string()),
+                )
+            })?;
+        Ok(receipt)
+    }
+
     /// Build the exact neutral Session spec for the provider selected by the
     /// immutable Agent publication. Network projection is provider capability
     /// dependent, so create/adopt/restore must not build with the process-wide

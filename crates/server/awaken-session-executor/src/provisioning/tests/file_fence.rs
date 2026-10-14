@@ -177,16 +177,19 @@ async fn file_staging_passes_one_exact_prepared_fence_to_one_source_read() {
         if remote {
             dependencies = dependencies.with_authority(crate::UpstreamAuthority::default());
         }
-        let result =
-            crate::ManagedHost::new((dependencies).build().expect("validated Host dependencies"))
-                .stage_resolved_input(
-                    "workspace",
-                    &input,
-                    claim.as_ref(),
-                    realization.map(|(session_id, revision)| (session_id, revision, &lease)),
-                    None,
-                )
-                .await;
+        let result = (dependencies)
+            .build()
+            .expect("validated Host dependencies")
+            .realizer
+            .staging
+            .stage_resolved_input(
+                "workspace",
+                &input,
+                claim.as_ref(),
+                realization.map(|(session_id, revision)| (session_id, revision, &lease)),
+                None,
+            )
+            .await;
         match (result, succeeds) {
             (Ok(staged), true) => assert_eq!(staged.mounts.len(), 1, "{rule}"),
             (Err(error), false) if rule == "R5" => assert_eq!(
@@ -215,7 +218,9 @@ async fn terminal_repository_guard_rejects_file_before_any_source_read() {
     // C1 a terminal publication command carries a File instead of Repository;
     // R6 the existing intent guard rejects before FileContentSource, transport,
     // or physical effects. This is the excluded terminal arm of the File fence
-    // decision table above, not a second terminal publication path.
+    // decision table above, not a second terminal publication path. R10 uses
+    // the original contract intent validation, which owns the kind decision;
+    // deleting the unreachable second Stage guard preserves this first error.
     let input = session_resource::ResolvedInput {
         created_at_unix_ms: None,
         updated_at_unix_ms: None,
@@ -248,6 +253,9 @@ async fn terminal_repository_guard_rejects_file_before_any_source_read() {
         .expect("validated Host dependencies"),
     );
     let error = match runtime
+        .host
+        .realizer
+        .staging
         .stage_terminal_repository_publication_input(
             "workspace",
             &command,

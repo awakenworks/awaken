@@ -723,25 +723,6 @@ impl HostDependencies {
 }
 
 impl SessionExecutionDependencies {
-    /// One live Memory binding verification used at both staging and activation.
-    pub(crate) async fn verify_memory_binding(
-        &self,
-        workspace: &str,
-        id: &str,
-        version: awaken_resource_contract::ConfigVersion,
-    ) -> Result<(), awaken_session_types::RunError> {
-        self.resource_validator
-            .as_ref()
-            .ok_or_else(|| {
-                awaken_session_types::RunError::bad_request(
-                    "memory resources require a configured resource binding validator",
-                )
-            })?
-            .verify_memory_binding(workspace, id, version)
-            .await
-            .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))
-    }
-
     /// Wire the live resource-invariant port used at activation and Memory use.
     /// Configuration was already selected by the Session control plane; this port
     /// only validates trusted Workspace ownership, lifecycle state, and the frozen
