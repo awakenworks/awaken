@@ -839,9 +839,14 @@ impl SharedHost {
                     awaken_resource_contract::MemoryMaterializationReferenceEncoder::<
                         awaken_session_state_contract::SessionTerminalMemoryIntent,
                     >::encode(
-                        self.authority.memory_reference_encoder().ok_or_else(|| {
-                            HostError::internal("remote terminal Memory encoder is not configured")
-                        })?,
+                        self.authority
+                            .memory_reference_encoder()
+                            .as_deref()
+                            .ok_or_else(|| {
+                                HostError::internal(
+                                    "remote terminal Memory encoder is not configured",
+                                )
+                            })?,
                         workspace_id,
                         intent.memory_store_id(),
                         intent.config_version(),

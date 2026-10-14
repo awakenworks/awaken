@@ -27,21 +27,56 @@ fn repository_binding_failure_controls_host_retry_semantics() {
     // concurrent authority -> Conflict; authority outage or unknown read ->
     // Unavailable; corrupt authority response -> Internal. This is the final
     // Host boundary, so the typed cause must survive without message parsing.
+    // R1..R6 cover the complete verifier enum through the sole classifier;
+    // kind, literal code/message and Display are observable effects. The Run
+    // boundary's original table separately pins Conflict -> BadRequest.
+    // There is no lock, IO, state or poison precondition in this pure mapping.
     use crate::host::HostErrorKind as K;
     use awaken_resource_contract::RepositoryBindingVerifierError as E;
     let cases = [
-        (E::InvalidRequest { detail: "x".into() }, K::BadRequest),
-        (E::Denied { detail: "x".into() }, K::BadRequest),
-        (E::Conflict { detail: "x".into() }, K::Conflict),
+        (
+            E::InvalidRequest { detail: "x".into() },
+            K::BadRequest,
+            "invalid_request",
+            "invalid Repository binding request: x",
+        ),
+        (
+            E::Denied { detail: "x".into() },
+            K::BadRequest,
+            "invalid_request",
+            "Repository binding was denied: x",
+        ),
+        (
+            E::Conflict { detail: "x".into() },
+            K::Conflict,
+            "conflict",
+            "Repository binding authority changed concurrently: x",
+        ),
         (
             E::AuthorityUnavailable { detail: "x".into() },
             K::Unavailable,
+            "unavailable",
+            "Repository binding authority is unavailable: x",
         ),
-        (E::Indeterminate { detail: "x".into() }, K::Unavailable),
-        (E::CorruptAuthority { detail: "x".into() }, K::Internal),
+        (
+            E::Indeterminate { detail: "x".into() },
+            K::Unavailable,
+            "unavailable",
+            "Repository binding decision is indeterminate: x",
+        ),
+        (
+            E::CorruptAuthority { detail: "x".into() },
+            K::Internal,
+            "internal",
+            "Repository binding authority returned corrupt data: x",
+        ),
     ];
-    for (error, expected) in cases {
-        assert_eq!(repository_binding_host_error(error).kind, expected);
+    for (error, expected, code, message) in cases {
+        let actual = repository_binding_host_error(error);
+        assert_eq!(actual.kind, expected);
+        assert_eq!(actual.code, code);
+        assert_eq!(actual.message, message);
+        assert_eq!(actual.to_string(), message);
     }
 }
 
@@ -579,7 +614,9 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
     )
     .expect("resolved File+Memory manifest");
     let strict_projection = project_environment(&environment);
-    let effectful = crate::ManagedHost::new(host.clone())
+    let effectful = host
+        .realizer
+        .staging
         .stage_resolved_input(
             "workspace",
             &resolved.inputs()[1],
@@ -1071,7 +1108,9 @@ async fn realize_thread_repositories_fails_closed_on_an_unsafe_path() {
         },
     );
     let err = host
-        .realize_thread_repositories("t", env.repositories().as_ref())
+        .realizer
+        .staging
+        .realize_thread_repositories("t", host.local_workspace(), env.repositories().as_ref())
         .await;
     assert!(
         err.is_err(),
@@ -1086,7 +1125,13 @@ async fn realize_thread_repositories_fails_closed_on_an_unsafe_path() {
         },
     );
     let error = host
-        .realize_thread_repositories("clone-failure", &FailingRepositoryRealizer)
+        .realizer
+        .staging
+        .realize_thread_repositories(
+            "clone-failure",
+            host.local_workspace(),
+            &FailingRepositoryRealizer,
+        )
         .await
         .expect_err("R9b clone failure must abort Session start");
     assert!(error.message.contains("clone failed"), "R9b/E1: {error:?}");
@@ -1112,7 +1157,17 @@ async fn explicit_repository_publication_uses_one_frozen_activation_and_verifies
     };
     let realizer = RecordingPublicationRealizer::default();
     let receipt = host
-        .publish_repository_activation("thread", &repository, &[], &realizer, &expectation, None)
+        .realizer
+        .staging
+        .publish_repository_activation(
+            "thread",
+            host.local_workspace(),
+            &repository,
+            &[],
+            &realizer,
+            &expectation,
+            None,
+        )
         .await
         .expect("H1");
     receipt.verify(&repository.plan, &expectation).unwrap();
@@ -1126,7 +1181,17 @@ async fn explicit_repository_publication_uses_one_frozen_activation_and_verifies
         credential_pin: None,
     };
     let error = host
-        .publish_repository_activation("thread", &readonly, &[], &realizer, &expectation, None)
+        .realizer
+        .staging
+        .publish_repository_activation(
+            "thread",
+            host.local_workspace(),
+            &readonly,
+            &[],
+            &realizer,
+            &expectation,
+            None,
+        )
         .await
         .expect_err("H2");
     assert!(
@@ -1144,7 +1209,17 @@ async fn explicit_repository_publication_uses_one_frozen_activation_and_verifies
         commit: "short".into(),
         expected_prior_commit: None,
     };
-    host.publish_repository_activation("thread", &repository, &[], &realizer, &invalid, None)
+    host.realizer
+        .staging
+        .publish_repository_activation(
+            "thread",
+            host.local_workspace(),
+            &repository,
+            &[],
+            &realizer,
+            &invalid,
+            None,
+        )
         .await
         .expect_err("H3");
     assert_eq!(*realizer.calls.lock().unwrap(), 1, "H3 no effect");
@@ -1154,7 +1229,17 @@ async fn explicit_repository_publication_uses_one_frozen_activation_and_verifies
         ..Default::default()
     };
     let error = host
-        .publish_repository_activation("thread", &repository, &[], &mismatched, &expectation, None)
+        .realizer
+        .staging
+        .publish_repository_activation(
+            "thread",
+            host.local_workspace(),
+            &repository,
+            &[],
+            &mismatched,
+            &expectation,
+            None,
+        )
         .await
         .expect_err("H4");
     assert!(

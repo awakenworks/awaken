@@ -7,6 +7,7 @@
 //! their remote, claim-fenced transports instead. [`SessionAuthority`] is the
 //! one place the Host asks which of the two it is given.
 
+use crate::memory_binding::RuntimeMemoryReferenceEncoder;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::awaiting::ResumeTicket;
@@ -573,7 +574,7 @@ pub(crate) trait SessionAuthority: Send + Sync {
 
     /// The encoder that turns a fenced Memory operation into the upstream
     /// transport's opaque reference.
-    fn memory_reference_encoder(&self) -> Option<&dyn crate::host::RuntimeMemoryReferenceEncoder>;
+    fn memory_reference_encoder(&self) -> Option<Arc<dyn RuntimeMemoryReferenceEncoder>>;
 }
 
 /// The authority of a Host that owns committed truth: a Coordinator or a single
@@ -661,7 +662,7 @@ impl SessionAuthority for LocalAuthority {
         false
     }
 
-    fn memory_reference_encoder(&self) -> Option<&dyn crate::host::RuntimeMemoryReferenceEncoder> {
+    fn memory_reference_encoder(&self) -> Option<Arc<dyn RuntimeMemoryReferenceEncoder>> {
         None
     }
 }
@@ -676,7 +677,7 @@ pub struct UpstreamAuthority {
     stream_publisher: Option<Arc<dyn awaken_dispatch_contract::ClaimedStreamPublisher>>,
     terminal_cleanup_control:
         Option<Arc<dyn awaken_session_realization_contract::SessionTerminalCleanupControl>>,
-    memory_reference_encoder: Option<Arc<dyn crate::host::RuntimeMemoryReferenceEncoder>>,
+    memory_reference_encoder: Option<Arc<dyn RuntimeMemoryReferenceEncoder>>,
 }
 
 impl UpstreamAuthority {
@@ -839,8 +840,8 @@ impl SessionAuthority for UpstreamAuthority {
         true
     }
 
-    fn memory_reference_encoder(&self) -> Option<&dyn crate::host::RuntimeMemoryReferenceEncoder> {
-        self.memory_reference_encoder.as_deref()
+    fn memory_reference_encoder(&self) -> Option<Arc<dyn RuntimeMemoryReferenceEncoder>> {
+        self.memory_reference_encoder.clone()
     }
 }
 

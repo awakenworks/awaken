@@ -29,7 +29,7 @@ impl ManagedHost {
         command: SessionRepositoryPublicationCommand,
         lease: &SessionRealizationLease,
     ) -> Result<SessionRepositoryPublicationEffect, RunError> {
-        let realizations = self.host.installed_sessions.realizations();
+        let staging = &self.host.realizer.staging;
         let cleanup = &self.host.realizer.cleanup;
         let workspace = self.host.thread_workspace(command.session_id.as_str());
 
@@ -46,30 +46,22 @@ impl ManagedHost {
             .acquire_realization_with(command.session_id.as_str(), |_| ())
             .await
             .0;
-        let _lifecycle = realizations
+        let _lifecycle = staging
+            .sessions
             .lock_lifecycle(command.session_id.as_str())
             .await;
         let mut current_lease = cleanup
             .authorize_lease(&command.session_id, lease)
             .map_err(to_run_error)?;
-        let staged = self
+        let staged = staging
             .stage_terminal_repository_publication_input(&workspace, &command, &current_lease)
             .await?;
-        if staged.repositories.len() != 1
-            || staged.binding_checks.len() != 1
-            || !matches!(
-                staged.binding_checks.first(),
-                Some(crate::staged_resources::ResourceBindingCheck::Repository { .. })
-            )
-        {
-            return Err(RunError::internal(
-                "terminal Repository publication did not compile one exact activation",
-            ));
-        }
+
         current_lease = cleanup
             .authorize_lease(&command.session_id, lease)
             .map_err(to_run_error)?;
-        let (assignment, resolved_resources) = realizations
+        let (assignment, resolved_resources) = staging
+            .sessions
             .read_realization(command.session_id.as_str(), |r| {
                 (
                     r.terminal_cleanup_assignment.clone(),
@@ -142,10 +134,10 @@ impl ManagedHost {
                 )
             })?;
         let fence = (command.clone(), current_lease);
-        let effect = self
-            .host
+        let effect = staging
             .publish_repository_activation(
                 command.session_id.as_str(),
+                self.host.local_workspace(),
                 staged.repositories.first().expect("checked"),
                 &staged.binding_checks,
                 environment.repositories().as_ref(),

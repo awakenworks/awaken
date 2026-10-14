@@ -576,18 +576,6 @@ impl crate::host::SharedHost {
         Ok(scheduled)
     }
 
-    pub(crate) fn platform_memory_handle(
-        &self,
-        store_id: String,
-        writable: bool,
-    ) -> Arc<PlatformMemoryHandle> {
-        Arc::new(PlatformMemoryHandle::new(
-            self.resources.memory_stores.fs_handle(),
-            store_id,
-            writable,
-        ))
-    }
-
     /// Install one already-resolved MemoryStore binding for a thread. This is an
     /// ACL/startup seam for embedders: ownership and authorization must have
     /// completed before calling it; the Runtime Host receives only the opaque store
@@ -601,7 +589,11 @@ impl crate::host::SharedHost {
         resource_validator: Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>,
     ) {
         let writable = access == awaken_resource_contract::ResourceAccess::ReadWrite;
-        let handle = self.platform_memory_handle(config.memory_store_id.to_string(), writable);
+        let handle = Arc::new(PlatformMemoryHandle::new(
+            self.resources.memory_stores.fs_handle(),
+            config.memory_store_id.to_string(),
+            writable,
+        ));
         let binding = MemoryBinding::new(
             thread,
             workspace_id,

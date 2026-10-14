@@ -826,7 +826,11 @@ pub(crate) fn bind_test_memory(host: &SharedHost, thread: &str, store_id: &str, 
         version: awaken_resource_contract::ConfigVersion::INITIAL,
         retention_policy: Default::default(),
     };
-    let handle = host.platform_memory_handle(store_id.to_string(), writable);
+    let handle = Arc::new(crate::memory_binding::PlatformMemoryHandle::new(
+        host.resources.memory_stores.fs_handle(),
+        store_id.to_string(),
+        writable,
+    ));
     host.realizer.staging.register_thread_memory(
         thread,
         Some(Arc::new(crate::memory_binding::MemoryBinding::new(
@@ -1003,7 +1007,21 @@ impl crate::RepositoryBindingVerifier<crate::ResourceOperationFence> for FixedRe
     }
 }
 
-struct SequencedRepositoryTransport(AtomicUsize);
+type RepositoryVerificationCall = (
+    String,
+    String,
+    awaken_resource_contract::ConfigVersion,
+    Option<crate::ResourceOperationFence>,
+);
+
+#[derive(Default)]
+struct SequencedRepositoryTransport {
+    calls: AtomicUsize,
+    seen: Mutex<Vec<RepositoryVerificationCall>>,
+    next_error: Mutex<Option<awaken_resource_contract::RepositoryBindingVerifierError>>,
+    next_transport: Mutex<Option<awaken_resource_contract::RepositoryTransport>>,
+    next_gate: Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
+}
 
 #[async_trait::async_trait]
 impl crate::RepositoryBindingVerifier<crate::ResourceOperationFence>
@@ -1011,15 +1029,32 @@ impl crate::RepositoryBindingVerifier<crate::ResourceOperationFence>
 {
     async fn verify(
         &self,
-        _workspace_id: &str,
-        _repository_id: &str,
-        _config_version: awaken_resource_contract::ConfigVersion,
-        _authority: Option<&crate::ResourceOperationFence>,
+        workspace_id: &str,
+        repository_id: &str,
+        config_version: awaken_resource_contract::ConfigVersion,
+        authority: Option<&crate::ResourceOperationFence>,
     ) -> Result<
         awaken_resource_contract::RepositoryTransport,
         awaken_resource_contract::RepositoryBindingVerifierError,
     > {
-        let sequence = self.0.fetch_add(1, Ordering::SeqCst) + 1;
+        let sequence = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        self.seen.lock().unwrap().push((
+            workspace_id.to_owned(),
+            repository_id.to_owned(),
+            config_version,
+            authority.cloned(),
+        ));
+        let gate = self.next_gate.lock().unwrap().take();
+        if let Some((entered, release)) = gate {
+            entered.notify_one();
+            release.notified().await;
+        }
+        if let Some(error) = self.next_error.lock().unwrap().take() {
+            return Err(error);
+        }
+        if let Some(transport) = self.next_transport.lock().unwrap().take() {
+            return Ok(transport);
+        }
         Ok(
             awaken_resource_contract::RepositoryTransport::GatewayMediated {
                 remote_url: "https://gateway.internal/git/repo-platform".into(),

@@ -383,3 +383,250 @@ fn frozen_inputs_keep_their_agent_publication() {
     let refused = frozen.validate_publication(Some(&other)).unwrap_err();
     assert_eq!(refused.kind, crate::HostErrorKind::Internal, "P5");
 }
+
+#[tokio::test]
+async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_writes() {
+    // Cause/effect graph S4: C1 the actual Slot mutex is poisoned by a caught
+    // callback panic; C2 target is present/absent; C3 entry is Source.visit
+    // (create=false/true), named publication, or legacy read/modify/update.
+    // E1 Source returns the original InstalledSessionsPoisoned; E2 named action
+    // returns typed Internal/code internal without panic; E3 legacy retains
+    // its exact panic prefix and actual std PoisonError Debug; E4 callback0;
+    // E5 creation0 and all Frozen/Resource/Memory/Skill/key/Run fields unchanged;
+    // E6 poison persists. The healthy S1-S3 rows live in the original view case.
+    // | S4a | C1 + either C2 + visit/both create modes | E1+E4+E5+E6 |
+    // | S4b | C1 + either C2 + named action           | E2+E5+E6 |
+    // | S4c | C1 + either C2 + read/modify            | E3+E4+E5+E6 |
+    // | S4d | C1 + either C2 + update/create          | E3+E4+E5+E6 |
+    // This exercises the canonical Slot mutex, not MCP's active-marker lock.
+    // Only this test inspects a poisoned guard with into_inner; it never clears
+    // poison. Production neither recovers nor reads/writes poisoned state.
+    use crate::session_realizations::SessionRealizationSource;
+    use crate::staged_resources::{CompiledEffectiveInputs, ResourceBindingCheck, StagedResources};
+    use awaken_provisioning_contract as pc;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    let host = crate::HostDependencies::ephemeral(
+        Arc::new(crate::no_model::NoModelConfiguredExecutor),
+        "stub",
+    )
+    .await
+    .build()
+    .expect("validated Host dependencies");
+    let context = host
+        .ctx_for("present", None)
+        .await
+        .expect("actual Run context");
+    crate::host::tests::bind_test_memory(&host, "present", "poison-memory", true);
+    let slots = &host.installed_sessions;
+    let memory = slots
+        .read("present", |slot| slot.realization.memory.clone())
+        .flatten()
+        .unwrap();
+    let input = crate::session_resource::ResolvedInput {
+        created_at_unix_ms: None,
+        updated_at_unix_ms: None,
+        binding_id: "poison-file".into(),
+        source: crate::session_resource::ResolvedInputSource::File {
+            file_id: "file-original".into(),
+        },
+        mount_path: "/original.txt".into(),
+        access: awaken_resource_contract::ResourceAccess::ReadOnly,
+        instructions: Some("original instructions".into()),
+    };
+    let skill = awaken_resource_contract::SkillVersion {
+        id: "original-version".into(),
+        skill_id: "original-skill".into(),
+        version: 3,
+        name: "original Skill".into(),
+        description: "original description".into(),
+        directory: "/skills/original".into(),
+        bundle_sha256: "original-hash".into(),
+        files: Vec::new(),
+        created_unix_nanos: 1,
+    };
+    let claim = awaken_dispatch_contract::RunClaim {
+        run_id: awaken_agent_contract::agent::run::Id("original-run".into()),
+        owner: "original-worker".into(),
+        epoch: 3,
+    };
+    let resources = StagedResources {
+        mounts: vec![pc::MountRequirement {
+            mount_id: "original-mount".into(),
+            source: pc::MountSource::InlineBytes {
+                contents: b"original".to_vec(),
+                content_hash: None,
+            },
+            mount_path: "/original.txt".into(),
+            access: pc::MountAccess::ReadOnly,
+            lifetime: pc::MountLifetime::PerRun,
+            required: true,
+        }],
+        prompts: vec!["original prompt".into()],
+        resource_prompts: vec![
+            crate::managed_input_layout::ResourcePromptProjection::try_from_input(&input).unwrap(),
+        ],
+        binding_checks: vec![ResourceBindingCheck::MemoryStore {
+            memory_store_id: "poison-memory".into(),
+            config_version: awaken_resource_contract::ConfigVersion(3),
+        }],
+        repositories: vec![crate::staged_resources::RepositoryActivation {
+            plan: pc::RepositoryRealizationPlan {
+                repository_id: "original-repository".into(),
+                mount_path: "/workspace/repository".into(),
+                source_remote_url: "https://example.invalid/original.git".into(),
+                transport_url: "https://example.invalid/original.git".into(),
+                initial_branch: Some("original-branch".into()),
+                initial_commit: Some("original-commit".into()),
+                access: pc::MountAccess::ReadWrite,
+            },
+            credential_pin: None,
+        }],
+    };
+    slots.update("present", |slot| {
+        slot.replace_frozen_with(|next| next.workspace = Some("original-workspace".into()));
+        slot.realization.resources = resources.clone();
+        slot.realization
+            .memory_bindings
+            .insert("original-binding".into(), memory.clone());
+        slot.realization.skills = Some(vec![skill.clone()]);
+        slot.realization.staged_resource_effect_key = Some("original-key".into());
+        slot.run.dispatch_claim = Some(claim.clone());
+        slot.run.session_dispatch = true;
+    });
+    let frozen = slots.read("present", |slot| slot.inputs.clone()).unwrap();
+    let phase_locks = slots
+        .read("present", |slot| {
+            (
+                slot.realization.realization.clone(),
+                slot.realization.lifecycle.clone(),
+                slot.realization.resource_projection.clone(),
+            )
+        })
+        .unwrap();
+    let mut poisoning_callbacks = 0;
+    assert!(
+        catch_unwind(AssertUnwindSafe(|| slots.modify("present", |_| {
+            poisoning_callbacks += 1;
+            panic!("poison the actual Slot guard");
+        })))
+        .is_err()
+    );
+    assert_eq!(
+        poisoning_callbacks, 1,
+        "R12 callback panic once under actual guard"
+    );
+    assert!(slots.slots.is_poisoned());
+    let mut callbacks = 0;
+    let expected_panic = format!(
+        "session runtime slots mutex poisoned: {:?}",
+        PoisonError::new(())
+    );
+    for target in ["present", "absent"] {
+        for create in [false, true] {
+            let refused = slots.visit(target, create, &mut |_| callbacks += 1);
+            assert!(
+                matches!(refused, Err(InstalledSessionsPoisoned)),
+                "S4a {target}/{create}"
+            );
+        }
+        let publication = catch_unwind(AssertUnwindSafe(|| {
+            slots.publish_resource_requirements(
+                target,
+                "forbidden-workspace",
+                None,
+                CompiledEffectiveInputs {
+                    staged: StagedResources {
+                        prompts: vec!["forbidden replacement".into()],
+                        ..Default::default()
+                    },
+                    memory_bindings: Default::default(),
+                },
+                Vec::new(),
+                "forbidden-key".into(),
+            )
+        }))
+        .expect("S4b named Source action returns rather than panics")
+        .unwrap_err();
+        assert_eq!(
+            publication.kind,
+            awaken_session_types::RunErrorKind::Internal,
+            "S4b {target}"
+        );
+        assert_eq!(publication.code, "internal", "S4b {target}");
+        let panics = [
+            catch_unwind(AssertUnwindSafe(|| slots.read(target, |_| callbacks += 1))).unwrap_err(),
+            catch_unwind(AssertUnwindSafe(|| {
+                slots.modify(target, |_| callbacks += 1)
+            }))
+            .unwrap_err(),
+            catch_unwind(AssertUnwindSafe(|| {
+                slots.update(target, |_| callbacks += 1)
+            }))
+            .unwrap_err(),
+        ];
+        for panic in panics {
+            let message = panic
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| panic.downcast_ref::<&str>().copied())
+                .expect("original panic string");
+            assert_eq!(
+                message, expected_panic,
+                "S4c/S4d {target} actual std Debug retained"
+            );
+        }
+    }
+    assert_eq!(callbacks, 0, "S4a/S4c/S4d no callback entered");
+    assert!(slots.slots.is_poisoned(), "S4/E6 poison remains");
+    let poisoned_guard = match slots.slots.lock() {
+        Err(error) => error.into_inner(),
+        Ok(_) => panic!("S4/E6 no recovery or clear_poison"),
+    };
+    assert_eq!(poisoned_guard.len(), 1, "S4/E5 no target created");
+    assert!(
+        !poisoned_guard.contains_key("absent"),
+        "S4 absent remains absent"
+    );
+    let slot = &poisoned_guard["present"];
+    assert!(Arc::ptr_eq(&slot.inputs, &frozen), "S4/E5 whole Frozen Arc");
+    assert_eq!(slot.inputs.workspace.as_deref(), Some("original-workspace"));
+    assert_eq!(slot.realization.resources.mounts, resources.mounts);
+    assert_eq!(slot.realization.resources.prompts, resources.prompts);
+    assert_eq!(
+        format!("{:?}", slot.realization.resources.resource_prompts),
+        format!("{:?}", resources.resource_prompts)
+    );
+    assert_eq!(slot.realization.resources.binding_checks.len(), 1);
+    assert!(
+        matches!(&slot.realization.resources.binding_checks[0], ResourceBindingCheck::MemoryStore {
+        memory_store_id, config_version,
+    } if memory_store_id == "poison-memory" && config_version.0 == 3)
+    );
+    assert!(slot.realization.resources.repositories == resources.repositories);
+    assert_eq!(slot.realization.memory_bindings.len(), 1);
+    assert!(Arc::ptr_eq(
+        &slot.realization.memory_bindings["original-binding"],
+        &memory
+    ));
+    assert!(Arc::ptr_eq(
+        slot.realization.memory.as_ref().unwrap(),
+        &memory
+    ));
+    assert_eq!(slot.realization.skills, Some(vec![skill]));
+    assert_eq!(
+        slot.realization.staged_resource_effect_key.as_deref(),
+        Some("original-key")
+    );
+    assert!(
+        Arc::ptr_eq(slot.run.context.as_ref().unwrap(), &context),
+        "S4/E5 Run context"
+    );
+    assert_eq!(slot.run.dispatch_claim, Some(claim));
+    assert!(slot.run.session_dispatch);
+    assert!(Arc::ptr_eq(&slot.realization.realization, &phase_locks.0));
+    assert!(Arc::ptr_eq(&slot.realization.lifecycle, &phase_locks.1));
+    assert!(Arc::ptr_eq(
+        &slot.realization.resource_projection,
+        &phase_locks.2
+    ));
+}

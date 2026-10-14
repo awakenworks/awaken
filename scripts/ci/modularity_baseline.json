@@ -17,12 +17,12 @@
     },
     "awaken-session-executor::ManagedHost": {
       "files": 6,
-      "methods": 35,
+      "methods": 26,
       "reason": "slice H (plan 10.4): each Session role moves to the component that owns its state; ManagedHost only composes"
     },
     "awaken-session-executor::SharedHost": {
       "files": 40,
-      "methods": 262,
+      "methods": 258,
       "reason": "slice H: each of the eleven session-runtime roles gets one owning component (plan 10.3 item 11)"
     },
     "awaken-runtime::Runtime": {
@@ -327,11 +327,10 @@
     "awaken-session-executor::host/session/environment_lifecycle/terminal_preparation.rs::prepare_terminal_environment_under_lifecycle": 233,
     "awaken-session-executor::host/worker_resolver/claimed_dispatch.rs::worker_for_claimed": 238,
     "awaken-session-executor::host/worker_resolver/session_realization/projection_synchronizer.rs::synchronize_session_projection": 228,
-    "awaken-session-executor::managed_resource_projection.rs::apply_session_inputs_body": 463,
-    "awaken-session-executor::managed_resource_projection.rs::stage_resolved_input_with_resource_authority": 309,
-    "awaken-session-executor::provisioning.rs::repository_operation_credential": 203,
+    "awaken-session-executor::managed_resource_projection.rs::apply_session_inputs_body": 438,
+    "awaken-session-executor::managed_resource_projection.rs::stage_resolved_input_with_resource_authority": 297,
+    "awaken-session-executor::provisioning.rs::repository_operation_credential": 197,
     "awaken-session-executor::skills.rs::build_skill_registry": 154,
-    "awaken-session-executor::terminal_repository_publication.rs::publish_terminal_repository": 151,
     "awaken-runtime::engine/delegation.rs::resume_delegation": 180,
     "awaken-runtime::engine/dispatch.rs::recover_tool_batch": 324,
     "awaken-runtime::engine/dispatch.rs::run_concurrent_tool_calls": 326,

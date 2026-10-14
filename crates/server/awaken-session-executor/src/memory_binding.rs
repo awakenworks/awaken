@@ -126,3 +126,29 @@ impl MemoryStoreHandle for MemoryBinding {
         self.platform.entries().await
     }
 }
+
+/// One injected transport adapter encodes both ordinary Run-scoped and
+/// terminal Session-scoped Memory operations. The generic Resource ports stay
+/// authoritative; this private intersection trait only permits one trait
+/// object to carry both implementations through Runtime composition.
+pub(crate) trait RuntimeMemoryReferenceEncoder:
+    awaken_resource_contract::MemoryMaterializationReferenceEncoder<
+        awaken_dispatch_contract::RunClaim,
+    > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
+        awaken_session_realization_contract::SessionResourceMaterializationIntent,
+    > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
+        awaken_session_state_contract::SessionTerminalMemoryIntent,
+    >
+{
+}
+
+impl<T> RuntimeMemoryReferenceEncoder for T where
+    T: awaken_resource_contract::MemoryMaterializationReferenceEncoder<
+            awaken_dispatch_contract::RunClaim,
+        > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
+            awaken_session_realization_contract::SessionResourceMaterializationIntent,
+        > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
+            awaken_session_state_contract::SessionTerminalMemoryIntent,
+        >
+{
+}

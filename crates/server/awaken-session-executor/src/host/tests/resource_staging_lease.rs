@@ -664,6 +664,10 @@ impl StagingFixture {
         task
     }
 
+    // R3/R5: blocked, failed, cancelled or obsolete compilation leaves every
+    // correlated Frozen/Resource/Memory/Skill/key field unpublished. The
+    // existing S1-S13 cases exercise the actual IO and lease causes; this
+    // assertion observes the one installed Slot, never a parallel cache.
     fn assert_unpublished(&self) {
         assert!(
             self.host
@@ -674,6 +678,16 @@ impl StagingFixture {
                         && slot.run.context.is_none()
                         && !slot.run.session_dispatch
                         && slot.realization.resource_transition.is_none()
+                        && slot.inputs.workspace.is_none()
+                        && slot.realization.resources.mounts.is_empty()
+                        && slot.realization.resources.prompts.is_empty()
+                        && slot.realization.resources.resource_prompts.is_empty()
+                        && slot.realization.resources.binding_checks.is_empty()
+                        && slot.realization.resources.repositories.is_empty()
+                        && slot.realization.memory_bindings.is_empty()
+                        && slot.realization.memory.is_none()
+                        && slot.realization.skills.is_none()
+                        && slot.realization.staged_resource_effect_key.is_none()
                 })
                 .unwrap_or(true),
             "preparation does not publish an executable projection"

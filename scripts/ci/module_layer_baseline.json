@@ -29,6 +29,6 @@
     "host::session::environment_lifecycle": 16,
     "host::session::environment_realization": 15,
     "host::terminal_reconciliation": 1,
-    "provisioning": 5
+    "provisioning": 2
   }
 }

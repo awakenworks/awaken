@@ -79,3 +79,12 @@ pub(crate) enum EnvironmentResourceReconciliation {
     Fresh,
     Adopted,
 }
+
+/// One compiled projection from the frozen Session manifest. Standard mounts
+/// and optional automatic-memory candidates travel together so installation
+/// cannot publish one generation with bindings from another.
+pub(crate) struct CompiledEffectiveInputs {
+    pub(crate) staged: crate::staged_resources::StagedResources,
+    pub(crate) memory_bindings:
+        std::collections::HashMap<String, std::sync::Arc<crate::memory_binding::MemoryBinding>>,
+}
