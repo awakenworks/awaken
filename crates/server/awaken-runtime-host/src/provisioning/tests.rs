@@ -1108,7 +1108,9 @@ async fn realize_thread_repositories_fails_closed_on_an_unsafe_path() {
         },
     );
     let err = host
-        .realize_thread_repositories("t", env.repositories().as_ref())
+        .realizer
+        .staging
+        .realize_thread_repositories("t", host.local_workspace(), env.repositories().as_ref())
         .await;
     assert!(
         err.is_err(),
@@ -1123,7 +1125,13 @@ async fn realize_thread_repositories_fails_closed_on_an_unsafe_path() {
         },
     );
     let error = host
-        .realize_thread_repositories("clone-failure", &FailingRepositoryRealizer)
+        .realizer
+        .staging
+        .realize_thread_repositories(
+            "clone-failure",
+            host.local_workspace(),
+            &FailingRepositoryRealizer,
+        )
         .await
         .expect_err("R9b clone failure must abort Session start");
     assert!(error.message.contains("clone failed"), "R9b/E1: {error:?}");
@@ -1149,7 +1157,17 @@ async fn explicit_repository_publication_uses_one_frozen_activation_and_verifies
     };
     let realizer = RecordingPublicationRealizer::default();
     let receipt = host
-        .publish_repository_activation("thread", &repository, &[], &realizer, &expectation, None)
+        .realizer
+        .staging
+        .publish_repository_activation(
+            "thread",
+            host.local_workspace(),
+            &repository,
+            &[],
+            &realizer,
+            &expectation,
+            None,
+        )
         .await
         .expect("H1");
     receipt.verify(&repository.plan, &expectation).unwrap();
@@ -1163,7 +1181,17 @@ async fn explicit_repository_publication_uses_one_frozen_activation_and_verifies
         credential_pin: None,
     };
     let error = host
-        .publish_repository_activation("thread", &readonly, &[], &realizer, &expectation, None)
+        .realizer
+        .staging
+        .publish_repository_activation(
+            "thread",
+            host.local_workspace(),
+            &readonly,
+            &[],
+            &realizer,
+            &expectation,
+            None,
+        )
         .await
         .expect_err("H2");
     assert!(
@@ -1181,7 +1209,17 @@ async fn explicit_repository_publication_uses_one_frozen_activation_and_verifies
         commit: "short".into(),
         expected_prior_commit: None,
     };
-    host.publish_repository_activation("thread", &repository, &[], &realizer, &invalid, None)
+    host.realizer
+        .staging
+        .publish_repository_activation(
+            "thread",
+            host.local_workspace(),
+            &repository,
+            &[],
+            &realizer,
+            &invalid,
+            None,
+        )
         .await
         .expect_err("H3");
     assert_eq!(*realizer.calls.lock().unwrap(), 1, "H3 no effect");
@@ -1191,7 +1229,17 @@ async fn explicit_repository_publication_uses_one_frozen_activation_and_verifies
         ..Default::default()
     };
     let error = host
-        .publish_repository_activation("thread", &repository, &[], &mismatched, &expectation, None)
+        .realizer
+        .staging
+        .publish_repository_activation(
+            "thread",
+            host.local_workspace(),
+            &repository,
+            &[],
+            &mismatched,
+            &expectation,
+            None,
+        )
         .await
         .expect_err("H4");
     assert!(

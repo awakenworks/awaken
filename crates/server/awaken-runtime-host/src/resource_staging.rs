@@ -27,6 +27,9 @@ pub(crate) struct ResourceStaging {
         Arc<dyn awaken_resource_contract::RepositoryBindingVerifier<ResourceOperationFence>>,
     >,
     pub(crate) fetches_resources_upstream: bool,
+    /// The same exact materializer selected for the Host, used only at a Git effect.
+    pub(crate) credential_materializer:
+        Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
     pub(crate) memory_reference_encoder:
         Option<Arc<dyn crate::memory_binding::RuntimeMemoryReferenceEncoder>>,
 }

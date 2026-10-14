@@ -134,10 +134,10 @@ impl ManagedHost {
                 )
             })?;
         let fence = (command.clone(), current_lease);
-        let effect = self
-            .host
+        let effect = staging
             .publish_repository_activation(
                 command.session_id.as_str(),
+                self.host.local_workspace(),
                 staged.repositories.first().expect("checked"),
                 &staged.binding_checks,
                 environment.repositories().as_ref(),

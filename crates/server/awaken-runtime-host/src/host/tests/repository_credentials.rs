@@ -1,6 +1,7 @@
 //! Repository credential realization and worker resource runtime survival.
 
 use super::*;
+use futures_util::FutureExt;
 
 fn pinned_vault(
     credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
@@ -65,7 +66,16 @@ impl crate::RepositoryBindingVerifier<crate::ResourceOperationFence>
 }
 
 #[derive(Default)]
-struct RecordingRepositoryRealizer(Mutex<Vec<String>>);
+struct RecordingRepositoryRealizer(
+    Mutex<Vec<String>>,
+    Mutex<
+        Vec<(
+            awaken_provisioning_contract::RepositoryRealizationPlan,
+            awaken_provisioning_contract::RepositoryPublicationExpectation,
+            Option<String>,
+        )>,
+    >,
+);
 
 #[async_trait::async_trait]
 impl awaken_provisioning_contract::RepositoryRealizer for RecordingRepositoryRealizer {
@@ -88,11 +98,16 @@ impl awaken_provisioning_contract::RepositoryRealizer for RecordingRepositoryRea
         &self,
         plan: &awaken_provisioning_contract::RepositoryRealizationPlan,
         expectation: &awaken_provisioning_contract::RepositoryPublicationExpectation,
-        _credential: Option<&awaken_provisioning_contract::RepositoryHttpBasicCredential>,
+        credential: Option<&awaken_provisioning_contract::RepositoryHttpBasicCredential>,
     ) -> Result<
         awaken_provisioning_contract::RepositoryPublicationReceipt,
         awaken_provisioning_contract::RepositoryPublicationError,
     > {
+        self.1.lock().unwrap().push((
+            plan.clone(),
+            expectation.clone(),
+            credential.map(|value| value.expose_password().to_owned()),
+        ));
         Ok(awaken_provisioning_contract::RepositoryPublicationReceipt::new(plan, expectation))
     }
 }
@@ -107,6 +122,11 @@ impl awaken_provisioning_contract::RepositoryRealizer for RecordingRepositoryRea
 /// |---|---|---|---|---|---|
 /// | D1 | T | T | T | secret-free activation | exact transient material |
 /// | D2 | T | T | F | same secret-free activation | reject, zero realizer calls |
+/// P2/C12 extends these original rows with true Slot poison after staging:
+/// D3 configured Workload reads the current Workspace -> original panic, no effect;
+/// D4 absent materializer -> original Internal before any Workspace read;
+/// D5 anonymous clone -> no Slot read and one anonymous effect despite poison.
+/// No fake Session view or provider receipt is substituted for that mutex.
 #[tokio::test]
 async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
     for (rule, install_credentials) in [("D1", true), ("D2", false)] {
@@ -170,7 +190,11 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
             "{rule}: staging retains only the exact pin"
         );
         let realizer = RecordingRepositoryRealizer::default();
-        let effect = host.realize_thread_repositories(&thread, &realizer).await;
+        let effect = host
+            .realizer
+            .staging
+            .realize_thread_repositories(&thread, host.local_workspace(), &realizer)
+            .await;
         if install_credentials {
             effect.unwrap_or_else(|error| panic!("{rule}: {error}"));
             assert_eq!(
@@ -191,6 +215,77 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
                 "{rule}: no Git realizer call after materialization failure"
             );
         }
+        let staged = host.realizer.staging.thread_resources_snapshot(&thread);
+        let prior_calls = realizer.0.lock().unwrap().len();
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                host.installed_sessions
+                    .modify(&thread, |_| panic!("P2/C12 actual Slot poison"));
+            }))
+            .is_err()
+        );
+        let effect =
+            std::panic::AssertUnwindSafe(host.realizer.staging.realize_repository_activation(
+                &thread,
+                host.local_workspace(),
+                &staged.repositories[0],
+                &staged.binding_checks,
+                &realizer,
+                awaken_provisioning_contract::RepositoryRealizationIntent::Initialize,
+            ))
+            .catch_unwind()
+            .await;
+        if install_credentials {
+            let panic =
+                effect.expect_err("D3 configured materializer still reads the poisoned Slot");
+            let message = panic
+                .downcast_ref::<String>()
+                .expect("D3 original expect panic");
+            assert!(
+                message.starts_with("installed sessions mutex poisoned: InstalledSessionsPoisoned"),
+                "D3: {message}"
+            );
+        } else {
+            let error = effect
+                .expect("D4 missing dependency precedes poison")
+                .expect_err("D4 no materializer cannot reach Git");
+            assert_eq!(error.kind, crate::HostErrorKind::Internal, "D4");
+            assert_eq!(error.code, "internal", "D4");
+            assert_eq!(
+                error.message,
+                "repository credential requires a configured credential materializer",
+                "D4"
+            );
+        }
+        assert_eq!(
+            realizer.0.lock().unwrap().len(),
+            prior_calls,
+            "D3/D4 no effect"
+        );
+        let mut anonymous = staged.repositories[0].clone();
+        anonymous.credential_pin = None;
+        host.realizer
+            .staging
+            .realize_repository_activation(
+                &thread,
+                host.local_workspace(),
+                &anonymous,
+                &[],
+                &realizer,
+                awaken_provisioning_contract::RepositoryRealizationIntent::Initialize,
+            )
+            .await
+            .expect("D5 anonymous clone never reads poisoned Slot");
+        assert_eq!(
+            realizer.0.lock().unwrap().len(),
+            prior_calls + 1,
+            "D5 one effect"
+        );
+        assert_eq!(
+            realizer.0.lock().unwrap().last().unwrap(),
+            "",
+            "D5 no material"
+        );
     }
 }
 
@@ -204,6 +299,17 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
 /// | P4 | exact, delayed use | Gateway mediated again | absent | refresh capability at Git operation edge |
 /// | P5 | exact, tampered source or target before use | Gateway mediated | absent | reject before verifier/I/O |
 /// | P6 | exact, delayed use | changes to Direct | any | reject; zero direct fallback |
+/// P2/C13 uses this same verifier/realizer fixture for protected upstream
+/// publication. Causes T1 exact command+lease/Workspace/repo/config, T2 fresh
+/// mediated capability, T3 verifier Indeterminate/Direct, T4 pin malformed,
+/// T5 actual Slot poisoned while the original verifier is gated. Effects:
+/// T1+T2 -> one publish with refreshed capability + verified receipt;
+/// T3/T4 -> original typed refusal + zero new publish; T5 -> original second
+/// delayed Workspace read panics after joined verifier, zero new publish.
+/// C12 also preserves upstream missing-verifier-before-poison, while ordinary
+/// Platform clone reads poison before its missing-verifier check. These are
+/// operation-adapter proofs; the original physical terminal tests own lifecycle
+/// authorization/adoption and actual remote Git, without a fake receipt here.
 #[tokio::test]
 async fn platform_repository_credentials_are_gateway_mediated_without_fallback() {
     fn platform_resources() -> crate::session_resource::ResolvedSessionResources {
@@ -242,7 +348,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         owner: "worker-platform".into(),
         epoch: 7,
     };
-    let sequenced = Arc::new(SequencedRepositoryTransport(AtomicUsize::new(0)));
+    let sequenced = Arc::new(SequencedRepositoryTransport::default());
     let host = ((crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
         .with_session_execution(
             crate::SessionExecutionDependencies::default()
@@ -251,7 +357,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
     .build()
     .expect("validated Host dependencies");
 
-    let _runtime = crate::ManagedHost::new(host.clone());
+    let runtime = crate::ManagedHost::new(host.clone());
     let manifest = crate::session_resource::SessionResourceManifest::new(
         host.local_workspace(),
         platform_resources(),
@@ -298,8 +404,11 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
     );
     let invalid_realizer = RecordingRepositoryRealizer::default();
     let invalid = host
+        .realizer
+        .staging
         .realize_repository_activation(
             "platform-mediated",
+            host.local_workspace(),
             &wrong_target,
             &resources.binding_checks,
             &invalid_realizer,
@@ -308,7 +417,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         .await
         .expect_err("P5 target mismatch rejects before Gateway refresh");
     assert!(invalid.message.contains("another HTTPS origin"), "P5");
-    assert_eq!(sequenced.0.load(Ordering::SeqCst), 1, "P5");
+    assert_eq!(sequenced.calls.load(Ordering::SeqCst), 1, "P5");
     assert!(invalid_realizer.0.lock().unwrap().is_empty(), "P5");
 
     let mut wrong_source = activation.clone();
@@ -320,8 +429,11 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         .credential
         .id = "another-source".into();
     let invalid_source = host
+        .realizer
+        .staging
         .realize_repository_activation(
             "platform-mediated",
+            host.local_workspace(),
             &wrong_source,
             &resources.binding_checks,
             &invalid_realizer,
@@ -333,18 +445,73 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         invalid_source.message.contains("selects another source"),
         "P5"
     );
-    assert_eq!(sequenced.0.load(Ordering::SeqCst), 1, "P5");
+    assert_eq!(sequenced.calls.load(Ordering::SeqCst), 1, "P5");
     assert!(invalid_realizer.0.lock().unwrap().is_empty(), "P5");
 
     let realizer = RecordingRepositoryRealizer::default();
-    host.realize_thread_repositories("platform-mediated", &realizer)
+    host.realizer
+        .staging
+        .realize_thread_repositories("platform-mediated", host.local_workspace(), &realizer)
         .await
         .expect("P4 refreshes at the Git operation edge");
-    assert_eq!(sequenced.0.load(Ordering::SeqCst), 2, "P4");
+    assert_eq!(sequenced.calls.load(Ordering::SeqCst), 2, "P4");
     assert_eq!(
         *realizer.0.lock().unwrap(),
         vec!["repository-capability-2".to_owned()],
         "P4 never reuses the capability staged before package or Sandbox preparation"
+    );
+
+    let expected_run = Some(crate::ResourceOperationFence::Run(claim.clone()));
+    assert_eq!(
+        *sequenced.seen.lock().unwrap(),
+        vec![
+            (
+                host.local_workspace().to_owned(),
+                "repo-platform".into(),
+                awaken_resource_contract::ConfigVersion::INITIAL,
+                expected_run.clone()
+            ),
+            (
+                host.local_workspace().to_owned(),
+                "repo-platform".into(),
+                awaken_resource_contract::ConfigVersion::INITIAL,
+                expected_run.clone()
+            ),
+        ],
+        "P1/P4 exact original claim and resource domain, not a reminted fence",
+    );
+    let original_verifier: Arc<
+        dyn crate::RepositoryBindingVerifier<crate::ResourceOperationFence>,
+    > = sequenced.clone();
+    assert!(
+        Arc::ptr_eq(
+            host.realizer
+                .staging
+                .repository_binding_verifier
+                .as_ref()
+                .unwrap(),
+            &original_verifier
+        ),
+        "P2 same injected verifier Arc"
+    );
+    runtime
+        .validate_thread_resource_bindings("platform-mediated")
+        .await
+        .expect("P2 installed binding uses same Stage verifier");
+    assert_eq!(
+        sequenced.calls.load(Ordering::SeqCst),
+        3,
+        "P2 one original binding verification"
+    );
+    assert_eq!(
+        sequenced.seen.lock().unwrap().last().unwrap().3,
+        expected_run,
+        "P2 binding retains original claim"
+    );
+    assert_eq!(
+        realizer.0.lock().unwrap().len(),
+        1,
+        "P2 validation is not another Git effect"
     );
 
     let downgrade = Arc::new(GatewayThenDirectRepositoryTransport(AtomicUsize::new(0)));
@@ -367,7 +534,13 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         .expect("P6 initial Gateway route stages");
     let downgrade_realizer = RecordingRepositoryRealizer::default();
     let downgrade_error = downgrade_host
-        .realize_thread_repositories("platform-downgrade", &downgrade_realizer)
+        .realizer
+        .staging
+        .realize_thread_repositories(
+            "platform-downgrade",
+            downgrade_host.local_workspace(),
+            &downgrade_realizer,
+        )
         .await
         .expect_err("P6 refreshed Direct transport must not fall back");
     assert!(
@@ -437,6 +610,146 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         ),
         "P3 immutable Repository identity and credential binding survive staging"
     );
+    Box::pin(async {
+        let remote_verifier = Arc::new(SequencedRepositoryTransport::default());
+        let remote = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await
+            .with_authority(crate::UpstreamAuthority::default())
+            .with_session_execution(crate::SessionExecutionDependencies::default()
+                .with_repository_binding_verifier(remote_verifier.clone())))
+            .build().expect("C13 actual upstream mode");
+        let session = "terminal-protected-platform";
+        remote.installed_sessions.replace_frozen_with(session, |next| {
+            next.workspace = Some("terminal-original-workspace".into());
+        });
+        let expectation = awaken_provisioning_contract::RepositoryPublicationExpectation {
+            branch: "awf/work".into(), commit: "a".repeat(40), expected_prior_commit: None,
+        };
+        let command = awaken_session_state_contract::SessionRepositoryPublicationCommand {
+            session_id: session.into(), effect_id: "terminal-protected-platform-effect".into(),
+            intent: awaken_session_state_contract::SessionRepositoryPublicationIntent {
+                input: platform_resources().inputs()[0].clone(), expectation: expectation.clone(),
+            },
+        };
+        let (lease, _) = terminal_recovery_effect(session, "terminal-protected-owner");
+        let staged = remote.realizer.staging.stage_terminal_repository_publication_input(
+            "terminal-original-workspace", &command, &lease,
+        ).await.expect("C13 freeze exact protected publication plan");
+        let repository = &staged.repositories[0];
+        let fence = (command.clone(), lease.clone());
+        let expected_fence = Some(crate::ResourceOperationFence::RepositoryPublication {
+            command: Box::new(command.clone()), lease: lease.clone(),
+        });
+        let published = Arc::new(RecordingRepositoryRealizer::default());
+        let receipt = remote.realizer.staging.publish_repository_activation(
+            session, remote.local_workspace(), repository, &staged.binding_checks,
+            published.as_ref(), &expectation, Some(&fence),
+        ).await.expect("C13 fresh capability at protected Git publication");
+        receipt.verify(&repository.plan, &expectation).expect("C13 exact verified receipt");
+        assert_eq!(remote_verifier.calls.load(Ordering::SeqCst), 2, "C13 stage + operation refresh");
+        assert_eq!(
+            *remote_verifier.seen.lock().unwrap(),
+            vec![
+                ("terminal-original-workspace".into(), "repo-platform".into(), awaken_resource_contract::ConfigVersion::INITIAL, expected_fence.clone()),
+                ("terminal-original-workspace".into(), "repo-platform".into(), awaken_resource_contract::ConfigVersion::INITIAL, expected_fence),
+            ], "C13 exact publication command + lease replaces ordinary claim",
+        );
+        assert_eq!(*published.1.lock().unwrap(), vec![(repository.plan.clone(), expectation.clone(), Some("repository-capability-2".into()))], "C13 one publish, refreshed capability, exact plan/expectation");
+        assert!(published.0.lock().unwrap().is_empty(), "C13 no clone path");
+        assert_eq!(repository.credential_pin.as_ref().unwrap().access.credential.id, "credential-platform", "C13 retained pin is still secret-free");
+
+        let mut renewed = lease.clone();
+        renewed.expires_at_unix_ms += 1;
+        let renewed_fence = (command.clone(), renewed.clone());
+        *remote_verifier.next_error.lock().unwrap() = Some(awaken_resource_contract::RepositoryBindingVerifierError::Indeterminate { detail: "injected unknown authority".into() });
+        let refused = remote.realizer.staging.publish_repository_activation(
+            session, remote.local_workspace(), repository, &staged.binding_checks,
+            published.as_ref(), &expectation, Some(&renewed_fence),
+        ).await.expect_err("C13 unknown authority must not grant publication");
+        match refused {
+            crate::provisioning::RepositoryPublicationActivationError::Failed(error) => {
+                assert_eq!(error.kind, crate::HostErrorKind::Unavailable, "C13 unknown typed kind");
+                assert_eq!(error.code, "unavailable", "C13 original code");
+                assert_eq!(error.message, "Repository binding decision is indeterminate: injected unknown authority", "C13 original reason");
+            }
+            _ => panic!("C13 verifier failure is not a physical publication rejection"),
+        }
+        assert_eq!(remote_verifier.seen.lock().unwrap().last().unwrap().3, Some(crate::ResourceOperationFence::RepositoryPublication { command: Box::new(command.clone()), lease: renewed }), "C13 current lease forwarded exactly");
+        assert_eq!(published.1.lock().unwrap().len(), 1, "C13 unknown zero new effects");
+
+        let mut malformed = repository.clone();
+        malformed.credential_pin.as_mut().unwrap().access.credential.id = "foreign-source".into();
+        let refused = remote.realizer.staging.publish_repository_activation(
+            session, remote.local_workspace(), &malformed, &staged.binding_checks,
+            published.as_ref(), &expectation, Some(&fence),
+        ).await.expect_err("C13 pin rejects before verifier");
+        assert!(matches!(refused, crate::provisioning::RepositoryPublicationActivationError::Failed(error)
+            if error.kind == crate::HostErrorKind::Internal && error.message == "invalid Repository credential execution pin: Repository credential pin selects another source"));
+        assert_eq!(remote_verifier.calls.load(Ordering::SeqCst), 3, "C13 malformed no refresh");
+        assert_eq!(published.1.lock().unwrap().len(), 1, "C13 malformed zero effect");
+        *remote_verifier.next_transport.lock().unwrap() = Some(awaken_resource_contract::RepositoryTransport::Direct);
+        let refused = remote.realizer.staging.publish_repository_activation(
+            session, remote.local_workspace(), repository, &staged.binding_checks,
+            published.as_ref(), &expectation, Some(&fence),
+        ).await.expect_err("C13 upstream direct downgrade rejects");
+        assert!(matches!(refused, crate::provisioning::RepositoryPublicationActivationError::Failed(error)
+            if error.kind == crate::HostErrorKind::Internal && error.message == "Gateway-mediated Repository cannot fall back to direct credentials"));
+        assert_eq!(remote_verifier.calls.load(Ordering::SeqCst), 4, "C13 one downgrade decision");
+        assert_eq!(published.1.lock().unwrap().len(), 1, "C13 downgrade zero effect");
+
+        // C12: upstream publication checks a missing verifier BEFORE looking up
+        // Workspace; ordinary Platform clone performs that Slot read FIRST.
+        let missing = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await
+            .with_authority(crate::UpstreamAuthority::default()))
+            .build().expect("C12 upstream has no verifier");
+        missing.installed_sessions.replace_frozen_with(session, |next| next.workspace = Some("terminal-original-workspace".into()));
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            missing.installed_sessions.modify(session, |_| panic!("C12 actual Slot poison"));
+        })).is_err());
+        let refused = std::panic::AssertUnwindSafe(missing.realizer.staging.publish_repository_activation(
+            session, missing.local_workspace(), repository, &staged.binding_checks,
+            published.as_ref(), &expectation, Some(&fence),
+        )).catch_unwind().await.expect("C12 missing verifier precedes poison").expect_err("C12 refused");
+        assert!(matches!(refused, crate::provisioning::RepositoryPublicationActivationError::Failed(error)
+            if error.kind == crate::HostErrorKind::Internal && error.message == "terminal Repository publication has no binding verifier"));
+        assert!(std::panic::AssertUnwindSafe(missing.realizer.staging.realize_repository_activation(
+            session, missing.local_workspace(), repository, &staged.binding_checks,
+            published.as_ref(), awaken_provisioning_contract::RepositoryRealizationIntent::Initialize,
+        )).catch_unwind().await.is_err(), "C12 ordinary Platform poison precedes absent verifier");
+        assert_eq!(published.1.lock().unwrap().len(), 1, "C12 zero publication");
+        assert!(published.0.lock().unwrap().is_empty(), "C12 zero clone");
+
+        // C13/T5: join the actual asynchronous verifier entry, poison only this
+        // real Slot, release/join its callback, then observe the required SECOND
+        // Workspace read fail. A captured/precomputed Workspace would publish.
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        *remote_verifier.next_gate.lock().unwrap() = Some((entered.clone(), release.clone()));
+        let operation = tokio::spawn({
+            let remote = remote.clone();
+            let repository = repository.clone();
+            let checks = staged.binding_checks.clone();
+            let published = published.clone();
+            let expectation = expectation.clone();
+            let fence = fence.clone();
+            async move {
+                std::panic::AssertUnwindSafe(remote.realizer.staging.publish_repository_activation(
+                    session, remote.local_workspace(), &repository, &checks,
+                    published.as_ref(), &expectation, Some(&fence),
+                )).catch_unwind().await
+            }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified()).await.expect("C13 actual verifier entry");
+        assert_eq!(remote_verifier.calls.load(Ordering::SeqCst), 5, "C13 first read reached verifier");
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            remote.installed_sessions.modify(session, |_| panic!("C13 poison during original verifier"));
+        })).is_err());
+        release.notify_one();
+        let refused = operation.await.expect("C13 callback and operation joined");
+        assert!(refused.is_err(), "C13 second current Workspace read observes true Slot poison");
+        assert_eq!(remote_verifier.calls.load(Ordering::SeqCst), 5, "C13 no second verifier");
+        assert_eq!(published.1.lock().unwrap().len(), 1, "C13 gated poison zero new publication");
+        assert!(published.0.lock().unwrap().is_empty(), "C13 gated poison no clone");
+    }).await;
 }
 
 /// Repository realization cause graph:
@@ -717,7 +1030,11 @@ async fn repository_credential_realization_follows_the_decision_table() {
                 rule.id
             );
             let realizer = RecordingRepositoryRealizer::default();
-            let effect = host.realize_thread_repositories(&thread, &realizer).await;
+            let effect = host
+                .realizer
+                .staging
+                .realize_thread_repositories(&thread, host.local_workspace(), &realizer)
+                .await;
             match rule.expected_error {
                 None => {
                     effect.unwrap_or_else(|error| panic!("{}: {error}", rule.id));
@@ -731,7 +1048,9 @@ async fn repository_credential_realization_follows_the_decision_table() {
                         .await
                         .expect("H14 disable the exact source between Git effects");
                         let retry = host
-                            .realize_thread_repositories(&thread, &realizer)
+                            .realizer
+                            .staging
+                            .realize_thread_repositories(&thread, host.local_workspace(), &realizer)
                             .await
                             .expect_err("H14 second Git effect revalidates liveness");
                         assert!(

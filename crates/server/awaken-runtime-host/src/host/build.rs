@@ -115,6 +115,7 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
             .expect("background worker identity serializes"),
             clock.clone(),
         ));
+    let credential_materializer = exec.credential_materializer.clone();
     SharedHost {
         agent: capability::AgentExecution::new(agent, installed_sessions.clone()),
         exec,
@@ -133,6 +134,7 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
                         .repository_binding_verifier
                         .clone(),
                     fetches_resources_upstream: authority.fetches_resources_upstream(),
+                    credential_materializer,
                     memory_reference_encoder: authority.memory_reference_encoder(),
                 },
                 execution_authority,
@@ -226,12 +228,9 @@ impl SharedHost {
     /// Workspace context supplied to the Session application admission boundary.
     /// Unknown flat-protocol threads use the process's persisted local workspace.
     pub fn thread_workspace(&self, thread: &str) -> String {
-        let realizations = self.installed_sessions.realizations();
-        realizations
-            .frozen(thread)
-            .workspace
-            .clone()
-            .unwrap_or_else(|| self.local_workspace.clone())
+        self.installed_sessions
+            .realizations()
+            .workspace(thread, &self.local_workspace)
     }
 
     /// Workspace for a prepared thread; unlike `thread_workspace`, unknown ids

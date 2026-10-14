@@ -15,6 +15,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
     // | V1   | absent    | modify                                | not visited, nothing installed |
     // | V2   | absent    | update                                | installed empty, then visited |
     // | V3   | installed | frozen read                           | the host's exact frozen value; absent reads empty |
+    // | P2/C11 | installed/empty/absent | Workspace helper + Host delegate | exact frozen Workspace wins; fallback creates nothing |
     // | V4   | installed | realization write / host write        | each visible to the other side |
     // | V5   | installed | run query                             | context, Session dispatch and claim as the host holds them |
     // | V6   | installed | drop_context                          | only the run context is dropped |
@@ -63,6 +64,35 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         Some("ws-view")
     );
     assert!(sessions.frozen("unknown").workspace.is_none(), "V3 absent");
+    assert_eq!(
+        sessions.workspace(thread, "other-fallback"),
+        "ws-view",
+        "C11 installed Workspace"
+    );
+    assert_eq!(
+        host.thread_workspace(thread),
+        "ws-view",
+        "C11 public thin delegate"
+    );
+    assert_eq!(
+        sessions.workspace("created", "empty-fallback"),
+        "empty-fallback",
+        "C11 installed empty"
+    );
+    assert_eq!(
+        sessions.workspace("unknown", host.local_workspace()),
+        host.local_workspace(),
+        "C11 absent fallback"
+    );
+    assert_eq!(
+        host.thread_workspace("unknown"),
+        host.local_workspace(),
+        "C11 same public fallback"
+    );
+    assert!(
+        !host.installed_sessions.contains("unknown"),
+        "C11 no absent Slot created"
+    );
 
     sessions.update_realization(thread, |r| r.staged_resource_effect_key = Some("k1".into()));
     assert_eq!(
@@ -148,6 +178,16 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         )
         .unwrap();
     let published = sessions.frozen(thread);
+    assert_eq!(
+        sessions.workspace(thread, "ignored-fallback"),
+        "ws-published",
+        "C11 current whole Frozen Arc, no cached Workspace"
+    );
+    assert_eq!(
+        host.thread_workspace(thread),
+        "ws-published",
+        "C11 delegate observes new publication"
+    );
     assert!(
         !Arc::ptr_eq(&before, &published),
         "S1/R4 whole Frozen Arc replacement"

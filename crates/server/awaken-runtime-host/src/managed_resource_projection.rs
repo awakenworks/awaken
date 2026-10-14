@@ -16,7 +16,7 @@ use crate::managed_input_layout::{
     binding_layout_projection, managed_mount_access, resolved_input_layout_projection,
 };
 use crate::skill_delivery::skill_store_run_error;
-use crate::staged_resources::CompiledEffectiveInputs;
+use crate::staged_resources::{CompiledEffectiveInputs, EnvironmentResourceReconciliation};
 
 mod repository_error;
 mod transition;
@@ -184,7 +184,8 @@ impl crate::ManagedHost {
                     ..
                 } => self
                     .host
-                    .session_execution
+                    .realizer
+                    .staging
                     .repository_binding_verifier
                     .as_ref()
                     .ok_or_else(|| {
@@ -356,7 +357,7 @@ impl crate::ManagedHost {
         if live_environment.is_some()
             && transition.previous() == transition.desired()
             && installed_manifest.as_ref() == Some(&desired_manifest)
-            && reconciliation == crate::staged_resources::EnvironmentResourceReconciliation::None
+            && reconciliation == EnvironmentResourceReconciliation::None
         {
             return Ok(());
         }
@@ -381,7 +382,7 @@ impl crate::ManagedHost {
         }
         if live_environment.is_some()
             && transition.previous() == transition.desired()
-            && reconciliation == crate::staged_resources::EnvironmentResourceReconciliation::None
+            && reconciliation == EnvironmentResourceReconciliation::None
         {
             // Preparation already staged the exact desired requirements. A
             // same-generation adoption is continuity, not a replacement: the
@@ -419,7 +420,7 @@ impl crate::ManagedHost {
                 )
             })
             .collect::<Vec<_>>();
-        if reconciliation == crate::staged_resources::EnvironmentResourceReconciliation::Fresh {
+        if reconciliation == EnvironmentResourceReconciliation::Fresh {
             previous_mounts.extend(
                 desired_mounts
                     .iter()
@@ -532,8 +533,7 @@ impl crate::ManagedHost {
             let reconcile_skills = previous_manifest.resources.skills()
                 != desired_manifest.resources.skills()
                 || installed_manifest.is_none()
-                || reconciliation
-                    != crate::staged_resources::EnvironmentResourceReconciliation::None;
+                || reconciliation != EnvironmentResourceReconciliation::None;
             // Transition replay cause/effect table:
             // C1 desired path differs from the aggregate's previous generation;
             // C2 reservation CAS succeeds; C3 physical removal/attach/Git
@@ -572,8 +572,7 @@ impl crate::ManagedHost {
                     }
                 }
             }
-            if reconciliation == crate::staged_resources::EnvironmentResourceReconciliation::Adopted
-            {
+            if reconciliation == EnvironmentResourceReconciliation::Adopted {
                 environment
                     .projection()
                     .reconcile_adopted_mounts(&self.host.thread_session_mounts(thread))
@@ -581,8 +580,7 @@ impl crate::ManagedHost {
                     .map_err(|error| RunError::internal(error.to_string()))?;
             }
             if projection_change.installs_desired()
-                || reconciliation
-                    != crate::staged_resources::EnvironmentResourceReconciliation::None
+                || reconciliation != EnvironmentResourceReconciliation::None
             {
                 // Physical Skill installation belongs to this same Resource
                 // completion edge for eager, lazy and adopted Environments.
@@ -607,8 +605,7 @@ impl crate::ManagedHost {
                             input.source,
                             session_resource::ResolvedInputSource::MemoryStore { .. }
                         ))
-                        || (reconciliation
-                            == crate::staged_resources::EnvironmentResourceReconciliation::None
+                        || (reconciliation == EnvironmentResourceReconciliation::None
                             && previous_manifest
                                 .resources
                                 .inputs()
@@ -634,10 +631,8 @@ impl crate::ManagedHost {
                                         "compiled Resource mount `{path}` is missing"
                                     ))
                                 })?;
-                            if reconciliation
-                                == crate::staged_resources::EnvironmentResourceReconciliation::Adopted
-                                || (reconciliation
-                                    == crate::staged_resources::EnvironmentResourceReconciliation::Fresh
+                            if reconciliation == EnvironmentResourceReconciliation::Adopted
+                                || (reconciliation == EnvironmentResourceReconciliation::Fresh
                                     && crate::provisioning::resource_mount_is_create_time(mount))
                             {
                                 continue;
@@ -649,14 +644,20 @@ impl crate::ManagedHost {
                                 .map_err(|error| RunError::internal(error.to_string()))?;
                         }
                         session_resource::ResolvedInputSource::Repository { .. } => {
-                            let retain = reconciliation == crate::staged_resources::EnvironmentResourceReconciliation::Adopted
-                                && previous_manifest.resources.inputs().iter().any(|previous| previous == input);
+                            let retain = reconciliation
+                                == EnvironmentResourceReconciliation::Adopted
+                                && previous_manifest
+                                    .resources
+                                    .inputs()
+                                    .iter()
+                                    .any(|previous| previous == input);
                             let repository = new
                                 .repository_at_path(&path)
                                 .map_err(|error| RunError::internal(error.to_string()))?;
-                            self.host
+                            staging
                                 .realize_repository_activation(
                                     thread,
+                                    self.host.local_workspace(),
                                     repository,
                                     &new.binding_checks,
                                     environment.repositories().as_ref(),
@@ -678,8 +679,7 @@ impl crate::ManagedHost {
             update.commit();
         }
         sessions.update_realization(thread, |r| {
-            r.environment_resource_reconciliation =
-                crate::staged_resources::EnvironmentResourceReconciliation::None;
+            r.environment_resource_reconciliation = EnvironmentResourceReconciliation::None;
         });
         self.host.realizer.evict_session_for_rebuild(thread).await;
         Ok(())

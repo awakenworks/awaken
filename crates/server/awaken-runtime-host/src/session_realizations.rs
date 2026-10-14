@@ -215,6 +215,15 @@ impl SessionRealizations {
         self.frozen(session).published_snapshot.clone()
     }
 
+    /// Read the current frozen Workspace; unknown flat-protocol Sessions keep
+    /// the selected process fallback without creating or publishing a slot.
+    pub(crate) fn workspace(&self, session: &str, fallback: &str) -> String {
+        self.frozen(session)
+            .workspace
+            .clone()
+            .unwrap_or_else(|| fallback.to_owned())
+    }
+
     /// The Session's current frozen inputs, taken out of the lock as one
     /// value. An unknown Session reads as the empty projection.
     pub(crate) fn frozen(&self, session: &str) -> Arc<FrozenSessionInputs> {

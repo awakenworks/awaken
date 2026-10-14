@@ -240,6 +240,7 @@ fn executor(
                     resource_validator: None,
                     repository_binding_verifier: None,
                     fetches_resources_upstream: false,
+                    credential_materializer: None,
                     memory_reference_encoder: None,
                 },
                 None,
