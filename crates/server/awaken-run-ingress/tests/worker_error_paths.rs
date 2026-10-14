@@ -11,6 +11,9 @@
 //!    `drive_claimed`, via the worker's `while state == Awaiting` loop.
 
 mod harness;
+#[path = "../../../runtime/awaken-runtime/tests/harness/run_input.rs"]
+mod run_input;
+use run_input::MarkPlugin;
 #[path = "worker_error_paths/operation_receipts.rs"]
 mod operation_receipts;
 
@@ -339,6 +342,9 @@ async fn a_chain_of_scheduled_actions_is_performed_to_completion_in_one_drive() 
     // between hops.
     // R1 normal completion -> one ACK for the whole chain; R2 ACK response
     // lost -> retry that ACK only, never any scheduled effect.
+    // RI12 initial + two scheduled Native stages see the same complete
+    // supplied window. Lost ACK retries only the existing physical ACK and
+    // cannot add a fourth hook or repeat a scheduled effect.
     for lost_response in [false, true] {
         let (runtime, ran) = schedule_n_runtime(2);
         let store = harness::FlakyDispatchStore::new(0, awaken_time::system_clock());
@@ -349,12 +355,15 @@ async fn a_chain_of_scheduled_actions_is_performed_to_completion_in_one_drive() 
         });
         let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
 
+        let (probe, inputs) = MarkPlugin::recording();
+        let original = activation("run-1");
         store
-            .enqueue(RunDispatch::new(activation("run-1")))
+            .enqueue(RunDispatch::new(original.clone()))
             .await
             .unwrap();
-        let worker =
-            DispatchWorker::new(runtime, store.clone(), commit, "solo").with_lease_ms(LEASE);
+        let worker = DispatchWorker::new(runtime, store.clone(), commit, "solo")
+            .with_lease_ms(LEASE)
+            .with_context(RuntimeRunContext::new().with_session_plugin(probe));
 
         let processed = worker.tick(harness::clock(0)).await.unwrap();
         assert_eq!(
@@ -381,6 +390,15 @@ async fn a_chain_of_scheduled_actions_is_performed_to_completion_in_one_drive() 
             acknowledgements
                 .iter()
                 .all(|claim| claim == &acknowledgements[0])
+        );
+        assert_eq!(
+            *inputs.lock().unwrap(),
+            vec![
+                original.input.clone(),
+                original.input.clone(),
+                original.input
+            ],
+            "RI12 one original window per actual inference"
         );
     }
 }

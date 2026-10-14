@@ -106,7 +106,8 @@ use delegation::{
 use finalize::{finalize, finish};
 use inference::*;
 use progress::*;
-use resume::{ResumeContinuation, drive_resumed, drive_tool_batch, fresh_resume_context};
+pub(crate) use resume::ResumeContinuation;
+use resume::{drive_resumed, drive_tool_batch, fresh_resume_context};
 use run_loop::*;
 pub(crate) use tool_execution::RuntimeToolOperation;
 use tool_execution::*;

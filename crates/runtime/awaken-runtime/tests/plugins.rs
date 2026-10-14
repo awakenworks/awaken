@@ -3,15 +3,17 @@
 //! stages state via the commit path, and an out-of-bound plugin fails closed
 //! (G9/G30). Plugins are resolved once per run.
 
+#[path = "harness/run_input.rs"]
+mod run_input;
+use run_input::{MarkHook, MarkPlugin};
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
-use awaken_agent_contract::agent::state::{
-    Command as StateCommand, Key, MergePolicy, Scope, Store,
-};
+use awaken_agent_contract::agent::state::{Key, Scope, Store};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
@@ -50,42 +52,6 @@ impl LlmExecutor for TextLlm {
             stop_reason: None,
         })
     }
-}
-
-/// A hook that stages the current Run input at BeforeInference.
-struct MarkHook;
-
-#[async_trait::async_trait]
-impl PhaseHook for MarkHook {
-    fn point(&self) -> PhaseHookPoint {
-        PhaseHookPoint::BeforeInference
-    }
-    async fn on_phase(
-        &self,
-        ctx: &PhaseContext,
-        _conversation: &[Message],
-        _state: &Store,
-    ) -> HookReaction {
-        let awaken_runtime_contract::plugin::PhaseKind::BeforeInference { run_input } = &ctx.kind
-        else {
-            unreachable!("MarkHook is registered only at BeforeInference")
-        };
-        HookReaction::state(vec![StateCommand::set(
-            Scope::Run,
-            MergePolicy::Disjoint,
-            "phase",
-            serde_json::json!({
-                "phase": format!("{:?}@{}", ctx.kind.point(), ctx.step),
-                "run_input": run_input.iter().map(Message::text_content).collect::<Vec<_>>(),
-            }),
-        )])
-    }
-}
-
-/// A well-behaved plugin: declares the hook point and state key it uses, and
-/// counts how many times it is resolved.
-struct MarkPlugin {
-    resolves: Arc<AtomicUsize>,
 }
 
 #[derive(Clone, Copy)]
@@ -328,28 +294,6 @@ async fn resumed_after_tool_hook_retains_the_same_drop_veto() {
     assert!(!quiescence.can_acknowledge_return());
 }
 
-impl Plugin for MarkPlugin {
-    fn manifest(&self) -> PluginManifest {
-        PluginManifest {
-            id: "mark".to_string(),
-            requires: Vec::new(),
-            config_sections: Vec::new(),
-            bound: CapabilityBound {
-                state_keys: IdBound::Exact(vec!["phase".to_string()]),
-                phase_hooks: vec![PhaseHookPoint::BeforeInference],
-                ..Default::default()
-            },
-        }
-    }
-    fn resolve(&self) -> Contributions {
-        self.resolves.fetch_add(1, Ordering::SeqCst);
-        let mut c = Contributions::new("mark");
-        c.state_keys.push("phase".to_string());
-        c.phase_hooks.push(Arc::new(MarkHook));
-        c
-    }
-}
-
 /// A misbehaving plugin: registers a hook point it never declared in its bound.
 struct OutOfBoundPlugin;
 
@@ -364,7 +308,7 @@ impl Plugin for OutOfBoundPlugin {
     }
     fn resolve(&self) -> Contributions {
         let mut c = Contributions::new("rogue");
-        c.phase_hooks.push(Arc::new(MarkHook)); // BeforeInference, not in the empty bound
+        c.phase_hooks.push(Arc::new(MarkHook { inputs: None })); // BeforeInference, not in the empty bound
         c
     }
 }
@@ -912,6 +856,7 @@ async fn active_plugin_hook_stages_state_through_the_commit_path() {
         .with_llm(Arc::new(TextLlm))
         .with_plugin(Arc::new(MarkPlugin {
             resolves: resolves.clone(),
+            inputs: None,
         }));
 
     let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
@@ -934,6 +879,20 @@ async fn active_plugin_hook_stages_state_through_the_commit_path() {
 
     // The plugin resolved exactly once for the run.
     assert_eq!(resolves.load(Ordering::SeqCst), 1);
+    // RI13 the same original hook can observe a window without owning State.
+    // Keep its original staging assertions above; recording adds no State cmd.
+    let (probe, inputs) = MarkPlugin::recording();
+    let original = activation(Vec::new());
+    let state = Runtime::new()
+        .with_llm(Arc::new(TextLlm))
+        .execute(
+            original.clone(),
+            RuntimeRunContext::new().with_session_plugin(probe),
+        )
+        .await
+        .unwrap();
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+    assert_eq!(*inputs.lock().unwrap(), vec![original.input]);
 }
 
 #[tokio::test]
@@ -943,6 +902,7 @@ async fn inactive_plugin_contributes_nothing() {
         .with_llm(Arc::new(TextLlm))
         .with_plugin(Arc::new(MarkPlugin {
             resolves: resolves.clone(),
+            inputs: None,
         }));
 
     let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
@@ -990,6 +950,7 @@ async fn duplicate_selected_plugin_identity_fails_closed_before_resolution() {
         .with_llm(Arc::new(TextLlm))
         .with_plugin(Arc::new(MarkPlugin {
             resolves: resolves.clone(),
+            inputs: None,
         }))
         .execute(
             activation(vec!["mark".to_string(), "mark".to_string()]),

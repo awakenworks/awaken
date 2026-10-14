@@ -27,7 +27,7 @@ use awaken_agent_contract::agent::awaiting::AwaitReason;
 use awaken_agent_contract::agent::run::RunState;
 use awaken_lease_contract::authority::AuthorityLeaseTiming;
 use awaken_runtime_contract::execution::{AttemptRecoveryMode, LiveInput};
-use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+use awaken_runtime_contract::runtime_context::{ModelCancellationObservation, RuntimeRunContext};
 use awaken_time::WallClock;
 use awaken_time::WallClockExt;
 
@@ -173,7 +173,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         // This freshly admitted physical slot may keep observing its own call;
         // the policy alone is never proof that the provider stopped.
         attempt_context.model_cancellation_observation =
-            awaken_runtime_contract::runtime_context::ModelCancellationObservation::RetainClaimedUntilReceipt;
+            ModelCancellationObservation::RetainClaimedUntilReceipt;
         let quiescence = attempt_context.physical_quiescence.clone();
         let attempt = self.runtime.begin_active_attempt(
             &claim.run_id,
@@ -207,7 +207,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                         break;
                     }
                     state = self
-                        .perform_scheduled(&claim, clock.now_ms(), context.clone())
+                        .perform_scheduled(claimed, &ticket, clock.now_ms(), context.clone())
                         .await?;
                 }
                 Ok(state)

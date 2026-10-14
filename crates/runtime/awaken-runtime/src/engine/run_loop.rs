@@ -11,6 +11,24 @@
 
 use super::*;
 
+/// Fresh and activated resumes select the same publication-bounded model
+/// without rewriting the immutable snapshot or its catalog identity.
+pub(super) fn resolve_activation_snapshot(
+    runtime: &Runtime,
+    snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
+    model_ref_override: Option<&str>,
+) -> Result<ResolvedRun> {
+    let mut resolved = runtime.resolve(snapshot).map_err(map_resolver_error)?;
+    if let Some(model_ref) = model_ref_override.filter(|model_ref| !model_ref.is_empty())
+        && !resolved.spec.select_execution_model(model_ref)
+    {
+        return Err(Error::Execution(format!(
+            "model override `{model_ref}` is outside the publication-pinned candidate set"
+        )));
+    }
+    Ok(resolved)
+}
+
 pub(crate) async fn run_agent_loop(
     runtime: &Runtime,
     activation: RunActivation,
@@ -41,19 +59,11 @@ pub(crate) async fn run_agent_loop(
             .await;
         }
     };
-    let mut resolved = runtime
-        .resolve(&activation.snapshot)
-        .map_err(map_resolver_error)?;
-    if let Some(model_ref) = activation
-        .model_ref_override
-        .as_deref()
-        .filter(|model_ref| !model_ref.is_empty())
-        && !resolved.spec.select_execution_model(model_ref)
-    {
-        return Err(Error::Execution(format!(
-            "model override `{model_ref}` is outside the publication-pinned candidate set"
-        )));
-    }
+    let resolved = resolve_activation_snapshot(
+        runtime,
+        &activation.snapshot,
+        activation.model_ref_override.as_deref(),
+    )?;
 
     let delegation_origin = activation.delegation_origin.clone();
 

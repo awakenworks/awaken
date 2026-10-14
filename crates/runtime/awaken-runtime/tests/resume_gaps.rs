@@ -3,6 +3,10 @@
 //! (RR3), and a plugin set that violates its capability bound on the resume path
 //! (RR5) — the same fail-closed altitude as the initial run, reached via `resume`.
 
+#[path = "harness/run_input.rs"]
+mod run_input;
+use run_input::MarkPlugin;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -269,13 +273,61 @@ async fn attempt_resume_registers_its_exact_snapshot_after_runtime_rebuild() {
         }))
         .with_tool(Arc::new(EchoTool))
         .with_gate(Arc::new(SuspendGate));
+    // RI1 committed permission await + supplied original activation + cold
+    // Runtime -> exact BeforeInference window, one terminal resume. RI2 the
+    // new System resume context is transcript data, never original run_input;
+    // original input must occur once in committed Thread truth.
+    let (probe, inputs) = MarkPlugin::recording();
+    let original = activation(Vec::new());
+    // RI8 supplied run/thread/publication differs from the committed ticket ->
+    // existing typed mismatch, no hook/model/ticket-consumption effect. The
+    // command itself remains exact, so it cannot conceal a supplied-value bug.
+    for (kind, expected) in [
+        ("run", "resume_run_mismatch"),
+        ("thread", "resume_thread_mismatch"),
+        ("snapshot", "resume_snapshot_mismatch"),
+        ("fingerprint", "resume_fingerprint_mismatch"),
+    ] {
+        let mut bad = original.clone();
+        match kind {
+            "run" => bad.run_id.0 = "other-run".into(),
+            "thread" => bad.thread_id.0 = "other-thread".into(),
+            "snapshot" => bad.snapshot.id.0 = "other-snapshot".into(),
+            _ => bad.snapshot.fingerprint.0 = "other-fingerprint".into(),
+        }
+        let error = RunAttemptExecutor::resume(
+            &rebuilt,
+            bad,
+            resume_command(),
+            RuntimeRunContext::new()
+                .with_store(commit.clone())
+                .with_session_plugin(probe.clone()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code(), expected, "RI8 {kind}");
+        assert!(inputs.lock().unwrap().is_empty(), "RI8 zero hook effect");
+        assert!(
+            commit.resume_ticket_for(&original.run_id).is_some(),
+            "RI8 ticket retained"
+        );
+    }
     let context = RuntimeRunContext::new()
+        .with_session_plugin(probe)
         .with_commit(commit.clone())
         .with_reader(commit.clone());
-    let state =
-        RunAttemptExecutor::resume(&rebuilt, activation(Vec::new()), resume_command(), context)
-            .await
-            .expect("the activated resume restores its exact snapshot after rebuild");
+    let state = RunAttemptExecutor::resume(
+        &rebuilt,
+        original.clone(),
+        resume_command().with_context_messages(vec![Message::text(
+            MessageId("resume-context".into()),
+            Role::System,
+            "new context",
+        )]),
+        context,
+    )
+    .await
+    .expect("the activated resume restores its exact snapshot after rebuild");
 
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     assert!(
@@ -283,6 +335,26 @@ async fn attempt_resume_registers_its_exact_snapshot_after_runtime_rebuild() {
             .resume_ticket_for(&RunId("run-1".to_string()))
             .is_none(),
         "the successful resume consumes the committed ticket"
+    );
+    assert_eq!(
+        *inputs.lock().unwrap(),
+        vec![original.input.clone()],
+        "RI1 complete supplied window"
+    );
+    let messages = awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::committed_messages(commit.as_ref(), &original.thread_id);
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| message.id == original.input[0].id)
+            .count(),
+        1,
+        "RI2 original input is not appended again"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.id.0 == "resume-context"),
+        "RI2 new context still commits"
     );
 }
 

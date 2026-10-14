@@ -2514,3 +2514,147 @@ async fn attempt_resume_without_committed_history_fails_closed() {
         "runtime execution failed: RunAttemptExecutor::resume requires committed history"
     );
 }
+
+#[tokio::test]
+async fn sdk_supplied_activation_preserves_live_context_and_command_precedence() {
+    // Cause/effect decision table RI14: Ticket=A/None x supplied=A/B/None x
+    // context=A/B/None. C1 present context != Ticket -> old bare refusal;
+    // C2 present supplied != Ticket -> strict supplied refusal; otherwise
+    // E1 exact original continuation succeeds. None restores only Ticket truth,
+    // never a Configured guess or input history. RI15 wrong current command
+    // wins over both inherited mismatches. RI16 supplied DenyAll remains visible
+    // in the resumed model tool surface; this is not a proof that permission
+    // Allow rechecks the capability ceiling before its already-approved tool.
+    use awaken_runtime_contract::activation::InheritedToolsets;
+    use std::sync::atomic::AtomicUsize;
+    let a = InheritedToolsets::with_caller(Vec::new(), None);
+    let b = InheritedToolsets::with_caller(Vec::new(), Some(&a));
+    let cases = [None, Some(a.clone()), Some(b.clone())];
+    for ticket_source in [None, Some(a.clone())] {
+        for supplied_source in &cases {
+            for live_source in &cases {
+                let llm = std::sync::Arc::new(SucceedingLlm {
+                    requests: Default::default(),
+                    text: "done",
+                    response_delay: std::time::Duration::ZERO,
+                });
+                let tool = std::sync::Arc::new(CountingRawTool(AtomicUsize::new(0)));
+                let runtime = Runtime::new().with_llm(llm.clone()).with_tool(tool);
+                let store = std::sync::Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new(
+                    awaken_time::system_clock(),
+                ));
+                let snapshot =
+                    awaken_runtime_contract::ExecutableAgentSnapshot::builder("sdk-source-matrix")
+                        .model(
+                            ModelBinding::parse("test", "model", "native")
+                                .expect("RI14 exact test model coordinates"),
+                        )
+                        .tool(ToolDescriptor::pinned(
+                            "test",
+                            "ownership-probe",
+                            "probe",
+                            serde_json::json!({"type":"object"}),
+                        ))
+                        .build();
+                let original = RunActivation::new(
+                    RunId("sdk-matrix-run".into()),
+                    ThreadId("sdk-matrix-thread".into()),
+                    snapshot,
+                    vec![user_message()],
+                )
+                .with_inherited_toolsets(ticket_source.clone());
+                let pause = awaken_runtime_contract::pause::PauseSignal::new();
+                pause.request();
+                assert_eq!(
+                    runtime
+                        .execute(
+                            original.clone(),
+                            RuntimeRunContext::new()
+                                .with_store(store.clone())
+                                .with_pause(pause)
+                        )
+                        .await
+                        .unwrap(),
+                    RunState::Awaiting
+                );
+                let ticket = store.resume_ticket(&original.run_id).unwrap();
+                let supplied = original
+                    .clone()
+                    .with_inherited_toolsets(supplied_source.clone())
+                    .without_tools();
+                let context = RuntimeRunContext::new()
+                    .with_store(store.clone())
+                    .with_inherited_toolsets(live_source.clone());
+                let mut wrong =
+                    ResumeCommand::from_ticket(&ticket, ResumeResult::Input("continue".into()), 0);
+                wrong.correlation_id = "wrong-current-command".into();
+                let before = llm.requests.lock().unwrap().len();
+                let error = run_commands::resume_with_continuation(
+                    &runtime,
+                    wrong,
+                    store.as_ref(),
+                    context.clone(),
+                    ResumeContinuation::NativeLoop,
+                    Some(&supplied),
+                )
+                .await
+                .unwrap_err();
+                assert_eq!(
+                    error.code(),
+                    "resume_correlation_mismatch",
+                    "RI15 current command first"
+                );
+                assert_eq!(
+                    llm.requests.lock().unwrap().len(),
+                    before,
+                    "RI15 zero model entry"
+                );
+                let command =
+                    ResumeCommand::from_ticket(&ticket, ResumeResult::Input("continue".into()), 0);
+                let result = run_commands::resume_with_continuation(
+                    &runtime,
+                    command,
+                    store.as_ref(),
+                    context,
+                    ResumeContinuation::NativeLoop,
+                    Some(&supplied),
+                )
+                .await;
+                let context_matches = live_source.is_none() || *live_source == ticket_source;
+                let supplied_matches =
+                    supplied_source.is_none() || *supplied_source == ticket_source;
+                assert_eq!(
+                    result.is_ok(),
+                    context_matches && supplied_matches,
+                    "RI14 ticket={ticket_source:?} supplied={supplied_source:?} live={live_source:?}"
+                );
+                if result.is_ok() {
+                    assert!(
+                        llm.requests
+                            .lock()
+                            .unwrap()
+                            .last()
+                            .unwrap()
+                            .tools
+                            .is_empty(),
+                        "RI16 DenyAll value not relaxed"
+                    );
+                    assert!(
+                        store.resume_ticket(&original.run_id).is_none(),
+                        "RI14 exact accepted ticket consumed"
+                    );
+                } else {
+                    assert_eq!(
+                        llm.requests.lock().unwrap().len(),
+                        before,
+                        "RI14 refusal has no model effect"
+                    );
+                    assert!(
+                        store.resume_ticket(&original.run_id).is_some(),
+                        "RI14 refusal keeps ticket"
+                    );
+                }
+            }
+        }
+    }
+}

@@ -8,11 +8,12 @@
 
 use super::delegation::is_resolved_advisor_call;
 use super::*;
+use awaken_agent_contract::audit::permission::PermissionConfirmation;
 
 /// Who continues after the common durable tool phase. This selects a control
 /// boundary, not a second executor, permission policy, or recovery algorithm.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum ResumeContinuation {
+pub(crate) enum ResumeContinuation {
     NativeLoop,
     ToolBatch,
 }
@@ -44,33 +45,16 @@ pub(super) fn fresh_resume_context(
     Ok(fresh_context)
 }
 
-/// Rebuild the transcript and state from committed truth, inject a resumed
-/// `result` for the awaiting ticket, and drive the loop to its next terminal/awaiting
-/// checkpoint. Shared by the two resume entries — a validated `ResumeCommand`
-/// (`resume_run`) and a delegate step folded back into the parent
-/// (`resume_delegation`) — so the rebuild/inject/drive/finalize glue lives once.
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn drive_resumed(
-    runtime: &Runtime,
+/// Rebuild the model-request transcript and context, retaining the original
+/// committed-message ordinal and request-only projection in one read phase.
+fn resumed_model_context(
     resolved: &ResolvedRun,
-    env: &ResolvedExecutionEnv,
     run_id: &RunId,
     thread_id: &ThreadId,
-    ticket: &ResumeTicket,
-    result: ResumeResult,
-    mut resume_commit: Option<ResumeCommit>,
-    fresh_context: Vec<Message>,
     reader: &dyn CommittedThreadView,
     context: &RuntimeRunContext,
-    continuation: ResumeContinuation,
-    resume_checkpoint: Option<StreamCheckpoint>,
-    mut store: Store,
-) -> Result<RunState> {
-    if context.inherited_toolsets != ticket.inherited_toolsets {
-        return Err(Error::Execution(
-            "resume tool configuration differs from the committed ticket".into(),
-        ));
-    }
+    fresh_context: &[Message],
+) -> (usize, Vec<Message>, RuntimeRunContext) {
     let committed = reader.committed_messages(thread_id);
     // Cause/effect decision table for resumed assistant ids:
     // R1 no prior assistant for this Run -> start at step 0;
@@ -93,8 +77,41 @@ pub(super) async fn drive_resumed(
         request_context: normalized.request_context,
         ..context.clone()
     };
-    let context = &projected_context;
     transcript.extend(fresh_context.iter().cloned());
+    (resume_step_base, transcript, projected_context)
+}
+
+/// Rebuild the transcript and state from committed truth, inject a resumed
+/// `result` for the awaiting ticket, and drive the loop to its next terminal/awaiting
+/// checkpoint. Shared by the two resume entries — a validated `ResumeCommand`
+/// (`resume_run`) and a delegate step folded back into the parent
+/// (`resume_delegation`) — so the rebuild/inject/drive/finalize glue lives once.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn drive_resumed(
+    runtime: &Runtime,
+    resolved: &ResolvedRun,
+    env: &ResolvedExecutionEnv,
+    run_id: &RunId,
+    thread_id: &ThreadId,
+    ticket: &ResumeTicket,
+    result: ResumeResult,
+    mut resume_commit: Option<ResumeCommit>,
+    fresh_context: Vec<Message>,
+    run_input: std::sync::Arc<[Message]>,
+    reader: &dyn CommittedThreadView,
+    context: &RuntimeRunContext,
+    continuation: ResumeContinuation,
+    resume_checkpoint: Option<StreamCheckpoint>,
+    mut store: Store,
+) -> Result<RunState> {
+    if context.inherited_toolsets != ticket.inherited_toolsets {
+        return Err(Error::Execution(
+            "resume tool configuration differs from the committed ticket".into(),
+        ));
+    }
+    let (resume_step_base, mut transcript, projected_context) =
+        resumed_model_context(resolved, run_id, thread_id, reader, context, &fresh_context);
+    let context = &projected_context;
     // Keep the state already validated at recovery admission, including model
     // history and any child result committed by resume_delegation. Rebuilding
     // from the reader here would discard both the validated ordinal and local
@@ -132,7 +149,7 @@ pub(super) async fn drive_resumed(
                 AwaitReason::ToolPermission | AwaitReason::ScheduledAction
             ) =>
         {
-            Some(awaken_agent_contract::audit::permission::PermissionConfirmation::from(decision))
+            Some(PermissionConfirmation::from(decision))
         }
         _ => None,
     };
@@ -196,7 +213,7 @@ pub(super) async fn drive_resumed(
                         RunEvent::PermissionConfirmed {
                             tool_id: call.tool_id.clone(),
                             call_id: call_id.to_string(),
-                            result: awaken_agent_contract::audit::permission::PermissionConfirmation::Allow,
+                            result: PermissionConfirmation::Allow,
                         }
                         .into(),
                     ],
@@ -410,7 +427,7 @@ pub(super) async fn drive_resumed(
         ticket.delegation_origin.as_ref(),
         transcript,
         new_messages,
-        Default::default(),
+        run_input,
         resume_step_base,
         store,
         seed_state,

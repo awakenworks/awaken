@@ -13,7 +13,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::model_request::ModelRequestObservation;
 use awaken_runtime::{RetryPolicy, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::execution::RunExecutor;
+use awaken_runtime_contract::execution::{RunAttemptExecutor, RunExecutor};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, Error as LlmError, LlmExecutor, StopReason,
 };
@@ -302,7 +302,7 @@ async fn model_override_preserves_same_model_provider_fallbacks_in_publication_o
     activation.model_ref_override = Some("chosen".to_string());
 
     let outcome = runtime
-        .execute(activation, RuntimeRunContext::new())
+        .execute(activation.clone(), RuntimeRunContext::new())
         .await
         .expect("same-model fallback remains executable");
 
@@ -314,6 +314,72 @@ async fn model_override_preserves_same_model_provider_fallbacks_in_publication_o
             ("account-b".to_string(), "chosen".to_string()),
         ],
         "the selector keeps every same-model binding and excludes other models"
+    );
+    // RI5 an actual ManualPause commits at the response boundary, then a rebuilt
+    // Runtime resumes the same supplied selector. Same-model account order is
+    // retained, while other/different candidates remain outside this drive.
+    let pause = awaken_runtime_contract::pause::PauseSignal::new();
+    pause.request();
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+    let before = seen.lock().unwrap().len();
+    assert_eq!(
+        runtime
+            .execute(
+                activation.clone(),
+                RuntimeRunContext::new()
+                    .with_store(commit.clone())
+                    .with_pause(pause)
+            )
+            .await
+            .unwrap(),
+        RunState::Awaiting
+    );
+    assert_eq!(
+        seen.lock().unwrap().len(),
+        before + 2,
+        "RI5 the selected first response reaches the actual pause boundary"
+    );
+    let before = seen.lock().unwrap().len();
+    let rebuilt = Runtime::new()
+        .with_llm(Arc::new(RouteByProviderLlm {
+            failing_provider: "account-a",
+            seen: seen.clone(),
+        }))
+        .with_retry_policy(no_retries());
+    let ticket = awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::resume_ticket(commit.as_ref(), &activation.run_id).unwrap();
+    let command = awaken_runtime_contract::resume::ResumeCommand::from_ticket(
+        &ticket,
+        awaken_runtime_contract::resume::ResumeResult::Input("continue".into()),
+        0,
+    );
+    let snapshot_before = activation.snapshot.clone();
+    let state = RunAttemptExecutor::resume(
+        &rebuilt,
+        activation.clone(),
+        command,
+        RuntimeRunContext::new().with_store(commit.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+    assert_eq!(
+        &seen.lock().unwrap()[before..],
+        &[
+            ("account-a".to_owned(), "chosen".to_owned()),
+            ("account-b".to_owned(), "chosen".to_owned())
+        ],
+        "RI5 resumed route order"
+    );
+    assert_eq!(
+        rebuilt
+            .load_snapshot(
+                &awaken_runtime_contract::snapshot::AgentSnapshotInput::ById(
+                    snapshot_before.id.clone()
+                )
+            )
+            .unwrap(),
+        snapshot_before,
+        "RI5 full snapshot and metadata unchanged"
     );
 }
 
@@ -327,7 +393,8 @@ async fn an_override_outside_the_published_pool_is_rejected_before_inference() {
         }))
         .with_retry_policy(no_retries());
 
-    let mut activation = activation("primary", &["published-fallback"]);
+    let original = activation("primary", &["published-fallback"]);
+    let mut activation = original.clone();
     activation.model_ref_override = Some("not-published".to_string());
     let error = runtime
         .execute(activation, RuntimeRunContext::new())
@@ -336,6 +403,46 @@ async fn an_override_outside_the_published_pool_is_rejected_before_inference() {
 
     assert!(error.to_string().contains("outside the publication-pinned"));
     assert!(seen.lock().unwrap().is_empty());
+    // RI6 initial and resumed selection share the same owner; a changed
+    // out-of-pool selector on supplied resume must fail before model entry.
+    let pause = awaken_runtime_contract::pause::PauseSignal::new();
+    pause.request();
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+    assert_eq!(
+        runtime
+            .execute(
+                original.clone(),
+                RuntimeRunContext::new()
+                    .with_store(commit.clone())
+                    .with_pause(pause)
+            )
+            .await
+            .unwrap(),
+        RunState::Awaiting
+    );
+    let ticket = awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::resume_ticket(commit.as_ref(), &original.run_id).unwrap();
+    let command = awaken_runtime_contract::resume::ResumeCommand::from_ticket(
+        &ticket,
+        awaken_runtime_contract::resume::ResumeResult::Input("continue".into()),
+        0,
+    );
+    let before_resume = seen.lock().unwrap().len();
+    let bad = original.with_model_ref_override(Some("not-published".into()));
+    let error = RunAttemptExecutor::resume(
+        &runtime,
+        bad,
+        command,
+        RuntimeRunContext::new().with_store(commit.clone()),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("outside the publication-pinned"));
+    assert_eq!(
+        seen.lock().unwrap().len(),
+        before_resume,
+        "RI6 zero resumed model effect"
+    );
+    assert!(awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::resume_ticket(commit.as_ref(), &ticket.run_id).is_some(), "RI6 ticket retained");
 }
 
 #[tokio::test]

@@ -1,5 +1,9 @@
 //! Independent public-API tasks: typed tools, outcomes, approval and recovery.
 
+#[path = "harness/run_input.rs"]
+mod run_input;
+use run_input::MarkPlugin;
+
 use awaken_agent_contract::agent::run::{EndCause, RunState};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_lease_testkit::ManualClock;
@@ -172,13 +176,20 @@ async fn typed_tool_and_named_outcome_work_without_builtin_dependencies() {
 
 #[tokio::test]
 async fn asynchronous_approval_and_denial_use_the_same_durable_resume_path() {
+    // RI3 SDK owns the original activation across await; allow/deny resumes
+    // through the same core with the same hello window. Every inference sees
+    // one User input; Thread truth contains it once. Both outcomes preserve the
+    // original callback/effect/terminal law, without a new input store.
     for allow in [true, false] {
         let (runtime, snapshot, _, hits, store) = setup(true, awaken_time::system_clock());
+        let (probe, inputs) = MarkPlugin::recording();
         let state = runtime
             .session(
                 &snapshot,
                 "approval",
-                RuntimeRunContext::new().with_store(store.clone()),
+                RuntimeRunContext::new()
+                    .with_store(store.clone())
+                    .with_session_plugin(probe),
             )
             .unwrap()
             .run_to_completion_async("hello", move |ticket| async move {
@@ -202,6 +213,33 @@ async fn asynchronous_approval_and_denial_use_the_same_durable_resume_path() {
                 .unwrap()
                 .state
                 .is_terminal()
+        );
+        let windows = inputs.lock().unwrap();
+        assert_eq!(windows.len(), 2, "RI3 fresh and resumed inference");
+        for window in windows.iter() {
+            assert_eq!(window.len(), 1, "RI3 complete original window");
+            assert_eq!(
+                window[0].role,
+                awaken_agent_contract::agent::message::Role::User
+            );
+            assert_eq!(
+                window[0].text_content(),
+                "hello",
+                "RI3 independently expected original task"
+            );
+        }
+        assert_eq!(
+            windows[0][0].id, windows[1][0].id,
+            "RI3 original identity retained"
+        );
+        assert_eq!(
+            store
+                .committed_messages(&awaken_agent_contract::agent::thread::Id("approval".into()))
+                .iter()
+                .filter(|message| message.text_content() == "hello")
+                .count(),
+            1,
+            "RI3 no reappend"
         );
     }
 }
@@ -240,7 +278,12 @@ async fn approval_timeout_preserves_ticket_and_rebuilt_runtime_can_resume_once()
                 .with_gate(Arc::new(ApprovalGate)),
         )
         .unwrap();
-    let context = RuntimeRunContext::new().with_store(store.clone());
+    // RI4 cold SDK recovery receives hello from its existing owner; terminal
+    // exact replay must add no hook/model/callback/effect observations.
+    let (probe, inputs) = MarkPlugin::recording();
+    let context = RuntimeRunContext::new()
+        .with_store(store.clone())
+        .with_session_plugin(probe);
     let state = rebuilt
         .session(&snapshot, "recover", context.clone())
         .unwrap()
@@ -253,6 +296,12 @@ async fn approval_timeout_preserves_ticket_and_rebuilt_runtime_can_resume_once()
         .clone();
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(hits.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        inputs.lock().unwrap()[0][0].text_content(),
+        "hello",
+        "RI4 cold original input"
+    );
+    let hook_calls = inputs.lock().unwrap().len();
     let calls = model.calls.load(Ordering::SeqCst);
     let replay = rebuilt
         .session(&snapshot, "recover", context)
@@ -267,6 +316,11 @@ async fn approval_timeout_preserves_ticket_and_rebuilt_runtime_can_resume_once()
     assert_eq!(replay, state);
     assert_eq!(model.calls.load(Ordering::SeqCst), calls);
     assert_eq!(hits.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        inputs.lock().unwrap().len(),
+        hook_calls,
+        "RI4 terminal replay has no hook"
+    );
 }
 
 #[tokio::test]
@@ -404,6 +458,65 @@ async fn cold_recovery_rejects_each_identity_mismatch_before_approval_or_effects
         assert_eq!(model.calls.load(Ordering::SeqCst), calls);
         assert_eq!(hits.load(Ordering::SeqCst), 0);
         assert!(store.resume_ticket(outcome.run_id()).is_some());
+    }
+    // RI9 SDK activation sources are produced from its live context. Cases
+    // ticket A/None x context A/B/None cover the real producer's diagonal:
+    // R1 absent context restores A; R2 matching A stays A; R3 a mismatched
+    // present context rejects after the original callback/current-ticket law.
+    // This does not fill original input or authorize a current catalog default.
+    use awaken_runtime_contract::activation::InheritedToolsets;
+    let a = InheritedToolsets::with_caller(Vec::new(), None);
+    let b = InheritedToolsets::with_caller(Vec::new(), Some(&a));
+    for ticket_source in [None, Some(a.clone())] {
+        for context_source in [None, Some(a.clone()), Some(b.clone())] {
+            let (runtime, snapshot, _, hits, store) = setup(true, awaken_time::system_clock());
+            let context = RuntimeRunContext::new()
+                .with_store(store.clone())
+                .with_inherited_toolsets(ticket_source.clone());
+            let pending = runtime
+                .session(&snapshot, "sources", context)
+                .unwrap()
+                .run("hello")
+                .await
+                .unwrap();
+            let callbacks = Arc::new(AtomicUsize::new(0));
+            let callback_count = callbacks.clone();
+            let recovered = runtime
+                .session(
+                    &snapshot,
+                    "sources",
+                    RuntimeRunContext::new()
+                        .with_store(store.clone())
+                        .with_inherited_toolsets(context_source.clone()),
+                )
+                .unwrap()
+                .resume_with_id_async(pending.run_id().clone(), "hello", move |_| {
+                    callback_count.fetch_add(1, Ordering::SeqCst);
+                    std::future::ready(Ok(ResumeResult::allow()))
+                })
+                .await;
+            let accepted = context_source.is_none() || context_source == ticket_source;
+            assert_eq!(
+                recovered.is_ok(),
+                accepted,
+                "RI9 ticket={ticket_source:?} context={context_source:?}"
+            );
+            assert_eq!(
+                callbacks.load(Ordering::SeqCst),
+                1,
+                "RI9 context check preserves callback order"
+            );
+            assert_eq!(
+                hits.load(Ordering::SeqCst),
+                usize::from(accepted),
+                "RI9 one or zero effects"
+            );
+            assert_eq!(
+                store.resume_ticket(pending.run_id()).is_none(),
+                accepted,
+                "RI9 accepted consumes only its ticket"
+            );
+        }
     }
 }
 
