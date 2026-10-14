@@ -1,5 +1,14 @@
 # Wiki Update Log
 
+## 2026-10-15 — Retain physical admission in the original Dispatch history
+
+- [Session and Dispatch roles](../design/session-aggregate-and-dispatch-capabilities.md)
+  retain the exact physical entry in the existing operation transaction. Exact
+  retries and refusals add no entries; existing return/closure facts stay distinct.
+- Binding lifecycle and durable rollback/reopen tests cover the cause/effect
+  rules. This source evidence does not claim historical closure, Flow successor
+  admission or deployed automatic coding acceptance.
+
 ## 2026-10-12 — Bound diagnostic trace storage and move export off requests
 
 - [Observability boundary](../design/observability-eval-dataset-boundary.md)

@@ -40,6 +40,13 @@ authority, settlement, ordinary reads, maintenance, attempt control, control
 claims and control reads. `InboxRead` is separate from Inbox writes. Role
 bundles live with their consumers; the existing contract crate owns the leaves.
 
+Physical Install and Replace retain an `AttemptAdmitted` operation in the same
+Dispatch transaction as their slot mutation. The existing operational feed
+returns this original entry identity; exact retry and refusal add no entry.
+This inventory is distinct from the existing ordinary-return and independent
+closure meanings, and grants neither replay nor stop authority. Old streams
+without retained entries remain incomplete evidence for whole-execution recovery.
+
 Local composition constructs `AnyCoordinatorDispatch` from an owner implementing
 `DurableDispatch`, then uses `DispatchBinding::local`. Its cached Worker view
 retains the exact queue owner. Remote composition uses

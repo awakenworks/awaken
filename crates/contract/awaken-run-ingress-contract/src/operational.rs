@@ -41,6 +41,11 @@ pub enum LeaseLossReason {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DispatchOperation {
+    /// Positive inventory evidence, committed with the physical slot before
+    /// executor entry. A claim without this record is not proof of admission.
+    AttemptAdmitted {
+        attempt: crate::dispatch::PhysicalAttempt,
+    },
     Claimed {
         claim: RunClaim,
     },
@@ -66,6 +71,7 @@ impl DispatchOperation {
     #[must_use]
     pub fn run_id(&self) -> &RunId {
         match self {
+            Self::AttemptAdmitted { attempt } => &attempt.claim.run_id,
             Self::Claimed { claim }
             | Self::LeaseLost { claim, .. }
             | Self::Reclaimed { claim, .. }
@@ -117,6 +123,48 @@ pub trait DispatchOperationalFeed: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn admitted_entry_preserves_exact_identity_and_refuses_malformed_inventory() {
+        // A1 exact Run/epoch/Thread + open entry -> serializable original
+        // identity, no closure claim. A2 missing/blank Thread, zero epoch,
+        // already-closing flag or blank claim identity -> invalid inventory.
+        // Old Claimed events remain readable but cannot become A1 entries.
+        let entry = crate::dispatch::PhysicalAttempt {
+            claim: RunClaim {
+                run_id: RunId("run".into()),
+                owner: "worker".into(),
+                epoch: 1,
+            },
+            binding: None,
+            thread_id: Some(awaken_agent_contract::agent::thread::Id("thread".into())),
+            session_thread_id: None,
+            closing: false,
+        };
+        entry.validate_admission().unwrap();
+        let operation = DispatchOperation::AttemptAdmitted {
+            attempt: entry.clone(),
+        };
+        let wire = serde_json::to_value(&operation).unwrap();
+        assert_eq!(wire["type"], "attempt_admitted", "A1 entry, not closure");
+        assert_eq!(
+            serde_json::from_value::<DispatchOperation>(wire).unwrap(),
+            operation,
+            "A1 immutable identity"
+        );
+        assert_eq!(operation.run_id(), &entry.claim.run_id);
+        for fault in 0..5 {
+            let mut changed = entry.clone();
+            match fault {
+                0 => changed.thread_id = None,
+                1 => changed.thread_id = Some(awaken_agent_contract::agent::thread::Id("".into())),
+                2 => changed.claim.epoch = 0,
+                3 => changed.closing = true,
+                _ => changed.claim.owner.clear(),
+            }
+            assert!(changed.validate_admission().is_err(), "A2 axis {fault}");
+        }
+    }
 
     #[test]
     fn operation_round_trip_preserves_the_valid_product_type() {

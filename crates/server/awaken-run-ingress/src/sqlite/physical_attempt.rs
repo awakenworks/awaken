@@ -2,6 +2,7 @@
 // SQLite physical-slot admission uses the canonical Dispatch transition kernel.
 // Included by sqlite.rs; no separate state or transition authority.
 struct PersistedAttemptFacts {
+    request: String,
     status: String,
     lease_owner: Option<String>,
     lease_epoch: i64,
@@ -25,6 +26,7 @@ type PersistedAttemptRow = (
     Option<String>,
     Option<String>,
     bool,
+    String,
 );
 
 impl SqliteDispatchStore {
@@ -44,7 +46,7 @@ impl SqliteDispatchStore {
         let current: Option<PersistedAttemptFacts> = sqlx::query_as::<_, PersistedAttemptRow>(
             &format!(
                 "SELECT status, lease_owner, lease_epoch, lease_until, \
-                 active_attempt_owner, active_attempt_epoch, retired_attempt_epoch, active_attempt_binding, worker_assignment, active_attempt_closing \
+                 active_attempt_owner, active_attempt_epoch, retired_attempt_epoch, active_attempt_binding, worker_assignment, active_attempt_closing, request \
                  FROM {p}_dispatch WHERE run_id = ?1"
             ),
         )
@@ -64,6 +66,7 @@ impl SqliteDispatchStore {
                 binding,
                 assignment,
                 closing,
+                request,
             )| PersistedAttemptFacts {
                 status,
                 lease_owner,
@@ -75,6 +78,7 @@ impl SqliteDispatchStore {
                 binding,
                 assignment,
                 closing,
+                request,
             },
         );
         let Some(current) = current else {
@@ -139,6 +143,10 @@ impl SqliteDispatchStore {
             transition,
             PhysicalAttemptTransition::Install | PhysicalAttemptTransition::Replace
         ) {
+            let request: RunDispatch = serde_json::from_str(&current.request).map_err(json_err)?;
+            let operation =
+                crate::dispatch::physical_admission_operation(&claim, binding.as_ref(), &request);
+            insert_operation(&mut tx, p, operation, now_ms).await?;
             let binding_json = binding
                 .as_ref()
                 .map(serde_json::to_string)

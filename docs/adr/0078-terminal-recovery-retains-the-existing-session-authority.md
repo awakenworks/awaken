@@ -929,3 +929,27 @@ ordinary participant and canonical receipt. No direct lease edit, replacement
 Root, provider lookup guess, cleanup acknowledgement or force-reassignment API
 is introduced. Cause/effect tests cover expiry/witness/request-shape conditions,
 response-loss replay and refusal without Root or Runtime effects.
+
+## Amendment 2026-10-15: retain physical admission in the original Dispatch log
+
+Whole-execution recovery requires an inventory of every admitted physical
+attempt, not just returned or independently closed attempts. The existing
+Dispatch operation log and its original cursor remain the authority. Each
+physical Install or Replace appends `AttemptAdmitted` with the exact frozen
+Run claim, Worker/provider binding and logical/Session Thread identities in the
+same transaction that installs its physical slot. A failed operation append
+rolls back admission; exact retries and refusals append nothing. Executor entry
+remains downstream of this committed admission.
+
+This extends the current operation feed and all three storage implementations;
+it adds no queue, recovery state, receipt store or lifecycle owner. Existing
+ordinary-return and independent-closure facts retain their meanings. Admission
+is not stop evidence. Recovery joins admissions and closure evidence using the
+exact original claim and binding, rather than treating an empty closure query
+as a complete inventory. Historical absence of admission records remains
+unknown and must not be backfilled as proof of historical containment.
+
+Validation belongs to the shared binding lifecycle decision table (entry,
+exact retries, foreign binding refusal and handoff) and durable transaction
+failure/restart tests. This source change alone does not establish Flow successor
+admission, complete historical recovery or deployed automatic coding acceptance.

@@ -61,6 +61,9 @@ impl MemoryDispatchStore {
             transition,
             PhysicalAttemptTransition::Install | PhysicalAttemptTransition::Replace
         ) {
+            let operation =
+                crate::dispatch::physical_admission_operation(claim, binding, &row.request);
+            push_operation(&mut state, operation);
             let row = state.rows.get_mut(&claim.run_id).expect("locked row");
             row.active_attempt = Some(claim.clone());
             row.active_attempt_binding = binding.cloned();
