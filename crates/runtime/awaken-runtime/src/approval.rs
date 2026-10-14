@@ -107,23 +107,14 @@ where
                 let ticket = reader
                     .resume_ticket(&run_id)
                     .ok_or(ApprovalError::MissingTicket)?;
-                if ticket.snapshot_id != activation.snapshot.id.0 {
-                    return Err(
-                        awaken_runtime_contract::resume::ResumeError::SnapshotMismatch.into(),
-                    );
-                }
-                if ticket.catalog_fingerprint != activation.snapshot.fingerprint.0 {
-                    return Err(
-                        awaken_runtime_contract::resume::ResumeError::FingerprintMismatch.into(),
-                    );
-                }
+                crate::engine::run_commands::validate_resume_activation(&activation, &ticket)?;
                 crate::configuration::validate_for(runtime, &activation.snapshot, &context)?;
                 runtime.register_snapshot(activation.snapshot.clone());
                 RunState::Awaiting
             }
             Some(RunState::Running) | None => {
                 crate::configuration::validate_for(runtime, &activation.snapshot, &context)?;
-                runtime.execute(activation, context.clone()).await?
+                runtime.execute(activation.clone(), context.clone()).await?
             }
             Some(RunState::Ended(_)) => return Err(ApprovalError::InconsistentRecord.into()),
         },
@@ -152,6 +143,7 @@ where
             .clock
             .as_deref()
             .ok_or(ConfigurationError::MissingClock)?;
+        crate::engine::run_commands::validate_resume_activation(&activation, &ticket)?;
         let callback = decide(ticket.clone());
         let wait = async {
             match options.timeout {
@@ -173,7 +165,15 @@ where
             answer = wait => answer?,
         };
         let command = ResumeCommand::from_ticket(&ticket, answer, clock.now_ms());
-        state = runtime.resume(command, reader, context.clone()).await?;
+        state = crate::engine::run_commands::resume_with_continuation(
+            runtime,
+            command,
+            reader,
+            context.clone(),
+            crate::engine::ResumeContinuation::NativeLoop,
+            Some(&activation),
+        )
+        .await?;
     }
     Ok(state)
 }

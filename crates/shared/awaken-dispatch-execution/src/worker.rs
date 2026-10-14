@@ -37,7 +37,7 @@ use awaken_agent_contract::ThreadCommit;
 use awaken_agent_contract::agent::awaiting::AwaitReason;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{Id as RunId, RunState};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::{
@@ -51,7 +51,8 @@ use awaken_credential_contract::{
     CredentialRealizationRecordError, CredentialRealizationRecorder,
 };
 use awaken_runtime::Runtime;
-use awaken_runtime_contract::execution::{AttemptRecoveryMode, RunAttemptExecutor};
+use awaken_runtime_contract::execution::{AttemptRecoveryMode, LiveInput, RunAttemptExecutor};
+use awaken_runtime_contract::resolved::Backend;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::{
     AttemptOwnershipError, AttemptOwnershipVerifier, RuntimeRunContext,
@@ -704,14 +705,21 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     /// and fencing its commits by the claim's lease `epoch`.
     async fn perform_scheduled(
         &self,
-        claim: &RunClaim,
+        claimed: &Claimed,
+        ticket: &awaken_agent_contract::agent::awaiting::ResumeTicket,
         now_ms: u64,
         context: RuntimeRunContext,
     ) -> Result<RunState, Error> {
-        Ok(self
-            .runtime
-            .perform_scheduled_action(&claim.run_id, self.reader.as_ref(), context, now_ms)
-            .await?)
+        // Both callers have read this exact ScheduledAction ticket inside the
+        // existing claimed drive. Keep its original activation through Native
+        // continuation, without another attempt or backend dispatch.
+        Ok(RunAttemptExecutor::resume(
+            self.runtime.as_ref(),
+            claimed.request.activation.clone(),
+            ResumeCommand::from_ticket(ticket, ResumeResult::allow(), now_ms),
+            context,
+        )
+        .await?)
     }
 
     /// Claim at most one runnable dispatch for this worker's owner, without
@@ -1030,7 +1038,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         // an external effect; the existing neutral Indeterminate terminal is the
         // only sound committed truth until ACP exposes an idempotent Run receipt.
         if claimed.recovered
-            && awaken_runtime_contract::resolved::Backend::from_ref(
+            && Backend::from_ref(
                 activation
                     .snapshot
                     .resolved_spec
@@ -1042,10 +1050,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             .is_acp()
         {
             return self
-                .end_claimed_before_execution(
-                    &claimed,
-                    awaken_agent_contract::agent::run::EndCause::Indeterminate,
-                )
+                .end_claimed_before_execution(&claimed, EndCause::Indeterminate)
                 .await;
         }
 
@@ -1090,7 +1095,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                         claimed: &claimed,
                         claimed_snapshot: &claimed_snapshot,
                         context: &context,
-                        live_input: awaken_runtime_contract::execution::LiveInput::None,
+                        live_input: LiveInput::None,
                         recovery_mode,
                         clock: clock.clone(),
                         execution_capacity: execution_capacity.as_ref(),
@@ -1134,10 +1139,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 }
                 PhysicalAttemptOutcome::PredecessorUnconfirmed => {
                     return self
-                        .end_claimed_before_execution(
-                            &claimed,
-                            awaken_agent_contract::agent::run::EndCause::Indeterminate,
-                        )
+                        .end_claimed_before_execution(&claimed, EndCause::Indeterminate)
                         .await;
                 }
                 PhysicalAttemptOutcome::Deferred => return Ok(None),
@@ -1258,22 +1260,21 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                             claimed: &claimed,
                             claimed_snapshot: &claimed_snapshot,
                             context: &execution_context,
-                            live_input: awaken_runtime_contract::execution::LiveInput::None,
+                            live_input: LiveInput::None,
                             recovery_mode: AttemptRecoveryMode::RequirePredecessorQuiescence,
                             clock: clock.clone(),
                             execution_capacity: execution_capacity.as_ref(),
                         },
-                        |attempt_context| self.perform_scheduled(&claim, now_ms, attempt_context),
+                        |attempt_context| {
+                            self.perform_scheduled(&claimed, &ticket, now_ms, attempt_context)
+                        },
                     )
                     .await?
                 {
                     PhysicalAttemptOutcome::Returned(Ok(state)) => state,
                     PhysicalAttemptOutcome::PredecessorUnconfirmed => {
                         return self
-                            .end_claimed_before_execution(
-                                &claimed,
-                                awaken_agent_contract::agent::run::EndCause::Indeterminate,
-                            )
+                            .end_claimed_before_execution(&claimed, EndCause::Indeterminate)
                             .await;
                     }
                     PhysicalAttemptOutcome::Deferred => return Ok(None),
@@ -1328,10 +1329,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                             PhysicalAttemptOutcome::Returned(Ok(state)) => state,
                             PhysicalAttemptOutcome::PredecessorUnconfirmed => {
                                 return self
-                                    .end_claimed_before_execution(
-                                        &claimed,
-                                        awaken_agent_contract::agent::run::EndCause::Indeterminate,
-                                    )
+                                    .end_claimed_before_execution(&claimed, EndCause::Indeterminate)
                                     .await;
                             }
                             PhysicalAttemptOutcome::Deferred => return Ok(None),
@@ -1444,10 +1442,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                         PhysicalAttemptOutcome::Returned(Ok(state)) => state,
                         PhysicalAttemptOutcome::PredecessorUnconfirmed => {
                             return self
-                                .end_claimed_before_execution(
-                                    &claimed,
-                                    awaken_agent_contract::agent::run::EndCause::Indeterminate,
-                                )
+                                .end_claimed_before_execution(&claimed, EndCause::Indeterminate)
                                 .await;
                         }
                         PhysicalAttemptOutcome::Deferred => return Ok(None),

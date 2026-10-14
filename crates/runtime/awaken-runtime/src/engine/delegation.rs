@@ -6,6 +6,7 @@
 //! handling form one bounded responsibility.
 
 use super::*;
+use awaken_runtime_contract::snapshot::AgentId;
 
 /// Stable parent context needed to address and durably deliver one delegated
 /// child Run. Grouping these cohesive identities keeps the dispatch function's
@@ -402,6 +403,7 @@ pub(super) async fn resume_delegation(
     ticket: &ResumeTicket,
     result: ResumeResult,
     context_messages: Vec<Message>,
+    run_input: std::sync::Arc<[Message]>,
     resolved: &ResolvedRun,
     env: &ResolvedExecutionEnv,
     run_id: &RunId,
@@ -473,12 +475,7 @@ pub(super) async fn resume_delegation(
                                 .cancellation_reference
                                 .clone()
                                 .map(|reference| {
-                                    (
-                                        reference,
-                                        awaken_runtime_contract::snapshot::AgentId(
-                                            relationship.target_agent_id.clone(),
-                                        ),
-                                    )
+                                    (reference, AgentId(relationship.target_agent_id.clone()))
                                 })
                         })
                     })
@@ -570,6 +567,7 @@ pub(super) async fn resume_delegation(
         synthetic,
         None,
         context_messages,
+        run_input,
         reader,
         context,
         ResumeContinuation::NativeLoop,

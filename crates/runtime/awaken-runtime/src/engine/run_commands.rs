@@ -42,20 +42,55 @@ impl RunAttemptExecutor for Runtime {
         let reader = context.reader.clone().ok_or_else(|| {
             Error::Execution("RunAttemptExecutor::resume requires committed history".to_string())
         })?;
-        if let Some(ticket) = reader.resume_ticket(&command.run_id)
-            && ticket.inherited_toolsets.as_ref() != activation.inherited_toolsets()
-        {
-            return Err(Error::Execution(
-                "resumed activation tool configuration differs from the committed ticket".into(),
-            ));
+        if let Some(ticket) = reader.resume_ticket(&command.run_id) {
+            validate_activation_toolsets(&activation, &ticket)?;
         }
         // Resume is the single ingress for an activated retry. A rebuilt Runtime
         // starts without its predecessor's in-memory snapshot registry, so retain
         // the exact immutable snapshot carried by this activation before resolving
         // the committed resume ticket.
-        self.register_snapshot(activation.snapshot.clone());
-        Runtime::resume(self, command, reader.as_ref(), context).await
+        resume_with_continuation(
+            self,
+            command,
+            reader.as_ref(),
+            context,
+            ResumeContinuation::NativeLoop,
+            Some(&activation),
+        )
+        .await
     }
+}
+
+/// Bind the supplied immutable value to the existing ticket. The SDK uses
+/// this same check before its callback; the continuation uses it before entry.
+/// Snapshot/fingerprint retain the SDK's existing diagnostic precedence.
+pub(crate) fn validate_resume_activation(
+    activation: &RunActivation,
+    ticket: &ResumeTicket,
+) -> Result<()> {
+    use awaken_runtime_contract::resume::ResumeError;
+    if ticket.snapshot_id != activation.snapshot.id.0 {
+        return Err(ResumeError::SnapshotMismatch.into());
+    }
+    if ticket.catalog_fingerprint != activation.snapshot.fingerprint.0 {
+        return Err(ResumeError::FingerprintMismatch.into());
+    }
+    if ticket.run_id != activation.run_id {
+        return Err(ResumeError::RunMismatch.into());
+    }
+    if ticket.thread_id != activation.thread_id {
+        return Err(ResumeError::ThreadMismatch.into());
+    }
+    Ok(())
+}
+
+fn validate_activation_toolsets(activation: &RunActivation, ticket: &ResumeTicket) -> Result<()> {
+    if ticket.inherited_toolsets.as_ref() != activation.inherited_toolsets() {
+        return Err(Error::Execution(
+            "resumed activation tool configuration differs from the committed ticket".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Cancel a run that is not executing (a queued or awaiting run) by committing a
@@ -289,6 +324,7 @@ pub(crate) async fn resume_run(
         reader,
         context,
         ResumeContinuation::NativeLoop,
+        None,
     )
     .await
 }
@@ -310,6 +346,7 @@ pub(crate) async fn resume_tool_batch(
         reader,
         context,
         ResumeContinuation::ToolBatch,
+        None,
     )
     .await
 }
@@ -333,17 +370,15 @@ pub(crate) async fn recover_tool_batch(
     run_agent_loop(runtime, activation, context, ResumeContinuation::ToolBatch).await
 }
 
-async fn resume_with_continuation(
+/// Complete context binding after the current ticket/command validation.
+/// This preserves live-source refusal, ticket attribution, supplied capability
+/// overlay and exact process-local snapshot registration as one synchronous phase.
+fn bind_resume_context(
     runtime: &Runtime,
-    command: ResumeCommand,
-    reader: &dyn CommittedThreadView,
     mut context: RuntimeRunContext,
-    continuation: ResumeContinuation,
-) -> Result<RunState> {
-    let ticket = reader
-        .resume_ticket(&command.run_id)
-        .ok_or(awaken_runtime_contract::resume::ResumeError::NotWaiting)?;
-    validate_resume(&ticket, &command)?;
+    ticket: &ResumeTicket,
+    activation: Option<&RunActivation>,
+) -> Result<RuntimeRunContext> {
     if context.inherited_toolsets.is_some()
         && context.inherited_toolsets != ticket.inherited_toolsets
     {
@@ -352,6 +387,36 @@ async fn resume_with_continuation(
         ));
     }
     context.inherited_toolsets = ticket.inherited_toolsets.clone();
+    if let Some(activation) = activation {
+        validate_resume_activation(activation, ticket)?;
+        // An explicit supplied source is immutable. SDK source absence retains
+        // the original bare context restoration above; it is not new history.
+        if activation.inherited_toolsets().is_some() {
+            validate_activation_toolsets(activation, ticket)?;
+        }
+        let inherited = context.inherited_toolsets.clone();
+        context = activation.narrow_context(context);
+        // Ticket attribution already passed the original live-context check.
+        // Applying a capability overlay must not erase that frozen input.
+        context.inherited_toolsets = inherited;
+        runtime.register_snapshot(activation.snapshot.clone());
+    }
+    Ok(context)
+}
+
+pub(crate) async fn resume_with_continuation(
+    runtime: &Runtime,
+    command: ResumeCommand,
+    reader: &dyn CommittedThreadView,
+    context: RuntimeRunContext,
+    continuation: ResumeContinuation,
+    activation: Option<&RunActivation>,
+) -> Result<RunState> {
+    let ticket = reader
+        .resume_ticket(&command.run_id)
+        .ok_or(awaken_runtime_contract::resume::ResumeError::NotWaiting)?;
+    validate_resume(&ticket, &command)?;
+    let context = bind_resume_context(runtime, context, &ticket, activation)?;
     // Delegation continuation retains its execution ticket across child turns
     // and is not a ToolResult consumption. Every other named resume operation
     // is carried to the first commit that replaces this exact ticket.
@@ -396,10 +461,20 @@ async fn resume_with_continuation(
             .await;
         }
     };
-    let snapshot = runtime
-        .snapshot_by_id(&ExecutableAgentSnapshotId(ticket.snapshot_id.clone()))
-        .ok_or_else(|| Error::Resolution("snapshot for resume not found".to_string()))?;
-    let resolved = runtime.resolve(&snapshot).map_err(map_resolver_error)?;
+    let snapshot = match activation {
+        Some(activation) => activation.snapshot.clone(),
+        None => runtime
+            .snapshot_by_id(&ExecutableAgentSnapshotId(ticket.snapshot_id.clone()))
+            .ok_or_else(|| Error::Resolution("snapshot for resume not found".to_string()))?,
+    };
+    let resolved = super::run_loop::resolve_activation_snapshot(
+        runtime,
+        &snapshot,
+        activation.and_then(|activation| activation.model_ref_override.as_deref()),
+    )?;
+    let run_input = activation
+        .map(|activation| std::sync::Arc::<[Message]>::from(activation.input.clone()))
+        .unwrap_or_default();
 
     let run_id = command.run_id.clone();
     let thread_id = command.thread_id.clone();
@@ -439,6 +514,7 @@ async fn resume_with_continuation(
             &ticket,
             command.result,
             context_messages,
+            run_input,
             &resolved,
             &env,
             &run_id,
@@ -462,6 +538,7 @@ async fn resume_with_continuation(
         command.result,
         resume_commit,
         context_messages,
+        run_input,
         reader,
         &context,
         continuation,
