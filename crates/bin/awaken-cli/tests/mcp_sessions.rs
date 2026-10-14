@@ -480,6 +480,11 @@ fn always_allow_mcp_tools(server_name: &str) -> Value {
 /// M1=C1+C2+C3=>E1+E2+E3; missing credentials are covered separately.
 #[tokio::test(flavor = "multi_thread")]
 async fn session_inline_mcp_server_with_vault_credential_converses_across_runs() {
+    // Stack regression: C4 the second accepted Run rebuilds the same Session's
+    // context through assembly and Memory recovery; C5 the runner uses its
+    // default thread stack. M2=C1+C2+C3+C4+C5 must produce both exact receipted
+    // tool results and final messages below, without abort or a second factory.
+    // M1/M2 share the original transport, Vault and idle-boundary assertions.
     let url = mock_calc_mcp().await;
     let app = build_all_in_one_router().await;
     let vault_id = vault_with_calc_credential(&app, &url).await;
