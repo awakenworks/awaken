@@ -839,7 +839,7 @@ impl ToolExecutionFactsResolver for CurrentToolExecutionFacts {
         let (capability, concurrency) = match tool.execution_target() {
             ToolExecutionTarget::Brain => (
                 tool.recovery_capability(),
-                tool.concurrency(&call.arguments),
+                intrinsic_tool_concurrency(ToolExecutionTarget::Brain, tool.as_ref(), None, call),
             ),
             ToolExecutionTarget::Sandbox => {
                 let sandbox = self.sandbox.as_deref().ok_or_else(|| {
@@ -850,7 +850,12 @@ impl ToolExecutionFactsResolver for CurrentToolExecutionFacts {
                 })?;
                 (
                     sandbox.recovery_capability(&call.tool_id),
-                    sandbox.concurrency(&call.tool_id, &call.arguments),
+                    intrinsic_tool_concurrency(
+                        ToolExecutionTarget::Sandbox,
+                        tool.as_ref(),
+                        Some(sandbox),
+                        call,
+                    ),
                 )
             }
         };
@@ -858,12 +863,7 @@ impl ToolExecutionFactsResolver for CurrentToolExecutionFacts {
             .recovery_policy
             .validate(capability)
             .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?;
-        let concurrency = self
-            .constraints
-            .iter()
-            .fold(concurrency, |claim, constraint| {
-                claim.narrowed_with(constraint.constrain(call))
-            });
+        let concurrency = constrain_tool_concurrency(concurrency, &self.constraints, call);
         Ok(ToolExecutionFacts {
             recovery: descriptor.recovery_policy.clone(),
             concurrency,
@@ -1027,8 +1027,10 @@ impl DurableTaskExecutor for LocalToolExecutor<'_> {
     }
 }
 
-/// Resolve concurrency through the same placement decision as invocation. A
-/// missing Sandbox executor and an unknown tool both fail closed to sequential.
+/// Resolve the complete concurrency claim through invocation's placement and
+/// the resolved plugins' ordered constraints. An unknown tool stays Serial;
+/// an absent Sandbox executor retains its intrinsic default while invocation
+/// rejects that missing executor at its existing boundary.
 pub(crate) fn tool_concurrency(
     runtime: &Runtime,
     env: &ResolvedExecutionEnv,
@@ -1039,16 +1041,46 @@ pub(crate) fn tool_concurrency(
         runtime,
         env: Some(env),
     };
-    match local.execution_target(&call.tool_id) {
-        Some(ToolExecutionTarget::Sandbox) => context
-            .tool_executor
-            .as_deref()
-            .map_or_else(ToolConcurrency::default, |executor| {
-                executor.concurrency(&call.tool_id, &call.arguments)
-            }),
-        Some(ToolExecutionTarget::Brain) => local.concurrency(&call.tool_id, &call.arguments),
-        None => ToolConcurrency::Serial,
+    let intrinsic = local
+        .tool(&call.tool_id)
+        .map_or(ToolConcurrency::Serial, |tool| {
+            intrinsic_tool_concurrency(
+                tool.execution_target(),
+                tool.as_ref(),
+                context.tool_executor.as_deref(),
+                call,
+            )
+        });
+    constrain_tool_concurrency(intrinsic, env.tool_constraints(), call)
+}
+
+/// Placement's intrinsic claim, shared with the immutable execution catalog.
+/// The catalog validates missing Sandbox wiring before using this calculation.
+fn intrinsic_tool_concurrency(
+    target: ToolExecutionTarget,
+    tool: &dyn RawTool,
+    sandbox: Option<&dyn ToolExecutor>,
+    call: &ToolCall,
+) -> ToolConcurrency {
+    match target {
+        ToolExecutionTarget::Brain => tool.concurrency(&call.arguments),
+        ToolExecutionTarget::Sandbox => sandbox.map_or_else(ToolConcurrency::default, |executor| {
+            executor.concurrency(&call.tool_id, &call.arguments)
+        }),
     }
+}
+
+/// One ordered composition for ordinary placement and special intrinsic claims.
+/// Evaluate every contribution, including after Serial, so a trait callback is
+/// observed once in order at this boundary rather than relying on idempotence.
+pub(super) fn constrain_tool_concurrency(
+    intrinsic: ToolConcurrency,
+    constraints: &[Arc<dyn ToolConcurrencyConstraint>],
+    call: &ToolCall,
+) -> ToolConcurrency {
+    constraints.iter().fold(intrinsic, |claim, constraint| {
+        claim.narrowed_with(constraint.constrain(call))
+    })
 }
 
 /// Resolve recovery through the same placement decision as invocation.

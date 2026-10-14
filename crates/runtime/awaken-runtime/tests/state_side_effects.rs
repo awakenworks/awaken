@@ -22,7 +22,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
 use awaken_agent_contract::agent::state::{Command as StateCommand, Key, MergePolicy, Scope};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_runtime::Runtime;
+use awaken_runtime::{PreparedToolExecutor, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
@@ -159,7 +159,7 @@ struct CountedTool {
     calls: Arc<AtomicUsize>,
 }
 
-struct ArgumentResourceConstraint;
+struct ArgumentResourceConstraint(Arc<AtomicUsize>);
 
 impl ToolConcurrencyConstraint for ArgumentResourceConstraint {
     fn id(&self) -> &str {
@@ -167,6 +167,7 @@ impl ToolConcurrencyConstraint for ArgumentResourceConstraint {
     }
 
     fn constrain(&self, call: &ToolCall) -> ToolConcurrency {
+        self.0.fetch_add(1, Ordering::SeqCst);
         call.arguments
             .get("resource")
             .and_then(serde_json::Value::as_str)
@@ -179,7 +180,7 @@ impl ToolConcurrencyConstraint for ArgumentResourceConstraint {
     }
 }
 
-struct ConstraintPlugin;
+struct ConstraintPlugin(Arc<AtomicUsize>);
 
 impl Plugin for ConstraintPlugin {
     fn manifest(&self) -> PluginManifest {
@@ -195,7 +196,8 @@ impl Plugin for ConstraintPlugin {
 
     fn resolve(&self) -> Contributions {
         let mut contributions = Contributions::new("constraint-plugin");
-        contributions.register_tool_constraint(Arc::new(ArgumentResourceConstraint));
+        contributions
+            .register_tool_constraint(Arc::new(ArgumentResourceConstraint(self.0.clone())));
         contributions
     }
 }
@@ -463,6 +465,13 @@ async fn immediate_gate_results_do_not_serialize_compatible_siblings() {
 /// distinct keys retain maximum overlap through the identical runtime path.
 #[tokio::test]
 async fn plugin_resource_constraint_partitions_parallel_tools_by_argument_key() {
+    // C1 intrinsic Parallel; C2 constraint Write(same/different argument key);
+    // C3 foreground planning / Prepared facts / original Task submission.
+    // R1 same key -> one active effect; R2 distinct keys -> two. R3 each
+    // ordinary planning/fact boundary evaluates the bound constraint once;
+    // R4 Task freezes the same independently expected claim as Prepared.
+    // No admission is installed in this foreground case, so its two constraint
+    // calls belong exactly to the two planned tools, not an execution gate.
     for (case, keys, expected_maximum, synchronize) in [
         ("same resource", ["shared", "shared"], 1, false),
         ("different resources", ["left", "right"], 2, true),
@@ -477,9 +486,10 @@ async fn plugin_resource_constraint_partitions_parallel_tools_by_argument_key() 
                 tool_id: id.to_string(),
                 arguments: serde_json::json!({"resource": resource}),
             });
+        let constraint_calls = Arc::new(AtomicUsize::new(0));
         let mut runtime = Runtime::new()
             .with_llm(Arc::new(CallsThenEnd::new(calls.collect())))
-            .with_plugin(Arc::new(ConstraintPlugin));
+            .with_plugin(Arc::new(ConstraintPlugin(constraint_calls.clone())));
         for id in ["a", "b"] {
             runtime = runtime.with_tool(Arc::new(ObservedTool {
                 id,
@@ -491,6 +501,13 @@ async fn plugin_resource_constraint_partitions_parallel_tools_by_argument_key() 
         }
         let mut configured = activation(&["a", "b"]);
         configured.snapshot.resolved_spec.plugin_ids = vec!["constraint-plugin".to_string()];
+        let runtime = Arc::new(runtime);
+        let prepared = PreparedToolExecutor::new(
+            runtime.clone(),
+            &configured.snapshot,
+            RuntimeRunContext::new(),
+        )
+        .expect("R3 same resolved plugin input");
         let outcome = runtime
             .execute(configured, RuntimeRunContext::new())
             .await
@@ -502,7 +519,102 @@ async fn plugin_resource_constraint_partitions_parallel_tools_by_argument_key() 
             expected_maximum,
             "{case}"
         );
+        assert_eq!(constraint_calls.load(Ordering::SeqCst), 2, "R3 {case}");
+        for (id, key) in ["a", "b"].into_iter().zip(keys) {
+            let before = constraint_calls.load(Ordering::SeqCst);
+            let execution = prepared
+                .execution(&ToolCall {
+                    call_id: format!("prepared-{id}"),
+                    tool_id: id.into(),
+                    arguments: serde_json::json!({"resource": key}),
+                })
+                .expect("R3 prepared fact");
+            assert_eq!(
+                execution.concurrency,
+                ToolConcurrency::Resources(vec![ToolResourceAccess::Write(ToolResource::new(
+                    "plugin-test",
+                    key
+                )),]),
+                "R3 independently expected argument claim"
+            );
+            assert_eq!(
+                constraint_calls.load(Ordering::SeqCst),
+                before + 1,
+                "R3 one resolution"
+            );
+        }
     }
+    let supervisor = Arc::new(awaken_ext_background_task::BackgroundTaskSupervisor::new(
+        "constraint-worker",
+        awaken_time::system_clock(),
+    ));
+    let constraint_calls = Arc::new(AtomicUsize::new(0));
+    let runtime = Arc::new(
+        Runtime::new()
+            .with_llm(Arc::new(CallsThenEnd::new(vec![ToolCall {
+                call_id: "submit-constrained".into(),
+                tool_id: "run_in_background".into(),
+                arguments: serde_json::json!({"tool":"a", "arguments":{"resource":"shared"}}),
+            }])))
+            .with_tool(Arc::new(ObservedTool {
+                id: "a",
+                probe: Arc::new(ConcurrencyProbe::default()),
+                concurrency: Some(ToolConcurrency::Parallel),
+                delay: Duration::ZERO,
+                barrier: None,
+            }))
+            .with_plugin(Arc::new(ConstraintPlugin(constraint_calls)))
+            .with_plugin(Arc::new(
+                awaken_ext_background_task::BackgroundTaskPlugin::with_supervisor(
+                    awaken_ext_background_task::BackgroundTaskConfig {
+                        tools: std::collections::BTreeSet::from(["a".into()]),
+                        ..Default::default()
+                    },
+                    supervisor,
+                ),
+            )),
+    );
+    let mut configured = activation(&["a"]);
+    configured.snapshot.resolved_spec.plugin_ids = vec![
+        "constraint-plugin".into(),
+        awaken_ext_background_task::BACKGROUND_TASK_PLUGIN_ID.into(),
+    ];
+    let prepared = PreparedToolExecutor::new(
+        runtime.clone(),
+        &configured.snapshot,
+        RuntimeRunContext::new(),
+    )
+    .unwrap();
+    let commits = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+    runtime
+        .execute(
+            configured,
+            RuntimeRunContext::new().with_commit(commits.clone()),
+        )
+        .await
+        .unwrap();
+    let tasks = awaken_ext_background_task::tasks_from_state(
+        &awaken_agent_contract::agent::state::Store::rebuild(&commits.committed().state),
+    )
+    .unwrap();
+    assert_eq!(tasks.len(), 1, "R4 original Task submission");
+    let expected = ToolConcurrency::Resources(vec![ToolResourceAccess::Write(ToolResource::new(
+        "plugin-test",
+        "shared",
+    ))]);
+    assert_eq!(
+        tasks[0].attempt().unwrap().policy.concurrency,
+        expected,
+        "R4 original facts freeze"
+    );
+    assert_eq!(
+        prepared
+            .execution(&tasks[0].invocation.call)
+            .unwrap()
+            .concurrency,
+        expected,
+        "R4 prepared agrees without restamping Task"
+    );
 }
 
 async fn run_observed_pair(
