@@ -326,6 +326,9 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         epoch: 2,
     };
     let run_only = managed
+        .host
+        .realizer
+        .staging
         .stage_resolved_input("realization-workspace", &input, Some(&claim), None, None)
         .await
         .expect("R1 Run claim alone");
@@ -336,6 +339,9 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         "R1 does not call the Session encoder"
     );
     let both = managed
+        .host
+        .realizer
+        .staging
         .stage_resolved_input(
             "realization-workspace",
             &input,
@@ -367,6 +373,9 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         ..lease.clone()
     };
     let stale_error = match managed
+        .host
+        .realizer
+        .staging
         .stage_resolved_input(
             "realization-workspace",
             &input,
@@ -387,6 +396,9 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     let mut foreign_input = input.clone();
     foreign_input.binding_id = awaken_resource_contract::BindingId::from("foreign-memory");
     let foreign_error = match managed
+        .host
+        .realizer
+        .staging
         .stage_resolved_input(
             "realization-workspace",
             &foreign_input,
@@ -411,6 +423,9 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     );
     assert_eq!(events.lock().unwrap().len(), 4, "R4/R5 no mount reference");
     let zero_error = match managed
+        .host
+        .realizer
+        .staging
         .stage_resolved_input(
             "realization-workspace",
             &input,
@@ -459,6 +474,221 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         "R3 no fence never reaches encoder"
     );
     assert_eq!(events.lock().unwrap().len(), 4, "R3 no mount reference");
+
+    // Resource cache decisions after the receiver moves to Stage:
+    // C1 physical exact key + claim => no compile/IO, then retain exact tuple;
+    // C2 a miss => canonical full compiler; C3 ingress with claim + exact key
+    // still revalidates; C6 the second exact-key read returns the same Memory
+    // Arc; C7 compiler failure returns before any publication. R1 unclaimed
+    // ingress replay above skips IO. C4/C5's removal between the two Slot reads
+    // is a source-level race invariant: no deterministic interleaving hook
+    // exists here, so this test does not claim to execute those two schedules.
+    let stage = &managed.host.realizer.staging;
+    let key = stage
+        .sessions
+        .read_realization("realization-memory-session", |r| {
+            r.staged_resource_effect_key.clone()
+        })
+        .flatten()
+        .unwrap();
+    let retained = stage
+        .retained_resource_requirements(
+            "realization-memory-session",
+            transition.desired(),
+            Some(&claim),
+            Some(&renewed),
+            &key,
+        )
+        .await
+        .expect("C1/C6 physical matching cache keeps original policy even with a claim");
+    assert_eq!(
+        events.lock().unwrap().len(),
+        4,
+        "C1 zero new encoder or content IO"
+    );
+    stage
+        .sessions
+        .read_realization("realization-memory-session", |r| {
+            assert_eq!(
+                retained.staged.mounts, r.resources.mounts,
+                "C6 exact retained requirements"
+            );
+            assert!(
+                Arc::ptr_eq(
+                    &retained.memory_bindings["realization-memory"],
+                    &r.memory_bindings["realization-memory"]
+                ),
+                "C6 original binding Arc"
+            );
+        })
+        .unwrap();
+    stage
+        .stage_resource_requirements(
+            "realization-memory-session",
+            transition.desired(),
+            Some(&claim),
+            Some((
+                "realization-memory-session",
+                transition.desired().revision,
+                &renewed,
+            )),
+            key.clone(),
+        )
+        .await
+        .expect("C3 claimed ingress revalidates even for the same key");
+    assert_eq!(
+        events.lock().unwrap().len(),
+        5,
+        "C3 one original encoder call"
+    );
+    stage
+        .retained_resource_requirements(
+            "realization-memory-session",
+            transition.desired(),
+            None,
+            Some(&lease),
+            "cache-miss-key",
+        )
+        .await
+        .expect("C2 cache miss calls one full compiler");
+    assert_eq!(
+        events.lock().unwrap().len(),
+        6,
+        "C2 one original encoder call"
+    );
+    let before = stage.sessions.frozen("realization-memory-session");
+    let binding = stage
+        .sessions
+        .read_realization("realization-memory-session", |r| {
+            r.memory_bindings["realization-memory"].clone()
+        })
+        .unwrap();
+    let failed = stage
+        .retained_resource_requirements(
+            "realization-memory-session",
+            transition.desired(),
+            None,
+            None,
+            "unfenced-cache-miss",
+        )
+        .await;
+    let failed = match failed {
+        Ok(_) => panic!("C7 unfenced miss accepted"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        failed.kind,
+        awaken_session_types::RunErrorKind::BadRequest,
+        "C7 original missing fence error"
+    );
+    assert_eq!(
+        events.lock().unwrap().len(),
+        6,
+        "C7 no encoder or mount effect"
+    );
+    assert!(
+        Arc::ptr_eq(
+            &before,
+            &stage.sessions.frozen("realization-memory-session")
+        ),
+        "C7 Frozen unchanged"
+    );
+    stage
+        .sessions
+        .read_realization("realization-memory-session", |r| {
+            assert!(
+                Arc::ptr_eq(&binding, &r.memory_bindings["realization-memory"]),
+                "C7 binding unchanged"
+            );
+            assert_eq!(
+                r.staged_resource_effect_key.as_deref(),
+                Some("cache-miss-key"),
+                "C7 no failed key publication"
+            );
+            assert_eq!(
+                r.resources.mounts.len(),
+                1,
+                "C7 prior complete requirements retained"
+            );
+            assert!(
+                r.skills.as_ref().is_some_and(Vec::is_empty),
+                "C7 Skills unchanged"
+            );
+            assert!(r.memory.is_none(), "C7 no automatic memory selection");
+        })
+        .unwrap();
+
+    // R9: prospective bound Environment adoption must publish only the pinned
+    // Skill set. No Resource compilation, complete key, Workspace publication
+    // or active-generation receipt may precede adoption of that original domain.
+    managed
+        .stage_prevalidated_resource_transition_under_resource_projection(
+            "awaiting-memory-adoption",
+            &transition,
+            Some(&claim),
+            Some(&lease),
+            true,
+        )
+        .await
+        .expect("R9 pinned empty Skill set is sufficient before bound adoption");
+    assert_eq!(
+        events.lock().unwrap().len(),
+        6,
+        "R9 no Memory encoder or content IO"
+    );
+    managed
+        .host
+        .installed_sessions
+        .read("awaiting-memory-adoption", |slot| {
+            assert!(
+                slot.inputs.workspace.is_none(),
+                "R9 no complete Frozen publication"
+            );
+            assert_eq!(
+                slot.realization.skills,
+                Some(Vec::new()),
+                "R9 exact empty Skill set"
+            );
+            assert!(slot.realization.staged_resource_effect_key.is_none());
+            assert!(slot.realization.resources.mounts.is_empty());
+            assert!(slot.realization.resources.prompts.is_empty());
+            assert!(slot.realization.resources.resource_prompts.is_empty());
+            assert!(slot.realization.resources.binding_checks.is_empty());
+            assert!(slot.realization.resources.repositories.is_empty());
+            assert!(slot.realization.memory_bindings.is_empty());
+            assert!(slot.realization.memory.is_none());
+            assert!(
+                slot.realization.manifest.is_none(),
+                "R9 no physical completion"
+            );
+        })
+        .unwrap();
+    // R8 missing selected encoder: the same upstream mode has no local
+    // fallback. The original owner returns Internal before any content call.
+    let missing_encoder_host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_authority(crate::UpstreamAuthority::default())
+        .build()
+        .expect("validated upstream Host dependencies");
+    let missing = missing_encoder_host
+        .realizer
+        .staging
+        .stage_resolved_input("realization-workspace", &input, Some(&claim), None, None)
+        .await;
+    let missing = match missing {
+        Ok(_) => panic!("R8 missing encoder fell back locally"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        missing.kind,
+        awaken_session_types::RunErrorKind::Internal,
+        "R8 missing encoder"
+    );
+    assert_eq!(missing.code, "internal", "R8 original error classification");
+    assert_eq!(
+        missing.message,
+        "remote Memory materialization encoder is not configured"
+    );
 }
 
 struct RecordingTerminalMemoryMounter {

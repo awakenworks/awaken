@@ -176,6 +176,21 @@ pub(crate) struct SessionRealization {
 }
 
 impl SessionRealization {
+    pub(crate) fn validate_preparation_publication(
+        &self,
+        asserted: Option<&session_resource::SessionRealizationLease>,
+    ) -> Result<(), awaken_session_types::RunError> {
+        if self.resource_preparation.is_some()
+            && !asserted.is_some_and(|lease| self.resource_preparation_authorized(lease))
+        {
+            return Err(awaken_session_types::RunError::unavailable_classified(
+                "session_realization_authority_lost",
+                "Resource preparation cannot publish after realization authority ended",
+            ));
+        }
+        Ok(())
+    }
+
     /// Resources the Environment held before an in-flight resource transition.
     pub(crate) fn previous_resources(&self) -> Option<session_resource::ResolvedSessionResources> {
         let transition = self.resource_transition.as_ref()?;

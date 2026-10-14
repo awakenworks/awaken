@@ -826,7 +826,11 @@ pub(crate) fn bind_test_memory(host: &SharedHost, thread: &str, store_id: &str, 
         version: awaken_resource_contract::ConfigVersion::INITIAL,
         retention_policy: Default::default(),
     };
-    let handle = host.platform_memory_handle(store_id.to_string(), writable);
+    let handle = Arc::new(crate::memory_binding::PlatformMemoryHandle::new(
+        host.resources.memory_stores.fs_handle(),
+        store_id.to_string(),
+        writable,
+    ));
     host.realizer.staging.register_thread_memory(
         thread,
         Some(Arc::new(crate::memory_binding::MemoryBinding::new(

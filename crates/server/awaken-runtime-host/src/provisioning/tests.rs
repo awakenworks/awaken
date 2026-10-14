@@ -27,21 +27,56 @@ fn repository_binding_failure_controls_host_retry_semantics() {
     // concurrent authority -> Conflict; authority outage or unknown read ->
     // Unavailable; corrupt authority response -> Internal. This is the final
     // Host boundary, so the typed cause must survive without message parsing.
+    // R1..R6 cover the complete verifier enum through the sole classifier;
+    // kind, literal code/message and Display are observable effects. The Run
+    // boundary's original table separately pins Conflict -> BadRequest.
+    // There is no lock, IO, state or poison precondition in this pure mapping.
     use crate::host::HostErrorKind as K;
     use awaken_resource_contract::RepositoryBindingVerifierError as E;
     let cases = [
-        (E::InvalidRequest { detail: "x".into() }, K::BadRequest),
-        (E::Denied { detail: "x".into() }, K::BadRequest),
-        (E::Conflict { detail: "x".into() }, K::Conflict),
+        (
+            E::InvalidRequest { detail: "x".into() },
+            K::BadRequest,
+            "invalid_request",
+            "invalid Repository binding request: x",
+        ),
+        (
+            E::Denied { detail: "x".into() },
+            K::BadRequest,
+            "invalid_request",
+            "Repository binding was denied: x",
+        ),
+        (
+            E::Conflict { detail: "x".into() },
+            K::Conflict,
+            "conflict",
+            "Repository binding authority changed concurrently: x",
+        ),
         (
             E::AuthorityUnavailable { detail: "x".into() },
             K::Unavailable,
+            "unavailable",
+            "Repository binding authority is unavailable: x",
         ),
-        (E::Indeterminate { detail: "x".into() }, K::Unavailable),
-        (E::CorruptAuthority { detail: "x".into() }, K::Internal),
+        (
+            E::Indeterminate { detail: "x".into() },
+            K::Unavailable,
+            "unavailable",
+            "Repository binding decision is indeterminate: x",
+        ),
+        (
+            E::CorruptAuthority { detail: "x".into() },
+            K::Internal,
+            "internal",
+            "Repository binding authority returned corrupt data: x",
+        ),
     ];
-    for (error, expected) in cases {
-        assert_eq!(repository_binding_host_error(error).kind, expected);
+    for (error, expected, code, message) in cases {
+        let actual = repository_binding_host_error(error);
+        assert_eq!(actual.kind, expected);
+        assert_eq!(actual.code, code);
+        assert_eq!(actual.message, message);
+        assert_eq!(actual.to_string(), message);
     }
 }
 
@@ -579,7 +614,9 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
     )
     .expect("resolved File+Memory manifest");
     let strict_projection = project_environment(&environment);
-    let effectful = crate::ManagedHost::new(host.clone())
+    let effectful = host
+        .realizer
+        .staging
         .stage_resolved_input(
             "workspace",
             &resolved.inputs()[1],

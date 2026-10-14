@@ -250,6 +250,9 @@ impl DispatchSessionRuntime {
             )));
         }
         self.managed()?
+            .host
+            .realizer
+            .staging
             .compile_memory_binding(session_thread, &manifest.workspace_id, input, None)
             .await?
             .map(|(_, memory)| memory)

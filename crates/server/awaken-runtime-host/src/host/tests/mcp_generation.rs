@@ -780,6 +780,12 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
     );
     // RQ5 active mutex poison => preserve the original panic diagnostic,
     // never substitute context presence or return a false quiescence result.
+    // Environment continuation's primary/delegated reads use this same kernel,
+    // preserving their Slot -> active lock order and existing Runtime Arc.
+    // Their absent/inactive/active conditions remain RQ0-RQ4; delegated status
+    // still short-circuits a non-occupying dispatch before the Slot read.
+    // This fault proves only the active kernel; the distinct actual Slot S4
+    // poison regression belongs to installed_session/tests.rs.
     // Poison the same actual Runtime only after all P2-P4 cleanup assertions;
     // the primitive reads no registry, so this fault does not poison the slot.
     let poisoned_runtime = runtime.clone();

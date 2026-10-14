@@ -126,6 +126,14 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
                 crate::resource_staging::ResourceStaging {
                     sessions: installed_sessions.realizations(),
                     bundle_source: skill_bundle_source,
+                    file_content_source: resources.file_content_source.clone(),
+                    memory_repository: resources.memory_stores.fs_handle(),
+                    resource_validator: session_execution.resource_validator.clone(),
+                    repository_binding_verifier: session_execution
+                        .repository_binding_verifier
+                        .clone(),
+                    fetches_resources_upstream: authority.fetches_resources_upstream(),
+                    memory_reference_encoder: authority.memory_reference_encoder(),
                 },
                 execution_authority,
             ),

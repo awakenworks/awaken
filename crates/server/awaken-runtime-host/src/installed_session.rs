@@ -12,7 +12,7 @@ use crate::frozen_inputs::FrozenSessionInputs;
 use crate::session_realizations::InstalledSessionsPoisoned;
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 pub(crate) use crate::environment_owner::*;
 pub(crate) use crate::session_realizations::{
@@ -245,20 +245,44 @@ impl crate::session_realizations::SessionRealizationSource for InstalledSessions
         create: bool,
         visit: &mut dyn FnMut(crate::session_realizations::SessionRealizationAccess<'_>),
     ) -> Result<(), InstalledSessionsPoisoned> {
-        let mut slots = self.slots.lock().map_err(|_| InstalledSessionsPoisoned)?;
-        let slot = if create {
-            Some(slots.entry(session.to_string()).or_default())
-        } else {
-            slots.get_mut(session)
-        };
-        if let Some(slot) = slot {
+        self.visit_slot(session, create, |slot| {
             visit(crate::session_realizations::SessionRealizationAccess {
                 inputs: &slot.inputs,
                 realization: &mut slot.realization,
                 run: &mut slot.run,
             });
-        }
+        })
+        .map_err(|_| InstalledSessionsPoisoned)?;
         Ok(())
+    }
+
+    fn publish_resource_requirements(
+        &self,
+        session: &str,
+        workspace: &str,
+        asserted: Option<&awaken_session_configuration_contract::resource::SessionRealizationLease>,
+        compiled: crate::staged_resources::CompiledEffectiveInputs,
+        versions: Vec<awaken_resource_contract::SkillVersion>,
+        effect_key: String,
+    ) -> Result<(), awaken_session_types::RunError> {
+        self.visit_slot(session, true, |slot| {
+            // The lease check and correlated cache publication share the slot
+            // lock with renewal rejection. Neither a late read nor cancellation
+            // may publish requirements after that rejection has linearized.
+            slot.realization
+                .validate_preparation_publication(asserted)?;
+            slot.replace_frozen_with(|next| next.workspace = Some(workspace.to_owned()));
+            slot.realization.resources = compiled.staged;
+            slot.realization.memory_bindings = compiled.memory_bindings;
+            slot.realization.memory = None;
+            slot.realization.skills = Some(versions);
+            slot.realization.staged_resource_effect_key = Some(effect_key);
+            Ok(())
+        })
+        .map_err(|_| awaken_session_types::RunError::internal("installed sessions mutex poisoned"))?
+        .ok_or_else(|| {
+            awaken_session_types::RunError::internal("an installed Session was not visited")
+        })?
     }
 }
 
@@ -325,6 +349,21 @@ impl SessionRealizationRevocationSelection {
 }
 
 impl InstalledSessions {
+    fn visit_slot<R>(
+        &self,
+        session: &str,
+        create: bool,
+        f: impl FnOnce(&mut InstalledSession) -> R,
+    ) -> Result<Option<R>, PoisonError<()>> {
+        let mut slots = self.slots.lock().map_err(|_| PoisonError::new(()))?;
+        let slot = if create {
+            Some(slots.entry(session.to_string()).or_default())
+        } else {
+            slots.get_mut(session)
+        };
+        Ok(slot.map(f))
+    }
+
     /// Every enrolled scoped execution Environment, for realization renewal.
     #[cfg(target_os = "linux")]
     pub(crate) fn execution_environments(
@@ -401,19 +440,14 @@ impl InstalledSessions {
     }
 
     pub fn read<R>(&self, session: &str, f: impl FnOnce(&InstalledSession) -> R) -> Option<R> {
-        self.slots
-            .lock()
+        self.visit_slot(session, false, |slot| f(slot))
             .expect("session runtime slots mutex poisoned")
-            .get(session)
-            .map(f)
     }
 
     pub fn update<R>(&self, session: &str, f: impl FnOnce(&mut InstalledSession) -> R) -> R {
-        let mut slots = self
-            .slots
-            .lock()
-            .expect("session runtime slots mutex poisoned");
-        f(slots.entry(session.to_string()).or_default())
+        self.visit_slot(session, true, f)
+            .expect("session runtime slots mutex poisoned")
+            .expect("an installed Session is always visited")
     }
 
     pub fn modify<R>(
@@ -421,11 +455,8 @@ impl InstalledSessions {
         session: &str,
         f: impl FnOnce(&mut InstalledSession) -> R,
     ) -> Option<R> {
-        self.slots
-            .lock()
+        self.visit_slot(session, false, f)
             .expect("session runtime slots mutex poisoned")
-            .get_mut(session)
-            .map(f)
     }
 
     /// Read only the run layer of one Session's slot.

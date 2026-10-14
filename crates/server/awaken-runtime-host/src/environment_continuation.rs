@@ -184,13 +184,9 @@ impl ManagedHost {
             .map_err(to_run_error)?;
         let primary_active = sessions
             .read_run(thread, |run| {
-                run.context.as_ref().is_some_and(|runtime| {
-                    runtime
-                        .active_run
-                        .lock()
-                        .expect("active run mutex poisoned")
-                        .is_some()
-                })
+                run.context
+                    .as_ref()
+                    .is_some_and(|runtime| runtime.has_active_run())
             })
             .unwrap_or(false);
         let delegated = self
@@ -202,13 +198,9 @@ impl ManagedHost {
             run.status.occupies_parallel_slot()
                 && sessions
                     .read_run(&run.run_id.0, |run| {
-                        run.context.as_ref().is_some_and(|runtime| {
-                            runtime
-                                .active_run
-                                .lock()
-                                .expect("active run mutex poisoned")
-                                .is_some()
-                        })
+                        run.context
+                            .as_ref()
+                            .is_some_and(|runtime| runtime.has_active_run())
                     })
                     .unwrap_or(false)
         });

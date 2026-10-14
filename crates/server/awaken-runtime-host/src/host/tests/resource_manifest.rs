@@ -66,6 +66,9 @@ async fn managed_multi_memory_mounts_are_backend_neutral_pairwise() {
     // resource realization. The nine rows below are a strength-2 covering array:
     // every value pair across C1..C4 occurs at least once. This test verifies
     // that property before executing the rows, rather than trusting the table.
+    // R7 extends P5 with two distinct bindings to the same store, one RO and
+    // one RW. The per-input compiled mount determines each MemoryBinding before
+    // merge; the earlier mount cannot determine the later binding's access.
     #[derive(Clone, Copy)]
     struct PairwiseCase {
         rule: &'static str,
@@ -180,7 +183,11 @@ async fn managed_multi_memory_mounts_are_backend_neutral_pairwise() {
         let inputs = (0..count)
             .map(|index| TestInput {
                 kind: "memory_store".into(),
-                id: format!("{}-store-{index}", case.rule),
+                id: if case.rule == "P5" {
+                    "p5-shared-store".into()
+                } else {
+                    format!("{}-store-{index}", case.rule)
+                },
                 mount_path: format!("/mnt/memory/{}-{index}", case.rule.to_lowercase()),
                 access: match case.access {
                     "rw" => ResourceAccess::ReadWrite,
@@ -243,6 +250,20 @@ async fn managed_multi_memory_mounts_are_backend_neutral_pairwise() {
             .unwrap();
         assert_eq!(binding_count, count, "{} E1 bindings", case.rule);
         assert!(automatic_absent, "{} E3", case.rule);
+        host.installed_sessions
+            .realizations()
+            .read_realization(&thread, |r| {
+                for (index, access) in expected_access.iter().enumerate() {
+                    let binding = &r.memory_bindings[&format!("test-input-{index}")];
+                    assert_eq!(
+                        binding.extraction_enabled,
+                        *access == ResourceAccess::ReadWrite,
+                        "{} R7 binding {index} keeps its own access",
+                        case.rule
+                    );
+                }
+            })
+            .unwrap();
     }
 }
 

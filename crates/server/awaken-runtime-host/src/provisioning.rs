@@ -23,7 +23,7 @@ pub(crate) enum RepositoryPublicationActivationError {
     Failed(crate::host_error::HostError),
 }
 
-fn repository_binding_host_error(
+pub(crate) fn repository_binding_host_error(
     error: RepositoryBindingVerifierError,
 ) -> crate::host_error::HostError {
     let message = error.to_string();
