@@ -861,7 +861,7 @@ pub struct WebFetchPlugin {
     registry: WebSearchProviderRegistry,
     credentials: Option<Arc<dyn WebSearchCredentialResolver>>,
     execution_configuration: Option<EffectiveWebFetchConfiguration>,
-    client_tool_names: Option<Arc<std::collections::BTreeSet<String>>>,
+    source_catalogue: Option<Arc<sources::SourceCatalogue>>,
 }
 
 impl WebFetchPlugin {
@@ -873,7 +873,7 @@ impl WebFetchPlugin {
             registry,
             credentials,
             execution_configuration: None,
-            client_tool_names: None,
+            source_catalogue: None,
         }
     }
 
@@ -886,19 +886,13 @@ impl WebFetchPlugin {
         self
     }
 
-    /// Project only client identity from the existing immutable descriptor catalog.
+    /// Project source ownership from the existing immutable descriptor catalog.
     /// No names authored by a model can select their source class.
     #[must_use]
     pub fn with_tool_source_catalogue(mut self, descriptors: &[ToolDescriptor]) -> Self {
-        self.client_tool_names = Some(Arc::new(
-            descriptors
-                .iter()
-                .filter(|descriptor| {
-                    descriptor.kind == awaken_runtime_contract::resolved::ToolKind::ClientExecuted
-                })
-                .map(|descriptor| descriptor.id.clone())
-                .collect(),
-        ));
+        self.source_catalogue = Some(Arc::new(sources::SourceCatalogue::from_descriptors(
+            descriptors,
+        )));
         self
     }
 
@@ -1061,7 +1055,10 @@ impl Plugin for WebFetchPlugin {
             config_sections: vec![WEB_FETCH_PLUGIN_ID.into()],
             bound: CapabilityBound {
                 tools: IdBound::Exact(vec![WEB_FETCH_TOOL_ID.into()]),
-                phase_hooks: vec![awaken_runtime_contract::plugin::PhaseHookPoint::BeforeInference],
+                phase_hooks: vec![
+                    awaken_runtime_contract::plugin::PhaseHookPoint::BeforeInference,
+                    awaken_runtime_contract::plugin::PhaseHookPoint::AfterTool,
+                ],
                 state_keys: IdBound::Exact(vec![sources::STATE_KEY.into()]),
                 ..Default::default()
             },
@@ -1082,8 +1079,9 @@ impl Plugin for WebFetchPlugin {
             && !policy.url_sources.is_empty()
         {
             contributions.declare_state_key(sources::STATE_KEY);
-            contributions.register_hook(Arc::new(sources::UrlSourceObserver(
-                self.client_tool_names.clone(),
+            contributions.register_hook(Arc::new(sources::UrlSourceObserver));
+            contributions.register_hook(Arc::new(sources::UrlSourceRecorder(
+                self.source_catalogue.clone(),
             )));
         }
         contributions.register_dynamic_tool(

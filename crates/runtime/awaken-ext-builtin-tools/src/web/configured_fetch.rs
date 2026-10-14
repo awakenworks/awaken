@@ -14,11 +14,17 @@ use std::sync::Arc;
 
 pub(super) fn configured_web_fetch_url(
     raw_url: &str,
-    configuration: &EffectiveWebFetchConfiguration,
+    configuration: Option<&EffectiveWebFetchConfiguration>,
 ) -> Result<url::Url, ToolError> {
     let url = url::Url::parse(raw_url)
         .map_err(|error| ToolError::InvalidArguments(format!("url: {error}")))?;
-    if !url_matches_filters(&url, &configuration.domains) {
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return Err(ToolError::InvalidArguments(
+            "url: an HTTP(S) URL with a host is required".into(),
+        ));
+    }
+    if configuration.is_some_and(|configuration| !url_matches_filters(&url, &configuration.domains))
+    {
         return Err(ToolError::DefinitiveFailure(
             "url_not_allowed: web_fetch URL is outside the combined domain policy".into(),
         ));
@@ -59,6 +65,30 @@ pub(super) struct RoutedWebFetchTool {
     pub(super) execution_configuration: Option<EffectiveWebFetchConfiguration>,
 }
 
+/// Process-local proof of ordering, created only after pure Web admission.
+/// It is neither serializable nor a cross-process execution authorization.
+struct AdmittedFetch {
+    raw_url: String,
+    configured_url: url::Url,
+}
+
+impl AdmittedFetch {
+    fn admit(
+        args: WebFetchArgs,
+        configuration: Option<&EffectiveWebFetchConfiguration>,
+        evidence: Option<&sources::VisibleUrls>,
+    ) -> Result<Self, ToolError> {
+        let configured_url = configured_web_fetch_url(&args.url, configuration)?;
+        if let Some(configuration) = configuration {
+            sources::admit_url(&args.url, &configuration.url_sources, evidence)?;
+        }
+        Ok(Self {
+            raw_url: args.url,
+            configured_url,
+        })
+    }
+}
+
 #[async_trait]
 impl Tool for RoutedWebFetchTool {
     type Args = WebFetchArgs;
@@ -67,14 +97,13 @@ impl Tool for RoutedWebFetchTool {
     const DESCRIPTION: &'static str = "Fetch a URL through the configured platform provider";
 
     async fn call(&self, args: WebFetchArgs) -> Result<String, ToolError> {
-        if let Some(configuration) = &self.execution_configuration {
-            sources::admit_url(&args.url, &configuration.url_sources)?;
-        }
-        let configured_url = self
-            .execution_configuration
-            .as_ref()
-            .map(|configuration| configured_web_fetch_url(&args.url, configuration))
-            .transpose()?;
+        let evidence = awaken_tool_contract::tool::current_tool_state()
+            .and_then(|state| sources::VisibleUrls::load(&state));
+        let admitted = AdmittedFetch::admit(
+            args,
+            self.execution_configuration.as_ref(),
+            evidence.as_ref(),
+        )?;
         let mut last_unavailable = None;
         for target in &self.targets {
             let credential = resolve_credential(
@@ -86,7 +115,7 @@ impl Tool for RoutedWebFetchTool {
             )
             .await?;
             let request = WebFetchRequest {
-                url: args.url.clone(),
+                url: admitted.raw_url.clone(),
                 options: target.config.options.clone(),
             };
             let domain_filters = self
@@ -99,10 +128,9 @@ impl Tool for RoutedWebFetchTool {
                 .await;
             match result {
                 Ok(mut body) => {
-                    if let (Some(url), Some(configuration)) = (
-                        configured_url.as_ref(),
-                        self.execution_configuration.as_ref(),
-                    ) && let Some(max_bytes) = web_fetch_text_limit(url, configuration)
+                    if let Some(configuration) = self.execution_configuration.as_ref()
+                        && let Some(max_bytes) =
+                            web_fetch_text_limit(&admitted.configured_url, configuration)
                     {
                         truncate_text(&mut body, max_bytes);
                     }
@@ -126,6 +154,265 @@ mod tests {
     use super::super::*;
     use awaken_tool_contract::tool::ToolCall;
     use std::sync::Mutex;
+
+    #[tokio::test]
+    async fn direct_http_provider_refuses_redirect_before_the_next_connection() {
+        // A real loopback 302 points from an allowed host to a blocked host.
+        // The second listener counts actual requests; a wake-only connection
+        // lets the owned fixture exit without sleeps or a leftover process.
+        use std::io::{Read, Write};
+        use std::net::{Shutdown, TcpListener, TcpStream};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let target = TcpListener::bind("127.0.0.1:0").unwrap();
+        let target_address = target.local_addr().unwrap();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let observed = hits.clone();
+        let target_worker = std::thread::spawn(move || {
+            let (mut stream, _) = target.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut request = [0; 4096];
+            if stream.read(&mut request).unwrap() != 0 {
+                observed.fetch_add(1, Ordering::SeqCst);
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nescaped",
+                    )
+                    .unwrap();
+            }
+        });
+        let redirect = TcpListener::bind("127.0.0.1:0").unwrap();
+        let first_address = redirect.local_addr().unwrap();
+        let first_hits = Arc::new(AtomicUsize::new(0));
+        let first_observed = first_hits.clone();
+        let first_worker = std::thread::spawn(move || {
+            let (mut stream, _) = redirect.accept().unwrap();
+            let mut request = [0; 4096];
+            if stream.read(&mut request).unwrap() != 0 {
+                first_observed.fetch_add(1, Ordering::SeqCst);
+                write!(stream, "HTTP/1.1 302 Found\r\nLocation: http://localhost:{}/blocked\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", target_address.port()).unwrap();
+            }
+        });
+        let (_, tool) = WebFetchPlugin::new(WebSearchProviderRegistry::builtins(), None)
+            .with_execution_configuration(Some(WebFetchExecutionConfiguration {
+                domains: Some(WebDomainFilter::Allow(vec!["127.0.0.1".into()])),
+                ..Default::default()
+            }))
+            .configured_tool(None)
+            .unwrap();
+        let result = tool
+            .invoke(ToolCall {
+                call_id: "redirect-probe".into(),
+                tool_id: "web_fetch".into(),
+                arguments: json!({"url":format!("http://{first_address}/allowed")}),
+            })
+            .await;
+        if let Ok(wake) = TcpStream::connect(target_address) {
+            wake.shutdown(Shutdown::Both).unwrap();
+        }
+        if let Ok(wake) = TcpStream::connect(first_address) {
+            wake.shutdown(Shutdown::Both).unwrap();
+        }
+        first_worker.join().unwrap();
+        target_worker.join().unwrap();
+        assert!(
+            matches!(result, Err(ToolError::DefinitiveFailure(_))),
+            "{result:?}"
+        );
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "redirect target receives no HTTP request"
+        );
+        assert_eq!(
+            first_hits.load(Ordering::SeqCst),
+            1,
+            "the allowed first hop actually executes"
+        );
+    }
+
+    #[tokio::test]
+    async fn refused_request_never_resolves_credentials_or_dispatches_paid_provider() {
+        // R1 missing evidence -> zero credential/provider calls; R2 evidence
+        // for a URL outside the domain policy -> the same zero-effect result.
+        // R3 admitted URL -> exactly one credential attempt, whose failure
+        // prevents dispatch and fallback. Both public executable entry points
+        // share the private request construction above.
+        use awaken_runtime_contract::plugin::{PhaseContext, PhaseKind};
+        use awaken_runtime_contract::{Message, MessageId, Role, RunId, Store};
+        use awaken_tool_contract::tool::with_tool_state_context;
+        use awaken_web_policy_contract::WebFetchUrlSources;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct Credentials(AtomicUsize);
+        #[async_trait]
+        impl WebSearchCredentialResolver for Credentials {
+            async fn resolve(&self, _: &CredentialAccess, _: &str) -> Result<Credential, String> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Err("credential probe reached".into())
+            }
+        }
+        struct Paid(Arc<AtomicUsize>);
+        #[async_trait]
+        impl WebFetchProvider for Paid {
+            fn descriptor(&self) -> WebFetchProviderDescriptor {
+                WebFetchProviderDescriptor {
+                    id: "paid-probe".into(),
+                    label: "Paid probe".into(),
+                    credential: WebSearchCredentialRequirement::Exact(
+                        CredentialUsage::HttpHeader {
+                            name: "Authorization".into(),
+                            scheme: None,
+                        },
+                    ),
+                    options_schema: json!({"type":"object"}),
+                }
+            }
+            fn enforces_domain_filter(&self) -> bool {
+                true
+            }
+            async fn fetch(
+                &self,
+                _: WebFetchRequest,
+                _: Option<&Credential>,
+                _: &[WebDomainFilter],
+            ) -> Result<String, ToolError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok("body".into())
+            }
+        }
+        let credentials = Arc::new(Credentials(AtomicUsize::new(0)));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut registry = WebSearchProviderRegistry::default();
+        registry
+            .register_fetch(Arc::new(Paid(calls.clone())))
+            .unwrap();
+        let holder = awaken_runtime_contract::PlaintextHolder::new(
+            PlaintextBoundary::Worker,
+            awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+        );
+        let access = CredentialAccess::new(
+            CredentialRef {
+                id: "cred:paid-probe".into(),
+                revision: 1,
+            },
+            awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+            CredentialUsage::HttpHeader {
+                name: "Authorization".into(),
+                scheme: None,
+            },
+            awaken_runtime_contract::CredentialExecutionPolicy::exact(
+                holder,
+                ModelExposurePolicy::Forbidden,
+            ),
+        )
+        .with_target(CredentialTarget::new(
+            CredentialPurpose::WebProviderAuthorization,
+            "paid-probe",
+        ));
+        let config = json!({"provider_id":"paid-probe", "credential_access":access, "options":{}});
+        let plugin = WebFetchPlugin::new(registry.clone(), Some(credentials.clone()))
+            .with_tool_source_catalogue(&[])
+            .with_execution_configuration(Some(WebFetchExecutionConfiguration {
+                url_sources: Some(WebFetchUrlSources::default()),
+                domains: Some(WebDomainFilter::Allow(vec!["example.com".into()])),
+                ..Default::default()
+            }));
+        let (_, direct) = plugin.configured_tool(Some(&config)).unwrap();
+        let contributions = plugin.resolve_configured(Some(&config)).unwrap();
+        let call = |url: &str| ToolCall {
+            call_id: "probe".into(),
+            tool_id: "web_fetch".into(),
+            arguments: json!({"url":url}),
+        };
+        for executable in [
+            direct.as_ref(),
+            contributions.dynamic_tools[0].executable().as_ref(),
+        ] {
+            assert!(
+                executable
+                    .invoke(call("https://example.com/shown"))
+                    .await
+                    .is_err()
+            );
+        }
+        assert_eq!(credentials.0.load(Ordering::SeqCst), 0);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let mut state = Store::new();
+        let ctx = PhaseContext {
+            run_id: RunId("probe".into()),
+            step: 0,
+            kind: PhaseKind::BeforeInference {
+                run_input: vec![].into(),
+            },
+        };
+        let conversation = vec![Message::text(
+            MessageId("u".into()),
+            Role::User,
+            "https://outside.test/shown https://example.com/shown",
+        )];
+        for hook in &contributions.phase_hooks {
+            for command in hook.on_phase(&ctx, &conversation, &state).await.state {
+                state.apply(&command);
+            }
+        }
+        with_tool_state_context(state.clone(), async {
+            assert!(
+                direct
+                    .invoke(call("https://outside.test/shown"))
+                    .await
+                    .is_err()
+            );
+        })
+        .await;
+        assert_eq!(credentials.0.load(Ordering::SeqCst), 0);
+        with_tool_state_context(state, async {
+            assert!(
+                direct
+                    .invoke(call("https://example.com/shown"))
+                    .await
+                    .is_err()
+            );
+        })
+        .await;
+        assert_eq!(credentials.0.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let (_, unconfigured) = WebFetchPlugin::new(registry, Some(credentials.clone()))
+            .configured_tool(Some(&config))
+            .unwrap();
+        for bad in [
+            "not a URL",
+            "file:///private",
+            "ftp://example.com/file",
+            "mailto:user@example.com",
+            "http://",
+        ] {
+            assert!(
+                matches!(
+                    unconfigured.invoke(call(bad)).await,
+                    Err(ToolError::InvalidArguments(_))
+                ),
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            credentials.0.load(Ordering::SeqCst),
+            1,
+            "even unrestricted fetch validates before credentials"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(
+            unconfigured
+                .invoke(call("https://example.com/valid"))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            credentials.0.load(Ordering::SeqCst),
+            2,
+            "valid unrestricted URL reaches the credential positive control"
+        );
+    }
 
     #[tokio::test]
     async fn url_sources_guard_the_single_fetch_effect_boundary() {

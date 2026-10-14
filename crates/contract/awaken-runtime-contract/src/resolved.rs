@@ -1432,6 +1432,13 @@ impl ToolDescriptor {
         self.parameters.0.clone()
     }
 
+    /// Owner namespace frozen with the descriptor. A display name alone does
+    /// not identify the source or execution owner of a tool result.
+    #[must_use]
+    pub fn content_namespace(&self) -> &str {
+        &self.content_namespace
+    }
+
     /// Stable content identity derived from every descriptor fact that changes
     /// model projection or execution semantics.
     #[must_use]
