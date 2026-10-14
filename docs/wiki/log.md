@@ -1,5 +1,16 @@
 # Wiki Update Log
 
+## 2026-10-15 — Project original execution closure through the existing read boundary
+
+- [Session and Dispatch roles](../design/session-aggregate-and-dispatch-capabilities.md)
+  keep the original diagnostic projection and retained-record query. Dispatch
+  execution joins exact entry/closure identities with each frozen Thread's
+  committed history, while Session consumes only the neutral read result.
+- Ordinary return, missing history, incomplete scope and identity mismatch
+  remain unproven. The causal matrix includes positive closure while physical
+  cleanup stays pending; this source evidence is separate from Flow admission
+  and original-task deployment acceptance.
+
 ## 2026-10-15 — Retain physical admission in the original Dispatch history
 
 - [Session and Dispatch roles](../design/session-aggregate-and-dispatch-capabilities.md)

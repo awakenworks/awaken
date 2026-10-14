@@ -316,7 +316,9 @@ async fn finish_attempt(
 
 #[tokio::test]
 async fn local_return_cause_crosses_http_without_fallback_on_old_strict_rejection() {
-    use awaken_dispatch::{AttemptPhysicalFact, AttemptReturnCause, DispatchControlReads as _};
+    use awaken_dispatch::{
+        AttemptPhysicalFact, AttemptReturnCause, DispatchAttemptRecordReads as _,
+    };
     // T1 current codec/client preserves Some through the original finish verb;
     // T2 a strict old two-field JSON extractor returns 422 before its handler;
     // the client must retain that explicit failure, never retry a None body.

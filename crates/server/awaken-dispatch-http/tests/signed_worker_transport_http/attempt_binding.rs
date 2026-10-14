@@ -1,5 +1,6 @@
 // @formal evidence session_execution.one_physical_attempt_per_thread
 use super::*;
+use awaken_dispatch::DispatchAttemptRecordReads as _;
 use awaken_dispatch::{
     ApplicationError, AttemptExecutionBinding, RunClaim, WorkerExecutionBindingSource,
 };

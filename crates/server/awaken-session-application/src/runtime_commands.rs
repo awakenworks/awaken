@@ -12,7 +12,6 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
-use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::stream::sink::Sink;
 use awaken_session_application_contract::{DelegatedRun, Pending, StepOutcome};
 use awaken_session_budget_contract::SessionUsage;
@@ -46,51 +45,10 @@ fn session_input_error(error: crate::session_resource::SessionInputError) -> Run
     }
 }
 
-/// Read-only application projection joining one Session's immutable execution
-/// selection to committed Run/model-request facts. It owns no status or audit
-/// state: every field is rebuilt from the Session aggregate and the Runtime's
-/// one internally consistent Thread recovery prefix.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SessionExecutionObservation {
-    pub session_id: String,
-    pub session_revision: u64,
-    pub agent_id: String,
-    pub agent_revision: Option<u64>,
-    pub application_origin: Option<awaken_session_configuration_contract::ApplicationOriginBinding>,
-    pub model: String,
-    pub execution_model_ref: String,
-    pub backend_ref: Option<String>,
-    pub execution: awaken_session_state_contract::SessionExecutionState,
-    pub runs: Vec<SessionRunExecutionObservation>,
-}
-
-/// One committed Run and only the model-request completion coordinates that
-/// belong to it. The Run record and audit log remain the authorities.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SessionRunExecutionObservation {
-    pub run_id: RunId,
-    pub idempotency_key: Option<String>,
-    pub state: RunState,
-    pub tool_uses: Vec<SessionToolUseObservation>,
-    pub model_requests: Vec<SessionModelRequestObservation>,
-}
-
-/// Neutral coordinates for one committed tool use. Protocol adapters retain
-/// ownership of their public event identity codecs.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SessionToolUseObservation {
-    pub source_message_id: String,
-    pub call_id: String,
-}
-
-/// Minimal proof that one logical model request reached a committed completion
-/// boundary. Usage remains on the existing Managed Events projection.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SessionModelRequestObservation {
-    pub sequence: u64,
-    pub is_error: bool,
-    pub retry_count: u32,
-}
+pub use awaken_session_execution_contract::{
+    SessionExecutionObservation, SessionModelRequestObservation, SessionRunExecutionObservation,
+    SessionToolUseObservation,
+};
 
 /// Closed owner namespace for a Repository definition created exclusively for
 /// one Session. Platform and Agent-default Repository definitions never carry
@@ -394,6 +352,11 @@ impl SessionApplication {
             .transpose()?
             .unwrap_or_default();
         Ok(SessionExecutionObservation {
+            recovery: self
+                .runtime()
+                .coordination_reads()
+                .execution_recovery_observation(&recovered.session)
+                .await,
             session_id: recovered.session.session_id.to_string(),
             session_revision: recovered.session.revision.0,
             agent_id: baseline.agent_id.clone(),

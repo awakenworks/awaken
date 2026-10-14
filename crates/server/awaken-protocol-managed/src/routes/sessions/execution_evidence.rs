@@ -19,6 +19,7 @@ fn project_execution_evidence(
     let public_thread_id =
         crate::state::public_thread_id(&observation.session_id, &observation.session_id);
     crate::awaken_extensions::SessionExecutionEvidence {
+        recovery: Some(observation.recovery),
         session_id: observation.session_id,
         session_revision: observation.session_revision,
         agent_id: observation.agent_id,
@@ -95,6 +96,9 @@ mod tests {
         // R1=P1=>E1 and R2=P2=>E2.
         let projected =
             project_execution_evidence(awaken_session_application::SessionExecutionObservation {
+                recovery: awaken_session_execution_contract::SessionExecutionRecoveryObservation::NotProven {
+                    reason: awaken_session_execution_contract::SessionExecutionRecoveryGap::NotTerminal,
+                },
                 session_id: "session-1".into(),
                 session_revision: 5,
                 agent_id: "agent-1".into(),

@@ -176,6 +176,17 @@ pub trait CoordinationRuntime: Send + Sync {
 /// ```
 #[async_trait]
 pub trait SessionCoordinationReads: Send + Sync {
+    /// Rebuild execution containment from the observed terminal root and the
+    /// original execution authority. Unsupported fixtures remain unproven.
+    async fn execution_recovery_observation(
+        &self,
+        _session: &awaken_session_state_contract::PersistedSession,
+    ) -> crate::SessionExecutionRecoveryObservation {
+        crate::SessionExecutionRecoveryObservation::NotProven {
+            reason: crate::SessionExecutionRecoveryGap::HistoryUnavailable,
+        }
+    }
+
     /// Project an exact already-accepted original business receipt. Some grants
     /// no execution; None is ONLY original dispatch Missing and the caller must
     /// still prove fresh eligibility from original activity/history. Unknown,

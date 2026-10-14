@@ -59,3 +59,6 @@ pub use awaken_dispatch_erasure::{
     AnyCoordinatorDispatch, AnyDispatchStore, Dispatch, DispatchBinding, DispatchTopology,
     DurableDispatch, RemoteDispatch,
 };
+
+mod execution_recovery;
+pub use execution_recovery::read_execution_recovery;
