@@ -85,8 +85,19 @@ async fn http_status(address: &str, method: &str, path: &str) -> Option<u16> {
 }
 
 async fn poll_status(address: &str, method: &str, path: &str, expected: u16) -> bool {
+    poll_admin_observation(|| async { http_status(address, method, path).await == Some(expected) })
+        .await
+}
+
+// One bounded observation owner for the same admin listener. Both HTTP status
+// and exact port release use it; release is a process fact, not Session settle.
+async fn poll_admin_observation<F, O>(mut observe: F) -> bool
+where
+    F: FnMut() -> O,
+    O: std::future::Future<Output = bool>,
+{
     for _ in 0..300 {
-        if http_status(address, method, path).await == Some(expected) {
+        if observe().await {
             return true;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -814,18 +825,19 @@ async fn startup_transport_gap_retries_the_same_incarnation_until_coordinator_is
     // Cause/effect decision table for a newly networked Pod:
     // C1 the Service coordinate initially refuses TCP; C2 the same coordinate
     // later serves Coordinator; C3 no shutdown arrives. E1 Worker stays alive
-    // without local admission; E2 exactly one accepted registration reaches
+    // and serves /livez=200, /readyz=503 without local admission; E2 exactly one accepted registration reaches
     // Ready/claim; E3 ordinary shutdown uses the one registered lifecycle.
     // Permanent 4xx/request defects remain terminal in WorkerControlClient.
     let reservation = TcpListener::bind("127.0.0.1:0").expect("reserve delayed port");
     let address = reservation.local_addr().unwrap();
     drop(reservation);
     let url = format!("http://{address}");
+    let admin_addr = format!("127.0.0.1:{}", free_port());
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let worker = lifecycle_worker(WorkerUpstream::new(url).with_worker_id("worker-delayed-start"))
         .with_deployment_config(local_coordinator_deployment())
         .with_manifest(manifest())
-        .without_admin_surface()
+        .with_admin_listen(&admin_addr)
         .build()
         .expect("valid Worker topology");
     let task = tokio::spawn(worker.run_until(async move {
@@ -840,6 +852,15 @@ async fn startup_transport_gap_retries_the_same_incarnation_until_coordinator_is
         !task.is_finished(),
         "E1 transient refusal must not exit startup"
     );
+    assert!(
+        poll_status(&admin_addr, "GET", "/livez", 200).await,
+        "E1 registration dependency failure must not fail process liveness"
+    );
+    assert_eq!(
+        http_status(&admin_addr, "GET", "/readyz").await,
+        Some(503),
+        "E1 waiting for registration grants no readiness"
+    );
     let upstream = FakeWorkerUpstream::start_at(address);
     for _ in 0..300 {
         if upstream
@@ -852,6 +873,10 @@ async fn startup_transport_gap_retries_the_same_incarnation_until_coordinator_is
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     let requests = upstream.requests();
+    assert!(
+        poll_status(&admin_addr, "GET", "/readyz", 200).await,
+        "E2 the same admin surface follows the registered lifecycle"
+    );
     assert_eq!(
         requests
             .iter()
@@ -874,6 +899,58 @@ async fn startup_transport_gap_retries_the_same_incarnation_until_coordinator_is
         .expect("E3 lifecycle shutdown is bounded")
         .expect("Worker task did not panic")
         .expect("E3 lifecycle closes successfully");
+    assert!(
+        poll_admin_observation(|| async {
+            tokio::net::TcpListener::bind(&admin_addr).await.is_ok()
+        })
+        .await,
+        "E3 shutdown releases the original listener; no orphan admin task"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn registration_pending_shutdown_closes_the_original_admin_listener() {
+    // H3 Coordinator absent + admin serving + shutdown before registration ->
+    // bounded successful process exit and listener release. No registered
+    // lifecycle or Ready/claim authority exists to fabricate a withdrawal for.
+    let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
+    let upstream_address = reservation.local_addr().unwrap();
+    drop(reservation);
+    let admin_addr = format!("127.0.0.1:{}", free_port());
+    let worker = lifecycle_worker(
+        WorkerUpstream::new(format!("http://{upstream_address}"))
+            .with_worker_id("pending-shutdown"),
+    )
+    .with_deployment_config(local_coordinator_deployment())
+    .with_manifest(manifest())
+    .with_admin_listen(&admin_addr)
+    .build()
+    .unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        worker.run_until(async {
+            assert!(
+                poll_status(&admin_addr, "GET", "/livez", 200).await,
+                "H3 live while pending"
+            );
+            assert_eq!(
+                http_status(&admin_addr, "GET", "/readyz").await,
+                Some(503),
+                "H3 no readiness"
+            );
+            Ok(WorkerShutdown::Prompt)
+        }),
+    )
+    .await
+    .expect("H3 bounded startup shutdown")
+    .unwrap();
+    assert!(
+        poll_admin_observation(|| async {
+            tokio::net::TcpListener::bind(&admin_addr).await.is_ok()
+        })
+        .await,
+        "H3 no orphan listener"
+    );
 }
 
 /// Cause/effect design:

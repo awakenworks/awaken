@@ -269,7 +269,7 @@ pub use awaken_session_application_contract::{
 pub type ResolvedSessionEnvironment =
     awaken_executable_environment_contract::ResolvedSessionEnvironment<EnvironmentSnapshot>;
 use awaken_executable_environment_contract::SessionEnvironmentProjectionSource;
-use awaken_worker_contract::SessionWorkSource;
+use awaken_worker_contract::{SessionWorkSource, WorkerObservationSource};
 /// One required Environment assembly, with query and Work roles from their owners.
 /// A query-only provider cannot supply the complete application capability.
 ///

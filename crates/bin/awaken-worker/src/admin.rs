@@ -14,7 +14,7 @@
 //!   refresh with the canonical Worker observation lifecycle.
 //! - `GET /metrics` — the drain gauge in Prometheus text format.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use axum::Router;
 use axum::extract::State;
@@ -22,9 +22,46 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 
-pub(crate) fn worker_admin_router_with_lifecycle(
-    lifecycle: Arc<crate::WorkerSupervisor>,
-) -> Router {
+type LifecycleBinding = Arc<OnceLock<Arc<crate::WorkerSupervisor>>>;
+
+/// One listener for the whole process, including registration. The optional
+/// binding only routes queries to the canonical lifecycle; it owns no readiness.
+pub(crate) struct WorkerAdminSurface {
+    binding: LifecycleBinding,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl WorkerAdminSurface {
+    pub(crate) fn start(listener: tokio::net::TcpListener) -> Self {
+        let binding = Arc::new(OnceLock::new());
+        let router = worker_admin_router(binding.clone());
+        let task = tokio::spawn(async move {
+            if let Err(error) = axum::serve(listener, router).await {
+                eprintln!("awaken-worker admin server exited: {error}");
+            }
+        });
+        Self { binding, task }
+    }
+
+    pub(crate) fn bind_lifecycle(
+        &self,
+        lifecycle: Arc<crate::WorkerSupervisor>,
+    ) -> Result<(), std::io::Error> {
+        self.binding.set(lifecycle).map_err(|_| {
+            std::io::Error::other("Worker admin surface already has its canonical lifecycle")
+        })
+    }
+}
+
+impl Drop for WorkerAdminSurface {
+    fn drop(&mut self) {
+        // Covers early registration shutdown, rejected construction, unwind and
+        // normal withdrawal. Dropping JoinHandle alone would detach the server.
+        self.task.abort();
+    }
+}
+
+fn worker_admin_router(lifecycle: LifecycleBinding) -> Router {
     Router::new()
         .route("/livez", get(livez))
         .route("/readyz", get(lifecycle_readyz))
@@ -37,9 +74,10 @@ pub(crate) fn worker_admin_router_with_lifecycle(
         .with_state(lifecycle)
 }
 
-async fn lifecycle_readyz(
-    State(lifecycle): State<Arc<crate::WorkerSupervisor>>,
-) -> impl IntoResponse {
+async fn lifecycle_readyz(State(binding): State<LifecycleBinding>) -> impl IntoResponse {
+    let Some(lifecycle) = binding.get() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "not ready\n");
+    };
     if lifecycle.host.pool_accepting_work().await {
         (StatusCode::OK, "ready\n")
     } else {
@@ -47,9 +85,10 @@ async fn lifecycle_readyz(
     }
 }
 
-async fn lifecycle_drain(
-    State(lifecycle): State<Arc<crate::WorkerSupervisor>>,
-) -> impl IntoResponse {
+async fn lifecycle_drain(State(binding): State<LifecycleBinding>) -> impl IntoResponse {
+    let Some(lifecycle) = binding.get() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "not registered\n");
+    };
     match lifecycle.begin_drain(None).await {
         Ok(()) => (StatusCode::OK, "draining\n"),
         Err(_) => (
@@ -60,8 +99,11 @@ async fn lifecycle_drain(
 }
 
 async fn lifecycle_refresh_observations(
-    State(lifecycle): State<Arc<crate::WorkerSupervisor>>,
+    State(binding): State<LifecycleBinding>,
 ) -> impl IntoResponse {
+    let Some(lifecycle) = binding.get() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "not registered\n");
+    };
     match lifecycle.refresh_observations().await {
         Ok(()) => (StatusCode::OK, "observations refreshed\n"),
         Err(_) => (
@@ -135,7 +177,8 @@ mod tests {
             probe_interval: std::time::Duration::from_secs(10),
             warm_environments: Default::default(),
         });
-        let app = worker_admin_router_with_lifecycle(lifecycle);
+        let binding = Arc::new(OnceLock::from(lifecycle));
+        let app = worker_admin_router(binding);
         assert_eq!(
             call(&app, "GET", "/readyz").await.0,
             StatusCode::SERVICE_UNAVAILABLE
@@ -162,5 +205,39 @@ mod tests {
         // has installed the meter provider via `awaken_observability::init`.
         let (status, _body) = call(&app, "GET", "/metrics").await;
         assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn registration_pending_health_grants_no_lifecycle_authority() {
+        // Cause/effect table: H1 no registered Supervisor -> liveness/metrics
+        // 200, readiness/drain/refresh 503. H2 listener guard drops before any
+        // registration -> the original listener closes, with no detached task.
+        // The real WorkerNode transport-gap test owns late installation/Ready.
+        let app = worker_admin_router(Arc::new(OnceLock::new()));
+        for path in ["/livez", "/metrics"] {
+            assert_eq!(call(&app, "GET", path).await.0, StatusCode::OK, "H1 {path}");
+        }
+        for (method, path) in [
+            ("GET", "/readyz"),
+            ("POST", "/admin/drain"),
+            ("POST", "/admin/refresh-observations"),
+        ] {
+            assert_eq!(
+                call(&app, method, path).await.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "H1 {path}"
+            );
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let surface = WorkerAdminSurface::start(listener);
+        let task = surface.task.abort_handle();
+        drop(surface);
+        tokio::task::yield_now().await;
+        assert!(task.is_finished(), "H2 serving task is stopped");
+        assert!(
+            tokio::net::TcpListener::bind(address).await.is_ok(),
+            "H2 listener released"
+        );
     }
 }
