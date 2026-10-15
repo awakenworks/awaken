@@ -498,24 +498,13 @@ pub(super) async fn resume_delegation(
         .expect("the common resume admission validated the pending call")
         .clone();
     let call_id = call.call_id.as_str();
-    let Some(executor) = runtime.run_delegation() else {
-        return finish(
-            runtime,
-            context,
-            thread_id,
-            run_id.clone(),
-            RunStepResult::ended_with_messages(
-                run_id.clone(),
-                EndCause::Error(Failure::CapabilityBound),
-                context_messages,
-            ),
-        )
-        .await;
-    };
     if !is_resolved_delegation_call(runtime, resolved, ticket.delegation_origin.as_ref(), &call) {
-        return finish(
+        // No child/approval commit has advanced this admitted prefix. The bare
+        // SDK's explicit view owns terminal batch sealing and cancel intent too.
+        return super::finalize::finish_with_reader(
             runtime,
             context,
+            Some(reader),
             thread_id,
             run_id.clone(),
             RunStepResult::ended_with_messages(
@@ -526,6 +515,9 @@ pub(super) async fn resume_delegation(
         )
         .await;
     }
+    let executor = runtime
+        .run_delegation()
+        .expect("a resolved delegation call has an executor");
     let step = match derive_delegation_origin(
         ticket.delegation_origin.as_ref(),
         &resolved.agent_id.0,
