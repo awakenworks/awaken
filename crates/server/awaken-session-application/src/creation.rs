@@ -493,6 +493,28 @@ async fn commit_creation_activation(
         .await
 }
 
+fn compile_creation_configuration(
+    compiler: &dyn awaken_tool_contract::ToolConfigurationCompiler,
+    mut intent: SessionCreationIntent,
+    tools: SessionToolConfiguration,
+) -> Result<(CompiledSessionCreation, SessionToolConfiguration), RunError> {
+    intent.control.toolsets = crate::tool_compilation::compile_tool_settings(
+        compiler,
+        SessionToolConfiguration {
+            toolsets: intent.control.toolsets,
+            client_tools: tools.client_tools.clone(),
+        },
+    )?
+    .toolsets;
+    let compiled = intent
+        .finalize()
+        .map_err(|error| RunError::bad_request(error.to_string()))?;
+    Ok((
+        compiled,
+        crate::tool_compilation::compile_tool_settings(compiler, tools)?,
+    ))
+}
+
 impl SessionApplication {
     /// Create one Session through the only durable creation protocol.
     pub async fn create_session(
@@ -544,11 +566,14 @@ impl SessionApplication {
         } = command;
         // Compile the complete intent before insert so invalid input can never
         // strand a durable Session waiting for a second authoring path.
-        let compiled = match intent.finalize() {
+        let (compiled, tools) = match compile_creation_configuration(
+            self.tool_configuration_compiler.as_ref(),
+            intent,
+            tools,
+        ) {
             Ok(compiled) => compiled,
             Err(error) => {
-                let first =
-                    SessionCreationError::Rejected(RunError::bad_request(error.to_string()));
+                let first = SessionCreationError::Rejected(error);
                 self.compensate_request_repositories(
                     &session_id,
                     &repository_configurations,

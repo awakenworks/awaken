@@ -176,6 +176,33 @@ The versioned `agent_toolset_20260401` has exactly eight built-in names: `bash`,
 credential, egress, usage, and Billing seams; the Managed adapter only selects
 it through the official toolset policy.
 
+The Managed protocol's `tools` module owns `AgentTool`, its closed versioned
+DTOs and the fallible wire-to-neutral compilation/projection. Control's authoring
+HTTP adapter consumes that same module. Session configuration contains only
+neutral toolsets and opaque configuration values; it does not decode Managed
+Web fields. Every authored duplicate is validated before first-wins folding.
+Custom JSON Schema keywords stay open; non-Web and MCP opaque configuration is
+preserved rather than interpreted as builtin Web policy.
+
+The existing `awaken-web-policy-contract` SDK owns the pure typed Web kernel:
+parse, intrinsic/client-roster validation, normalization, composition and URL
+admission. It depends on serde, JSON, URL parsing and field-path decoding, with
+no Runtime, HTTP, credential, filesystem or Session application dependency.
+`awaken-ext-builtin-tools` retains its existing public Web configuration paths
+as real re-exports of those same types. The independent SDK consumer checks
+both paths and executes compilation and composition without workspace features.
+
+The existing `awaken-tool-contract` supplies the required
+`ToolConfigurationCompiler` constructor role. ConfigService and Session
+Application receive the concrete Web extension compiler from their composition
+roots. Ordinary and audited authoring writes, validation, preview, publication, effective Session
+creation/update and plugin resolution all use the same kernel before credential
+or provider effects. Errors carry an owning field path and stable code (for
+example `invalid_web_domain_count`), including the original index in legacy
+HTTP tool arrays. Compilation returns the canonical value atomically and never
+publishes a partially normalized input. The compiler validates disabled and
+later duplicate entries as well as the selected entry.
+
 Web execution settings remain in the neutral
 `ToolPolicyOverride.configuration` value, separately from provider bindings and
 options in `plugin_config`. Installed provider capabilities and prepared
@@ -199,12 +226,21 @@ format refuses the fetch. The private admitted request only enforces ordering
 inside the process and carries no cross-process authorization.
 
 The existing `AfterTool` outcome captures the original frozen tool ownership and
-an equality fingerprint of its successful call and output. The same derived
-State key holds these witnesses. `BeforeInference` promotes URLs only from a
-matching conversation call/result pair; an outcome alone cannot authorize a
-fetch in the same inference. Errors, mismatched results and historical results
-without their original witness contribute no tool-source evidence. Recovery
-cannot classify those historical results from the current descriptor catalog.
+an equality fingerprint bound to its Run, successful call and output. The same
+derived State key holds these witnesses. The existing phase SPI's optional
+`on_model_input` observation reports the materialized input of a successful
+model request after context
+selection. Web promotes URLs only from uniquely matched conversation messages
+in that input and, for tool results, their original executed witness. Hidden,
+ambiguous or mismatched results and historical results without their witness
+contribute no tool-source evidence. Internal delegated task/advisor inputs are
+model-authored transport messages even when their role is User; their existing
+message identity excludes them from user URL evidence. Recovery cannot classify
+historical results from the current descriptor catalog. An outcome alone cannot
+authorize a fetch before that result reaches an observed model input.
+Client-executed result content cannot carry Runtime state-writer authority:
+the resume boundary rejects nonempty client state commands before consuming
+the ticket or running hooks. Trusted in-process tools retain their state ports.
 
 The current `max_content_tokens` behavior is an independent compatibility issue:
 the nearest configured value wins rather than taking the minimum, and execution

@@ -155,19 +155,6 @@ fn coordination_spawn_command(
     }
 }
 
-fn configured_admission_application(
-    repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
-    runtime: Arc<RecordingAgentAdmissionRuntime>,
-) -> SessionApplication {
-    let mut app = application_with_runtime(
-        runtime,
-        repo,
-        Arc::new(RecordingEnvironmentSource::default()),
-    );
-    app.set_config_source(Arc::new(CoordinatedAgentSource));
-    app
-}
-
 fn managed_repository_id(session_id: &str) -> String {
     format!("managed:{session_id}:repository:source")
 }
@@ -1781,15 +1768,11 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
             watermark: 5,
             runtime_commit_cursor: 8,
         };
-    let application = SessionApplicationBuilder::fixture(
+    let application = application_with_runtime(
         runtime.clone(),
-        Arc::new(NoopMcpRealizer),
-        crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
+        repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
-    )
-    .configuration(SessionApplicationConfiguration::default())
-    .build()
-    .expect("valid fixture Session application");
+    );
     let fact = awaken_session_state_contract::ManagedLifecycleFact {
         id: "profiled-publication:terminated".into(),
         object_id: "profiled-publication".into(),
@@ -1908,15 +1891,11 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
     foreign_completed.session_id = "profiled-foreign-outcome".into();
     let faulting_repo = Arc::new(FaultingSessionRepository::new(repo.clone()));
     faulting_repo.return_get_once(foreign_completed);
-    let guarded = SessionApplicationBuilder::fixture(
+    let guarded = application_with_runtime(
         runtime.clone(),
-        Arc::new(NoopMcpRealizer),
-        crate::SessionPersistence::new(faulting_repo, awaken_time::system_clock()),
+        faulting_repo,
         Arc::new(RecordingEnvironmentSource::default()),
-    )
-    .configuration(SessionApplicationConfiguration::default())
-    .build()
-    .expect("valid fixture Session application");
+    );
     let effects_before_foreign = runtime.terminal_effect_order.lock().unwrap().len();
     assert!(
         matches!(
@@ -6644,6 +6623,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         Arc::new(NoopMcpRealizer),
         persistence,
         Arc::new(RecordingEnvironmentSource::default()),
+        std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
     .build()
     .expect("valid fixture Session application");

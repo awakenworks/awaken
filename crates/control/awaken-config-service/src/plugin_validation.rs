@@ -36,6 +36,7 @@ pub(crate) async fn resolve_plugin_configuration(
         if let Some(resolver) = owned.next() {
             if owned.next().is_some() {
                 return Err(crate::publication::ValidationIssue {
+                    code: None,
                     path: format!("plugin_config.{plugin_id}"),
                     message: format!("plugin `{plugin_id}` has more than one publication resolver"),
                 });
@@ -48,6 +49,7 @@ pub(crate) async fn resolve_plugin_configuration(
                 )
                 .await
                 .map_err(|message| crate::publication::ValidationIssue {
+                    code: None,
                     path: format!("plugin_config.{plugin_id}"),
                     message,
                 })?;

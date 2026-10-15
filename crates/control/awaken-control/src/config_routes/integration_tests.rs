@@ -311,9 +311,10 @@ async fn reserved_publication_requires_an_explicit_execution_workspace() {
         Arc::new(ConfigService::new(
             Arc::new(FakeResolver),
             Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         )),
         Arc::new(SqliteConfigStore::open_in_memory().await.unwrap()),
-        Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
+        Arc::new(awaken_config_service::StaticToolCatalog(vec![])),
     );
     let scope = ScopeId::from(RESERVED_ADMIN_SCOPE);
     plane.put(&scope, &agent_config("mgmt")).await.unwrap();
@@ -417,5 +418,89 @@ async fn executable_catalog_is_keyed_by_workspace_and_agent_id() {
     assert!(
         catalog.current("wrkspc_c", "shared-id").is_none(),
         "an uninstalled Workspace must fail closed even when another Workspace uses the id"
+    );
+}
+
+#[tokio::test]
+async fn validation_reports_web_field_path_and_code_using_original_legacy_index() {
+    // A legacy ordinary tool occupies index zero. The adapter must retain the
+    // authored position when one later Web entry fails before model resolution.
+    let plane = static_plane(None).await;
+    let (status, Json(body)) = super::validate(
+        State(plane), default_workspace(), None, Path("web-index".into()),
+        Json(json!({"model":"p/m/b","tools":["read",{"type":"agent_toolset_20260401","configs":[{"name":"web_fetch","allowed_domains":[]}]}]})),
+    ).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["valid"], false);
+    assert_eq!(
+        body["issues"][0]["path"],
+        "tools[1].configs[0].allowed_domains"
+    );
+    assert_eq!(body["issues"][0]["code"], "invalid_web_domain_count");
+}
+
+#[tokio::test]
+async fn durable_publication_survives_unavailable_registration_and_retry() {
+    // Cause/effect graph:
+    // C1 Control storage succeeds; C2 Coordinator registration is unavailable;
+    // C3 the same publication is retried through a healthy registrar.
+    // Effects: E1 the immutable publication remains durable after C2; E2 the
+    // HTTP edge reports retryable 503; E3 C3 installs that same fingerprint
+    // without a second publication row.
+    //
+    // Decision table:
+    // | Rule | C1 | Registrar | Effect |
+    // | R1 | T | unavailable | durable row + 503 |
+    // | R2 | existing | healthy | same row + current registration |
+    let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
+    let scope = ScopeId::from("wrkspc_registration_retry");
+    let unavailable = ConfigPlane::new(
+        Arc::new(ConfigService::new(
+            Arc::new(FakeResolver),
+            Arc::new(UnavailableRegistrar),
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )),
+        store.clone(),
+        Arc::new(awaken_config_service::StaticToolCatalog(vec![])),
+    );
+    unavailable
+        .put(&scope, &agent_config("retry-agent"))
+        .await
+        .unwrap();
+
+    let (status, _) = publish(
+        State(unavailable),
+        crate::config_routes::RequiredScope(scope.clone()),
+        None,
+        Path("retry-agent".into()),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "R1/E2");
+    let durable = store.list_published_scoped(&scope).await.unwrap();
+    assert_eq!(durable.len(), 1, "R1/E1");
+
+    let catalog = Arc::new(ExecutableAgentCatalog::new());
+    let retry = ConfigPlane::new(
+        Arc::new(ConfigService::new(
+            Arc::new(FakeResolver),
+            Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )),
+        store.clone(),
+        Arc::new(awaken_config_service::StaticToolCatalog(vec![])),
+    );
+    let registered = retry.publish(&scope, "retry-agent").await.unwrap();
+    assert_eq!(registered.fingerprint, durable[0].fingerprint, "R2/E3");
+    assert_eq!(store.list_published_scoped(&scope).await.unwrap().len(), 1);
+    assert_eq!(
+        catalog
+            .current(scope.as_str(), "retry-agent")
+            .unwrap()
+            .snapshot
+            .fingerprint
+            .0,
+        durable[0].fingerprint,
+        "R2/E3"
     );
 }

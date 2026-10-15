@@ -40,6 +40,7 @@ async fn publication_race_fixture(
                     Arc::new(awaken_lease_testkit::ManualClock::new(time)),
                 ),
                 Arc::new(RecordingEnvironmentSource::default()),
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
             )
             .build()
             .expect("valid fixture Store/Clock composition"),

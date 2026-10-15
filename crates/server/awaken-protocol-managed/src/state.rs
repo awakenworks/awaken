@@ -44,8 +44,6 @@ pub(crate) use events::{
 };
 mod helpers;
 mod managed_state;
-#[cfg(any(test, feature = "test-support"))]
-mod mcp_attachment;
 mod realization;
 mod rehydration;
 mod resource;

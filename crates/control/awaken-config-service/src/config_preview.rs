@@ -31,6 +31,10 @@ impl ConfigService {
         config: &AgentConfig,
         catalog: &[ToolDescriptor],
     ) -> Result<(), ValidationIssue> {
+        let config = crate::tool_compilation::compile_tool_settings(
+            self.tool_configuration_compiler.as_ref(),
+            config,
+        )?;
         let mut resolved = prepare_agent_publication(
             self.model_publication_resolver.as_ref(),
             workspace,
@@ -43,6 +47,7 @@ impl ConfigService {
         )
         .await
         .map_err(|error| ValidationIssue {
+            code: None,
             path: "model".to_string(),
             message: error.to_string(),
         })?;
@@ -59,6 +64,7 @@ impl ConfigService {
         )
         .await
         .map_err(|error| ValidationIssue {
+            code: None,
             path: error.path,
             message: error.message,
         })?;
@@ -72,6 +78,7 @@ impl ConfigService {
         )
         .map(|_| ())
         .map_err(|error| ValidationIssue {
+            code: None,
             path: error.field_path().to_string(),
             message: error.to_string(),
         })
@@ -93,6 +100,11 @@ impl ConfigService {
                 "preview config and resources must use the requested preview id".into(),
             ));
         }
+        let config = crate::tool_compilation::compile_tool_settings(
+            self.tool_configuration_compiler.as_ref(),
+            config,
+        )
+        .map_err(|error| PublishError::Compile(error.to_string()))?;
         let source_revision = 1;
         let mut resolved = prepare_agent_publication(
             self.model_publication_resolver.as_ref(),

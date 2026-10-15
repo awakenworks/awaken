@@ -16,6 +16,7 @@ use awaken_session_state_contract::{
     SessionRepositoryError,
 };
 use awaken_time::WallClockExt;
+use awaken_tool_contract::ToolConfigurationCompiler;
 /// Reject a frozen topology whose idle policy would require Coordinator-local
 /// continuation effects against a Worker-owned Environment. External Workers
 /// have one realization/terminal-cleanup claim path, but no claim-fenced
@@ -108,6 +109,7 @@ pub struct SessionApplication {
     clock: Arc<dyn awaken_time::WallClock>,
     configuration: SessionApplicationConfiguration,
     runtime: crate::SessionExecutor,
+    tool_configuration_compiler: Arc<dyn ToolConfigurationCompiler>,
     mcp_realizer: Arc<dyn McpAttachmentRealizer>,
     credential_source: Option<Arc<dyn SessionCredentialSource>>,
     credential_material_ingress: Option<Arc<dyn CredentialMaterialIngress>>,

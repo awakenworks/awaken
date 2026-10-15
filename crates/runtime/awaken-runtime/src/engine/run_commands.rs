@@ -8,6 +8,31 @@
 
 use super::*;
 
+#[derive(Debug, thiserror::Error)]
+#[error("client-executed tool results cannot mutate Runtime state")]
+struct ClientStateMutation;
+
+/// Caller-owned result content carries no in-process state-writer capability.
+fn validate_client_state_authority(ticket: &ResumeTicket, result: &ResumeResult) -> Result<()> {
+    if matches!(
+        ticket.target(),
+        awaken_agent_contract::agent::awaiting::AwaitTarget::ToolCall {
+            reason: awaken_agent_contract::agent::awaiting::ToolAwaitReason::ClientExecution,
+            ..
+        }
+    ) && let ResumeResult::ToolResult(output) = result
+        && !output.state.is_empty()
+    {
+        return Err(awaken_runtime_contract::diagnostic::RuntimeDiagnostic::new(
+            awaken_runtime_contract::diagnostic::RuntimeErrorKind::InvalidRequest,
+            "resume_client_state_mutation",
+            ClientStateMutation,
+        )
+        .into());
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl RunExecutor for Runtime {
     #[tracing::instrument(name = "runtime.run", skip_all, fields(awaken.run.id = %activation.run_id.0))]
@@ -488,6 +513,7 @@ fn admit_resume(
         .resume_ticket(&command.run_id)
         .ok_or(awaken_runtime_contract::resume::ResumeError::NotWaiting)?;
     validate_resume(&ticket, command)?;
+    validate_client_state_authority(&ticket, &command.result)?;
     let context = bind_resume_context(runtime, context, &ticket, activation)?;
     // Native tool tickets need the same atomic approval/result boundary.
     // Validate command and context first, keeping their existing precedence;

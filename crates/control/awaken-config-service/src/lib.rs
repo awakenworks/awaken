@@ -3,9 +3,8 @@
 //! Extracted from the data-plane host (`awaken-session-executor`) so both planes can
 //! share it without the authoring/authz plane (`awaken-control`) depending on the
 //! execution host — preserving the **control ⊥ execution** invariant. This crate is
-//! pure config-plane logic: the config service and its CRUD router, the
-//! advertised-capabilities router, the model-binding resolver, and the scoped tool
-//! catalog. It references neither `SharedHost` nor run execution.
+//! pure config-plane logic: the config application service, required tool
+//! compiler port, model-binding resolver, and scoped tool catalog. It references neither `SharedHost` nor run execution.
 //!
 //! Composition roots and `awaken-control` depend on this authoritative owner
 //! directly; the Runtime Host does not act as a public facade.
@@ -16,10 +15,8 @@ mod capabilities;
 mod compaction;
 mod config_plane;
 mod config_preview;
-mod config_routes;
 mod config_service;
 mod credential_reference;
-mod managed_agent;
 mod managed_model_id;
 mod management_audit;
 mod plugin_validation;
@@ -30,21 +27,15 @@ mod service_access;
 mod service_wiring;
 mod session_model_resolution;
 mod tool_catalog;
+mod tool_compilation;
 
 pub use binding_resolver::{
     ConfigServiceReconciler, ModelPublicationResolver, PublicationBindingReconciler,
     PublicationResolutionError, ResolvedPublicationModels,
 };
-pub use capabilities::{
-    LocalRuntimeCapability, RuntimeCapability, RuntimeCapabilitySource, capabilities_router,
-    capabilities_router_with_source, sandbox_execution_policy_capability,
-    static_runtime_capabilities,
-};
 pub use config_plane::ConfigPlane;
-pub use config_routes::config_router;
 pub use config_service::ConfigService;
 pub use credential_reference::CredentialReferenceValidator;
-pub use managed_agent::{agent_config_from_managed, managed_from_agent_config};
 pub use managed_model_id::{ManagedModelIdError, parse_managed_model_id, render_managed_model_id};
 pub use management_audit::{ManagementAuditPlane, ManagementAuditRepository};
 pub use plugin_validation::PluginPublicationResolver;
@@ -52,4 +43,10 @@ pub use publication::{PublishError, ValidationIssue};
 pub use session_model_resolution::ConfigSessionModelPublicationResolver;
 pub use tool_catalog::{
     RESERVED_ADMIN_SCOPE, ScopedToolCatalog, StaticToolCatalog, ToolCatalogSource,
+};
+
+pub use capabilities::{
+    LocalRuntimeCapability, RuntimeCapability, RuntimeCapabilitySource, capabilities_router,
+    capabilities_router_with_source, sandbox_execution_policy_capability,
+    static_runtime_capabilities,
 };

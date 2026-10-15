@@ -82,11 +82,17 @@ pub use crate::registration_supervisor::{
     RegistrationHealth, RegistrationHealthSnapshot, RegistrationSupervisorConfig,
     StaticRegistrationSupervisor,
 };
+mod config_routes;
+mod managed_agent;
 pub use awaken_config_service::{
-    LocalRuntimeCapability, RuntimeCapability, RuntimeCapabilitySource, static_runtime_capabilities,
+    LocalRuntimeCapability, RuntimeCapability, RuntimeCapabilitySource, capabilities_router,
+    capabilities_router_with_source, sandbox_execution_policy_capability,
+    static_runtime_capabilities,
 };
 pub use awaken_iam_contract::AccountId;
 pub use awaken_iam_host::{LocalBrowserAuth, LocalSetupHandoff};
+pub use config_routes::config_router;
+pub use managed_agent::{agent_config_from_managed, managed_from_agent_config};
 // Trusted local materialization: only the credential vault and secret store
 // needed by snapshot-pinned inference access.
 pub use crate::worker_stores::{
@@ -97,7 +103,7 @@ use awaken_admin_config_api::{AdminState, CredentialProbe};
 use awaken_agent_config::{AuditedConfigWrite, DEFAULT_SCOPE, ManagementAuditRecord};
 use awaken_config_resolver::AgentInputBindingRepository;
 use awaken_config_resolver::{InferenceProfileStore, WebhookStore};
-use awaken_config_service::{ConfigPlane, ManagementAuditPlane, config_router};
+use awaken_config_service::{ConfigPlane, ManagementAuditPlane};
 use awaken_credential_vault::SecretStore;
 use awaken_credential_vault::repo::CredentialRepo;
 use awaken_deployment_contract::AgentArchiveCascade;
@@ -538,8 +544,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     let agents = agents_router(Arc::new(agent_state));
     // Capability snapshot (`GET /v1/capabilities`): the host's tool descriptors +
     // installable plugins (with config schema) so the console authors data-driven.
-    let capabilities =
-        awaken_config_service::capabilities_router_with_source(global_tools, plugins, runtimes);
+    let capabilities = crate::capabilities_router_with_source(global_tools, plugins, runtimes);
     let presentation_identity_mode = identity_mode;
     // The presentation route reads the Workspace the edge resolved. The
     // installation's own Workspace is filled in by ONE layer below, never by

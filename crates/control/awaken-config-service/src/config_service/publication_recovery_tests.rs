@@ -134,7 +134,11 @@ async fn startup_reconciliation_converges_legacy_duplicate_source_revisions() {
         .unwrap();
     let first = author.publish(&scope, "legacy-agent").await.unwrap();
 
-    let alternate = ConfigService::new(Arc::new(FakeProviderResolver), test_registrar());
+    let alternate = ConfigService::new(
+        Arc::new(FakeProviderResolver),
+        test_registrar(),
+        std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+    );
     let registry = ScopedConfig::new(store.clone(), scope.clone());
     let last = alternate
         .preview_publication(&scope, &registry, "legacy-agent", &[])

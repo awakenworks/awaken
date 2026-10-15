@@ -172,3 +172,19 @@ many ADRs, and some of them pull the code apart. Measured on main `14ef08382e`:
 - The guards' baselines record today's exceptions; each shrinks as the code moves.
 - ADR-0081 §7–§9, the ADR-0088 2026-10-07 amendment, ADR-0059 §3 and §6, ADR-0057's
   Assembly section and the design naming table carry pointers to this record.
+
+
+## Amendment — 2026-10-15: existing Web SDK policy boundary
+
+`awaken-web-policy-contract` remains an independently published SDK target in
+plan 9.14 rather than a pending merge into `awaken-runtime-contract`. The target
+map therefore has 27 targets. This retains an existing crate and its public API
+snapshot promise; it creates no contract crate. Its pure Web parser, validation,
+normalization, composition and URL admission belong to the Web extension domain.
+The crate's normal graph has serialization, JSON field-path and URL parsing
+libraries, with no Runtime, Session application, credential, filesystem or HTTP
+implementation dependency. Runtime consumes neutral facts and does not interpret
+Web policy fields. The existing `awaken-tool-contract` owns the required compiler
+role used by ConfigService and Session Application; Managed wire DTOs belong to
+the existing protocol adapter's `tools` module. See
+[the consumer and ownership inventory](../design/anthropic-alignment-and-sessions.md).

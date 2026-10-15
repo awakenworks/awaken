@@ -878,8 +878,7 @@ async fn running_session_persists_manifest_and_applies_only_at_idle_boundary() {
     // |---|---|---|---|---|---|
     // | M1 | Running | absent | none | none | E1 |
     // | M2 | Idle | present | committed | once | E2 + E3 + E4 |
-    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        sqlite_session_repository("session repository").await;
+    let repo = sqlite_session_repository("session repository").await;
     create(
         repo.as_ref(),
         persisted("running-manifest", false, "running"),
@@ -889,17 +888,13 @@ async fn running_session_persists_manifest_and_applies_only_at_idle_boundary() {
         repository: Some(repo.clone()),
         ..Default::default()
     });
-    let app = SessionApplicationBuilder::fixture(
+    let app = application_with_persistence(
         runtime.clone(),
-        Arc::new(NoopMcpRealizer),
         SessionPersistence::new(
             repo.clone(),
             Arc::new(awaken_lease_testkit::ManualClock::new(100)),
         ),
-        Arc::new(RecordingEnvironmentSource::default()),
-    )
-    .build()
-    .expect("valid fixture Store/Clock composition");
+    );
     let desired = file_resources("safe-boundary");
     let outcome = app
         .replace_session_resource_manifest(
@@ -6275,14 +6270,10 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
      * retains the already-open interval. */
     let repo = sqlite_session_repository("session repository").await;
     let clock = Arc::new(awaken_lease_testkit::ManualClock::new(500));
-    let application = SessionApplicationBuilder::fixture(
+    let application = application_with_persistence(
         Arc::new(NoopRuntime),
-        Arc::new(NoopMcpRealizer),
         SessionPersistence::new(repo.clone(), clock.clone()),
-        Arc::new(RecordingEnvironmentSource::default()),
-    )
-    .build()
-    .expect("valid fixture Store/Clock composition");
+    );
     let lease = crate::session_resource::SessionRealizationLease {
         owner: "worker-a".into(),
         runtime_incarnation: "worker-a/boot-2".into(),

@@ -50,7 +50,7 @@ fn child_seed_message(
     input: String,
 ) -> Message {
     Message::text(
-        MessageId(format!("{}-input", child_run_id.0)),
+        MessageId::agent_thread_input(child_run_id),
         Role::User,
         input,
     )
@@ -88,7 +88,7 @@ fn advisor_seed_messages(
         transcript.remove(current_step);
     }
     transcript.push(Message::text(
-        MessageId(format!("{}-advisor-input", child_run_id.0)),
+        MessageId::agent_advisor_input(child_run_id),
         Role::User,
         ADVISOR_REQUEST,
     ));

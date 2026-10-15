@@ -190,7 +190,7 @@ async fn accepted_a_and_b_snapshots_survive_catalog_withdrawal_and_cold_peer() {
     // existing wire projector emits toolsets first. Freeze its accepted order,
     // including both original names, rather than the request union interleave.
     assert!(
-        matches!(&b.agent.tools[..], [awaken_session_configuration_contract::AgentTool::McpToolset { mcp_server_name, .. }, awaken_session_configuration_contract::AgentTool::Custom {name, ..}] if name == "accepted-b" && mcp_server_name == "accepted-b"),
+        matches!(&b.agent.tools[..], [crate::tools::AgentTool::McpToolset { mcp_server_name, .. }, crate::tools::AgentTool::Custom {name, ..}] if name == "accepted-b" && mcp_server_name == "accepted-b"),
         "canonical toolsets-before-custom order: {:?}",
         b.agent.tools
     );

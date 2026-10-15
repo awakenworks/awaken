@@ -13,6 +13,8 @@ separation = "process"
 
 
 [dependencies]
+# Real Web compiler used by this bootstrap crate's explicit scenario assembly only.
+awaken-ext-builtin-tools = { workspace = true, optional = true }
 awaken-tool-contract.workspace = true
 awaken-data-governance-contract.workspace = true
 awaken-service-lifecycle.workspace = true
@@ -138,6 +140,7 @@ url.workspace = true
 [features]
 # Volatile embedded/scenario assembly is excluded from product builds.
 test-support = [
+    "dep:awaken-ext-builtin-tools",
     "dep:awaken-work-store",
     "dep:awaken-executable-environment-catalog",
     "awaken-work-store/test-support",

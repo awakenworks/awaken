@@ -53,7 +53,7 @@ fn project_root_fields_and_updates(
     record: &mut SessionRecord,
     persisted: &PersistedSession,
 ) -> Result<(), StateError> {
-    ManagedState::apply_persisted_session(record, persisted);
+    ManagedState::apply_persisted_session(record, persisted)?;
     for (fact, update) in awaken_managed_session_events::derive_session_update_events(persisted)
         .map_err(projection_error)?
     {

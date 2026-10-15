@@ -47,6 +47,7 @@ async fn live_session_usage_projects_the_same_clock_that_opened_its_root_interva
         Arc::new(NoopMcpRealizer),
         SessionPersistence::new(repo.clone(), clock.clone()),
         Arc::new(RecordingEnvironmentSource::default()),
+        std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
     .build()
     .expect("valid fixture Store/Clock composition");
@@ -161,6 +162,7 @@ async fn cold_cleanup_registry_window_and_receipt_use_one_application_clock_afte
             Arc::new(NoopMcpRealizer),
             SessionPersistence::new(repo.clone(), clock.clone()),
             Arc::new(RecordingEnvironmentSource::default()),
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         )
         .configuration(SessionApplicationConfiguration {
             execution_placement: SessionExecutionPlacement::RegisteredWorker,

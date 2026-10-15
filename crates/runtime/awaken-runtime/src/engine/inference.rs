@@ -14,6 +14,31 @@
 use super::*;
 use awaken_runtime_contract::resilience::RetryVerdict;
 
+/// Prepare the model-owned input through the existing materializer/read seam.
+pub(super) async fn materialize_model_input(
+    context: &RuntimeRunContext,
+    request: ChatRequest,
+) -> awaken_runtime_contract::llm::Result<Option<ChatRequest>> {
+    let request = if let Some(materializer) = &context.model_content_materializer {
+        model_read(
+            context.cancellation.as_ref(),
+            context
+                .physical_quiescence
+                .observe_return(materializer.materialize(request)),
+        )
+        .await
+        .ok_or_else(|| {
+            awaken_runtime_contract::llm::Error::Cancelled("model preparation cancelled".into())
+        })??
+    } else {
+        request
+    };
+    Ok(context
+        .physical_quiescence
+        .permits_execution()
+        .then_some(request))
+}
+
 /// Sole admission gate for retiring a spent interrupted-stream checkpoint.
 /// The async store effect remains with the caller; this kernel only decides
 /// whether the completed local observation is safe to acknowledge.

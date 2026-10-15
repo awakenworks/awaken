@@ -6,9 +6,12 @@ use awaken_session_types::SessionId;
 use awaken_tool_contract::tool_batch::ToolBatch;
 
 fn test_thread_agent(id: &str) -> SessionThreadAgent {
-    SessionThreadAgent::from(&super::super::sessions::session_agent_from_configuration(
-        &super::super::sessions::agent_configuration_from_profile(id, Default::default()),
-    ))
+    SessionThreadAgent::from(
+        &super::super::sessions::session_agent_from_configuration(
+            &super::super::sessions::agent_configuration_from_profile(id, Default::default()),
+        )
+        .expect("valid profile fixture"),
+    )
 }
 
 async fn await_session_tombstone(
@@ -179,12 +182,13 @@ async fn coordinator_only_creation_reports_durable_preparing_without_fabricated_
     let environments = crate::state::test_support::environment_components().1;
     let application = awaken_session_application::SessionApplicationBuilder::fixture(
         runtime.clone(),
-        Arc::new(mcp_attachment::UnsupportedMcpAttachmentRealizer),
+        Arc::new(awaken_protocol_managed_testkit::UnsupportedMcpAttachmentRealizer),
         awaken_session_application::SessionPersistence::new(
             repo.clone(),
             awaken_time::system_clock(),
         ),
         environments.clone(),
+        std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
     .configuration(
         awaken_session_application::SessionApplicationConfiguration {
