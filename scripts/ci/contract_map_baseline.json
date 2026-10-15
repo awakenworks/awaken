@@ -45,7 +45,6 @@
     "ResourceReclamationRepository <- awaken-session-executor": 1,
     "SandboxCheckpointStore <- awaken-session-executor": 1,
     "SandboxCheckpointStore <- awaken-sandbox-local": 1,
-    "SandboxExecutionPolicyStore <- awaken-environment-application": 1,
     "SandboxExecutionPolicyStore <- awaken-protocol-awaken": 1,
     "SandboxExecutionPolicyStore <- awaken-protocol-managed": 1,
     "SessionRepository <- awaken-resource-worker-http": 1,
@@ -56,7 +55,6 @@
   "fat-trait": {
     "ContainerEnvironmentProvider": 16,
     "DurableRunOperations": 15,
-    "EnvRegistry": 13,
     "MemoryRepository": 20,
     "Sandbox": 15
   },

@@ -110,7 +110,6 @@ awaken-session-application = { workspace = true, features = ["test-support"] }
 awaken-session-repository-contract.workspace = true
 # Resource fixtures compose the same Environment catalog/Work owner as Coordinator.
 awaken-environment-application.workspace = true
-awaken-environment-execution-application.workspace = true
 awaken-executable-environment-catalog.workspace = true
 awaken-work-store = { workspace = true, features = ["test-support"] }
 awaken-coordinator-client.workspace = true

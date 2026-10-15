@@ -117,7 +117,6 @@ awaken-credential-store = { path = "crates/stores/awaken-credential-store" }
 awaken-data-subject-application = { path = "crates/control/awaken-data-subject-application" }
 awaken-data-subject-store = { path = "crates/stores/awaken-data-subject-store" }
 awaken-environment-application = { path = "crates/control/awaken-environment-application" }
-awaken-environment-execution-application = { path = "crates/server/awaken-environment-execution-application" }
 awaken-captured-content-store = { path = "crates/stores/awaken-captured-content-store" }
 awaken-config-resolver = { path = "crates/control/awaken-config-resolver" }
 awaken-admin-config-api = { path = "crates/control/awaken-admin-config-api" }

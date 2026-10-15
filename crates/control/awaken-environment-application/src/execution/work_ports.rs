@@ -10,22 +10,22 @@ use std::sync::Arc;
 /// ```compile_fail
 /// use std::sync::Arc;
 /// use awaken_executable_environment_contract::WorkQueries;
-/// use awaken_environment_execution_application::WorkQueue;
+/// use awaken_environment_application::execution::WorkQueue;
 /// fn incomplete<T: WorkQueries + 'static>(backend: Arc<T>) {
 ///     let _: WorkQueue = backend.into();
 /// }
 /// ```
 #[derive(Clone)]
 pub struct WorkQueue {
-    pub(crate) queries: Arc<dyn work::WorkQueries>,
-    pub(crate) consumer: Arc<dyn work::WorkConsumer>,
-    pub(crate) authentication: Arc<dyn work::SessionAccessAuthenticator>,
-    pub(crate) session_control: Arc<dyn work::SessionWorkLeaseControl>,
-    pub(crate) assignment: Arc<dyn work::SessionWorkStore>,
-    pub(crate) worker_leases: Arc<dyn work::SessionWorkerLeaseStore>,
-    pub(crate) observation: Arc<dyn work::WorkerLeaseObservation>,
-    pub(crate) metadata: Arc<dyn work::WorkMetadataPatch>,
-    pub(crate) lifecycle: Arc<dyn work::EnvironmentWorkLifecycle>,
+    pub(super) queries: Arc<dyn work::WorkQueries>,
+    pub(super) consumer: Arc<dyn work::WorkConsumer>,
+    pub(super) authentication: Arc<dyn work::SessionAccessAuthenticator>,
+    pub(super) session_control: Arc<dyn work::SessionWorkLeaseControl>,
+    pub(super) assignment: Arc<dyn work::SessionWorkStore>,
+    pub(super) worker_leases: Arc<dyn work::SessionWorkerLeaseStore>,
+    pub(super) observation: Arc<dyn work::WorkerLeaseObservation>,
+    pub(super) metadata: Arc<dyn work::WorkMetadataPatch>,
+    pub(super) lifecycle: Arc<dyn work::EnvironmentWorkLifecycle>,
 }
 impl WorkQueue {
     #[must_use]

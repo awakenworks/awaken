@@ -50,7 +50,7 @@ pub(crate) struct DomainState {
     pub(crate) directory: Arc<dyn WorkerDirectory>,
     pub(crate) host: Arc<SharedHost>,
     pub(crate) environments:
-        Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
+        Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
     pub(crate) sessions: Arc<awaken_session_application::SessionApplication>,
     pub(crate) relay_targets: Option<Arc<dyn crate::WorkerRelayTargetObserver>>,
     pub(crate) bindings: Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,

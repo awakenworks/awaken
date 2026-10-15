@@ -12,7 +12,7 @@ use std::time::Duration;
 use awaken_time::mono::Stopwatch;
 
 use awaken_config_service::PublicationBindingReconciler;
-use awaken_environment_application::EnvironmentApplication;
+use awaken_environment_application::EnvironmentRegistrationDelivery;
 
 #[derive(Clone, Copy, Debug)]
 pub struct RegistrationSupervisorConfig {
@@ -111,7 +111,7 @@ impl StaticRegistrationSupervisor {
     #[must_use]
     pub fn start(
         agents: Arc<dyn PublicationBindingReconciler>,
-        environments: Arc<EnvironmentApplication>,
+        environments: Arc<EnvironmentRegistrationDelivery>,
         service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
     ) -> Arc<Self> {
         Self::start_with_config(
@@ -125,7 +125,7 @@ impl StaticRegistrationSupervisor {
     #[must_use]
     pub fn start_with_config(
         agents: Arc<dyn PublicationBindingReconciler>,
-        environments: Arc<EnvironmentApplication>,
+        environments: Arc<EnvironmentRegistrationDelivery>,
         config: RegistrationSupervisorConfig,
         service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
     ) -> Arc<Self> {
@@ -208,7 +208,8 @@ mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    use awaken_environment_contract::EnvRegistry;
+    use awaken_environment_application::EnvironmentApplication;
+    use awaken_environment_contract::EnvironmentDefinitionStore;
     use awaken_executable_environment_contract::{
         ExecutableEnvironmentRegistrar, ExecutableEnvironmentRegistration,
         ExecutableEnvironmentRegistrationError, ExecutableEnvironmentRegistrationOutcome,
@@ -285,7 +286,7 @@ mod tests {
         let agents = Arc::new(AgentRecovery {
             fail: AtomicBool::new(true),
         });
-        let envs: Arc<dyn EnvRegistry> = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
+        let envs = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
             awaken_time::system_clock(),
         ));
         let registrar = Arc::new(EnvironmentRegistrar::default());
@@ -293,7 +294,7 @@ mod tests {
         let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
         let supervisor = StaticRegistrationSupervisor::start_with_config(
             agents,
-            environments,
+            environments.registration_delivery(),
             RegistrationSupervisorConfig {
                 retry_min: Duration::from_secs(60),
                 retry_max: Duration::from_secs(60),
@@ -376,7 +377,7 @@ mod tests {
             })
             .await
             .unwrap();
-        let envs: Arc<dyn EnvRegistry> = registry.clone();
+        let envs = registry.clone();
         let registrar = Arc::new(EnvironmentRegistrar {
             registrations: Mutex::new(0),
             fail_custom_once: AtomicBool::new(true),
@@ -388,7 +389,7 @@ mod tests {
         let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
         let supervisor = StaticRegistrationSupervisor::start_with_config(
             agents,
-            environments,
+            environments.registration_delivery(),
             RegistrationSupervisorConfig {
                 retry_min: Duration::from_secs(60),
                 retry_max: Duration::from_secs(60),

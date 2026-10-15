@@ -7,7 +7,7 @@ license.workspace = true
 [package.metadata.awaken]
 context = "control"
 product = "platform"
-bounded_context = "config"
+bounded_context = "environment"
 layer = "infrastructure"
 authority = "env"
 separation = "isolation"
@@ -15,7 +15,7 @@ isolates = ["sqlx"]
 
 [dependencies]
 awaken-sql-storage = { workspace = true, features = ["postgres"] }
-# The EnvRegistry port + neutral EnvItem this crate implements a durable backend for
+# The Environment definition roles and neutral EnvItem implemented by this backend
 # (SQLite embedded / Postgres distributed, at parity).
 awaken-environment-contract.workspace = true
 # The shared wall-clock port: every observation timestamp this store writes is a

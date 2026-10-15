@@ -14,7 +14,7 @@ use awaken_time::WallClockExt as _;
 use std::sync::Arc;
 
 use awaken_agent_contract::RedactedString;
-use awaken_environment_execution_application::EnvironmentExecutionApplication;
+use awaken_environment_application::execution::EnvironmentExecutionApplication;
 use awaken_executable_environment_contract::WorkSessionAccess;
 use axum::Json;
 use axum::extract::{Request, State};
@@ -134,7 +134,7 @@ pub async fn work_session_guard(
     let Some(presented) = bearer(&req) else {
         return next.run(req).await;
     };
-    if !presented.starts_with(awaken_environment_execution_application::SESSION_TOKEN_PREFIX) {
+    if !presented.starts_with(awaken_environment_application::execution::SESSION_TOKEN_PREFIX) {
         return next.run(req).await;
     }
     let token = RedactedString::from(presented.to_owned());

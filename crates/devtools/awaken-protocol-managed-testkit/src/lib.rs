@@ -43,7 +43,7 @@ pub use session_fixtures::{
 };
 
 use awaken_environment_application::EnvironmentApplication;
-use awaken_environment_execution_application::{
+use awaken_environment_application::execution::{
     CoordinatorEnvironmentRegistrar, EnvironmentExecutionApplication,
 };
 use awaken_executable_environment_contract::ExecutableEnvironmentRegistrar;

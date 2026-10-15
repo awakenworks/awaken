@@ -282,12 +282,10 @@ async fn assemble_control_component(
                 .control
                 .as_ref()
                 .expect("AllInOne owns Control Environment stores");
-            let application =
-                Arc::new(awaken_environment_application::EnvironmentApplication::new(
-                    control.environments.clone(),
-                    base.environments.registrar.clone(),
-                    Some(control.sandbox_policies.clone()),
-                ));
+            let application = Arc::new(control.environments.application(
+                base.environments.registrar.clone(),
+                control.sandbox_policies.clone(),
+            ));
             let state = Arc::new(awaken_protocol_managed::EnvironmentAuthoringState::new(
                 application,
                 control.sandbox_policies.clone(),
@@ -378,7 +376,7 @@ struct ExecutionStores {
     dream_process_store: Arc<dyn awaken_session_dream_contract::DreamProcessStore>,
     capture_sink: Arc<dyn awaken_runtime_contract::CaptureSink>,
     environment_execution:
-        Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
+        Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
     memory_extractions: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
 }
 
@@ -402,7 +400,7 @@ async fn assemble_execution_stores(
         .take()
         .expect("Managed Execution role requires Coordinator stores");
     let environment_execution =
-        awaken_environment_execution_application::EnvironmentExecutionApplication::new(
+        awaken_environment_application::execution::EnvironmentExecutionApplication::new(
             environment_work,
             base.environments.catalog.clone(),
         );

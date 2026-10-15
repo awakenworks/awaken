@@ -470,7 +470,6 @@ dependencies = [
  "awaken-env-store",
  "awaken-environment-application",
  "awaken-environment-contract",
- "awaken-environment-execution-application",
  "awaken-environment-image-build",
  "awaken-environment-package-image-builder",
  "awaken-executable-agent-catalog",
@@ -759,7 +758,6 @@ dependencies = [
  "awaken-dream-application",
  "awaken-environment-application",
  "awaken-environment-contract",
- "awaken-environment-execution-application",
  "awaken-executable-agent-catalog",
  "awaken-executable-agent-contract",
  "awaken-executable-environment-catalog",
@@ -1294,34 +1292,9 @@ name = "awaken-environment-application"
 version = "1.0.0"
 dependencies = [
  "async-trait",
- "awaken-env-store",
- "awaken-environment-contract",
- "awaken-executable-environment-contract",
- "awaken-provisioning-contract",
- "awaken-time",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "awaken-environment-contract"
-version = "1.0.0"
-dependencies = [
- "async-trait",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "awaken-environment-execution-application"
-version = "1.0.0"
-dependencies = [
- "async-trait",
  "awaken-agent-contract",
  "awaken-credential-contract",
- "awaken-environment-application",
+ "awaken-env-store",
  "awaken-environment-contract",
  "awaken-executable-environment-catalog",
  "awaken-executable-environment-contract",
@@ -1340,6 +1313,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-environment-contract"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-environment-image-build"
 version = "1.0.0"
 dependencies = [
@@ -1347,7 +1331,6 @@ dependencies = [
  "awaken-env-store",
  "awaken-environment-application",
  "awaken-environment-contract",
- "awaken-environment-execution-application",
  "awaken-executable-environment-catalog",
  "awaken-executable-environment-contract",
  "awaken-lease-testkit",
@@ -2109,7 +2092,6 @@ dependencies = [
  "awaken-env-store",
  "awaken-environment-application",
  "awaken-environment-contract",
- "awaken-environment-execution-application",
  "awaken-executable-agent-contract",
  "awaken-executable-environment-catalog",
  "awaken-executable-environment-contract",
@@ -2181,7 +2163,6 @@ dependencies = [
  "awaken-env-store",
  "awaken-environment-application",
  "awaken-environment-contract",
- "awaken-environment-execution-application",
  "awaken-executable-environment-catalog",
  "awaken-executable-environment-contract",
  "awaken-lease-contract",
@@ -3053,7 +3034,6 @@ dependencies = [
  "awaken-dispatch-testkit",
  "awaken-environment-application",
  "awaken-environment-contract",
- "awaken-environment-execution-application",
  "awaken-executable-agent-contract",
  "awaken-executable-environment-catalog",
  "awaken-ext-background-task",
