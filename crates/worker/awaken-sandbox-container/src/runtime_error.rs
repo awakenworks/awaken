@@ -215,16 +215,13 @@ mod api_status_classification_tests {
     #[cfg(feature = "k8s")]
     #[test]
     fn kubernetes_api_status_keeps_the_class_callers_act_on() {
-        // Decision table. C1 kube-apiserver `ErrorResponse.code` / non-API
+        // Decision table. C1 kube-apiserver Status.code / non-API
         // failure. R1 404 absence; R2 409 conflict; R3 401/403 authority
         // refusal; R4 every other status or client failure stays Backend.
         let response = |code: u16| {
-            kube::Error::Api(kube::core::ErrorResponse {
-                status: "Failure".into(),
-                message: "apiserver said no".into(),
-                reason: "Reason".into(),
-                code,
-            })
+            kube::Error::Api(Box::new(
+                kube::core::Status::failure("apiserver said no", "Reason").with_code(code),
+            ))
         };
         let rows = [
             ("R1", response(404), "NotFound"),
@@ -294,12 +291,9 @@ mod api_status_classification_tests {
             ("Q4", 500, quota, "Backend"),
         ];
         for (rule, status, message, expected) in rows {
-            let response = kube::Error::Api(kube::core::ErrorResponse {
-                status: "Failure".into(),
-                message: message.into(),
-                reason: "Forbidden".into(),
-                code: status,
-            });
+            let response = kube::Error::Api(Box::new(
+                kube::core::Status::failure(message, "Forbidden").with_code(status),
+            ));
             let runtime = response.into_runtime_error();
             let port = pc::SandboxError::from(runtime);
             assert_eq!(port_class_of(&port), expected, "{rule}: {port}");

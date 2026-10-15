@@ -63,11 +63,8 @@ pub(crate) async fn guarded_claim_physical_state(
     {
         return Ok(GuardedClaimPhysical::Incompatible);
     }
-    let Some(claim) = runtime
-        .persistent_volume_claims()
-        .get_opt(&canonical_claim)
-        .await
-        .map_err(backend)?
+    let Some(claim) =
+        crate::k8s::get_optional(&runtime.persistent_volume_claims(), &canonical_claim).await?
     else {
         return Ok(GuardedClaimPhysical::Absent);
     };
@@ -359,11 +356,8 @@ async fn isolated_pod_terminal_evidence(
     if !create_ledger::verify_pod_isolation(&runtime.clients.control, &ticket, &uid).await? {
         return Ok(MissingHandleTerminalEvidence::Unknown);
     }
-    let claim = runtime
-        .persistent_volume_claims()
-        .get_opt(context.claim_name)
-        .await
-        .map_err(backend)?;
+    let claim =
+        crate::k8s::get_optional(&runtime.persistent_volume_claims(), context.claim_name).await?;
     if !context.claim_required {
         return Ok(
             if claim.is_none() && created_claim_uid.is_none() && context.absence_shape_closed {
@@ -416,11 +410,7 @@ async fn unmaterialized_after_join(
     if created_claim || !absence_shape_closed || pod_present {
         return Ok(MissingHandleTerminalEvidence::Unknown);
     }
-    let claim = runtime
-        .persistent_volume_claims()
-        .get_opt(claim_name)
-        .await
-        .map_err(backend)?;
+    let claim = crate::k8s::get_optional(&runtime.persistent_volume_claims(), claim_name).await?;
     Ok(if claim.is_none() {
         MissingHandleTerminalEvidence::Unmaterialized
     } else {
@@ -807,20 +797,14 @@ impl ContainerRuntime for K8sRuntime {
             )
             .await;
         }
-        let pod = self
-            .pods()
-            .get_opt(&runtime_pod_name)
-            .await
-            .map_err(backend)?;
+        let pod = crate::k8s::get_optional(&self.pods(), &runtime_pod_name).await?;
         if let Some((_, pod_uid)) = &joined.created_pod {
             let Some(pod) = pod else {
                 return Ok(MissingHandleTerminalEvidence::Unknown);
             };
-            let claim = self
-                .persistent_volume_claims()
-                .get_opt(&runtime_claim_name)
-                .await
-                .map_err(backend)?;
+            let claim =
+                crate::k8s::get_optional(&self.persistent_volume_claims(), &runtime_claim_name)
+                    .await?;
             let claim_uid = match (claim_required, &joined.created_claim_uid, claim.as_ref()) {
                 (true, Some(ticket_uid), Some(observed))
                     if verify_joined_original_claim(

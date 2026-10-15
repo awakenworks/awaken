@@ -57,9 +57,9 @@ impl ScratchNamespace {
         ))
         .expect("read the canonical sandbox NetworkPolicy graph");
         let policies = Api::<NetworkPolicy>::namespaced(client.clone(), &name);
-        for document in serde_yaml::Deserializer::from_str(&graph) {
-            let policy: NetworkPolicy =
-                serde::Deserialize::deserialize(document).expect("canonical NetworkPolicy");
+        for policy in serde_saphyr::from_multiple::<NetworkPolicy>(&graph)
+            .expect("canonical NetworkPolicy graph")
+        {
             policies
                 .create(&PostParams::default(), &policy)
                 .await

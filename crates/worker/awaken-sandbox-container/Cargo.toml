@@ -47,8 +47,8 @@ bollard = { version = "0.18", optional = true }
 futures-util = { version = "0.3", optional = true }
 base64 = "0.22"
 # Real Kubernetes backend (kube-apiserver via the SDK, not kubectl). Optional.
-kube = { version = "1", default-features = false, features = ["client", "http-proxy", "rustls-tls", "ws"], optional = true }
-k8s-openapi = { version = "0.25", features = ["v1_30"], optional = true }
+kube = { workspace = true, features = ["client", "http-proxy", "rustls-tls", "ws"], optional = true }
+k8s-openapi = { workspace = true, optional = true }
 http = { version = "1", optional = true }
 http-body-util = { version = "0.1", optional = true }
 tower = { version = "0.5", features = ["util"], optional = true }
@@ -88,4 +88,4 @@ awaken-tool-relay.workspace = true
 awaken-memory-store = { workspace = true, features = ["test-support"] }
 awaken-sandbox-memoryd.workspace = true
 tempfile = "3"
-serde_yaml = "0.9"
+serde-saphyr.workspace = true

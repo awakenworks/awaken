@@ -756,6 +756,10 @@ mod tests {
 
     #[tokio::test]
     async fn in_memory_object_store_conforms() -> Result<(), Box<dyn std::error::Error>> {
+        // Dependency compatibility P2: the patched SDK/RNG graph retains the
+        // existing F1/F2 content-id, replay, exact-set, empty-read and delete
+        // effects below. The shared table owns those assertions; no replacement
+        // object-store or cryptographic implementation is introduced here.
         object_store_conformance(Arc::new(InMemory::new()), "blobs").await
     }
 

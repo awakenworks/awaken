@@ -84,7 +84,7 @@ use client::K8sClients;
 pub use client::connect_control_client;
 use continuation::{rebuild_claim_admission, rebuild_continuation_expectation};
 use error::api_not_found;
-pub(crate) use error::backend;
+pub(crate) use error::{backend, get_optional};
 use names::{configmap_name, continuation_claim_for_pod, credential_secret_name};
 pub(crate) use names::{k8s_runtime_id, pod_name};
 #[cfg(test)]
@@ -918,11 +918,7 @@ impl K8sRuntime {
             .name
             .as_deref()
             .expect("canonical continuation claim has a name");
-        let observed = self
-            .persistent_volume_claims()
-            .get_opt(name)
-            .await
-            .map_err(backend)?;
+        let observed = crate::k8s::get_optional(&self.persistent_volume_claims(), name).await?;
         self.create_claim_admission(&desired, observed.as_ref(), expected_fence)
             .map(drop)
     }
@@ -955,7 +951,7 @@ impl K8sRuntime {
     ) -> Result<Vec<ExistingRealization>, RuntimeError> {
         let runtime_id = self.realization_runtime_id(scope)?;
         let name = pod_name(&runtime_id);
-        let Some(pod) = self.pods().get_opt(&name).await.map_err(backend)? else {
+        let Some(pod) = crate::k8s::get_optional(&self.pods(), &name).await? else {
             return Ok(Vec::new());
         };
         if pod
