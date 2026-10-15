@@ -286,20 +286,15 @@ async fn postgres_backfills_legacy_managed_timestamps_from_insert_time() {
     use sqlx::{Executor, Row};
 
     const SCHEMA: &str = "credential_timestamp_backfill";
-    let url = std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
-    });
-    let admin = match PgPoolOptions::new().max_connections(1).connect(&url).await {
-        Ok(pool) => pool,
-        Err(error) => {
-            assert!(
-                std::env::var_os("AWAKEN_TEST_DATABASE_URL").is_none(),
-                "explicit PostgreSQL fixture is unavailable: {error}"
-            );
-            println!("[skip] no Postgres reachable: {error}");
-            return;
-        }
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
+        return;
     };
+    let admin = PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(5))
+        .connect(&url)
+        .await
+        .expect("configured PostgreSQL backfill fixture must connect");
     admin
         .execute(format!("DROP SCHEMA IF EXISTS {SCHEMA} CASCADE").as_str())
         .await

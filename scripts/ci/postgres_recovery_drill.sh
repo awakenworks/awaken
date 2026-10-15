@@ -8,6 +8,14 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/_postgres_recovery_root.sh"
 
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    # Docker's container paths are data. Host bind paths are converted once
+    # below; Git Bash must not turn /bin/sh or /recovery into host paths.
+    docker() { MSYS2_ARG_CONV_EXCL='*' command docker "$@"; }
+    ;;
+esac
+
 valid_lsn() {
   [[ "$1" =~ ^[0-9A-F]+/[0-9A-F]+$ ]]
 }
@@ -52,12 +60,14 @@ if ! valid_recovery_root "$RECOVERY_ROOT" \
   exit 2
 fi
 
+RECOVERY_MOUNT_ROOT=$(postgres_recovery_mount_root "$RECOVERY_ROOT") || exit 2
+
 cleanup() {
   docker rm -f "$RESTORE_CONTAINER" >/dev/null 2>&1 || true
   # pg_basebackup and archive_command write as the container's postgres uid.
   # Return ownership of this exact disposable mount to pg_tests.sh so its
   # already-owned cleanup can remove the directory on every failure path.
-  docker run --rm --user 0 -v "$RECOVERY_ROOT:/recovery" \
+  docker run --rm --user 0 -v "$RECOVERY_MOUNT_ROOT:/recovery" \
     --entrypoint chown "$POSTGRES_IMAGE" -R "$HOST_UID:$HOST_GID" /recovery \
     >/dev/null 2>&1 || true
 }
@@ -89,7 +99,7 @@ CONTENT_KEY="reliability-recovery/sha256/$CONTENT_SHA256"
 # distinct restore bucket before database recovery. A superset is acceptable;
 # a missing or digest-mismatched referenced object is not.
 docker run --rm --network "container:$OBJECT_CONTAINER" \
-  -e CONTENT_KEY="$CONTENT_KEY" -v "$RECOVERY_ROOT:/recovery" \
+  -e CONTENT_KEY="$CONTENT_KEY" -v "$RECOVERY_MOUNT_ROOT:/recovery" \
   --entrypoint /bin/sh "$MC_IMAGE" -ec '
     mc alias set source http://127.0.0.1:9000 minioadmin minioadmin >/dev/null
     mc mb --ignore-existing source/awaken-blobs >/dev/null
@@ -143,7 +153,7 @@ object_sha256=$CONTENT_SHA256
 EOF
 # Read the postgres-owned 0700/0600 backup from a root process in the already
 # pinned PostgreSQL image. The database files never need weakened permissions.
-docker run --rm --user 0 -v "$RECOVERY_ROOT:/recovery" \
+docker run --rm --user 0 -v "$RECOVERY_MOUNT_ROOT:/recovery" \
   --entrypoint tar "$POSTGRES_IMAGE" \
   -C /recovery -czf /recovery/awaken-recovery.tgz base wal backup-manifest.txt
 BUNDLE_SHA256=$(sha256sum "$BUNDLE" | awk '{print $1}')
@@ -151,7 +161,7 @@ BUNDLE_SHA256=$(sha256sum "$BUNDLE" | awk '{print $1}')
 # The backup crosses the real S3-compatible API before restore. Downloading to
 # a distinct path and comparing its digest rejects partial/corrupt transfer.
 docker run --rm --network "container:$OBJECT_CONTAINER" \
-  -v "$RECOVERY_ROOT:/recovery" --entrypoint /bin/sh "$MC_IMAGE" -ec '
+  -v "$RECOVERY_MOUNT_ROOT:/recovery" --entrypoint /bin/sh "$MC_IMAGE" -ec '
     mc alias set source http://127.0.0.1:9000 minioadmin minioadmin >/dev/null
     mc mb --ignore-existing source/awaken-recovery >/dev/null
     mc cp /recovery/awaken-recovery.tgz source/awaken-recovery/awaken-recovery.tgz >/dev/null
@@ -164,8 +174,8 @@ mkdir -p "$RECOVERY_ROOT/restore"
 tar -C "$RECOVERY_ROOT/restore" -xzf "$DOWNLOADED"
 test "$(sed -n 's/^recovery_target_lsn=//p' "$RECOVERY_ROOT/restore/backup-manifest.txt")" = "$TARGET_LSN"
 docker run --rm --user 0 \
-  -v "$RECOVERY_ROOT/restore/base:/data" \
-  -v "$RECOVERY_ROOT/restore/wal:/wal-archive" \
+  -v "$RECOVERY_MOUNT_ROOT/restore/base:/data" \
+  -v "$RECOVERY_MOUNT_ROOT/restore/wal:/wal-archive" \
   --entrypoint /bin/sh "$POSTGRES_IMAGE" -ec \
   "touch /data/recovery.signal
    printf '%s\n' \"restore_command = 'cp /wal-archive/%f %p'\" >>/data/postgresql.auto.conf
@@ -175,8 +185,8 @@ docker run --rm --user 0 \
 
 docker run -d --name "$RESTORE_CONTAINER" \
   -e POSTGRES_PASSWORD=ci -e POSTGRES_DB=awaken \
-  -v "$RECOVERY_ROOT/restore/base:/var/lib/postgresql/data" \
-  -v "$RECOVERY_ROOT/restore/wal:/wal-archive:ro" \
+  -v "$RECOVERY_MOUNT_ROOT/restore/base:/var/lib/postgresql/data" \
+  -v "$RECOVERY_MOUNT_ROOT/restore/wal:/wal-archive:ro" \
   "$POSTGRES_IMAGE" >/dev/null
 ready=0
 for _ in $(seq 1 120); do
@@ -209,7 +219,7 @@ RESTORED_SHA256=$(docker exec "$RESTORE_CONTAINER" psql -U postgres -d awaken -t
 test "$RESTORED_KEY" = "$CONTENT_KEY"
 test "$RESTORED_SHA256" = "$CONTENT_SHA256"
 docker run --rm --network "container:$OBJECT_CONTAINER" \
-  -v "$RECOVERY_ROOT:/recovery" --entrypoint /bin/sh "$MC_IMAGE" -ec \
+  -v "$RECOVERY_MOUNT_ROOT:/recovery" --entrypoint /bin/sh "$MC_IMAGE" -ec \
   "mc alias set restored http://127.0.0.1:9000 minioadmin minioadmin >/dev/null
    mc cp restored/awaken-blobs-restored/$CONTENT_KEY /recovery/restored-content.txt >/dev/null"
 test "$(sha256sum "$RESTORED_CONTENT" | awk '{print $1}')" = "$RESTORED_SHA256"

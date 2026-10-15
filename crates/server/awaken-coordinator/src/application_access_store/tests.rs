@@ -790,22 +790,15 @@ async fn run_postgres_repository_conformance(url: &str) {
     cleanup.close().await;
 }
 
-/// Developer-probe coverage rules: C1 Postgres is reachable -> PG-D1 runs the
-/// complete migration/repository/store decision tables in
-/// `run_postgres_repository_conformance`; C2 it is unreachable -> PG-D2 skips
-/// only this convenience probe. The adjacent ignored release gate owns the
-/// fail-closed C2 outcome, so this wrapper does not duplicate its contract.
+/// Optional fixture coverage: an absent URL skips; a configured or required
+/// fixture must work. A connected fixture runs the complete shared decision
+/// tables; the adjacent ignored release gate additionally requires provision.
 #[tokio::test]
 async fn postgres_repository_conforms_when_available() {
-    use sqlx::postgres::PgPool;
-
-    let url = std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
-    });
-    let Ok(probe) = PgPool::connect(&url).await else {
-        println!("[skip] no Postgres reachable; release gate is fail-closed");
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
         return;
     };
+    let probe = awaken_reliability_testkit::postgres_fixture_pool(&url).await;
     probe.close().await;
     run_postgres_repository_conformance(&url).await;
 }

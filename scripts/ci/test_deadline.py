@@ -365,7 +365,11 @@ class WindowsDeadlineTests(unittest.TestCase):
         return bash_executable()
 
     def test_native_status_and_literal_arguments(self):
-        arguments = ("with spaces", "'quotes'", "$(touch unexpected);`literal`")
+        # Docker's container paths and bind/tmpfs arguments must cross the
+        # native Python boundary verbatim, just like shell-shaped data.
+        arguments = ("with spaces", "'quotes'", "$(touch unexpected);`literal`",
+                     "/bin/sh", "/data:rw,nosuid,nodev,noexec,size=4g",
+                     "C:/fixture with spaces:/recovery", "/recovery/wal/%f")
         for status in (0, 23):
             with tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
@@ -398,6 +402,17 @@ class WindowsDeadlineTests(unittest.TestCase):
             encoding="utf-8", errors="replace", timeout=40)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(result.stdout.startswith("cargo "), result.stdout)
+
+    def test_native_shell_script_entry_retains_status_and_arguments(self):
+        with tempfile.TemporaryDirectory(prefix="native shell entry ") as tmp:
+            entry = Path(tmp) / "command with spaces.sh"
+            entry.write_text('printf \'%s\\n\' "$1"\nexit 23\n', encoding="utf-8", newline="\n")
+            result = subprocess.run(
+                [self.native_bash(), "-c", 'source "$1"; run_with_deadline 30 "$2" "$3"',
+                 "shell-entry", HELPER.as_posix(), entry.as_posix(), "/bin/sh"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=40)
+            self.assertEqual(result.returncode, 23, result.stderr)
+            self.assertEqual(result.stdout, "/bin/sh\n")
 
     def test_missing_job_refuses_command_before_effects(self):
         with tempfile.TemporaryDirectory() as tmp:

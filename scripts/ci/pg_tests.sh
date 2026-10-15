@@ -85,6 +85,10 @@ backend_parity() {
   # One selection owner for native and Docker fixtures. Every row requires its
   # concrete backend bindings in the inventory, then reconciles actual outcomes.
   # SQLite is explicit even when a crate's defaults leave it disabled.
+  pg_required_test -p awaken-reliability-testkit --features postgres --lib fixture::tests \
+    --require-case=fixture::tests::postgres_fixture_pool_connects_when_configured \
+    --require-case=fixture::tests::postgres_fixture_pool_admission_respects_configuration \
+    -- --test-threads=1 || record_failure "$?"
   pg_required_test -p awaken-model-catalog-store --features postgres,sqlite,test-support --test repo_conformance \
     --require-case=in_memory_repo_conforms --require-case=sqlite::sqlite_repo_conforms \
     --require-case=postgres::postgres_repo_conforms \
@@ -469,6 +473,7 @@ RECOVERY_ROOT=$(mktemp -d "$(postgres_recovery_prefix "$RECOVERY_PARENT")XXXXXX"
 valid_recovery_root "$RECOVERY_ROOT" \
   || { echo "mktemp returned an unexpected PostgreSQL recovery path: $RECOVERY_ROOT" >&2; exit 1; }
 export AWAKEN_RECOVERY_ROOT="$RECOVERY_ROOT"
+RECOVERY_MOUNT_ROOT=$(postgres_recovery_mount_root "$RECOVERY_ROOT") || exit 2
 mkdir -p "$RECOVERY_ROOT/base" "$RECOVERY_ROOT/wal"
 chmod 0777 "$RECOVERY_ROOT/base" "$RECOVERY_ROOT/wal"
 
@@ -487,8 +492,8 @@ POSTGRES_CREATE_ATTEMPTED=1
 if ! pg_run_with_deadline postgres-create "$PG_OPERATION_TIMEOUT_SECONDS" \
   docker run -d --name "$NAME" \
   -e "${POSTGRES_CONTAINER_ENV[0]}" -e "${POSTGRES_CONTAINER_ENV[1]}" \
-  -v "$RECOVERY_ROOT/base:/recovery-base" \
-  -v "$RECOVERY_ROOT/wal:/wal-archive" \
+  -v "$RECOVERY_MOUNT_ROOT/base:/recovery-base" \
+  -v "$RECOVERY_MOUNT_ROOT/wal:/wal-archive" \
   -p "$PUBLISH" postgres:16-alpine \
   -c wal_level=replica \
   -c archive_mode=on \

@@ -800,23 +800,20 @@ mod tests {
 
     #[tokio::test]
     async fn postgres_migration_persists_high_water_and_rehydrates_environment() {
-        // Cause/effect decision table: R1 PostgreSQL is unavailable -> the
-        // optional integration case self-skips; R2 a fresh authority applies
+        // Cause/effect decision table: R1 an optional fixture is absent -> the
+        // integration case skips; configured failures reject. R2 a fresh authority applies
         // deterministic V1/V2 and accepts revision 1 -> the command has a
         // positive durable sequence; R3 connect_existing runs no DDL and a new
         // replica full-replays the same Environment definition.
         const SCHEMA: &str = "t_executable_environment_catalog";
-        let database_url = std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
-            "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".into()
-        });
-        let Ok(admin) = PgPoolOptions::new()
+        let Some(database_url) = awaken_reliability_testkit::postgres_fixture_url() else {
+            return;
+        };
+        let admin = PgPoolOptions::new()
             .acquire_timeout(std::time::Duration::from_secs(1))
             .connect(&database_url)
             .await
-        else {
-            eprintln!("[skip] no PostgreSQL reachable for executable Environment catalog test");
-            return;
-        };
+            .expect("configured executable Environment PostgreSQL fixture must connect");
         admin
             .execute(format!("DROP SCHEMA IF EXISTS {SCHEMA} CASCADE").as_str())
             .await

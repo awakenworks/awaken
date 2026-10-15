@@ -519,27 +519,10 @@ async fn postgres_preflights_all_targets_then_binds_fresh_or_explicit_legacy() {
      * only those exact rows; P3 Serve verification is read-only; P4 changed
      * expected Workspace rejects. The fixture uses unique schemas and never
      * drops a shared database. */
-    const DEFAULT_DATABASE_URL: &str =
-        "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test";
-    let configured_url = match std::env::var("AWAKEN_TEST_DATABASE_URL") {
-        Ok(url) => Some(url),
-        Err(std::env::VarError::NotPresent) => None,
-        Err(error) => panic!("AWAKEN_TEST_DATABASE_URL is not valid Unicode: {error}"),
+    let Some(base_url) = awaken_reliability_testkit::postgres_fixture_url() else {
+        return;
     };
-    let base_url = configured_url
-        .as_deref()
-        .unwrap_or(DEFAULT_DATABASE_URL)
-        .to_owned();
-    let admin = match PgPool::connect(&base_url).await {
-        Ok(pool) => pool,
-        Err(error) if configured_url.is_none() => {
-            eprintln!("default local Postgres is unavailable; skipping CLI binding test: {error}");
-            return;
-        }
-        Err(error) => {
-            panic!("explicit AWAKEN_TEST_DATABASE_URL must be reachable: {error}")
-        }
-    };
+    let admin = awaken_reliability_testkit::postgres_fixture_pool(&base_url).await;
     let suffix = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()

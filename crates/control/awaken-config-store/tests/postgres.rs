@@ -8,7 +8,7 @@
 // @formal evidence resource_binding.draft_audit_and_effect_are_atomic
 // @formal evidence resource_binding.pending_effect_survives_until_readback
 // @formal evidence resource_binding.replay_is_idempotent_and_identity_stable
-//! Live Postgres config-store CRUD. Skips when no Postgres is reachable; isolates
+//! Live Postgres config-store CRUD. An absent optional fixture skips; isolates
 //! each test in a fresh schema (the store takes no prefix; ADR-0029/ADR-0031).
 
 use awaken_agent_config::{
@@ -274,12 +274,6 @@ fn compile(
     compile_resolved(config, tools, AgentSnapshotMetadata::default())
 }
 
-fn database_url() -> String {
-    std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
-    })
-}
-
 #[tokio::test]
 async fn postgres_audit_and_config_commit_are_atomic_replay_safe_and_scope_fenced() {
     let Some(pool) = schema_pool("t_config_audit").await else {
@@ -542,17 +536,8 @@ async fn postgres_audit_begin_serializes_concurrent_exact_and_conflicting_reques
 }
 
 async fn schema_pool(schema: &'static str) -> Option<PgPool> {
-    let admin = match PgPool::connect(&database_url()).await {
-        Ok(pool) => pool,
-        Err(err) => {
-            assert!(
-                std::env::var_os("AWAKEN_TEST_DATABASE_URL").is_none(),
-                "explicit PostgreSQL fixture must be reachable: {err}"
-            );
-            println!("[skip] no Postgres reachable: {err}");
-            return None;
-        }
-    };
+    let url = awaken_reliability_testkit::postgres_fixture_url()?;
+    let admin = awaken_reliability_testkit::postgres_fixture_pool(&url).await;
     let _ = admin
         .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
         .await;
@@ -570,7 +555,7 @@ async fn schema_pool(schema: &'static str) -> Option<PgPool> {
                     Ok(())
                 })
             })
-            .connect(&database_url())
+            .connect(&url)
             .await
             .expect("reachable PostgreSQL fixture must open its isolated schema"),
     )

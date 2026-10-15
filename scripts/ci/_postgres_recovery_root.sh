@@ -8,6 +8,13 @@ postgres_recovery_prefix() {
   printf '%s/awaken-pg-recovery.' "${1%/}"
 }
 
+postgres_recovery_mount_root() {
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) cygpath -m "$1" ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
 valid_recovery_root() {
   local prefix suffix
   prefix=$(postgres_recovery_prefix "$RECOVERY_PARENT")

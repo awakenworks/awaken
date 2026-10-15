@@ -1100,22 +1100,14 @@ mod tests {
         // connect_existing performs no alternate migration path and a fresh
         // process projection rehydrates the exact current publication and time.
         const SCHEMA: &str = "t_executable_agent_catalog";
-        let configured_url = std::env::var("AWAKEN_TEST_DATABASE_URL").ok();
-        let database_url = configured_url.clone().unwrap_or_else(|| {
-            "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".into()
-        });
-        let Ok(admin) = PgPoolOptions::new()
+        let Some(database_url) = awaken_reliability_testkit::postgres_fixture_url() else {
+            return;
+        };
+        let admin = PgPoolOptions::new()
             .acquire_timeout(std::time::Duration::from_secs(1))
             .connect(&database_url)
             .await
-        else {
-            assert!(
-                configured_url.is_none(),
-                "explicit executable Agent PostgreSQL fixture must be reachable"
-            );
-            eprintln!("[skip] no PostgreSQL reachable for executable Agent catalog test");
-            return;
-        };
+            .expect("configured executable Agent PostgreSQL fixture must connect");
         admin
             .execute(format!("DROP SCHEMA IF EXISTS {SCHEMA} CASCADE").as_str())
             .await
