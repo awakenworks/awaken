@@ -125,23 +125,49 @@ def shared_conformance_errors(
 
     # The ingress testkit intentionally owns no backend. Its executable proof is
     # the same suite applied to each production implementation.
+    ingress = owned_functions(ingress_tests, "dispatch conformance")
+    if ingress is None:
+        return errors
+    roots = set(TEST_ATTRIBUTE.findall(ingress[0]))
+    invalid = {"conformance": [], "operational-feed": []}
     for backend in ("memory", "sqlite", "postgres"):
-        if f"async fn {backend}_dispatch_conforms" not in ingress_tests:
+        root = f"{backend}_dispatch_conforms"
+        bindings = {family: set() for family in invalid}
+        if root not in roots or root not in ingress[1]:
             errors.append(f"dispatch conformance omits {backend} backend")
-    # Cause C7: a backend may inject its store-owned clock through the canonical
-    # conformance wrapper. Effect: exactly three backend bindings still execute
-    # one shared suite; neither helper spelling creates a parallel case list.
-    conformance_bindings = re.findall(
-        r"\bassert_dispatch_conformance(?:_with_clock)?\(", ingress_tests
-    )
-    if len(conformance_bindings) != 3:
-        errors.append("dispatch conformance suite is not applied to exactly three backends")
-    operational_feed_bindings = re.findall(
-        r"\bassert_dispatch_operational_feed_conformance(?:_with_clock)?\(",
-        ingress_tests,
-    )
-    if len(operational_feed_bindings) != 3:
-        errors.append("dispatch operational-feed suite is not applied to exactly three backends")
+        else:
+            pending, reached = [root], set()
+            while pending:
+                name = pending.pop()
+                if name in reached:
+                    continue
+                reached.add(name)
+                body = ingress[1][name]
+                for call in calls.finditer(body):
+                    path = re.sub(r"\s", "", call.group(1)).removesuffix("::")
+                    callee = call.group(2)
+                    close = _balanced_end(body, call.end() - 1, "(", ")")
+                    if close is None:
+                        errors.append("dispatch conformance has an unbalanced call")
+                        continue
+                    awaited = AWAIT.match(body, close) is not None
+                    if path in ("", "self", "crate") and callee in ingress[1]:
+                        if callee not in ingress[2] or awaited:
+                            pending.append(callee)
+                    elif path in ("", "awaken_dispatch_testkit") and awaited:
+                        boundary = re.fullmatch(
+                            r"assert_dispatch_(operational_feed_)?conformance(?:_with_clock)?", callee,
+                        )
+                        if boundary:
+                            family = "operational-feed" if boundary[1] else "conformance"
+                            bindings[family].add((name, call.start()))
+        for family, bound in bindings.items():
+            if len(bound) != 1:
+                invalid[family].append(f"{backend}={len(bound)}")
+    for family, backends in invalid.items():
+        if backends:
+            errors.append(f"dispatch {family} suite is not applied to exactly three backends: "
+                          + ", ".join(backends))
     return errors
 
 
@@ -245,30 +271,67 @@ def self_test(store_suite: str, backend_tests: dict[str, str], ingress_tests: st
     assert not shared_conformance_errors(
         store_suite, backend_tests, ingress_tests
     ), "R1/C13-C14 mixed operational-feed clocks"
-    missing_operational_feed = ingress_tests.replace(
-        "assert_dispatch_operational_feed_conformance(&store, \"conformance-postgres\").await;",
-        "",
-        1,
-    )
+    # Derive one whole awaited binding from the actual syntax. A literal API
+    # spelling silently stopped mutating this fixture when PostgreSQL adopted
+    # its observed store clock. Nested clock arguments and formatting belong to
+    # the existing balanced-expression reader, not a second source template.
+    syntax = rust_syntax(ingress_tests)
+    binding = next(re.finditer(
+        r"(?<![\w.:])(?:[A-Za-z_]\w*\s*::\s*)*"
+        r"assert_dispatch_operational_feed_conformance(?:_with_clock)?\s*\(", syntax,
+    ))
+    close = _balanced_end(syntax, binding.end() - 1, "(", ")")
+    awaited = AWAIT.match(syntax, close) if close is not None else None
+    assert awaited is not None, "operational-feed fixture needs an awaited binding"
+    semicolon = re.match(r"\s*;", syntax[awaited.end():])
+    assert semicolon is not None, "operational-feed fixture needs a complete statement"
+    before = ingress_tests[:binding.start()]
+    after = ingress_tests[awaited.end() + semicolon.end():]
+    missing_operational_feed = before + after
     assert any(
         "operational-feed suite is not applied to exactly three backends" in error
         for error in shared_conformance_errors(
             store_suite, backend_tests, missing_operational_feed
         )
     ), "R14 missing operational-feed binding"
-    duplicate_operational_feed = ingress_tests.replace(
-        "assert_dispatch_operational_feed_conformance(&store, \"conformance-postgres\").await;",
-        (
-            "assert_dispatch_operational_feed_conformance(&store, \"conformance-postgres\").await;\n"
-            "    assert_dispatch_operational_feed_conformance_with_clock(\n"
-            "        &store, \"conformance-postgres-duplicate\", &set_clock,\n"
-            "    ).await;"
-        ),
-        1,
-    )
+    default_binding = 'assert_dispatch_operational_feed_conformance(&store, "fixture").await;'
+    clock_binding = 'assert_dispatch_operational_feed_conformance_with_clock(&store, "fixture", &set_clock).await;'
+    for variant in (default_binding, clock_binding):
+        assert not shared_conformance_errors(
+            store_suite, backend_tests, before + variant + after
+        ), "R1/C13-C14 either clock spelling binds the same suite"
+    duplicate_operational_feed = before + default_binding + clock_binding + after
     assert any(
         "operational-feed suite is not applied to exactly three backends" in error
         for error in shared_conformance_errors(
             store_suite, backend_tests, duplicate_operational_feed
         )
     ), "R15 duplicate operational-feed binding"
+    # Text is not execution; a counted call on another backend cannot fill the
+    # missing backend's obligation. Unpolled Futures and foreign namespaces are
+    # independent causes, even when all three test functions remain present.
+    for imitation in (
+        "// " + default_binding + "\n",
+        'let display = r#"' + default_binding + '"#;',
+        default_binding.replace(".await", ""),
+        "detached::" + default_binding,
+    ):
+        assert any(
+            "operational-feed suite is not applied to exactly three backends" in error
+            for error in shared_conformance_errors(store_suite, backend_tests, before + imitation + after)
+        ), "R16 non-executing operational-feed imitation"
+    owner = next(item["name"] for item in function_bodies(syntax)
+                 if item["body"] < binding.start() < item["end"])
+    alternate = next(item for item in function_bodies(rust_syntax(missing_operational_feed))
+                     if item["name"].endswith("_dispatch_conforms") and item["name"] != owner)
+    insertion = alternate["body"] + 1
+    misplaced = missing_operational_feed[:insertion] + default_binding + missing_operational_feed[insertion:]
+    assert any(
+        "operational-feed suite is not applied to exactly three backends" in error
+        for error in shared_conformance_errors(store_suite, backend_tests, misplaced)
+    ), "R17 duplicate elsewhere cannot replace a backend binding"
+    delegated = "async fn delegated() { " + default_binding + (
+        'assert_dispatch_conformance(&store, "fixture", capabilities).await; }\n'
+    ) + "\n".join("#[tokio::test]\nasync fn " + backend + "_dispatch_conforms() { delegated().await; }"
+                   for backend in ("memory", "sqlite", "postgres"))
+    assert not shared_conformance_errors(store_suite, backend_tests, delegated), "R18 awaited local delegation"
