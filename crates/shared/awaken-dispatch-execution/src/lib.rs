@@ -4,6 +4,7 @@
 //! attempt context, and process-local capacity. Durable queue/storage and
 //! transport factories remain with their Coordinator and Worker owners.
 
+mod attempt_termination;
 pub mod claimed_stream;
 mod commit_fence;
 #[cfg(test)]
@@ -30,6 +31,10 @@ mod dispatch {
     pub use awaken_dispatch_contract::dispatch::*;
 }
 
+pub use attempt_termination::{
+    NativeAttemptFootprint, NativeAttemptTermination, NativeAttemptTerminationError,
+    classify_native_attempt_termination,
+};
 pub use awaken_dispatch_contract::{
     ClaimedStreamPublisher, DispatchError, DispatchSettlementObserver, DispatchState,
     DispatchSummary, RunClaim, RunDispatch, SettleOutcome,

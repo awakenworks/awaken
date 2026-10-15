@@ -15,7 +15,6 @@ isolates = ["async-nats", "sqlx"]
 
 [dependencies]
 awaken-credential-contract.workspace = true
-awaken-tool-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-dispatch-contract = { workspace = true }
@@ -61,6 +60,7 @@ test-support = ["durable", "awaken-dispatch-execution/test-support"]
 nats = ["durable", "dep:async-nats", "dep:futures-lite"]
 
 [dev-dependencies]
+awaken-tool-contract.workspace = true
 awaken-session-application-contract.workspace = true
 awaken-worker-contract.workspace = true
 awaken-lease-testkit.workspace = true
