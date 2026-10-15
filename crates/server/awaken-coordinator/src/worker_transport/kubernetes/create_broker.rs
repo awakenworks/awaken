@@ -30,7 +30,7 @@ use awaken_time::{WallClock, WallClockExt};
 use awaken_worker_transport_security::kubernetes::KubernetesPodIdentity;
 use awaken_worker_transport_security::{
     VerifiedWorkerContext, WorkerRequestAuthenticator, authenticate_worker_request,
-    verify_current_worker_identity,
+    verify_current_worker_identity, verify_registered_worker_identity,
 };
 use axum::extract::{Extension, State};
 use axum::http::{Method, Request, StatusCode, header};
@@ -109,9 +109,7 @@ fn current_create_worker(
     anchor: Option<&WorkerCreateLedger>,
     now_ms: u64,
 ) -> bool {
-    record.snapshot.identity == *identity
-        && record.snapshot.state == WorkerState::Ready
-        && record.snapshot.expires_at_ms > now_ms
+    verify_registered_worker_identity(&record.snapshot, identity, now_ms, true).is_ok()
         && anchor.is_none_or(|anchor| record.create_ledger.as_ref() == Some(anchor))
 }
 
@@ -335,16 +333,23 @@ async fn verify_request(
     state: &CreateState,
     worker: &VerifiedWorkerContext,
     identity: &WorkerIdentity,
+    require_ready: bool,
 ) -> Result<(), ApplicationError> {
     verify_current_worker_identity(
         state.directory.as_ref(),
         worker,
         identity,
         state.clock.now_ms(),
-        true,
+        require_ready,
     )
     .await
-    .map_err(|_| ApplicationError::invalid("Worker Create identity is not current and Ready"))?;
+    .map_err(|_| {
+        ApplicationError::invalid(if require_ready {
+            "Worker Create identity is not current and Ready"
+        } else {
+            "Worker Seal identity is not current and live"
+        })
+    })?;
     Ok(())
 }
 
@@ -380,7 +385,7 @@ impl K8sCreateBroker {
                         "unsupported Create control wire version",
                     ));
                 }
-                verify_request(&state, &worker, &request.identity).await?;
+                verify_request(&state, &worker, &request.identity, true).await?;
                 let response = state
                     .broker
                     .create(
@@ -412,7 +417,7 @@ impl K8sCreateBroker {
                         "unsupported Create control wire version",
                     ));
                 }
-                verify_request(&state, &worker, &request.identity).await?;
+                verify_request(&state, &worker, &request.identity, false).await?;
                 let joined = state
                     .broker
                     .seal_predecessor(
