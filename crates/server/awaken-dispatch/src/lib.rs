@@ -87,6 +87,7 @@ pub use awaken_dispatch_execution::{
     PoolDrainFence, RecoveryProjection, RecoveryProjectionError, TerminalReconciliationScan,
     WorkerResolver, claim_bound_ownership_verifier, publish_dispatch_hint,
 };
+pub use awaken_dispatch_contract::DispatchAttemptRecordReads;
 pub use awaken_dispatch_contract::operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,
     DispatchPage, LeaseLossReason,
@@ -351,5 +352,3 @@ mod supersession_epoch_tests {
         ));
     }
 }
-
-pub use awaken_dispatch_contract::DispatchAttemptRecordReads;

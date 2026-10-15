@@ -28,11 +28,23 @@ pub enum SessionExecutionRecoveryObservation {
         reason: SessionExecutionRecoveryGap,
     },
     EffectsClosed {
+        // The Managed adapter projects this as a top-level optional field so
+        // existing strict recovery readers retain their exact wire shape.
+        #[serde(default, skip_serializing)]
+        operation_footprint: Option<SessionExecutionOperationFootprint>,
         session_revision: u64,
         runtime_commit_cursor: u64,
         thread_ids: Vec<String>,
         closure_records: Vec<SessionExecutionClosureReference>,
     },
+}
+
+/// Scope-wide facts from original entry journals, independent of backend names.
+/// Absence is unknown, never a no-effects declaration for legacy execution.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionExecutionOperationFootprint {
+    ResponseOnly,
 }
 
 /// Coordinates of an original execution-owner record, not a new receipt.

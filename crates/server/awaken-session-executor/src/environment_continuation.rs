@@ -182,29 +182,22 @@ impl ManagedHost {
                 ),
             )
             .map_err(to_run_error)?;
-        let primary_active = sessions
-            .read_run(thread, |run| {
-                run.context
-                    .as_ref()
-                    .is_some_and(|runtime| runtime.has_active_run())
-            })
-            .unwrap_or(false);
-        let delegated = self
-            .host
-            .delegated_runs_under_lifecycle(thread)
-            .await
-            .map_err(to_run_error)?;
-        let delegated_active = delegated.iter().any(|run| {
-            run.status.occupies_parallel_slot()
-                && sessions
-                    .read_run(&run.run_id.0, |run| {
+        if crate::session_realizations::primary_or_delegated_run_active(
+            thread,
+            |session| {
+                sessions
+                    .read_run(session, |run| {
                         run.context
                             .as_ref()
                             .is_some_and(|runtime| runtime.has_active_run())
                     })
                     .unwrap_or(false)
-        });
-        if primary_active || delegated_active {
+            },
+            self.host.delegated_runs_under_lifecycle(thread),
+        )
+        .await
+        .map_err(to_run_error)?
+        {
             return Err(RunError::unavailable_classified(
                 "session_environment_not_quiescent",
                 "Primary or delegated work still owns the Session environment",

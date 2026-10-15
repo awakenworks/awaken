@@ -974,3 +974,28 @@ stop observation -> existing Dispatch closure -> resource-owned terminal cleanup
 remains one path. This is prospective; historical opaque ToolBatch entries are
 not upgraded. The process-observation and stopper tests own the retention,
 identity-drift and guard-release decision tables.
+
+## Amendment 2026-10-15: project the original response-only operation footprint
+
+The existing frozen-scope recovery read reuses original Dispatch admission and
+independent closure records unchanged. Its successful observation additionally
+projects an optional `response_only` operation footprint from the same complete
+Thread snapshots. Every member Run must have its original Native coverage
+marker, no retained ToolBatch entry, and only model operations whose pre-entry
+effect scope was `ResponseOnly`. Missing, malformed or opaque historical data
+leaves this optional footprint absent; neither backend names nor current
+Provider configuration can supply it.
+
+This modifies the existing read DTO and projector, adding only a neutral value
+to that contract. Runtime's coverage, model journal and ToolBatch remain the
+authorities; no execution, effect ledger or cleanup mechanism is added. The
+footprint is emitted only after the existing whole-scope closure join succeeds.
+Its consumer still owns business-effect reconciliation, current business
+admission and transactional predecessor checks. Reading it never retires a
+physical slot, acknowledges cleanup or upgrades a legacy model scope.
+
+Model-request completion coordinates reuse the existing
+`SessionModelRequestObservation` value directly. The former identical protocol
+DTO and scalar-copy projection are removed; Rust callers depend on that value's
+owning contract rather than a protocol re-export. Its JSON fields and strict
+decoding remain unchanged.

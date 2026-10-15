@@ -150,6 +150,292 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         "V5 the host's run layer"
     );
     assert_eq!(sessions.dispatch_claim(thread), Some(claim.clone()), "V5");
+    // Q1-Q7 decision table: two REAL Slot adapters x Primary(0/1) x all
+    // DelegationStatus variants x child marker(0/1) = 24 rows. Completed skips
+    // the child; Open and CancelRequested query it. Missing Slot/context adds
+    // the distinct false partitions. Q3 both Primary values + failed awaited
+    // delegation must propagate the exact error BEFORE any child, never bypass
+    // the await. Trace asserts query(root) -> poll(delegation) -> allowed child.
+    // These are local marker observations, not physical-stop/cleanup evidence.
+    // Bound this extended test's future layout at the existing heap boundary;
+    // do not increase the default test thread stack for additional causes.
+    Box::pin(async {
+        use crate::session_realizations::primary_or_delegated_run_active;
+        use awaken_agent_contract::agent::delegation::DelegationStatus as Status;
+        use futures_util::FutureExt;
+        let child_id = "realizations-query-child";
+        let child = host
+            .ctx_for(child_id, None)
+            .await
+            .expect("actual child context");
+        host.installed_sessions
+            .update_run(child_id, |run| run.context = Some(child.clone()));
+        let delegated = |status| awaken_session_application_contract::DelegatedRun {
+            run_id: RunId(child_id.into()),
+            parent_call_id: "query-parent-call".into(),
+            agent_id: "query-child-agent".into(),
+            status,
+        };
+        for legacy in [false, true] {
+            for primary_active in [false, true] {
+                for (status, occupies) in [
+                    (Status::Open, true),
+                    (Status::Completed, false),
+                    (Status::CancelRequested, true),
+                ] {
+                    for child_active in [false, true] {
+                        *ctx.active_run.lock().unwrap() =
+                            primary_active.then(|| RunId("query-primary".into()));
+                        *child.active_run.lock().unwrap() =
+                            child_active.then(|| RunId("query-child".into()));
+                        let trace = std::sync::Mutex::new(Vec::new());
+                        let result = primary_or_delegated_run_active(
+                            thread,
+                            |id| {
+                                trace.lock().unwrap().push(format!("query:{id}"));
+                                if legacy {
+                                    host.installed_sessions
+                                        .read_run(id, |run| {
+                                            run.context
+                                                .as_ref()
+                                                .is_some_and(|runtime| runtime.has_active_run())
+                                        })
+                                        .unwrap_or(false)
+                                } else {
+                                    sessions
+                                        .modify_session(id, |slot| slot.run.has_active_run())
+                                        .unwrap_or(false)
+                                }
+                            },
+                            async {
+                                trace.lock().unwrap().push("delegate".into());
+                                Ok(vec![delegated(status)])
+                            },
+                        )
+                        .await
+                        .unwrap();
+                        assert_eq!(
+                            result,
+                            primary_active || (occupies && child_active),
+                            "Q1-Q7 legacy={legacy} primary={primary_active} status={status:?} child={child_active}"
+                        );
+                        let mut expected = vec![format!("query:{thread}"), "delegate".into()];
+                        if occupies {
+                            expected.push(format!("query:{child_id}"));
+                        }
+                        assert_eq!(
+                            *trace.lock().unwrap(),
+                            expected,
+                            "Q1-Q7 exact order, true Primary never skips children"
+                        );
+                    }
+                }
+                *ctx.active_run.lock().unwrap() =
+                    primary_active.then(|| RunId("query-error-primary".into()));
+                let trace = std::sync::Mutex::new(Vec::new());
+                let error = primary_or_delegated_run_active(
+                    thread,
+                    |id| {
+                        trace.lock().unwrap().push(format!("query:{id}"));
+                        if legacy {
+                            host.installed_sessions
+                                .read_run(id, |run| {
+                                    run.context
+                                        .as_ref()
+                                        .is_some_and(|runtime| runtime.has_active_run())
+                                })
+                                .unwrap_or(false)
+                        } else {
+                            sessions
+                                .modify_session(id, |slot| slot.run.has_active_run())
+                                .unwrap_or(false)
+                        }
+                    },
+                    async {
+                        trace.lock().unwrap().push("delegate-error".into());
+                        Err(crate::HostError::unavailable_classified(
+                            "delegation_read_unknown",
+                            "original delegation failure",
+                        ))
+                    },
+                )
+                .await
+                .expect_err("Q3 delegation error wins even when Primary is active");
+                assert_eq!(error.kind, crate::HostErrorKind::Unavailable, "Q3 kind");
+                assert_eq!(error.code, "delegation_read_unknown", "Q3 original code");
+                assert_eq!(
+                    error.message, "original delegation failure",
+                    "Q3 original message"
+                );
+                assert_eq!(
+                    *trace.lock().unwrap(),
+                    vec![format!("query:{thread}"), "delegate-error".into()],
+                    "Q3 no child lookup"
+                );
+            }
+            *ctx.active_run.lock().unwrap() = None;
+            *child.active_run.lock().unwrap() = None;
+            for id in ["query-missing-slot", "created"] {
+                let mut missing = delegated(Status::Open);
+                missing.run_id = RunId(id.into());
+                let observed = primary_or_delegated_run_active(
+                    id,
+                    |session| {
+                        if legacy {
+                            host.installed_sessions
+                                .read_run(session, |run| {
+                                    run.context
+                                        .as_ref()
+                                        .is_some_and(|runtime| runtime.has_active_run())
+                                })
+                                .unwrap_or(false)
+                        } else {
+                            sessions
+                                .modify_session(session, |slot| slot.run.has_active_run())
+                                .unwrap_or(false)
+                        }
+                    },
+                    async { Ok(vec![missing]) },
+                )
+                .await
+                .unwrap();
+                assert!(!observed, "Q1/Q5 missing Slot or Runtime stays false");
+            }
+            assert!(
+                !host.installed_sessions.contains("query-missing-slot"),
+                "Q1 no new Slot"
+            );
+            *child.active_run.lock().unwrap() = Some(RunId("query-child".into()));
+            let mut second = delegated(Status::Open);
+            second.run_id = RunId("query-never-read".into());
+            let trace = std::sync::Mutex::new(Vec::new());
+            assert!(
+                primary_or_delegated_run_active(
+                    thread,
+                    |id| {
+                        trace.lock().unwrap().push(format!("query:{id}"));
+                        if legacy {
+                            host.installed_sessions
+                                .read_run(id, |run| {
+                                    run.context
+                                        .as_ref()
+                                        .is_some_and(|runtime| runtime.has_active_run())
+                                })
+                                .unwrap_or(false)
+                        } else {
+                            sessions
+                                .modify_session(id, |slot| slot.run.has_active_run())
+                                .unwrap_or(false)
+                        }
+                    },
+                    async {
+                        trace.lock().unwrap().push("delegate".into());
+                        Ok(vec![delegated(Status::Open), second])
+                    }
+                )
+                .await
+                .unwrap(),
+                "Q6 first occupying child active"
+            );
+            assert_eq!(
+                *trace.lock().unwrap(),
+                vec![
+                    format!("query:{thread}"),
+                    "delegate".into(),
+                    format!("query:{child_id}")
+                ],
+                "Q6 original iter.any stops after first true"
+            );
+        }
+        *ctx.active_run.lock().unwrap() = None;
+        *child.active_run.lock().unwrap() = None;
+        // Q13 exercises the ACTUAL original commit projection while the actual
+        // lifecycle guard is held. A public/relocking reader would time out.
+        let lifecycle = sessions.lock_lifecycle(thread).await;
+        // Use the request budget derived from this original fixture's 30s lease;
+        // this detects recursive locking, not a one-second performance promise.
+        let request_timeout =
+            awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000)
+                .request_timeout();
+        assert!(
+            !tokio::time::timeout(
+                request_timeout,
+                primary_or_delegated_run_active(
+                    thread,
+                    |id| sessions
+                        .modify_session(id, |slot| slot.run.has_active_run())
+                        .unwrap_or(false),
+                    host.delegated_runs_under_lifecycle(thread),
+                )
+            )
+            .await
+            .expect("Q13 no lifecycle relock")
+            .unwrap(),
+            "Q13 current actual empty delegation snapshot"
+        );
+        drop(lifecycle);
+
+        // Q12: real marker changes only AFTER the awaited reader is entered.
+        // R1 prior Primary true -> false, child false stays false: retain earlier
+        // true; R2 prior Primary false, child false -> true: read later child.
+        // Join both signals/writer; never replace the actual contexts by bools.
+        for legacy in [false, true] {
+            for prior_primary in [false, true] {
+                *ctx.active_run.lock().unwrap() = prior_primary.then(|| RunId("prior-primary".into()));
+                *child.active_run.lock().unwrap() = None;
+                let (entered, entry) = tokio::sync::oneshot::channel::<()>();
+                let (changed, change) = tokio::sync::oneshot::channel::<()>();
+                let writer = tokio::spawn({
+                    let ctx = ctx.clone();
+                    let child = child.clone();
+                    async move {
+                        entry.await.expect("Q12 actual reader entry");
+                        *ctx.active_run.lock().unwrap() = None;
+                        if !prior_primary {
+                            *child.active_run.lock().unwrap() = Some(RunId("later-child".into()));
+                        }
+                        changed.send(()).expect("Q12 marker change joined");
+                    }
+                });
+                let observed = std::panic::AssertUnwindSafe(primary_or_delegated_run_active(
+                    thread,
+                    |id| {
+                        if legacy {
+                            host.installed_sessions
+                                .read_run(id, |run| {
+                                    run.context
+                                        .as_ref()
+                                        .is_some_and(|runtime| runtime.has_active_run())
+                                })
+                                .unwrap_or(false)
+                        } else {
+                            sessions
+                                .modify_session(id, |slot| slot.run.has_active_run())
+                                .unwrap_or(false)
+                        }
+                    },
+                    async {
+                        entered.send(()).expect("Q12 start real marker writer");
+                        change.await.expect("Q12 observe joined change");
+                        Ok(vec![delegated(Status::Open)])
+                    },
+                ))
+                .catch_unwind()
+                .await;
+                let joined = writer.await;
+                joined.expect("Q12 writer joined even if the observed operation failed");
+                let observed = observed
+                    .expect("Q12 healthy query did not panic")
+                    .expect("Q12 delegated read completed");
+                assert!(
+                    observed,
+                    "Q12 preserve early Primary / late child for legacy={legacy} prior={prior_primary}"
+                );
+            }
+        }
+        *ctx.active_run.lock().unwrap() = None;
+        *child.active_run.lock().unwrap() = None;
+    }).await;
 
     // R4/R6: the named action grants no generic mutable Frozen access. Ordinary
     // callbacks above retain their readonly borrow; this command alone replaces

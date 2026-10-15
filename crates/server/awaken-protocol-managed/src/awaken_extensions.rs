@@ -20,8 +20,7 @@ pub use event_admissions::{
     session_event_admission_router,
 };
 pub use execution_evidence::{
-    SessionExecutionEvidence, SessionModelRequestEvidence, SessionRunExecutionEvidence,
-    session_execution_evidence_router,
+    SessionExecutionEvidence, SessionRunExecutionEvidence, session_execution_evidence_router,
 };
 pub use memory_copy_conflicts::memory_copy_conflicts_router;
 pub use profiled_run_events::{

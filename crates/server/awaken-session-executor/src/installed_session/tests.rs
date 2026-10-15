@@ -522,6 +522,57 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
         PoisonError::new(())
     );
     for target in ["present", "absent"] {
+        // Q8 actual global Slot poison precedes Primary for either adapter;
+        // the delegated future must remain UNPOLLED, for present and absent ids.
+        // Preserve each original prefix/Debug, not a common substituted panic.
+        for legacy in [false, true] {
+            use futures_util::FutureExt;
+            let polls = std::sync::atomic::AtomicUsize::new(0);
+            let refused = AssertUnwindSafe(
+                crate::session_realizations::primary_or_delegated_run_active(
+                    target,
+                    |id| {
+                        if legacy {
+                            slots
+                                .read_run(id, |run| {
+                                    run.context
+                                        .as_ref()
+                                        .is_some_and(|runtime| runtime.has_active_run())
+                                })
+                                .unwrap_or(false)
+                        } else {
+                            host.realizer
+                                .sessions
+                                .modify_session(id, |slot| slot.run.has_active_run())
+                                .unwrap_or(false)
+                        }
+                    },
+                    async {
+                        polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(Vec::new())
+                    },
+                ),
+            )
+            .catch_unwind()
+            .await
+            .expect_err("Q8 actual Slot poison must propagate");
+            let message = refused
+                .downcast_ref::<String>()
+                .expect("Q8 original expect panic");
+            if legacy {
+                assert_eq!(message, &expected_panic, "Q8 legacy std Debug unchanged");
+            } else {
+                assert_eq!(
+                    message, "installed sessions mutex poisoned: InstalledSessionsPoisoned",
+                    "Q8 original view diagnostic"
+                );
+            }
+            assert_eq!(
+                polls.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "Q8 delegated read never polled"
+            );
+        }
         for create in [false, true] {
             let refused = slots.visit(target, create, &mut |_| callbacks += 1);
             assert!(
@@ -629,4 +680,225 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
         &slot.realization.resource_projection,
         &phase_locks.2
     ));
+}
+
+#[tokio::test]
+async fn local_activity_combination_keeps_real_poison_fault_order() {
+    // Necessary Q9-Q11 fault partitions extend the original S4 setup: create
+    // fresh actual Hosts because neither global Slot nor active-marker poison
+    // may be cleared/recovered. No fake Source/view, registry or bool adapter.
+    // Q9 two adapters + Primary active + awaiting reader poisons Slot + Open
+    // child -> exact original child panic (true Primary never skips it).
+    // Q10 two adapters + Primary inactive + same awaited poison + Completed
+    // child -> false without a child query. Q11 root marker poison precedes
+    // reader; occupied child marker poison follows reader even if Primary true;
+    // Completed child marker poison is never queried. All actual writers join.
+    // Fresh Hosts share the process-default Sandbox root: each independent row
+    // needs its own stable Session identity, rather than reclaiming another
+    // row's still-owned directory. Queries within a row retain that identity.
+    use crate::session_realizations::primary_or_delegated_run_active;
+    use awaken_agent_contract::agent::delegation::DelegationStatus as Status;
+    use futures_util::FutureExt;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    let relationship = |child: &str, status| awaken_session_application_contract::DelegatedRun {
+        run_id: awaken_agent_contract::agent::run::Id(child.into()),
+        parent_call_id: "query-call".into(),
+        agent_id: "query-agent".into(),
+        status,
+    };
+    for legacy in [false, true] {
+        for (primary_active, status) in [(true, Status::Open), (false, Status::Completed)] {
+            let root_id = format!("query-slot-root-{legacy}-{primary_active}-{status:?}");
+            let child_id = format!("query-slot-child-{legacy}-{primary_active}-{status:?}");
+            let host = crate::HostDependencies::ephemeral(
+                Arc::new(crate::no_model::NoModelConfiguredExecutor),
+                "stub",
+            )
+            .await
+            .build()
+            .expect("Q9/Q10 actual Host");
+            let ctx = host
+                .ctx_for(&root_id, None)
+                .await
+                .expect("Q9 actual context");
+            host.installed_sessions
+                .update_run(&root_id, |run| run.context = Some(ctx.clone()));
+            *ctx.active_run.lock().unwrap() = primary_active
+                .then(|| awaken_agent_contract::agent::run::Id("active-primary".into()));
+            let view = host.installed_sessions.realizations();
+            let polls = std::sync::atomic::AtomicUsize::new(0);
+            let (enter, entry) = tokio::sync::oneshot::channel::<()>();
+            let writer = tokio::spawn({
+                let slots = host.installed_sessions.clone();
+                let root_id = root_id.clone();
+                async move {
+                    if entry.await.is_err() {
+                        return false;
+                    }
+                    catch_unwind(AssertUnwindSafe(|| {
+                        slots.modify(&root_id, |_| {
+                            panic!("Q9/Q10 actual Slot poison during reader")
+                        });
+                    }))
+                    .is_err()
+                }
+            });
+            // The reader itself joins its actual writer before returning rows.
+            // If a regressed helper skips the future, its sender drops and the
+            // writer exits; keep its handle outside so every path is joined.
+            let mut writer = writer;
+            let observed = AssertUnwindSafe(primary_or_delegated_run_active(
+                &root_id,
+                |id| {
+                    if legacy {
+                        host.installed_sessions
+                            .read_run(id, |run| {
+                                run.context
+                                    .as_ref()
+                                    .is_some_and(|runtime| runtime.has_active_run())
+                            })
+                            .unwrap_or(false)
+                    } else {
+                        view.modify_session(id, |slot| slot.run.has_active_run())
+                            .unwrap_or(false)
+                    }
+                },
+                async {
+                    polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    enter.send(()).expect("Q9 actual delegation reader entry");
+                    assert!(
+                        (&mut writer).await.expect("Q9 writer joined within reader"),
+                        "Q9 actual caught callback poisoned Slot"
+                    );
+                    Ok(vec![relationship(&child_id, status)])
+                },
+            ))
+            .catch_unwind()
+            .await;
+            // JoinHandle returns after completion; do not poll the same handle
+            // twice. The poll count distinguishes the skipped-reader path.
+            if polls.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                let _ = writer.await;
+            }
+            assert_eq!(
+                polls.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "Q9/Q10 true Primary still polls reader"
+            );
+            assert!(
+                host.installed_sessions.slots.is_poisoned(),
+                "Q9/Q10 actual Slot poison"
+            );
+            if primary_active {
+                let panic = observed.expect_err("Q9 active Primary must not suppress child poison");
+                let message = panic
+                    .downcast_ref::<String>()
+                    .expect("Q9 original expect panic");
+                if legacy {
+                    assert_eq!(
+                        message,
+                        &format!(
+                            "session runtime slots mutex poisoned: {:?}",
+                            PoisonError::new(())
+                        ),
+                        "Q9 legacy diagnostic"
+                    );
+                } else {
+                    assert_eq!(
+                        message, "installed sessions mutex poisoned: InstalledSessionsPoisoned",
+                        "Q9 view diagnostic"
+                    );
+                }
+            } else {
+                assert!(
+                    !observed
+                        .expect("Q10 Completed skips poisoned child Slot")
+                        .unwrap(),
+                    "Q10 local inactive result only"
+                );
+            }
+        }
+        for (primary_fault, status) in [
+            (true, Status::Open),
+            (false, Status::Open),
+            (false, Status::Completed),
+        ] {
+            let root_id = format!("query-marker-root-{legacy}-{primary_fault}-{status:?}");
+            let child_id = format!("query-marker-child-{legacy}-{primary_fault}-{status:?}");
+            let host = crate::HostDependencies::ephemeral(
+                Arc::new(crate::no_model::NoModelConfiguredExecutor),
+                "stub",
+            )
+            .await
+            .build()
+            .expect("Q11 actual Host");
+            let root = host.ctx_for(&root_id, None).await.expect("Q11 actual root");
+            let child = host
+                .ctx_for(&child_id, None)
+                .await
+                .expect("Q11 actual child");
+            host.installed_sessions
+                .update_run(&root_id, |run| run.context = Some(root.clone()));
+            host.installed_sessions
+                .update_run(&child_id, |run| run.context = Some(child.clone()));
+            *root.active_run.lock().unwrap() = (!primary_fault && status == Status::Open)
+                .then(|| awaken_agent_contract::agent::run::Id("active-primary".into()));
+            let fault = if primary_fault { root } else { child };
+            let marker_writer = std::thread::spawn(move || {
+                let _held = fault.active_run.lock().unwrap();
+                panic!("Q11 actual active-marker poison");
+            });
+            assert!(marker_writer.join().is_err(), "Q11 marker writer joined");
+            assert!(
+                !host.installed_sessions.slots.is_poisoned(),
+                "Q11 distinct healthy Slot before query"
+            );
+            let view = host.installed_sessions.realizations();
+            let polls = std::sync::atomic::AtomicUsize::new(0);
+            let observed = AssertUnwindSafe(primary_or_delegated_run_active(
+                &root_id,
+                |id| {
+                    if legacy {
+                        host.installed_sessions
+                            .read_run(id, |run| {
+                                run.context
+                                    .as_ref()
+                                    .is_some_and(|runtime| runtime.has_active_run())
+                            })
+                            .unwrap_or(false)
+                    } else {
+                        view.modify_session(id, |slot| slot.run.has_active_run())
+                            .unwrap_or(false)
+                    }
+                },
+                async {
+                    polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(vec![relationship(&child_id, status)])
+                },
+            ))
+            .catch_unwind()
+            .await;
+            assert_eq!(
+                polls.load(std::sync::atomic::Ordering::SeqCst),
+                usize::from(!primary_fault),
+                "Q11 exact Primary-before-reader order"
+            );
+            if status == Status::Completed {
+                assert!(
+                    !observed
+                        .expect("Q11 Completed skips child poisoned marker")
+                        .unwrap(),
+                    "Q11 no context-presence substitution"
+                );
+            } else {
+                let panic =
+                    observed.expect_err("Q11 actual active-marker poison cannot become inactive");
+                assert_eq!(
+                    panic.downcast_ref::<String>().unwrap(),
+                    &format!("active run mutex poisoned: {:?}", PoisonError::new(())),
+                    "Q11 original Runtime diagnostic"
+                );
+            }
+        }
+    }
 }

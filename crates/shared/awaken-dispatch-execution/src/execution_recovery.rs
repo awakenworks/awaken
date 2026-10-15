@@ -16,6 +16,37 @@ use std::collections::{BTreeMap, BTreeSet};
 const PAGE_SIZE: usize = 256;
 const MAX_PAGES: usize = 256;
 
+fn response_only_run(
+    snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
+    run: &awaken_agent_contract::agent::run::Id,
+) -> bool {
+    use awaken_agent_contract::agent::state::StateKey;
+    use awaken_runtime_contract::attempt_termination::{
+        ActiveNativeAttemptCoverage, NativeAttemptCoverage,
+    };
+    use awaken_runtime_contract::model_operation::{ActiveModelOperation, ModelEffectScope};
+    use awaken_runtime_contract::tool_batch::{ActiveToolBatch, store_from_run_commands};
+    let store = store_from_run_commands(snapshot.state.clone(), run);
+    ActiveNativeAttemptCoverage::load(&store)
+        .is_ok_and(|coverage| coverage != NativeAttemptCoverage::Unspecified)
+        && snapshot.messages.iter().all(|message| {
+            message.content.iter().all(|block| {
+                !matches!(
+                    block,
+                    awaken_agent_contract::agent::content::ContentBlock::ToolUse { .. }
+                )
+            })
+        })
+        && ActiveToolBatch::recorded_batches(&snapshot.state, run)
+            .next()
+            .is_none()
+        && ActiveModelOperation::recorded(&snapshot.state, run).is_ok_and(|models| {
+            models
+                .iter()
+                .all(|model| model.effect_scope == ModelEffectScope::ResponseOnly)
+        })
+}
+
 fn unknown(reason: Gap) -> Observation {
     Observation::NotProven { reason }
 }
@@ -154,6 +185,7 @@ where
     if entries.is_empty() {
         return unknown(Gap::InventoryIncomplete);
     }
+    let mut response_only = true;
     for thread in threads {
         let snapshot = match reads
             .projection_thread_snapshot(&session.session_id, thread, None)
@@ -179,6 +211,10 @@ where
         }) {
             return unknown(Gap::InventoryIncomplete);
         }
+        response_only &= snapshot
+            .runs
+            .iter()
+            .all(|run| response_only_run(&snapshot, &run.id));
     }
     let mut identities = BTreeSet::new();
     let mut closure_records = Vec::new();
@@ -210,6 +246,9 @@ where
         }
     }
     Observation::EffectsClosed {
+        operation_footprint: response_only.then_some(
+            awaken_session_execution_contract::SessionExecutionOperationFootprint::ResponseOnly,
+        ),
         session_revision: session.revision.0,
         runtime_commit_cursor,
         thread_ids: threads.iter().cloned().collect(),
@@ -476,6 +515,104 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn response_only_footprint_uses_original_coverage_and_every_operation() {
+        use awaken_agent_contract::agent::state::{Command, StateKey};
+        use awaken_runtime_contract::attempt_termination::{
+            ActiveNativeAttemptCoverage, NativeAttemptCoverage,
+        };
+        use awaken_runtime_contract::model_operation::{
+            ActiveModelOperation, ModelEffectScope, ModelOperation,
+        };
+        use awaken_runtime_contract::resolved::ModelBinding;
+        use awaken_runtime_contract::tool::{ToolCall, ToolRecoveryPolicy};
+        use awaken_runtime_contract::tool_batch::{ActiveToolBatch, ToolBatch};
+        // Causes C1 original coverage; C2 every model's frozen scope is
+        // ResponseOnly; C3 no ToolBatch history. R1 C1+C2+C3 -> footprint;
+        // R2 missing/malformed coverage, opaque/malformed model, any retained
+        // tool batch (even Requested), or removed history -> unknown. Physical
+        // closure is independently required by the sole whole-scope caller.
+        let run = RunId("run".into());
+        let bind = |mut command: Command| {
+            command.run_id = Some(run.clone());
+            command
+        };
+        let marker = bind(ActiveNativeAttemptCoverage::write(
+            &NativeAttemptCoverage::JournalledV1,
+        ));
+        let mut model = ModelOperation::next(
+            None,
+            ModelBinding::parse("provider", "model", "genai").unwrap(),
+        )
+        .unwrap();
+        model.effect_scope = ModelEffectScope::ResponseOnly;
+        let response = bind(ActiveModelOperation::write(&Some(model.clone())));
+        let mut snapshot = recovery_snapshot(
+            "thread",
+            vec![RunRecord {
+                id: run.clone(),
+                thread_id: ThreadId("thread".into()),
+                state: RunState::Ended(EndCause::Indeterminate),
+            }],
+            vec![],
+            vec![],
+        );
+        snapshot.state = vec![marker.clone(), response.clone()];
+        assert!(
+            response_only_run(&snapshot, &run),
+            "R1 original response-only, including unknown model result"
+        );
+        snapshot.state = vec![marker.clone()];
+        assert!(
+            response_only_run(&snapshot, &run),
+            "R1 covered pre-model exit"
+        );
+        for fault in 0..6 {
+            snapshot.state = vec![marker.clone(), response.clone()];
+            match fault {
+                0 => {
+                    snapshot.state.remove(0);
+                }
+                1 => {
+                    model.effect_scope = ModelEffectScope::Opaque;
+                    snapshot.state[1] = bind(ActiveModelOperation::write(&Some(model.clone())));
+                }
+                2 => {
+                    snapshot.state[0] = bind(ActiveNativeAttemptCoverage::write(
+                        &NativeAttemptCoverage::Unspecified,
+                    ));
+                }
+                3 => {
+                    let batch = ToolBatch::for_step(
+                        run.clone(),
+                        1,
+                        [(
+                            ToolCall {
+                                call_id: "tool".into(),
+                                tool_id: "read".into(),
+                                arguments: serde_json::json!({}),
+                            },
+                            ToolRecoveryPolicy::default(),
+                        )],
+                    )
+                    .unwrap();
+                    snapshot
+                        .state
+                        .push(bind(ActiveToolBatch::write(&Some(batch))));
+                }
+                4 => {
+                    snapshot.state.push(bind(ActiveToolBatch::write(&None)));
+                }
+                _ => {
+                    snapshot.state[1].action = awaken_agent_contract::agent::state::Action::Set(
+                        serde_json::json!({"invalid":true}),
+                    );
+                }
+            }
+            assert!(!response_only_run(&snapshot, &run), "R2 fault {fault}");
+        }
+    }
+
     #[tokio::test]
     async fn terminal_recovery_requires_every_frozen_thread_and_original_attempt() {
         use awaken_dispatch_contract::dispatch::PhysicalAttempt;
@@ -493,7 +630,10 @@ mod tests {
         // R5 !I -> incomplete inventory; R6 !C -> old physical attempt stays open;
         // R7 record dependency unavailable -> unknown, never discard that member.
         // R8 foreign member snapshot or R9 foreign physical parent -> identity refusal.
-        for rule in 1..=9 {
+        // R10 every member has original response-only/no-tool coverage ->
+        // optional footprint. R11 one opaque child -> closure still truthful,
+        // but no scope-wide no-effects footprint may borrow the root's proof.
+        for rule in 1..=11 {
             let id = SessionId::from(format!("recovery-scope-{rule}"));
             let child = ThreadId(format!("{}-child", id.as_str()));
             let root_run = RunId(format!("{}-root-run", id.as_str()));
@@ -529,6 +669,36 @@ mod tests {
                 );
                 if rule == 8 && thread == child {
                     snapshot.thread_id = ThreadId("foreign-thread".into());
+                }
+                if rule >= 10 {
+                    use awaken_agent_contract::agent::state::StateKey;
+                    use awaken_runtime_contract::attempt_termination::{
+                        ActiveNativeAttemptCoverage, NativeAttemptCoverage,
+                    };
+                    use awaken_runtime_contract::model_operation::{
+                        ActiveModelOperation, ModelEffectScope, ModelOperation,
+                    };
+                    let owner = snapshot.runs[0].id.clone();
+                    let mut marker =
+                        ActiveNativeAttemptCoverage::write(&NativeAttemptCoverage::JournalledV1);
+                    marker.run_id = Some(owner.clone());
+                    let mut model = ModelOperation::next(
+                        None,
+                        awaken_runtime_contract::resolved::ModelBinding::parse(
+                            "provider", "model", "genai",
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+                    model.effect_scope = if rule == 11 && thread == child {
+                        ModelEffectScope::Opaque
+                    } else {
+                        ModelEffectScope::ResponseOnly
+                    };
+                    let mut entry = ActiveModelOperation::write(&Some(model));
+                    entry.run_id = Some(owner);
+                    snapshot.state = vec![marker, entry];
+                    snapshot.state_commit_cursors = vec![1, 2];
                 }
                 runtime.set_recovery_snapshot(id.as_str(), &thread, snapshot);
             }
@@ -586,8 +756,9 @@ mod tests {
                 unavailable: (rule == 7).into(),
             });
             let observed = read_execution_recovery(feed.as_ref(), runtime.as_ref(), &session).await;
-            if rule == 1 {
+            if matches!(rule, 1 | 10 | 11) {
                 let Observation::EffectsClosed {
+                    operation_footprint,
                     runtime_commit_cursor,
                     thread_ids,
                     closure_records,
@@ -597,6 +768,7 @@ mod tests {
                     panic!("R1 complete scope is closed");
                 };
                 assert_eq!(runtime_commit_cursor, 41, "R1 original scope fence");
+                assert_eq!(operation_footprint, (rule == 10).then_some(awaken_session_execution_contract::SessionExecutionOperationFootprint::ResponseOnly), "R10/R11 complete original scope only");
                 assert_eq!(thread_ids.len(), 2, "R1 includes child");
                 assert_eq!(
                     closure_records.len(),
