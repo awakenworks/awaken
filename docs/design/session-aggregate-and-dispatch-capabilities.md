@@ -75,6 +75,15 @@ response-only footprint through a weaker second parser. The recovery query also
 retains its independent refusal of any recorded tool batch or tool-use message.
 This consolidation supplies neither historical containment nor a cleanup receipt.
 
+An already-closing Dispatch entry does not imply that the original Worker exit
+has been observed or retained. When complete-attempt evidence is missing,
+unavailable or unknown, the same stop-admission owner can still use
+`independently_close_worker` to observe that exact expired/closed incarnation,
+commit its Registry exit and release its provider evidence. Live Workers remain
+protected. Exact complete-attempt evidence keeps its existing retirement path
+without requiring a whole Worker stop; missing complete evidence still retains
+the original physical slot and every external obligation.
+
 Local composition constructs `AnyCoordinatorDispatch` from an owner implementing
 `DurableDispatch`, then uses `DispatchBinding::local`. Its cached Worker view
 retains the exact queue owner. Remote composition uses
