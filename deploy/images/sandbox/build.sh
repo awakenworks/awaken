@@ -3,6 +3,10 @@
 set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/../../.." && pwd)"
 source "$repo_root/scripts/ci/_deadline.sh"
+# These arguments name Linux image paths. Git Bash must not rewrite them to
+# its Windows installation root when invoking the native deadline/engine CLI.
+# Host-side staging and build-context paths still receive normal conversion.
+export MSYS2_ARG_CONV_EXCL="${MSYS2_ARG_CONV_EXCL:+$MSYS2_ARG_CONV_EXCL;}/usr/local/;/bin/sh"
 
 # The argument vocabulary is exactly: an optional mode flag, then an optional
 # image reference and runtime-id set. Anything else used to fall through to a

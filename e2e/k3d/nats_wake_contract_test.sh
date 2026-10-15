@@ -139,6 +139,16 @@ for CLUSTER in awaken-nats-first awaken-nats-second; do
   grep -Fq 'containerPort: 8222' "$RUN_DIR/rendered.yaml"
 done
 
+# N25 a failed canonical base render must stop before publishing an overlay,
+# including callers that explicitly collect a function's failure status.
+(
+  RUN_DIR=$(mktemp -d "$TEST_ROOT/rejected-overlay.XXXXXX")
+  kubectl() { return 37; }
+  status=0
+  render_overlay || status=$?
+  [[ "$status" = 37 && ! -e "$RUN_DIR/kustomization.yaml" ]]
+)
+
 # N19-N22 transport status x JSON validity x broker progress. Exercise the
 # actual curl->file->parser composition: a nonzero HTTP command cannot admit
 # even a valid body; an eventual observation may progress within the deadline.

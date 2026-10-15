@@ -163,6 +163,20 @@ def compile_scope(metadata: dict, changed: list[str], original: list[str], root:
 
 
 class PlanTests(unittest.TestCase):
+    def test_native_command_fixture_honors_compiler_and_wrapper(self) -> None:
+        from _native_test_launcher import compiler_command
+        # The configured wrapper receives the real compiler as one OS argument;
+        # absent/empty wrappers keep direct execution, including paths with spaces.
+        compiler = "compiler with spaces/rustc"
+        wrapper = "wrapper with spaces/cache"
+        for configured, expected in [(None, [compiler]), ("", [compiler]),
+                                      (wrapper, [wrapper, compiler])]:
+            with self.subTest(wrapper=configured):
+                environment = {"RUSTC": compiler}
+                if configured is not None:
+                    environment["RUSTC_WRAPPER"] = configured
+                self.assertEqual(compiler_command(environment), expected)
+
     @classmethod
     def setUpClass(cls) -> None:
         if os.name != "nt":

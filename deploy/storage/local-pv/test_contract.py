@@ -9,6 +9,7 @@ import unittest
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts/ci"))
 import _strict_unittest as strict_unittest
+from _native_shell import bash_executable
 
 ROOT = Path(__file__).resolve().parent
 
@@ -69,7 +70,7 @@ elif args[2]=='apply':sys.stdin.read() if args[-1]=='-' else None
 elif args[2]=='-n':assert 'rollout' in args
 else:raise AssertionError(args)
 ''');binary.chmod(0o755)
-                result = subprocess.run(['bash', str(ROOT / 'install.sh'), '--context', 'fixture', str(directory / 'out')],
+                result = subprocess.run([bash_executable(), (ROOT / 'install.sh').as_posix(), '--context', 'fixture', (directory / 'out').as_posix()],
                     env=dict(os.environ, PATH=str(directory)+os.pathsep+os.environ['PATH'], CALLS=str(calls),
                         SCENARIO=scenario, EXISTING=json.dumps(existing)), capture_output=True, text=True, timeout=15)
                 self.assertEqual(result.returncode == 0, scenario in ('absent', 'owned'), result.stderr)
@@ -79,7 +80,7 @@ else:raise AssertionError(args)
 
     def test_unknown_invocation_has_no_effect(self):
         # I6 unknown or incomplete arguments => reject before Helm/Kubernetes.
-        result = subprocess.run(['bash', str(ROOT / 'install.sh'), '--unknown'], capture_output=True, text=True)
+        result = subprocess.run([bash_executable(), (ROOT / 'install.sh').as_posix(), '--unknown'], capture_output=True, text=True)
         self.assertEqual(result.returncode, 2)
 
 

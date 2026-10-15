@@ -587,10 +587,10 @@ async fn kube_client_accepts_an_http_proxy_from_deployment_environment() {
     // A host-level HTTP(S)_PROXY is consumed by kube::Config discovery. K8s
     // workers must keep accepting that standard deployment posture instead of
     // panicking while the Session runtime is being composed.
-    install_rustls_crypto_provider();
     let mut config = kube::Config::new("https://127.0.0.1:1/".parse().unwrap());
     config.proxy_url = Some("http://127.0.0.1:18082/".parse().unwrap());
-    Client::try_from(config).expect("the k8s client is compiled with HTTP proxy support");
+    awaken_outbound_http::kubernetes_control_client(config)
+        .expect("the k8s client is compiled with HTTP proxy support");
 }
 
 #[tokio::test]
@@ -616,9 +616,8 @@ async fn package_builder_job_is_rootless_bounded_and_registry_backed() {
     // digest contract; R5 unsafe Registry prefixes fail before entering
     // BuildKit configuration; R6 ring+aws-lc feature unification => select
     // ring before constructing the lazy kube client.
-    install_rustls_crypto_provider();
     let config = kube::Config::new("http://127.0.0.1:1/".parse().unwrap());
-    let client = Client::try_from(config).unwrap();
+    let client = awaken_outbound_http::kubernetes_control_client(config).unwrap();
     let builder = K8sPackageImageProvisioner::new(
         client.clone(),
         "awaken-system",
@@ -763,7 +762,10 @@ async fn package_builder_job_is_rootless_bounded_and_registry_backed() {
     );
     assert!(
         K8sPackageImageProvisioner::new(
-            Client::try_from(kube::Config::new("http://127.0.0.1:1/".parse().unwrap())).unwrap(),
+            awaken_outbound_http::kubernetes_control_client(kube::Config::new(
+                "http://127.0.0.1:1/".parse().unwrap()
+            ))
+            .unwrap(),
             "awaken-system",
             "registry.local/environments",
             Vec::new(),
@@ -776,7 +778,10 @@ async fn package_builder_job_is_rootless_bounded_and_registry_backed() {
     );
     assert!(
         K8sPackageImageProvisioner::new(
-            Client::try_from(kube::Config::new("http://127.0.0.1:1/".parse().unwrap())).unwrap(),
+            awaken_outbound_http::kubernetes_control_client(kube::Config::new(
+                "http://127.0.0.1:1/".parse().unwrap()
+            ))
+            .unwrap(),
             "awaken-system",
             "registry.local/environments",
             Vec::new(),

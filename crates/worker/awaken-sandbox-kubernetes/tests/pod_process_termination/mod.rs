@@ -255,7 +255,9 @@ async fn independent_observer_requires_exact_runtime_exit_and_retains_missing_hi
         .await
         .expect("create exact test process domain");
     let pod = pod_of(&sandbox);
-    let client = kube::Client::try_default().await.unwrap();
+    let client = awaken_sandbox_kubernetes::connect_control_client()
+        .await
+        .unwrap();
     let pods: kube::Api<k8s_openapi::api::core::v1::Pod> =
         kube::Api::namespaced(client.clone(), &namespace);
     let observer = PodProcessObserver::new(client, &namespace).unwrap();

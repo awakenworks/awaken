@@ -1,7 +1,7 @@
 //! Shared safe outbound HTTP boundary for server-side callbacks.
 //!
-//! Admission requires HTTPS and rejects private IP literals. Every production
-//! request resolves and pins only globally-routable addresses and never follows
+//! Guarded callback admission requires HTTPS and rejects private IP literals.
+//! Callback requests pin only globally-routable addresses and never follow
 //! redirects, closing DNS-rebinding and redirect-based SSRF paths. Protocol and
 //! webhook adapters own payloads/retries; this crate owns only transport safety
 //! and the common HTTP retry classification.
@@ -12,6 +12,13 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 mod client;
+#[cfg(feature = "kubernetes")]
+mod kubernetes;
+
+#[cfg(feature = "kubernetes")]
+pub use kubernetes::{
+    kubernetes_client_with_verified_absence, kubernetes_control_client, kubernetes_streaming_client,
+};
 
 pub use client::{
     BaseUrlRejected, DEFAULT_CONNECT_TIMEOUT, ExternalHttpClient, HttpMethod, HttpReply,

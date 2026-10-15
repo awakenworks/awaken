@@ -148,6 +148,44 @@ fn console_inputs_reject_unknown_graphs_and_escaping_export_roots() {
     }
 }
 
+fn probe_compiler(
+    rustc: &std::ffi::OsStr,
+    wrapper: Option<&std::ffi::OsStr>,
+) -> std::process::Command {
+    match wrapper.filter(|program| !program.is_empty()) {
+        Some(wrapper) => {
+            let mut command = std::process::Command::new(wrapper);
+            command.arg(rustc);
+            command
+        }
+        None => std::process::Command::new(rustc),
+    }
+}
+
+#[test]
+fn asset_probe_respects_the_cargo_compiler_wrapper_protocol() {
+    // W1 absent/empty wrapper => invoke rustc directly; W2 a configured wrapper
+    // receives the real compiler as its first argument. Paths containing spaces
+    // remain individual OS arguments; the probe never invokes a shell.
+    let rustc = std::ffi::OsStr::new("compiler with spaces/rustc");
+    let wrapper = std::ffi::OsStr::new("wrapper with spaces/cache");
+    for (configured, expected_program, prefix) in [
+        (None, rustc, Vec::new()),
+        (Some(std::ffi::OsStr::new("")), rustc, Vec::new()),
+        (Some(wrapper), wrapper, vec![rustc]),
+    ] {
+        let mut command = probe_compiler(rustc, configured);
+        let arguments = ["--edition=2024", "source with spaces.rs", "-o", "probe.exe"];
+        command.args(arguments);
+        assert_eq!(command.get_program(), expected_program);
+        let expected = prefix
+            .into_iter()
+            .chain(arguments.into_iter().map(std::ffi::OsStr::new))
+            .collect::<Vec<_>>();
+        assert_eq!(command.get_args().collect::<Vec<_>>(), expected);
+    }
+}
+
 #[test]
 fn cached_asset_table_survives_an_independent_frontend_build() {
     // A1 two Cargo output owners; A2 later build replaces a different asset
@@ -181,8 +219,10 @@ fn cached_asset_table_survives_an_independent_frontend_build() {
     let source = temp.path().join("probe.rs");
     fs::write(&source, format!("include!({:?}); fn main() {{ assert_eq!(embedded_asset(\"assets/app.js\"), Some(b\"first\".as_slice())); }}", temp.path().join("first/embedded_console.rs"))).unwrap();
     let executable = temp.path().join("probe.exe");
+    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    let wrapper = std::env::var_os("RUSTC_WRAPPER");
     assert!(
-        std::process::Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+        probe_compiler(&rustc, wrapper.as_deref())
             .arg("--edition=2024")
             .arg(&source)
             .arg("-o")
