@@ -12,7 +12,7 @@
     },
     "awaken-protocol-managed::ManagedState": {
       "files": 29,
-      "methods": 155,
+      "methods": 154,
       "reason": "W13 step 2 and W20: event projection and orchestration leave; the adapter keeps its wire cache"
     },
     "awaken-session-executor::ManagedHost": {
@@ -340,8 +340,8 @@
     "awaken-session-application::activity.rs::settle_activity_observed_for_event": 167,
     "awaken-session-application::continuation.rs::advance_environment_continuation": 187,
     "awaken-session-application::coordination.rs::send_session_agent_message": 156,
-    "awaken-session-application::creation.rs::create_session_with_completion": 242,
-    "awaken-session-application::creation_request.rs::create_requested_session": 508,
+    "awaken-session-application::creation.rs::create_session_with_completion": 241,
+    "awaken-session-application::creation_request.rs::create_requested_session": 497,
     "awaken-session-application::event_batches.rs::reconcile_one_session_event": 300,
     "awaken-session-application::realization.rs::reconcile_pending_session_state_for": 191,
     "awaken-session-application::realization/control.rs::activate_session_realization_inner": 167,
@@ -352,7 +352,7 @@
     "awaken-session-application::resource_reconciliation/terminal_cleanup.rs::release_terminal_resources_once": 183,
     "awaken-session-application::run_admission.rs::create_profiled_session_with_completion": 380,
     "awaken-session-application::runtime_commands.rs::configure_session_repository": 266,
-    "awaken-session-application::update.rs::update_session_once": 164,
+    "awaken-session-application::update.rs::update_session_once": 155,
     "awaken-session-event-contract::lib.rs::compile_attributed": 172,
     "awaken-session-mcp::mcp/attachment.rs::stage_with_admission": 589,
     "awaken-session-mcp::mcp/sessions.rs::drain_projection_selection": 178,
@@ -380,7 +380,7 @@
   "crate-budget": {
     "awaken-protocol-managed": {
       "deps": 35,
-      "lines": 24420,
+      "lines": 24749,
       "reason": "W20 (plan 9.11): Session lifecycle and deployment decisions move to their application services; the adapter keeps protocol translation only"
     },
     "awaken-session-executor": {
