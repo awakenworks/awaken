@@ -6,6 +6,7 @@
 //! handling form one bounded responsibility.
 
 use super::*;
+use awaken_agent_contract::agent::state::StateError;
 use awaken_runtime_contract::snapshot::AgentId;
 
 /// Stable parent context needed to address and durably deliver one delegated
@@ -293,6 +294,84 @@ pub(super) struct DelegationInvocation {
     pub step: DelegationStep,
 }
 
+/// Read the original delivery envelope without changing its payload or state.
+/// Start and resume retain their own error vocabulary and cache-first ordering.
+fn cached_child_run_result(
+    store: &Store,
+    id: &DelegationId,
+) -> std::result::Result<Option<ChildRunResult>, StateError> {
+    PendingChildRunResults::load(store).map(|results| results.get(id).cloned())
+}
+
+/// Recover the original child boundary; cache and live delivery share one
+/// full-value adapter. The outer resume still owns parent result publication.
+async fn resume_delegation_step(
+    executor: &dyn awaken_runtime_contract::delegation::RunDelegationService,
+    origin: DelegationOrigin,
+    ticket: &ResumeTicket,
+    result: ResumeResult,
+    thread_id: &ThreadId,
+    context: &RuntimeRunContext,
+    store: &mut Store,
+) -> Result<std::result::Result<DelegationStep, DelegationExecutionError>> {
+    let id = origin.delegation_id.clone();
+    let returned = if let Some(result) =
+        cached_child_run_result(store, &id).map_err(|error| Error::Execution(error.to_string()))?
+    {
+        Ok(result)
+    } else {
+        let (continuation, target_agent_id) = RunDelegations::load(store)
+            .map_err(|error| Error::Execution(error.to_string()))?
+            .and_then(|registry| {
+                registry.get(&id).and_then(|relationship| {
+                    relationship
+                        .cancellation_reference
+                        .clone()
+                        .map(|reference| (reference, AgentId(relationship.target_agent_id.clone())))
+                })
+            })
+            .ok_or_else(|| {
+                Error::Execution(
+                    "awaiting delegation is missing its durable execution reference".to_string(),
+                )
+            })?;
+        verify_attempt_ownership(context.ownership.as_deref()).await?;
+        match executor
+            .resume(DelegationResume {
+                child_run_id: origin.child_run_id(),
+                target_agent_id,
+                parent_thread_id: thread_id.clone(),
+                context: context.for_child_run(),
+                origin: origin.clone(),
+                continuation,
+                result,
+            })
+            .await
+        {
+            Ok(DelegationStep::Ended { text, usage }) => {
+                persist_child_run_result(
+                    context,
+                    thread_id,
+                    RunDisposition::awaiting(ticket.clone()),
+                    &id,
+                    store,
+                    ChildRunResult {
+                        child_run_id: origin.child_run_id(),
+                        text,
+                        usage,
+                    },
+                )
+                .await
+            }
+            other => return Ok(other),
+        }
+    };
+    Ok(returned.map(|result| DelegationStep::Ended {
+        text: result.text,
+        usage: result.usage,
+    }))
+}
+
 /// Address and invoke a child without mutating parent state. Existing durable
 /// results short-circuit executor entry. The caller owns the subsequent ordered
 /// result-delivery commits.
@@ -317,18 +396,17 @@ pub(super) async fn invoke_delegation(
         Err(error) => return Some(Err(error)),
     };
     let id = origin.delegation_id.clone();
-    match PendingChildRunResults::load(store) {
-        Ok(results) => {
-            if let Some(result) = results.get(&id).cloned() {
-                return Some(Ok(DelegationInvocation {
-                    id,
-                    step: DelegationStep::Ended {
-                        text: result.text,
-                        usage: result.usage,
-                    },
-                }));
-            }
+    match cached_child_run_result(store, &id) {
+        Ok(Some(result)) => {
+            return Some(Ok(DelegationInvocation {
+                id,
+                step: DelegationStep::Ended {
+                    text: result.text,
+                    usage: result.usage,
+                },
+            }));
         }
+        Ok(None) => {}
         Err(error) => return Some(Err(DelegationExecutionError::new(error.to_string()))),
     }
     let target_agent_id = match executor.target_agent_id_for(&call.tool_id, &call.arguments) {
@@ -411,16 +489,13 @@ pub(super) async fn resume_delegation(
     reader: &dyn CommittedThreadView,
     context: &RuntimeRunContext,
     resume_checkpoint: Option<StreamCheckpoint>,
+    waiting_batch: ToolBatch,
     mut store: Store,
 ) -> Result<RunState> {
-    let (call_id, pending) = ticket.tool_call().ok_or_else(|| {
-        Error::Execution("awaiting delegation is missing its pending tool".to_string())
-    })?;
-    let call = ToolCall {
-        call_id: call_id.to_string(),
-        tool_id: pending.tool_id.clone(),
-        arguments: pending.arguments.clone(),
-    };
+    let call = pending_tool_call(Some(&waiting_batch), ticket)
+        .expect("the common resume admission validated the pending call")
+        .clone();
+    let call_id = call.call_id.as_str();
     let Some(executor) = runtime.run_delegation() else {
         return finish(
             runtime,
@@ -456,77 +531,27 @@ pub(super) async fn resume_delegation(
         call_id,
     ) {
         Ok(origin) => {
-            let id = origin.delegation_id.clone();
-            if let Some(result) = PendingChildRunResults::load(&store)
-                .map_err(|error| Error::Execution(error.to_string()))?
-                .get(&id)
-                .cloned()
-            {
-                Ok(DelegationStep::Ended {
-                    text: result.text,
-                    usage: result.usage,
-                })
-            } else {
-                let (continuation, target_agent_id) = RunDelegations::load(&store)
-                    .map_err(|error| Error::Execution(error.to_string()))?
-                    .and_then(|registry| {
-                        registry.get(&id).and_then(|relationship| {
-                            relationship
-                                .cancellation_reference
-                                .clone()
-                                .map(|reference| {
-                                    (reference, AgentId(relationship.target_agent_id.clone()))
-                                })
-                        })
-                    })
-                    .ok_or_else(|| {
-                        Error::Execution(
-                            "awaiting delegation is missing its durable execution reference"
-                                .to_string(),
-                        )
-                    })?;
-                verify_attempt_ownership(context.ownership.as_deref()).await?;
-                let step = executor
-                    .resume(DelegationResume {
-                        child_run_id: origin.child_run_id(),
-                        target_agent_id,
-                        parent_thread_id: thread_id.clone(),
-                        context: context.for_child_run(),
-                        origin: origin.clone(),
-                        continuation,
-                        result,
-                    })
-                    .await;
-                match step {
-                    Ok(DelegationStep::Ended { text, usage }) => {
-                        let result = persist_child_run_result(
-                            context,
-                            thread_id,
-                            RunDisposition::awaiting(ticket.clone()),
-                            &id,
-                            &mut store,
-                            ChildRunResult {
-                                child_run_id: origin.child_run_id(),
-                                text,
-                                usage,
-                            },
-                        )
-                        .await;
-                        result.map(|result| DelegationStep::Ended {
-                            text: result.text,
-                            usage: result.usage,
-                        })
-                    }
-                    other => other,
-                }
-            }
+            resume_delegation_step(
+                executor.as_ref(),
+                origin,
+                ticket,
+                result,
+                thread_id,
+                context,
+                &mut store,
+            )
+            .await?
         }
         Err(error) => Err(error),
     };
 
     let synthetic = match step {
-        Ok(DelegationStep::Ended { text, .. }) => {
-            ResumeResult::ToolResult(ToolOutput::ok(call_id, text))
+        Ok(DelegationStep::Ended { text, usage }) => {
+            // The original result-state channel publishes this rollup with the
+            // completed batch and inbox consumption, never with delivery alone.
+            let mut state = Vec::new();
+            merge_thread_usage(&mut store, &mut state, &usage);
+            ResumeResult::ToolResult(ToolOutput::ok(call_id, text).with_state(state))
         }
         Ok(DelegationStep::Awaiting { continuation }) => {
             let mut staged_state = Vec::new();
@@ -572,6 +597,7 @@ pub(super) async fn resume_delegation(
         context,
         ResumeContinuation::NativeLoop,
         resume_checkpoint,
+        Some(waiting_batch),
         store,
     )
     .await
@@ -679,3 +705,6 @@ pub(crate) async fn reconcile_delegation_cancellations(
         None => Ok(delivered),
     }
 }
+
+#[cfg(test)]
+mod tests;

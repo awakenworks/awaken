@@ -6,12 +6,23 @@ use awaken_agent_contract::agent::message::{Message, Role};
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 
 impl ActiveToolBatch {
-    /// Decode each retained write of the one Run-scoped batch cell. Callers
-    /// share its validation rather than adding another state or batch codec.
+    /// Provenance and physical-entry reads require a retained batch. Logical
+    /// execution recovery may instead consume an explicit clear boundary.
+    pub(super) fn require_retained_batch(
+        batch: Option<ToolBatch>,
+    ) -> Result<ToolBatch, ToolBatchError> {
+        batch.ok_or_else(|| {
+            ToolBatchError::InvalidPersistedState("tool execution history was removed".into())
+        })
+    }
+
+    /// Decode each retained write or clear of the one Run-scoped batch cell.
+    /// Both Remove and the typed write(None) are legitimate clear boundaries.
+    /// Callers share this codec and select their read purpose.
     pub fn recorded_batches<'a>(
         state: &'a [StateCommand],
         run_id: &'a RunId,
-    ) -> impl Iterator<Item = Result<(usize, ToolBatch), ToolBatchError>> + 'a {
+    ) -> impl Iterator<Item = Result<(usize, Option<ToolBatch>), ToolBatchError>> + 'a {
         state
             .iter()
             .enumerate()
@@ -29,13 +40,8 @@ impl ActiveToolBatch {
                 let mut one = Store::new();
                 one.apply(command);
                 let batch = Self::load(&one)
-                    .map_err(|error| ToolBatchError::InvalidPersistedState(error.to_string()))?
-                    .ok_or_else(|| {
-                        ToolBatchError::InvalidPersistedState(
-                            "tool execution history was removed".into(),
-                        )
-                    })?;
-                if batch.run_id() != run_id {
+                    .map_err(|error| ToolBatchError::InvalidPersistedState(error.to_string()))?;
+                if batch.as_ref().is_some_and(|batch| batch.run_id() != run_id) {
                     return Err(ToolBatchError::InvalidPersistedState(
                         "tool history belongs to another Run".into(),
                     ));
@@ -81,6 +87,7 @@ impl ActiveToolBatch {
         let mut selected: Option<String> = None;
         for recorded in Self::recorded_batches(&snapshot.state, &run_id) {
             let (position, batch) = recorded?;
+            let batch = Self::require_retained_batch(batch)?;
             if let Some(cursor) = source_cursor
                 && snapshot.state_commit_cursors[position] != cursor
             {
@@ -115,8 +122,16 @@ impl ActiveToolBatch {
 /// Rebuild one Run's execution view from committed Thread state. Native and
 /// external tool continuation share this filter, including the exact legacy
 /// ToolBatch migration; other Runs cannot erase or replace this Run's batch.
+/// An open batch's retained terminal effects enter this execution view at their
+/// original command positions, once per recorded value. Applying them after
+/// the latest command would let an old Remove erase a later delivery. This is
+/// not publication: finalized batches and ordinary committed reads keep their
+/// existing top-level state, and the batch still owns its staged effects.
+/// This read projection is not execution admission: the Runtime validates the
+/// retained batch history before effects. Undecodable history withholds the
+/// staged projection here and preserves the original published state.
 pub fn store_from_run_commands(commands: Vec<StateCommand>, run_id: &RunId) -> Store {
-    let kept: Vec<StateCommand> = commands
+    let mut kept: Vec<StateCommand> = commands
         .into_iter()
         .filter(|command| {
             if command.scope != Scope::Run {
@@ -142,13 +157,65 @@ pub fn store_from_run_commands(commands: Vec<StateCommand>, run_id: &RunId) -> S
             }
         })
         .collect();
-    Store::rebuild(&kept)
+    let published = Store::rebuild(&kept);
+    let Some(active) = ActiveToolBatch::load(&published)
+        .ok()
+        .flatten()
+        .filter(|batch| batch.phase() == ToolBatchPhase::Open)
+    else {
+        // Preserve malformed latest state for the existing typed admission to
+        // reject, rather than replacing it with a fabricated empty batch.
+        return published;
+    };
+    // Only the explicitly accepted legacy batch above lacked a Run binding.
+    // Stamp this local view through the original binding law, never the log.
+    for command in &mut kept {
+        command.bind_run(run_id);
+    }
+    let mut recorded = ActiveToolBatch::recorded_batches(&kept, run_id).peekable();
+    let mut effects = std::collections::BTreeMap::<String, Vec<StateCommand>>::new();
+    let mut store = Store::new();
+    for (position, command) in kept.iter().enumerate() {
+        store.apply(command);
+        match recorded.peek() {
+            Some(Err(_)) => return published,
+            Some(Ok((at, _))) if *at == position => {}
+            _ => continue,
+        }
+        let (_, batch) = recorded
+            .next()
+            .expect("the recorded position matched")
+            .expect("the recorded batch was decoded");
+        let Some(batch) = batch else {
+            effects.clear();
+            continue;
+        };
+        if batch.id() != active.id() {
+            continue;
+        }
+        for entry in batch
+            .calls()
+            .iter()
+            .filter(|entry| entry.phase.is_terminal())
+        {
+            let previous = effects.entry(entry.call.call_id.clone()).or_default();
+            if *previous == entry.result_state {
+                continue;
+            }
+            for effect in &entry.result_state {
+                store.apply(effect);
+            }
+            previous.clone_from(&entry.result_state);
+        }
+    }
+    store
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use awaken_agent_contract::agent::message::Id as MessageId;
+    use awaken_agent_contract::agent::state::Key;
     use awaken_agent_contract::agent::thread::Id as ThreadId;
 
     fn source() -> (RunRecoverySnapshot, Message) {
@@ -301,5 +368,117 @@ mod tests {
             )),
             "S7"
         );
+    }
+
+    #[test]
+    fn open_batch_effects_follow_retained_command_order_without_publishing() {
+        // Cause/effect graph: C1 owned Run or Thread cell; C2 terminal Set/Remove;
+        // C3 absent or later direct Set/Remove; C4 repeated terminal checkpoint
+        // after C3; C5 exact explicit/legacy batch ownership. R1=C1+C2+!C3=>
+        // terminal effect in execution view; R2=C1+C2+C3+C4=>later direct effect,
+        // never replay the old terminal snapshot at C4. Cross all actions,
+        // scopes, C3 and C5, plus typed None/Remove clear (64 rows).
+        // A foreign Run checkpoint is inert; both clear producers are original
+        // StateKey operations, never manufactured closure evidence.
+        // E3 raw committed reads never expose nested state; Finalized does not
+        // invent publication. E4 malformed latest batch remains a typed error.
+        // Expected state is the independently ordered seed/effect/later command
+        // sequence; no second reducer or fabricated recovery receipt is used.
+        let (snapshot, _) = source();
+        let run = snapshot.claimed_run_id;
+        for scope in [Scope::Run, Scope::Thread] {
+            for terminal_remove in [false, true] {
+                for later_remove in [false, true] {
+                    for has_later in [false, true] {
+                        for legacy in [false, true] {
+                            for typed_none in [false, true] {
+                                let key = "ordered-effect";
+                                let mut seed =
+                                    StateCommand::set(scope, MergePolicy::Disjoint, key, 1.into());
+                                seed.bind_run(&run);
+                                let effect = if terminal_remove {
+                                    StateCommand::remove(scope, MergePolicy::Disjoint, key)
+                                } else {
+                                    StateCommand::set(scope, MergePolicy::Disjoint, key, 2.into())
+                                };
+                                let mut later = if later_remove {
+                                    StateCommand::remove(scope, MergePolicy::Disjoint, key)
+                                } else {
+                                    StateCommand::set(scope, MergePolicy::Disjoint, key, 3.into())
+                                };
+                                later.bind_run(&run);
+                                let write = |batch: &ToolBatch| {
+                                    let mut command = ActiveToolBatch::write(&Some(batch.clone()));
+                                    if !legacy {
+                                        command.bind_run(&run);
+                                    }
+                                    command
+                                };
+                                let mut batch =
+                                    ActiveToolBatch::load(&Store::rebuild(&snapshot.state))
+                                        .unwrap()
+                                        .unwrap();
+                                let mut cleared = if typed_none {
+                                    ActiveToolBatch::write(&None)
+                                } else {
+                                    ActiveToolBatch::remove()
+                                };
+                                cleared.bind_run(&run);
+                                let mut history = vec![seed.clone(), cleared, write(&batch)];
+                                batch.mark_executing("send").unwrap();
+                                batch.complete(ToolOutput::ok("send", "done")).unwrap();
+                                batch
+                                    .set_result_state("send", vec![effect.clone()])
+                                    .unwrap();
+                                history.push(write(&batch));
+                                let mut expected = vec![seed, effect];
+                                if has_later {
+                                    history.push(later.clone());
+                                    expected.push(later);
+                                }
+                                history.push(write(&batch));
+                                let mut foreign = write(&batch);
+                                foreign.run_id = Some(RunId("foreign".into()));
+                                history.push(foreign);
+                                let raw = Store::rebuild(&history);
+                                assert!(
+                                    ActiveToolBatch::recorded_execution_domains(&history, &run)
+                                        .is_err(),
+                                    "a clear is not physical-stop evidence"
+                                );
+                                let warm = store_from_run_commands(history.clone(), &run);
+                                assert_eq!(
+                                    warm.get(scope, &Key(key.into())),
+                                    Store::rebuild(&expected).get(scope, &Key(key.into())),
+                                    "R1/R2 {scope:?}/{terminal_remove}/{later_remove}/{has_later}/{legacy}/{typed_none}"
+                                );
+                                let cold: Vec<StateCommand> =
+                                    serde_json::from_slice(&serde_json::to_vec(&history).unwrap())
+                                        .unwrap();
+                                assert_eq!(store_from_run_commands(cold, &run), warm, "R1/R2 cold");
+                                batch.finalize().unwrap();
+                                history.push(write(&batch));
+                                let finalized = store_from_run_commands(history.clone(), &run);
+                                assert_eq!(
+                                    finalized.get(scope, &Key(key.into())),
+                                    raw.get(scope, &Key(key.into())),
+                                    "E3 no fabricated publication"
+                                );
+                                let mut corrupt = write(&batch);
+                                corrupt.bind_run(&run);
+                                corrupt.action =
+                                    StateAction::Set(serde_json::json!({"corrupt":true}));
+                                history.push(corrupt);
+                                assert!(
+                                    ActiveToolBatch::load(&store_from_run_commands(history, &run))
+                                        .is_err(),
+                                    "E4"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

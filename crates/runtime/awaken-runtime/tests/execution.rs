@@ -521,6 +521,90 @@ async fn restored_model_history_rejects_damage_hidden_by_a_valid_latest_value() 
 }
 
 #[tokio::test]
+async fn restored_tool_history_rejects_damage_hidden_by_a_valid_latest_batch() {
+    use awaken_agent_contract::agent::state::{Action, MergePolicy};
+    use awaken_runtime_contract::{CommitCoordinator, RunDisposition, ThreadCommit};
+    use awaken_tool_contract::tool::{ToolOutput, ToolRecoveryPolicy};
+    use awaken_tool_contract::tool_batch::{ActiveToolBatch, ToolBatch};
+    // T1 owned/foreign history; T2 malformed/wrong merge followed by the
+    // exact valid latest batch. R1 owned+damage => Commit error,
+    // zero model entry, no state append, sticky physical-return veto. R2 foreign
+    // damage => ordinary execution. R3 typed write(None) and Remove are both
+    // legitimate clear boundaries and permit execution for either owner.
+    // The real commit owner retains all three
+    // writes; a materialized latest-value read alone would miss every R1 row.
+    for foreign in [false, true] {
+        for damage in 0..4 {
+            let durable = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+            let mut batch = ToolBatch::for_step(
+                RunId("run-1".into()),
+                0,
+                [(
+                    ToolCall {
+                        call_id: "retained".into(),
+                        tool_id: "tool".into(),
+                        arguments: serde_json::json!({}),
+                    },
+                    ToolRecoveryPolicy::replay_safe(),
+                )],
+            )
+            .unwrap();
+            batch
+                .complete_immediate(ToolOutput::ok("retained", "done"))
+                .unwrap();
+            batch.finalize().unwrap();
+            let valid = ActiveToolBatch::write(&Some(batch));
+            let mut broken = valid.clone();
+            match damage {
+                0 => broken.action = Action::Set(serde_json::json!("malformed")),
+                1 => broken = ActiveToolBatch::write(&None),
+                2 => broken = ActiveToolBatch::remove(),
+                _ => broken.merge = MergePolicy::Exclusive,
+            }
+            for command in [valid.clone(), broken, valid] {
+                durable
+                    .commit(ThreadCommit::assemble(
+                        ThreadId("thread-1".into()),
+                        RunDisposition::running(RunId(
+                            if foreign { "foreign" } else { "run-1" }.into(),
+                        )),
+                        true,
+                        Vec::new(),
+                        vec![command],
+                        Vec::new(),
+                    ))
+                    .await
+                    .unwrap();
+            }
+            let before = durable.committed().state;
+            let model = Arc::new(MaxTokensThenTextLlm(AtomicUsize::new(0)));
+            let context = RuntimeRunContext::new()
+                .with_commit(durable.clone())
+                .with_reader(durable.clone());
+            let quiescence = context.physical_quiescence.clone();
+            let outcome = Runtime::new()
+                .with_llm(model.clone())
+                .execute(activation("catalog-a"), context)
+                .await;
+            if foreign || matches!(damage, 1 | 2) {
+                assert_eq!(
+                    outcome.unwrap(),
+                    RunState::Ended(EndCause::NaturalEnd),
+                    "R2/{damage}"
+                );
+                assert_eq!(model.0.load(Ordering::SeqCst), 2, "R2/{damage}");
+                assert!(quiescence.can_acknowledge_return(), "R2/{damage}");
+            } else {
+                assert!(matches!(outcome, Err(Error::Commit(_))), "R1/{damage}");
+                assert_eq!(model.0.load(Ordering::SeqCst), 0, "R1/{damage}");
+                assert_eq!(durable.committed().state, before, "R1 no append/{damage}");
+                assert!(!quiescence.can_acknowledge_return(), "R1/{damage}");
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn restored_model_evidence_is_run_scoped_and_invalid_coordinates_fail_closed() {
     use awaken_agent_contract::agent::state::{Command, MergePolicy, Scope};
     use awaken_runtime_contract::model_operation::{

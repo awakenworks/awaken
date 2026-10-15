@@ -1103,7 +1103,7 @@ async fn resumed_tool_operation_uses_the_committed_assistant_coordinate() {
     let cold: ToolBatch = serde_json::from_slice(&serde_json::to_vec(&batch).unwrap()).unwrap();
     assert_eq!(cold.operation_id("after-confirmation"), expected, "E3");
     let first_batch = ActiveToolBatch::recorded_batches(&history.state, &run)
-        .map(|recorded| recorded.unwrap().1)
+        .map(|recorded| recorded.unwrap().1.expect("this trace retains every batch"))
         .find(|batch| {
             batch
                 .calls()

@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use awaken_agent_contract::agent::awaiting::AwaitReason;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::delegation::{
-    DelegationOrigin, DelegationRegistry, DelegationStatus, RequestDelegation,
+    DelegationId, DelegationOrigin, DelegationRegistry, DelegationStatus, RequestDelegation,
 };
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
@@ -35,12 +35,12 @@ use awaken_agent_contract::thread::commit::staged::{CommitRecord, RunDisposition
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::delegation::{
-    DelegationExecutionError, DelegationRequest, DelegationResume, DelegationStep,
+    ChildRunResult, DelegationExecutionError, DelegationRequest, DelegationResume, DelegationStep,
     PendingChildRunResults, RunDelegationService, RunDelegations,
 };
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ThreadUsage, ToolCall,
+    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ThreadUsage, TokenUsage, ToolCall,
 };
 use awaken_runtime_contract::permission::{GateDecision, GateOutcome, ToolGateHook};
 use awaken_runtime_contract::resolved::{
@@ -128,6 +128,7 @@ impl CommitCoordinator for TracingCoordinator {
 struct CrashAfterChildResult {
     trace: TracingCoordinator,
     armed: Arc<std::sync::atomic::AtomicBool>,
+    after_child: Option<DelegationId>,
 }
 
 #[async_trait::async_trait]
@@ -138,10 +139,16 @@ impl CommitCoordinator for CrashAfterChildResult {
                 "simulated crash after child result delivery".to_string(),
             ));
         }
-        let arms_crash = commit
-            .state
-            .iter()
-            .any(|command| command.key.0 == PendingChildRunResults::KEY);
+        let arms_crash = match &self.after_child {
+            None => commit
+                .state
+                .iter()
+                .any(|command| command.key.0 == PendingChildRunResults::KEY),
+            Some(id) => PendingChildRunResults::load(&Store::rebuild(&commit.state))
+                .expect("the original producer's delivery is typed")
+                .get(id)
+                .is_some(),
+        };
         let record = self.trace.commit(commit).await?;
         if arms_crash {
             self.armed.store(true, Ordering::SeqCst);
@@ -313,11 +320,28 @@ impl ToolGateHook for BlockGate {
 
 struct AwaitingDelegation {
     trace: TracingCoordinator,
+    ended_child: Option<ChildRunResult>,
+    resumed_child: Option<ChildRunResult>,
+    starts: Arc<Mutex<Vec<RunId>>>,
+    resumes: Arc<Mutex<Vec<RunId>>>,
+}
+
+impl AwaitingDelegation {
+    fn new(trace: TracingCoordinator) -> Self {
+        Self {
+            trace,
+            ended_child: None,
+            resumed_child: None,
+            starts: Arc::default(),
+            resumes: Arc::default(),
+        }
+    }
 }
 
 struct CompletingDelegation {
     trace: TracingCoordinator,
     invocations: Arc<AtomicUsize>,
+    usage: ThreadUsage,
 }
 
 struct CrashOnceDelegation {
@@ -398,7 +422,7 @@ impl RunDelegationService for CompletingDelegation {
         self.invocations.fetch_add(1, Ordering::SeqCst);
         Ok(DelegationStep::Ended {
             text: "recovered".to_string(),
-            usage: ThreadUsage::default(),
+            usage: self.usage.clone(),
         })
     }
 
@@ -436,6 +460,18 @@ impl RunDelegationService for AwaitingDelegation {
             Some(DelegationStatus::Open),
             "child dispatch must follow the relationship commit"
         );
+        self.starts
+            .lock()
+            .expect("child starts")
+            .push(request.child_run_id.clone());
+        if let Some(result) = &self.ended_child
+            && result.child_run_id == request.child_run_id
+        {
+            return Ok(DelegationStep::Ended {
+                text: result.text.clone(),
+                usage: result.usage.clone(),
+            });
+        }
         Ok(DelegationStep::Awaiting {
             continuation: serde_json::json!({"task": request.child_run_id.0}),
         })
@@ -443,8 +479,20 @@ impl RunDelegationService for AwaitingDelegation {
 
     async fn resume(
         &self,
-        _: DelegationResume,
+        request: DelegationResume,
     ) -> Result<DelegationStep, DelegationExecutionError> {
+        self.resumes
+            .lock()
+            .expect("child resumes")
+            .push(request.child_run_id.clone());
+        if let Some(result) = &self.resumed_child
+            && result.child_run_id == request.child_run_id
+        {
+            return Ok(DelegationStep::Ended {
+                text: result.text.clone(),
+                usage: result.usage.clone(),
+            });
+        }
         Ok(DelegationStep::Ended {
             text: "done".to_string(),
             usage: ThreadUsage::default(),
@@ -1014,6 +1062,7 @@ async fn parallel_child_runs_produce_a_refinement_trace() {
         .with_run_delegation(Arc::new(CompletingDelegation {
             trace: trace.clone(),
             invocations: invocations.clone(),
+            usage: ThreadUsage::default(),
         }));
     register_snapshot(&runtime, &snapshot);
 
@@ -1085,9 +1134,7 @@ async fn delegated_child_cancel_produces_a_refinement_trace() {
             "agent_call",
             "agent_run",
         )])))
-        .with_run_delegation(Arc::new(AwaitingDelegation {
-            trace: trace.clone(),
-        }));
+        .with_run_delegation(Arc::new(AwaitingDelegation::new(trace.clone())));
     register_snapshot(&runtime, &snapshot);
     let context = RuntimeRunContext::new()
         .with_commit(Arc::new(trace.clone()))
@@ -1390,6 +1437,7 @@ async fn durable_delegation_crash_recovery_reuses_the_child_relationship() {
         .with_run_delegation(Arc::new(CompletingDelegation {
             trace: trace.clone(),
             invocations: invocations.clone(),
+            usage: ThreadUsage::default(),
         }));
     register_snapshot(&runtime, &snapshot);
 
@@ -1454,6 +1502,7 @@ async fn closed_delegation_relationship_never_reenters_the_child_executor() {
         .with_run_delegation(Arc::new(CompletingDelegation {
             trace: trace.clone(),
             invocations: invocations.clone(),
+            usage: ThreadUsage::default(),
         }));
     register_snapshot(&runtime, &snapshot);
 
@@ -1511,6 +1560,29 @@ async fn retryable_child_owner_crash_produces_a_refinement_trace() {
 
 #[tokio::test]
 async fn child_result_survives_crash_and_is_consumed_without_reinvocation() {
+    // CL9 child ended delivery committed, parent crashed before consume =>
+    // recovery uses the complete cached value with zero second child invocation.
+    // Every per-model token field must survive; the envelope is consumed once
+    // by the original ToolBatch/relationship commit, never republished by lookup.
+    let mut usage = ThreadUsage::default();
+    usage.record(
+        "cached-a",
+        TokenUsage {
+            prompt_tokens: 2,
+            completion_tokens: 3,
+            cache_read_tokens: 5,
+            cache_creation_tokens: 7,
+        },
+    );
+    usage.record(
+        "cached-b",
+        TokenUsage {
+            prompt_tokens: 11,
+            completion_tokens: 13,
+            cache_read_tokens: 17,
+            cache_creation_tokens: 19,
+        },
+    );
     let trace = TracingCoordinator::default();
     let call = tool_call("delivered_child_call", "agent_run");
     let run_id = RunId(RUN_ID.to_string());
@@ -1542,11 +1614,13 @@ async fn child_result_survives_crash_and_is_consumed_without_reinvocation() {
         .with_run_delegation(Arc::new(CompletingDelegation {
             trace: trace.clone(),
             invocations: invocations.clone(),
+            usage: usage.clone(),
         }));
     register_snapshot(&runtime, &snapshot);
     let crashing = CrashAfterChildResult {
         trace: trace.clone(),
         armed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        after_child: None,
     };
 
     let first = runtime
@@ -1565,6 +1639,19 @@ async fn child_result_survives_crash_and_is_consumed_without_reinvocation() {
         .flat_map(|commit| &commit.state)
         .any(|command| command.key.0 == PendingChildRunResults::KEY);
     assert!(delivered, "the child result reached committed truth");
+    let pending = PendingChildRunResults::load(&Store::rebuild(&trace.inner.committed().state))
+        .expect("the original producer wrote a valid inbox");
+    assert_eq!(
+        pending.get(&origin.delegation_id).unwrap().usage,
+        usage,
+        "CL9 full delivery"
+    );
+    let delivery_writes = trace
+        .commits()
+        .iter()
+        .flat_map(|commit| &commit.state)
+        .filter(|command| command.key.0 == PendingChildRunResults::KEY)
+        .count();
 
     let recovered = runtime
         .execute(
@@ -1598,6 +1685,22 @@ async fn child_result_survives_crash_and_is_consumed_without_reinvocation() {
         trace.latest_delegation_status("delivered_child_call"),
         Some(DelegationStatus::Completed)
     );
+    assert_eq!(
+        ThreadUsage::from_committed_state(&trace.inner.committed().state),
+        usage,
+        "CL9 full usage once"
+    );
+    let writes = trace
+        .commits()
+        .iter()
+        .flat_map(|commit| &commit.state)
+        .filter(|command| command.key.0 == PendingChildRunResults::KEY)
+        .count();
+    assert_eq!(
+        writes,
+        delivery_writes + 1,
+        "CL9: only original consume, no duplicate delivery write"
+    );
     emit_trace("durable_child_result_recovery", &trace);
 }
 
@@ -1614,4 +1717,420 @@ fn nested_origin_identity_used_by_the_trace_is_stable() {
     .expect("nested origin");
     assert_eq!(nested.depth, root.depth + 1);
     assert_eq!(nested.child_run_id(), nested.child_run_id());
+}
+
+#[tokio::test]
+async fn resumed_terminal_state_never_erases_a_later_child_delivery() {
+    // Cause/effect graph: C1 one real model batch contains A then B; the
+    // existing service awaits A and ends B. C2 A resumes through the real
+    // producer and Completed.result_state keeps its original inbox consumption.
+    // C3 B's full result is delivered by the real producer in a later commit.
+    // C4 the original crash coordinator rejects the next parent-completion
+    // commit, then a rebuilt Runtime reads the actual committed prefix.
+    // Effects: E1 retained commits establish A-completed before B-delivered;
+    // E2 B's entire result survives, with no second child start/resume; E3 its
+    // full per-model usage folds once and the envelope/relationship completes;
+    // E4 a replay of the consumed A command stutters with NotWaiting.
+    // Decision rules CH1/CH2=C1+C2+C3+C4=>E1-E4, with empty/full A usage.
+    // CH2 overlaps one model and adds an A-only model: later B rollup must
+    // retain every token field once, and final publication cannot rewind it.
+    // Constraints: one Run/ToolBatch,
+    // stable child identities, real ThreadCommit producer/consumer only, no
+    // manually inserted Store/inbox/history or predeclared eligibility. The
+    // crash observes typed delivery and writes nothing itself. Existing CL9
+    // supplies the simpler delivery-before-consume recovery control.
+    for with_a_usage in [false, true] {
+        let trace = TracingCoordinator::default();
+        let run_id = RunId(RUN_ID.into());
+        let call_a = tool_call("chronology-a", "agent_run");
+        let call_b = tool_call("chronology-b", "agent_run");
+        let id_a = DelegationId::for_parent_call(&run_id, &call_a.call_id);
+        let id_b = DelegationId::for_parent_call(&run_id, &call_b.call_id);
+        let mut usage = ThreadUsage::default();
+        for (model, tokens) in [
+            ("chronology-first", [2, 3, 5, 7]),
+            ("chronology-second", [11, 13, 17, 19]),
+        ] {
+            usage.record(
+                model,
+                TokenUsage {
+                    prompt_tokens: tokens[0],
+                    completion_tokens: tokens[1],
+                    cache_read_tokens: tokens[2],
+                    cache_creation_tokens: tokens[3],
+                },
+            );
+        }
+        let child_b = ChildRunResult {
+            child_run_id: id_b.child_run_id(),
+            text: "later child B: exact delivery".into(),
+            usage: usage.clone(),
+        };
+        let mut a_usage = ThreadUsage::default();
+        if with_a_usage {
+            for (model, tokens) in [
+                ("chronology-first", [23, 29, 31, 37]),
+                ("chronology-a-only", [41, 43, 47, 53]),
+            ] {
+                a_usage.record(
+                    model,
+                    TokenUsage {
+                        prompt_tokens: tokens[0],
+                        completion_tokens: tokens[1],
+                        cache_read_tokens: tokens[2],
+                        cache_creation_tokens: tokens[3],
+                    },
+                );
+            }
+        }
+        let mut expected_usage = usage.clone();
+        expected_usage.merge(&a_usage);
+        let service = Arc::new(AwaitingDelegation {
+            resumed_child: Some(ChildRunResult {
+                child_run_id: id_a.child_run_id(),
+                text: "done".into(),
+                usage: a_usage,
+            }),
+            ended_child: Some(child_b.clone()),
+            ..AwaitingDelegation::new(trace.clone())
+        });
+        let snapshot = snapshot(&["agent_run"]);
+        let runtime = Runtime::new()
+            .with_llm(Arc::new(CallsThenText::new(vec![
+                call_a.clone(),
+                call_b.clone(),
+            ])))
+            .with_run_delegation(service.clone());
+        register_snapshot(&runtime, &snapshot);
+        assert_eq!(
+            runtime
+                .execute(
+                    activation(snapshot.clone()),
+                    RuntimeRunContext::new()
+                        .with_commit(Arc::new(trace.clone()))
+                        .with_reader(Arc::new(trace.inner.clone())),
+                )
+                .await
+                .expect("CH1 original model batch awaits A"),
+            RunState::Awaiting
+        );
+        let ticket = trace.inner.resume_ticket_for(&run_id).expect("A ticket");
+        assert_eq!(ticket.call_id(), Some(call_a.call_id.as_str()), "CH1");
+        let command =
+            ResumeCommand::from_ticket(&ticket, ResumeResult::Input("continue A".into()), 0);
+        let crashing = CrashAfterChildResult {
+            trace: trace.clone(),
+            armed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            after_child: Some(id_b.clone()),
+        };
+        let failed = runtime
+            .resume(
+                command.clone(),
+                &trace.inner,
+                RuntimeRunContext::new()
+                    .with_commit(Arc::new(crashing))
+                    .with_reader(Arc::new(trace.inner.clone())),
+            )
+            .await
+            .expect_err("CH1 crash follows B delivery, before its parent completion");
+        assert_eq!(failed.code(), "commit_failed", "CH1 injected boundary");
+        assert_eq!(
+            *service.starts.lock().unwrap(),
+            [id_a.child_run_id(), id_b.child_run_id()],
+            "CH1 original starts"
+        );
+        assert_eq!(
+            *service.resumes.lock().unwrap(),
+            [id_a.child_run_id()],
+            "CH1 only A resumed"
+        );
+        let before = trace.inner.committed();
+        let original_pending = PendingChildRunResults::load(&Store::rebuild(&before.state))
+            .expect("CH1 original producer's complete pending value");
+        assert_eq!(
+            original_pending.get(&id_b),
+            Some(&child_b),
+            "E1 full delivery"
+        );
+        let original_registry = RunDelegations::load(&Store::rebuild(&before.state))
+            .expect("E1 real registry")
+            .expect("E1 registry retained");
+        let original_b = original_registry
+            .get(&id_b)
+            .expect("E1 original B relation");
+        assert_eq!(
+            original_b.child_run_id, child_b.child_run_id,
+            "E1 stable child"
+        );
+        assert_eq!(
+            original_b.status,
+            DelegationStatus::Open,
+            "E1 unconsumed relation"
+        );
+        let batch = trace.latest_batch().expect("CH1 original same batch");
+        let completed_a = batch
+            .calls()
+            .iter()
+            .find(|entry| entry.call == call_a)
+            .unwrap();
+        assert!(
+            matches!(completed_a.phase, ToolCallPhase::Completed(_)),
+            "E1"
+        );
+        assert!(
+            completed_a
+                .result_state
+                .iter()
+                .any(|state| state.key.0 == PendingChildRunResults::KEY),
+            "E1 A retains its real earlier consumption"
+        );
+        assert!(
+            batch.calls().iter().any(|entry| entry.call == call_b
+                && matches!(entry.phase, ToolCallPhase::Executing { .. })),
+            "E1 B is not consumed"
+        );
+        let commits = trace.commits();
+        let a_completed_at = commits
+            .iter()
+            .position(|commit| {
+                ActiveToolBatch::load(&Store::rebuild(&commit.state))
+                    .expect("real batch commit")
+                    .is_some_and(|batch| {
+                        batch.calls().iter().any(|entry| {
+                            entry.call == call_a
+                                && matches!(entry.phase, ToolCallPhase::Completed(_))
+                        })
+                    })
+            })
+            .expect("E1 retained A completion");
+        let b_delivered_at = commits
+            .iter()
+            .position(|commit| {
+                PendingChildRunResults::load(&Store::rebuild(&commit.state))
+                    .expect("real delivery commit")
+                    .get(&id_b)
+                    == Some(&child_b)
+            })
+            .expect("E1 retained B delivery");
+        assert!(a_completed_at < b_delivered_at, "E1 actual commit order");
+
+        // A new Runtime and a fresh committed reader discard all previous local
+        // Store state. The observed envelope above is data from the real producer,
+        // not a fixture-created permission to invoke or consume it.
+        let recovered_runtime = Runtime::new()
+            .with_llm(Arc::new(TextOnly))
+            .with_run_delegation(service.clone());
+        register_snapshot(&recovered_runtime, &snapshot);
+        let outcome = recovered_runtime
+            .execute(
+                activation(snapshot),
+                RuntimeRunContext::new()
+                    .with_commit(Arc::new(trace.clone()))
+                    .with_reader(Arc::new(trace.inner.clone())),
+            )
+            .await
+            .expect("CH1 recovery consumes B's existing delivery");
+        assert_eq!(
+            *service.starts.lock().unwrap(),
+            [id_a.child_run_id(), id_b.child_run_id()],
+            "E2 no duplicate child start after A's old result_state"
+        );
+        assert_eq!(
+            *service.resumes.lock().unwrap(),
+            [id_a.child_run_id()],
+            "E2 no duplicate child resume"
+        );
+        assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd), "E3");
+        let after = trace.inner.committed();
+        assert_eq!(
+            ThreadUsage::from_committed_state(&after.state),
+            expected_usage,
+            "E3 full usage once"
+        );
+        assert!(
+        after
+            .messages
+            .iter()
+            .any(|message| message.role == Role::Tool && message.text_content() == child_b.text),
+        "E3 exact B text published"
+    );
+        assert!(
+            PendingChildRunResults::load(&Store::rebuild(&after.state))
+                .unwrap()
+                .is_empty(),
+            "E3 consumed"
+        );
+        assert_eq!(
+            trace.latest_delegation_status(&call_b.call_id),
+            Some(DelegationStatus::Completed),
+            "E3 same original relationship"
+        );
+        let commits_after = trace.commits().len();
+        let replay = recovered_runtime
+            .resume(
+                command,
+                &trace.inner,
+                RuntimeRunContext::new().with_commit(Arc::new(trace.clone())),
+            )
+            .await
+            .expect_err("E4 A ticket was already replaced");
+        assert_eq!(replay.code(), "run_not_awaiting", "E4");
+        assert_eq!(
+            trace.commits().len(),
+            commits_after,
+            "E4 zero side-effect commit"
+        );
+        assert_eq!(
+            trace.inner.committed().state,
+            after.state,
+            "E4 no second usage/consume"
+        );
+        assert_eq!(
+            *service.starts.lock().unwrap(),
+            [id_a.child_run_id(), id_b.child_run_id()],
+            "E4 no duplicate start"
+        );
+        assert_eq!(
+            *service.resumes.lock().unwrap(),
+            [id_a.child_run_id()],
+            "E4 no duplicate resume"
+        );
+    }
+}
+
+#[tokio::test]
+async fn delegation_resume_joins_the_original_ticket_and_batch_before_child_effects() {
+    // Causes: C1 the real Runtime/child producer commits a Delegation wait;
+    // C2 a retained batch is internally valid but disagrees with that ticket on
+    // call id/tool/arguments/wait kind/correlation/phase. R1 C1+!C2 resumes the
+    // original child once. R2 C1+C2 rejects before child resume or delivery,
+    // leaving the original ticket, Run, messages, state and events unchanged.
+    // The permission and tool-only paths' RB2/RB3 cases live in awaiting.rs;
+    // this table covers the distinct child-service route, not another validator.
+    // Fault injection changes the actual committed projection after a real
+    // Awaiting producer; it creates no eligibility flag or replacement reader.
+    for fault in [
+        "call",
+        "tool",
+        "arguments",
+        "kind",
+        "correlation",
+        "phase",
+        "valid",
+    ] {
+        let trace = TracingCoordinator::default();
+        let service = Arc::new(AwaitingDelegation::new(trace.clone()));
+        let call = tool_call("coherent-child", "agent_run");
+        let run = RunId(RUN_ID.into());
+        let thread = ThreadId(THREAD_ID.into());
+        let snapshot = snapshot(&["agent_run"]);
+        let runtime = Runtime::new()
+            .with_llm(Arc::new(CallsThenText::new(vec![call.clone()])))
+            .with_run_delegation(service.clone());
+        register_snapshot(&runtime, &snapshot);
+        assert_eq!(
+            runtime
+                .execute(
+                    activation(snapshot),
+                    RuntimeRunContext::new()
+                        .with_commit(Arc::new(trace.clone()))
+                        .with_reader(Arc::new(trace.inner.clone())),
+                )
+                .await
+                .unwrap(),
+            RunState::Awaiting,
+            "C1/{fault}"
+        );
+        let ticket = trace
+            .inner
+            .resume_ticket_for(&run)
+            .expect("original child wait");
+        assert_eq!(ticket.call_id(), Some(call.call_id.as_str()), "C1/{fault}");
+        if fault != "valid" {
+            let mut value = serde_json::to_value(trace.latest_batch().unwrap()).unwrap();
+            let entry = &mut value["calls"][0];
+            match fault {
+                "call" => entry["call"]["call_id"] = serde_json::json!("other-call"),
+                "tool" => entry["call"]["tool_id"] = serde_json::json!("other-tool"),
+                "arguments" => entry["call"]["arguments"] = serde_json::json!({"changed":true}),
+                "kind" => {
+                    entry["phase"]["Awaiting"]["wait"]["kind"] = serde_json::json!("ToolPermission")
+                }
+                "correlation" => {
+                    entry["phase"]["Awaiting"]["wait"]["correlation_id"] =
+                        serde_json::json!(format!("{}-changed", ticket.correlation_id))
+                }
+                "phase" => entry["phase"] = serde_json::json!("Requested"),
+                _ => unreachable!(),
+            }
+            let conflicting: ToolBatch =
+                serde_json::from_value(value).expect("C2 remains an internally valid batch");
+            trace
+                .commit(ThreadCommit::assemble(
+                    thread.clone(),
+                    RunDisposition::awaiting(ticket.clone()),
+                    false,
+                    Vec::new(),
+                    vec![ActiveToolBatch::write(&Some(conflicting))],
+                    Vec::new(),
+                ))
+                .await
+                .unwrap();
+        }
+        let before = trace.inner.committed();
+        let commits_before = trace.commits().len();
+        let outcome = runtime
+            .resume(
+                ResumeCommand::from_ticket(&ticket, ResumeResult::Input("continue".into()), 0),
+                &trace.inner,
+                RuntimeRunContext::new()
+                    .with_commit(Arc::new(trace.clone()))
+                    .with_reader(Arc::new(trace.inner.clone())),
+            )
+            .await;
+        if fault == "valid" {
+            assert_eq!(
+                outcome.unwrap(),
+                RunState::Ended(EndCause::NaturalEnd),
+                "R1"
+            );
+            assert_eq!(
+                *service.resumes.lock().unwrap(),
+                [DelegationId::for_parent_call(&run, &call.call_id).child_run_id()],
+                "R1"
+            );
+        } else {
+            assert!(
+                service.resumes.lock().unwrap().is_empty(),
+                "R2/{fault}: child resume must follow ticket/batch admission"
+            );
+            assert!(
+                outcome
+                    .unwrap_err()
+                    .to_string()
+                    .contains("incoherent tool resume"),
+                "R2/{fault}"
+            );
+            assert_eq!(
+                trace.commits().len(),
+                commits_before,
+                "R2/{fault}: no delivery or resume commit"
+            );
+            let after = trace.inner.committed();
+            assert_eq!(after.state, before.state, "R2/{fault}");
+            assert_eq!(after.messages, before.messages, "R2/{fault}");
+            assert_eq!(after.events, before.events, "R2/{fault}");
+            assert_eq!(
+                trace.inner.resume_ticket_for(&run),
+                Some(ticket),
+                "R2/{fault}"
+            );
+            assert_eq!(awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::run_state(&trace.inner, &run), Some(RunState::Awaiting), "R2/{fault}");
+        }
+        assert_eq!(
+            service.starts.lock().unwrap().len(),
+            1,
+            "one original child/{fault}"
+        );
+    }
 }

@@ -18,6 +18,7 @@
 
 use super::delegation::is_resolved_advisor_call;
 use super::*;
+use awaken_agent_contract::agent::state::Action as StateAction;
 
 fn is_client_executed(resolved: &ResolvedRun, call: &ToolCall) -> bool {
     resolved.spec.tool_descriptors.iter().any(|descriptor| {
@@ -468,7 +469,7 @@ pub(super) async fn run_tool_calls(
     batch
         .finalize()
         .map_err(|error| Error::Execution(error.to_string()))?;
-    stage_batch_publication(&batch, ledger)?;
+    stage_batch_publication(&batch, ledger, store)?;
     // Publication barrier: Finalized and every ordered tool-result message are one
     // commit, so the model never observes a partial parallel/sequential batch.
     persist_batch(&batch, ledger, store, context, thread_id, run_id).await?;
@@ -799,7 +800,7 @@ async fn run_concurrent_tool_calls(
     batch
         .finalize()
         .map_err(|error| Error::Execution(error.to_string()))?;
-    stage_batch_publication(&batch, ledger)?;
+    stage_batch_publication(&batch, ledger, store)?;
     persist_batch(&batch, ledger, store, context, thread_id, run_id).await?;
     Ok(None)
 }
@@ -996,16 +997,8 @@ pub(super) async fn recover_tool_batch(
 ) -> Result<Option<RunDisposition>> {
     let dynamic_descriptors = env.dynamic_descriptors();
     let executable_descriptors = executable_tool_descriptors(&resolved.spec, &dynamic_descriptors);
-    // Rehydrate terminal per-call effects into the attempt's live state. They
-    // remain unpublished StateCommands until Finalized, but later gates/hooks in
-    // this recovery must observe the same state as the original attempt.
-    for entry in batch.calls() {
-        if entry.phase.is_terminal() {
-            for command in &entry.result_state {
-                store.apply(command);
-            }
-        }
-    }
+    // The shared Run reconstruction already restored terminal effects in their
+    // original commit order. Reapplying them here would rewind newer deliveries.
     *discovery =
         ToolDiscoveryStateKey::load(store).map_err(|error| Error::Execution(error.to_string()))?;
     for index in 0..batch.calls().len() {
@@ -1302,7 +1295,7 @@ pub(super) async fn recover_tool_batch(
     batch
         .finalize()
         .map_err(|error| Error::Execution(error.to_string()))?;
-    stage_batch_publication(&batch, ledger)?;
+    stage_batch_publication(&batch, ledger, store)?;
     persist_batch(&batch, ledger, store, context, thread_id, run_id).await?;
     Ok(None)
 }
@@ -1395,13 +1388,37 @@ fn stage_batch(batch: &ToolBatch, ledger: &mut StepLedger, store: &mut Store) {
 /// Stage the one ordered publication admitted by the finalized ToolBatch.
 /// Fresh sequential, compatible concurrent, and recovery paths share this
 /// adapter; the aggregate remains the sole lifecycle and ordering authority.
-fn stage_batch_publication(batch: &ToolBatch, ledger: &mut StepLedger) -> Result<()> {
+fn stage_batch_publication(
+    batch: &ToolBatch,
+    ledger: &mut StepLedger,
+    store: &Store,
+) -> Result<()> {
     let publication = batch
         .publication()
         .map_err(|error| Error::Execution(error.to_string()))?;
     ledger
         .staged_state
-        .extend(publication.result_state().cloned());
+        .extend(publication.result_state().cloned().map(|mut command| {
+            // These cells are Runtime bookkeeping, not tool-owned state. A resumed
+            // call retains its original snapshot in result_state, but subsequent
+            // requests, deliveries and consumption may already have advanced it.
+            // Publish the current execution projection at this one adapter; copying
+            // the old snapshot would resurrect a relationship or erase later usage.
+            if [
+                (RunDelegations::SCOPE, RunDelegations::KEY),
+                (PendingChildRunResults::SCOPE, PendingChildRunResults::KEY),
+                (ThreadUsageKey::SCOPE, ThreadUsageKey::KEY),
+            ]
+            .contains(&(command.scope, command.key.0.as_str()))
+            {
+                command.action = store
+                    .get(command.scope, &command.key)
+                    .cloned()
+                    .map(StateAction::Set)
+                    .unwrap_or(StateAction::Remove);
+            }
+            command
+        }));
     for message in publication.messages() {
         ledger.push_message(message.clone());
     }

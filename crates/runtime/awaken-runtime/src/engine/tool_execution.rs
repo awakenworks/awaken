@@ -175,6 +175,19 @@ pub(super) fn resume_ticket(
     )
 }
 
+/// Read the pending payload from the aggregate admitted by the common resume
+/// entry. Ticket coordinates select it; the ticket is not a second call store.
+pub(super) fn pending_tool_call<'a>(
+    batch: Option<&'a ToolBatch>,
+    ticket: &ResumeTicket,
+) -> Option<&'a ToolCall> {
+    batch?
+        .calls()
+        .iter()
+        .find(|entry| Some(entry.call.call_id.as_str()) == ticket.call_id())
+        .map(|entry| &entry.call)
+}
+
 /// Turn a resumed result into the tool/user message(s) and any staged state.
 /// An `allow` decision executes the pending tool now; a `deny` feeds a blocked
 /// result; a `ToolResult`/`Input` is used directly.
@@ -204,13 +217,7 @@ pub(super) async fn resume_into_messages(
     } = execution;
     // The pending call, when the ticket carries one, so a tool-outcome hook can
     // advance a machine on the replayed result exactly like a first-time call.
-    let pending_call = |output: &ToolOutput| {
-        ticket.pending_tool().map(|pending| ToolCall {
-            call_id: output.call_id.clone(),
-            tool_id: pending.tool_id.clone(),
-            arguments: pending.arguments.clone(),
-        })
-    };
+    let pending_call = pending_tool_call(batch, ticket);
     match result {
         ResumeResult::Continue => Ok((Vec::new(), Vec::new(), None)),
         ResumeResult::ToolResult(output) => {
@@ -221,13 +228,13 @@ pub(super) async fn resume_into_messages(
             let batch = batch.ok_or_else(|| {
                 Error::Execution("resumed tool result has no committed tool batch".to_string())
             })?;
-            let call = pending_call(&output);
+            let call = pending_call.cloned();
             let (messages, state) =
                 fold_resume_tool_output(env, batch, call_id, call, &output, store, context).await?;
             Ok((messages, state, Some(output)))
         }
         ResumeResult::Permission(decision) => {
-            let (call_id, pending) = ticket.tool_call().ok_or_else(|| {
+            let (call_id, _) = ticket.tool_call().ok_or_else(|| {
                 Error::Execution("permission resumed a ticket without a pending tool".to_string())
             })?;
             if matches!(decision, PermissionDecision::Allow { .. }) {
@@ -241,11 +248,9 @@ pub(super) async fn resume_into_messages(
                         "approved tool resume executor admission names another call".to_string(),
                     ));
                 }
-                let call = ToolCall {
-                    call_id: call_id.to_string(),
-                    tool_id: pending.tool_id.clone(),
-                    arguments: pending.arguments.clone(),
-                };
+                let call = pending_call.cloned().ok_or_else(|| {
+                    Error::Execution("approved tool resume lost its validated call".into())
+                })?;
                 let operation_id = admission.operation_id();
                 let output = execute_tool(
                     runtime,
