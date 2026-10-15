@@ -329,6 +329,31 @@ fn binding<'a>(
     })
 }
 
+/// One original-anchor seal/join used by terminal recovery and both Worker
+/// evidence-release purposes. Complete admission fencing is not disposal.
+pub(super) async fn seal_worker_requests<'a>(
+    ledger: &K8sWorkerCreateLedger,
+    anchor: &'a WorkerCreateLedger,
+    pod: &'a KubernetesPodIdentity,
+    worker: &WorkerIdentity,
+    provider_id: &str,
+) -> Result<(K8sLedgerBinding<'a>, RequestJoin), ApplicationError> {
+    if !pod.matches_worker(worker) {
+        return Err(ApplicationError::invalid(
+            "Worker Create seal has another incarnation",
+        ));
+    }
+    let exact = binding(ledger, anchor, pod, provider_id)?;
+    ledger.seal_worker(exact).await.map_err(|_| {
+        ApplicationError::unavailable("old Worker Create ledger could not be sealed")
+    })?;
+    let joined = ledger
+        .seal_group_and_join(exact, &group_for(worker))
+        .await
+        .map_err(|_| ApplicationError::unavailable("old Worker Create requests remain unjoined"))?;
+    Ok((exact, joined))
+}
+
 async fn verify_request(
     state: &CreateState,
     worker: &VerifiedWorkerContext,
@@ -679,17 +704,9 @@ impl K8sCreateBroker {
         let Some(anchor) = record.create_ledger else {
             return Ok(RequestJoin::Unknown);
         };
-        let exact = binding(&self.ledger, &anchor, &pod, &self.provider_id)?;
-        self.ledger.seal_worker(exact).await.map_err(|_| {
-            ApplicationError::unavailable("old Worker Create ledger could not be sealed")
-        })?;
+        let (exact, _) =
+            seal_worker_requests(&self.ledger, &anchor, &pod, &identity, &self.provider_id).await?;
         let group = group_for(&identity);
-        self.ledger
-            .seal_group_and_join(exact, &group)
-            .await
-            .map_err(|_| {
-                ApplicationError::unavailable("old Worker Create requests remain unjoined")
-            })?;
         self.ledger
             .reserve_terminal_claim_pod_and_join(exact, &group, scope, expected_pod_name)
             .await

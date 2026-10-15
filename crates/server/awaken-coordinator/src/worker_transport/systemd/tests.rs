@@ -441,7 +441,7 @@ async fn live_systemd_unit_stop_survives_adapter_reopen() {
         "L4 durable before Registry"
     );
     adapter
-        .release_closed_idle_worker_evidence(&idle_worker)
+        .release_closed_idle_worker_evidence(&idle_worker, None)
         .await
         .expect("L4 simulated Registry readback permits release");
     assert!(
@@ -464,7 +464,7 @@ async fn live_systemd_unit_stop_survives_adapter_reopen() {
         "L4 binding released"
     );
     adapter
-        .release_closed_idle_worker_evidence(&idle_worker)
+        .release_closed_idle_worker_evidence(&idle_worker, None)
         .await
         .expect("L4 response-loss replay of idle release is idempotent");
 }

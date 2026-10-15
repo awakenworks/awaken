@@ -58,6 +58,7 @@ impl WorkerExecutionStopSource for StopSource {
     async fn release_closed_idle_worker_evidence(
         &self,
         identity: &WorkerIdentity,
+        _original_create_ledger: Option<&awaken_dispatch::WorkerCreateLedger>,
     ) -> Result<(), ApplicationError> {
         self.idle_release_calls
             .lock()

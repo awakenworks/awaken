@@ -706,6 +706,7 @@ impl WorkerExecutionStopSource for SystemdWorkerEvidence {
     async fn release_closed_idle_worker_evidence(
         &self,
         worker: &WorkerIdentity,
+        _original_create_ledger: Option<&awaken_dispatch::WorkerCreateLedger>,
     ) -> Result<(), ApplicationError> {
         let unit = unit_name(worker)?;
         let observed = self.show(&unit).await?;
