@@ -8,6 +8,7 @@ use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 /// one internally consistent Thread recovery prefix.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionExecutionObservation {
+    pub artifact_capture: Option<awaken_resource_contract::ArtifactCapture>,
     pub recovery: crate::SessionExecutionRecoveryObservation,
     pub session_id: String,
     pub session_revision: u64,

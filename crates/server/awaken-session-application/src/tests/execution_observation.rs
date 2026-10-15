@@ -932,7 +932,9 @@ async fn execution_observation_joins_only_same_snapshot_run_and_model_facts() {
     // R4 a committed Run without a model audit => retained with an empty list,
     // never promoted to executed. R5 two source messages reuse one batch-local
     // tool call id => retain both exact source/call coordinates. The projection
-    // performs no write or recovery.
+    // performs no write or recovery. R6 an original catalog capture names an
+    // older Run: expose that exact reference, never substitute either current
+    // observed Run. Session/Workspace access checks still precede catalog reads.
     let repository = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
@@ -1008,11 +1010,32 @@ async fn execution_observation_joins_only_same_snapshot_run_and_model_facts() {
             ],
         ),
     );
-    let application = application_with_runtime(
+    let mut application = application_with_runtime(
         runtime,
         repository.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
+    use awaken_resource_contract::FileCatalog as _;
+    let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
+    let mut capture = awaken_resource_contract::ReplaceArtifactCapture::new(
+        "workspace".into(),
+        "session-observed".into(),
+        0,
+        vec![],
+    );
+    capture.origin = Some(
+        serde_json::from_value(serde_json::json!({
+            "run_id":"original-artifact-run","owner":"original-worker","epoch":3,
+        }))
+        .unwrap(),
+    );
+    files.replace_artifact_capture(capture).await.unwrap();
+    let original = files
+        .artifact_capture("workspace", "session-observed")
+        .await
+        .unwrap();
+    application
+        .set_resource_reference_authority(Arc::new(RecordingReferenceIndex::default()), files);
     let before = repository
         .get(&SessionId::from("session-observed"))
         .await
@@ -1025,6 +1048,10 @@ async fn execution_observation_joins_only_same_snapshot_run_and_model_facts() {
     let first_tool_source = MessageId::assistant(&run_a, 0).0;
     let second_tool_source = MessageId::assistant(&run_a, 1).0;
 
+    assert_eq!(
+        observed.artifact_capture, original,
+        "R6 original capture, no Run backfill"
+    );
     assert_eq!(observed.session_revision, before.revision.0, "R1");
     assert_eq!(observed.agent_id, "courseware-agent", "R1");
     assert_eq!(observed.agent_revision, Some(17), "R1");

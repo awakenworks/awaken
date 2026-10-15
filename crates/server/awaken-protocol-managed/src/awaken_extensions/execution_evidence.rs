@@ -19,6 +19,8 @@ pub struct SessionExecutionEvidence {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preparation: Option<awaken_session_execution_contract::SessionRecoveryPreparationReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_capture: Option<awaken_resource_contract::ArtifactCapture>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation_footprint:
         Option<awaken_session_execution_contract::SessionExecutionOperationFootprint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -74,6 +76,7 @@ mod tests {
         // drift fails closed. Rules R1=W1=>E1, R2=W2=>E2, R3=W3=>E3.
         let evidence = SessionExecutionEvidence {
             preparation: None,
+            artifact_capture: None,
             operation_footprint: None,
             recovery: None,
             session_id: "session-1".into(),
@@ -145,6 +148,12 @@ mod tests {
         // recovery readers retain exactly their four closure coordinates; old
         // evidence omits the new outer field and never invents this observation.
         let mut with_footprint = evidence;
+        // W4 optional original capture is lossless; legacy None above retains
+        // its exact old wire shape. The reference is not a cleanup/Run grant.
+        with_footprint.artifact_capture=Some(serde_json::from_value(serde_json::json!({
+            "workspace_id":"workspace","session_id":"session-1","revision":2,
+            "file_ids":["file-original"],"origin":{"run_id":"original-run","owner":"worker","epoch":7}
+        })).unwrap());
         with_footprint.operation_footprint =
             Some(awaken_session_execution_contract::SessionExecutionOperationFootprint::ResponseOnly);
         with_footprint.preparation = Some(
@@ -179,6 +188,10 @@ mod tests {
             wire["preparation"]["preparation_fingerprint"], "original-preparation",
             "R4 original reference"
         );
+        assert_eq!(
+            wire["artifact_capture"]["origin"]["run_id"], "original-run",
+            "W4 original source"
+        );
         assert_eq!(wire["operation_footprint"], "response_only", "R4");
         assert!(
             wire["recovery"].get("operation_footprint").is_none(),
@@ -201,6 +214,7 @@ mod tests {
         async fn read(Path(session_id): Path<String>) -> Json<SessionExecutionEvidence> {
             Json(SessionExecutionEvidence {
                 preparation: None,
+                artifact_capture: None,
                 operation_footprint: None,
                 recovery: None,
                 session_id,

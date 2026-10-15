@@ -82,6 +82,11 @@ pub fn file_store_bundle() -> Result<MigrationBundle, MigrationError> {
                  revision BIGINT NOT NULL, file_ids_json TEXT NOT NULL, \
                  PRIMARY KEY (workspace_id, session_id))",
             )?,
+            Migration::new(
+                7,
+                "original Run publication reference on existing output capture",
+                "ALTER TABLE {prefix}_artifact_capture ADD COLUMN origin_json TEXT",
+            )?,
         ],
     )
 }
