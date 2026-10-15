@@ -284,7 +284,7 @@ impl KubernetesWorkerStops {
     fn process_for(
         &self,
         execution: &ClosedWorkerExecution,
-    ) -> Result<PodProcessBinding, ApplicationError> {
+    ) -> Result<(PodProcessBinding, KubernetesPodIdentity), ApplicationError> {
         let binding = execution.binding();
         let pod = KubernetesPodIdentity::from_worker_id(&binding.worker().worker_id)
             .map_err(ApplicationError::invalid)?;
@@ -299,7 +299,27 @@ impl KubernetesWorkerStops {
                 "closed Worker binding does not belong to this Kubernetes execution domain",
             ));
         }
-        Ok(process)
+        Ok((process, pod))
+    }
+
+    async fn seal_original_create_admission(
+        &self,
+        pod: &KubernetesPodIdentity,
+        worker: &WorkerIdentity,
+        original: Option<&WorkerCreateLedger>,
+    ) -> Result<(), ApplicationError> {
+        let Some(anchor) = original else {
+            return Ok(());
+        };
+        create_broker::seal_worker_requests(
+            &self.create_ledger,
+            anchor,
+            pod,
+            worker,
+            &self.provider_id,
+        )
+        .await?;
+        Ok(())
     }
 }
 
@@ -376,6 +396,7 @@ impl WorkerExecutionStopSource for KubernetesWorkerStops {
     async fn release_closed_idle_worker_evidence(
         &self,
         worker: &WorkerIdentity,
+        original_create_ledger: Option<&WorkerCreateLedger>,
     ) -> Result<(), ApplicationError> {
         let pod = KubernetesPodIdentity::from_worker_id(&worker.worker_id)
             .map_err(ApplicationError::invalid)?;
@@ -384,6 +405,8 @@ impl WorkerExecutionStopSource for KubernetesWorkerStops {
                 "idle Worker evidence belongs to another Kubernetes domain",
             ));
         }
+        self.seal_original_create_admission(&pod, worker, original_create_ledger)
+            .await?;
         self.stopper
             .retire_closed_idle_pod(pod.name(), pod.uid())
             .await
@@ -395,7 +418,7 @@ impl WorkerExecutionStopSource for KubernetesWorkerStops {
         &self,
         execution: &ClosedWorkerExecution,
     ) -> Result<WorkerProcessStopStatus, ApplicationError> {
-        let process = self.process_for(execution)?;
+        let (process, _) = self.process_for(execution)?;
         // Uses Coordinator credentials, not the dead Pod's now-revoked token.
         // Exact UID/resourceVersion CAS and retention are owned by the provider.
         match self.stopper.request_stop(&process).await.map_err(|_| {
@@ -412,7 +435,13 @@ impl WorkerExecutionStopSource for KubernetesWorkerStops {
         &self,
         execution: &ClosedWorkerExecution,
     ) -> Result<(), ApplicationError> {
-        let process = self.process_for(execution)?;
+        let (process, pod) = self.process_for(execution)?;
+        self.seal_original_create_admission(
+            &pod,
+            execution.binding().worker(),
+            execution.original_create_ledger(),
+        )
+        .await?;
         self.stopper.release_evidence(&process).await.map_err(|_| {
             ApplicationError::unavailable(
                 "exact Kubernetes Worker process evidence release is unavailable",

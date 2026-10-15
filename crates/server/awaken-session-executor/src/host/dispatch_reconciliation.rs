@@ -272,6 +272,7 @@ mod tests {
         async fn release_closed_idle_worker_evidence(
             &self,
             identity: &awaken_dispatch_contract::WorkerIdentity,
+            _original_create_ledger: Option<&awaken_dispatch_contract::WorkerCreateLedger>,
         ) -> Result<(), awaken_session_execution_contract::ApplicationError> {
             if self.fail_first.swap(false, Ordering::SeqCst) {
                 return Err(
@@ -450,6 +451,7 @@ mod tests {
         async fn release_closed_idle_worker_evidence(
             &self,
             _: &awaken_dispatch_contract::WorkerIdentity,
+            _: Option<&awaken_dispatch_contract::WorkerCreateLedger>,
         ) -> Result<(), awaken_session_execution_contract::ApplicationError> {
             self.released.fetch_add(1, Ordering::SeqCst);
             Ok(())
@@ -562,6 +564,7 @@ mod tests {
         async fn release_closed_idle_worker_evidence(
             &self,
             _: &awaken_dispatch_contract::WorkerIdentity,
+            _: Option<&awaken_dispatch_contract::WorkerCreateLedger>,
         ) -> Result<(), awaken_session_execution_contract::ApplicationError> {
             panic!("Unknown physical exit cannot release provider evidence")
         }
@@ -641,6 +644,7 @@ mod tests {
         async fn release_closed_idle_worker_evidence(
             &self,
             _: &awaken_dispatch_contract::WorkerIdentity,
+            _: Option<&awaken_dispatch_contract::WorkerCreateLedger>,
         ) -> Result<(), awaken_session_execution_contract::ApplicationError> {
             panic!("an unowned domain cannot release provider evidence")
         }

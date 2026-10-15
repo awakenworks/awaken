@@ -298,6 +298,21 @@ pub(super) async fn broker_fixture(mutate_response: fn(&mut Value)) -> BrokerFix
                     ("GET", "/api/v1/namespaces/sandbox-ns/pods/sandbox-pod") => {
                         (200, created_pod.lock().unwrap().clone().unwrap())
                     }
+                    ("GET", "/api/v1/namespaces/sandbox-ns/pods/worker") => {
+                        let object = stored.lock().unwrap();
+                        let state: Value = serde_json::from_str(
+                            object.as_ref().unwrap()["data"]["ledger"].as_str().unwrap(),
+                        )
+                        .unwrap();
+                        assert_eq!(
+                            state["worker_sealed"], true,
+                            "original Create admission closes before Worker evidence release"
+                        );
+                        (
+                            404,
+                            json!({"apiVersion":"v1","kind":"Status","status":"Failure","reason":"NotFound","code":404}),
+                        )
+                    }
                     _ => panic!("unexpected test Kubernetes request {method} {path}"),
                 };
                 Ok::<_, std::io::Error>(
