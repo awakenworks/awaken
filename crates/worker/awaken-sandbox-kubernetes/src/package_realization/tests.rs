@@ -67,9 +67,8 @@ fn test_builder() -> K8sPackageImageProvisioner {
 }
 
 fn test_builder_with_pull_secrets(image_pull_secrets: Vec<String>) -> K8sPackageImageProvisioner {
-    crate::install_rustls_crypto_provider();
     let config = kube::Config::new("http://127.0.0.1:1/".parse().unwrap());
-    let client = kube::Client::try_from(config).unwrap();
+    let client = awaken_outbound_http::kubernetes_control_client(config).unwrap();
     K8sPackageImageProvisioner::new(client, NAMESPACE, REGISTRY, image_pull_secrets, true)
         .unwrap()
         .with_forward_proxy(awaken_sandbox_container::ForwardProxy {

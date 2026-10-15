@@ -18,12 +18,21 @@ separation = "publish"
 async-trait.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring"] }
+kube = { workspace = true, features = ["client", "rustls-tls", "http-proxy"], optional = true }
+http = { version = "1", optional = true }
+http-body-util = { version = "0.1", optional = true }
+serde_json = { workspace = true, optional = true }
+tower = { version = "0.5", features = ["util"], optional = true }
 tokio = { workspace = true, features = ["net"] }
 
 [dev-dependencies]
+axum.workspace = true
+k8s-openapi.workspace = true
+serde_json.workspace = true
 tokio = { workspace = true, features = ["net", "io-util", "time"] }
 
 [features]
 default = []
+kubernetes = ["dep:kube", "dep:http", "dep:http-body-util", "dep:serde_json", "dep:tower"]
 # A bounded permissive sender exists only for loopback integration tests.
 test-support = []

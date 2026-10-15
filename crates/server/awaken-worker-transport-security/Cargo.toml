@@ -33,7 +33,7 @@ k8s-openapi = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["time"], optional = true }
 
 [features]
-kubernetes = ["dep:kube", "dep:k8s-openapi", "dep:tokio"]
+kubernetes = ["dep:kube", "dep:k8s-openapi", "dep:tokio", "awaken-outbound-http/kubernetes"]
 
 [dev-dependencies]
 awaken-lease-testkit.workspace = true

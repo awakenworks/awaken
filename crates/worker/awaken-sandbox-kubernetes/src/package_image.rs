@@ -922,9 +922,8 @@ mod tests {
     use kube::client::Body;
 
     fn test_builder() -> K8sPackageImageProvisioner {
-        crate::install_rustls_crypto_provider();
         let config = kube::Config::new("http://127.0.0.1:1/".parse().unwrap());
-        let client = kube::Client::try_from(config).unwrap();
+        let client = awaken_outbound_http::kubernetes_control_client(config).unwrap();
         K8sPackageImageProvisioner::new(
             client,
             "awaken-system",

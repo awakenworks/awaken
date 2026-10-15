@@ -451,7 +451,9 @@ async fn complete_original_inline_handoff_recovers_only_its_ticket_bound_set() {
             }
         }
     });
-    let client = kube::Client::new(service, "default");
+    let client = awaken_outbound_http::kubernetes_client_with_verified_absence(kube::Client::new(
+        service, "default",
+    ));
     source.clients.control = client.clone();
     let original_set = realize(
         &source,
@@ -666,11 +668,10 @@ async fn complete_original_inline_handoff_recovers_only_its_ticket_bound_set() {
             .missing_handle_terminal_evidence(scope, &frozen, Some(&requested_fence))
             .await;
         if row == "malformed-pod-404" {
-            // Kube4 can decode a partial Status; the existing optional-read
-            // boundary rejects its missing required field as a codec failure.
-            // This stricter unknown class still proves no absence or mutation.
+            // Reject a partial Status at the shared transport boundary before
+            // an optional read can convert malformed evidence to absence.
             assert!(
-                matches!(result, Err(RuntimeError::Backend(message)) if message.contains("status")),
+                matches!(result, Err(RuntimeError::Backend(message)) if message.contains("invalid Kubernetes absence response")),
                 "R8 bad Pod 404 is not an absence witness"
             );
             assert_eq!(

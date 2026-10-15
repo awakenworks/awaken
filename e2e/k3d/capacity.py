@@ -189,12 +189,19 @@ class CapacityTests(unittest.TestCase):
         # admits calculation; remote daemon / unknown metadata fails before
         # any mutation. Two tags for one ID consume one image-size budget.
         records = [{"Id": "sha256:a", "Size": 10}] * 2
+        docker_root = str(Path(tempfile.gettempdir()).resolve() / "docker-fixture")
         with patch.dict(os.environ, {}, clear=True), \
-                patch(__name__ + ".docker_output", side_effect=["unix:///fixture.sock", "/docker", json.dumps(records)]) as docker, \
+                patch(__name__ + ".docker_output", side_effect=["unix:///fixture.sock", docker_root, json.dumps(records)]) as docker, \
                 patch(__name__ + ".capacity_plan", return_value=[]) as plan:
             self.assertEqual(inspect_local_capacity(4, ["a", "alias"]), [])
-            self.assertEqual(plan.call_args.args[:3], (4, [10], "/docker"))
+            self.assertEqual(plan.call_args.args[:3], (4, [10], docker_root))
             self.assertEqual(docker.call_count, 3)
+        with patch.dict(os.environ, {}, clear=True), \
+                patch(__name__ + ".docker_output", side_effect=["unix:///fixture.sock", "relative-docker-root"]), \
+                patch(__name__ + ".capacity_plan") as plan:
+            with self.assertRaisesRegex(ValueError, "absolute directory"):
+                inspect_local_capacity(1, [])
+            plan.assert_not_called()
         for endpoint in ("tcp://remote:2376", "ssh://remote", ""):
             with self.subTest(endpoint=endpoint), patch.dict(os.environ, {}, clear=True), \
                     patch(__name__ + ".docker_output", return_value=endpoint) as docker:
