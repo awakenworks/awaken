@@ -1,7 +1,8 @@
 //! Cross-interface input history on the same Session and production Run application.
 
 use super::{
-    Body, BodyExt, Request, ServiceExt, StatusCode, build_custom_router, create_session, json_call,
+    Body, BodyExt, DurableFact, Request, ServiceExt, StatusCode, build_custom_router,
+    create_session, json_call, wait_for_session_events,
 };
 
 #[tokio::test]
@@ -16,6 +17,13 @@ async fn ai_sdk_input_and_client_answer_remain_one_managed_history_each() {
     // Constraints: this is deterministic protocol/commit coverage, not real
     // model quality. The existing server helpers and custom-tool fixture own
     // setup. No parallel input ledger or application-specific event API.
+    // C6 a racing Managed refresh may legally serve its prior complete prefix.
+    // R4 C6 -> observe with the existing read-only fact waiter until the fresh
+    // Session's exact input and client-tool fact are visible. R5 the answer's
+    // processed_at plus the model's 42 response -> the original stable-history
+    // assertions. The SDK stream itself must already expose submit_answer.
+    // No Managed command receipt exists for these SDK inputs; this fresh
+    // Session has only this command, and the refinements name its exact content.
     let app = build_custom_router().await;
     let session = create_session(&app).await;
     let customer = "服务费金额本次没提供，收款时间还没定。";
@@ -50,11 +58,20 @@ async fn ai_sdk_input_and_client_answer_remain_one_managed_history_each() {
         let wire = String::from_utf8(bytes.to_vec()).unwrap();
         assert!(!wire.contains("\"type\":\"error\""), "{wire}");
         if turn == 0 {
-            let managed = json_call(
+            assert!(wire.contains("\"type\":\"tool-input-available\""), "{wire}");
+            assert!(wire.contains("\"toolName\":\"submit_answer\""), "{wire}");
+            let managed = wait_for_session_events(
                 &app,
-                "GET",
-                &format!("/v1/sessions/{session}/events"),
-                serde_json::Value::Null,
+                &session,
+                DurableFact::committed_event("agent.custom_tool_use"),
+                "the SDK command's exact input and client tool",
+                |events| {
+                    events.iter().any(|event| {
+                        event["type"] == "user.message"
+                            && event["content"]
+                                == serde_json::json!([{"type":"text", "text":customer}])
+                    })
+                },
             )
             .await;
             public_call = managed["data"]
@@ -62,7 +79,9 @@ async fn ai_sdk_input_and_client_answer_remain_one_managed_history_each() {
                 .unwrap()
                 .iter()
                 .find(|event| event["type"] == "agent.custom_tool_use")
-                .expect("real kernel reaches client tool")["id"]
+                .unwrap_or_else(|| {
+                    panic!("real kernel reaches client tool; sdk={wire}; managed={managed}")
+                })["id"]
                 .as_str()
                 .unwrap()
                 .to_owned();
@@ -98,11 +117,23 @@ async fn ai_sdk_input_and_client_answer_remain_one_managed_history_each() {
         serde_json::json!([{"type":"text", "text":customer}]),
         "R1 exact certainty"
     );
-    let final_history = json_call(
+    let final_history = wait_for_session_events(
         &app,
-        "GET",
-        &format!("/v1/sessions/{session}/events"),
-        serde_json::Value::Null,
+        &session,
+        DurableFact::committed_event("user.custom_tool_result"),
+        "the exact client answer to be processed and consumed by the model",
+        |events| {
+            events.iter().any(|event| {
+                event["type"] == "user.custom_tool_result"
+                    && event["custom_tool_use_id"] == public_call
+                    && event["processed_at"].is_string()
+            }) && events.iter().any(|event| {
+                event["type"] == "agent.message"
+                    && event["content"][0]["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("42"))
+            })
+        },
     )
     .await;
     let events = final_history["data"].as_array().unwrap();

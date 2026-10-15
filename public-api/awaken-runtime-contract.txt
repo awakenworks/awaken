@@ -346,6 +346,8 @@ pub fn awaken_runtime_contract::delegation::ChildRunResultInbox::discard_on_pare
 pub fn awaken_runtime_contract::delegation::ChildRunResultInbox::get(&self, &awaken_agent_contract::agent::delegation::DelegationId) -> core::option::Option<&awaken_runtime_contract::delegation::ChildRunResult>
 pub fn awaken_runtime_contract::delegation::ChildRunResultInbox::is_empty(&self) -> bool
 pub fn awaken_runtime_contract::delegation::ChildRunResultInbox::record(&mut self, awaken_agent_contract::agent::delegation::DelegationId, awaken_runtime_contract::delegation::ChildRunResult) -> core::result::Result<awaken_runtime_contract::delegation::ResultRecord, awaken_runtime_contract::delegation::DelegationResultError>
+impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::delegation::ChildRunResultInbox
+pub fn awaken_runtime_contract::delegation::ChildRunResultInbox::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 pub struct awaken_runtime_contract::delegation::DelegationExecutionError
 impl awaken_runtime_contract::delegation::DelegationExecutionError
 pub const fn awaken_runtime_contract::delegation::DelegationExecutionError::is_retryable(&self) -> bool
@@ -1955,6 +1957,8 @@ pub fn awaken_runtime_contract::delegation::ChildRunResultInbox::discard_on_pare
 pub fn awaken_runtime_contract::delegation::ChildRunResultInbox::get(&self, &awaken_agent_contract::agent::delegation::DelegationId) -> core::option::Option<&awaken_runtime_contract::delegation::ChildRunResult>
 pub fn awaken_runtime_contract::delegation::ChildRunResultInbox::is_empty(&self) -> bool
 pub fn awaken_runtime_contract::delegation::ChildRunResultInbox::record(&mut self, awaken_agent_contract::agent::delegation::DelegationId, awaken_runtime_contract::delegation::ChildRunResult) -> core::result::Result<awaken_runtime_contract::delegation::ResultRecord, awaken_runtime_contract::delegation::DelegationResultError>
+impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::delegation::ChildRunResultInbox
+pub fn awaken_runtime_contract::delegation::ChildRunResultInbox::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 pub struct awaken_runtime_contract::Contributions
 pub awaken_runtime_contract::Contributions::action_kinds: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::Contributions::dynamic_tools: alloc::vec::Vec<awaken_runtime_contract::plugin::DynamicTool>

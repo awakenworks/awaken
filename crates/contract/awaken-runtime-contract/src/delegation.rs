@@ -104,9 +104,27 @@ pub struct ChildRunResult {
 
 /// Run-scoped reliable-delivery inbox between child completion and parent result
 /// consumption. A stable delegation id makes recording idempotent across retries.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct ChildRunResultInbox {
     pending: BTreeMap<DelegationId, ChildRunResult>,
+}
+
+impl<'de> serde::Deserialize<'de> for ChildRunResultInbox {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        struct Fields {
+            pending: BTreeMap<DelegationId, ChildRunResult>,
+        }
+        let fields = <Fields as serde::Deserialize>::deserialize(deserializer)?;
+        let mut inbox = Self::default();
+        for (id, result) in fields.pending {
+            // Cold recovery has the same identity admission as live delivery.
+            // Reuse record's law; never relabel a historical wrong-child value
+            // as the currently requested child on a cache hit.
+            inbox.record(id, result).map_err(serde::de::Error::custom)?;
+        }
+        Ok(inbox)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -408,6 +426,11 @@ mod result_tests {
 
     #[test]
     fn conflicting_or_wrong_child_result_fails_closed() {
+        // Identity decision table: I1 fresh correct identity records; I2 changed
+        // payload conflicts; I3 fresh wrong child rejects; I4 exact serialized
+        // inbox restores unchanged; I5 cold wrong-child bytes reject through the
+        // same record law. Decode cannot mint another child identity or mutate
+        // the retained original inbox. Empty legacy inbox stays readable.
         let id = DelegationId("d".into());
         let mut inbox = ChildRunResultInbox::default();
         inbox.record(id.clone(), result(&id, "one")).unwrap();
@@ -425,6 +448,26 @@ mod result_tests {
                 }
             ),
             Err(DelegationResultError::ChildRunMismatch)
+        );
+        let encoded = serde_json::to_value(&inbox).unwrap();
+        assert_eq!(
+            serde_json::from_value::<ChildRunResultInbox>(encoded.clone()).unwrap(),
+            inbox,
+            "I4 exact round trip"
+        );
+        let mut wrong = encoded;
+        wrong["pending"]["d"]["child_run_id"] = serde_json::json!("wrong");
+        let error = serde_json::from_value::<ChildRunResultInbox>(wrong).unwrap_err();
+        assert!(error.to_string().contains("stable child Run"), "I5");
+        assert_eq!(
+            inbox.get(&DelegationId("d".into())).unwrap().text,
+            "one",
+            "I5 inert"
+        );
+        assert!(
+            serde_json::from_value::<ChildRunResultInbox>(serde_json::json!({"pending":{}}))
+                .unwrap()
+                .is_empty()
         );
     }
 
