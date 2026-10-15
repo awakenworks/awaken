@@ -106,16 +106,30 @@ pub async fn verify_current_worker_identity(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "worker is not registered".to_string())?;
-    if &record.snapshot.identity != identity {
+    verify_registered_worker_identity(&record.snapshot, identity, now_ms, require_ready)?;
+    Ok(record.snapshot)
+}
+
+/// The record-level part of current Worker admission. Callers must obtain this
+/// snapshot from the authoritative current read; a historical or supplied
+/// snapshot does not prove that it is current. This neither authenticates a
+/// transport nor grants a lease or a physical effect.
+pub fn verify_registered_worker_identity(
+    snapshot: &WorkerSnapshot,
+    identity: &WorkerIdentity,
+    now_ms: u64,
+    require_ready: bool,
+) -> Result<(), String> {
+    if &snapshot.identity != identity {
         return Err("worker incarnation is stale".into());
     }
-    if (require_ready && record.snapshot.state != WorkerState::Ready)
-        || record.snapshot.expires_at_ms <= now_ms
-        || record.snapshot.state == WorkerState::Dead
+    if (require_ready && snapshot.state != WorkerState::Ready)
+        || snapshot.expires_at_ms <= now_ms
+        || snapshot.state == WorkerState::Dead
     {
         return Err("worker is not ready or its registry lease expired".into());
     }
-    Ok(record.snapshot)
+    Ok(())
 }
 
 /// Verify that one authenticated Worker is the exact current incarnation that
@@ -1252,6 +1266,77 @@ impl WorkerLeasePolicy for FixedWorkerLeasePolicy {
 mod tests {
     use super::*;
     use awaken_lease_testkit::ManualClock;
+
+    #[test]
+    fn registered_worker_record_admission_has_one_identity_liveness_and_ready_law() {
+        // Cause/effect graph: C1 all three subject coordinates match; C2 lease
+        // expiry is strictly after now; C3 state is not Dead; C4 this caller
+        // requires Ready. R1 !C1 -> the original stale error, before any state
+        // error; R2 C1 + (!C2 || !C3 || (C4 && state!=Ready)) -> the original
+        // liveness error; R3 otherwise -> admission. Cross all five states,
+        // expiry before/equal/after now, four subject rows and both caller modes
+        // (120 rules). Other placement/capacity axes stay fixed: they are not
+        // this existing request-admission law. Values are pure inputs, never
+        // Registry/process-exit evidence. Real mutations/authentication and
+        // zero-API outcomes are tested through the Coordinator's original Router.
+        let identity = WorkerIdentity::new("worker", "incarnation", 7);
+        let manifest = awaken_worker_contract::WorkerManifest::default();
+        let template = WorkerSnapshot {
+            identity: identity.clone(),
+            state: WorkerState::Ready,
+            capability_fingerprint: manifest.fingerprint().unwrap(),
+            manifest,
+            in_flight: 0,
+            warm_environment_shapes: Default::default(),
+            credential_observations: Default::default(),
+            acp_capability_observations: Default::default(),
+            expires_at_ms: 101,
+        };
+        for state in [
+            WorkerState::Starting,
+            WorkerState::Ready,
+            WorkerState::Draining,
+            WorkerState::Quiesced,
+            WorkerState::Dead,
+        ] {
+            for expires_at_ms in [99, 100, 101] {
+                let snapshot = WorkerSnapshot {
+                    state,
+                    expires_at_ms,
+                    ..template.clone()
+                };
+                for asserted in [
+                    identity.clone(),
+                    WorkerIdentity::new("foreign", "incarnation", 7),
+                    WorkerIdentity::new("worker", "foreign", 7),
+                    WorkerIdentity::new("worker", "incarnation", 8),
+                ] {
+                    for require_ready in [false, true] {
+                        let expected: Result<(), String> = if asserted != identity {
+                            Err("worker incarnation is stale".into())
+                        } else if expires_at_ms <= 100
+                            || state == WorkerState::Dead
+                            || (require_ready && state != WorkerState::Ready)
+                        {
+                            Err("worker is not ready or its registry lease expired".into())
+                        } else {
+                            Ok(())
+                        };
+                        assert_eq!(
+                            verify_registered_worker_identity(
+                                &snapshot,
+                                &asserted,
+                                100,
+                                require_ready
+                            ),
+                            expected,
+                            "{state:?}/{expires_at_ms}/{asserted:?}/ready={require_ready}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     fn clock() -> Arc<dyn WallClock> {
         Arc::new(ManualClock::new(1_000))

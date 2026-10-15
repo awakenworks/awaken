@@ -3,6 +3,8 @@ mod fixture;
 use super::*;
 use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{WorkerHeartbeat, WorkerManifest, WorkerRegistration};
+use awaken_sandbox_container::k8s::K8S_CREATE_CAPTURE_HEADER;
+use awaken_worker_contract::WorkerIncarnationSource as _;
 use awaken_worker_registry::MemoryWorkerDirectory;
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WORKER_ID_HEADER};
 use axum::body::Body as AxumBody;
@@ -482,36 +484,9 @@ async fn private_create_route_requires_transport_and_current_registry_identity()
     // C matching header with no durable Registry incarnation. Effects:
     // each is refused before a provider GET, ticket CAS or Kubernetes
     // Create; neither application JSON nor a copied Worker id is proof.
-    let api_calls = Arc::new(AtomicUsize::new(0));
-    let service = tower::service_fn({
-        let api_calls = api_calls.clone();
-        move |_request: Request<Body>| {
-            api_calls.fetch_add(1, Ordering::SeqCst);
-            async move {
-                Ok::<_, std::io::Error>(
-                    Response::builder()
-                        .status(500)
-                        .body(Body::from(b"{}".to_vec()))
-                        .unwrap(),
-                )
-            }
-        }
-    });
-    let client = Client::new(service, "sandbox-ns");
-    let ledger =
-        K8sWorkerCreateLedger::new(client.clone(), "control-ns", "sandbox-ns", "provider-a")
-            .unwrap();
-    let router = Arc::new(K8sCreateBroker::new(
-        client,
-        ledger,
-        "sandbox-ns",
-        "provider-a",
-    ))
-    .router(
-        Arc::new(MemoryWorkerDirectory::new()),
-        Arc::new(HeaderWorkerAuthenticator),
-        Arc::new(ManualClock::new(100)),
-    );
+    let fixture::NoApiRouteFixture {
+        router, api_calls, ..
+    } = fixture::no_api_route_fixture();
     let wire = json!({
         "wire_version": K8S_CREATE_WIRE_VERSION,
         "identity": WorkerIdentity::new("k8s:sandbox-ns:worker:pod-uid", "pod-uid", 1),
@@ -521,16 +496,7 @@ async fn private_create_route_requires_transport_and_current_registry_identity()
         }
     });
     let body = serde_json::to_vec(&wire).unwrap();
-    let request = |header: Option<&str>| {
-        let mut builder = Request::builder()
-            .method(Method::POST)
-            .uri(PATH)
-            .header(header::CONTENT_TYPE, "application/json");
-        if let Some(value) = header {
-            builder = builder.header(WORKER_ID_HEADER, value);
-        }
-        builder.body(AxumBody::from(body.clone())).unwrap()
-    };
+    let request = |header: Option<&str>| fixture::route_request(PATH, body.clone(), header);
     assert_eq!(
         router
             .clone()
@@ -565,4 +531,245 @@ async fn private_create_route_requires_transport_and_current_registry_identity()
         0,
         "no rejected identity reached Kubernetes"
     );
+}
+
+#[tokio::test]
+async fn private_seal_route_allows_draining_without_create_admission() {
+    // Cause/effect graph: C1 one authenticated exact current Registry identity
+    // with a live lease; C2 it advances Ready -> Draining through begin_drain;
+    // C3 the original predecessor incarnation is absent; C4 operation is Seal
+    // versus fresh Create. S1=C1+Ready+C3+Seal -> HTTP200/Unknown, zero API.
+    // S2=C1+Draining+C4(Create) -> original Ready-only refusal, zero API.
+    // S3=C1+Draining+C3+Seal -> HTTP200/Unknown, zero API; old code returns400.
+    // Constraints: Registry mutations and the original Router/authenticator
+    // produce the caller state; no inserted snapshot, ledger, stop/exit receipt
+    // or guessed historical closure. Unknown remains Unknown after acceptance;
+    // this is continuation routing evidence, never physical cleanup admission.
+    let (ready_fixture, identity) = fixture::ready_route_fixture().await;
+    let fixture::NoApiRouteFixture {
+        router,
+        directory,
+        clock,
+        api_calls,
+    } = ready_fixture;
+    let now_ms = clock.now_ms();
+    let seal_body = fixture::seal_body(&identity);
+    let request = |path: &str, body: Vec<u8>| {
+        fixture::route_request(path, body, Some(identity.worker_id.as_str()))
+    };
+    let ready = router
+        .clone()
+        .oneshot(request(SEAL_PATH, seal_body.clone()))
+        .await
+        .unwrap();
+    fixture::assert_unknown_seal(ready, "S1 Ready").await;
+    assert_eq!(api_calls.load(Ordering::SeqCst), 0, "S1 zero API");
+    assert_eq!(
+        directory
+            .begin_drain(&identity, now_ms + 1_000)
+            .await
+            .unwrap(),
+        awaken_dispatch::RegistryMutation::Applied,
+        "S2/S3 real Draining transition"
+    );
+    // Check fresh Create refusal before the deliberately red Seal row, so the
+    // original admission's negative control remains observable on the red run.
+    let create_body = fixture::create_body(&identity);
+    let create = router
+        .clone()
+        .oneshot(request(PATH, create_body))
+        .await
+        .unwrap();
+    assert_eq!(
+        create.status(),
+        StatusCode::BAD_REQUEST,
+        "S2 no fresh Create grant"
+    );
+    assert_eq!(api_calls.load(Ordering::SeqCst), 0, "S2 zero API");
+    let draining = router.oneshot(request(SEAL_PATH, seal_body)).await.unwrap();
+    assert_eq!(
+        api_calls.load(Ordering::SeqCst),
+        0,
+        "S3 zero API before response"
+    );
+    fixture::assert_unknown_seal(draining, "S3 Draining").await;
+    assert_eq!(api_calls.load(Ordering::SeqCst), 0, "S3 zero API");
+}
+
+#[tokio::test]
+async fn private_seal_route_uses_existing_non_ready_control_admission() {
+    // The canonical non-Ready control policy also admits Starting and Quiesced
+    // when the exact authenticated registration and lease remain live. P1 a
+    // real ready=false heartbeat -> Starting; P2 begin_drain -> mark_quiesced.
+    // Both -> Seal200/Unknown with the original capture profile, Create400 and
+    // zero API. Ready and Draining are S1/S3 above; Dead, exact expiry and wrong
+    // authority are N1..N8 below. This covers every Worker lifecycle state
+    // without adding another state-policy table or treating Unknown as closure.
+    for cause in ["starting", "quiesced"] {
+        let (fixture, identity) = fixture::ready_route_fixture().await;
+        if cause == "starting" {
+            assert_eq!(
+                fixture
+                    .directory
+                    .heartbeat(
+                        &identity,
+                        fixture::empty_heartbeat(2, false),
+                        fixture.clock.now_ms(),
+                        60_000,
+                    )
+                    .await
+                    .unwrap(),
+                awaken_dispatch::RegistryMutation::Applied,
+                "P1 real Starting transition"
+            );
+        } else {
+            assert_eq!(
+                fixture
+                    .directory
+                    .begin_drain(&identity, fixture.clock.now_ms() + 1_000)
+                    .await
+                    .unwrap(),
+                awaken_dispatch::RegistryMutation::Applied,
+                "P2 real Draining transition"
+            );
+            assert_eq!(
+                fixture.directory.mark_quiesced(&identity).await.unwrap(),
+                awaken_dispatch::RegistryMutation::Applied,
+                "P2 real Quiesced transition"
+            );
+        }
+        let request = |path: &str, body: Vec<u8>| {
+            fixture::route_request(path, body, Some(identity.worker_id.as_str()))
+        };
+        let create_body = fixture::create_body(&identity);
+        let create = fixture
+            .router
+            .clone()
+            .oneshot(request(PATH, create_body))
+            .await
+            .unwrap();
+        assert_eq!(
+            create.status(),
+            StatusCode::BAD_REQUEST,
+            "no Create/{cause}"
+        );
+        assert_eq!(
+            fixture.api_calls.load(Ordering::SeqCst),
+            0,
+            "Create/{cause}"
+        );
+        let response = fixture
+            .router
+            .oneshot(request(SEAL_PATH, fixture::seal_body(&identity)))
+            .await
+            .unwrap();
+        fixture::assert_unknown_seal(response, cause).await;
+        assert_eq!(fixture.api_calls.load(Ordering::SeqCst), 0, "Seal/{cause}");
+    }
+}
+
+#[tokio::test]
+async fn private_seal_route_keeps_identity_liveness_and_transport_fences() {
+    // Cause/effect graph: the positive S3 caller is registered and Draining;
+    // independently remove transport authentication (N1), change its asserted
+    // transport owner (N2), incarnation (N3), or generation (N4), reach the exact
+    // lease expiry (N5), deregister the live caller (N6), publish a real newer
+    // incarnation (N7), or use a directory without its registration (N8).
+    // Decision table: N1 -> 401; N2..N8 -> 400; every row -> zero Kubernetes
+    // calls and no complete-join response profile. S1/S3 in the preceding test
+    // are the acceptance controls. State changes use Registry commands and the
+    // supplied clock; wrong request coordinates are inputs, never inserted
+    // Registry snapshots or fabricated process-exit/ledger facts. This tests
+    // the original local authenticator's routing, not signed/mTLS deployment.
+    for cause in [
+        "missing-auth",
+        "foreign-auth",
+        "wrong-incarnation",
+        "wrong-generation",
+        "expired",
+        "dead",
+        "replaced",
+        "unregistered",
+    ] {
+        let (mut fixture, identity) = fixture::ready_route_fixture().await;
+        assert_eq!(
+            fixture
+                .directory
+                .begin_drain(&identity, fixture.clock.now_ms() + 1_000)
+                .await
+                .unwrap(),
+            awaken_dispatch::RegistryMutation::Applied,
+            "real Draining precondition/{cause}"
+        );
+        let mut asserted = identity.clone();
+        let mut transport_owner = Some(identity.worker_id.as_str());
+        match cause {
+            "missing-auth" => transport_owner = None,
+            "foreign-auth" => transport_owner = Some("foreign"),
+            "wrong-incarnation" => asserted.incarnation_id = "foreign".into(),
+            "wrong-generation" => {
+                asserted.generation = asserted.generation.checked_add(1).unwrap();
+            }
+            "expired" => fixture.clock.advance(60_000),
+            "dead" | "replaced" => {
+                assert_eq!(
+                    fixture.directory.deregister(&identity).await.unwrap(),
+                    awaken_dispatch::RegistryMutation::Applied,
+                    "real Dead transition/{cause}"
+                );
+                if cause == "replaced" {
+                    let replacement = fixture
+                        .directory
+                        .register(
+                            WorkerRegistration {
+                                worker_id: identity.worker_id.clone(),
+                                incarnation_id: "replacement".into(),
+                                manifest: WorkerManifest::default(),
+                                create_ledger: None,
+                            },
+                            fixture.clock.now_ms(),
+                            60_000,
+                        )
+                        .await
+                        .unwrap();
+                    assert!(replacement.snapshot.identity.generation > identity.generation);
+                    assert_eq!(
+                        fixture
+                            .directory
+                            .incarnation(&identity)
+                            .await
+                            .unwrap()
+                            .unwrap()
+                            .snapshot
+                            .identity,
+                        identity,
+                        "N7 exact original record is retained"
+                    );
+                }
+            }
+            "unregistered" => fixture = fixture::no_api_route_fixture(),
+            _ => unreachable!(),
+        }
+        let request =
+            fixture::route_request(SEAL_PATH, fixture::seal_body(&asserted), transport_owner);
+        let response = fixture.router.oneshot(request).await.unwrap();
+        assert_eq!(
+            response.status(),
+            if cause == "missing-auth" {
+                StatusCode::UNAUTHORIZED
+            } else {
+                StatusCode::BAD_REQUEST
+            },
+            "refusal/{cause}"
+        );
+        assert!(
+            response.headers().get(K8S_CREATE_CAPTURE_HEADER).is_none(),
+            "no join profile/{cause}"
+        );
+        assert_eq!(
+            fixture.api_calls.load(Ordering::SeqCst),
+            0,
+            "zero API/{cause}"
+        );
+    }
 }

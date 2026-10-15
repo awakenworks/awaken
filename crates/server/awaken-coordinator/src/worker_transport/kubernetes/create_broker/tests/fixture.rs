@@ -1,5 +1,159 @@
 use super::*;
 
+pub(super) fn empty_heartbeat(sequence: u64, ready: bool) -> WorkerHeartbeat {
+    WorkerHeartbeat {
+        sequence,
+        ready,
+        in_flight: 0,
+        warm_environment_shapes: Default::default(),
+        credential_observations: Default::default(),
+        acp_capability_observations: Default::default(),
+    }
+}
+
+pub(super) struct NoApiRouteFixture {
+    pub(super) router: Router,
+    pub(super) directory: Arc<MemoryWorkerDirectory>,
+    pub(super) clock: Arc<ManualClock>,
+    pub(super) api_calls: Arc<AtomicUsize>,
+}
+
+/// The original transport-rejection API spy also owns the zero-effect Seal
+/// fixture. Its client never supplies a ledger, exit, or historical proof.
+pub(super) fn no_api_route_fixture() -> NoApiRouteFixture {
+    let api_calls = Arc::new(AtomicUsize::new(0));
+    let service = tower::service_fn({
+        let api_calls = api_calls.clone();
+        move |_request: Request<Body>| {
+            api_calls.fetch_add(1, Ordering::SeqCst);
+            async move {
+                Ok::<_, std::io::Error>(
+                    Response::builder()
+                        .status(500)
+                        .body(Body::from(b"{}".to_vec()))
+                        .unwrap(),
+                )
+            }
+        }
+    });
+    let client = Client::new(service, "sandbox-ns");
+    let ledger =
+        K8sWorkerCreateLedger::new(client.clone(), "control-ns", "sandbox-ns", "provider-a")
+            .unwrap();
+    let directory = Arc::new(MemoryWorkerDirectory::new());
+    let clock = Arc::new(ManualClock::new(100));
+    let router = Arc::new(K8sCreateBroker::new(
+        client,
+        ledger,
+        "sandbox-ns",
+        "provider-a",
+    ))
+    .router(
+        directory.clone(),
+        Arc::new(HeaderWorkerAuthenticator),
+        clock.clone(),
+    );
+    NoApiRouteFixture {
+        router,
+        directory,
+        clock,
+        api_calls,
+    }
+}
+
+pub(super) async fn ready_route_fixture() -> (NoApiRouteFixture, WorkerIdentity) {
+    let fixture = no_api_route_fixture();
+    let now_ms = fixture.clock.now_ms();
+    let registered = fixture
+        .directory
+        .register(
+            WorkerRegistration {
+                worker_id: "k8s:sandbox-ns:worker:pod-uid".into(),
+                incarnation_id: "pod-uid".into(),
+                manifest: WorkerManifest::default(),
+                create_ledger: None,
+            },
+            now_ms,
+            60_000,
+        )
+        .await
+        .unwrap();
+    let identity = registered.snapshot.identity;
+    assert_eq!(
+        fixture
+            .directory
+            .heartbeat(&identity, empty_heartbeat(1, true), now_ms, 60_000,)
+            .await
+            .unwrap(),
+        awaken_dispatch::RegistryMutation::Applied,
+        "S1 real Ready transition"
+    );
+    (fixture, identity)
+}
+
+pub(super) fn seal_body(identity: &WorkerIdentity) -> Vec<u8> {
+    let old = WorkerIdentity::new("k8s:sandbox-ns:old-worker:old-uid", "old-uid", 1);
+    let predecessor =
+        ContainerEffectFence::new("old-effect", &old.worker_id, old.lease_owner(), 1, u64::MAX)
+            .unwrap();
+    serde_json::to_vec(&json!({
+        "wire_version": K8S_CREATE_WIRE_VERSION,
+        "identity": identity,
+        "scope": "scope",
+        "predecessor": predecessor,
+        "expected_pod_name": "awaken-scope"
+    }))
+    .unwrap()
+}
+
+pub(super) fn create_body(identity: &WorkerIdentity) -> Vec<u8> {
+    serde_json::to_vec(&json!({
+        "wire_version": K8S_CREATE_WIRE_VERSION,
+        "identity": identity,
+        "create": {
+            "path":"/api/v1/namespaces/sandbox-ns/pods",
+            "object":{"metadata":{"name":"pod","namespace":"sandbox-ns",
+                "annotations":{"awaken.dev/realization-digest":"a".repeat(64)}}}
+        }
+    }))
+    .unwrap()
+}
+
+pub(super) fn route_request(
+    path: &str,
+    body: Vec<u8>,
+    transport_owner: Option<&str>,
+) -> Request<AxumBody> {
+    let mut request = Request::builder()
+        .method(Method::POST)
+        .uri(path)
+        .header(header::CONTENT_TYPE, "application/json");
+    if let Some(owner) = transport_owner {
+        request = request.header(WORKER_ID_HEADER, owner);
+    }
+    request.body(AxumBody::from(body)).unwrap()
+}
+
+pub(super) async fn assert_unknown_seal(response: AxumResponse, rule: &str) {
+    assert_eq!(response.status(), StatusCode::OK, "{rule} Seal control");
+    assert_eq!(
+        response.headers().get(K8S_CREATE_CAPTURE_HEADER).unwrap(),
+        CreateReplyProfile::WholeJoin.header_value(),
+        "{rule} original complete response profile"
+    );
+    let bytes = axum::body::to_bytes(
+        response.into_body(),
+        CreateReplyProfile::WholeJoin.body_limit().unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<RequestJoin>(&bytes).unwrap(),
+        RequestJoin::Unknown,
+        "{rule} missing predecessor is not closed; admission creates no closure proof"
+    );
+}
+
 pub(super) struct BrokerFixture {
     pub(super) broker: K8sCreateBroker,
     pub(super) directory: Arc<MemoryWorkerDirectory>,
@@ -188,19 +342,7 @@ pub(super) async fn broker_fixture(mutate_response: fn(&mut Value)) -> BrokerFix
         .unwrap();
     let identity = registered.snapshot.identity;
     directory
-        .heartbeat(
-            &identity,
-            WorkerHeartbeat {
-                sequence: 1,
-                ready: true,
-                in_flight: 0,
-                warm_environment_shapes: Default::default(),
-                credential_observations: Default::default(),
-                acp_capability_observations: Default::default(),
-            },
-            100,
-            60_000,
-        )
+        .heartbeat(&identity, empty_heartbeat(1, true), 100, 60_000)
         .await
         .unwrap();
     let broker = K8sCreateBroker::new(client, ledger, "sandbox-ns", "provider-a");
