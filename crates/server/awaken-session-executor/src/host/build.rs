@@ -116,11 +116,28 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
             clock.clone(),
         ));
     let credential_materializer = exec.credential_materializer.clone();
+    let dispatch_execution = authority
+        .dispatch_binding()
+        .map(|binding| binding.queue() as Arc<dyn awaken_dispatch_contract::DispatchExecution>);
+    let publication = crate::session_publication::SessionPublicationSelection::new(
+        installed_sessions.realizations(),
+        local_workspace.clone(),
+        agent.agent_publications.clone(),
+    );
     SharedHost {
         agent: capability::AgentExecution::new(agent, installed_sessions.clone()),
         exec,
         worker,
         realizer: crate::RealizationExecutor {
+            environment_binding_sink: std::sync::RwLock::new(environment_binding_sink),
+            dispatch_execution,
+            publication,
+            clock: clock.clone(),
+            artifacts: crate::provisioning::ArtifactHarvester::new(
+                installed_sessions.realizations(),
+                local_workspace.clone(),
+                resources.artifact_publisher.clone(),
+            ),
             environments: crate::environment_holding::EnvironmentHolding::new(
                 env,
                 execution.local.runs_local_pool(),
@@ -161,7 +178,6 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
         )),
         session_application,
         session_execution,
-        environment_binding_sink: std::sync::RwLock::new(environment_binding_sink),
     }
 }
 

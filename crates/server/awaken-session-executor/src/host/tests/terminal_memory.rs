@@ -246,6 +246,8 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     )
     .expect("R2 exact aggregate transition");
     managed
+        .host
+        .realizer
         .stage_prevalidated_resource_transition_under_resource_projection(
             "realization-memory-session",
             &transition,
@@ -280,6 +282,8 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     );
 
     managed
+        .host
+        .realizer
         .stage_prevalidated_resource_transition_under_resource_projection(
             "realization-memory-session",
             &transition,
@@ -295,6 +299,8 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         ..lease.clone()
     };
     managed
+        .host
+        .realizer
         .stage_prevalidated_resource_transition_under_resource_projection(
             "realization-memory-session",
             &transition,
@@ -450,6 +456,8 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     );
 
     let error = match managed
+        .host
+        .realizer
         .stage_prevalidated_resource_transition_under_resource_projection(
             "unfenced-realization-memory-session",
             &transition,
@@ -622,6 +630,8 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     // Skill set. No Resource compilation, complete key, Workspace publication
     // or active-generation receipt may precede adoption of that original domain.
     managed
+        .host
+        .realizer
         .stage_prevalidated_resource_transition_under_resource_projection(
             "awaiting-memory-adoption",
             &transition,
@@ -2221,15 +2231,16 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
             let warm_fence = lease
                 .sandbox_effect_fence("resident-terminal-memory-preparation")
                 .expect("HM1 live resident preparation fence");
-            host.prepare_bound_environment_for_effect_under_lifecycle(
-                &thread,
-                &binding,
-                &warm_fence,
-                Some(&resources),
-                crate::session_environment::BoundEnvironmentPreparationMode::LiveSource,
-            )
-            .await
-            .unwrap_or_else(|error| panic!("{} prepares resident owner: {error}", rule.name));
+            host.realizer
+                .prepare_bound_environment_for_effect_under_lifecycle(
+                    &thread,
+                    &binding,
+                    &warm_fence,
+                    Some(&resources),
+                    crate::session_environment::BoundEnvironmentPreparationMode::LiveSource,
+                )
+                .await
+                .unwrap_or_else(|error| panic!("{} prepares resident owner: {error}", rule.name));
             assert!(
                 host.installed_sessions
                     .realizations()
@@ -2350,6 +2361,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
             )).unwrap(), "H7/H8 no invented commit evidence");
             let before = events.lock().unwrap().clone();
             let error = host
+                .realizer
                 .prepare_bound_environment_for_effect_under_lifecycle(
                     &thread,
                     &binding,

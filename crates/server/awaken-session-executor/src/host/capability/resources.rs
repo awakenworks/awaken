@@ -1,6 +1,7 @@
 //! RES capability of [`SharedHost`]: the Resources-context ports the Host
-//! consumes (Memory content and extraction, File content, Artifact
-//! publication) and the test-support local File/Skill/reclamation authorities.
+//! consumes (Memory content and extraction, File content) and the test-support
+//! local File/Skill/reclamation authorities. Artifact publication belongs to
+//! the realization executor.
 
 use crate::host::*;
 
@@ -82,11 +83,6 @@ pub(crate) struct ResourcePorts {
     /// processes receive only the narrower content and publication ports.
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) file_application: Option<Arc<dyn awaken_resource_contract::FileApplicationService>>,
-    /// Sole Runtime-to-Resources artifact command edge. Embedded deployments
-    /// install the local application adapter; database-less Workers install the
-    /// claim-fenced HTTP client.
-    pub(crate) artifact_publisher:
-        Arc<dyn awaken_resource_contract::ArtifactPublisher<crate::ResourceOperationFence>>,
     /// Durable resource-plane lifecycle/reference state. It contains intrinsic
     /// Workspace/resource edges only and is independent of the IAM deployment.
     #[cfg(any(test, feature = "test-support"))]
@@ -136,7 +132,6 @@ impl ResourcePorts {
             file_catalog: selection.file_catalog,
             #[cfg(any(test, feature = "test-support"))]
             file_application: selection.file_application,
-            artifact_publisher: selection.artifact_publisher,
             #[cfg(any(test, feature = "test-support"))]
             resource_reclamation: selection.resource_reclamation,
             memory_stores: selection.memory_stores,

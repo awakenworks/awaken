@@ -223,6 +223,19 @@ fn executor(
     );
     (
         crate::RealizationExecutor {
+            environment_binding_sink: std::sync::RwLock::new(None),
+            dispatch_execution: None,
+            publication: crate::session_publication::SessionPublicationSelection::new(
+                sessions.clone(),
+                "capacity-workspace".into(),
+                None,
+            ),
+            clock: awaken_time::system_clock(),
+            artifacts: crate::provisioning::ArtifactHarvester::new(
+                sessions.clone(),
+                "capacity-workspace".into(),
+                Arc::new(awaken_resource_contract::UnavailableArtifactPublisher),
+            ),
             environments: crate::environment_holding::EnvironmentHolding::new(
                 env,
                 runs_local_dispatch_pool,

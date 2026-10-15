@@ -35,12 +35,16 @@ impl SharedHost {
                             "a cold child requires the frozen parent Session publication",
                         )
                     })?;
-                if !super::super::completion::requires_local_environment(&parent.resolved_spec) {
+                if !awaken_session_realization_contract::requires_local_environment(
+                    &parent.resolved_spec,
+                ) {
                     return Err(HostError::internal(
                         "a delegated child has no parent Session environment",
                     ));
                 }
-                let provider = self.projected_session_environment_provider(thread, None)?;
+                let provider = self
+                    .realizer
+                    .projected_session_environment_provider(thread, None)?;
                 self.create_reserved_session_environment_under_lifecycle(thread, provider)
                     .await?
             }

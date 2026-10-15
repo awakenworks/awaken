@@ -1077,7 +1077,7 @@ pub(crate) mod tests {
 
         let inner = Arc::new(RecordingExecutor::new("harvested"));
         let executor =
-            ArtifactHarvestAttemptExecutor::new(inner.clone(), host.artifact_harvester());
+            ArtifactHarvestAttemptExecutor::new(inner.clone(), host.realizer.artifacts.clone());
         executor
             .execute(activation("awaken"), RuntimeRunContext::new())
             .await
@@ -1121,7 +1121,7 @@ pub(crate) mod tests {
         std::fs::write(output_dir.join("partial.txt"), b"partial").unwrap();
         let error = ArtifactHarvestAttemptExecutor::new(
             Arc::new(FailingExecutor),
-            host.artifact_harvester(),
+            host.realizer.artifacts.clone(),
         )
         .execute(activation("awaken"), RuntimeRunContext::new())
         .await
@@ -1157,7 +1157,7 @@ pub(crate) mod tests {
                 thread,
                 replacement,
             )),
-            host.artifact_harvester(),
+            host.realizer.artifacts.clone(),
         )
         .execute(activation("awaken"), RuntimeRunContext::new())
         .await
@@ -1196,7 +1196,7 @@ pub(crate) mod tests {
                 thread,
                 replacement,
             )),
-            host.artifact_harvester(),
+            host.realizer.artifacts.clone(),
         )
         .resume(resumed.clone(), resume(&resumed), RuntimeRunContext::new())
         .await
@@ -1234,7 +1234,7 @@ pub(crate) mod tests {
                 replacement,
                 "in-flight replacement failed",
             )),
-            host.artifact_harvester(),
+            host.realizer.artifacts.clone(),
         )
         .execute(activation("awaken"), RuntimeRunContext::new())
         .await
@@ -1270,7 +1270,7 @@ pub(crate) mod tests {
                 thread,
                 replacement,
             )),
-            host.artifact_harvester(),
+            host.realizer.artifacts.clone(),
         )
         .execute(activation("awaken"), RuntimeRunContext::new())
         .await
@@ -1347,7 +1347,7 @@ pub(crate) mod tests {
         std::fs::write(failed_output.join("blocked.txt"), b"blocked").unwrap();
         let error = ArtifactHarvestAttemptExecutor::new(
             Arc::new(RecordingExecutor::new("must-not-escape")),
-            failed_host.artifact_harvester(),
+            failed_host.realizer.artifacts.clone(),
         )
         .execute(activation("awaken"), RuntimeRunContext::new())
         .await

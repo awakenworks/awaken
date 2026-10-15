@@ -33,6 +33,22 @@ pub(crate) enum BoundSessionEnvironmentIdentity {
     LegacyDirect(LegacyDirectEnvironmentProvenance),
 }
 
+impl BoundSessionEnvironmentIdentity {
+    pub(crate) fn from_committed_receipt(
+        receipt: &awaken_session_state_contract::SessionEnvironmentReceipt,
+        committed: awaken_session_state_contract::SessionEnvironmentState,
+    ) -> Result<Self, crate::host_error::HostError> {
+        let generation = committed
+            .committed_receipt_generation(receipt)
+            .map_err(|error| crate::host_error::HostError::internal(error.to_string()))?
+            .clone();
+        Ok(BoundSessionEnvironmentIdentity::Durable {
+            effect_id: receipt.effect_id.clone(),
+            generation,
+        })
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct UnboundSessionEnvironment {
     pub origin: UnboundSessionEnvironmentOrigin,

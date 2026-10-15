@@ -638,6 +638,7 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
             run.dispatch_claim = Some(awaken_dispatch_contract::RunClaim::from(&old.lease));
         });
         let effect = host
+            .realizer
             .authorize_environment_effect_before_io(
                 thread,
                 &host.realizer.new_environment_effect_intent(

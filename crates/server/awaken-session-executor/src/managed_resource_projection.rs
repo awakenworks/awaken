@@ -40,7 +40,7 @@ fn resource_requirement_effect_key(
     format!("{}:{}", transition.operation_fingerprint(), authority,)
 }
 
-impl crate::ManagedHost {
+impl crate::realization_executor::RealizationExecutor {
     /// Install one already-resolved Session resource manifest. This is shared by
     /// managed Session creation and cold durable workers; neither path reads Agent
     /// defaults or selects a newer mutable-resource configuration.
@@ -73,9 +73,7 @@ impl crate::ManagedHost {
             claim,
             None,
         );
-        self.host
-            .realizer
-            .staging
+        self.staging
             .stage_resource_requirements(thread, &desired, claim, None, effect_key)
             .await
     }
@@ -92,7 +90,7 @@ impl crate::ManagedHost {
         realization_lease: Option<&session_resource::SessionRealizationLease>,
         prospective_environment_binding: bool,
     ) -> Result<(), RunError> {
-        let staging = &self.host.realizer.staging;
+        let staging = &self.staging;
         let realizations = &staging.sessions;
         let installed = staging.thread_resource_manifest(thread);
         if installed.as_ref().is_some_and(|installed| {
@@ -103,7 +101,7 @@ impl crate::ManagedHost {
                 "the resident active Resource generation is outside the aggregate transition",
             ));
         }
-        let live_environment = self.host.realizer.session_environment(thread).await;
+        let live_environment = self.session_environment(thread).await;
         let awaiting_adoption = live_environment.is_none()
             && (prospective_environment_binding
                 || realizations
@@ -151,7 +149,7 @@ impl crate::ManagedHost {
         &self,
         thread: &str,
     ) -> Result<(), RunError> {
-        let realizations = self.host.installed_sessions.realizations();
+        let realizations = self.sessions.clone();
         use crate::staged_resources::ResourceBindingCheck;
 
         // This method is entered only through the SessionRuntime application
@@ -164,16 +162,14 @@ impl crate::ManagedHost {
         if checks.is_empty() {
             return Ok(());
         }
-        let workspace = self.host.thread_workspace(thread);
+        let workspace = self.publication.workspace(thread);
         for check in checks {
             match check {
                 ResourceBindingCheck::MemoryStore {
                     memory_store_id,
                     config_version,
                 } => {
-                    self.host
-                        .realizer
-                        .staging
+                    self.staging
                         .verify_memory_binding(&workspace, &memory_store_id, config_version)
                         .await?
                 }
@@ -183,8 +179,6 @@ impl crate::ManagedHost {
                     authority,
                     ..
                 } => self
-                    .host
-                    .realizer
                     .staging
                     .repository_binding_verifier
                     .as_ref()
@@ -214,7 +208,7 @@ impl crate::ManagedHost {
         claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization_lease: Option<&session_resource::SessionRealizationLease>,
     ) -> Result<(), RunError> {
-        let realizations = self.host.installed_sessions.realizations();
+        let realizations = self.sessions.clone();
         let _lifecycle = realizations.lock_lifecycle(thread).await;
         self.apply_session_inputs_under_lifecycle(thread, transition, claim, realization_lease)
             .await
@@ -232,7 +226,7 @@ impl crate::ManagedHost {
         claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization_lease: Option<&session_resource::SessionRealizationLease>,
     ) -> Result<(), RunError> {
-        let realizations = self.host.installed_sessions.realizations();
+        let realizations = self.sessions.clone();
         let _resource_projection = realizations.lock_resource_projection(thread).await;
         self.apply_session_inputs_body(thread, transition, claim, realization_lease)
             .await
@@ -252,7 +246,7 @@ impl crate::ManagedHost {
         claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization_lease: Option<&session_resource::SessionRealizationLease>,
     ) -> Result<(), RunError> {
-        let staging = &self.host.realizer.staging;
+        let staging = &self.staging;
         let sessions = &staging.sessions;
         let previous_manifest = transition.previous();
         let desired_manifest = transition.desired();
@@ -265,7 +259,7 @@ impl crate::ManagedHost {
         sessions.update_realization(thread, |r| {
             r.resource_transition = Some(transition.clone());
         });
-        let live_environment = self.host.realizer.session_environment(thread).await;
+        let live_environment = self.session_environment(thread).await;
         let awaiting_adoption = live_environment.is_none()
             && sessions
                 .read_realization(thread, |r| r.environment_owner.durable_binding().is_some())
@@ -458,11 +452,9 @@ impl crate::ManagedHost {
                 Vec::new()
             };
             if !reserved_paths.is_empty() {
-                let effect = self
-                    .host
-                    .authorize_environment_effect_before_io(
+                let effect = self.authorize_environment_effect_before_io(
                         thread,
-                        &self.host.realizer.new_environment_effect_intent(thread, awaken_session_state_contract::SessionEnvironmentEffectKind::ResourceProjectionReservation {
+                        &self.new_environment_effect_intent(thread, awaken_session_state_contract::SessionEnvironmentEffectKind::ResourceProjectionReservation {
                             transition_fingerprint: transition.operation_fingerprint(),
                         },
                         Some(&source_binding)),
@@ -490,8 +482,7 @@ impl crate::ManagedHost {
                         }
                         let binding = serde_json::to_string(&environment.lifecycle().handle())
                             .map_err(|error| RunError::internal(error.to_string()))?;
-                        self.host
-                            .persist_authorized_environment_binding(thread, binding, &effect)
+                        self.persist_authorized_environment_binding(thread, binding, &effect)
                             .await
                             .map_err(|failure| {
                                 crate::host_error::to_run_error(failure.error)
@@ -575,7 +566,7 @@ impl crate::ManagedHost {
             if reconciliation == EnvironmentResourceReconciliation::Adopted {
                 environment
                     .projection()
-                    .reconcile_adopted_mounts(&self.host.thread_session_mounts(thread))
+                    .reconcile_adopted_mounts(&self.staging.thread_session_mounts(thread))
                     .await
                     .map_err(|error| RunError::internal(error.to_string()))?;
             }
@@ -657,7 +648,7 @@ impl crate::ManagedHost {
                             staging
                                 .realize_repository_activation(
                                     thread,
-                                    self.host.local_workspace(),
+                                    self.publication.local_workspace(),
                                     repository,
                                     &new.binding_checks,
                                     environment.repositories().as_ref(),
@@ -681,7 +672,7 @@ impl crate::ManagedHost {
         sessions.update_realization(thread, |r| {
             r.environment_resource_reconciliation = EnvironmentResourceReconciliation::None;
         });
-        self.host.realizer.evict_session_for_rebuild(thread).await;
+        self.evict_session_for_rebuild(thread).await;
         Ok(())
     }
 }
@@ -1455,19 +1446,19 @@ impl crate::resource_staging::ResourceStaging {
     }
 }
 
-impl crate::ManagedHost {
-    pub(super) fn validate_prospective_session_layout(
+impl crate::realization_executor::RealizationExecutor {
+    pub(crate) fn validate_prospective_session_layout(
         &self,
         thread: &str,
         layout: &awaken_session_configuration_contract::SessionSandboxLayout,
     ) -> Result<(), awaken_session_types::RunError> {
-        let staging = &self.host.realizer.staging;
+        let staging = &self.staging;
         let environment = crate::provisioning::project_environment(&layout.environment);
         let (_, candidate) = self
-            .host
+            .publication
             .resolve_canonical_session_projection(
                 &layout.workspace_id,
-                crate::session_environment::CanonicalSessionProjection::Layout(layout),
+                awaken_session_realization_contract::CanonicalSessionProjection::Layout(layout),
                 None,
                 None,
             )
@@ -1483,11 +1474,9 @@ impl crate::ManagedHost {
                 )
             } else {
                 let provider = if let Some(candidate) = candidate.as_ref() {
-                    self.host
-                        .realizer
-                        .session_environment_provider_for_thread(thread, candidate.provisioning())
+                    self.session_environment_provider_for_thread(thread, candidate.provisioning())
                 } else {
-                    self.host.realizer.session_environment_provider_for_thread(
+                    self.session_environment_provider_for_thread(
                         thread,
                         &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
                     )
@@ -1505,14 +1494,13 @@ impl crate::ManagedHost {
         result.map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))
     }
 
-    pub(super) fn validate_effective_resource_layout(
+    pub(crate) fn validate_effective_resource_layout(
         &self,
         thread: &str,
         resources: &session_resource::ResolvedSessionResources,
     ) -> Result<(), awaken_session_types::RunError> {
-        let staging = &self.host.realizer.staging;
+        let staging = &self.staging;
         let provider = self
-            .host
             .projected_session_environment_provider(thread, None)
             .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
         staging

@@ -921,6 +921,7 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
     // selected by the frozen projection. A second LocalProvider root would be
     // a parallel physical authority and could not observe this exact marker.
     let provider = host
+        .realizer
         .projected_session_environment_provider(thread, None)
         .expect("C1 frozen Environment provider");
     let spec = host

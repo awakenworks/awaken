@@ -764,7 +764,7 @@ impl SessionEnvironmentOwner {
         Ok(Some(retiring))
     }
 
-    pub(super) fn begin_retirement_with_adopted(
+    pub(crate) fn begin_retirement_with_adopted(
         &mut self,
         expected_identity: &BoundSessionEnvironmentIdentity,
         expected_binding: &str,
@@ -804,7 +804,7 @@ impl SessionEnvironmentOwner {
     /// a retirement fence. It never becomes Resident/tool-visible; the durable
     /// identity and exact Arc become one Bound retirement owner so preparation
     /// and disposal/revocation retries share their ordinary lifecycle paths.
-    pub(super) fn begin_retirement_with_committed_candidate(
+    pub(crate) fn begin_retirement_with_committed_candidate(
         &mut self,
         expected: &UnboundSessionEnvironment,
         cause: SessionEnvironmentRetirementCause,
@@ -866,7 +866,7 @@ impl SessionEnvironmentOwner {
     /// The physical Sandbox remains untouched. Preserve known durable identity,
     /// but never invent one for an unacknowledged Candidate. LegacyDirect
     /// retirement is owned by the separate typed physical-rebuild path.
-    pub(super) fn prepare_retiring_realization_adoption(
+    pub(crate) fn prepare_retiring_realization_adoption(
         &mut self,
         expected: &RetiringSessionEnvironment,
         environment: Arc<crate::session_environment::SessionEnvironment>,
@@ -1022,18 +1022,4 @@ fn committed_candidate_retains_effect_kind_and_rejects_identity_relabeling() {
             assert_eq!(decision, CandidateCommitDecision::Conflict)
         }
     }
-}
-
-pub(in crate::host::session) fn committed_identity(
-    receipt: &awaken_session_state_contract::SessionEnvironmentReceipt,
-    committed: awaken_session_state_contract::SessionEnvironmentState,
-) -> Result<BoundSessionEnvironmentIdentity, HostError> {
-    let generation = committed
-        .committed_receipt_generation(receipt)
-        .map_err(|error| HostError::internal(error.to_string()))?
-        .clone();
-    Ok(BoundSessionEnvironmentIdentity::Durable {
-        effect_id: receipt.effect_id.clone(),
-        generation,
-    })
 }

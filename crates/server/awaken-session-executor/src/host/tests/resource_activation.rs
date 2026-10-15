@@ -1212,6 +1212,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             .sandbox_effect_fence(command.effect_id.clone())
             .unwrap();
         let ordinary = host
+            .realizer
             .prepare_bound_environment_for_effect_under_lifecycle(
                 session_id,
                 binding,

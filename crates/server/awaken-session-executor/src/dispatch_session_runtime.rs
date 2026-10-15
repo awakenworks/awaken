@@ -110,6 +110,8 @@ impl DispatchSessionRuntime {
             // so desired-only dispatch cannot replace it with an inferred
             // Empty→desired transition or a no-op effect identity.
             return managed
+                .host
+                .realizer
                 .stage_prevalidated_resource_transition_under_resource_projection(
                     thread,
                     &projected_transition,
@@ -134,6 +136,8 @@ impl DispatchSessionRuntime {
             // are live-deny checks at every claimed operation. Staging never
             // republishes completion.
             return managed
+                .host
+                .realizer
                 .stage_resource_manifest(
                     thread,
                     &manifest.workspace_id,
@@ -158,6 +162,8 @@ impl DispatchSessionRuntime {
             crate::session_resource::SessionResourceTransition::new(empty, manifest.clone())
                 .map_err(|error| RunError::bad_request(error.to_string()))?;
         managed
+            .host
+            .realizer
             .stage_prevalidated_resource_transition_under_resource_projection(
                 thread,
                 &proven_transition,
@@ -175,50 +181,6 @@ impl DispatchSessionRuntime {
             }
         });
         Ok(())
-    }
-
-    async fn stage_prevalidated_transition_under_resource_projection(
-        &self,
-        thread: &str,
-        transition: &crate::session_resource::SessionResourceTransition,
-        claim: Option<&awaken_dispatch_contract::RunClaim>,
-        realization_lease: Option<&crate::session_resource::SessionRealizationLease>,
-        prospective_environment_binding: bool,
-    ) -> Result<(), RunError> {
-        let managed = self.managed()?;
-        managed
-            .stage_prevalidated_resource_transition_under_resource_projection(
-                thread,
-                transition,
-                claim,
-                realization_lease,
-                prospective_environment_binding,
-            )
-            .await
-    }
-
-    async fn apply_transition(
-        &self,
-        thread: &str,
-        transition: &crate::session_resource::SessionResourceTransition,
-        claim: Option<&awaken_dispatch_contract::RunClaim>,
-        realization_lease: Option<&crate::session_resource::SessionRealizationLease>,
-    ) -> Result<(), RunError> {
-        self.managed()?
-            .apply_session_inputs_with_context(thread, transition, claim, realization_lease)
-            .await
-    }
-
-    async fn apply_transition_under_lifecycle(
-        &self,
-        thread: &str,
-        transition: &crate::session_resource::SessionResourceTransition,
-        claim: Option<&awaken_dispatch_contract::RunClaim>,
-        realization_lease: Option<&crate::session_resource::SessionRealizationLease>,
-    ) -> Result<(), RunError> {
-        self.managed()?
-            .apply_session_inputs_under_lifecycle(thread, transition, claim, realization_lease)
-            .await
     }
 
     /// Compile only the authored Memory binding selected by one frozen Agent.
@@ -333,8 +295,8 @@ impl SharedHost {
         realization_lease: Option<&crate::session_resource::SessionRealizationLease>,
         prospective_environment_binding: bool,
     ) -> Result<(), RunError> {
-        self.dispatch_session_runtime()
-            .stage_prevalidated_transition_under_resource_projection(
+        self.realizer
+            .stage_prevalidated_resource_transition_under_resource_projection(
                 thread,
                 transition,
                 claim,
@@ -351,8 +313,8 @@ impl SharedHost {
         claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization_lease: Option<&crate::session_resource::SessionRealizationLease>,
     ) -> Result<(), RunError> {
-        self.dispatch_session_runtime()
-            .apply_transition(thread, transition, claim, realization_lease)
+        self.realizer
+            .apply_session_inputs_with_context(thread, transition, claim, realization_lease)
             .await
     }
 
@@ -363,8 +325,8 @@ impl SharedHost {
         claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization_lease: Option<&crate::session_resource::SessionRealizationLease>,
     ) -> Result<(), RunError> {
-        self.dispatch_session_runtime()
-            .apply_transition_under_lifecycle(thread, transition, claim, realization_lease)
+        self.realizer
+            .apply_session_inputs_under_lifecycle(thread, transition, claim, realization_lease)
             .await
     }
 

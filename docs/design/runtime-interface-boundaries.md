@@ -21,6 +21,35 @@ runtime small.
 > registrar, Coordinator-local Deployment launcher, and per-kind remote Resource
 > adapters below are target boundaries, not claims about already-landed code.
 
+## Implemented Session Realization Ownership
+
+The Host split currently lives inside `awaken-session-executor`; the crate extraction
+remains pending. Following [ADR-0089](../adr/0089-session-realization-single-owner.md)
+and [ADR-0091](../adr/0091-architecture-rules.md), the implemented components are:
+
+| Component | Implemented responsibility |
+|---|---|
+| [`RealizationExecutor`](../../crates/server/awaken-session-executor/src/realization_executor.rs) | Executes aggregate-authorized Environment effects, bound-source recovery, resource projection, continuation and terminal Repository publication with the selected providers and execution authority. |
+| [`ArtifactHarvester`](../../crates/server/awaken-session-executor/src/provisioning.rs) | One constructed publication operation shared by Run completion, continuation and terminal cleanup, using the same publisher, Session slots and receipt recovery. |
+| [`SessionPublicationSelection`](../../crates/server/awaken-session-executor/src/session_publication.rs) | Resolves and retains exact frozen Agent/model coordinates and Workspace fallback; context construction and provider selection share this selector. |
+| [`ResourcePreparation`](../../crates/server/awaken-session-executor/src/session_realizations/resource_preparation.rs) | Bounds Resource I/O with the canonical installed lease and cancellation token; failure/drop removes only its own preparation and any unpublished lease it introduced. |
+
+`InstalledSessions` retains the original slots and their realization, lifecycle
+and resource-projection locks. `SessionRealizations` is a narrow view of those
+same slots; its permit entry delegates to the existing replacement-aware
+`SessionRealizationPermit` acquisition. No component adds a parallel registry,
+lease scheduler, durable receipt store or Session lifecycle decision point.
+The Session aggregate still supplies durable intent and preparation facts;
+physical disposal binds immutable preparation A to current successor B.
+
+Host compatibility and Session-runtime entry points delegate to these actual
+owners where required. Internal callers use the selected component directly.
+Run execution/history/events/delegation have not yet been extracted into the
+proposed `RunExecution`, `RunHistory`, `RunEvents` and `RunDelegation` components;
+the existing `McpSessions` remains the MCP lifecycle owner. The public
+`EnvironmentRuntime` port and Anthropic Managed Agents wire behavior retain their
+existing request, receipt, error and event shapes.
+
 ## Embedded Runtime SDK Boundary
 
 The SDK boundary is the existing `awaken-runtime` crate. It has no dependency on

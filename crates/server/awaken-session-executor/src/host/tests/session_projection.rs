@@ -1397,6 +1397,8 @@ async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_read
     )
     .expect("literal model reference");
     let (_, selected_agent, selected, _) = fallback_host
+        .realizer
+        .publication
         .resolve_session_publication("delivered-agent-thread", None, Some(delivered.clone()))
         .expect("R5 use the delivered publication as the retained identity authority");
     assert_eq!(selected_agent, "delivered-agent", "R5/E5");
@@ -1492,11 +1494,15 @@ async fn frozen_session_resolves_its_exact_agent_revision_instead_of_current() {
     .expect("frozen baseline");
 
     let (_, _, selected, _) = host
+        .realizer
+        .publication
         .resolve_session_publication("frozen-revision", None, None)
         .expect("R1 exact frozen publication");
     assert_eq!(selected, Some(frozen), "R1");
 
     let (_, _, selected, _) = host
+        .realizer
+        .publication
         .resolve_session_publication("legacy-current", Some("agent-a"), None)
         .expect("R2 legacy current publication");
     assert_eq!(selected, Some(current), "R2");

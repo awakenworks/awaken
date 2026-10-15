@@ -13,6 +13,9 @@ use crate::environment_owner::{
     RetiringEnvironmentOwner, RetiringSessionEnvironment, SessionEnvironmentOwner,
     SessionEnvironmentPreparation, SessionEnvironmentRetirementCause, UnboundSessionEnvironment,
 };
+use crate::session_environment::{
+    PreparedBoundEnvironment, TerminalEffectMode, TerminalEnvironmentInstallation,
+};
 use awaken_session_configuration_contract::resource as session_resource;
 use awaken_tool_contract::tool_batch::ResourceOriginRef;
 
@@ -21,7 +24,6 @@ mod state;
 mod terminal_cleanup;
 mod terminal_preparation;
 
-pub(super) use state::committed_identity;
 use state::{
     RetirementSelection, checkpoint_source_identity, pending_revoked_resource_reservation,
 };
@@ -51,128 +53,6 @@ type ValidatedSessionEnvironmentAdoption = (
     Option<Arc<crate::session_environment::SessionEnvironment>>,
     Option<UnboundSessionEnvironment>,
 );
-
-/// Process-local projection of which source effects remain legal after the
-/// provider observation. The provider-owned [`SandboxObservation`] remains the
-/// only physical fact; this mode merely keeps live I/O, source preparation,
-/// and already-prepared recovery from drifting into three independent tests.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TerminalEffectMode {
-    LiveUnprepared,
-    RecoverOnlyUnprepared,
-    RecoverOnlyAlreadyPrepared,
-}
-
-impl TerminalEffectMode {
-    /// A stopped process environment cannot supply the attached-exec file read
-    /// used by Container. Filesystem providers retain direct data access after
-    /// their marker becomes terminal. Neither row proves prior preparation.
-    const fn for_terminal_source(data_readable: bool) -> Self {
-        if data_readable {
-            Self::LiveUnprepared
-        } else {
-            Self::RecoverOnlyUnprepared
-        }
-    }
-}
-
-/// One exact terminal owner plus its non-durable I/O mode. This stays inside
-/// runtime-host and is never serialized, acknowledged, or used as mutation
-/// authority.
-pub(crate) struct PreparedBoundEnvironment {
-    pub(crate) environment: Option<(Arc<crate::session_environment::SessionEnvironment>, bool)>,
-    durable_handle: Option<awaken_provisioning_contract::SandboxHandle>,
-    effect_mode: TerminalEffectMode,
-    definitive_absence: bool,
-    closed_publication_source: Option<awaken_provisioning_contract::SandboxObservation>,
-}
-
-impl PreparedBoundEnvironment {
-    fn new(
-        environment: Option<(Arc<crate::session_environment::SessionEnvironment>, bool)>,
-        durable_handle: Option<awaken_provisioning_contract::SandboxHandle>,
-        effect_mode: TerminalEffectMode,
-    ) -> Self {
-        Self {
-            environment,
-            durable_handle,
-            effect_mode,
-            definitive_absence: false,
-            closed_publication_source: None,
-        }
-    }
-
-    /// Non-executable publication observation. It retains the original handle
-    /// and validated fact, but neither installs a replacement Environment nor
-    /// claims complete physical cleanup of auxiliary participants.
-    fn closed_publication_source(
-        handle: awaken_provisioning_contract::SandboxHandle,
-        observation: awaken_provisioning_contract::SandboxObservation,
-    ) -> Self {
-        let mut prepared = Self::new(
-            None,
-            Some(handle),
-            TerminalEffectMode::RecoverOnlyUnprepared,
-        );
-        prepared.closed_publication_source = Some(observation);
-        prepared
-    }
-
-    pub(crate) fn publication_source_closure(
-        &self,
-    ) -> Option<&awaken_provisioning_contract::SandboxObservation> {
-        self.closed_publication_source.as_ref()
-    }
-
-    fn with_definitive_absence(mut self) -> Self {
-        debug_assert!(self.environment.is_none() && self.durable_handle.is_none());
-        self.definitive_absence = true;
-        self
-    }
-
-    /// Join the provider's physical observation with the aggregate's closed
-    /// continuation predecessor. The latter dominates: after A is durable,
-    /// total physical absence is a response-loss recovery case rather than an
-    /// excuse to repeat live source effects under terminal T.
-    fn with_preparation_authorization(
-        mut self,
-        authorization: &awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
-    ) -> Self {
-        if authorization.inherited_provider_disposal().is_some() {
-            self.effect_mode = TerminalEffectMode::RecoverOnlyAlreadyPrepared;
-        }
-        self
-    }
-
-    pub(crate) fn permits_live_io(&self) -> bool {
-        self.effect_mode == TerminalEffectMode::LiveUnprepared
-    }
-
-    fn requires_provider_preparation(&self) -> bool {
-        self.effect_mode != TerminalEffectMode::RecoverOnlyAlreadyPrepared
-    }
-
-    fn source_effects_are_already_prepared(&self) -> bool {
-        self.effect_mode == TerminalEffectMode::RecoverOnlyAlreadyPrepared
-    }
-
-    fn durable_handle(&self) -> Option<&awaken_provisioning_contract::SandboxHandle> {
-        self.durable_handle.as_ref()
-    }
-
-    fn memory_materializations(
-        &self,
-    ) -> Result<
-        Option<&[awaken_provisioning_contract::MemoryMaterializationEvidence]>,
-        awaken_provisioning_contract::SandboxError,
-    > {
-        match self.durable_handle() {
-            Some(handle) => handle.memory_materializations(),
-            None if self.definitive_absence => Ok(Some(&[])),
-            None => Ok(None),
-        }
-    }
-}
 
 /// Pure terminal Memory projection produced before Artifact, checkpoint, or
 /// provider effects. The contract owns the optional-handle join and intent
@@ -270,20 +150,6 @@ fn closed_environment_recovery_consumes_only_rebuildable_owner_classes() {
         closed_environment_recovery_admission(policy, owner),
         rebuild && owner != ClosedEnvironmentRecoveryOwnerClass::ProtectedOrStale
     );
-}
-
-/// Borrowed inputs for one terminal Environment installation phase. The
-/// aggregate effect fence, provider spec, handle, and optional restore fence
-/// remain their canonical value objects; this context owns no lifecycle fact.
-struct TerminalEnvironmentInstallation<'a> {
-    thread: &'a str,
-    binding: Option<&'a str>,
-    committed_candidate: Option<&'a UnboundSessionEnvironment>,
-    provider: &'a crate::session_environment::SessionEnvironmentProvider,
-    spec: &'a awaken_provisioning_contract::SandboxSpec,
-    handle: Option<&'a awaken_provisioning_contract::SandboxHandle>,
-    expected_effect_fence: Option<&'a awaken_provisioning_contract::SandboxEffectFence>,
-    effect_fence: &'a awaken_provisioning_contract::SandboxEffectFence,
 }
 
 impl TerminalEnvironmentPreparation {
@@ -433,7 +299,8 @@ impl SharedHost {
         unavailable_policy: SessionEnvironmentUnavailablePolicy,
         preauthorized: Option<&AuthorizedSessionEnvironmentEffect>,
     ) -> Result<SessionEnvironmentAdoptionDisposition, HostError> {
-        let exec = &self.realizer.environments;
+        let realizer = &self.realizer;
+        let exec = &realizer.environments;
         if exec.holds_unpublished_retirement(thread) {
             return Err(HostError::internal(
                 "unpublished terminal or cleanup ownership cannot resume ordinary adoption",
@@ -462,10 +329,10 @@ impl SharedHost {
         let effect = match preauthorized {
             Some(effect) => effect,
             None => {
-                authorized = self
+                authorized = realizer
                     .authorize_environment_effect_before_io(
                         thread,
-                        &self.realizer.new_environment_effect_intent(
+                        &realizer.new_environment_effect_intent(
                             thread,
                             awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt,
                             Some(encoded),
@@ -511,11 +378,7 @@ impl SharedHost {
         let authority = effect
             .provider_fence
             .as_ref()
-            .map(|fence| {
-                self.realizer
-                    .execution
-                    .provider_effect_authority(thread, fence)
-            })
+            .map(|fence| realizer.execution.provider_effect_authority(thread, fence))
             .transpose()?;
         let provider_effect = crate::session_environment::ProviderEffect::from_parts(
             effect.provider_fence.as_ref(),
@@ -657,9 +520,9 @@ impl SharedHost {
                 // A pending Managed Rebuild must retain that exact owner;
                 // unowned direct Threads keep the original recovery policy.
                 if unavailable_policy == SessionEnvironmentUnavailablePolicy::Rebuild {
-                    self.authorize_environment_effect_before_io(
+                    realizer.authorize_environment_effect_before_io(
                         thread,
-                        &self.realizer.new_environment_effect_intent(thread, awaken_session_state_contract::SessionEnvironmentEffectKind::Rebuild {
+                        &realizer.new_environment_effect_intent(thread, awaken_session_state_contract::SessionEnvironmentEffectKind::Rebuild {
                             source_generation_id: source_generation_id.map(str::to_owned),
                         },
                         Some(encoded)),
@@ -1210,7 +1073,7 @@ impl crate::environment_holding::EnvironmentHolding {
             .flatten()
     }
 
-    fn pending_environment_adoption(
+    pub(crate) fn pending_environment_adoption(
         &self,
         thread: &str,
     ) -> Option<(BoundSessionEnvironmentIdentity, String)> {
@@ -1671,7 +1534,7 @@ impl crate::environment_holding::EnvironmentHolding {
         Ok(())
     }
 
-    fn validated_session_environment_adoption(
+    pub(crate) fn validated_session_environment_adoption(
         &self,
         thread: &str,
         encoded: &str,
@@ -1764,7 +1627,14 @@ impl crate::environment_holding::EnvironmentHolding {
         source_binding: &str,
         authorization: &awaken_provisioning_contract::SandboxDisposalAuthorization,
     ) -> Result<(), HostError> {
-        self.validate_suspend_operation(thread, operation, generation)?;
+        // Preparation A remains the exact retained source identity. Disposal
+        // may be driven by an aggregate-authorized higher-epoch successor B;
+        // requiring A to remain current here would make failover unrecoverable.
+        // The canonical authorization validates A -> B, and the physical effect
+        // authority captured below checks B against the current Session slot.
+        authorization
+            .validate()
+            .map_err(|error| HostError::unavailable(error.to_string()))?;
         let expected_cause = SessionEnvironmentRetirementCause::CheckpointSource {
             operation: operation.clone(),
             generation: generation.clone(),

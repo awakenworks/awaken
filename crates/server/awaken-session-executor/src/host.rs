@@ -195,9 +195,6 @@ pub struct SharedHost {
     /// worker as its `StreamSink`.
     pub(crate) completion: Arc<CompletionRegistry>,
     pub(crate) session_execution: dependencies::SessionExecutionDependencies,
-    pub(crate) environment_binding_sink: std::sync::RwLock<
-        Option<Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>>,
-    >,
     /// Durable dispatch: queue transport, process pool, and the weak Session
     /// application edges the pool's Workers call back into.
     pub(crate) dispatch: capability::DispatchCapability,
@@ -221,4 +218,19 @@ pub struct SharedHost {
     pub(crate) capture: capability::ContentCaptureCapability,
     /// The edges back into the Session application built over this Host.
     pub(crate) session_application: SessionApplicationBindings,
+}
+
+impl SharedHost {
+    /// Persist every Agent-authored output before the environment can be disposed.
+    /// The `(Session, logical path, content)` harvest key makes retries idempotent;
+    /// Files API reads only this durable catalog and never scan the Sandbox.
+    pub async fn harvest_thread_artifacts(
+        &self,
+        thread: &str,
+    ) -> Result<
+        crate::provisioning::HarvestedArtifacts,
+        awaken_resource_contract::ArtifactPublicationError,
+    > {
+        self.realizer.artifacts.harvest(thread).await
+    }
 }

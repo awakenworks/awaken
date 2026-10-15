@@ -1265,3 +1265,268 @@ use awaken_dispatch_contract::{
     DispatchEnqueue as _, DispatchExecution as _, DispatchReads as _, DispatchSettlement as _,
     SessionRunReservations as _,
 };
+
+#[tokio::test]
+async fn checkpoint_source_disposal_separates_preparation_and_current_authority() {
+    use crate::environment_owner::{
+        BoundSessionEnvironment, BoundSessionEnvironmentIdentity, RetiringEnvironmentOwner,
+        RetiringSessionEnvironment, SessionEnvironmentOwner, SessionEnvironmentRetirementCause,
+    };
+    use crate::installed_session::SessionRealizationAuthority as Authority;
+    use awaken_session_realization_contract::SessionRealizationLeaseReceipt;
+    use awaken_session_execution_contract::EnvironmentRuntime as _;
+
+    // D1 durable preparation A has expired, but aggregate-current successor B
+    // (higher epoch and different Worker/incarnation) may finish the same source.
+    // D2 exactly B.expiry denies before the provider's dispose entry. D3 another
+    // current epoch cannot borrow B's typed fact. D4/D5 repeat D2/D3 while the
+    // public call waits on lifecycle ownership, proving post-wait revalidation.
+    // D6 same-generation renewal is legal too. D7-D9 another prepared operation,
+    // generation or binding is never consumed under the otherwise-current B.
+    // The existing provider fixture records BOTH entry and guarded physical I/O.
+    // No rejection can pass merely because its own provider guard denies I/O.
+    for rule in [
+        "successor",
+        "renewed",
+        "source-operation-replaced",
+        "source-generation-replaced",
+        "source-binding-replaced",
+        "expired",
+        "replaced",
+        "wait-expired",
+        "wait-replaced",
+    ] {
+        let thread = "continuation-successor-disposal";
+        let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
+        let probe = Arc::new(TerminalFenceRefreshProbe::default());
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let provider = Arc::new(TerminalRecoveryProvider {
+            restored_disposals: Mutex::new(Vec::new()),
+            events: events.clone(),
+            scenario: TerminalRecoveryScenario::Disposing,
+            fence_refresh_probe: Some(probe.clone()),
+        });
+        let mut dependencies = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+            .await
+            .with_session_container_provider(
+                provider,
+                Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            );
+        dependencies.clock = clock.clone();
+        let host = dependencies.build().expect("validated Host dependencies");
+        let prepared_lease = crate::session_resource::SessionRealizationLease {
+            owner: "prepared-worker".into(),
+            runtime_incarnation: "prepared-incarnation".into(),
+            epoch: 1,
+            expires_at_unix_ms: 10_000,
+        };
+        let current_lease = if rule == "renewed" {
+            crate::session_resource::SessionRealizationLease {
+                expires_at_unix_ms: 20_000,
+                ..prepared_lease.clone()
+            }
+        } else {
+            crate::session_resource::SessionRealizationLease {
+                owner: "successor-worker".into(),
+                runtime_incarnation: "successor-incarnation".into(),
+                epoch: 2,
+                expires_at_unix_ms: 20_000,
+            }
+        };
+        let handle = terminal_fixture_container_handle(thread, &host.realizer.sandbox_spec(thread));
+        let (state, preparation, prepared) =
+            disposing_terminal_environment(thread, &prepared_lease, &handle, "durable-checkpoint");
+        let mut session = awaken_session_state_contract::PersistedSession::frozen_with_budget(
+            thread,
+            remote_terminal_cleanup_projection().baseline,
+            Default::default(),
+            Default::default(),
+            None,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
+        session.environment = state;
+        session.realization = Some(current_lease.clone());
+        let disposal = session
+            .source_release_disposal()
+            .expect("root-owned typed disposal");
+        let authorization = disposal.sandbox_disposal_authorization().unwrap();
+        assert_eq!(
+            authorization.prepared_effect_fence(),
+            prepared.provider_prepared_effect_fence()
+        );
+        assert_eq!(authorization.effect_fence().owner(), current_lease.owner);
+        assert_eq!(authorization.effect_fence().epoch(), current_lease.epoch);
+        let environment_provider = host
+            .realizer
+            .projected_session_environment_provider(thread, None)
+            .unwrap();
+        let environment = Arc::new(
+            environment_provider
+                .terminal()
+                .prepare_terminal_effective_for_effect(
+                    &host.realizer.sandbox_spec(thread),
+                    Some(&handle),
+                    None,
+                    &preparation.sandbox_effect_fence().unwrap(),
+                    &pc::test_support::EffectAuthority::new(
+                        &preparation.sandbox_effect_fence().unwrap(),
+                    ),
+                )
+                .await
+                .expect("recover the existing prepared source")
+                .expect("the prepared source exists"),
+        );
+        let install_current = |lease: crate::session_resource::SessionRealizationLease| {
+            host.installed_sessions
+                .realizations()
+                .update_realization(thread, |r| {
+                    r.authority = Authority::Live(
+                        SessionRealizationLeaseReceipt::issued_at(lease, 0)
+                            .unwrap()
+                            .observed(awaken_authority_clock::authority_proof_started().unwrap()),
+                    );
+                });
+        };
+        host.installed_sessions
+            .realizations()
+            .update_realization(thread, |r| {
+                r.environment_owner =
+                    SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
+                        cause: SessionEnvironmentRetirementCause::CheckpointSource {
+                            operation: disposal.operation().clone(),
+                            generation: disposal.generation().clone(),
+                        },
+                        owned: RetiringEnvironmentOwner::Bound(BoundSessionEnvironment {
+                            identity: BoundSessionEnvironmentIdentity::Durable {
+                                effect_id: "terminal-source-effect".into(),
+                                generation: disposal.generation().clone(),
+                            },
+                            binding: disposal.source_binding().into(),
+                            environment: environment.clone(),
+                        }),
+                    });
+            });
+        install_current(current_lease.clone());
+        host.installed_sessions
+            .realizations()
+            .update_realization(thread, |r| {
+                let SessionEnvironmentOwner::Retiring(retained) = &mut r.environment_owner else {
+                    unreachable!("fixture retains the prepared owner");
+                };
+                match rule {
+                    "source-operation-replaced" => {
+                        let SessionEnvironmentRetirementCause::CheckpointSource {
+                            operation, ..
+                        } = &mut retained.cause
+                        else {
+                            unreachable!("fixture is checkpoint source retirement");
+                        };
+                        operation.effect_id.push_str("-other");
+                    }
+                    "source-generation-replaced" => {
+                        let RetiringEnvironmentOwner::Bound(owned) = &mut retained.owned else {
+                            unreachable!("fixture is bound");
+                        };
+                        owned.identity = BoundSessionEnvironmentIdentity::Durable {
+                            effect_id: "terminal-source-effect".into(),
+                            generation: awaken_session_state_contract::SandboxGeneration::new(
+                                &awaken_session_types::SessionId::from(thread),
+                                3,
+                                u64::MAX,
+                                "replacement-environment",
+                                "replacement-image",
+                            ),
+                        };
+                    }
+                    "source-binding-replaced" => {
+                        let RetiringEnvironmentOwner::Bound(owned) = &mut retained.owned else {
+                            unreachable!("fixture is bound");
+                        };
+                        owned.binding.push_str("-other");
+                    }
+                    _ => {}
+                }
+            });
+        let retained_before = host
+            .installed_sessions
+            .realizations()
+            .read_realization(thread, |r| {
+                let SessionEnvironmentOwner::Retiring(retained) = &r.environment_owner else {
+                    unreachable!("fixture retains the prepared owner");
+                };
+                retained.clone()
+            })
+            .unwrap();
+        clock.set(prepared_lease.expires_at_unix_ms);
+        events.lock().unwrap().clear();
+        let managed = crate::ManagedHost::new(host.clone());
+        let held = if rule.starts_with("wait-") {
+            Some(
+                host.installed_sessions
+                    .realizations()
+                    .lock_lifecycle(thread)
+                    .await,
+            )
+        } else {
+            None
+        };
+        let pending = managed.dispose_prepared_checkpoint_source(thread, &disposal);
+        let mut pending = std::pin::pin!(pending);
+        if held.is_some() {
+            assert!(
+                futures_util::poll!(pending.as_mut()).is_pending(),
+                "{rule} waits"
+            );
+        }
+        if rule.ends_with("expired") {
+            clock.set(current_lease.expires_at_unix_ms);
+        } else if matches!(rule, "replaced" | "wait-replaced") {
+            let mut replacement = current_lease.clone();
+            replacement.epoch = awaken_lease_contract::fence::Epoch::try_from(replacement.epoch)
+                .expect("nonzero fixture epoch")
+                .next()
+                .expect("fixture successor epoch")
+                .get();
+            install_current(replacement);
+        }
+        drop(held);
+        let result = pending.await;
+        let admitted = matches!(rule, "successor" | "renewed");
+        assert_eq!(result.is_ok(), admitted, "{rule}: {result:?}");
+        assert_eq!(
+            probe.physical_disposal_entries.lock().unwrap().as_slice(),
+            if admitted {
+                std::slice::from_ref(&authorization)
+            } else {
+                &[]
+            },
+            "{rule}: exact A/fingerprint/B at provider entry, or no provider call",
+        );
+        assert_eq!(
+            events.lock().unwrap().as_slice(),
+            if admitted {
+                &["dispose-physical"][..]
+            } else {
+                &[]
+            },
+            "{rule}"
+        );
+        if let Ok(receipt) = result {
+            assert_eq!(receipt.effect_id, disposal.operation().effect_id);
+            assert_eq!(receipt.source_binding, disposal.source_binding());
+            assert!(receipt.terminated);
+            assert!(host.realizer.session_environment_owner_is_vacant(thread));
+        } else {
+            assert!(
+                matches!(
+                    host.installed_sessions.realizations().read_realization(thread, |r| r.environment_owner.clone()),
+                    Some(SessionEnvironmentOwner::Retiring(retained))
+                        if retained.exact_matches(&retained_before)
+                ),
+                "{rule}: rejected call retains the exact prepared physical owner"
+            );
+        }
+    }
+}

@@ -12,14 +12,14 @@
     "awaken-credential-contract": 269,
     "awaken-executable-environment-contract": 327,
     "awaken-protocol-managed": 32,
-    "awaken-dispatch-http": 818,
-    "awaken-session-executor": 472,
+    "awaken-dispatch-http": 793,
+    "awaken-session-executor": 335,
     "awaken-scenario-host": 78,
-    "awaken-session-application": 2945,
+    "awaken-session-application": 2940,
+    "awaken-session-configuration-contract": 84,
     "awaken-session-environment": 76,
     "awaken-session-environment-contract": 253,
     "awaken-session-realization-driver": 265,
-    "awaken-session-state-contract": 16,
-    "awaken-session-configuration-contract": 84
+    "awaken-session-state-contract": 16
   }
 }

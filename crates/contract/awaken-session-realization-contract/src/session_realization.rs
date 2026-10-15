@@ -16,6 +16,11 @@ use crate::{
     McpGenerationRef, McpRealizationReceipt, RunError, SessionRealizationLease, StageMcpAttachment,
 };
 
+mod execution_projection;
+pub use execution_projection::{
+    CanonicalSessionProjection, frozen_session_requires_opaque_process,
+    model_candidates_require_opaque_process, requires_local_environment,
+};
 mod agent_publication_projection;
 pub use agent_publication_projection::{
     FrozenAgentPublicationDecision, frozen_agent_publication_decision,
