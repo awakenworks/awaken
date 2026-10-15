@@ -15,7 +15,7 @@ use awaken_credential_contract::{
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::{future::Future, pin::Pin, time::Duration};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::ContentBlock;
@@ -538,9 +538,15 @@ impl crate::RunAssembly {
         &'a self,
         session_thread: &'a str,
         commit: Arc<HostCommit>,
-    ) -> Pin<Box<impl Future<Output = Result<usize, crate::HostError>> + Send + 'a>> {
-        // Keep extraction recovery's typed state out of enclosing context polls,
-        // including resident-cache hits during the next Run of the same Session.
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<usize, crate::HostError>> + Send + 'a>,
+    > {
+        // Recovery is reached both from cold Runtime assembly and cache reuse.
+        // Its typed controller futures must not enlarge those already nested
+        // HTTP/Session polls: a second Run otherwise overflows the default
+        // Windows stack before entering recovery. Keep the same borrowed owner,
+        // lifecycle guard and cancellation boundary; dropping this future drops
+        // its work rather than detaching a new recovery task.
         Box::pin(async move {
             let realizations = self.installed_sessions.realizations();
             // A database-less execution Worker owns only the frozen Memory data-plane
