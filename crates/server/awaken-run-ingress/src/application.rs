@@ -262,10 +262,11 @@ pub trait WorkerExecutionStopSource: Send + Sync {
     fn owns_worker_evidence(&self, _identity: &crate::WorkerIdentity) -> bool {
         false
     }
-    /// Observe and stop one closed Worker with no Dispatch physical slot,
-    /// using provider-retained pre-exit coordinates. The application persists
-    /// the exact receipt before releasing that evidence; unsupported providers
-    /// remain Unknown and cannot manufacture a process-exit fact.
+    /// Observe one closed Worker using provider-retained pre-exit coordinates.
+    /// With `may_stop_active == false`, an occupied or uninspected physical slot
+    /// permits only natural exit observation and closure of that exited launch
+    /// lifecycle. Active stop additionally requires the caller's closed-idle
+    /// admission. Unsupported providers cannot manufacture a process-exit fact.
     async fn observe_closed_idle_worker(
         &self,
         _identity: &crate::WorkerIdentity,
@@ -416,48 +417,94 @@ pub async fn release_closed_idle_worker_evidence(
     ) {
         return Ok(());
     }
+    // Exit is an infrastructure fact, independent of permission to release
+    // retention. An occupied, inconsistent or unavailable slot scan must not
+    // suppress a natural exit; it still blocks active stop and release below.
+    let exited = record.process_exit.is_some()
+        || observe_closed_worker_exit(
+            directory,
+            source,
+            identity,
+            record.create_ledger.as_ref(),
+            false,
+        )
+        .await?;
     if has_active_physical_attempt_for_owner(dispatch, &identity.lease_owner()).await? {
         return Ok(());
     }
-    if record.process_exit.is_none() {
-        // Deregistration marks Dead while the Worker's own response may still
-        // be in flight. The existing Registry lease is the grace boundary:
-        // until expiry only natural exit is observed; afterward the provider
-        // may stop a stale active process.
-        let may_stop_active = record.snapshot.expires_at_ms <= now_ms;
-        let Some(receipt) = source
-            .observe_closed_idle_worker(identity, may_stop_active, record.create_ledger.as_ref())
-            .await?
-        else {
-            return Ok(());
-        };
-        receipt
-            .validate()
-            .map_err(|error| ApplicationError::internal(error.to_string()))?;
-        if directory
-            .record_process_exit(identity, receipt.clone())
-            .await
-            .map_err(|error| ApplicationError::unavailable(error.to_string()))?
-            != crate::RegistryMutation::Applied
-        {
-            return Err(ApplicationError::unavailable(
-                "idle Worker process exit could not be committed",
-            ));
-        }
-        let committed = directory
-            .incarnation(identity)
-            .await
-            .map_err(|error| ApplicationError::unavailable(error.to_string()))?
-            .and_then(|record| record.process_exit);
-        if committed.as_ref() != Some(&receipt) {
-            return Err(ApplicationError::unavailable(
-                "idle Worker process exit readback does not match",
-            ));
-        }
+    // Deregistration can precede its own RPC response. Only an empty exact
+    // slot scan plus the original Registry grace deadline permits stop.
+    if !exited
+        && (record.snapshot.expires_at_ms > now_ms
+            || !observe_closed_worker_exit(
+                directory,
+                source,
+                identity,
+                record.create_ledger.as_ref(),
+                true,
+            )
+            .await?)
+    {
+        return Ok(());
     }
     source
         .release_closed_idle_worker_evidence(identity, record.create_ledger.as_ref())
         .await
+}
+
+async fn observe_closed_worker_exit(
+    directory: &dyn crate::WorkerDirectory,
+    source: &dyn WorkerExecutionStopSource,
+    identity: &crate::WorkerIdentity,
+    create_ledger: Option<&crate::WorkerCreateLedger>,
+    may_stop_active: bool,
+) -> Result<bool, ApplicationError> {
+    let Some(receipt) = source
+        .observe_closed_idle_worker(identity, may_stop_active, create_ledger)
+        .await?
+    else {
+        return Ok(false);
+    };
+    persist_worker_exit(
+        directory,
+        identity,
+        receipt,
+        ApplicationError::unavailable("idle Worker process exit could not be committed"),
+        ApplicationError::unavailable("idle Worker process exit readback does not match"),
+    )
+    .await?;
+    Ok(true)
+}
+
+/// One exact-incarnation receipt writer for occupied and idle observations.
+/// Caller-specific errors retain their existing wire classification and text.
+async fn persist_worker_exit(
+    directory: &dyn crate::WorkerDirectory,
+    identity: &crate::WorkerIdentity,
+    receipt: crate::WorkerProcessExit,
+    commit_failure: ApplicationError,
+    readback_failure: ApplicationError,
+) -> Result<(), ApplicationError> {
+    receipt
+        .validate()
+        .map_err(|error| ApplicationError::internal(error.to_string()))?;
+    if directory
+        .record_process_exit(identity, receipt.clone())
+        .await
+        .map_err(|error| ApplicationError::unavailable(error.to_string()))?
+        != crate::RegistryMutation::Applied
+    {
+        return Err(commit_failure);
+    }
+    let committed = directory
+        .incarnation(identity)
+        .await
+        .map_err(|error| ApplicationError::unavailable(error.to_string()))?
+        .and_then(|record| record.process_exit);
+    if committed.as_ref() != Some(&receipt) {
+        return Err(readback_failure);
+    }
+    Ok(())
 }
 
 /// Read the original Dispatch physical-slot authority for a complete Worker
@@ -793,26 +840,14 @@ async fn independently_close_worker(
         exit.evidence_ref(),
     )
     .map_err(|error| ApplicationError::internal(error.to_string()))?;
-    if directory
-        .record_process_exit(binding.worker(), receipt.clone())
-        .await
-        .map_err(|error| ApplicationError::unavailable(error.to_string()))?
-        != crate::RegistryMutation::Applied
-    {
-        return Err(ApplicationError::internal(
-            "Worker exit could not be committed",
-        ));
-    }
-    let committed = directory
-        .incarnation(binding.worker())
-        .await
-        .map_err(|error| ApplicationError::unavailable(error.to_string()))?
-        .and_then(|record| record.process_exit);
-    if committed.as_ref() != Some(&receipt) {
-        return Err(ApplicationError::internal(
-            "Worker exit readback did not match",
-        ));
-    }
+    persist_worker_exit(
+        directory,
+        binding.worker(),
+        receipt,
+        ApplicationError::internal("Worker exit could not be committed"),
+        ApplicationError::internal("Worker exit readback did not match"),
+    )
+    .await?;
     source.release_closed_worker_evidence(&closed).await?;
     Ok(Some(WorkerProcessStopStatus::Exited(exit)))
 }

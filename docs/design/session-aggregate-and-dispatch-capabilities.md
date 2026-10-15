@@ -84,6 +84,15 @@ protected. Exact complete-attempt evidence keeps its existing retirement path
 without requiring a whole Worker stop; missing complete evidence still retains
 the original physical slot and every external obligation.
 
+Closed-Worker maintenance first observes natural exit without permission to
+stop an active process. Both occupied-attempt and idle maintenance persist and
+read back that fact through one Ingress helper. A retained physical slot or a
+failed slot query can still prevent evidence release, but cannot erase or hide
+an independently observed exit. Only an empty exact slot scan and an expired
+Registry lease permit idle maintenance to stop a still-active process. Physical
+retirement, provider retention release and Session recovery keep their existing
+separate admissions.
+
 The existing closed-Worker command carries that exact incarnation's immutable
 Create ledger anchor from Registry. Kubernetes evidence release seals this same
 provider ledger and original request group before releasing the Worker Pod

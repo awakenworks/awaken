@@ -476,6 +476,9 @@ mod tests {
         // Effects: E1 C1+C3+future => no stop, receipt or release;
         // E2 C1+C3+equal/past+C4 => exact durable exit and one release;
         // E3 replay after receipt => no second stop observation.
+        // Natural-exit probes grant no active stop. Their count is independent
+        // of E2; exactly one allowed stop, then no new probe on replay, is the
+        // behavioral boundary rather than a fixed false/true call sequence.
         // | Rule | C1 | C2       | C3 | C4 | Effect |
         // | G1   | Y  | future   | Y  | -  | E1     |
         // | G2   | Y  | equal    | Y  | Y  | E2     |
@@ -529,7 +532,13 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(*source.observed.lock().unwrap(), [false, true], "G2");
+        let after_exit = source.observed.lock().unwrap().clone();
+        assert_eq!(
+            after_exit.iter().filter(|allowed| **allowed).count(),
+            1,
+            "G2"
+        );
+        assert_eq!(after_exit.last(), Some(&true), "G2");
         assert!(
             directory
                 .incarnation(&identity)
@@ -546,7 +555,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(*source.observed.lock().unwrap(), [false, true], "G3");
+        assert_eq!(*source.observed.lock().unwrap(), after_exit, "G3");
         assert_eq!(
             source.released.load(Ordering::SeqCst),
             2,
