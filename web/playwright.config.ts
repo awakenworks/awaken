@@ -31,8 +31,11 @@ export default defineConfig({
   workers: 1,
   forbidOnly: true,
   retries: 0,
-  reporter: [["list"], ["json", { outputFile: "test-results/results.json" }]],
-  globalTeardown: "./e2e/global-teardown.ts",
+  reporter: [
+    ["./e2e/owned-data-reporter.mjs", { directory: backendDataDir }],
+    ["list"],
+    ["json", { outputFile: "test-results/results.json" }],
+  ],
   use: {
     baseURL: webUrl,
     launchOptions: process.env.AWAKEN_ORCA_LOG ? { args: ["--force-renderer-accessibility", "--ozone-platform=x11"] } : undefined,
@@ -72,7 +75,8 @@ export default defineConfig({
     {
       // Preview reuses Vite's same API proxy and serves the built release assets.
       // Acceptance callers build first; ordinary development tests keep HMR.
-      command: `AWAKEN_HTTP_URL=${backendUrl} pnpm exec vite ${process.env.AWAKEN_UIUX_PREVIEW === "1" ? "preview " : ""}--host 127.0.0.1 --port ${webPort}`,
+      command: `pnpm exec vite ${process.env.AWAKEN_UIUX_PREVIEW === "1" ? "preview " : ""}--host 127.0.0.1 --port ${webPort}`,
+      env: { AWAKEN_HTTP_URL: backendUrl },
       url: webUrl,
       timeout: 60_000,
       reuseExistingServer: false,

@@ -91,9 +91,9 @@ fn session_activity_open_and_settlement_plans_are_total_exact_and_fail_closed() 
     // epoch, external-realization permission, committed-Awaiting continuation,
     // and budget admission. Effects: terminal/not-ready/budget/overflow/conflict
     // reject; Open always carries one non-zero epoch greater than the fence.
-    // Settlement causes cross exact removal, last-active, and Running; only the
-    // exact+last+Running row closes the interval, while unknown/duplicate is a
-    // stutter. SQL CAS and interval persistence remain outside this plan.
+    // Settlement crosses the real Option<bool> observation with every execution
+    // state through the production conversion. Only the final Running member
+    // closes; absence stutters. SQL CAS and interval persistence remain outside.
     let execution = match kani::any::<u8>() % 7 {
         0 => SessionExecutionState::Preparing,
         1 => SessionExecutionState::Activating,
@@ -170,20 +170,53 @@ fn session_activity_open_and_settlement_plans_are_total_exact_and_fail_closed() 
         projected_revision.is_none_or(|projected| projected == current_revision)
     );
     let observation: Option<bool> = kani::any();
-    let settlement = SessionActivitySettlementPlan::from_epoch_settlement(observation, execution);
+    let expected = match observation {
+        None => SessionActivitySettlementPlan::Stutter,
+        Some(false) => SessionActivitySettlementPlan::RetainExecution,
+        Some(true) => match execution {
+            SessionExecutionState::Running => SessionActivitySettlementPlan::CloseRunningInterval,
+            _ => SessionActivitySettlementPlan::RetainExecution,
+        },
+    };
     assert_eq!(
-        settlement == SessionActivitySettlementPlan::CloseRunningInterval,
-        observation == Some(true) && execution == SessionExecutionState::Running
+        SessionActivitySettlementPlan::from_epoch_settlement(observation, execution),
+        expected
     );
-    assert_eq!(
-        settlement == SessionActivitySettlementPlan::Stutter,
-        observation.is_none()
-    );
-    assert_eq!(
-        settlement == SessionActivitySettlementPlan::RetainExecution,
-        observation.is_some()
-            && (observation != Some(true) || execution != SessionExecutionState::Running)
-    );
+}
+
+#[cfg(test)]
+#[test]
+fn settlement_observation_covers_every_execution_state() {
+    // C1: no exact removal, another member remains, or the final member settles.
+    // C2: each of the seven execution states. E1: absence stutters; E2: a
+    // surviving member retains execution; E3: only final+Running closes the
+    // interval. The 3x7 table exercises the same conversion as the async path.
+    use SessionActivitySettlementPlan::{CloseRunningInterval, RetainExecution, Stutter};
+    use SessionExecutionState::{
+        Activating, ActivationFailed, Idle, Preparing, Rescheduling, Running, Terminated,
+    };
+
+    for (execution, final_effect) in [
+        (Preparing, RetainExecution),
+        (Activating, RetainExecution),
+        (ActivationFailed, RetainExecution),
+        (Running, CloseRunningInterval),
+        (Rescheduling, RetainExecution),
+        (Idle, RetainExecution),
+        (Terminated, RetainExecution),
+    ] {
+        for (observation, expected) in [
+            (None, Stutter),
+            (Some(false), RetainExecution),
+            (Some(true), final_effect),
+        ] {
+            assert_eq!(
+                SessionActivitySettlementPlan::from_epoch_settlement(observation, execution),
+                expected,
+                "observation={observation:?}, execution={execution:?}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

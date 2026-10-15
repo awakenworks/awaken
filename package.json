@@ -10,7 +10,7 @@
     "build": "pnpm --filter @awaken/managed-sdk-oracle build && pnpm --filter @awaken/managed-session-projection build && pnpm -C web build",
     "dev": "pnpm -C web dev",
     "test:e2e-process-policy": "node --test e2e/awaken_cli_args.test.mjs",
-    "test": "pnpm --filter @awaken/managed-session-projection test && pnpm -C web test && pnpm test:e2e-process-policy"
+    "test": "pnpm --filter @awaken/managed-session-projection test && pnpm -C web test && pnpm test:e2e-process-policy && pnpm -C web test:e2e:runner"
   },
   "devDependencies": {
     "json-schema-to-typescript": "15.0.4"
