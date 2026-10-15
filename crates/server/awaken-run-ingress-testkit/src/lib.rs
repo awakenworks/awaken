@@ -9,6 +9,9 @@
 //! wrapper preserves the worker-visible claim, fencing, and recovery semantics rather
 //! than merely delegating a convenient subset of methods.
 
+mod observed_clock;
+pub use observed_clock::ObservedStoreClock;
+
 use awaken_agent_contract::agent::delegation::DelegationOrigin;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
