@@ -501,7 +501,6 @@ async fn brokered_create_isolation_joins_six_real_api_uids_after_reservation() {
     use k8s_openapi::api::core::v1::{Namespace, Pod};
     use kube::api::{DeleteParams, ListParams, Patch, PatchParams, PostParams, Preconditions};
     use kube::{Api, ResourceExt};
-    use serde::Deserialize as _;
     use std::io;
     use std::time::Duration;
 
@@ -536,10 +535,7 @@ async fn brokered_create_isolation_joins_six_real_api_uids_after_reservation() {
     );
     let manifests =
         include_str!("../../../../../deploy/k3d/product-backend/create-control/resources.yaml");
-    let docs = serde_yaml::Deserializer::from_str(manifests)
-        .map(|doc| serde_yaml::Value::deserialize(doc).unwrap())
-        .map(|doc| serde_json::to_value(doc).unwrap())
-        .collect::<Vec<serde_json::Value>>();
+    let docs = serde_saphyr::from_multiple::<serde_json::Value>(manifests).unwrap();
     let policy: ValidatingAdmissionPolicy = serde_json::from_value(
         docs.iter()
             .find(|doc| doc["kind"] == "ValidatingAdmissionPolicy")

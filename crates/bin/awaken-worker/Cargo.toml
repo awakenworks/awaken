@@ -34,7 +34,7 @@ path = "src/main.rs"
 # sessions inside containers/Pods. Off by default (bwrap namespace tier).
 container-docker = ["awaken-execution-composition/docker"]
 container-podman = ["awaken-execution-composition/podman"]
-container-k8s = ["awaken-execution-composition/k8s", "awaken-worker-transport-security/kubernetes", "dep:kube"]
+container-k8s = ["awaken-execution-composition/k8s", "awaken-worker-transport-security/kubernetes"]
 
 [dependencies]
 awaken-dispatch-erasure.workspace = true
@@ -89,7 +89,6 @@ serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 tracing = "0.1"
-kube = { version = "1", default-features = false, features = ["client", "rustls-tls"], optional = true }
 
 [dev-dependencies]
 awaken-lease-testkit.workspace = true

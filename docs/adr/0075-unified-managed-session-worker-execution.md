@@ -1191,3 +1191,9 @@ from this no-Run claim; its ownership protocol is not bypassed. The result is
 observed from the ordinary Session root. An unavailable Worker leaves
 `Preparing` retryable, while a durable failed phase remains a failure rather
 than a fabricated ready result.
+
+## Amendment (2026-10-15): prompt terminal queue reconciliation
+
+Profiled release joins verified Session-root cleanup. The existing Worker terminal lane now polls every second rather than every ten seconds, so cleanup can finish before a following Workflow state's recovery observation budget expires.
+The Session root remains the sole queue and receipt owner. Complete effectful sweeps, skipped missed ticks, 64-assignment/four-driver bounds, independent lease renewal, and Registry/incarnation/lease/root-CAS fences remain unchanged. Pending or failed cleanup retains its identity and cannot acknowledge a Flow execution link.
+The existing paused-clock single-flight test uses the production cadence. Flow's original real-Worker cases retain their observation budget for exact failed-stage retry, resolution-crash recovery and operator-only indeterminate recovery; deployed qualification remains separate.

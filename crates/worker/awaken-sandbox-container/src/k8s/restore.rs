@@ -226,7 +226,7 @@ async fn observe(
     let runtime_id = k8s_runtime_id(id)?;
     let name = pod_name(&runtime_id);
     let pods = runtime.pods();
-    let Some(pod) = pods.get_opt(&name).await.map_err(backend)? else {
+    let Some(pod) = crate::k8s::get_optional(&pods, &name).await? else {
         return Ok(None);
     };
     realization::verify_restoration(&pod, evidence)?;

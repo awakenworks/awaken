@@ -412,7 +412,7 @@ async fn verify_other_reservation(
     let (resource, _) = other_reservation(ticket)?;
     let api: Api<DynamicObject> =
         Api::namespaced_with(client.clone(), &ticket.request.namespace, &resource);
-    let Some(observed) = api.get_opt(&ticket.request.name).await.map_err(backend)? else {
+    let Some(observed) = crate::k8s::get_optional(&api, &ticket.request.name).await? else {
         return Ok(false);
     };
     if !exact_other_reservation(ticket, &observed, Some(uid))
@@ -436,7 +436,7 @@ pub(super) async fn isolate_other(
     let observed = match api.create(&PostParams::default(), &desired).await {
         Ok(object) => object,
         Err(error) if api_conflict(&error) => {
-            let Some(object) = api.get_opt(&ticket.request.name).await.map_err(backend)? else {
+            let Some(object) = crate::k8s::get_optional(&api, &ticket.request.name).await? else {
                 return Ok(None);
             };
             object

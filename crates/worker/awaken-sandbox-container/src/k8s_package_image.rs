@@ -19,8 +19,8 @@ use kube::api::{DeleteParams, ListParams, Preconditions};
 use kube::{Api, Client};
 
 use crate::k8s::{
-    K8sCreateTransport, backend, brokered_client, create_or_verify_exact,
-    install_rustls_crypto_provider, sandbox_network_labels, stamp_realization,
+    K8sCreateTransport, backend, brokered_client, create_or_verify_exact, sandbox_network_labels,
+    stamp_realization,
 };
 use crate::k8s_package_realization::{
     PACKAGE_BUILD_JOB_KIND, PACKAGE_IMAGE_CHECK_JOB_KIND, bind_package_job_to_config,
@@ -56,7 +56,7 @@ fn image_check_client_timeout() -> std::time::Duration {
 
 enum ImageCheckObservation {
     Missing,
-    Present(k8s_openapi::api::batch::v1::JobStatus),
+    Present(Box<k8s_openapi::api::batch::v1::JobStatus>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,7 +148,7 @@ async fn delete_exact_job(jobs: &Api<Job>, job: &Job) -> Result<(), RuntimeError
 
 fn image_check_observation(job: Option<Job>) -> ImageCheckObservation {
     match job {
-        Some(job) => ImageCheckObservation::Present(job.status.unwrap_or_default()),
+        Some(job) => ImageCheckObservation::Present(Box::new(job.status.unwrap_or_default())),
         None => ImageCheckObservation::Missing,
     }
 }
@@ -253,8 +253,7 @@ impl K8sPackageImageProvisioner {
         registry_insecure: bool,
         transport: Option<Arc<dyn K8sCreateTransport>>,
     ) -> Result<Self, RuntimeError> {
-        install_rustls_crypto_provider();
-        let client = Client::try_default().await.map_err(backend)?;
+        let client = crate::k8s::connect_control_client().await?;
         let client = match transport {
             Some(broker) => brokered_client(client, broker),
             None => client,
@@ -690,7 +689,7 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
         .await?;
         let deadline = awaken_time::mono::MonoDeadline::after(image_check_client_timeout());
         loop {
-            let observed = jobs.get_opt(&name).await.map_err(backend)?;
+            let observed = crate::k8s::get_optional(&jobs, &name).await?;
             let status = match image_check_observation(observed.clone()) {
                 ImageCheckObservation::Present(status) => status,
                 ImageCheckObservation::Missing => {
@@ -752,7 +751,7 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
                         || exact_owner_pod_count(observed_job, &listed.items),
                         Vec::len,
                     );
-                    let refreshed = jobs.get_opt(&name).await.map_err(backend)?;
+                    let refreshed = crate::k8s::get_optional(&jobs, &name).await?;
                     match job_pod_snapshot_disposition(
                         same_job_incarnation(observed_job, refreshed.as_ref()),
                         exact_pod_count,
@@ -887,7 +886,7 @@ impl PackageImageProvisioner for K8sPackageImageProvisioner {
             .as_deref()
             .ok_or_else(|| backend("package ConfigMap has no name"))?;
         let configs: Api<ConfigMap> = Api::namespaced(self.client.clone(), &self.namespace);
-        let Some(config) = configs.get_opt(name).await.map_err(backend)? else {
+        let Some(config) = crate::k8s::get_optional(&configs, name).await? else {
             return Ok(false);
         };
         verify_exact_package_config_map(&desired_config, &config)?;

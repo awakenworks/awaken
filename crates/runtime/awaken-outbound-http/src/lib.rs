@@ -251,6 +251,10 @@ mod tests {
         // already run or a concurrent caller wins => reuse the one process choice.
         // R1 C1 => a provider is present; R2 C2 => the exact process choice is
         // retained and no parallel selector or registry is created.
+        // Security-patch qualification: C3 rustls >=0.23.46 with the same
+        // provider feature graph => R1/R2 still hold. Existing URL, DNS pinning,
+        // redirect and deadline tests cover unaffected transport admission;
+        // upstream owns TLS session secrecy/ECH/Brotli/key-share regressions.
         install_rustls_crypto_provider();
         let first = rustls::crypto::CryptoProvider::get_default().expect("R1");
         install_rustls_crypto_provider();

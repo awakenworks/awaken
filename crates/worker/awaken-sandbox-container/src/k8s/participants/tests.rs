@@ -660,8 +660,11 @@ async fn complete_original_inline_handoff_recovers_only_its_ticket_bound_set() {
             .missing_handle_terminal_evidence(scope, &frozen, Some(&requested_fence))
             .await;
         if row == "malformed-pod-404" {
+            // Kube4 can decode a partial Status; the existing optional-read
+            // boundary rejects its missing required field as a codec failure.
+            // This stricter unknown class still proves no absence or mutation.
             assert!(
-                matches!(result, Err(RuntimeError::NotFound(message)) if message.contains("Failed to parse error data")),
+                matches!(result, Err(RuntimeError::Backend(message)) if message.contains("status")),
                 "R8 bad Pod 404 is not an absence witness"
             );
             assert_eq!(

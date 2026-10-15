@@ -82,6 +82,13 @@ DDD 边界：
 
 ## DSL
 
+YAML 输入由现有 `StateMachineConfig::from_yaml_str` 入口直接反序列化为同一
+DSL 模型，再进入原编译器。读取入口使用维护中的 `serde-saphyr` 反序列化；
+Kubernetes 客户端及部署断言使用同一版本，清单断言读取完整多文档 YAML。
+JSON 入口、领域模型、permission 与 commit/replay 边界保持原有职责。
+解析失败仍返回 `StateMachineConfigError::Parse`，不附带整段输入源码；
+不保留旧 YAML 解析器回退，也不启用文件包含或属性展开。
+
 ### Read before write
 
 写操作在工具执行前拦截；一次成功读取后，可以连续写入：

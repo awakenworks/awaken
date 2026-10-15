@@ -517,7 +517,7 @@ pub(super) async fn verify_joined_original(
         macro_rules! verify {
             ($desired:expr, $api:expr) => {{
                 stamp_desired(runtime, $desired, Some(original), None)?;
-                let observed = $api.get_opt(&name).await.map_err(backend)?;
+                let observed = crate::k8s::get_optional(&$api, &name).await?;
                 if let Some(observed) = observed {
                     if observed.metadata.uid.as_deref() != Some(object.uid.as_str())
                         || !metadata_matches(ticket, &observed.metadata)

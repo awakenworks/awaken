@@ -15,6 +15,11 @@ use awaken_tool_relay::{FsOperationLedger, RemoteToolExecutor, wire::HandResult}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_hand_role_runs_a_real_tool_over_a_unix_socket() {
+    // Packaging compatibility rule P1: the locked transitive RNG patch adds no
+    // Hand input or state contract. Reuse this real bind/dial/tool path: the same
+    // declared feature graph must return the exact tool output after the patch.
+    // This exercises product composition; upstream owns SIMD/RNG vectors, and
+    // this socket case does not certify an external NATS service or older CPU.
     let dir = std::env::temp_dir().join(format!("awaken-hand-role-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("tmpdir");

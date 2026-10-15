@@ -30,6 +30,10 @@ pub(crate) use authority::WorkerAuthorityProof;
 pub(crate) use authority::authority_proof_started;
 
 const SESSION_REALIZATION_LEASE_TTL_MS: u64 = 20_000;
+// Session roots queue ordinary terminal release as well as restart recovery.
+// Keep that work prompt in the one single-flight reconciliation lane.
+const SESSION_TERMINAL_RECONCILIATION_PERIOD: std::time::Duration =
+    std::time::Duration::from_secs(1);
 pub(crate) const WORKER_REVOCATION_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// Keep a cold cleanup claim inside the already-observed Worker Registry lease.
@@ -757,7 +761,7 @@ pub(crate) fn spawn_session_realization_reconciliation(
         let cold_lifecycle = lifecycle;
         supervise_session_realization_reconciliation(
             std::time::Duration::from_secs(1),
-            std::time::Duration::from_secs(10),
+            SESSION_TERMINAL_RECONCILIATION_PERIOD,
             move || {
                 let lifecycle = renewal_lifecycle.clone();
                 async move {
@@ -1840,7 +1844,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn effectful_reconciliation_outlives_poll_budget_and_remains_single_flight() {
-        const PERIOD: std::time::Duration = std::time::Duration::from_secs(10);
+        const PERIOD: std::time::Duration = super::SESSION_TERMINAL_RECONCILIATION_PERIOD;
 
         let renewal_initial = Arc::new(tokio::sync::Notify::new());
         let renewal_during_cold = Arc::new(tokio::sync::Notify::new());
@@ -1870,6 +1874,10 @@ mod tests {
         // | R2 | yes | yes | yes | no | E2 + E4 |
         // | R3 | yes | yes | yes | yes | E3 + E4 |
         //
+        // C5 a normal terminal command queues a root between polls: the same
+        // production period must discover it without waiting a former ten-second
+        // recovery delay. R1-R3 also apply at this prompt cadence: no overlap,
+        // cancellation, burst replay or shortened lease proof window is allowed.
         // Error reporting belongs to the production closures; this test owns
         // only the shared supervisor cadence and adds no second scheduler.
         let task = tokio::spawn(supervise_session_realization_reconciliation(

@@ -225,7 +225,8 @@ impl StateMachineConfig {
 
     /// Parse from a YAML string.
     pub fn from_yaml_str(content: &str) -> Result<Self, StateMachineConfigError> {
-        serde_yaml::from_str(content).map_err(|e| StateMachineConfigError::Parse(e.to_string()))
+        serde_saphyr::from_str(content)
+            .map_err(|e| StateMachineConfigError::Parse(e.without_snippet().to_string()))
     }
 
     /// Build from an already-deserialized JSON value (the plugin config path).
@@ -451,6 +452,8 @@ mod tests {
 
     #[test]
     fn yaml_and_json_agree() {
+        // Y1 ordinary YAML + quoted tool patterns and unquoted on key
+        // -> original typed DSL and compiler, same transition inputs as JSON.
         let yaml = r#"
 machines:
   - name: rbw
@@ -469,6 +472,76 @@ machines:
         assert_eq!(
             m[0].transitions[0].from,
             vec!["unread".to_string(), "read".to_string()]
+        );
+    }
+
+    #[test]
+    fn yaml_aliases_and_json_input_keep_the_original_dsl() {
+        // Y2 JSON-as-YAML -> same typed rules, legacy cooldown alias and
+        // continuation values. Y3 YAML anchors/aliases + bool -> same inputs;
+        // optional parser interpolation is absent, so literal values stay so.
+        let json = StateMachineConfig::from_yaml_str(READ_BEFORE_WRITE).unwrap();
+        assert_eq!(json.continuation.max_continuations, 25);
+        let machines = json.into_machines().unwrap();
+        assert_eq!(
+            machines[0].transitions[1].on_violation.action,
+            ViolationAction::Deny
+        );
+        assert_eq!(
+            machines[0].transitions[1]
+                .emit
+                .as_ref()
+                .unwrap()
+                .cooldown_steps,
+            2
+        );
+        let yaml = r#"
+machines:
+  - name: alias
+    initial: "${UNCHANGED_LITERAL}"
+    strict: true
+    transitions:
+      - on: 'Read(file_path ~ "*")'
+        from: &states [unread, read]
+        to: read
+      - on: 'Write(file_path ~ "*")'
+        from: *states
+        to: written
+"#;
+        let machines = StateMachineConfig::from_yaml_str(yaml)
+            .unwrap()
+            .into_machines()
+            .unwrap();
+        assert_eq!(machines[0].initial, "${UNCHANGED_LITERAL}");
+        assert!(machines[0].strict);
+        assert_eq!(
+            machines[0].transitions[0].from,
+            machines[0].transitions[1].from
+        );
+    }
+
+    #[test]
+    fn yaml_refuses_multiple_documents_and_keeps_parse_errors_without_source_snippets() {
+        // Y4 several documents / duplicate typed field / malformed schema /
+        // include tag -> original Parse class, no compile or effects. Y5 the
+        // unrelated source comment must not be echoed by the new diagnostics.
+        for source in [
+            "machines: []\n---\nmachines: []",
+            "machines: []\nmachines: []",
+            "machines: !include /nonexistent/config",
+        ] {
+            assert!(matches!(
+                StateMachineConfig::from_yaml_str(source),
+                Err(StateMachineConfigError::Parse(_))
+            ));
+        }
+        let source = "# synthetic-private-config-sentinel\nmachines: [ : : ]";
+        let error = StateMachineConfig::from_yaml_str(source).unwrap_err();
+        assert!(matches!(error, StateMachineConfigError::Parse(_)));
+        assert!(
+            !error
+                .to_string()
+                .contains("synthetic-private-config-sentinel")
         );
     }
 

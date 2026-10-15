@@ -28,8 +28,8 @@ serde_json.workspace = true
 sha2 = "0.10"
 thiserror.workspace = true
 tracing = "0.1"
-kube = { version = "1", default-features = false, features = ["client", "rustls-tls", "http-proxy"], optional = true }
-k8s-openapi = { version = "0.25", features = ["v1_30"], optional = true }
+kube = { workspace = true, features = ["client", "rustls-tls", "http-proxy"], optional = true }
+k8s-openapi = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["time"], optional = true }
 
 [features]
