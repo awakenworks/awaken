@@ -94,19 +94,17 @@ impl SharedHost {
             r.terminal_cleanup_root = Some(effect.command.session_id.to_string());
         });
 
-        let primary_active = sessions
-            .modify_session(&effect.command.thread_id, |slot| slot.run.has_active_run())
-            .unwrap_or(false);
-        let delegated = self
-            .delegated_runs_under_lifecycle(&effect.command.thread_id)
-            .await?;
-        let delegated_active = delegated.iter().any(|run| {
-            run.status.occupies_parallel_slot()
-                && sessions
-                    .modify_session(&run.run_id.0, |slot| slot.run.has_active_run())
+        if crate::session_realizations::primary_or_delegated_run_active(
+            &effect.command.thread_id,
+            |session| {
+                sessions
+                    .modify_session(session, |slot| slot.run.has_active_run())
                     .unwrap_or(false)
-        });
-        if primary_active || delegated_active {
+            },
+            self.delegated_runs_under_lifecycle(&effect.command.thread_id),
+        )
+        .await?
+        {
             return Err(HostError::unavailable_classified(
                 "session_terminal_environment_not_quiescent",
                 "Primary or delegated work still owns the terminal Environment",

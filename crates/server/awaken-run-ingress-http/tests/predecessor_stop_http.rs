@@ -4,7 +4,6 @@
 //! fixtures here; this suite does not claim Kubernetes or remote termination.
 mod postgres_support;
 
-use awaken_run_ingress::DispatchAttemptRecordReads as _;
 use awaken_worker_contract::WorkerCurrentSource;
 use std::sync::{Arc, Mutex};
 

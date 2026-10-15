@@ -13,6 +13,8 @@
 use std::sync::Arc;
 
 use crate::frozen_inputs::FrozenSessionInputs;
+use crate::host_error::HostError;
+use awaken_session_application_contract::DelegatedRun;
 
 mod execution_authority;
 mod projection_receipt;
@@ -20,6 +22,25 @@ mod state;
 pub(crate) use execution_authority::ExecutionAuthority;
 pub(crate) use projection_receipt::FrozenProjectionReceipt;
 pub(crate) use state::{SessionRealization, SessionRealizationAuthority};
+
+/// The one local Primary/delegated activity combination. Callers retain their
+/// original Slot query adapter and already-held lifecycle scope; the delegated
+/// future is polled only after Primary, even when Primary was active. This is
+/// local activity, never a physical-stop proof or Environment authorization.
+pub(crate) async fn primary_or_delegated_run_active(
+    thread: &str,
+    mut active: impl FnMut(&str) -> bool,
+    delegated: impl std::future::Future<Output = Result<Vec<DelegatedRun>, HostError>>,
+) -> Result<bool, HostError> {
+    let primary_active = active(thread);
+    let delegated = delegated.await?;
+    // Evaluate children even when Primary was active: read errors/poison and
+    // the original status-before-query order must not be short-circuited.
+    let delegated_active = delegated
+        .iter()
+        .any(|run| run.status.occupies_parallel_slot() && active(&run.run_id.0));
+    Ok(primary_active || delegated_active)
+}
 
 /// What the realizer may learn of a Session's run layer, and the only two
 /// changes it may make to it.
