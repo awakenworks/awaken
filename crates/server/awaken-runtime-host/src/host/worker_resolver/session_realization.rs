@@ -1539,8 +1539,13 @@ mod tests {
         (host, control, directive, original_handle, roots)
     }
 
-    #[tokio::test]
-    async fn cold_worker_adopts_the_frozen_environment_before_recovering_stdio_mcp() {
+    #[test]
+    fn cold_worker_adopts_the_frozen_environment_before_recovering_stdio_mcp() {
+        // Construct and poll recovery on the canonical composed-test root.
+        awaken_service_lifecycle::run_composed_async_test(cold_worker_recovery_case);
+    }
+
+    async fn cold_worker_recovery_case() {
         /* Cold remote-Session recovery cause/effect graph: C1 Control returns a
          * frozen Session with an opaque resident-Environment binding; C2 the new
          * Worker process has no resident Runtime/Environment; C3 the claimed Run
@@ -2087,7 +2092,9 @@ mod tests {
                 "run failed: Session materialization remains pending its exact original effect and source closure",
                 "R5 exact retryable MaterializationPending receiver",
             ),
-            other => panic!("R5 expected retryable original materialization refusal: {other:?}"),
+            other => {
+                panic!("R5 expected retryable original materialization refusal: {other:?}")
+            }
         }
         assert!(
             rebuild_host

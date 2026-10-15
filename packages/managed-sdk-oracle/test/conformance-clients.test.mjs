@@ -19,6 +19,17 @@ import { exerciseUserProfileChangePoint } from '../src/conformance/user-profile-
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
+test('qualified anchors accept native absolute package entrypoints', async () => {
+  const entries = readSdkMatrix().map((entry) => ({
+    ...entry, module: fileURLToPath(import.meta.resolve(entry.module)),
+  }));
+  const clients = await loadQualifiedClients(entries);
+  assert.deepEqual(clients.map(({ id, version }) => ({ id, version })), entries.map((entry) => ({
+    id: entry.id, version: installedPackageVersion(entry.module),
+  })));
+  for (const { Client } of clients) assert.equal(typeof Client, 'function');
+});
+
 test('Workspace response projection is derived from one declaration graph', () => {
   // Cause/effect graph: C1 error, promise, and parsed-object declarations all
   // expose Workspace context; C2 none expose it; C3 the declaration surfaces

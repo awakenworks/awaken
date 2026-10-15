@@ -228,7 +228,13 @@ mod file_exporter {
                 .open(&self.path)?;
             let mut size = file.metadata()?.len();
             if size > self.max_bytes {
-                file.set_len(0)?;
+                // Windows append-only access cannot truncate. Keep append
+                // semantics for the writer and use a short-lived write handle
+                // for legacy cleanup under the same exporter mutex.
+                OpenOptions::new()
+                    .write(true)
+                    .open(&self.path)?
+                    .set_len(0)?;
                 size = 0;
             }
             for line in lines {
@@ -341,6 +347,34 @@ mod file_exporter {
                 "legacy excess cannot remain in rollover"
             );
             std::fs::remove_dir_all(dir).unwrap();
+        }
+
+        #[test]
+        fn legacy_cleanup_preserves_bounded_rollover_and_rotates_exact_capacity() {
+            // C1 current file exceeds B / equals B; C2 rollover absent / within
+            // B / exceeds B. Six rows cross C1/C2. Legacy current resets before
+            // append and retains only a bounded prior file; exact capacity
+            // rotates its complete lines into that same prior slot. A new
+            // record always appends as one complete JSON line on both OSes.
+            for current in ["0\n1\n2\n3\n4\n", "0\n1\n2\n3\n"] {
+                for prior in [None, Some("7\n"), Some("0\n1\n2\n3\n4\n")] {
+                    let (dir, exporter) = fixture();
+                    let rollover = dir.join("trace.jsonl.1");
+                    std::fs::write(&exporter.path, current).unwrap();
+                    if let Some(prior) = prior {
+                        std::fs::write(&rollover, prior).unwrap();
+                    }
+                    exporter.write_lines([Ok(b"9\n".to_vec())]).unwrap();
+                    assert_eq!(std::fs::read_to_string(&exporter.path).unwrap(), "9\n");
+                    let expected = if current.len() == 8 {
+                        Some(current)
+                    } else {
+                        prior.filter(|value| value.len() <= 8)
+                    };
+                    assert_eq!(std::fs::read_to_string(&rollover).ok().as_deref(), expected);
+                    std::fs::remove_dir_all(dir).unwrap();
+                }
+            }
         }
 
         #[test]

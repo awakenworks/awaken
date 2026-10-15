@@ -5,6 +5,13 @@
 *.py text eol=lf
 # Public API comparisons must be reproducible in fresh Windows checkouts.
 public-api/*.txt text eol=lf
+# Management exports are byte-compared against native codegen on every OS.
+contracts/*.generated.json text eol=lf
+contracts/*.d.ts text eol=lf
+contracts/anthropic-managed/*.generated.json text eol=lf
+crates/server/awaken-protocol-managed/contracts/*.generated.json text eol=lf
+packages/managed-sdk-oracle/fixtures/generated/*.ts text eol=lf
+packages/managed-sdk-oracle/src/*.generated.ts text eol=lf
 # Reviewed compiler patches and upstream templates carry raw-byte digests.
 *.patch text eol=lf
 deploy/storage/local-pv/chart/** text eol=lf

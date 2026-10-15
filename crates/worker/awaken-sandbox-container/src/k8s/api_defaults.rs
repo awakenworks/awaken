@@ -4,17 +4,19 @@
 
 use k8s_openapi::api::core::v1::{Container, PodSpec, Toleration, Volume};
 
-fn normalize_empty<T>(items: &mut Option<Vec<T>>) {
-    if items.as_ref().is_some_and(Vec::is_empty) {
-        *items = None;
+fn clear_default<T: PartialEq>(value: &mut Option<T>, default: T) {
+    if value.as_ref() == Some(&default) {
+        *value = None;
     }
 }
 
+fn normalize_empty<T>(items: &mut Option<Vec<T>>) {
+    *items = items.take().filter(|items| !items.is_empty());
+}
+
 pub(crate) fn normalize_volume(volume: &mut Volume) {
-    if let Some(claim) = volume.persistent_volume_claim.as_mut()
-        && claim.read_only == Some(false)
-    {
-        claim.read_only = None;
+    if let Some(claim) = volume.persistent_volume_claim.as_mut() {
+        clear_default(&mut claim.read_only, false);
     }
     if let Some(config) = volume.config_map.as_mut()
         && config.default_mode == Some(0o644)
@@ -53,9 +55,7 @@ pub(crate) fn normalize_container(container: &mut Container) {
     .into_iter()
     .flatten()
     {
-        if probe.initial_delay_seconds == Some(0) {
-            probe.initial_delay_seconds = None;
-        }
+        clear_default(&mut probe.initial_delay_seconds, 0);
     }
     normalize_empty(&mut container.env);
     normalize_empty(&mut container.env_from);
@@ -66,9 +66,7 @@ pub(crate) fn normalize_container(container: &mut Container) {
     normalize_empty(&mut container.volume_devices);
     if let Some(mounts) = container.volume_mounts.as_mut() {
         for mount in mounts {
-            if mount.read_only == Some(false) {
-                mount.read_only = None;
-            }
+            clear_default(&mut mount.read_only, false);
         }
     }
     if container
@@ -86,7 +84,15 @@ pub(crate) fn normalize_container(container: &mut Container) {
     }
 }
 
-pub(crate) fn normalize_pod_spec(spec: &mut PodSpec, observed_pod: bool) {
+/// Preserve a declared or retained node assignment exactly; ignore only the
+/// scheduler output absent from the expected projection.
+pub(crate) fn normalize_pod_pair(expected: &mut PodSpec, observed: &mut PodSpec) {
+    let ignore_assigned_node = expected.node_name.is_none();
+    normalize_pod_spec(expected, false);
+    normalize_pod_spec(observed, ignore_assigned_node);
+}
+
+pub(crate) fn normalize_pod_spec(spec: &mut PodSpec, ignore_assigned_node: bool) {
     normalize_empty(&mut spec.init_containers);
     normalize_empty(&mut spec.ephemeral_containers);
     normalize_empty(&mut spec.volumes);
@@ -106,9 +112,7 @@ pub(crate) fn normalize_pod_spec(spec: &mut PodSpec, observed_pod: bool) {
     if spec.dns_policy.as_deref() == Some("ClusterFirst") {
         spec.dns_policy = None;
     }
-    if spec.enable_service_links == Some(true) {
-        spec.enable_service_links = None;
-    }
+    clear_default(&mut spec.enable_service_links, true);
     if spec.scheduler_name.as_deref() == Some("default-scheduler") {
         spec.scheduler_name = None;
     }
@@ -134,34 +138,23 @@ pub(crate) fn normalize_pod_spec(spec: &mut PodSpec, observed_pod: bool) {
     {
         spec.security_context = None;
     }
-    if observed_pod {
+    if ignore_assigned_node {
         spec.node_name = None;
-        if spec.priority == Some(0) {
-            spec.priority = None;
-        }
-        if spec.host_users == Some(true) {
-            spec.host_users = None;
-        }
-        if spec.set_hostname_as_fqdn == Some(false) {
-            spec.set_hostname_as_fqdn = None;
-        }
-        if spec.share_process_namespace == Some(false) {
-            spec.share_process_namespace = None;
-        }
-        if spec.host_network == Some(false) {
-            spec.host_network = None;
-        }
-        if spec.host_pid == Some(false) {
-            spec.host_pid = None;
-        }
-        if spec.host_ipc == Some(false) {
-            spec.host_ipc = None;
-        }
-        if let Some(tolerations) = spec.tolerations.as_mut() {
-            tolerations.retain(|toleration| !default_no_execute_toleration(toleration));
-            if tolerations.is_empty() {
-                spec.tolerations = None;
-            }
+    }
+    // These are API-default representations, including when the expected
+    // projection was retained from an earlier Create response. Only runtime
+    // scheduling placement above is ignored only when not already declared.
+    clear_default(&mut spec.priority, 0);
+    clear_default(&mut spec.host_users, true);
+    clear_default(&mut spec.set_hostname_as_fqdn, false);
+    clear_default(&mut spec.share_process_namespace, false);
+    clear_default(&mut spec.host_network, false);
+    clear_default(&mut spec.host_pid, false);
+    clear_default(&mut spec.host_ipc, false);
+    if let Some(tolerations) = spec.tolerations.as_mut() {
+        tolerations.retain(|toleration| !default_no_execute_toleration(toleration));
+        if tolerations.is_empty() {
+            spec.tolerations = None;
         }
     }
 }

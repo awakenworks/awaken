@@ -26,7 +26,7 @@ use {
     awaken_session_types::SessionRuntimePlacement,
 };
 use {
-    awaken_session_state_contract::{PersistedSession, SessionScan},
+    awaken_session_state_contract::{PersistedSession, SessionScan, SessionScanCursor},
     awaken_session_types::SessionRecoveryQuarantine,
 };
 

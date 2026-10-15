@@ -106,7 +106,7 @@ k8s-tests = ["awaken-sandbox-container/k8s"]
 
 [dev-dependencies]
 # Managed fixtures use the real Session Root/sink and its existing Store port.
-awaken-session-application.workspace = true
+awaken-session-application = { workspace = true, features = ["test-support"] }
 awaken-session-repository-contract.workspace = true
 # Resource fixtures compose the same Environment catalog/Work owner as Coordinator.
 awaken-environment-application.workspace = true
@@ -128,7 +128,7 @@ awaken-sandbox-container.workspace = true
 # ACP contract re-uses but does not re-export, so a test handshake has to name
 # the trait itself. Dev-only: production code only ever consumes the port.
 awaken-provisioning-contract = { workspace = true, features = ["test-support"] }
-awaken-service-lifecycle.workspace = true
+awaken-service-lifecycle = { workspace = true, features = ["test-support"] }
 awaken-sandbox-local = { workspace = true, features = ["test-support"] }
 # The sandbox-backed Session environment the process composition installs;
 # this crate's own tests realize environments through it.

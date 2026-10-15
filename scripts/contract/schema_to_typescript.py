@@ -209,7 +209,7 @@ def build_codegen_schema(bundle_path: Path, output_path: Path) -> None:
         "$defs": normalized,
     }
     output_path.write_text(
-        json.dumps(output, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        json.dumps(output, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n"
     )
 
 
@@ -218,7 +218,7 @@ def normalize_schema(input_path: Path, output_path: Path) -> None:
 
     normalized = _normalize_ref_siblings(_read_object(input_path))
     output_path.write_text(
-        json.dumps(normalized, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        json.dumps(normalized, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n"
     )
 
 
@@ -234,6 +234,7 @@ def finalize_stdin_typescript(path: Path) -> None:
     path.write_text(
         typescript.replace(placeholder, "by the generated JSON Schema"),
         encoding="utf-8",
+        newline="\n",
     )
 
 

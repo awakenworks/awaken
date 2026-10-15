@@ -456,6 +456,11 @@ mod tests {
             );
             let result = prepare(&runtime, &context, &plan, &fingerprint).await;
             assert_eq!(result.is_ok(), !changed, "E1/E2 changed={changed}");
+            if changed {
+                let message = result.unwrap_err().to_string();
+                assert!(message.contains("spec fields: containers"));
+                assert!(!message.contains("foreign-image"), "values remain private");
+            }
             assert_eq!(posts.load(Ordering::SeqCst), 1, "E3 changed={changed}");
         }
     }

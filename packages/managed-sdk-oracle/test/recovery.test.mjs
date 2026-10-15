@@ -241,7 +241,7 @@ function completeRecoveryState() {
   };
 }
 
-test('recovery state has one closed, atomic, private wire format', () => {
+test('recovery state has one closed, atomic wire format', () => {
   // Grammar/commit table: the exact eleven-field v1 record is admitted; missing,
   // extra, blank, wrong-version, or wrong-role states fail before any service
   // read. Persistence publishes the whole 0600 file by an atomic no-replace
@@ -268,8 +268,20 @@ test('recovery state has one closed, atomic, private wire format', () => {
   try {
     writeRecoveryState(stateFile, state);
     assert.deepEqual(JSON.parse(fs.readFileSync(stateFile, 'utf8')), state);
-    assert.equal(fs.statSync(stateFile).mode & 0o777, 0o600);
     assert.throws(() => writeRecoveryState(stateFile, state), /must be new/u);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('POSIX recovery-state permissions restrict access to its owner', {
+  skip: process.platform === 'win32' ? 'POSIX mode bits; executed in Linux' : false,
+}, () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-recovery-mode-'));
+  try {
+    const stateFile = path.join(directory, 'state.json');
+    writeRecoveryState(stateFile, completeRecoveryState());
+    assert.equal(fs.statSync(stateFile).mode & 0o777, 0o600);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }

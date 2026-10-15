@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -82,7 +82,8 @@ export function validateSdkMatrix(entries) {
 export async function loadQualifiedClients(entries = readSdkMatrix()) {
   validateSdkMatrix(entries);
   const clients = await Promise.all(entries.map(async (entry) => {
-    const sdk = await import(entry.module);
+    const specifier = path.isAbsolute(entry.module) ? pathToFileURL(entry.module).href : entry.module;
+    const sdk = await import(specifier);
     const installed = installedPackage(entry.module);
     return {
       ...entry,

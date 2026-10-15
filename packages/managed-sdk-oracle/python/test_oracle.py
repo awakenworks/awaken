@@ -1,15 +1,32 @@
 from __future__ import annotations
 
 import ast
+import json
+import os
+import subprocess
 import zipfile
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import oracle
 
 
 class PythonOracleExtractorTest(unittest.TestCase):
+    def test_generate_command_emits_canonical_utf8_lf(self) -> None:
+        # Native Windows writing must preserve the reviewed byte format, not
+        # only equivalent JSON. CLI input owns the complete generated payload.
+        result = {"current": {"version": "fixture"}, "message": "配置"}
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary) / "oracle.json"
+            with patch.object(oracle, "ORACLE_PATH", target), \
+                    patch.object(oracle, "generate", return_value=result), \
+                    patch("sys.argv", ["oracle.py", "generate"]):
+                oracle.main()
+            self.assertEqual(target.read_bytes(), (json.dumps(result, indent=2) + "\n").encode("utf-8"))
+            self.assertEqual(json.loads(target.read_bytes()), result)
+
     def test_extracts_only_sync_transport_and_normalizes_identity(self) -> None:
         # Extractor cause/effect graph: C1=a sync resource contains one HTTP
         # call; C2=its async twin repeats the generated implementation; C3=the
@@ -183,7 +200,17 @@ def decode(sse):
             filename.parent.mkdir(parents=True)
             filename.write_text("class Widget: pass\n", encoding="utf-8")
             alias_root = container / "sdk-alias"
-            alias_root.symlink_to(real_root, target_is_directory=True)
+            if os.name == "nt":
+                # Junctions exercise a real directory alias without requiring
+                # Windows symlink privileges. Both fixed names stay inside
+                # this test's disposable directory; no shell paths are built.
+                subprocess.run(
+                    ["cmd.exe", "/d", "/c", "mklink", "/J", "sdk-alias", "sdk"],
+                    cwd=container, check=True, capture_output=True,
+                )
+            else:
+                alias_root.symlink_to(real_root, target_is_directory=True)
+            self.assertEqual(alias_root.resolve(), real_root.resolve())
 
             self.assertEqual(
                 oracle.python_module_name(alias_root, filename),
