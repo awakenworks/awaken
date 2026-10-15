@@ -233,6 +233,19 @@ fn sqlite_backend_conforms() {
 }
 
 #[test]
+fn sqlite_backend_conforms_with_bounded_polling_stack() {
+    // Keep the original default-stack entry above and run the same complete
+    // backend laws under a smaller budget to detect growth of native poll frames.
+    std::thread::Builder::new()
+        .name("sqlite-conformance".into())
+        .stack_size(1024 * 1024)
+        .spawn(sqlite_backend_conforms)
+        .expect("spawn bounded SQLite conformance")
+        .join()
+        .expect("bounded SQLite conformance")
+}
+
+#[test]
 fn sqlite_unbound_preparation_demand_uses_one_shared_capacity_slot() {
     block(async {
         // Backend S1 runs shared R1-R3 over a fresh SQLite authority so a
