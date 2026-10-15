@@ -28,13 +28,13 @@ pub(crate) struct ExecutableEnvironmentWiring {
 impl ExecutableEnvironmentWiring {
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn local(
-        work: impl Into<awaken_environment_execution_application::WorkQueue>,
+        work: impl Into<awaken_environment_application::execution::WorkQueue>,
     ) -> Result<Self, String> {
         Self::local_with_image_builds(work, None)
     }
 
     fn local_with_image_builds(
-        work: impl Into<awaken_environment_execution_application::WorkQueue>,
+        work: impl Into<awaken_environment_application::execution::WorkQueue>,
         image_builds: Option<Arc<awaken_environment_image_build::EnvironmentImageBuildCoordinator>>,
     ) -> Result<Self, String> {
         let work = work.into();
@@ -66,7 +66,7 @@ impl ExecutableEnvironmentWiring {
     async fn coordinator(
         deployment: &ResolvedDeployment,
         schema: PostgresSchemaMode,
-        work: awaken_environment_execution_application::WorkQueue,
+        work: awaken_environment_application::execution::WorkQueue,
         service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
         postgres_pools: &mut crate::postgres_pools::ProcessPostgresPools,
         clock: Arc<dyn awaken_time::WallClock>,
@@ -120,7 +120,7 @@ pub(crate) async fn for_runtime_role(
     role: Role,
     deployment: &ResolvedDeployment,
     schema: PostgresSchemaMode,
-    work: awaken_environment_execution_application::WorkQueue,
+    work: awaken_environment_application::execution::WorkQueue,
     service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
     postgres_pools: &mut crate::postgres_pools::ProcessPostgresPools,
     clock: Arc<dyn awaken_time::WallClock>,
@@ -164,7 +164,7 @@ fn coordinator_registrar(
         None => registrar,
     };
     Arc::new(
-        awaken_environment_execution_application::CoordinatorEnvironmentRegistrar::new(
+        awaken_environment_application::execution::CoordinatorEnvironmentRegistrar::new(
             registrar, work,
         ),
     )

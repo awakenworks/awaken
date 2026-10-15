@@ -49,8 +49,43 @@ pub(super) struct ControlStores {
     pub(super) data_subjects: Arc<dyn awaken_data_subject_application::DataSubjectRepo>,
     /// Durable Control erasure process checkpoints over the same adapter.
     pub(super) erasure_jobs: Arc<dyn awaken_data_subject_application::ErasureJobRepo>,
-    pub(super) environments: Arc<dyn awaken_environment_contract::EnvRegistry>,
+    pub(super) environments: EnvironmentStore,
     pub(super) sandbox_policies: Arc<dyn awaken_provisioning_contract::SandboxExecutionPolicyStore>,
+}
+
+/// One physical Environment authority selected by the process composition root.
+pub(super) enum EnvironmentStore {
+    Sqlite(Arc<awaken_env_store::SqliteEnvRegistry>),
+    Postgres(Arc<awaken_env_store::PostgresEnvRegistry>),
+    #[cfg(any(test, feature = "test-support"))]
+    InMemory(Arc<awaken_env_store::InMemoryEnvRegistry>),
+}
+
+impl EnvironmentStore {
+    pub(super) fn application(
+        &self,
+        registrar: Arc<dyn awaken_executable_environment_contract::ExecutableEnvironmentRegistrar>,
+        sandbox_policies: Arc<dyn awaken_provisioning_contract::SandboxExecutionPolicyStore>,
+    ) -> awaken_environment_application::EnvironmentApplication {
+        match self {
+            Self::Sqlite(store) => awaken_environment_application::EnvironmentApplication::new(
+                store.clone(),
+                registrar,
+                Some(sandbox_policies),
+            ),
+            Self::Postgres(store) => awaken_environment_application::EnvironmentApplication::new(
+                store.clone(),
+                registrar,
+                Some(sandbox_policies),
+            ),
+            #[cfg(any(test, feature = "test-support"))]
+            Self::InMemory(store) => awaken_environment_application::EnvironmentApplication::new(
+                store.clone(),
+                registrar,
+                Some(sandbox_policies),
+            ),
+        }
+    }
 }
 
 /// Port views over one admin aggregate; no independently opened MCP database.
@@ -132,7 +167,7 @@ pub(super) struct CoordinatorStores {
     /// A second view of the exact same captured-content adapter for Control's
     /// authenticated erasure command.
     pub(super) captured_content_eraser: Arc<dyn awaken_data_governance_contract::ContentEraser>,
-    pub(super) environment_work: awaken_environment_execution_application::WorkQueue,
+    pub(super) environment_work: awaken_environment_application::execution::WorkQueue,
 }
 
 /// Every typed port backed by the one canonical Managed Session repository.
@@ -217,7 +252,7 @@ pub(super) async fn open_environment_work(
     postgres_schema: PostgresSchemaMode,
     clock: Arc<dyn awaken_time::WallClock>,
     postgres_pools: &mut crate::postgres_pools::ProcessPostgresPools,
-) -> Result<awaken_environment_execution_application::WorkQueue, String> {
+) -> Result<awaken_environment_application::execution::WorkQueue, String> {
     use awaken_control::StoreBackend;
 
     ensure_store_parent(backend)?;
@@ -594,14 +629,14 @@ pub(super) async fn open_process_stores(
         ensure_store_parent(&cfg.environment)?;
         Some(match &cfg.environment {
             StoreBackend::Sqlite(environment_path) => (
-                Arc::new(
+                EnvironmentStore::Sqlite(Arc::new(
                     awaken_env_store::SqliteEnvRegistry::open(
                         &path(environment_path),
                         clock.clone(),
                     )
                     .await
                     .map_err(|error| format!("open environments SQLite: {error}"))?,
-                ) as Arc<dyn awaken_environment_contract::EnvRegistry>,
+                )),
                 Arc::new(
                     awaken_sandbox_policy_store::SqliteSandboxExecutionPolicyStore::open(&path(
                         environment_path,
@@ -642,7 +677,7 @@ pub(super) async fn open_process_stores(
                 }
                 .map_err(|error| format!("connect sandbox policies Postgres: {error}"))?;
                 (
-                    Arc::new(environments) as Arc<dyn awaken_environment_contract::EnvRegistry>,
+                    EnvironmentStore::Postgres(Arc::new(environments)),
                     Arc::new(sandbox_policies)
                         as Arc<dyn awaken_provisioning_contract::SandboxExecutionPolicyStore>,
                 )

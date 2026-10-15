@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
-use awaken_environment_execution_application::EnvironmentExecutionApplication;
+use awaken_environment_application::execution::EnvironmentExecutionApplication;
 use awaken_session_application::SessionApplication;
 #[cfg(any(test, feature = "test-support"))]
 use awaken_session_application::{CredentialMaterialIngress, SessionCredentialSource};

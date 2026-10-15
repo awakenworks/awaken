@@ -299,7 +299,7 @@ mod tests {
     };
 
     use awaken_environment_contract::{
-        CreateEnvironmentCommand, EnvItem, EnvRegistry, EnvironmentConfig, EnvironmentPackages,
+        CreateEnvironmentCommand, EnvItem, EnvironmentConfig, EnvironmentPackages,
         EnvironmentRevision,
     };
     use awaken_executable_environment_catalog::{
@@ -767,9 +767,9 @@ mod tests {
                 Arc::new(LocalExecutableEnvironmentRegistrar::new(catalog.clone())),
                 builds.clone(),
             ));
-        let definitions: Arc<dyn EnvRegistry> = Arc::new(
-            awaken_env_store::InMemoryEnvRegistry::new(awaken_time::system_clock()),
-        );
+        let definitions = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
+            awaken_time::system_clock(),
+        ));
         let control = awaken_environment_application::EnvironmentApplication::new(
             definitions,
             registrar,
@@ -807,7 +807,7 @@ mod tests {
             "X1/E1"
         );
         let execution =
-            awaken_environment_execution_application::EnvironmentExecutionApplication::new(
+            awaken_environment_application::execution::EnvironmentExecutionApplication::new(
                 Arc::new(awaken_work_store::InMemoryWorkQueue::new(
                     awaken_time::system_clock(),
                 )),

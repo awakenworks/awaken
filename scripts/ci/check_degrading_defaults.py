@@ -143,7 +143,7 @@ DEGRADING_DEFAULT_EXEMPTIONS: dict[str, str] = {
         "delegating with an explicit `None` target path, which is what an "
         "update that does not move the memory means"
     ),
-    "EnvRegistry::create": (
+    "EnvironmentDefinitionStore::create": (
         "not a degrade: `create` has no `scope` parameter to drop. It is the "
         "unqualified spelling delegating to the qualified `create_scoped` with an "
         "explicit `None`, which is what an unscoped create means — the caller gets "

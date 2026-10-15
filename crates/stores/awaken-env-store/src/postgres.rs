@@ -73,7 +73,60 @@ impl PostgresEnvRegistry {
 }
 
 #[async_trait]
-impl EnvRegistry for PostgresEnvRegistry {
+impl EnvironmentDefinitionQueries for PostgresEnvRegistry {
+    async fn list_active(&self) -> Result<Vec<EnvItem>, EnvironmentStoreError> {
+        sqlx::query(&format!(
+            "SELECT {COLS} FROM env_registry_env WHERE archived_at IS NULL ORDER BY seq ASC"
+        ))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(environment_store)?
+        .iter()
+        .map(pg_row)
+        .collect()
+    }
+
+    async fn list_all(&self) -> Result<Vec<EnvItem>, EnvironmentStoreError> {
+        sqlx::query(&format!(
+            "SELECT {COLS} FROM env_registry_env ORDER BY seq ASC"
+        ))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(environment_store)?
+        .iter()
+        .map(pg_row)
+        .collect()
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<EnvItem>, EnvironmentStoreError> {
+        self.read(id).await
+    }
+
+    async fn get_revision(
+        &self,
+        id: &str,
+        revision: EnvironmentRevision,
+    ) -> Result<Option<EnvItem>, EnvironmentStoreError> {
+        let revision = i64::try_from(revision.0).map_err(environment_store)?;
+        sqlx::query(&format!(
+            "SELECT {COLS} FROM env_registry_revision WHERE env_id = $1 AND revision = $2"
+        ))
+        .bind(id)
+        .bind(revision)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(environment_store)?
+        .map(|row| pg_row(&row))
+        .transpose()
+    }
+
+    async fn exists(&self, id: &str) -> Result<bool, EnvironmentStoreError> {
+        Ok(self.read(id).await?.is_some())
+    }
+}
+
+#[async_trait]
+impl EnvironmentDefinitionStore for PostgresEnvRegistry {
     async fn create_once(
         &self,
         command: CreateEnvironmentCommand,
@@ -217,56 +270,6 @@ impl EnvRegistry for PostgresEnvRegistry {
             .await
             .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
         Ok(CreateEnvironmentOutcome::Created(item))
-    }
-
-    async fn list_active(&self) -> Result<Vec<EnvItem>, EnvironmentStoreError> {
-        sqlx::query(&format!(
-            "SELECT {COLS} FROM env_registry_env WHERE archived_at IS NULL ORDER BY seq ASC"
-        ))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(environment_store)?
-        .iter()
-        .map(pg_row)
-        .collect()
-    }
-
-    async fn list_all(&self) -> Result<Vec<EnvItem>, EnvironmentStoreError> {
-        sqlx::query(&format!(
-            "SELECT {COLS} FROM env_registry_env ORDER BY seq ASC"
-        ))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(environment_store)?
-        .iter()
-        .map(pg_row)
-        .collect()
-    }
-
-    async fn get(&self, id: &str) -> Result<Option<EnvItem>, EnvironmentStoreError> {
-        self.read(id).await
-    }
-
-    async fn get_revision(
-        &self,
-        id: &str,
-        revision: EnvironmentRevision,
-    ) -> Result<Option<EnvItem>, EnvironmentStoreError> {
-        let revision = i64::try_from(revision.0).map_err(environment_store)?;
-        sqlx::query(&format!(
-            "SELECT {COLS} FROM env_registry_revision WHERE env_id = $1 AND revision = $2"
-        ))
-        .bind(id)
-        .bind(revision)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(environment_store)?
-        .map(|row| pg_row(&row))
-        .transpose()
-    }
-
-    async fn exists(&self, id: &str) -> Result<bool, EnvironmentStoreError> {
-        Ok(self.read(id).await?.is_some())
     }
 
     async fn update(
@@ -421,7 +424,10 @@ impl EnvRegistry for PostgresEnvRegistry {
         tx.commit().await.map_err(environment_store)?;
         Ok(Some(item))
     }
+}
 
+#[async_trait]
+impl EnvironmentRegistrationOutbox for PostgresEnvRegistry {
     async fn registration_intent(
         &self,
         id: &str,

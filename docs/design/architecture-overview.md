@@ -88,11 +88,17 @@ receives no Session/Deployment or Resources content store. The legacy
 role-aware validation and acquisition define authority.
 
 Environment definitions are static Control facts. `awaken-environment-contract`
-owns `EnvItem`, immutable `EnvironmentRevision`, and `EnvRegistry`; Control also
+owns `EnvItem`, immutable `EnvironmentRevision`, and the `EnvironmentDefinitionQueries`,
+`EnvironmentDefinitionStore`, and `EnvironmentRegistrationOutbox` roles; Control also
 owns exact sandbox-policy versions and stores the selected policy reference in
 the Environment revision. `awaken-environment-application` owns the sole
-`EnvironmentApplication`, which publishes the resolved exact revision through
-`ExecutableEnvironmentRegistrar`. Coordinator persists only a
+`EnvironmentApplication` authoring path and its separate `execution` module provides
+`EnvironmentExecutionApplication`. The application crate has no process-global
+Environment object: each process constructs only its operation roles.
+`EnvironmentRegistrationDelivery` reads
+only definition queries and the committed outbox, then publishes the resolved exact
+revision through `ExecutableEnvironmentRegistrar`; background recovery receives this
+delivery component without definition mutation authority. Coordinator persists only a
 rebuildable executable command log and owns `EnvironmentExecutionApplication`, image
 build/realization state, and the WorkQueue. Session admission freezes an
 `EnvironmentSnapshot`; Worker consumes that snapshot and never reopens either
@@ -222,7 +228,7 @@ crate name.
 |---|---|---|
 | Agent-domain contract | replayable agent truth and runtime commit vocabulary | `RunRecord`, durable run lifecycle value, `ThreadCommit`, `CommitCoordinator`, `RuntimeResumeStore`, state/fact/event records |
 | Config publication contract | Control-owned records, model-candidate resolution, and immutable publication values | `ConfigStore`, `CatalogModelPublicationResolver`, `StoredPublication`, `ExecutableAgentSnapshot`, `ExecutableAgentRegistrar` |
-| Environment contract | Control-owned static definitions, exact revisions, and policy references | `EnvItem`, `EnvironmentRevision`, `EnvRegistry`, `EnvironmentSandboxPolicyRef` |
+| Environment contract | Control-owned static definitions, exact revisions, and policy references | `EnvItem`, `EnvironmentRevision`, `EnvironmentDefinitionQueries`, `EnvironmentDefinitionStore`, `EnvironmentRegistrationOutbox`, `EnvironmentSandboxPolicyRef` |
 | Coordinator execution catalog | rebuildable executable-Agent availability for new Sessions | `ExecutableAgentCatalog`, current/exact-revision/fingerprint reads, local/HTTP/PostgreSQL registrar adapters, authenticated private router, and durable command replay |
 | Coordinator Environment application | rebuildable executable-Environment availability, frozen Session snapshot compilation, registration convergence, and dynamic work coordination | `EnvironmentExecutionApplication` over `ExecutableEnvironmentCatalog` and `WorkQueue`; no authoring repository, HTTP, or Managed DTO |
 | Resources application contract | resource commands and per-kind materialization/lifecycle contracts | `ResourcesApplication`, `ResourceAuthorities`, `FileApplicationService`, `MemoryStoreApplicationService`, `ResourceCatalog`, `ResourceReclamationRepository` |

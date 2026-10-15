@@ -278,7 +278,7 @@ mod tests {
             ManagedState::new(RehydrateFake::default())
                 .await
                 .with_environments(Arc::new(
-                    awaken_environment_execution_application::EnvironmentExecutionApplication::new(
+                    awaken_environment_application::execution::EnvironmentExecutionApplication::new(
                         Arc::new(awaken_work_store::InMemoryWorkQueue::new(
                             awaken_time::system_clock(),
                         )),

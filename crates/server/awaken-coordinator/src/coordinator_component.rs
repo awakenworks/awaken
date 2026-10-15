@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use awaken_deployment_application::DeploymentApplication;
 use awaken_deployment_contract::DeploymentRepository;
-use awaken_environment_execution_application::EnvironmentExecutionApplication;
+use awaken_environment_application::execution::EnvironmentExecutionApplication;
 use awaken_executable_agent_contract::{
     ExecutableAgentInventorySource, ExecutableAgentRegistrationSource,
 };

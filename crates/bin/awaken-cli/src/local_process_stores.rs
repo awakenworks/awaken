@@ -2,6 +2,8 @@
 
 use super::*;
 use crate::process_stores::ControlStores;
+#[cfg(any(test, feature = "test-support"))]
+use crate::process_stores::EnvironmentStore;
 
 /// Ephemeral deployment stores: everything in process memory (dev / e2e default).
 #[cfg(any(test, feature = "test-support"))]
@@ -41,7 +43,7 @@ pub(super) async fn in_memory_process_stores() -> ProcessStores {
             ),
             data_subjects: data_subjects.clone(),
             erasure_jobs: data_subjects,
-            environments: Arc::new(awaken_env_store::InMemoryEnvRegistry::new(clock.clone())),
+            environments: EnvironmentStore::InMemory(Arc::new(awaken_env_store::InMemoryEnvRegistry::new(clock.clone()))),
             sandbox_policies: Arc::new(
                 awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default(),
             ),

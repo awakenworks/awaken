@@ -69,7 +69,7 @@ pub struct ManagedState {
     /// application Arc here lets process composition expose the existing owner;
     /// it does not introduce a second catalog, queue, or warmup state.
     pub(super) environments:
-        Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
+        Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
     /// Disposable record→wire projection; durable truth lives in the application repository.
     pub(super) sessions: Mutex<HashMap<String, SessionRecord>>,
     /// Edge-owned Session-to-Workspace wire projection.

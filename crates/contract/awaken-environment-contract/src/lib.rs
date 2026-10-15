@@ -774,16 +774,43 @@ impl EnvironmentPackages {
     }
 }
 
-/// The port the environment routes drive. In-memory by default; a durable impl
-/// (sqlite / postgres) backs it at parity.
+/// Read current definitions and their immutable authored revisions.
 #[async_trait]
-pub trait EnvRegistry: Send + Sync {
+pub trait EnvironmentDefinitionQueries: Send + Sync {
+    /// All non-archived environments, ascending by id.
+    async fn list_active(&self) -> Result<Vec<EnvItem>, EnvironmentStoreError>;
+
+    /// Every current Environment projection, including archived definitions.
+    /// This is a query surface only; executable delivery consumes the outbox.
+    async fn list_all(&self) -> Result<Vec<EnvItem>, EnvironmentStoreError>;
+
+    /// The environment under `id` (archived or not).
+    async fn get(&self, id: &str) -> Result<Option<EnvItem>, EnvironmentStoreError>;
+
+    /// One immutable authored revision. Implementations append this record in
+    /// the same transaction that advances the current row; they never reconstruct
+    /// history from the mutable current projection.
+    async fn get_revision(
+        &self,
+        id: &str,
+        revision: EnvironmentRevision,
+    ) -> Result<Option<EnvItem>, EnvironmentStoreError>;
+
+    /// Whether `id` exists (archived or not).
+    async fn exists(&self, id: &str) -> Result<bool, EnvironmentStoreError>;
+}
+
+/// Atomically author definitions, immutable revisions, and their registration intents.
+/// Every mutation commits all three facts under one backend transaction or lock.
+#[async_trait]
+pub trait EnvironmentDefinitionStore: Send + Sync {
     /// Atomically persist or replay one create command. A command id can name
     /// exactly one fingerprint for the lifetime of the authority store.
     async fn create_once(
         &self,
         command: CreateEnvironmentCommand,
     ) -> Result<CreateEnvironmentOutcome, CreateEnvironmentError>;
+
     /// Test/embedding convenience for callers that intentionally request a new
     /// identity on every invocation. Production ingress must use `create_once`.
     async fn create(
@@ -796,6 +823,7 @@ pub trait EnvRegistry: Send + Sync {
         self.create_scoped(name, description, metadata, None, config)
             .await
     }
+
     /// Test/embedding convenience counterpart of [`Self::create`].
     async fn create_scoped(
         &self,
@@ -822,23 +850,7 @@ pub trait EnvRegistry: Send + Sync {
         .await
         .map(CreateEnvironmentOutcome::into_item)
     }
-    /// All non-archived environments, ascending by id.
-    async fn list_active(&self) -> Result<Vec<EnvItem>, EnvironmentStoreError>;
-    /// Every current Environment projection, including archived definitions.
-    /// This is a query surface only; executable delivery consumes the outbox.
-    async fn list_all(&self) -> Result<Vec<EnvItem>, EnvironmentStoreError>;
-    /// The environment under `id` (archived or not).
-    async fn get(&self, id: &str) -> Result<Option<EnvItem>, EnvironmentStoreError>;
-    /// One immutable authored revision. Implementations append this record in
-    /// the same transaction that advances the current row; they never reconstruct
-    /// history from the mutable current projection.
-    async fn get_revision(
-        &self,
-        id: &str,
-        revision: EnvironmentRevision,
-    ) -> Result<Option<EnvItem>, EnvironmentStoreError>;
-    /// Whether `id` exists (archived or not).
-    async fn exists(&self, id: &str) -> Result<bool, EnvironmentStoreError>;
+
     /// Compare-and-apply an update patch to an active definition. The store must
     /// reject a stale `expected_revision` in the same transaction or lock that
     /// advances the current row. `None` means `id` does not exist or is archived.
@@ -848,20 +860,29 @@ pub trait EnvRegistry: Send + Sync {
         expected_revision: EnvironmentRevision,
         patch: EnvUpdate,
     ) -> Result<Option<EnvItem>, EnvironmentStoreError>;
+
     /// Archive `id` (stamps `archived_at`); `None` when it does not exist.
     async fn archive(&self, id: &str) -> Result<Option<EnvItem>, EnvironmentStoreError>;
+}
+
+/// Read and acknowledge the exact registration facts committed with definitions.
+/// Delivery never derives new facts from the mutable current projection.
+#[async_trait]
+pub trait EnvironmentRegistrationOutbox: Send + Sync {
     /// Read one exact outbox fact. Every authored revision has exactly one.
     async fn registration_intent(
         &self,
         id: &str,
         revision: EnvironmentRevision,
     ) -> Result<Option<EnvironmentRegistrationIntent>, EnvironmentStoreError>;
+
     /// Read the authoritative outbox in deterministic per-Environment revision
     /// order. `All` is used only to rebuild an empty projection at startup.
     async fn registration_intents(
         &self,
         filter: EnvironmentRegistrationIntentFilter,
     ) -> Result<Vec<EnvironmentRegistrationIntent>, EnvironmentStoreError>;
+
     /// Acknowledge successful idempotent projection delivery. Returning false
     /// means the exact intent did not exist and is an invariant violation.
     async fn mark_registration_intent_delivered(

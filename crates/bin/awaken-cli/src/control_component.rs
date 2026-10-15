@@ -261,10 +261,9 @@ pub(super) async fn prepare_control_routers(
             .control
             .as_ref()
             .expect("Control process requires Control stores");
-        let application = Arc::new(awaken_environment_application::EnvironmentApplication::new(
-            control.environments.clone(),
+        let application = Arc::new(control.environments.application(
             executable_environment_registrar,
-            Some(control.sandbox_policies.clone()),
+            control.sandbox_policies.clone(),
         ));
         Arc::new(awaken_protocol_managed::EnvironmentAuthoringState::new(
             application,

@@ -1,6 +1,6 @@
 // @formal surface obligation=environment.registration_intent_is_atomic_recoverable_and_idempotent
 // @formal reason: In-memory Environment registration intent store.
-//! In-memory reference [`EnvRegistry`] backend.
+//! In-memory reference environment definition roles backend.
 //!
 //! [`InMemoryEnvRegistry`] is the single-process reference fixture. Product
 //! composition selects the durable SQLite/Postgres sibling explicitly. The neutral
@@ -15,9 +15,10 @@ use async_trait::async_trait;
 #[cfg(test)]
 use awaken_environment_contract::EnvironmentConfig;
 use awaken_environment_contract::{
-    CreateEnvironmentCommand, CreateEnvironmentError, CreateEnvironmentOutcome, EnvItem,
-    EnvRegistry, EnvUpdate, EnvironmentRegistrationIntent, EnvironmentRegistrationIntentFilter,
-    EnvironmentRevision, EnvironmentStoreError,
+    CreateEnvironmentCommand, CreateEnvironmentError, CreateEnvironmentOutcome, EnvItem, EnvUpdate,
+    EnvironmentDefinitionQueries, EnvironmentDefinitionStore, EnvironmentRegistrationIntent,
+    EnvironmentRegistrationIntentFilter, EnvironmentRegistrationOutbox, EnvironmentRevision,
+    EnvironmentStoreError,
 };
 
 use awaken_time::WallClock;
@@ -75,7 +76,44 @@ impl InMemoryEnvRegistry {
 }
 
 #[async_trait]
-impl EnvRegistry for InMemoryEnvRegistry {
+impl EnvironmentDefinitionQueries for InMemoryEnvRegistry {
+    async fn list_active(&self) -> Result<Vec<EnvItem>, EnvironmentStoreError> {
+        Ok(self
+            .state()?
+            .envs
+            .values()
+            .filter(|e| e.archived_at.is_none())
+            .cloned()
+            .collect())
+    }
+
+    async fn list_all(&self) -> Result<Vec<EnvItem>, EnvironmentStoreError> {
+        Ok(self.state()?.envs.values().cloned().collect())
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<EnvItem>, EnvironmentStoreError> {
+        Ok(self.state()?.envs.get(id).cloned())
+    }
+
+    async fn get_revision(
+        &self,
+        id: &str,
+        revision: EnvironmentRevision,
+    ) -> Result<Option<EnvItem>, EnvironmentStoreError> {
+        Ok(self
+            .state()?
+            .revisions
+            .get(&(id.to_string(), revision))
+            .cloned())
+    }
+
+    async fn exists(&self, id: &str) -> Result<bool, EnvironmentStoreError> {
+        Ok(self.state()?.envs.contains_key(id))
+    }
+}
+
+#[async_trait]
+impl EnvironmentDefinitionStore for InMemoryEnvRegistry {
     async fn create_once(
         &self,
         command: CreateEnvironmentCommand,
@@ -128,40 +166,6 @@ impl EnvRegistry for InMemoryEnvRegistry {
             .commands
             .insert(command.command_id, (fingerprint, item.id.clone()));
         Ok(CreateEnvironmentOutcome::Created(item))
-    }
-
-    async fn list_active(&self) -> Result<Vec<EnvItem>, EnvironmentStoreError> {
-        Ok(self
-            .state()?
-            .envs
-            .values()
-            .filter(|e| e.archived_at.is_none())
-            .cloned()
-            .collect())
-    }
-
-    async fn list_all(&self) -> Result<Vec<EnvItem>, EnvironmentStoreError> {
-        Ok(self.state()?.envs.values().cloned().collect())
-    }
-
-    async fn get(&self, id: &str) -> Result<Option<EnvItem>, EnvironmentStoreError> {
-        Ok(self.state()?.envs.get(id).cloned())
-    }
-
-    async fn get_revision(
-        &self,
-        id: &str,
-        revision: EnvironmentRevision,
-    ) -> Result<Option<EnvItem>, EnvironmentStoreError> {
-        Ok(self
-            .state()?
-            .revisions
-            .get(&(id.to_string(), revision))
-            .cloned())
-    }
-
-    async fn exists(&self, id: &str) -> Result<bool, EnvironmentStoreError> {
-        Ok(self.state()?.envs.contains_key(id))
     }
 
     async fn update(
@@ -224,7 +228,10 @@ impl EnvRegistry for InMemoryEnvRegistry {
         );
         Ok(Some(item))
     }
+}
 
+#[async_trait]
+impl EnvironmentRegistrationOutbox for InMemoryEnvRegistry {
     async fn registration_intent(
         &self,
         id: &str,

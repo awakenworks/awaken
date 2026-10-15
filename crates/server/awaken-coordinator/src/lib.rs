@@ -406,7 +406,7 @@ pub async fn local_managed_state_with_agent_source_and_list_prices(
 pub async fn local_managed_state_with_environments(
     dependencies: HostDependencies,
     catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
-    environments: Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
+    environments: Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
 ) -> ScenarioManagedState {
     local_managed_state_over(dependencies, catalog, Some(environments), None, None, None).await
 }
@@ -417,7 +417,7 @@ pub async fn local_managed_state_with_environments(
 pub async fn local_managed_state_with_environments_and_agent_source(
     dependencies: HostDependencies,
     catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
-    environments: Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
+    environments: Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
 ) -> ScenarioManagedState {
     local_managed_state_over(
@@ -438,14 +438,14 @@ pub async fn local_managed_state_with_environments_and_agent_source(
 #[cfg(feature = "test-support")]
 fn volatile_environment_execution(
     clock: Arc<dyn awaken_time::WallClock>,
-) -> Arc<awaken_environment_execution_application::EnvironmentExecutionApplication> {
+) -> Arc<awaken_environment_application::execution::EnvironmentExecutionApplication> {
     let catalog =
         Arc::new(awaken_executable_environment_catalog::ExecutableEnvironmentCatalog::new());
     catalog
         .install_seed(awaken_environment_application::default_environment_registration())
         .expect("install built-in local Environment");
     Arc::new(
-        awaken_environment_execution_application::EnvironmentExecutionApplication::new(
+        awaken_environment_application::execution::EnvironmentExecutionApplication::new(
             Arc::new(awaken_work_store::InMemoryWorkQueue::new(clock)),
             catalog,
         ),
@@ -457,7 +457,7 @@ async fn local_managed_state_over(
     dependencies: HostDependencies,
     catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     environments: Option<
-        Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
+        Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
     >,
     agent_source: Option<Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>>,
     model_publication_resolver: Option<
