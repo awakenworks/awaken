@@ -17,6 +17,8 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct SessionExecutionEvidence {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preparation: Option<awaken_session_execution_contract::SessionRecoveryPreparationReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation_footprint:
         Option<awaken_session_execution_contract::SessionExecutionOperationFootprint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -71,6 +73,7 @@ mod tests {
         // identity is lost; E2 historical unknown is not invented; E3 schema
         // drift fails closed. Rules R1=W1=>E1, R2=W2=>E2, R3=W3=>E3.
         let evidence = SessionExecutionEvidence {
+            preparation: None,
             operation_footprint: None,
             recovery: None,
             session_id: "session-1".into(),
@@ -144,9 +147,17 @@ mod tests {
         let mut with_footprint = evidence;
         with_footprint.operation_footprint =
             Some(awaken_session_execution_contract::SessionExecutionOperationFootprint::ResponseOnly);
+        with_footprint.preparation = Some(
+            awaken_session_execution_contract::SessionRecoveryPreparationReference {
+                session_id: "session-1".into(),
+                effect_id: "original-effect".into(),
+                preparation_fingerprint: "original-preparation".into(),
+            },
+        );
         with_footprint.recovery = Some(
             awaken_session_execution_contract::SessionExecutionRecoveryObservation::EffectsClosed {
-                operation_footprint: with_footprint.operation_footprint.clone(),
+                preparation: None,
+                operation_footprint: None,
                 session_revision: 4,
                 runtime_commit_cursor: 9,
                 thread_ids: vec!["session-1".into()],
@@ -158,7 +169,16 @@ mod tests {
                 ],
             },
         );
-        let wire = serde_json::to_value(with_footprint).unwrap();
+        let wire = serde_json::to_value(&with_footprint).unwrap();
+        assert_eq!(
+            serde_json::from_value::<SessionExecutionEvidence>(wire.clone()).unwrap(),
+            with_footprint,
+            "R4 exact outer preparation round-trip"
+        );
+        assert_eq!(
+            wire["preparation"]["preparation_fingerprint"], "original-preparation",
+            "R4 original reference"
+        );
         assert_eq!(wire["operation_footprint"], "response_only", "R4");
         assert!(
             wire["recovery"].get("operation_footprint").is_none(),
@@ -180,6 +200,7 @@ mod tests {
 
         async fn read(Path(session_id): Path<String>) -> Json<SessionExecutionEvidence> {
             Json(SessionExecutionEvidence {
+                preparation: None,
                 operation_footprint: None,
                 recovery: None,
                 session_id,

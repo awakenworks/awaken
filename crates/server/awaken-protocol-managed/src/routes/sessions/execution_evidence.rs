@@ -19,15 +19,17 @@ fn project_execution_evidence(
     let public_thread_id =
         crate::state::public_thread_id(&observation.session_id, &observation.session_id);
     let mut recovery = observation.recovery;
-    let operation_footprint = match &mut recovery {
+    let (operation_footprint, preparation) = match &mut recovery {
         awaken_session_execution_contract::SessionExecutionRecoveryObservation::EffectsClosed {
             operation_footprint,
+            preparation,
             ..
-        } => operation_footprint.take(),
-        _ => None,
+        } => (operation_footprint.take(), preparation.take()),
+        _ => (None, None),
     };
     crate::awaken_extensions::SessionExecutionEvidence {
         operation_footprint,
+        preparation,
         recovery: Some(recovery),
         session_id: observation.session_id,
         session_revision: observation.session_revision,
