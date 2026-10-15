@@ -34,9 +34,10 @@ async fn closed_idle_worker_uses_the_same_original_creator_seal() {
         .await
         .unwrap();
     }
-    let object = f.stored.lock().unwrap();
-    let state: Value =
-        serde_json::from_str(object.as_ref().unwrap()["data"]["ledger"].as_str().unwrap()).unwrap();
+    let state: Value = {
+        let object = f.stored.lock().unwrap();
+        serde_json::from_str(object.as_ref().unwrap()["data"]["ledger"].as_str().unwrap()).unwrap()
+    };
     assert_eq!(state["worker_sealed"], true);
     assert_eq!(state["groups"][group_for(&f.identity)], "sealed");
     assert_eq!(f.pod_posts.load(Ordering::SeqCst), 0);
@@ -184,10 +185,11 @@ async fn exited_worker_closes_its_original_create_ledger_before_releasing_eviden
         )
         .await
         .unwrap();
-        let object = f.stored.lock().unwrap();
-        let state: Value =
+        let state: Value = {
+            let object = f.stored.lock().unwrap();
             serde_json::from_str(object.as_ref().unwrap()["data"]["ledger"].as_str().unwrap())
-                .unwrap();
+                .unwrap()
+        };
         assert_eq!(state["worker_sealed"], true, "CW3");
         assert_eq!(state["groups"][group_for(&f.identity)], "sealed", "CW3");
         assert_eq!(f.pod_posts.load(Ordering::SeqCst), 0, "CW3 no Create");
