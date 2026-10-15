@@ -311,33 +311,25 @@ async fn record_update_fact(
 }
 
 fn compile_update_tool_settings(
-    compiler: &dyn awaken_tool_contract::ToolConfigurationCompiler,
+    application: &SessionApplication,
     command: &SessionUpdateCommand,
-    current: &SessionToolConfiguration,
+    session: &awaken_session_state_contract::SessionAggregate,
 ) -> Result<SessionUpdateCommand, SessionUpdateError> {
+    if session.execution != SessionExecutionState::Idle {
+        return Err(SessionUpdateError::NotIdle);
+    }
+    if command.if_match.unwrap_or(session.revision) != session.revision {
+        return Err(SessionUpdateError::Conflict);
+    }
     let tools = crate::tool_compilation::compile_tool_settings(
-        compiler,
-        command.tools.as_ref().unwrap_or(current).clone(),
+        application.tool_configuration_compiler.as_ref(),
+        command.tools.as_ref().unwrap_or(&session.tools).clone(),
     )
     .map_err(SessionUpdateError::Rejected)?;
     Ok(SessionUpdateCommand {
         tools: command.tools.as_ref().map(|_| tools),
         ..command.clone()
     })
-}
-
-fn admit_update_snapshot(
-    session: &awaken_session_state_contract::SessionAggregate,
-    if_match: Option<awaken_session_types::SessionRevision>,
-) -> Result<(), SessionUpdateError> {
-    if session.execution != SessionExecutionState::Idle {
-        return Err(SessionUpdateError::NotIdle);
-    }
-    if if_match.is_some_and(|expected| expected != session.revision) {
-        return Err(SessionUpdateError::Conflict);
-    }
-
-    Ok(())
 }
 
 impl SessionApplication {
@@ -755,13 +747,7 @@ impl SessionApplication {
                 changes: SessionUpdateChanges::default(),
             });
         }
-        admit_update_snapshot(&session, command.if_match)?;
-        let command = compile_update_tool_settings(
-            self.tool_configuration_compiler.as_ref(),
-            command,
-            &session.tools,
-        )?;
-        let command = &command;
+        let command = &compile_update_tool_settings(self, command, &session)?;
         let before = session.snapshot().clone();
         let mut mcp_changed = false;
         if let Some(mcp_update) = command.mcp_update.clone() {
