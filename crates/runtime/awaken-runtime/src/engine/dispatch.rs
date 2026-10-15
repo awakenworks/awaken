@@ -42,6 +42,13 @@ async fn await_client_call(
     if !is_client_executed(resolved, call) {
         return Ok(None);
     }
+    if tool_execution::verify_tool_capability(context.tool_capability_narrowing).is_err() {
+        stage_batch(batch, ledger, store);
+        return Ok(Some(RunDisposition::ended(
+            run_id.clone(),
+            EndCause::Error(Failure::CapabilityBound),
+        )));
+    }
     let ticket = resume_ticket(
         context,
         resolved,
@@ -124,6 +131,41 @@ fn reject_direct_detached_call(
     })
 }
 
+/// Select the original pinned per-call policy once when creating the Requested
+/// batch. Execution and recovery continue to use that same aggregate policy.
+fn requested_tool_batch(
+    runtime: &Runtime,
+    delegation_origin: Option<&DelegationOrigin>,
+    resolved: &ResolvedRun,
+    descriptors: &[ToolDescriptor],
+    run_id: &RunId,
+    step: usize,
+    calls: &[ToolCall],
+) -> Result<ToolBatch> {
+    let policies = calls.iter().cloned().map(|call| {
+        let policy = if is_resolved_delegation_call(runtime, resolved, delegation_origin, &call) {
+            // A delegated child is addressed by its stable RunId. Recovery
+            // reconnects/re-dispatches that durable request; treating it as a
+            // generic non-replayable side effect would strand an Open child
+            // relationship after an owner crash.
+            ToolRecoveryPolicy::durable_request()
+        } else if RuntimeToolOperation::classify(&call.tool_id)
+            == Some(RuntimeToolOperation::ToolSearch)
+        {
+            ToolRecoveryPolicy::replay_safe()
+        } else {
+            descriptors
+                .iter()
+                .find(|descriptor| descriptor.id == call.tool_id)
+                .map(|descriptor| descriptor.recovery_policy.clone())
+                .unwrap_or_default()
+        };
+        (call, policy)
+    });
+    ToolBatch::for_step(run_id.clone(), step, policies)
+        .map_err(|error| Error::Execution(error.to_string()))
+}
+
 /// Run each requested tool call for one step, feeding each result back into the
 /// transcript and folding tool-outcome reactions into state and reminders. Returns
 /// `Some(RunDisposition)` when a call awaits input (delegation/permission/scheduled) or fails
@@ -147,28 +189,15 @@ pub(super) async fn run_tool_calls(
 ) -> Result<Option<RunDisposition>> {
     let dynamic_descriptors = env.dynamic_descriptors();
     let executable_descriptors = executable_tool_descriptors(&resolved.spec, &dynamic_descriptors);
-    let policies = calls.iter().cloned().map(|call| {
-        let policy = if is_resolved_delegation_call(runtime, resolved, delegation_origin, &call) {
-            // A delegated child is addressed by its stable RunId. Recovery
-            // reconnects/re-dispatches that durable request; treating it as a
-            // generic non-replayable side effect would strand an Open child
-            // relationship after an owner crash.
-            ToolRecoveryPolicy::durable_request()
-        } else if RuntimeToolOperation::classify(&call.tool_id)
-            == Some(RuntimeToolOperation::ToolSearch)
-        {
-            ToolRecoveryPolicy::replay_safe()
-        } else {
-            executable_descriptors
-                .iter()
-                .find(|descriptor| descriptor.id == call.tool_id)
-                .map(|descriptor| descriptor.recovery_policy.clone())
-                .unwrap_or_default()
-        };
-        (call, policy)
-    });
-    let mut batch = ToolBatch::for_step(run_id.clone(), step, policies)
-        .map_err(|error| Error::Execution(error.to_string()))?;
+    let mut batch = requested_tool_batch(
+        runtime,
+        delegation_origin,
+        resolved,
+        &executable_descriptors,
+        run_id,
+        step,
+        &calls,
+    )?;
 
     // Commit the assistant tool-use blocks and the complete Requested batch before
     // entering any executor. Recovery can now distinguish "never entered" from an
@@ -234,6 +263,7 @@ pub(super) async fn run_tool_calls(
             == Some(RuntimeToolOperation::ToolSearch)
         {
             execute_tool_search(
+                context.tool_capability_narrowing,
                 &resolved.spec.tool_presentation,
                 &executable_descriptors,
                 &call,
@@ -1063,28 +1093,14 @@ pub(super) async fn recover_tool_batch(
             let gate = gate_decision(runtime, &call, env, store, context).await;
             ledger.audit.extend(gate.audit);
             match gate.outcome {
-                GateOutcome::Block { reason } => {
-                    record_tool_output(
-                        runtime,
-                        env,
-                        run_id,
-                        thread_id,
-                        context,
-                        RECOVERED_STEP,
-                        &call,
-                        &call,
-                        ToolOutput::error(&call.call_id, format!("blocked: {reason}")),
-                        false,
-                        false,
-                        BatchPersistence::Always,
-                        &mut batch,
-                        ledger,
-                        store,
-                    )
-                    .await?;
-                    continue;
-                }
-                GateOutcome::SetResult(output) => {
+                outcome @ (GateOutcome::Block { .. } | GateOutcome::SetResult(_)) => {
+                    let output = match outcome {
+                        GateOutcome::Block { reason } => {
+                            ToolOutput::error(&call.call_id, format!("blocked: {reason}"))
+                        }
+                        GateOutcome::SetResult(output) => output,
+                        _ => unreachable!("selected immediate gate outcomes"),
+                    };
                     record_tool_output(
                         runtime,
                         env,
@@ -1207,6 +1223,7 @@ pub(super) async fn recover_tool_batch(
             == Some(RuntimeToolOperation::ToolSearch)
         {
             execute_tool_search(
+                context.tool_capability_narrowing,
                 &resolved.spec.tool_presentation,
                 &executable_descriptors,
                 &call,

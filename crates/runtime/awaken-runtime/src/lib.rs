@@ -33,6 +33,7 @@ pub use awaken_runtime_contract::{
 pub use circuit_breaker::CircuitBreakerConfig;
 pub use configuration::ConfigurationError;
 pub use detached_tool::{DetachedToolError, PreparedToolExecutor, ResolvedToolExecution};
+pub use engine::run_commands::resume_activated_tool_batch;
 pub use ingress::DirectAttemptDriver;
 pub use outcome::{RunOutcome, RunOutcomeError};
 pub use permission::PermissionGate;

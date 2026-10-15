@@ -217,3 +217,4 @@ impl awaken_runtime_contract::resolver::RunResolver for awaken_runtime::Runtime
 pub fn awaken_runtime::Runtime::resolve(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshot) -> core::result::Result<awaken_runtime_contract::resolved::ResolvedRun, awaken_runtime_contract::resolver::Error>
 impl core::default::Default for awaken_runtime::Runtime
 pub fn awaken_runtime::Runtime::default() -> Self
+pub async fn awaken_runtime::resume_activated_tool_batch(&awaken_runtime::Runtime, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::resume::ResumeCommand, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>

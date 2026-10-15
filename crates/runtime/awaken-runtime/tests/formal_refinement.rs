@@ -585,7 +585,14 @@ async fn seed_executing_batch(
             RunDisposition::running(run_id.clone()),
             true,
             Vec::new(),
-            vec![ActiveToolBatch::write(&Some(batch.clone()))],
+            // Current Configured producer input precedes Requested/Executing.
+            // This fixture is a positive recovery control, not legacy backfill.
+            vec![
+                awaken_runtime_contract::permission::RunToolCapability::write(&Some(
+                    awaken_runtime_contract::permission::ToolCapabilityNarrowing::Configured,
+                )),
+                ActiveToolBatch::write(&Some(batch.clone())),
+            ],
             Vec::new(),
         ))
         .await

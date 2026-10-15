@@ -308,18 +308,20 @@ fn cached_child_run_result(
 async fn resume_delegation_step(
     executor: &dyn awaken_runtime_contract::delegation::RunDelegationService,
     origin: DelegationOrigin,
+    call: &ToolCall,
     ticket: &ResumeTicket,
     result: ResumeResult,
-    thread_id: &ThreadId,
     context: &RuntimeRunContext,
     store: &mut Store,
 ) -> Result<std::result::Result<DelegationStep, DelegationExecutionError>> {
+    let thread_id = &ticket.thread_id;
     let id = origin.delegation_id.clone();
     let returned = if let Some(result) =
         cached_child_run_result(store, &id).map_err(|error| Error::Execution(error.to_string()))?
     {
         Ok(result)
     } else {
+        super::tool_execution::verify_resumed_tool_authority(call, context).await?;
         let (continuation, target_agent_id) = RunDelegations::load(store)
             .map_err(|error| Error::Execution(error.to_string()))?
             .and_then(|registry| {
@@ -534,9 +536,9 @@ pub(super) async fn resume_delegation(
             resume_delegation_step(
                 executor.as_ref(),
                 origin,
+                &call,
                 ticket,
                 result,
-                thread_id,
                 context,
                 &mut store,
             )

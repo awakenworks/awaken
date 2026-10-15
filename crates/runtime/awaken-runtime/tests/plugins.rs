@@ -913,15 +913,30 @@ async fn inactive_plugin_contributes_nothing() {
         .await
         .expect("runs");
 
-    // No plugin state exists; only the model's two recovery evidence records.
-    assert_eq!(commit.committed().state.len(), 2);
-    assert!(
+    // Causes: inactive plugin + fresh Configured input. No plugin state exists;
+    // exactly the original two model records plus one original Run ceiling.
+    assert_eq!(commit.committed().state.len(), 3);
+    assert_eq!(
         commit
             .committed()
             .state
             .iter()
-            .all(|command| command.key.0 == "runtime.model_operation.v1")
+            .filter(|command| command.key.0 == "runtime.model_operation.v1")
+            .count(),
+        2
     );
+    assert_eq!(
+        awaken_runtime_contract::permission::RunToolCapability::recorded(
+            &commit.committed().state,
+            &RunId("run-1".into()),
+        )
+        .unwrap(),
+        Some(awaken_runtime_contract::permission::ToolCapabilityNarrowing::Configured)
+    );
+    assert!(commit.committed().state.iter().all(|command| matches!(
+        command.key.0.as_str(),
+        "runtime.model_operation.v1" | "runtime.run_tool_capability.v1"
+    )));
     assert_eq!(resolves.load(Ordering::SeqCst), 0);
 }
 

@@ -8,6 +8,7 @@ use super::*;
 use awaken_runtime_contract::model_operation::{
     ActiveModelOperation, ModelOperation, ModelOperationContext, ModelOperationPhase,
 };
+use awaken_runtime_contract::permission::RunToolCapability;
 use awaken_runtime_contract::resolved::ModelBinding;
 
 // Observation budget only: independent of Run execution, lease and provider
@@ -82,11 +83,19 @@ pub(super) async fn recover_checkpoint(
                     Error::Commit(format!("tool batch history unavailable: {error}"))
                 })?;
             }
-            Ok(recorded)
+            let capability =
+                RunToolCapability::recorded(&committed_state, run_id).map_err(|error| {
+                    context.physical_quiescence.mark_uncertain();
+                    Error::Commit(format!("Run tool capability unavailable: {error}"))
+                })?;
+            Ok((recorded, capability))
         });
     let mut store = store_from_run_commands(committed_state, run_id);
     let observation = match recorded {
-        Ok(recorded) => {
+        Ok((recorded, capability)) => {
+            // This Runtime-owned input comes only from its original committed
+            // command, never a tool's retained result_state or an unowned cell.
+            RunToolCapability::project_recorded(&mut store, capability);
             for operation in recorded
                 .iter()
                 .filter(|operation| !operation.execution.permits_reentry())
@@ -103,6 +112,25 @@ pub(super) async fn recover_checkpoint(
         Err(error) => Err(error),
     };
     (store, observation)
+}
+
+/// Intersect the validated original input with this attempt's current ceiling.
+/// A missing legacy record adds no evidence and is never backfilled here.
+/// Recovery therefore retains no tool authority from that unknown original;
+/// only a fresh activation may introduce its first recorded ceiling.
+pub(super) fn narrow_recovered_context(
+    store: &Store,
+    context: RuntimeRunContext,
+    fresh: bool,
+) -> Result<RuntimeRunContext> {
+    let effective = RunToolCapability::effective(
+        store,
+        context.tool_capability_narrowing,
+        context.tool_permission_policy.as_deref(),
+        fresh,
+    )
+    .map_err(|error| Error::Commit(format!("Run tool capability unavailable: {error}")))?;
+    Ok(context.with_tool_capability_narrowing(effective))
 }
 
 async fn observe_checkpoint(

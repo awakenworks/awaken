@@ -228,6 +228,7 @@ fn context(commit: &Arc<MemoryCommitCoordinator>) -> RuntimeRunContext {
 /// authority; a new worker's local step counter is not.
 #[tokio::test]
 async fn reclaimed_running_run_advances_assistant_id_from_committed_history() {
+    use awaken_agent_contract::agent::state::StateKey;
     let activation = activation();
     let run_id = activation.run_id.clone();
     let thread_id = activation.thread_id.clone();
@@ -245,7 +246,12 @@ async fn reclaimed_running_run_advances_assistant_id_from_committed_history() {
                     "prior step",
                 ),
             ],
-            Vec::new(),
+            // R2 is a current Run whose original activation is retained here.
+            vec![
+                awaken_runtime_contract::permission::RunToolCapability::write(&Some(
+                    activation.tool_capability_narrowing(),
+                )),
+            ],
             Vec::new(),
         ))
         .await

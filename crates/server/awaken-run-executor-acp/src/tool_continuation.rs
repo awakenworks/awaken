@@ -54,20 +54,41 @@ impl AcpRunExecutor {
         activation: &RunActivation,
         context: &mut RuntimeRunContext,
     ) -> Result<Option<RunState>> {
+        use awaken_runtime_contract::permission::RunToolCapability;
+        let commands = context
+            .reader
+            .as_ref()
+            .map(|reader| reader.committed_state(&activation.thread_id))
+            .unwrap_or_default();
+        let recorded =
+            RunToolCapability::recorded(&commands, &activation.run_id).map_err(|error| {
+                context.physical_quiescence.mark_uncertain();
+                Error::Commit(error.to_string())
+            })?;
+        let mut store =
+            awaken_tool_contract::tool_batch::store_from_run_commands(commands, &activation.run_id);
+        RunToolCapability::project_recorded(&mut store, recorded);
+        let fresh = context
+            .reader
+            .as_ref()
+            .is_none_or(|reader| reader.run(&activation.run_id).is_none());
+        context.tool_capability_narrowing = RunToolCapability::effective(
+            &store,
+            context.tool_capability_narrowing,
+            context.tool_permission_policy.as_deref(),
+            fresh,
+        )
+        .map_err(|error| Error::Commit(error.to_string()))?;
         if let Some(continuation) = &self.owned_tool_continuation {
             if context.commit.is_none() {
                 return Err(Error::Execution(
                     "ACP owned tool continuation requires durable commits".into(),
                 ));
             }
-            let reader = context.reader.as_ref().ok_or_else(|| {
+            context.reader.as_ref().ok_or_else(|| {
                 Error::Execution("ACP owned tool continuation requires committed history".into())
             })?;
             {
-                let store = awaken_tool_contract::tool_batch::store_from_run_commands(
-                    reader.committed_state(&activation.thread_id),
-                    &activation.run_id,
-                );
                 if let Some(batch) = awaken_tool_contract::ActiveToolBatch::load(&store)
                     .map_err(|error| Error::Execution(error.to_string()))?
                     .filter(|batch| {

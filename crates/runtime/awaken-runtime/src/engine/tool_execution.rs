@@ -85,11 +85,15 @@ pub(crate) async fn spill_tool_output(
 /// every match by canonical id, and returns Claude-compatible `tool_reference`
 /// blocks. Other providers deterministically project those references as text.
 pub(super) fn execute_tool_search(
+    capability: awaken_runtime_contract::permission::ToolCapabilityNarrowing,
     presentation: &ToolPresentation,
     descriptors: &[ToolDescriptor],
     call: &ToolCall,
     discovery: &mut ToolDiscoveryState,
 ) -> ToolOutput {
+    if let Err(reason) = verify_tool_capability(capability) {
+        return ToolOutput::error(&call.call_id, format!("blocked: {reason}"));
+    }
     let input = match serde_json::from_value::<ToolSearchInput>(call.arguments.clone()) {
         Ok(input) => input,
         Err(error) => {
@@ -321,6 +325,40 @@ pub(crate) struct GatedCall {
     pub(crate) audit: Option<EventDraft>,
 }
 
+/// The serializable Run ceiling also bounds operations owned outside the Host
+/// permission gate, including client execution and Runtime tool discovery.
+pub(super) fn verify_tool_capability(
+    capability: awaken_runtime_contract::permission::ToolCapabilityNarrowing,
+) -> std::result::Result<(), &'static str> {
+    capability.disabled_reason().map_or(Ok(()), Err)
+}
+
+/// Check only the Run's current restriction before a new resumed effect. A
+/// refusal leaves the original ticket/call untouched, so an older confirmation
+/// is neither rewritten nor used to approve a newly introduced restriction.
+pub(super) async fn verify_resumed_tool_authority(
+    call: &ToolCall,
+    context: &RuntimeRunContext,
+) -> Result<()> {
+    let decision = context
+        .physical_quiescence
+        .observe_return(
+            context
+                .tool_capability_narrowing
+                .evaluate_run_policy(context.tool_permission_policy.as_deref(), call),
+        )
+        .await;
+    match decision.map(|decision| decision.verdict) {
+        None | Some(awaken_runtime_contract::permission::ToolPermissionVerdict::Allow) => Ok(()),
+        Some(awaken_runtime_contract::permission::ToolPermissionVerdict::Deny { reason }) => {
+            Err(Error::Execution(reason))
+        }
+        Some(_) => Err(Error::Execution(
+            "current Run restriction does not permit resumed tool execution".into(),
+        )),
+    }
+}
+
 /// Consult the gate chain: the host permission gate first, then any
 /// plugin-contributed gates in dependency order. A call runs only if every gate
 /// allows it; the first non-`Allow` outcome wins, and the host permission gate is
@@ -348,7 +386,9 @@ pub(crate) async fn gate_decision(
         .physical_quiescence
         .observe_return(async {
             // Audit the decision of a real (policy-backed) gate (ADR-0030).
-            let audited = runtime.gate().is_some() || context.tool_permission_policy.is_some();
+            let audited = runtime.gate().is_some()
+                || context.tool_permission_policy.is_some()
+                || !context.tool_capability_narrowing.is_configured();
             let decided = |decision: GateDecision| GatedCall {
                 // The decision label is the permission-relevant view of the outcome;
                 // who decided, the policy and the reason are the authority the deciding
@@ -356,21 +396,14 @@ pub(crate) async fn gate_decision(
                 audit: audited.then(|| decision.audit_fact(call).into()),
                 outcome: decision.outcome,
             };
-            if context.tool_capability_narrowing
-                == awaken_runtime_contract::permission::ToolCapabilityNarrowing::DenyAll
-            {
-                return decided(GateDecision::run_narrowing(GateOutcome::Block {
-                    reason: "tools are disabled for this Run".into(),
-                }));
-            }
-            let ctx = ToolCall {
-                tool_id: call.tool_id.clone(),
-                call_id: call.call_id.clone(),
-                arguments: call.arguments.clone(),
-            };
+            let ctx = call.clone();
             let mut allowed_on: Option<GateAuthority> = None;
-            if let Some(narrowing) = &context.tool_permission_policy {
-                let decision = narrowing.evaluate(&ctx).await.into_gate_decision();
+            if let Some(ruling) = context
+                .tool_capability_narrowing
+                .evaluate_run_policy(context.tool_permission_policy.as_deref(), &ctx)
+                .await
+            {
+                let decision = ruling.into_gate_decision();
                 if !matches!(decision.outcome, GateOutcome::Allow) {
                     return decided(decision);
                 }
@@ -980,6 +1013,7 @@ pub(super) async fn enter_pending_tool(
     call: &ToolCall,
     entry: awaken_tool_contract::tool_batch::PendingToolExecutionEntry<'_>,
 ) -> Result<()> {
+    verify_resumed_tool_authority(call, context).await?;
     let domain = prepare_tool_domain(runtime, env, context, call)
         .await?
         .map_err(|output| Error::Execution(output.text()))?;

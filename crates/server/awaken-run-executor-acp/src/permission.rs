@@ -81,7 +81,8 @@ impl PermissionAudit {
 /// when the narrowing allows does the base resolver get a chance to decide.
 pub(crate) struct NarrowedPermissionResolver<'a> {
     pub(crate) base: &'a dyn PermissionResolver,
-    pub(crate) narrowing: &'a dyn ToolPermissionPolicy,
+    pub(crate) narrowing: Option<&'a dyn ToolPermissionPolicy>,
+    pub(crate) capability: awaken_runtime_contract::permission::ToolCapabilityNarrowing,
     pub(crate) audit: &'a PermissionAudit,
 }
 
@@ -126,7 +127,13 @@ impl PermissionResolver for NarrowedPermissionResolver<'_> {
             call_id: ask.call_id.clone(),
             arguments: ask.arguments.clone(),
         };
-        let ruling = self.narrowing.evaluate(&call).await;
+        let Some(ruling) = self
+            .capability
+            .evaluate_run_policy(self.narrowing, &call)
+            .await
+        else {
+            return self.base.resolve(ask).await;
+        };
         match ruling.verdict.clone() {
             // An allowing narrowing is not the answer; the base resolver's is,
             // and it records its own.

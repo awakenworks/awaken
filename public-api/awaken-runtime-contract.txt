@@ -833,6 +833,8 @@ pub awaken_runtime_contract::permission::ToolCapabilityNarrowing::Configured
 pub awaken_runtime_contract::permission::ToolCapabilityNarrowing::ConfiguredWithInheritedToolsets
 pub awaken_runtime_contract::permission::ToolCapabilityNarrowing::DenyAll
 impl awaken_runtime_contract::permission::ToolCapabilityNarrowing
+pub fn awaken_runtime_contract::permission::ToolCapabilityNarrowing::disabled_reason(&self) -> core::option::Option<&'static str>
+pub async fn awaken_runtime_contract::permission::ToolCapabilityNarrowing::evaluate_run_policy(self, core::option::Option<&dyn awaken_runtime_contract::permission::ToolPermissionPolicy>, &awaken_tool_contract::tool::ToolCall) -> core::option::Option<awaken_runtime_contract::permission::ToolPermissionRuling>
 pub const fn awaken_runtime_contract::permission::ToolCapabilityNarrowing::intersect(self, Self) -> Self
 pub fn awaken_runtime_contract::permission::ToolCapabilityNarrowing::is_configured(&self) -> bool
 pub fn awaken_runtime_contract::permission::ToolCapabilityNarrowing::is_default(&self) -> bool
@@ -857,6 +859,7 @@ pub fn awaken_runtime_contract::permission::DenyAllTools::new(impl core::convert
 impl awaken_runtime_contract::permission::ToolPermissionPolicy for awaken_runtime_contract::permission::DenyAllTools
 pub fn awaken_runtime_contract::permission::DenyAllTools::evaluate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::ToolPermissionRuling> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_contract::permission::DenyAllTools::process_bound(&self) -> bool
+pub fn awaken_runtime_contract::permission::DenyAllTools::tool_capability_narrowing(&self) -> awaken_runtime_contract::permission::ToolCapabilityNarrowing
 pub struct awaken_runtime_contract::permission::GateDecision
 pub awaken_runtime_contract::permission::GateDecision::authority: awaken_runtime_contract::permission::GateAuthority
 pub awaken_runtime_contract::permission::GateDecision::outcome: awaken_runtime_contract::permission::GateOutcome
@@ -871,6 +874,17 @@ pub awaken_runtime_contract::permission::PermissionBasis::reason_code: core::opt
 impl awaken_runtime_contract::permission::PermissionBasis
 pub const fn awaken_runtime_contract::permission::PermissionBasis::auto(core::option::Option<awaken_agent_contract::audit::permission::PermissionReasonCode>) -> Self
 pub const fn awaken_runtime_contract::permission::PermissionBasis::fixed(awaken_agent_contract::audit::permission::PermissionPolicy) -> Self
+pub struct awaken_runtime_contract::permission::RunToolCapability
+impl awaken_runtime_contract::permission::RunToolCapability
+pub fn awaken_runtime_contract::permission::RunToolCapability::effective(&awaken_agent_contract::agent::state::Store, awaken_runtime_contract::permission::ToolCapabilityNarrowing, core::option::Option<&dyn awaken_runtime_contract::permission::ToolPermissionPolicy>, bool) -> core::result::Result<awaken_runtime_contract::permission::ToolCapabilityNarrowing, awaken_agent_contract::agent::state::StateError>
+pub fn awaken_runtime_contract::permission::RunToolCapability::project_recorded(&mut awaken_agent_contract::agent::state::Store, core::option::Option<awaken_runtime_contract::permission::ToolCapabilityNarrowing>)
+pub fn awaken_runtime_contract::permission::RunToolCapability::recorded(&[awaken_agent_contract::agent::state::Command], &awaken_agent_contract::agent::run::Id) -> core::result::Result<core::option::Option<awaken_runtime_contract::permission::ToolCapabilityNarrowing>, awaken_agent_contract::agent::state::StateError>
+pub fn awaken_runtime_contract::permission::RunToolCapability::stage(&mut awaken_agent_contract::agent::state::Store, &mut alloc::vec::Vec<awaken_agent_contract::agent::state::Command>, awaken_runtime_contract::permission::ToolCapabilityNarrowing, bool) -> core::result::Result<(), awaken_agent_contract::agent::state::StateError>
+impl awaken_agent_contract::agent::state::StateKey for awaken_runtime_contract::permission::RunToolCapability
+pub type awaken_runtime_contract::permission::RunToolCapability::Value = core::option::Option<awaken_runtime_contract::permission::ToolCapabilityNarrowing>
+pub const awaken_runtime_contract::permission::RunToolCapability::KEY: &'static str
+pub const awaken_runtime_contract::permission::RunToolCapability::MERGE: awaken_agent_contract::agent::state::MergePolicy
+pub const awaken_runtime_contract::permission::RunToolCapability::SCOPE: awaken_agent_contract::agent::state::Scope
 pub struct awaken_runtime_contract::permission::ToolPermissionRuling
 pub awaken_runtime_contract::permission::ToolPermissionRuling::authority: awaken_runtime_contract::permission::RulingAuthority
 pub awaken_runtime_contract::permission::ToolPermissionRuling::verdict: awaken_runtime_contract::permission::ToolPermissionVerdict
@@ -887,9 +901,11 @@ pub fn awaken_runtime_contract::permission::ToolGateHook::process_bound(&self) -
 pub trait awaken_runtime_contract::permission::ToolPermissionPolicy: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::permission::ToolPermissionPolicy::evaluate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::ToolPermissionRuling> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_contract::permission::ToolPermissionPolicy::process_bound(&self) -> bool
+pub fn awaken_runtime_contract::permission::ToolPermissionPolicy::tool_capability_narrowing(&self) -> awaken_runtime_contract::permission::ToolCapabilityNarrowing
 impl awaken_runtime_contract::permission::ToolPermissionPolicy for awaken_runtime_contract::permission::DenyAllTools
 pub fn awaken_runtime_contract::permission::DenyAllTools::evaluate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::ToolPermissionRuling> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_contract::permission::DenyAllTools::process_bound(&self) -> bool
+pub fn awaken_runtime_contract::permission::DenyAllTools::tool_capability_narrowing(&self) -> awaken_runtime_contract::permission::ToolCapabilityNarrowing
 pub mod awaken_runtime_contract::plugin
 pub enum awaken_runtime_contract::plugin::BoundViolation
 pub awaken_runtime_contract::plugin::BoundViolation::ActionKind
@@ -2371,9 +2387,11 @@ pub fn awaken_runtime_contract::ToolGateHook::process_bound(&self) -> bool
 pub trait awaken_runtime_contract::ToolPermissionPolicy: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::ToolPermissionPolicy::evaluate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::ToolPermissionRuling> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_contract::ToolPermissionPolicy::process_bound(&self) -> bool
+pub fn awaken_runtime_contract::ToolPermissionPolicy::tool_capability_narrowing(&self) -> awaken_runtime_contract::permission::ToolCapabilityNarrowing
 impl awaken_runtime_contract::permission::ToolPermissionPolicy for awaken_runtime_contract::permission::DenyAllTools
 pub fn awaken_runtime_contract::permission::DenyAllTools::evaluate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::ToolPermissionRuling> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_contract::permission::DenyAllTools::process_bound(&self) -> bool
+pub fn awaken_runtime_contract::permission::DenyAllTools::tool_capability_narrowing(&self) -> awaken_runtime_contract::permission::ToolCapabilityNarrowing
 pub fn awaken_runtime_contract::deserialize_max_steps<'de, D>(D) -> core::result::Result<core::option::Option<usize>, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
 pub fn awaken_runtime_contract::evaluate_boundary(&awaken_runtime_contract::runtime_context::RuntimeRunContext, &awaken_agent_contract::agent::run::Id, &[awaken_agent_contract::agent::message::Message]) -> awaken_runtime_contract::boundary::BoundaryOutcome
 pub fn awaken_runtime_contract::execution_capability(&str) -> alloc::string::String

@@ -2,9 +2,11 @@
 // @formal evidence acp.permission_tool_identity_normalization_is_exact
 // @formal evidence acp.process_cleanup_requires_observed_exit_and_retained_owner
 // @formal evidence session_execution.one_physical_attempt_per_thread
-// awaken-allow(file-limit-ceiling): 5856 (legacy oversized test file: split, never grow)
+// awaken-allow(file-limit-ceiling): 5852 (legacy oversized test file: split, never grow)
 //! End-to-end tests with in-memory fakes: a scripted duplex channel stands in for
 //! the launched CLI — no daemon, no network.
+
+mod permission_narrowing;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -3107,7 +3109,8 @@ async fn every_acp_permission_decision_is_recorded_with_the_policy_that_made_it(
     let deny_all = awaken_runtime_contract::permission::DenyAllTools::new("restricted Run");
     let narrowed = NarrowedPermissionResolver {
         base: &session_policy,
-        narrowing: &deny_all,
+        narrowing: Some(&deny_all),
+        capability: awaken_runtime_contract::permission::ToolCapabilityNarrowing::Configured,
         audit: &audit,
     };
     assert_eq!(narrowed.resolve(&ask("c3")).await, PermissionVerdict::Deny);
@@ -3129,7 +3132,8 @@ async fn every_acp_permission_decision_is_recorded_with_the_policy_that_made_it(
     ));
     let narrowed = NarrowedPermissionResolver {
         base: &session_policy,
-        narrowing: &narrowing_allow,
+        narrowing: Some(&narrowing_allow),
+        capability: awaken_runtime_contract::permission::ToolCapabilityNarrowing::Configured,
         audit: &audit,
     };
     assert_eq!(narrowed.resolve(&ask("c4")).await, PermissionVerdict::Allow);
@@ -3149,25 +3153,9 @@ async fn every_acp_permission_decision_is_recorded_with_the_policy_that_made_it(
 #[tokio::test]
 async fn per_run_permission_is_an_intersection_with_acp_authority() {
     use awaken_protocol_acp::{PermissionAsk, PermissionResolver, PermissionVerdict};
-    use awaken_runtime_contract::permission::{
-        DenyAllTools, ToolCall, ToolPermissionPolicy, ToolPermissionVerdict,
-    };
+    use awaken_runtime_contract::permission::{DenyAllTools, ToolPermissionVerdict};
 
-    struct FixedPolicy(ToolPermissionVerdict);
-    #[async_trait]
-    impl ToolPermissionPolicy for FixedPolicy {
-        async fn evaluate(&self, _call: &ToolCall) -> ToolPermissionRuling {
-            ToolPermissionRuling::run_narrowing(self.0.clone())
-        }
-    }
-
-    struct FixedResolver(PermissionVerdict);
-    #[async_trait]
-    impl PermissionResolver for FixedResolver {
-        async fn resolve(&self, _ask: &PermissionAsk) -> PermissionVerdict {
-            self.0.clone()
-        }
-    }
+    use permission_narrowing::{FixedPolicy, FixedResolver};
 
     let ask = PermissionAsk {
         tool: "bash".into(),
@@ -3182,14 +3170,16 @@ async fn per_run_permission_is_an_intersection_with_acp_authority() {
     let audit = PermissionAudit::default();
     let narrowed = NarrowedPermissionResolver {
         base: &base_allow,
-        narrowing: &deny_all,
+        narrowing: Some(&deny_all),
+        capability: awaken_runtime_contract::permission::ToolCapabilityNarrowing::Configured,
         audit: &audit,
     };
     assert_eq!(narrowed.resolve(&ask).await, PermissionVerdict::Deny);
 
     let cannot_widen = NarrowedPermissionResolver {
         base: &base_deny,
-        narrowing: &narrowing_allow,
+        narrowing: Some(&narrowing_allow),
+        capability: awaken_runtime_contract::permission::ToolCapabilityNarrowing::Configured,
         audit: &audit,
     };
     assert_eq!(cannot_widen.resolve(&ask).await, PermissionVerdict::Deny);
@@ -5784,7 +5774,13 @@ async fn owned_recovery_selects_only_the_current_runs_exact_execution_owner() {
                 RunDisposition::running(owner),
                 true,
                 Vec::new(),
-                vec![awaken_tool_contract::ActiveToolBatch::write(&Some(batch))],
+                // Current producer control; legacy unknown is R3 above.
+                vec![
+                    awaken_runtime_contract::permission::RunToolCapability::write(&Some(
+                        activation.tool_capability_narrowing(),
+                    )),
+                    awaken_tool_contract::ActiveToolBatch::write(&Some(batch)),
+                ],
                 Vec::new(),
             ))
             .await

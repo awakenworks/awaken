@@ -318,90 +318,130 @@ async fn an_on_demand_tool_is_hidden_until_tool_search_then_callable_and_persist
     // to the canonical MCP executable; E6 sequential discovery results form a union
     // rather than overwriting one another. This single path covers static/dynamic
     // catalog convergence, bounded presentation, persistence, replay and execution.
-    let version = Arc::new(AtomicU64::new(1));
-    let tools = Arc::new(Mutex::new(vec![
-        "mcp__srv__a".to_string(),
-        "mcp__srv__b".to_string(),
-    ]));
-    let seen = Arc::new(Mutex::new(Vec::new()));
-
-    let runtime = Runtime::new()
-        .with_llm(Arc::new(DiscoveryProbe {
-            seen: seen.clone(),
-            calls: AtomicUsize::new(0),
-        }))
-        .with_plugin(Arc::new(DynPlugin {
-            version: version.clone(),
-            tools: tools.clone(),
-        }));
-
-    let mut act = activation();
-    act.snapshot.resolved_spec.tool_presentation = ToolPresentation::from_overrides([
-        (
+    for denied in [false, true] {
+        let version = Arc::new(AtomicU64::new(1));
+        let tools = Arc::new(Mutex::new(vec![
             "mcp__srv__a".to_string(),
-            ToolPresentationOverride {
-                alias: Some("create_issue".to_string()),
-                description: Some("Create a GitHub issue.".to_string()),
-                exposure: Some(ToolExposure::OnDemand),
-            },
-        ),
-        (
             "mcp__srv__b".to_string(),
-            ToolPresentationOverride {
-                alias: Some("list_issues".to_string()),
-                description: Some("List GitHub issues.".to_string()),
-                exposure: Some(ToolExposure::OnDemand),
-            },
-        ),
-    ])
-    .with_discovery(ToolDiscoverySettings {
-        max_results: Some(ToolSearchLimit::new(1).expect("valid test limit")),
-        ..Default::default()
-    });
+        ]));
+        let seen = Arc::new(Mutex::new(Vec::new()));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
-    let context = RuntimeRunContext::new().with_commit(commit.clone());
-    let outcome = runtime.execute(act, context).await.expect("runs");
-    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
+        let runtime = Runtime::new()
+            .with_llm(Arc::new(DiscoveryProbe {
+                seen: seen.clone(),
+                calls: AtomicUsize::new(0),
+            }))
+            .with_plugin(Arc::new(DynPlugin {
+                version: version.clone(),
+                tools: tools.clone(),
+            }));
 
-    let seen = seen.lock().unwrap();
-    let search_id = awaken_runtime_contract::resolved::TOOL_SEARCH_ID.to_string();
-    // C1+C3=>E1: only `tool_search` is shown; the full schema is withheld.
-    assert!(seen[0].contains(&search_id), "tool_search is offered");
-    assert!(
-        !seen[0].contains(&"create_issue".to_string()),
-        "the on-demand tool is withheld until revealed"
-    );
-    // C4+C5+C6=>E4: the schema is visible on the next request.
-    assert!(
-        seen[1].contains(&"create_issue".to_string()),
-        "the revealed tool appears on the next step"
-    );
-    assert!(
-        seen[1].contains(&"list_issues".to_string()),
-        "C4+C5+C6=>E4+E6: both sequential reveals appear on the next step"
-    );
-    // C2+call=>E5: execution uses the canonical MCP identity.
-    let committed = commit.committed();
-    assert!(
-        committed
-            .messages
-            .iter()
-            .any(|m| m.role == Role::Tool && m.text_content().contains("ran mcp__srv__a")),
-        "the revealed tool executed"
-    );
-    let replayed = Store::rebuild(&committed.state);
-    let discovery = replayed
-        .get(Scope::Run, &Key("runtime.tool_discovery.v1".into()))
-        .expect("committed discovery state replays");
-    for canonical_id in ["mcp__srv__a", "mcp__srv__b"] {
+        let mut act = activation();
+        act.snapshot.resolved_spec.tool_presentation = ToolPresentation::from_overrides([
+            (
+                "mcp__srv__a".to_string(),
+                ToolPresentationOverride {
+                    alias: Some("create_issue".to_string()),
+                    description: Some("Create a GitHub issue.".to_string()),
+                    exposure: Some(ToolExposure::OnDemand),
+                },
+            ),
+            (
+                "mcp__srv__b".to_string(),
+                ToolPresentationOverride {
+                    alias: Some("list_issues".to_string()),
+                    description: Some("List GitHub issues.".to_string()),
+                    exposure: Some(ToolExposure::OnDemand),
+                },
+            ),
+        ])
+        .with_discovery(ToolDiscoverySettings {
+            max_results: Some(ToolSearchLimit::new(1).expect("valid test limit")),
+            ..Default::default()
+        });
+
+        let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+        let context = RuntimeRunContext::new().with_commit(commit.clone());
+        let act = if denied { act.without_tools() } else { act };
+        let outcome = runtime.execute(act, context).await.expect("runs");
+        assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
+
+        let seen = seen.lock().unwrap();
+        // N7: DenyAll + model emits the unadvertised discovery and alias calls ->
+        // no revealed state, no executor success and no advertised tools on any
+        // later request. Configured retains every original positive assertion.
+        if denied {
+            assert!(seen.iter().all(Vec::is_empty), "N7 no advertised tools");
+            let committed = commit.committed();
+            assert!(
+                Store::rebuild(&committed.state)
+                    .get(Scope::Run, &Key("runtime.tool_discovery.v1".into()))
+                    .is_none(),
+                "N7 no discovery authority was minted"
+            );
+            let results: Vec<_> = committed
+                .messages
+                .iter()
+                .flat_map(|message| &message.content)
+                .filter_map(|block| match block {
+                    awaken_agent_contract::agent::content::ContentBlock::ToolResult {
+                        is_error,
+                        ..
+                    } => Some(*is_error),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                results,
+                vec![true, true, true],
+                "N7 all three calls are refused"
+            );
+            assert!(
+                !committed
+                    .messages
+                    .iter()
+                    .any(|message| message.text_content().contains("ran mcp__srv__a"))
+            );
+            continue;
+        }
+        let search_id = awaken_runtime_contract::resolved::TOOL_SEARCH_ID.to_string();
+        // C1+C3=>E1: only `tool_search` is shown; the full schema is withheld.
+        assert!(seen[0].contains(&search_id), "tool_search is offered");
         assert!(
-            discovery
-                .pointer(&format!("/revealed/{canonical_id}"))
-                .and_then(serde_json::Value::as_str)
-                .is_some(),
-            "C5=>E3: state authority remains canonical rather than aliased"
+            !seen[0].contains(&"create_issue".to_string()),
+            "the on-demand tool is withheld until revealed"
         );
+        // C4+C5+C6=>E4: the schema is visible on the next request.
+        assert!(
+            seen[1].contains(&"create_issue".to_string()),
+            "the revealed tool appears on the next step"
+        );
+        assert!(
+            seen[1].contains(&"list_issues".to_string()),
+            "C4+C5+C6=>E4+E6: both sequential reveals appear on the next step"
+        );
+        // C2+call=>E5: execution uses the canonical MCP identity.
+        let committed = commit.committed();
+        assert!(
+            committed
+                .messages
+                .iter()
+                .any(|m| m.role == Role::Tool && m.text_content().contains("ran mcp__srv__a")),
+            "the revealed tool executed"
+        );
+        let replayed = Store::rebuild(&committed.state);
+        let discovery = replayed
+            .get(Scope::Run, &Key("runtime.tool_discovery.v1".into()))
+            .expect("committed discovery state replays");
+        for canonical_id in ["mcp__srv__a", "mcp__srv__b"] {
+            assert!(
+                discovery
+                    .pointer(&format!("/revealed/{canonical_id}"))
+                    .and_then(serde_json::Value::as_str)
+                    .is_some(),
+                "C5=>E3: state authority remains canonical rather than aliased"
+            );
+        }
     }
 }
 

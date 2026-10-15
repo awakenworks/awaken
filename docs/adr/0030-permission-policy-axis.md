@@ -86,7 +86,9 @@ The producer side is one closed `GateAuthority` (`Policy(PermissionBasis)` |
 there is no unattributed constructor, and all three audit fields are lowered
 from that one value, so they cannot disagree. An allow a later gate merely
 passes through keeps the earlier authority. There is no "absent gate" label:
-with neither a host gate nor a per-Run policy installed nothing is audited.
+with neither a host gate, a per-Run policy, nor an active per-Run capability
+restriction installed nothing is audited. A capability denial is attributed to
+`run_narrowing` even when no host gate is installed.
 
 `reason_code` is an open registry, as the SDK declares it: a reader keeps a code
 it has no name for rather than failing or dropping it. `decided_by`, `policy` and
@@ -122,10 +124,27 @@ call with a blocked result and records `PermissionConfirmed { result: deny }`,
 without entering the executor. The person's answer is its own fact, not a second
 `PermissionDecided`: the decision states what the gate concluded on which basis
 (D4), and the confirmation states how the wait that decision opened was answered.
+Both Native and model-free tool resumes require the original commit port before
+execution-domain preparation. A read-only continuation cannot consume a ticket,
+accept a result, or enter a tool using a merely local Executing transition.
 
 This is intentionally Run-scoped state stored in the thread commit log, not
 Thread-scoped domain state: the embedded `run_id` prevents an older Run's active
 batch from being rehydrated into a later Run on the same thread.
+
+Native's first Running commit also records the activation's tool-capability
+ceiling in that same Run-scoped state log. ACP records the same input at its
+original atomic Step boundary before a Runtime-owned continuation. An opaque
+ACP/A2A backend without a proven NoTools execution profile refuses the restricted
+entry before launch/send. Every recovery intersects the validated
+original ceiling with the current attempt's restrictions before inference or
+tool entry. A missing legacy ceiling remains unknown: recovery removes tool
+authority rather than backfilling a newly configured value. Already committed
+tool/child results remain consumable; neither an old confirmation nor a
+replay-safe policy grants a new effect past a current Run restriction.
+Fixed `DenyAllTools` also declares that same whole-Run ceiling, so its binding
+removes client and provider-native surfaces before requests are built. Per-call
+verdicts continue to own ordinary authorization; a declared ceiling cannot grant.
 
 ## Consequences
 

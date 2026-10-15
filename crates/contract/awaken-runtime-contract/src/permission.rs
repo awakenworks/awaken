@@ -13,6 +13,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::tool::ToolOutput;
 
+mod run_capability;
+pub use run_capability::RunToolCapability;
+
 pub use crate::llm::ToolCall;
 pub use awaken_agent_contract::audit::permission::{
     PermissionDecider, PermissionPolicy, PermissionReasonCode,
@@ -267,6 +270,12 @@ impl ToolPermissionVerdict {
 /// external system; it returns only a decision, never executes the tool.
 #[async_trait]
 pub trait ToolPermissionPolicy: Send + Sync {
+    /// A declared whole-Run ceiling, separate from per-call verdicts. The
+    /// default adds no restriction or authority. Fixed NoTools policies close
+    /// provider-native and client surfaces too, before requests are advertised.
+    fn tool_capability_narrowing(&self) -> ToolCapabilityNarrowing {
+        ToolCapabilityNarrowing::Configured
+    }
     /// Trusted implementation containment. Default/custom policies may perform
     /// external effects; a fixed local policy may explicitly close this scope.
     fn process_bound(&self) -> bool {
@@ -305,6 +314,32 @@ pub enum ToolCapabilityNarrowing {
 }
 
 impl ToolCapabilityNarrowing {
+    /// The same closed ceiling bounds Native, ACP and Runtime-owned discovery.
+    #[must_use]
+    pub fn disabled_reason(&self) -> Option<&'static str> {
+        (!self.is_configured()).then_some("tools are disabled for this Run")
+    }
+
+    /// Evaluate only the Run's current restrictions. The configured executor
+    /// remains responsible for authorization after this intersection allows.
+    pub async fn evaluate_run_policy(
+        self,
+        policy: Option<&dyn ToolPermissionPolicy>,
+        call: &ToolCall,
+    ) -> Option<ToolPermissionRuling> {
+        if let Some(reason) = self.disabled_reason() {
+            return Some(ToolPermissionRuling::run_narrowing(
+                ToolPermissionVerdict::Deny {
+                    reason: reason.into(),
+                },
+            ));
+        }
+        match policy {
+            Some(policy) => Some(policy.evaluate(call).await),
+            None => None,
+        }
+    }
+
     #[must_use]
     pub fn is_configured(&self) -> bool {
         matches!(
@@ -348,6 +383,9 @@ impl DenyAllTools {
 
 #[async_trait]
 impl ToolPermissionPolicy for DenyAllTools {
+    fn tool_capability_narrowing(&self) -> ToolCapabilityNarrowing {
+        ToolCapabilityNarrowing::DenyAll
+    }
     fn process_bound(&self) -> bool {
         true
     }
