@@ -441,6 +441,7 @@ async fn k8s_exact_restore_survives_provider_replacement_with_the_same_pvc_fence
     );
     let handle = pc::Sandbox::handle(first.target().as_ref());
     let payload = handle.container_payload().expect("KR1 container payload");
+    let retained_participants = payload.runtime_handle.clone();
     let pod_name = payload.container_id.clone();
     let (pod_uid, claim_uid) = match payload.runtime_handle.as_ref() {
         Some(awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV3 {
@@ -461,12 +462,14 @@ async fn k8s_exact_restore_survives_provider_replacement_with_the_same_pvc_fence
     let Some(retry_runtime) = live_runtime().await else {
         panic!("KR2 apiserver disappeared after exact target creation");
     };
-    let retry_runtime = retry_runtime.with_continuation_volume(K8sContinuationVolume {
-        storage_class_name: None,
-        size: "1Gi".into(),
-    });
+    let retry_runtime = Arc::new(
+        retry_runtime.with_continuation_volume(K8sContinuationVolume {
+            storage_class_name: None,
+            size: "1Gi".into(),
+        }),
+    );
     let retry = Arc::new(
-        ContainerProvider::new(Arc::new(retry_runtime), image)
+        ContainerProvider::new(retry_runtime.clone(), image)
             .with_clock(awaken_time::system_clock()),
     );
     let mut mismatch = request.clone();
@@ -495,8 +498,10 @@ async fn k8s_exact_restore_survives_provider_replacement_with_the_same_pvc_fence
     drop(recovered);
     // KR5 response-loss cuts: D1 Pod+PVC both terminating, D2 Pod absent
     // while PVC terminates, D3 both absent. Ordinary acquisition rejects D1;
-    // authorized disposal replays D1/D2, waits for physical absence, and D3
-    // is idempotent. Abort/join the caller only after real API deletion intent;
+    // authorized restoration replays D1. Once D2 loses the Pod carrier, only
+    // the persisted original handle can finish; a request alone must reject.
+    // Original-handle cleanup waits for physical absence and D3 is idempotent.
+    // Abort/join the caller only after real API deletion intent;
     // release only test-owned finalizers and require the product result.
     const TEST_FINALIZER: &str = "awaken.dev/k8s-it-restore-hold";
     let client = kube::Client::try_default()
@@ -591,12 +596,45 @@ async fn k8s_exact_restore_survives_provider_replacement_with_the_same_pvc_fence
         replay.await.unwrap_err().is_cancelled(),
         "KR5 D2 lose second caller response"
     );
-    let mut replay = start_disposal();
+    let refused = start_disposal().await.unwrap().unwrap_err();
     assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(300), &mut replay)
-            .await
-            .is_err(),
-        "KR5 D2 replay waits for held PVC"
+        refused.to_string().contains("original participant carrier"),
+        "KR5 D2 request alone cannot manufacture absence: {refused}"
+    );
+    let retained = claims.get(&claim_name).await.unwrap();
+    assert_eq!(retained.metadata.uid.as_deref(), Some(claim_uid.as_str()));
+    assert!(retained.metadata.deletion_timestamp.is_some());
+    assert!(
+        retained
+            .metadata
+            .finalizers
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|value| value == TEST_FINALIZER),
+        "KR5 D2 refusal cannot remove the held participant"
+    );
+    let start_original_cleanup = || {
+        let runtime = retry_runtime.clone();
+        let pod_name = pod_name.clone();
+        let handle = retained_participants.clone();
+        let authorization = authorization.clone();
+        tokio::spawn(async move {
+            runtime
+                .remove_exact_incarnation(
+                    &pod_name,
+                    handle.as_ref(),
+                    &authorization,
+                    &EffectAuthority::new(authorization.effect_fence()),
+                )
+                .await
+        })
+    };
+    let mut replay = start_original_cleanup();
+    let held_claim = tokio::time::timeout(std::time::Duration::from_millis(300), &mut replay).await;
+    assert!(
+        held_claim.is_err(),
+        "KR5 D2 original-handle cleanup waits for PVC: {held_claim:?}"
     );
     k8s_common::set_test_finalizer(&claims, &claim_name, TEST_FINALIZER, false).await;
     tokio::time::timeout(std::time::Duration::from_secs(60), replay)
@@ -604,17 +642,14 @@ async fn k8s_exact_restore_survives_provider_replacement_with_the_same_pvc_fence
         .expect("KR5 physical completion")
         .expect("KR5 join replay")
         .expect("KR4 product cleanup succeeds");
-    retry
-        .dispose_restored_environment(
-            &spec,
-            &request,
-            &authorization,
-            &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                authorization.effect_fence(),
-            ),
-        )
+    start_original_cleanup()
         .await
-        .expect("KR5 D3 absent replay");
+        .unwrap()
+        .expect("KR5 D3 original-handle absent replay");
+    assert!(
+        start_disposal().await.unwrap().is_err(),
+        "KR5 D3 a bare 404 is not original-participant evidence"
+    );
 
     assert!(pods.get_opt(&pod_name).await.unwrap().is_none(), "KR4/E4");
     assert!(

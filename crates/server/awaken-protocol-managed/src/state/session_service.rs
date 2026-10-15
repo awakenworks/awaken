@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
+use awaken_environment_execution_application::EnvironmentExecutionApplication;
 use awaken_session_application::SessionApplication;
 #[cfg(any(test, feature = "test-support"))]
 use awaken_session_application::{CredentialMaterialIngress, SessionCredentialSource};
@@ -68,9 +69,7 @@ impl ManagedState {
     /// `content_capture` projection decides exactly as its Runs do.
     pub fn from_application(
         application: Arc<SessionApplication>,
-        environments: Arc<
-            awaken_environment_execution_application::EnvironmentExecutionApplication,
-        >,
+        environments: Arc<EnvironmentExecutionApplication>,
         capture_policy: awaken_data_governance_contract::CapturePolicy,
     ) -> Self {
         Self {
@@ -124,9 +123,7 @@ impl ManagedState {
     /// Coordinator composition reuses this Arc for the Worker warmup adapter so
     /// test-support and production cannot observe different desired capacity.
     #[must_use]
-    pub fn environment_execution(
-        &self,
-    ) -> Arc<awaken_environment_execution_application::EnvironmentExecutionApplication> {
+    pub fn environment_execution(&self) -> Arc<EnvironmentExecutionApplication> {
         self.environments.clone()
     }
 
@@ -190,9 +187,7 @@ impl ManagedState {
         runtime: Arc<dyn awaken_session_execution_contract::CompleteSessionRuntime>,
         mcp_realizer: Option<Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
         sessions_repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
-        environments: Arc<
-            awaken_environment_execution_application::EnvironmentExecutionApplication,
-        >,
+        environments: Arc<EnvironmentExecutionApplication>,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         let application = awaken_session_application::SessionApplicationBuilder::fixture(
@@ -223,12 +218,7 @@ impl ManagedState {
     /// Coordinator's one executable Environment projection and WorkQueue.
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
-    pub fn with_environments(
-        self,
-        environments: Arc<
-            awaken_environment_execution_application::EnvironmentExecutionApplication,
-        >,
-    ) -> Self {
+    pub fn with_environments(self, environments: Arc<EnvironmentExecutionApplication>) -> Self {
         let this = self.configure_application(|application| {
             application.replace_environment_source(environments.clone());
         });

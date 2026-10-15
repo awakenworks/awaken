@@ -700,7 +700,7 @@ def main() -> None:
     args = parser.parse_args()
     if args.command == "generate":
         result = generate()
-        ORACLE_PATH.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        ORACLE_PATH.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8", newline="\n")
         print(f"Generated Python Managed SDK oracle for {result['current']['version']}")
         return
     expected = load_json(ORACLE_PATH)

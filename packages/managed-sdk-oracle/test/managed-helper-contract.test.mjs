@@ -370,23 +370,6 @@ async function assertAgentToolset(module, Anthropic, label) {
       /(?:outside (?:the allowed roots|the session's working directory)|escapes workdir)/u,
     );
 
-    const shell = new module.BashSession(workdir, { PATH: process.env.PATH ?? '' });
-    assert.deepEqual(await shell.exec('printf first'), { output: 'first', exitCode: 0 });
-    await shell.exec('export MANAGED_HELPER_STATE=preserved');
-    assert.deepEqual(
-      await shell.exec('printf %s "$MANAGED_HELPER_STATE"'),
-      { output: 'preserved', exitCode: 0 },
-      `${label}: BashSession preserves shell state`,
-    );
-    shell.close();
-    assert.equal(shell.closed, true);
-    await assert.rejects(() => shell.exec('true'), /terminated/u);
-
-    const bash = module.betaBashTool(ctx);
-    assert.equal(await bash.run({ command: 'printf helper' }), 'helper');
-    await assert.rejects(() => bash.run({ command: '' }), /command is required/u);
-    bash.close();
-
     const cleanupSkills = await module.setupSkills({ workdir });
     assert.equal(typeof cleanupSkills, 'function', `${label}: no-op skill cleanup`);
     await cleanupSkills();
@@ -446,8 +429,37 @@ async function assertAgentToolset(module, Anthropic, label) {
   }
 }
 
+async function assertBashHelpers(module, label) {
+  const workdir = mkdtempSync(resolve(tmpdir(), 'managed-bash-helper-contract-'));
+  const ctx = { workdir, maxFileBytes: 16 * 1024 };
+  let shell;
+  let bash;
+  try {
+    shell = new module.BashSession(workdir, { PATH: process.env.PATH ?? '' });
+    assert.deepEqual(await shell.exec('printf first'), { output: 'first', exitCode: 0 });
+    await shell.exec('export MANAGED_HELPER_STATE=preserved');
+    assert.deepEqual(
+      await shell.exec('printf %s "$MANAGED_HELPER_STATE"'),
+      { output: 'preserved', exitCode: 0 },
+      `${label}: BashSession preserves shell state`,
+    );
+    shell.close();
+    assert.equal(shell.closed, true);
+    await assert.rejects(() => shell.exec('true'), /terminated/u);
+    bash = module.betaBashTool(ctx);
+    assert.equal(await bash.run({ command: 'printf helper' }), 'helper');
+    await assert.rejects(() => bash.run({ command: '' }), /command is required/u);
+    bash.close();
+    bash = undefined;
+  } finally {
+    if (shell && !shell.closed) shell.close();
+    bash?.close();
+    rmSync(workdir, { recursive: true, force: true });
+  }
+}
+
 for (const packageAlias of PACKAGE_ALIASES) {
-  test(`${packageAlias}: every public Managed helper export has executable semantics`, async () => {
+  test(`${packageAlias}: portable Managed helper exports have executable semantics`, async () => {
     const sdk = resolveSdkPackage(packageAlias);
     const evidence = managedExportFingerprint(packageAlias, SCOPE, { allowMissing: true });
     const modules = await importedEntrypoints(sdk.root, evidence);
@@ -460,6 +472,14 @@ for (const packageAlias of PACKAGE_ALIASES) {
     const accumulator = modules.get('lib/sessions/accumulate.mjs');
     if (accumulator) assertAccumulator(accumulator, label);
     await assertAgentToolset(modules.get('tools/agent-toolset/node.mjs'), Anthropic, label);
+  });
+
+  test(`${packageAlias}: POSIX Bash helpers preserve shell state and lifecycle`, {
+    skip: process.platform === 'win32' ? 'official SDK requires /bin/bash; executed in Linux' : false,
+  }, async () => {
+    const sdk = resolveSdkPackage(packageAlias);
+    const module = await import(moduleURL(sdk.root, 'tools/agent-toolset/node.mjs'));
+    await assertBashHelpers(module, `${packageAlias}@${sdk.version}`);
   });
 }
 

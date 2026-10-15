@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[2]
 INPUT_GLOBS = ("scripts/ci/**",)
 
 LISTED = re.compile(r"^(\S+): test$", re.MULTILINE)
-EXECUTED = re.compile(r"^test (\S+) \.\.\. (ok|FAILED|ignored)(?:,.*)?$", re.MULTILINE)
+EXECUTED = re.compile(r"^test (\S+)(?: - should panic)? \.\.\. (ok|FAILED|ignored)(?:,.*)?$", re.MULTILINE)
 SUMMARY = re.compile(r"^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;", re.MULTILINE)
 SKIP = re.compile(r"^(?:skip(?:ped|ping)\b|\[skip\])", re.MULTILINE | re.IGNORECASE)
 
@@ -738,6 +738,41 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
         output = ("test same ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored;\n") * 2
         self.assertEqual(execution_evidence(inventory, output, 0)["errors"], [])
         self.assertTrue(execution_evidence(inventory, output[:len(output) // 2], 0)["errors"])
+
+    def test_expected_panic_annotation_preserves_identity_and_failure_checks(self) -> None:
+        # The annotation is libtest status syntax, never a second test name.
+        # A success qualifies only the listed identity and exact summary;
+        # missing panic, ignore, rename and duplicate results still fail.
+        inventory = "expected: test\n"
+        output = "test expected - should panic ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored;\n"
+        self.assertEqual(execution_evidence(inventory, output, 0)["errors"], [])
+        for result in [output.replace(" ... ok", " ... FAILED"),
+                       output.replace(" ... ok", " ... ignored"),
+                       output.replace("test expected", "test other"),
+                       output + "test expected - should panic ... ok\n"]:
+            self.assertTrue(execution_evidence(inventory, result, 0)["errors"])
+
+    def test_actual_libtest_expected_panic_format_is_qualified(self) -> None:
+        # Drive the real compiler and libtest boundary. Expected panic succeeds;
+        # a should_panic body returning normally fails without losing identity.
+        with tempfile.TemporaryDirectory(prefix="awaken-expected-panic-") as temporary:
+            root = Path(temporary)
+            source = root / "fixture.rs"
+            source.write_text('''#[test] #[should_panic] fn expected() { panic!("expected"); }
+#[test] #[should_panic] fn missing() {}
+''', encoding="utf-8")
+            binary = root / ("fixture.exe" if os.name == "nt" else "fixture")
+            compiled = subprocess.run(["rustc", "--test", str(source), "-o", str(binary)],
+                                      capture_output=True, text=True, encoding="utf-8")
+            self.assertEqual(compiled.returncode, 0, compiled.stdout + compiled.stderr)
+            for case, succeeds in [("expected", True), ("missing", False)]:
+                listed = subprocess.run([str(binary), "--exact", case, "--list"],
+                                        check=True, capture_output=True, text=True).stdout
+                executed = subprocess.run([str(binary), "--exact", case, "--show-output"],
+                                          capture_output=True, text=True)
+                evidence = execution_evidence(listed, executed.stdout, executed.returncode, [case])
+                self.assertEqual(not evidence["errors"], succeeds)
+                self.assertEqual([name for name, _ in evidence["executed_cases"]], [case])
 
     def test_missing_backend_is_rejected_even_when_every_listed_test_passes(self) -> None:
         # F1 the declared SQLite floor is present and executed -> qualify.

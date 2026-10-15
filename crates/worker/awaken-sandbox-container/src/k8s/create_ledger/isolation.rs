@@ -244,8 +244,7 @@ fn exact_reservation(ticket: &CreateTicket, observed: &Pod, uid: Option<&str>) -
                     .as_ref()
                     .is_none_or(Vec::is_empty)
         });
-    api_defaults::normalize_pod_spec(&mut desired, false);
-    api_defaults::normalize_pod_spec(&mut actual, true);
+    api_defaults::normalize_pod_pair(&mut desired, &mut actual);
     exact_reservation_metadata(ticket, &observed.metadata, uid) && unbound && desired == actual
 }
 
