@@ -187,11 +187,13 @@ async fn read_does_not_decode_non_utf8_files() {
 
 #[tokio::test]
 async fn read_missing_file_is_a_typed_error() {
-    let err = tool("read")
-        .invoke(call("read", serde_json::json!({ "path": "/no/such/file" })))
+    let dir = tempfile::tempdir().expect("private missing-file root");
+    let err = tool_at("read", dir.path())
+        .invoke(call("read", serde_json::json!({ "path": "missing-file" })))
         .await
         .expect_err("missing file");
     assert!(matches!(err, ToolError::DefinitiveFailure(_)));
+    assert!(err.to_string().contains("no such file or directory"));
 }
 
 #[tokio::test]
@@ -201,7 +203,7 @@ async fn glob_lists_matching_paths() {
     std::fs::write(dir.path().join("b.rs"), "").expect("write");
     std::fs::write(dir.path().join("c.txt"), "").expect("write");
 
-    let out = tool("glob")
+    let out = tool_at("glob", dir.path())
         .invoke(call(
             "glob",
             serde_json::json!({ "pattern": "*.rs", "path": dir.path() }),
@@ -367,7 +369,7 @@ async fn grep_finds_matching_lines_with_line_numbers() {
     let path = dir.path().join("log.txt");
     std::fs::write(&path, "alpha\nbeta error\ngamma\ndelta error").expect("write");
 
-    let out = tool("grep")
+    let out = tool_at("grep", dir.path())
         .invoke(call(
             "grep",
             serde_json::json!({ "pattern": "error", "path": path }),
@@ -385,7 +387,7 @@ async fn grep_finds_matching_lines_with_line_numbers() {
 async fn write_creates_a_file_with_contents() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("out.txt");
-    let out = tool("write")
+    let out = tool_at("write", dir.path())
         .invoke(call(
             "write",
             serde_json::json!({ "path": path, "content": "payload" }),
@@ -405,7 +407,7 @@ async fn edit_replaces_a_unique_occurrence() {
     let path = dir.path().join("code.txt");
     std::fs::write(&path, "let x = 1;\nlet y = 2;").expect("write");
 
-    tool("edit")
+    tool_at("edit", dir.path())
         .invoke(call(
             "edit",
             serde_json::json!({ "path": path, "old": "x = 1", "new": "x = 42" }),
@@ -424,7 +426,7 @@ async fn edit_fails_closed_on_missing_or_ambiguous_old() {
     let path = dir.path().join("dup.txt");
     std::fs::write(&path, "a a a").expect("write");
 
-    let missing = tool("edit")
+    let missing = tool_at("edit", dir.path())
         .invoke(call(
             "edit",
             serde_json::json!({ "path": path, "old": "zzz", "new": "q" }),
@@ -432,8 +434,9 @@ async fn edit_fails_closed_on_missing_or_ambiguous_old() {
         .await
         .expect_err("missing old");
     assert!(matches!(missing, ToolError::DefinitiveFailure(_)));
+    assert!(missing.to_string().contains("old_string not found"));
 
-    let ambiguous = tool("edit")
+    let ambiguous = tool_at("edit", dir.path())
         .invoke(call(
             "edit",
             serde_json::json!({ "path": path, "old": "a", "new": "b" }),
@@ -441,6 +444,7 @@ async fn edit_fails_closed_on_missing_or_ambiguous_old() {
         .await
         .expect_err("ambiguous old");
     assert!(matches!(ambiguous, ToolError::DefinitiveFailure(_)));
+    assert!(ambiguous.to_string().contains("appears 3 times"));
     // The file is untouched because the edit failed closed.
     assert_eq!(std::fs::read_to_string(&path).expect("read back"), "a a a");
 }
@@ -454,7 +458,7 @@ async fn edit_rejects_an_empty_old_and_does_not_mutate_an_empty_file() {
     let path = dir.path().join("empty.txt");
     std::fs::write(&path, "").expect("write");
 
-    let err = tool("edit")
+    let err = tool_at("edit", dir.path())
         .invoke(call(
             "edit",
             serde_json::json!({ "path": path, "old": "", "new": "injected" }),
@@ -583,14 +587,16 @@ async fn grep_searches_long_text_lines_and_skips_binary_and_oversized_files() {
 
 #[tokio::test]
 async fn grep_missing_file_is_a_typed_error() {
-    let err = tool("grep")
+    let dir = tempfile::tempdir().expect("private missing-file root");
+    let err = tool_at("grep", dir.path())
         .invoke(call(
             "grep",
-            serde_json::json!({ "pattern": "x", "path": "/no/such/file" }),
+            serde_json::json!({ "pattern": "x", "path": "missing-file" }),
         ))
         .await
         .expect_err("missing file");
     assert!(matches!(err, ToolError::DefinitiveFailure(_)));
+    assert!(err.to_string().contains("no such file or directory"));
 }
 
 #[tokio::test]
@@ -666,7 +672,7 @@ async fn write_to_an_unwritable_path_is_a_typed_error() {
     let dir = tempfile::tempdir().expect("tempdir");
     let parent_file = dir.path().join("not-a-directory");
     std::fs::write(&parent_file, "occupied").expect("write parent file");
-    let err = tool("write")
+    let err = tool_at("write", dir.path())
         .invoke(call(
             "write",
             serde_json::json!({ "path": parent_file.join("out.txt"), "content": "y" }),
@@ -674,18 +680,22 @@ async fn write_to_an_unwritable_path_is_a_typed_error() {
         .await
         .expect_err("bad dir");
     assert!(matches!(err, ToolError::DefinitiveFailure(_)));
+    assert!(!err.to_string().contains("escapes workdir"));
+    assert_eq!(std::fs::read_to_string(parent_file).unwrap(), "occupied");
 }
 
 #[tokio::test]
 async fn edit_missing_file_is_a_typed_error() {
-    let err = tool("edit")
+    let dir = tempfile::tempdir().expect("private missing-file root");
+    let err = tool_at("edit", dir.path())
         .invoke(call(
             "edit",
-            serde_json::json!({ "path": "/no/such/file", "old": "a", "new": "b" }),
+            serde_json::json!({ "path": "missing-file", "old": "a", "new": "b" }),
         ))
         .await
         .expect_err("missing file");
     assert!(matches!(err, ToolError::DefinitiveFailure(_)));
+    assert!(err.to_string().contains("no such file or directory"));
 }
 
 #[tokio::test]
@@ -693,7 +703,7 @@ async fn glob_with_no_matches_returns_empty_success_not_an_error() {
     // A well-formed pattern that matches nothing is a valid empty result, not an
     // error — the model reads "no files" from empty output, not a failure.
     let dir = tempfile::tempdir().expect("tempdir");
-    let out = tool("glob")
+    let out = tool_at("glob", dir.path())
         .invoke(call(
             "glob",
             serde_json::json!({ "pattern": "*.nonesuch", "path": dir.path() }),
@@ -710,7 +720,7 @@ async fn grep_with_no_matching_lines_returns_empty_success_not_an_error() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("plain.txt");
     std::fs::write(&path, "alpha\nbeta\ngamma").expect("write");
-    let out = tool("grep")
+    let out = tool_at("grep", dir.path())
         .invoke(call(
             "grep",
             serde_json::json!({ "pattern": "no-such-token", "path": path }),
@@ -992,6 +1002,106 @@ async fn file_tools_reject_parent_absolute_and_symlink_escapes() {
             .expect_err("symlink escape must fail");
         assert!(error.to_string().contains("escapes workdir"));
     }
+}
+
+async fn reject_foreign_file_root(
+    root: &std::path::Path,
+    directory: &std::path::Path,
+    file: &std::path::Path,
+    diagnostics: &[&str],
+) {
+    for (id, arguments) in [
+        ("read", serde_json::json!({"file_path":file})),
+        (
+            "write",
+            serde_json::json!({"file_path":file,"content":"must not write"}),
+        ),
+        (
+            "edit",
+            serde_json::json!({"file_path":file,"old_string":"original","new_string":"must not edit"}),
+        ),
+        ("glob", serde_json::json!({"path":directory,"pattern":"*"})),
+        (
+            "grep",
+            serde_json::json!({"path":file,"pattern":"original"}),
+        ),
+    ] {
+        let error = tool_at(id, root)
+            .invoke(call(id, arguments))
+            .await
+            .expect_err("foreign root grants no file capability");
+        assert!(
+            matches!(error, ToolError::DefinitiveFailure(_)),
+            "{id}: {error}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|text| error.to_string().contains(text)),
+            "{id}: {error}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn every_file_tool_rejects_foreign_roots_without_mutation() {
+    // F1 the native absolute path belongs to the declared root: existing success
+    // rows execute real I/O, including a temp drive different from the checkout.
+    // F2 another valid root; F3 parent traversal; F4 another Windows drive.
+    // F2-F3 x all five tools must fail for confinement. F4 preserves a foreign
+    // drive prefix, including an unavailable volume. No outside file changes.
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let file = outside.path().join("sentinel.txt");
+    std::fs::write(&file, "original").unwrap();
+    reject_foreign_file_root(root.path(), outside.path(), &file, &["escapes workdir"]).await;
+    assert_eq!(root.path().parent(), outside.path().parent());
+    let parent = std::path::PathBuf::from("..").join(outside.path().file_name().unwrap());
+    reject_foreign_file_root(
+        root.path(),
+        &parent,
+        &parent.join("sentinel.txt"),
+        &["escapes workdir"],
+    )
+    .await;
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "original");
+    assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 1);
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn every_file_tool_preserves_a_foreign_drive_prefix() {
+    // No second volume or Developer Mode is required: a foreign drive prefix
+    // itself cannot acquire a capability from the current physical root.
+    use std::path::{Component, Prefix};
+    let root = tempfile::tempdir().unwrap();
+    let shadow = root.path().join("foreign-hand-root");
+    std::fs::create_dir(&shadow).unwrap();
+    std::fs::write(shadow.join("sentinel.txt"), "original").unwrap();
+    let drive = match root.path().components().next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::Disk(letter) | Prefix::VerbatimDisk(letter)
+                if letter.eq_ignore_ascii_case(&b'Z') =>
+            {
+                'Y'
+            }
+            _ => 'Z',
+        },
+        _ => 'Z',
+    };
+    let directory = std::path::PathBuf::from(format!(r"{drive}:\foreign-hand-root"));
+    reject_foreign_file_root(
+        root.path(),
+        &directory,
+        &directory.join("sentinel.txt"),
+        &["escapes workdir", "no such file or directory"],
+    )
+    .await;
+    assert_eq!(
+        std::fs::read_to_string(shadow.join("sentinel.txt")).unwrap(),
+        "original"
+    );
+    assert_eq!(std::fs::read_dir(&shadow).unwrap().count(), 1);
 }
 
 #[tokio::test]
