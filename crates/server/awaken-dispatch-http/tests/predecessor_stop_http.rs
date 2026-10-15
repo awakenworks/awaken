@@ -43,6 +43,7 @@ struct StopSource {
     evidence_release_result: Mutex<Result<(), String>>,
     idle_release_calls: Mutex<Vec<WorkerIdentity>>,
     idle_observed_exit: Mutex<Option<WorkerProcessExit>>,
+    idle_observe_may_stop: Mutex<Vec<bool>>,
 }
 
 #[async_trait::async_trait]
@@ -50,9 +51,13 @@ impl WorkerExecutionStopSource for StopSource {
     async fn observe_closed_idle_worker(
         &self,
         _identity: &WorkerIdentity,
-        _may_stop_active: bool,
+        may_stop_active: bool,
         _create_ledger: Option<&awaken_dispatch::WorkerCreateLedger>,
     ) -> Result<Option<WorkerProcessExit>, ApplicationError> {
+        self.idle_observe_may_stop
+            .lock()
+            .unwrap()
+            .push(may_stop_active);
         Ok(self.idle_observed_exit.lock().unwrap().clone())
     }
     async fn release_closed_idle_worker_evidence(
@@ -380,6 +385,7 @@ impl Fixture {
             evidence_release_result: Mutex::new(Ok(())),
             idle_release_calls: Mutex::new(Vec::new()),
             idle_observed_exit: Mutex::new(None),
+            idle_observe_may_stop: Mutex::new(Vec::new()),
         });
         let thread_id = request_thread_id(&tag);
         let recovery: Arc<dyn RunRecoverySource> = Arc::new(StaticRecoverySource {
@@ -511,6 +517,138 @@ impl Fixture {
 
 fn request_thread_id(tag: &str) -> awaken_agent_contract::agent::thread::Id {
     awaken_agent_contract::agent::thread::Id(format!("thread-{tag}"))
+}
+
+#[tokio::test]
+async fn closed_worker_exit_is_observed_before_occupied_retention_policy() {
+    // Cause/effect graph: C1 authenticated exact Worker is closed; C2 its
+    // original physical slot remains occupied; C3 provider independently
+    // observes the exact exit. E1 persist/read back C3 despite C2; E2 retain
+    // the slot and provider evidence; E3 do not authorize an active stop.
+    // | Rule | C1 | C2 | C3 | Effect |
+    // | O1   | Y  | Y  | Y  | E1+E2+E3 |
+    // | O2   | Y  | Y  | N  | no exit + E2+E3 |
+    // The existing idle/ACK test owns the empty-slot rules; ordinary attempt
+    // tests own live-incarnation refusal and full-closure retirement. These
+    // rules add no assertion that a local exit closes the complete attempt.
+    for observed_exit in [true, false] {
+        let f = Fixture::new(Arc::new(MemoryWorkerDirectory::new()), true, 100, 1_000).await;
+        let identity = f.binding.worker().clone();
+        if observed_exit {
+            *f.stop.idle_observed_exit.lock().unwrap() = Some(
+                WorkerProcessExit::new(
+                    f.binding.provider_id(),
+                    f.binding.execution_ref(),
+                    "exact-natural-exit",
+                )
+                .unwrap(),
+            );
+        }
+        let response = reqwest::Client::new()
+            .post(format!("{}/v1/worker/deregister", f.address))
+            .header("x-awaken-worker-id", &identity.worker_id)
+            .json(&json!({"identity": identity}))
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_success());
+        let record = f.directory.incarnation(&identity).await.unwrap().unwrap();
+        assert_eq!(record.snapshot.state, WorkerState::Dead);
+        assert_eq!(
+            record.process_exit.is_some(),
+            observed_exit,
+            "O1/O2 exit fact"
+        );
+        assert_eq!(*f.stop.idle_observe_may_stop.lock().unwrap(), [false], "E3");
+        assert!(f.stop.idle_release_calls.lock().unwrap().is_empty(), "E2");
+        assert!(
+            f.stop.calls.lock().unwrap().is_empty(),
+            "E3 no occupied stop"
+        );
+        f.assert_occupied().await;
+    }
+}
+
+#[tokio::test]
+async fn closed_worker_exit_survives_an_unavailable_physical_scan() {
+    // O3 complements O1/O2: C1 exact closed Worker; C2 provider has its original
+    // exit; C3 the real PostgreSQL physical reader is unavailable. E1 the
+    // independent Registry fact survives C3; E2 release/active stop remain
+    // refused; E3 reconnecting reads the unchanged original occupied slot.
+    // Closing only the Dispatch pool keeps the independent Memory Registry
+    // available and exercises a real adapter error without another reader mock.
+    let Some(url) = postgres_support::database_url() else {
+        return;
+    };
+    let pool = postgres_support::connect(sqlx::postgres::PgPoolOptions::new().connect(&url)).await;
+    let store = Arc::new(
+        PostgresDispatchStore::with_pool(pool.clone())
+            .await
+            .unwrap(),
+    );
+    let f = Fixture::with_store(
+        store,
+        Arc::new(MemoryWorkerDirectory::new()),
+        true,
+        100,
+        1_000,
+    )
+    .await;
+    let identity = f.binding.worker().clone();
+    assert!(
+        reqwest::Client::new()
+            .post(format!("{}/v1/worker/deregister", f.address))
+            .header("x-awaken-worker-id", &identity.worker_id)
+            .json(&json!({"identity": identity}))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success()
+    );
+    *f.stop.idle_observed_exit.lock().unwrap() = Some(
+        WorkerProcessExit::new(
+            f.binding.provider_id(),
+            f.binding.execution_ref(),
+            "exit-before-unavailable-scan",
+        )
+        .unwrap(),
+    );
+    f.stop.idle_observe_may_stop.lock().unwrap().clear();
+    pool.close().await;
+    assert!(
+        awaken_dispatch::release_closed_idle_worker_evidence(
+            f.store.as_ref(),
+            f.directory.as_ref(),
+            f.stop.as_ref(),
+            &identity,
+            200,
+        )
+        .await
+        .is_err()
+    );
+    let record = f.directory.incarnation(&identity).await.unwrap().unwrap();
+    assert!(record.process_exit.is_some(), "O3/E1");
+    assert_eq!(
+        *f.stop.idle_observe_may_stop.lock().unwrap(),
+        [false],
+        "O3/E2"
+    );
+    assert!(
+        f.stop.idle_release_calls.lock().unwrap().is_empty(),
+        "O3/E2"
+    );
+    let reread = postgres_support::connect(PostgresDispatchStore::connect(&url, 1)).await;
+    assert_eq!(
+        reread
+            .load_physical_attempt(&f.old.run_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .claim,
+        f.old,
+        "O3/E3"
+    );
 }
 
 #[tokio::test]
@@ -1956,11 +2094,12 @@ async fn cancelled_terminal_observation_retries_the_same_original_closing_slot()
 #[test]
 fn postgres_configuration_contract() {
     // C1 each adapter receives a silent PostgreSQL listener; C2 the child
-    // deadline exceeds the shared connection deadline. R3=C1+C2 => E1 both
-    // adapters report a bounded configured-PG failure before child termination.
+    // deadline exceeds the shared connection deadline. R3=C1+C2 => E1 every
+    // adapter entry reports a bounded configured-PG failure before termination.
     postgres_support::assert_configuration_contract(&[
         "blocked_http_closes_exact_expired_worker_but_local_exit_never_clears_remote_obligations",
         "complete_stop_uses_exact_retirement_and_requires_fresh_successor_admission",
+        "closed_worker_exit_survives_an_unavailable_physical_scan",
     ]);
 }
 
