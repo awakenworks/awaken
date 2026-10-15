@@ -83,6 +83,55 @@ struct KubernetesWorkerBindings {
 
 #[async_trait::async_trait]
 impl WorkerExecutionBindingSource for KubernetesWorkerBindings {
+    async fn seal_unattempted_worker(
+        &self,
+        worker_id: &str,
+        expected: &WorkerCreateLedger,
+    ) -> Result<WorkerCreateLedger, ApplicationError> {
+        let pod =
+            KubernetesPodIdentity::from_worker_id(worker_id).map_err(ApplicationError::invalid)?;
+        if pod.namespace() != self.namespace || pod.worker_id() != worker_id {
+            return Err(ApplicationError::invalid(
+                "Worker bootstrap names another Pod namespace",
+            ));
+        }
+        let (name, uid) = self
+            .create_ledger
+            .existing_worker_anchor(pod.namespace(), pod.name(), pod.uid())
+            .await
+            .map_err(|_| {
+                ApplicationError::unavailable("original Worker bootstrap ledger unavailable")
+            })?;
+        let anchor = WorkerCreateLedger::new(
+            &self.provider_id,
+            self.create_ledger.control_namespace(),
+            name,
+            uid,
+            self.create_ledger.configuration_fingerprint(),
+        )
+        .map_err(|error| ApplicationError::internal(error.to_string()))?;
+        let binding = K8sLedgerBinding {
+            worker_namespace: pod.namespace(),
+            worker_name: pod.name(),
+            worker_uid: pod.uid(),
+            ledger_name: anchor.name(),
+            ledger_uid: anchor.uid(),
+            configuration_fingerprint: anchor.configuration_fingerprint(),
+        };
+        if &anchor != expected {
+            return Err(ApplicationError::unavailable(
+                "original Worker bootstrap anchor changed",
+            ));
+        }
+        self.create_ledger
+            .seal_unattempted_worker(binding)
+            .await
+            .map_err(|_| {
+                ApplicationError::unavailable("Worker bootstrap is bound, incomplete or changed")
+            })?;
+        Ok(anchor)
+    }
+
     async fn prepare_registration_physical_evidence(
         &self,
         registration: &WorkerRegistration,
