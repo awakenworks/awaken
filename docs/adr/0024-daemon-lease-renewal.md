@@ -999,3 +999,11 @@ Model-request completion coordinates reuse the existing
 DTO and scalar-copy projection are removed; Rust callers depend on that value's
 owning contract rather than a protocol re-export. Its JSON fields and strict
 decoding remain unchanged.
+
+The recovery projection carries an original aggregate preparation reference
+only when `PersistedSession::terminal_cleanup_work_action` returns `Dispose`.
+That action already joins every frozen Runtime/Memory/Artifact preparation,
+Repository retirement/publication and the selected provider fence. The
+reference copies its Session id, effect id and preparation fingerprint; it
+creates no receipt and does not mean physical deletion completed. Consumers
+require it alongside execution closure before early recovery.

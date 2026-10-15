@@ -16,6 +16,23 @@ use std::collections::{BTreeMap, BTreeSet};
 const PAGE_SIZE: usize = 256;
 const MAX_PAGES: usize = 256;
 
+fn original_preparation(
+    session: &PersistedSession,
+) -> Option<awaken_session_execution_contract::SessionRecoveryPreparationReference> {
+    match session.terminal_cleanup_work_action() {
+        Ok(Some(awaken_session_state_contract::SessionTerminalCleanupAction::Dispose {
+            command,
+        })) => Some(
+            awaken_session_execution_contract::SessionRecoveryPreparationReference {
+                session_id: command.session_id.to_string(),
+                effect_id: command.effect_id,
+                preparation_fingerprint: command.preparation_fingerprint,
+            },
+        ),
+        _ => None,
+    }
+}
+
 fn response_only_run(
     snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
     run: &awaken_agent_contract::agent::run::Id,
@@ -246,6 +263,7 @@ where
         }
     }
     Observation::EffectsClosed {
+        preparation: original_preparation(session),
         operation_footprint: response_only.then_some(
             awaken_session_execution_contract::SessionExecutionOperationFootprint::ResponseOnly,
         ),
@@ -515,6 +533,77 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn recovery_preparation_requires_the_original_complete_aggregate_receipts() {
+        use awaken_session_configuration_contract::resource::SessionRealizationLease;
+        use awaken_session_state_contract::{
+            SessionCleanupPreparation, SessionCleanupRepositoryPreparation,
+            SessionTerminalCleanupEffect,
+        };
+        // C1 fenced original Session; C2 frozen targets; C3 each exact Runtime
+        // preparation and Repository receipt. R1 !C2 or !C3 -> no reference;
+        // R2 C1+C2+C3 -> copy only the original Dispose command coordinates,
+        // while cleanup remains pending. A changed/invalid receipt must not
+        // be replaced by a boolean success label.
+        let mut session = recovery_session("preparation-root");
+        session.execution = awaken_session_state_contract::SessionExecutionState::Terminated;
+        session.ensure_terminal_cleanup_fence();
+        assert!(original_preparation(&session).is_none(), "R1 fenced only");
+        session.freeze_terminal_cleanup_targets([], 0, 7).unwrap();
+        assert!(
+            original_preparation(&session).is_none(),
+            "R1 no preparations"
+        );
+        let lease = SessionRealizationLease {
+            owner: "worker".into(),
+            runtime_incarnation: "incarnation".into(),
+            epoch: 1,
+            expires_at_unix_ms: 100,
+        };
+        session.realization = Some(lease.clone());
+        let command = session
+            .terminal_cleanup
+            .command_for(&session.session_id, session.session_id.as_str())
+            .unwrap();
+        let effect = SessionTerminalCleanupEffect::new(command, lease.clone());
+        let prepared = SessionCleanupPreparation::try_new(
+            &effect,
+            effect.sandbox_effect_fence().unwrap(),
+            vec![],
+        )
+        .unwrap();
+        let repository = SessionCleanupRepositoryPreparation::new(
+            &session.session_id,
+            "workspace",
+            &session.resources,
+        )
+        .unwrap();
+        session
+            .record_terminal_cleanup_preparation("workspace", &lease, prepared, Some(repository))
+            .unwrap();
+        let expected = match session.terminal_cleanup_work_action().unwrap().unwrap() {
+            awaken_session_state_contract::SessionTerminalCleanupAction::Dispose { command } => {
+                command
+            }
+            _ => panic!("R2 exact complete preparation must authorize only disposal"),
+        };
+        let observed = original_preparation(&session).unwrap();
+        assert_eq!(
+            observed.session_id,
+            expected.session_id.to_string(),
+            "R2 original Session"
+        );
+        assert_eq!(observed.effect_id, expected.effect_id, "R2 original effect");
+        assert_eq!(
+            observed.preparation_fingerprint, expected.preparation_fingerprint,
+            "R2 original aggregate fingerprint"
+        );
+        assert!(
+            !session.terminal_cleanup.is_completed(),
+            "R2 no physical cleanup ACK"
+        );
+    }
+
     #[test]
     fn response_only_footprint_uses_original_coverage_and_every_operation() {
         use awaken_agent_contract::agent::state::{Command, StateKey};
