@@ -38,6 +38,7 @@ pub use awaken_session_execution_contract::SessionExecutor;
 mod execution_admission;
 pub use execution_admission::SessionExecutionAdmission;
 mod construction;
+mod tool_compilation;
 pub use construction::{SessionApplicationBuilder, SessionCredentials, SessionResources};
 
 mod recovery_scan;

@@ -34,6 +34,7 @@ async fn seed_expired_cleanup_affinity(
         Arc::new(NoopMcpRealizer),
         crate::SessionPersistence::new(repository.clone(), system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
+        std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
     .configuration(SessionApplicationConfiguration {
         execution_placement: SessionExecutionPlacement::RegisteredWorker,

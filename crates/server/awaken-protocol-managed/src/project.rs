@@ -113,62 +113,30 @@ fn first_forbidden_schema_key(v: &serde_json::Value) -> Option<&'static str> {
     }
 }
 
-use awaken_session_configuration_contract::{
-    AgentTool, CustomToolInputSchema, resolved_toolsets, toolset_policies,
-};
+use crate::tools::{AgentTool, CustomToolInputSchema, compile_agent_tools, resolved_toolsets};
 
-/// Lower the Managed tool union into the Session's one neutral durable owner.
+/// Validate and lower the entire Managed tool union in one fallible call.
 pub fn session_tool_configuration(
     tools: &[AgentTool],
-) -> awaken_session_configuration_contract::SessionToolConfiguration {
-    awaken_session_configuration_contract::SessionToolConfiguration {
-        toolsets: toolset_policies(tools),
-        client_tools: tools
-            .iter()
-            .filter_map(|tool| match tool {
-                AgentTool::Custom {
-                    name,
-                    description,
-                    input_schema,
-                } => Some(awaken_agent_contract::ClientToolDescriptor {
-                    name: name.clone(),
-                    description: description.clone(),
-                    input_schema: serde_json::to_value(input_schema)
-                        .expect("Managed custom tool schema serializes"),
-                }),
-                AgentTool::AgentToolset20260401 { .. } | AgentTool::McpToolset { .. } => None,
-            })
-            .collect(),
-    }
+) -> Result<awaken_session_configuration_contract::SessionToolConfiguration, String> {
+    compile_agent_tools(tools).map_err(|error| error.to_string())
 }
 
-/// Project one neutral Session tool configuration onto the Managed union.
+/// Project one neutral Session configuration, decoding only Web-owned values.
 pub fn managed_tools(
     configuration: &awaken_session_configuration_contract::SessionToolConfiguration,
-) -> Vec<AgentTool> {
-    let mut tools = resolved_toolsets(&configuration.toolsets);
-    tools.extend(configuration.client_tools.iter().map(|tool| {
-        AgentTool::Custom {
-            name: tool.name.clone(),
-            description: tool.description.clone(),
-            input_schema: CustomToolInputSchema::from_value(tool.input_schema.clone())
-                .expect("published client tool schemas are object schemas"),
-        }
-    }));
-    tools
+) -> Result<Vec<AgentTool>, String> {
+    let mut tools =
+        resolved_toolsets(&configuration.toolsets).map_err(|error| error.to_string())?;
+    tools.extend(agent_client_tools(&configuration.client_tools)?);
+    Ok(tools)
 }
 
-/// Resolve nullable toolset fields while preserving custom tool definitions.
-pub fn resolved_tools(tools: &[AgentTool]) -> Vec<AgentTool> {
-    managed_tools(&session_tool_configuration(tools))
+pub fn resolved_tools(tools: &[AgentTool]) -> Result<Vec<AgentTool>, String> {
+    managed_tools(&session_tool_configuration(tools)?)
 }
 
-/// Project the agent's tool surface onto the public `agent.tools` array. The built-in
-/// tools fold into a single `agent_toolset_20260401` reference (never per-tool
-/// definitions) with `configs` that disable the toolset tools the host does not
-/// register and mark the confirmation-gated ones `always_ask`; each client tool
-/// becomes a `custom` tool definition.
-pub fn agent_tools(caps: &AgentCapabilities) -> Vec<AgentTool> {
+pub fn agent_tools(caps: &AgentCapabilities) -> Result<Vec<AgentTool>, String> {
     managed_tools(
         &awaken_session_configuration_contract::SessionToolConfiguration::from_capabilities(caps),
     )

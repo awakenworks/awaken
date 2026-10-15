@@ -356,6 +356,22 @@ pub struct awaken_tool_contract::tool_batch::ToolWait
 pub awaken_tool_contract::tool_batch::ToolWait::correlation_id: alloc::string::String
 pub awaken_tool_contract::tool_batch::ToolWait::kind: awaken_tool_contract::tool_batch::ToolWaitKind
 pub fn awaken_tool_contract::tool_batch::store_from_run_commands(alloc::vec::Vec<awaken_agent_contract::agent::state::Command>, &awaken_agent_contract::agent::run::Id) -> awaken_agent_contract::agent::state::Store
+pub mod awaken_tool_contract::tool_configuration
+pub struct awaken_tool_contract::tool_configuration::ToolConfigurationError
+pub awaken_tool_contract::tool_configuration::ToolConfigurationError::code: alloc::string::String
+pub awaken_tool_contract::tool_configuration::ToolConfigurationError::message: alloc::string::String
+pub awaken_tool_contract::tool_configuration::ToolConfigurationError::path: alloc::string::String
+impl core::error::Error for awaken_tool_contract::tool_configuration::ToolConfigurationError
+impl core::fmt::Display for awaken_tool_contract::tool_configuration::ToolConfigurationError
+pub fn awaken_tool_contract::tool_configuration::ToolConfigurationError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct awaken_tool_contract::tool_configuration::ToolConfigurationInput<'a>
+pub awaken_tool_contract::tool_configuration::ToolConfigurationInput::client_tools: &'a [awaken_agent_contract::toolset::ClientToolDescriptor]
+pub awaken_tool_contract::tool_configuration::ToolConfigurationInput::configuration: &'a serde_json::value::Value
+pub awaken_tool_contract::tool_configuration::ToolConfigurationInput::source: &'a awaken_agent_contract::toolset::ToolsetSource
+pub awaken_tool_contract::tool_configuration::ToolConfigurationInput::tool_name: &'a str
+pub trait awaken_tool_contract::tool_configuration::ToolConfigurationCompiler: core::marker::Send + core::marker::Sync
+pub fn awaken_tool_contract::tool_configuration::ToolConfigurationCompiler::compile(&self, awaken_tool_contract::tool_configuration::ToolConfigurationInput<'_>) -> core::result::Result<serde_json::value::Value, awaken_tool_contract::tool_configuration::ToolConfigurationError>
+pub fn awaken_tool_contract::tool_configuration::compile_toolset_configurations(&dyn awaken_tool_contract::tool_configuration::ToolConfigurationCompiler, &[awaken_agent_contract::toolset::ToolsetPolicy], &[awaken_agent_contract::toolset::ClientToolDescriptor]) -> core::result::Result<alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>, awaken_tool_contract::tool_configuration::ToolConfigurationError>
 pub mod awaken_tool_contract::tool_discovery
 pub struct awaken_tool_contract::tool_discovery::ToolSearchInput
 pub awaken_tool_contract::tool_discovery::ToolSearchInput::max_results: core::option::Option<awaken_tool_contract::tool_discovery::ToolSearchLimit>
@@ -508,6 +524,18 @@ pub fn awaken_tool_contract::tool_batch::ToolBatch::deserialize<D: serde_core::d
 pub struct awaken_tool_contract::ToolBatchId(_)
 impl awaken_tool_contract::tool_batch::ToolBatchId
 pub fn awaken_tool_contract::tool_batch::ToolBatchId::as_str(&self) -> &str
+pub struct awaken_tool_contract::ToolConfigurationError
+pub awaken_tool_contract::ToolConfigurationError::code: alloc::string::String
+pub awaken_tool_contract::ToolConfigurationError::message: alloc::string::String
+pub awaken_tool_contract::ToolConfigurationError::path: alloc::string::String
+impl core::error::Error for awaken_tool_contract::tool_configuration::ToolConfigurationError
+impl core::fmt::Display for awaken_tool_contract::tool_configuration::ToolConfigurationError
+pub fn awaken_tool_contract::tool_configuration::ToolConfigurationError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct awaken_tool_contract::ToolConfigurationInput<'a>
+pub awaken_tool_contract::ToolConfigurationInput::client_tools: &'a [awaken_agent_contract::toolset::ClientToolDescriptor]
+pub awaken_tool_contract::ToolConfigurationInput::configuration: &'a serde_json::value::Value
+pub awaken_tool_contract::ToolConfigurationInput::source: &'a awaken_agent_contract::toolset::ToolsetSource
+pub awaken_tool_contract::ToolConfigurationInput::tool_name: &'a str
 pub struct awaken_tool_contract::ToolExecutionWave
 impl awaken_tool_contract::tool::ToolExecutionWave
 pub const fn awaken_tool_contract::tool::ToolExecutionWave::is_empty(self) -> bool
@@ -606,6 +634,8 @@ pub const awaken_tool_contract::Tool::ID: &'static str
 pub fn awaken_tool_contract::Tool::call<'life0, 'async_trait>(&'life0 self, Self::Args) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<Self::Output, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_tool_contract::Tool::concurrency(&self, &Self::Args) -> awaken_tool_contract::tool::ToolConcurrency
 pub fn awaken_tool_contract::Tool::recovery_capability(&self) -> awaken_tool_contract::tool::ToolRecoveryCapability
+pub trait awaken_tool_contract::ToolConfigurationCompiler: core::marker::Send + core::marker::Sync
+pub fn awaken_tool_contract::ToolConfigurationCompiler::compile(&self, awaken_tool_contract::tool_configuration::ToolConfigurationInput<'_>) -> core::result::Result<serde_json::value::Value, awaken_tool_contract::tool_configuration::ToolConfigurationError>
 pub trait awaken_tool_contract::ToolExecutionAdmission: core::marker::Send + core::marker::Sync
 pub fn awaken_tool_contract::ToolExecutionAdmission::acquire<'async_trait>(alloc::sync::Arc<Self>, awaken_tool_contract::tool::ToolConcurrency) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_tool_contract::tool::ToolExecutionPermit>, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait
 pub trait awaken_tool_contract::ToolExecutionPermit: core::marker::Send
@@ -621,6 +651,7 @@ pub fn awaken_tool_contract::tool::RawToolRegistry::durable_tasks(&self) -> core
 pub fn awaken_tool_contract::tool::RawToolRegistry::execution_domain<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool_batch::ToolExecutionDomain, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_tool_contract::tool::RawToolRegistry::invoke<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool::ToolOutput, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_tool_contract::tool::RawToolRegistry::recovery_capability(&self, &str) -> awaken_tool_contract::tool::ToolRecoveryCapability
+pub fn awaken_tool_contract::compile_toolset_configurations(&dyn awaken_tool_contract::tool_configuration::ToolConfigurationCompiler, &[awaken_agent_contract::toolset::ToolsetPolicy], &[awaken_agent_contract::toolset::ClientToolDescriptor]) -> core::result::Result<alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>, awaken_tool_contract::tool_configuration::ToolConfigurationError>
 pub async fn awaken_tool_contract::start_executor_task(&dyn awaken_tool_contract::tool::ToolExecutor, &awaken_tool_contract::tool::ToolCall) -> core::result::Result<awaken_tool_contract::tool::ToolTaskStart, awaken_tool_contract::tool::ToolError>
 pub async fn awaken_tool_contract::start_tool_task(&dyn awaken_tool_contract::tool::RawTool, awaken_tool_contract::tool::ToolCall) -> core::result::Result<awaken_tool_contract::tool::ToolTaskStart, awaken_tool_contract::tool::ToolError>
 pub fn awaken_tool_contract::tool_execution_waves(&[awaken_tool_contract::tool::ToolConcurrency], usize) -> alloc::vec::Vec<awaken_tool_contract::tool::ToolExecutionWave>

@@ -31,6 +31,11 @@ impl ConfigService {
         let config = config.canonicalize_mutable_authoring_against(
             current.as_ref().map(|revision| &revision.config),
         )?;
+        let config = crate::tool_compilation::compile_tool_settings(
+            self.tool_configuration_compiler.as_ref(),
+            &config,
+        )
+        .map_err(|error| error.to_string())?;
         let expected_revision = current.map_or(0, |revision| revision.revision);
         Ok((config, expected_revision))
     }

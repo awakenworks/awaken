@@ -19,19 +19,11 @@ use crate::plugin_validation::PluginPublicationResolver;
 #[cfg(test)]
 use crate::ConfigPlane;
 #[cfg(test)]
-use crate::config_routes::{get_config, publish, put_config, validate};
-#[cfg(test)]
 use crate::tool_catalog::{RESERVED_ADMIN_SCOPE, ToolCatalogSource};
 #[cfg(test)]
 use awaken_agent_config::DEFAULT_SCOPE;
 #[cfg(test)]
 use awaken_agent_config::ScopedConfigRegistry;
-#[cfg(test)]
-use axum::Json;
-#[cfg(test)]
-use axum::extract::{Path, State};
-#[cfg(test)]
-use axum::http::StatusCode;
 #[cfg(test)]
 use serde_json::json;
 
@@ -53,6 +45,8 @@ mod publication_build;
 pub struct ConfigService {
     /// The sole Control-to-Coordinator executable availability boundary.
     pub(crate) registrar: Arc<dyn ExecutableAgentRegistrar>,
+    pub(crate) tool_configuration_compiler:
+        Arc<dyn awaken_tool_contract::tool_configuration::ToolConfigurationCompiler>,
     /// Per-agent resource bindings (ADR-0038). When wired, the agent's bound-resource
     /// prompt fragments are appended to its effective system prompt at compile (A3a).
     /// `None` → compilation is byte-identical to an unbound agent.
@@ -67,15 +61,3 @@ pub struct ConfigService {
 
 #[cfg(test)]
 include!("config_service/test_support.rs");
-
-#[cfg(test)]
-pub(crate) mod resource_prompt_tests {
-    pub(crate) use super::{agent_config, failing_scoped_plane, test_service};
-}
-
-#[cfg(test)]
-mod integration_tests {
-    use super::*;
-
-    include!("config_service/integration_tests.rs");
-}

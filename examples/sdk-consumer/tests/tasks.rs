@@ -302,3 +302,122 @@ async fn filesystem_restart_reads_receipt_and_replays_terminal_without_a_model()
     assert_eq!(replay, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(receipt.transcript(reopened.as_ref()).unwrap().len(), 2);
 }
+#[test]
+fn web_policy_configuration_remains_usable_through_sdk_reexports() {
+    use awaken_agent_contract::ToolsetSource;
+    use awaken_ext_builtin_tools::{
+        WebDomainFilter, WebFetchExecutionConfiguration, WebToolConfigurationCompiler,
+    };
+    use awaken_tool_contract::{ToolConfigurationCompiler, ToolConfigurationInput};
+    use awaken_web_policy_contract::{
+        EffectiveWebFetchConfiguration, WebAdmissionFailure, WebExecutionConfiguration,
+        admit_fetch_url,
+    };
+    use serde_json::json;
+
+    // A downstream consumer can still construct the old exported types; these
+    // are the kernel's actual types, not lookalike adapter DTOs.
+    let old_path = WebFetchExecutionConfiguration {
+        domains: Some(WebDomainFilter::Allow(vec!["example.com".into()])),
+        max_content_tokens: Some(0),
+        ..Default::default()
+    };
+    let kernel_type: awaken_web_policy_contract::WebFetchExecutionConfiguration = old_path;
+    let canonical = WebExecutionConfiguration::WebFetch(kernel_type.clone())
+        .compile(None)
+        .unwrap();
+    assert_eq!(
+        canonical,
+        json!({"type":"web_fetch","domains":{"type":"allow","domains":["example.com"]},"max_content_tokens":0})
+    );
+    let effective = EffectiveWebFetchConfiguration::compose(
+        Some(kernel_type),
+        [WebFetchExecutionConfiguration {
+            domains: Some(WebDomainFilter::Block(vec!["private.example.com".into()])),
+            max_content_tokens: Some(100),
+            ..Default::default()
+        }],
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(effective.max_content_tokens, Some(0));
+    assert!(
+        admit_fetch_url(
+            "https://www.example.com/path",
+            &effective.domains,
+            &[],
+            None
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        admit_fetch_url(
+            "https://private.example.com/",
+            &effective.domains,
+            &[],
+            None
+        ),
+        Err(WebAdmissionFailure::DomainRejected)
+    );
+    // External implementations still use the existing public provider method
+    // and legacy exported filter path after the kernel's ownership move.
+    struct ExternalFetch;
+    #[async_trait::async_trait]
+    impl awaken_ext_builtin_tools::WebFetchProvider for ExternalFetch {
+        fn descriptor(&self) -> awaken_ext_builtin_tools::WebFetchProviderDescriptor {
+            awaken_ext_builtin_tools::WebFetchProviderDescriptor {
+                id: "consumer-fetch".into(),
+                label: "Consumer".into(),
+                credential: awaken_ext_builtin_tools::WebSearchCredentialRequirement::None,
+                options_schema: json!({"type":"object"}),
+            }
+        }
+        async fn fetch(
+            &self,
+            request: awaken_ext_builtin_tools::WebFetchRequest,
+            _: Option<&awaken_agent_contract::credential::Credential>,
+            _: &[awaken_ext_builtin_tools::WebDomainFilter],
+        ) -> Result<String, awaken_tool_contract::tool::ToolError> {
+            Ok(request.url)
+        }
+    }
+    let provider: &dyn awaken_ext_builtin_tools::WebFetchProvider = &ExternalFetch;
+    assert_eq!(provider.descriptor().id, "consumer-fetch");
+    let compiler = WebToolConfigurationCompiler;
+    assert_eq!(
+        compiler
+            .compile(ToolConfigurationInput {
+                source: &ToolsetSource::Agent,
+                tool_name: "web_fetch",
+                configuration: &canonical,
+                client_tools: &[],
+            })
+            .unwrap(),
+        canonical
+    );
+    let opaque = json!({"type":"future","url_sources":17,"private":{"x":null}});
+    assert_eq!(
+        compiler
+            .compile(ToolConfigurationInput {
+                source: &ToolsetSource::Mcp {
+                    server_name: "external".into()
+                },
+                tool_name: "web_fetch",
+                configuration: &opaque,
+                client_tools: &[],
+            })
+            .unwrap(),
+        opaque
+    );
+    let malformed = json!({"type":"web_fetch","domains":{"type":"allow","domains":[]}});
+    let error = compiler
+        .compile(ToolConfigurationInput {
+            source: &ToolsetSource::Agent,
+            tool_name: "web_fetch",
+            configuration: &malformed,
+            client_tools: &[],
+        })
+        .unwrap_err();
+    assert_eq!(error.code, "invalid_web_domain_count");
+    assert_eq!(error.path, "domains.domains");
+}

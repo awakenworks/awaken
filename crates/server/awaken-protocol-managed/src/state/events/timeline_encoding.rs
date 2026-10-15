@@ -355,9 +355,7 @@ fn encode_session_update(
             .agent()
             .map(|value| match value {
                 awaken_session_state_contract::SessionUpdateAgentConfiguration::Recorded(value) => {
-                    Ok(crate::state::sessions::session_agent_from_configuration(
-                        value,
-                    ))
+                    crate::state::sessions::session_agent_from_configuration(value)
                 }
                 awaken_session_state_contract::SessionUpdateAgentConfiguration::Unrecorded => {
                     Err(StateError::Run(RunError::unavailable(

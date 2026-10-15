@@ -429,6 +429,7 @@ mod tests {
             runtime,
             awaken_session_application::SessionPersistence::new(repo, awaken_time::system_clock()),
             environments.clone(),
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         )
         .configuration(
             awaken_session_application::SessionApplicationConfiguration {

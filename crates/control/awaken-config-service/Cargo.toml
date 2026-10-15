@@ -21,6 +21,10 @@ isolates = ["axum"]
 # execution (the control ⊥ execution invariant). Every composition root depends
 # on this authoritative owner directly.
 [dependencies]
+axum = { version = "0.8", features = ["multipart"] }
+awaken-provisioning-contract.workspace = true
+awaken-session-dream-contract.workspace = true
+awaken-tool-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-executable-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
@@ -29,18 +33,16 @@ awaken-tenancy = { workspace = true }
 awaken-config-resolver = { workspace = true }
 # Shared typed File/Memory/Repository binding vocabulary; contains no policy.
 # Read-only projection of the provider-neutral Resource input mount defaults.
-awaken-provisioning-contract = { workspace = true }
 # Managed authoring normalization still consumes the Session tool policy helpers;
 # executable publication profiles live in awaken-executable-agent-contract.
 awaken-session-configuration-contract.workspace = true
-awaken-session-dream-contract.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
-axum = { version = "0.8", features = ["multipart"] }
 
 [dev-dependencies]
+awaken-ext-builtin-tools.workspace = true
 awaken-config-resolver = { workspace = true, features = ["test-support"] }
 awaken-config-store = { workspace = true, features = ["test-support"] }
 awaken-executable-agent-catalog.workspace = true

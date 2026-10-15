@@ -13,6 +13,7 @@ use awaken_resource_contract::{
 use awaken_session_application_contract::ExecutableProjectionRefresh;
 use awaken_session_budget_contract::ManagedListPriceProvider;
 use awaken_session_configuration_contract::SessionModelPublicationResolver;
+use awaken_tool_contract::ToolConfigurationCompiler;
 use std::sync::Arc;
 
 use crate::{
@@ -90,6 +91,7 @@ impl SessionResources {
 /// ports; consuming `build` removes the configuration mutation surface.
 pub struct SessionApplicationBuilder {
     runtime: SessionExecutor,
+    tool_configuration_compiler: Arc<dyn ToolConfigurationCompiler>,
     mcp: Arc<dyn McpAttachmentRealizer>,
     persistence: SessionPersistence,
     environments: SessionEnvironments,
@@ -111,6 +113,7 @@ impl SessionApplicationBuilder {
         mcp: Arc<dyn McpAttachmentRealizer>,
         persistence: SessionPersistence,
         environments: impl Into<SessionEnvironments>,
+        tool_configuration_compiler: Arc<dyn ToolConfigurationCompiler>,
     ) -> Self {
         Self::new(
             runtime,
@@ -118,6 +121,7 @@ impl SessionApplicationBuilder {
             persistence,
             environments,
             SessionExecutionAdmission::fixture(),
+            tool_configuration_compiler,
         )
     }
 
@@ -128,9 +132,11 @@ impl SessionApplicationBuilder {
         persistence: SessionPersistence,
         environments: impl Into<SessionEnvironments>,
         execution: SessionExecutionAdmission,
+        tool_configuration_compiler: Arc<dyn ToolConfigurationCompiler>,
     ) -> Self {
         Self {
             runtime: runtime.into(),
+            tool_configuration_compiler,
             mcp,
             persistence,
             environments: environments.into(),
@@ -211,6 +217,7 @@ impl SessionApplicationBuilder {
             clock,
             configuration,
             runtime: self.runtime,
+            tool_configuration_compiler: self.tool_configuration_compiler,
             mcp_realizer: self.mcp,
             credential_source,
             credential_material_ingress,

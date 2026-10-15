@@ -29,6 +29,30 @@ pub(crate) fn environment_components() -> (
     )
 }
 
+pub(crate) fn managed_state_from_parts(
+    runtime: std::sync::Arc<dyn awaken_session_execution_contract::CompleteSessionRuntime>,
+    mcp: Option<std::sync::Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
+    sessions: std::sync::Arc<dyn awaken_session_repository_contract::SessionStore>,
+    environments: std::sync::Arc<
+        awaken_environment_application::execution::EnvironmentExecutionApplication,
+    >,
+    clock: std::sync::Arc<dyn awaken_time::WallClock>,
+    compiler: std::sync::Arc<dyn awaken_tool_contract::ToolConfigurationCompiler>,
+) -> crate::ManagedState {
+    crate::ManagedState::from_application(
+        awaken_protocol_managed_testkit::session_application_from_parts(
+            runtime,
+            mcp,
+            sessions,
+            environments.clone(),
+            clock,
+            compiler,
+        ),
+        environments,
+        awaken_data_governance_contract::CapturePolicy::default(),
+    )
+}
+
 #[cfg(test)]
 mod session_repository {
     //! Existing real-SQLite conflict fixture, shared with controlled refresh reads.

@@ -91,7 +91,8 @@ pub(super) fn config_from_create(
     id: String,
     params: AgentCreateParams,
 ) -> Result<AgentConfig, ManagedAgentError> {
-    validate_agent_tools(&params.tools).map_err(ManagedAgentError::Invalid)?;
+    let compiled = compile_agent_tools(&params.tools)
+        .map_err(|error| ManagedAgentError::Invalid(error.to_string()))?;
     let model = params.model.into_config().into_resolved();
     let inference = model.inference_options();
     let model_binding = parse_managed_model_id(&model.id)
@@ -105,7 +106,7 @@ pub(super) fn config_from_create(
         model_binding,
         inference,
         tool_ids: Vec::new(),
-        toolsets: toolset_policies(&params.tools),
+        toolsets: compiled.toolsets,
         client_tools: client_tools(&params.tools),
         plugin_ids: Vec::new(),
         plugin_config: BTreeMap::new(),
@@ -232,7 +233,8 @@ pub(super) fn wire_tools(
     // | server `tool_ids`      | omitted                    |
     // | typed toolset          | typed toolset              |
     // | client tool descriptor | complete `custom`          |
-    let mut tools = resolved_toolsets(toolsets);
+    let mut tools = resolved_toolsets(toolsets)
+        .map_err(|error| ManagedAgentError::Invalid(error.to_string()))?;
     // A stored client tool whose schema is not an object schema is a shape this
     // wire cannot carry. The admission check that makes that impossible lives in
     // another crate, so the guarantee cannot be asserted from here: report the

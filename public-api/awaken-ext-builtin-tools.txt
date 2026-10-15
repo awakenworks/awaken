@@ -1,5 +1,9 @@
 pub mod awaken_ext_builtin_tools
 pub use awaken_ext_builtin_tools::Erased
+pub use awaken_ext_builtin_tools::WebDomainFilter
+pub use awaken_ext_builtin_tools::WebFetchExecutionConfiguration
+pub use awaken_ext_builtin_tools::WebSearchExecutionConfiguration
+pub use awaken_ext_builtin_tools::WebSearchUserLocation
 pub use awaken_ext_builtin_tools::erase
 pub enum awaken_ext_builtin_tools::AgentMessageTarget
 pub awaken_ext_builtin_tools::AgentMessageTarget::ExistingThread
@@ -16,9 +20,6 @@ pub enum awaken_ext_builtin_tools::Toolset
 pub awaken_ext_builtin_tools::Toolset::Coordination
 pub awaken_ext_builtin_tools::Toolset::Delegation
 pub awaken_ext_builtin_tools::Toolset::Hand
-pub enum awaken_ext_builtin_tools::WebDomainFilter
-pub awaken_ext_builtin_tools::WebDomainFilter::Allow(alloc::vec::Vec<alloc::string::String>)
-pub awaken_ext_builtin_tools::WebDomainFilter::Block(alloc::vec::Vec<alloc::string::String>)
 pub enum awaken_ext_builtin_tools::WebSearchCredentialRequirement
 pub awaken_ext_builtin_tools::WebSearchCredentialRequirement::Exact(awaken_agent_contract::credential::usage::CredentialUsage)
 pub awaken_ext_builtin_tools::WebSearchCredentialRequirement::None
@@ -55,7 +56,7 @@ pub struct awaken_ext_builtin_tools::AwakenDirectFetchProvider
 impl awaken_ext_builtin_tools::WebFetchProvider for awaken_ext_builtin_tools::AwakenDirectFetchProvider
 pub fn awaken_ext_builtin_tools::AwakenDirectFetchProvider::descriptor(&self) -> awaken_ext_builtin_tools::WebFetchProviderDescriptor
 pub fn awaken_ext_builtin_tools::AwakenDirectFetchProvider::enforces_domain_filter(&self) -> bool
-pub fn awaken_ext_builtin_tools::AwakenDirectFetchProvider::fetch<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, awaken_ext_builtin_tools::WebFetchRequest, core::option::Option<&'life1 awaken_agent_contract::credential::outbound::Credential>, &'life2 [awaken_ext_builtin_tools::WebDomainFilter]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_ext_builtin_tools::AwakenDirectFetchProvider::fetch<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, awaken_ext_builtin_tools::WebFetchRequest, core::option::Option<&'life1 awaken_agent_contract::credential::outbound::Credential>, &'life2 [awaken_web_policy_contract::configuration::WebDomainFilter]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_ext_builtin_tools::AwakenDirectFetchProvider::validate_options(&self, &serde_json::value::Value) -> core::result::Result<(), alloc::string::String>
 pub struct awaken_ext_builtin_tools::BashArgs
 pub awaken_ext_builtin_tools::BashArgs::command: alloc::string::String
@@ -154,7 +155,7 @@ pub fn awaken_ext_builtin_tools::ManagedGatewayWebProvider::with_descriptors(sel
 impl awaken_ext_builtin_tools::WebFetchProvider for awaken_ext_builtin_tools::ManagedGatewayWebProvider
 pub fn awaken_ext_builtin_tools::ManagedGatewayWebProvider::descriptor(&self) -> awaken_ext_builtin_tools::WebFetchProviderDescriptor
 pub fn awaken_ext_builtin_tools::ManagedGatewayWebProvider::enforces_domain_filter(&self) -> bool
-pub fn awaken_ext_builtin_tools::ManagedGatewayWebProvider::fetch<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, awaken_ext_builtin_tools::WebFetchRequest, core::option::Option<&'life1 awaken_agent_contract::credential::outbound::Credential>, &'life2 [awaken_ext_builtin_tools::WebDomainFilter]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_ext_builtin_tools::ManagedGatewayWebProvider::fetch<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, awaken_ext_builtin_tools::WebFetchRequest, core::option::Option<&'life1 awaken_agent_contract::credential::outbound::Credential>, &'life2 [awaken_web_policy_contract::configuration::WebDomainFilter]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_ext_builtin_tools::ManagedGatewayWebProvider::validate_options(&self, &serde_json::value::Value) -> core::result::Result<(), alloc::string::String>
 impl awaken_ext_builtin_tools::WebSearchProvider for awaken_ext_builtin_tools::ManagedGatewayWebProvider
 pub fn awaken_ext_builtin_tools::ManagedGatewayWebProvider::descriptor(&self) -> awaken_ext_builtin_tools::WebSearchProviderDescriptor
@@ -197,18 +198,14 @@ pub fn awaken_ext_builtin_tools::SendMessageTool::call<'life0, 'async_trait>(&'l
 pub fn awaken_ext_builtin_tools::SendMessageTool::recovery_capability(&self) -> awaken_tool_contract::tool::ToolRecoveryCapability
 pub struct awaken_ext_builtin_tools::WebFetchArgs
 pub awaken_ext_builtin_tools::WebFetchArgs::url: alloc::string::String
-pub struct awaken_ext_builtin_tools::WebFetchExecutionConfiguration
-pub awaken_ext_builtin_tools::WebFetchExecutionConfiguration::domains: core::option::Option<awaken_ext_builtin_tools::WebDomainFilter>
-pub awaken_ext_builtin_tools::WebFetchExecutionConfiguration::max_content_tokens: core::option::Option<u64>
-pub awaken_ext_builtin_tools::WebFetchExecutionConfiguration::url_sources: core::option::Option<awaken_web_policy_contract::WebFetchUrlSources>
 pub struct awaken_ext_builtin_tools::WebFetchPlugin
 impl awaken_ext_builtin_tools::WebFetchPlugin
 pub fn awaken_ext_builtin_tools::WebFetchPlugin::configured_tool(&self, core::option::Option<&serde_json::value::Value>) -> core::result::Result<(awaken_runtime_contract::resolved::ToolDescriptor, alloc::sync::Arc<dyn awaken_tool_contract::tool::RawTool>), awaken_runtime_contract::plugin::contributions::PluginConfigError>
 pub fn awaken_ext_builtin_tools::WebFetchPlugin::default_config() -> serde_json::value::Value
 pub fn awaken_ext_builtin_tools::WebFetchPlugin::new(awaken_ext_builtin_tools::WebSearchProviderRegistry, core::option::Option<alloc::sync::Arc<dyn awaken_ext_builtin_tools::WebSearchCredentialResolver>>) -> Self
 pub fn awaken_ext_builtin_tools::WebFetchPlugin::validate_config(&self, core::option::Option<&serde_json::value::Value>) -> core::result::Result<(), awaken_runtime_contract::plugin::contributions::PluginConfigError>
-pub fn awaken_ext_builtin_tools::WebFetchPlugin::with_execution_configuration(self, core::option::Option<awaken_ext_builtin_tools::WebFetchExecutionConfiguration>) -> Self
-pub fn awaken_ext_builtin_tools::WebFetchPlugin::with_inherited_execution_configuration(self, core::option::Option<awaken_ext_builtin_tools::WebFetchExecutionConfiguration>, &awaken_agent_contract::toolset::InheritedToolsets) -> core::result::Result<Self, alloc::string::String>
+pub fn awaken_ext_builtin_tools::WebFetchPlugin::with_execution_configuration(self, core::option::Option<awaken_web_policy_contract::configuration::WebFetchExecutionConfiguration>) -> Self
+pub fn awaken_ext_builtin_tools::WebFetchPlugin::with_inherited_execution_configuration(self, core::option::Option<awaken_web_policy_contract::configuration::WebFetchExecutionConfiguration>, &awaken_agent_contract::toolset::InheritedToolsets) -> core::result::Result<Self, alloc::string::String>
 pub fn awaken_ext_builtin_tools::WebFetchPlugin::with_tool_source_catalogue(self, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> Self
 impl awaken_runtime_contract::plugin::contributions::Plugin for awaken_ext_builtin_tools::WebFetchPlugin
 pub fn awaken_ext_builtin_tools::WebFetchPlugin::manifest(&self) -> awaken_runtime_contract::plugin::capability::PluginManifest
@@ -236,16 +233,13 @@ pub awaken_ext_builtin_tools::WebSearchConfig::credential_access: core::option::
 pub awaken_ext_builtin_tools::WebSearchConfig::fallbacks: alloc::vec::Vec<awaken_ext_builtin_tools::WebProviderTarget>
 pub awaken_ext_builtin_tools::WebSearchConfig::options: serde_json::value::Value
 pub awaken_ext_builtin_tools::WebSearchConfig::provider_id: alloc::string::String
-pub struct awaken_ext_builtin_tools::WebSearchExecutionConfiguration
-pub awaken_ext_builtin_tools::WebSearchExecutionConfiguration::domains: core::option::Option<awaken_ext_builtin_tools::WebDomainFilter>
-pub awaken_ext_builtin_tools::WebSearchExecutionConfiguration::user_location: core::option::Option<awaken_ext_builtin_tools::WebSearchUserLocation>
 pub struct awaken_ext_builtin_tools::WebSearchPlugin
 impl awaken_ext_builtin_tools::WebSearchPlugin
 pub fn awaken_ext_builtin_tools::WebSearchPlugin::configured_tool(&self, core::option::Option<&serde_json::value::Value>) -> core::result::Result<(awaken_runtime_contract::resolved::ToolDescriptor, alloc::sync::Arc<dyn awaken_tool_contract::tool::RawTool>), awaken_runtime_contract::plugin::contributions::PluginConfigError>
 pub fn awaken_ext_builtin_tools::WebSearchPlugin::new(awaken_ext_builtin_tools::WebSearchProviderRegistry, core::option::Option<alloc::sync::Arc<dyn awaken_ext_builtin_tools::WebSearchCredentialResolver>>) -> Self
 pub fn awaken_ext_builtin_tools::WebSearchPlugin::validate_config(&self, core::option::Option<&serde_json::value::Value>) -> core::result::Result<(), awaken_runtime_contract::plugin::contributions::PluginConfigError>
-pub fn awaken_ext_builtin_tools::WebSearchPlugin::with_execution_configuration(self, core::option::Option<awaken_ext_builtin_tools::WebSearchExecutionConfiguration>) -> Self
-pub fn awaken_ext_builtin_tools::WebSearchPlugin::with_inherited_execution_configuration(self, core::option::Option<awaken_ext_builtin_tools::WebSearchExecutionConfiguration>, &awaken_agent_contract::toolset::InheritedToolsets) -> core::result::Result<Self, alloc::string::String>
+pub fn awaken_ext_builtin_tools::WebSearchPlugin::with_execution_configuration(self, core::option::Option<awaken_web_policy_contract::configuration::WebSearchExecutionConfiguration>) -> Self
+pub fn awaken_ext_builtin_tools::WebSearchPlugin::with_inherited_execution_configuration(self, core::option::Option<awaken_web_policy_contract::configuration::WebSearchExecutionConfiguration>, &awaken_agent_contract::toolset::InheritedToolsets) -> core::result::Result<Self, alloc::string::String>
 impl awaken_runtime_contract::plugin::contributions::Plugin for awaken_ext_builtin_tools::WebSearchPlugin
 pub fn awaken_ext_builtin_tools::WebSearchPlugin::manifest(&self) -> awaken_runtime_contract::plugin::capability::PluginManifest
 pub fn awaken_ext_builtin_tools::WebSearchPlugin::resolve(&self) -> awaken_runtime_contract::plugin::contributions::Contributions
@@ -271,16 +265,14 @@ pub struct awaken_ext_builtin_tools::WebSearchRequest
 pub awaken_ext_builtin_tools::WebSearchRequest::count: usize
 pub awaken_ext_builtin_tools::WebSearchRequest::options: serde_json::value::Value
 pub awaken_ext_builtin_tools::WebSearchRequest::query: alloc::string::String
-pub awaken_ext_builtin_tools::WebSearchRequest::user_location: core::option::Option<awaken_ext_builtin_tools::WebSearchUserLocation>
+pub awaken_ext_builtin_tools::WebSearchRequest::user_location: core::option::Option<awaken_web_policy_contract::configuration::WebSearchUserLocation>
 pub struct awaken_ext_builtin_tools::WebSearchResult
 pub awaken_ext_builtin_tools::WebSearchResult::snippet: alloc::string::String
 pub awaken_ext_builtin_tools::WebSearchResult::title: alloc::string::String
 pub awaken_ext_builtin_tools::WebSearchResult::url: alloc::string::String
-pub struct awaken_ext_builtin_tools::WebSearchUserLocation
-pub awaken_ext_builtin_tools::WebSearchUserLocation::city: core::option::Option<alloc::string::String>
-pub awaken_ext_builtin_tools::WebSearchUserLocation::country: core::option::Option<alloc::string::String>
-pub awaken_ext_builtin_tools::WebSearchUserLocation::region: core::option::Option<alloc::string::String>
-pub awaken_ext_builtin_tools::WebSearchUserLocation::timezone: core::option::Option<alloc::string::String>
+pub struct awaken_ext_builtin_tools::WebToolConfigurationCompiler
+impl awaken_tool_contract::tool_configuration::ToolConfigurationCompiler for awaken_ext_builtin_tools::WebToolConfigurationCompiler
+pub fn awaken_ext_builtin_tools::WebToolConfigurationCompiler::compile(&self, awaken_tool_contract::tool_configuration::ToolConfigurationInput<'_>) -> core::result::Result<serde_json::value::Value, awaken_tool_contract::tool_configuration::ToolConfigurationError>
 pub struct awaken_ext_builtin_tools::WriteArgs
 pub awaken_ext_builtin_tools::WriteArgs::content: alloc::string::String
 pub awaken_ext_builtin_tools::WriteArgs::path: alloc::string::String
@@ -320,17 +312,17 @@ pub fn awaken_ext_builtin_tools::ManagedWebRouteResolver::resolve<'life0, 'life1
 pub trait awaken_ext_builtin_tools::WebFetchProvider: core::marker::Send + core::marker::Sync
 pub fn awaken_ext_builtin_tools::WebFetchProvider::descriptor(&self) -> awaken_ext_builtin_tools::WebFetchProviderDescriptor
 pub fn awaken_ext_builtin_tools::WebFetchProvider::enforces_domain_filter(&self) -> bool
-pub fn awaken_ext_builtin_tools::WebFetchProvider::fetch<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, awaken_ext_builtin_tools::WebFetchRequest, core::option::Option<&'life1 awaken_agent_contract::credential::outbound::Credential>, &'life2 [awaken_ext_builtin_tools::WebDomainFilter]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_ext_builtin_tools::WebFetchProvider::fetch<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, awaken_ext_builtin_tools::WebFetchRequest, core::option::Option<&'life1 awaken_agent_contract::credential::outbound::Credential>, &'life2 [awaken_web_policy_contract::configuration::WebDomainFilter]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_ext_builtin_tools::WebFetchProvider::validate_options(&self, &serde_json::value::Value) -> core::result::Result<(), alloc::string::String>
 impl awaken_ext_builtin_tools::WebFetchProvider for awaken_ext_builtin_tools::AwakenDirectFetchProvider
 pub fn awaken_ext_builtin_tools::AwakenDirectFetchProvider::descriptor(&self) -> awaken_ext_builtin_tools::WebFetchProviderDescriptor
 pub fn awaken_ext_builtin_tools::AwakenDirectFetchProvider::enforces_domain_filter(&self) -> bool
-pub fn awaken_ext_builtin_tools::AwakenDirectFetchProvider::fetch<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, awaken_ext_builtin_tools::WebFetchRequest, core::option::Option<&'life1 awaken_agent_contract::credential::outbound::Credential>, &'life2 [awaken_ext_builtin_tools::WebDomainFilter]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_ext_builtin_tools::AwakenDirectFetchProvider::fetch<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, awaken_ext_builtin_tools::WebFetchRequest, core::option::Option<&'life1 awaken_agent_contract::credential::outbound::Credential>, &'life2 [awaken_web_policy_contract::configuration::WebDomainFilter]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_ext_builtin_tools::AwakenDirectFetchProvider::validate_options(&self, &serde_json::value::Value) -> core::result::Result<(), alloc::string::String>
 impl awaken_ext_builtin_tools::WebFetchProvider for awaken_ext_builtin_tools::ManagedGatewayWebProvider
 pub fn awaken_ext_builtin_tools::ManagedGatewayWebProvider::descriptor(&self) -> awaken_ext_builtin_tools::WebFetchProviderDescriptor
 pub fn awaken_ext_builtin_tools::ManagedGatewayWebProvider::enforces_domain_filter(&self) -> bool
-pub fn awaken_ext_builtin_tools::ManagedGatewayWebProvider::fetch<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, awaken_ext_builtin_tools::WebFetchRequest, core::option::Option<&'life1 awaken_agent_contract::credential::outbound::Credential>, &'life2 [awaken_ext_builtin_tools::WebDomainFilter]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_ext_builtin_tools::ManagedGatewayWebProvider::fetch<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, awaken_ext_builtin_tools::WebFetchRequest, core::option::Option<&'life1 awaken_agent_contract::credential::outbound::Credential>, &'life2 [awaken_web_policy_contract::configuration::WebDomainFilter]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_ext_builtin_tools::ManagedGatewayWebProvider::validate_options(&self, &serde_json::value::Value) -> core::result::Result<(), alloc::string::String>
 pub trait awaken_ext_builtin_tools::WebSearchCredentialResolver: core::marker::Send + core::marker::Sync
 pub fn awaken_ext_builtin_tools::WebSearchCredentialResolver::resolve<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::credential::reference::CredentialAccess, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::credential::outbound::Credential, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
@@ -358,8 +350,8 @@ pub async fn awaken_ext_builtin_tools::invoke_auxiliary_agent(&dyn awaken_tool_c
 pub fn awaken_ext_builtin_tools::managed_web_route_ref<'a>(&str, &'a serde_json::value::Value) -> core::option::Option<&'a str>
 pub fn awaken_ext_builtin_tools::selected_hand_recovery_modes(&[awaken_runtime_contract::resolved::ToolDescriptor]) -> alloc::collections::btree::set::BTreeSet<awaken_tool_contract::tool::ToolRecoveryMode>
 pub fn awaken_ext_builtin_tools::web_fetch_descriptor() -> awaken_runtime_contract::resolved::ToolDescriptor
-pub fn awaken_ext_builtin_tools::web_fetch_execution_configuration(&[awaken_agent_contract::toolset::ToolsetPolicy]) -> core::result::Result<core::option::Option<awaken_ext_builtin_tools::WebFetchExecutionConfiguration>, alloc::string::String>
+pub fn awaken_ext_builtin_tools::web_fetch_execution_configuration(&[awaken_agent_contract::toolset::ToolsetPolicy]) -> core::result::Result<core::option::Option<awaken_web_policy_contract::configuration::WebFetchExecutionConfiguration>, alloc::string::String>
 pub fn awaken_ext_builtin_tools::web_search_descriptor() -> awaken_runtime_contract::resolved::ToolDescriptor
-pub fn awaken_ext_builtin_tools::web_search_execution_configuration(&[awaken_agent_contract::toolset::ToolsetPolicy]) -> core::result::Result<core::option::Option<awaken_ext_builtin_tools::WebSearchExecutionConfiguration>, alloc::string::String>
+pub fn awaken_ext_builtin_tools::web_search_execution_configuration(&[awaken_agent_contract::toolset::ToolsetPolicy]) -> core::result::Result<core::option::Option<awaken_web_policy_contract::configuration::WebSearchExecutionConfiguration>, alloc::string::String>
 pub type awaken_ext_builtin_tools::BashLaunchPreparation = alloc::sync::Arc<(dyn core::ops::function::Fn(&mut tokio::process::Command) -> core::io::error::Result<()> + core::marker::Send + core::marker::Sync)>
 pub type awaken_ext_builtin_tools::WebFetchConfig = awaken_ext_builtin_tools::WebSearchConfig

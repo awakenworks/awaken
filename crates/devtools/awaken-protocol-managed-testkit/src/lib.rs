@@ -148,12 +148,13 @@ impl ManagedStateFixture for ManagedState {
     async fn new(runtime: impl CompleteSessionRuntime + 'static) -> Self {
         // A test's fixture graph: it runs on the host clock throughout.
         let clock = awaken_time::system_clock();
-        ManagedState::from_fixture_parts(
+        managed_state_from_parts(
             Arc::new(runtime),
             None,
             ephemeral_session_repository().await,
             environment_fixture(clock.clone()).execution,
             clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         )
     }
 
@@ -163,12 +164,62 @@ impl ManagedStateFixture for ManagedState {
     {
         let runtime = Arc::new(runtime);
         let clock = awaken_time::system_clock();
-        ManagedState::from_fixture_parts(
+        managed_state_from_parts(
             runtime.clone(),
             Some(runtime),
             ephemeral_session_repository().await,
             environment_fixture(clock.clone()).execution,
             clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         )
     }
 }
+
+/// Explicit bootstrap of a test Session application over supplied ports.
+pub fn managed_state_from_parts(
+    runtime: Arc<dyn awaken_session_execution_contract::CompleteSessionRuntime>,
+    mcp: Option<Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
+    sessions: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    environments: Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
+    clock: Arc<dyn awaken_time::WallClock>,
+    compiler: Arc<dyn awaken_tool_contract::ToolConfigurationCompiler>,
+) -> ManagedState {
+    ManagedState::from_application(
+        session_application_from_parts(
+            runtime,
+            mcp,
+            sessions,
+            environments.clone(),
+            clock,
+            compiler,
+        ),
+        environments,
+        awaken_data_governance_contract::CapturePolicy::default(),
+    )
+}
+
+/// Build only the application so a protocol unit-test crate retains its own
+/// ManagedState type rather than importing the non-test copy through testkit.
+pub fn session_application_from_parts(
+    runtime: Arc<dyn awaken_session_execution_contract::CompleteSessionRuntime>,
+    mcp: Option<Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
+    sessions: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    environments: Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
+    clock: Arc<dyn awaken_time::WallClock>,
+    compiler: Arc<dyn awaken_tool_contract::ToolConfigurationCompiler>,
+) -> Arc<awaken_session_application::SessionApplication> {
+    Arc::new(
+        awaken_session_application::SessionApplicationBuilder::fixture(
+            runtime,
+            mcp.unwrap_or_else(|| Arc::new(UnsupportedMcpAttachmentRealizer)),
+            awaken_session_application::SessionPersistence::new(sessions, clock),
+            environments,
+            compiler,
+        )
+        .build()
+        .expect("valid fixture Session application"),
+    )
+}
+
+mod unsupported_mcp;
+pub use unsupported_mcp::UnsupportedMcpAttachmentRealizer;

@@ -27,13 +27,10 @@ use crate::resource::{ResolvedSessionResources, ResolvedSkillBinding, SessionMut
 use {crate::mcp::McpAttachmentOrigin, awaken_agent_contract::McpTarget};
 
 pub use agent_config::{
-    AGENT_TOOLSET_TOOL_IDS, AgentPermissionPreset, AgentPermissionPresetTarget, AgentTool,
-    AgentToolConfig, AgentToolDefaultConfig, AgentToolPermissionPolicy, AgentToolsetMember,
-    AgentWebSearchUserLocation, AgentWebSearchUserLocationKind, CustomToolInputSchema,
-    ObjectSchemaKind, agent_toolset_members, apply_agent_permission_preset,
+    AGENT_TOOLSET_TOOL_IDS, AgentPermissionPreset, AgentPermissionPresetTarget,
+    BuiltinToolsetMember, agent_toolset_members, apply_agent_permission_preset,
     ensure_typed_mcp_toolset_policies, is_agent_toolset_member, is_controlled_modification_member,
-    preserve_runtime_agent_overrides, resolved_toolsets, toolset_policies, validate_agent_tools,
-    validate_mcp_toolset_pairing,
+    preserve_runtime_agent_overrides, toolset_default_policy, validate_mcp_toolset_pairing,
 };
 pub use application_origin::{ApplicationOriginBinding, ApplicationOriginBindingError};
 pub use baseline::{

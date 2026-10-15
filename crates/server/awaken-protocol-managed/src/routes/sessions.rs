@@ -706,7 +706,12 @@ async fn update_session(
                 title,
                 metadata,
                 budget,
-                tools: tools.map(|tools| crate::project::session_tool_configuration(&tools)),
+                tools: tools
+                    .map(|tools| crate::project::session_tool_configuration(&tools))
+                    .transpose()
+                    .map_err(|message| {
+                        error_response(StateError::Run(RunError::bad_request(message)))
+                    })?,
                 mcp_update: mcp_servers.map(|servers| {
                     awaken_session_application::SessionMcpUpdate::PublicReplacement(
                         servers

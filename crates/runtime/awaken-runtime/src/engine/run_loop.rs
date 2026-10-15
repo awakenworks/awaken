@@ -386,21 +386,9 @@ async fn infer_step(
             request.messages.extend(transcript);
         }
         request.model_binding = candidates[cand_idx].clone();
-        if let Some(materializer) = &context.model_content_materializer {
-            request = inference::model_read(
-                context.cancellation.as_ref(),
-                context
-                    .physical_quiescence
-                    .observe_return(materializer.materialize(request)),
-            )
-            .await
-            .ok_or_else(|| {
-                awaken_runtime_contract::llm::Error::Cancelled("model preparation cancelled".into())
-            })??;
-            if !context.physical_quiescence.permits_execution() {
-                break Ok(InferStepOutcome::Indeterminate);
-            }
-        }
+        let Some(request) = inference::materialize_model_input(context, request).await? else {
+            break Ok(InferStepOutcome::Indeterminate);
+        };
         if let Some(gate) = &context.model_request_gate {
             let admission = inference::model_read(
                 context.cancellation.as_ref(),
@@ -446,6 +434,7 @@ async fn infer_step(
         let mut journal = super::model_operation::ModelOperationJournal::new(
             ledger, store, context, thread_id, run_id,
         );
+        let observed_input = request.messages.clone();
         let observed = infer_with_retry_observed(
             llm,
             request,
@@ -498,6 +487,17 @@ async fn infer_step(
         }
         match observed.result {
             Ok(response) => {
+                run_phase_hooks(
+                    env,
+                    context,
+                    run_id,
+                    source_step,
+                    PhaseKind::AfterInference,
+                    store,
+                    ledger,
+                    Some(&observed_input),
+                )
+                .await;
                 let has_tool_calls = !response.output.tool_calls().is_empty();
                 let has_text = !response.output.text_content().is_empty();
                 let has_continuable_output = has_text || response.output.has_reasoning();
@@ -734,23 +734,11 @@ pub(super) async fn drive(
         // RunState hooks stage state (G9/G30). A BeforeInference hook may also inject
         // request-only context (e.g. recalled memories), prepended to this
         // inference and never committed.
-        run_phase_hooks(
+        prepare_step_hooks(
             env,
             context,
             run_id,
             source_step,
-            PhaseHookPoint::StepStart,
-            &run_input,
-            &mut store,
-            &mut ledger,
-        )
-        .await;
-        run_phase_hooks(
-            env,
-            context,
-            run_id,
-            source_step,
-            PhaseHookPoint::BeforeInference,
             &run_input,
             &mut store,
             &mut ledger,
@@ -886,10 +874,10 @@ pub(super) async fn drive(
             context,
             run_id,
             source_step,
-            PhaseHookPoint::AfterInference,
-            &run_input,
+            PhaseKind::AfterInference,
             &mut store,
             &mut ledger,
+            None,
         )
         .await;
 
@@ -1100,10 +1088,10 @@ pub(super) async fn drive(
             context,
             run_id,
             source_step,
-            PhaseHookPoint::StepEnd,
-            &run_input,
+            PhaseKind::StepEnd,
             &mut store,
             &mut ledger,
+            None,
         )
         .await;
     }
@@ -1112,6 +1100,27 @@ pub(super) async fn drive(
     let disposition =
         disposition.unwrap_or_else(|| RunDisposition::ended(run_id.clone(), EndCause::MaxSteps));
     Ok(ledger.into_step_result(disposition))
+}
+
+/// Stage step state before the request-only inference context is assembled.
+#[allow(clippy::too_many_arguments)]
+async fn prepare_step_hooks(
+    env: &ResolvedExecutionEnv,
+    context: &RuntimeRunContext,
+    run_id: &RunId,
+    step: usize,
+    run_input: &std::sync::Arc<[Message]>,
+    store: &mut Store,
+    ledger: &mut StepLedger,
+) {
+    for kind in [
+        PhaseKind::StepStart,
+        PhaseKind::BeforeInference {
+            run_input: run_input.clone(),
+        },
+    ] {
+        run_phase_hooks(env, context, run_id, step, kind, store, ledger, None).await;
+    }
 }
 
 /// Apply each phase reaction to the one Step ledger. Both state and durable
@@ -1123,25 +1132,12 @@ async fn run_phase_hooks(
     context: &RuntimeRunContext,
     run_id: &RunId,
     step: usize,
-    point: PhaseHookPoint,
-    run_input: &std::sync::Arc<[Message]>,
+    kind: PhaseKind,
     store: &mut Store,
     ledger: &mut StepLedger,
+    observed_input: Option<&[ChatMessage]>,
 ) {
-    // The tool-result phase carries per-call data and runs via
-    // `collect_tool_reactions`, never here.
-    let kind = match point {
-        PhaseHookPoint::StepStart => PhaseKind::StepStart,
-        PhaseHookPoint::BeforeInference => PhaseKind::BeforeInference {
-            run_input: run_input.clone(),
-        },
-        PhaseHookPoint::AfterInference => PhaseKind::AfterInference,
-        PhaseHookPoint::StepEnd => PhaseKind::StepEnd,
-        PhaseHookPoint::AfterTool => {
-            unreachable!("AfterTool phase hooks run via collect_tool_reactions")
-        }
-    };
-    for hook in env.hooks_for(point) {
+    for hook in env.hooks_for(kind.point()) {
         let ctx = PhaseContext {
             run_id: run_id.clone(),
             step,
@@ -1149,10 +1145,17 @@ async fn run_phase_hooks(
         };
         // Hooks can await independent work just like model/tool executors.
         // Normal return cannot erase a nested veto; drop/unwind cannot ACK it.
-        let reaction = context
-            .physical_quiescence
-            .observe_return(hook.on_phase(&ctx, &ledger.transcript, store))
-            .await;
+        let reaction = if let Some(input) = observed_input {
+            context
+                .physical_quiescence
+                .observe_return(hook.on_model_input(&ctx, input, &ledger.transcript, store))
+                .await
+        } else {
+            context
+                .physical_quiescence
+                .observe_return(hook.on_phase(&ctx, &ledger.transcript, store))
+                .await
+        };
         // Apply the reaction's state to the live store before the next hook, so a
         // once-per-run hook that gates on its own run-scoped key sees its own
         // earlier write and replays instead of recomputing (ADR-0055) — the same

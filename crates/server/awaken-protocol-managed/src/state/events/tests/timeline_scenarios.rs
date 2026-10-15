@@ -1513,12 +1513,13 @@ async fn closed_interval_usage_keeps_its_committed_value_when_clock_and_activity
     let environments =
         awaken_protocol_managed_testkit::environment_fixture(clock.clone()).execution;
     let replica = || {
-        let state = ManagedState::from_fixture_parts(
+        let state = crate::state::test_support::managed_state_from_parts(
             Arc::new(runtime.clone()),
             None,
             repository.clone(),
             environments.clone(),
             clock.clone(),
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         );
         state.disable_warm_cold_oracle();
         state

@@ -14,6 +14,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::RuntimeCapabilitySource;
 use awaken_admin_assistant::ResourceInventory;
 use awaken_admin_config_api::{BrokeredCatalogDiscovery, CredentialProbe, ModelCatalogDiscovery};
 use awaken_agent_config::{ModelSelection, ScopedConfigRegistry};
@@ -21,7 +22,7 @@ use awaken_config_resolver::{AgentInputBindingRepository, InferenceProfileStore,
 use awaken_config_service::{
     ConfigPlane, ConfigService, ConfigServiceReconciler, ManagementAuditPlane,
     ModelPublicationResolver, PluginPublicationResolver, PublicationBindingReconciler,
-    RESERVED_ADMIN_SCOPE, RuntimeCapabilitySource, ScopedToolCatalog, ToolCatalogSource,
+    RESERVED_ADMIN_SCOPE, ScopedToolCatalog, ToolCatalogSource,
 };
 use awaken_credential_vault::SecretStore;
 use awaken_credential_vault::repo::CredentialRepo;
@@ -93,6 +94,8 @@ pub struct ControlDependencies {
     /// composition; its execution-owned implementation stays outside Control.
     pub agent_archive_cascade: Option<Arc<dyn awaken_deployment_contract::AgentArchiveCascade>>,
     pub model_publication_resolver: Arc<dyn ModelPublicationResolver>,
+    pub tool_configuration_compiler:
+        Arc<dyn awaken_tool_contract::tool_configuration::ToolConfigurationCompiler>,
     pub plugin_publication_resolvers: Vec<Arc<dyn PluginPublicationResolver>>,
     pub credential_probe: Arc<dyn CredentialProbe>,
     pub model_discovery: Arc<dyn ModelCatalogDiscovery>,
@@ -186,6 +189,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         executable_agent_registrar,
         agent_archive_cascade,
         model_publication_resolver,
+        tool_configuration_compiler,
         plugin_publication_resolvers,
         credential_probe,
         model_discovery,
@@ -250,19 +254,18 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
     recover_and_supervise_webhooks(secrets.clone(), webhook_store.clone(), &service_lifecycle)
         .await;
 
-    let tool_catalog: Arc<dyn ToolCatalogSource> = Arc::new(ScopedToolCatalog::new(
-        global_tools.clone(),
-        RESERVED_ADMIN_SCOPE,
-        awaken_admin_assistant::admin_tool_descriptors(),
-    ));
+    let tool_catalog = scoped_tool_catalog(global_tools.clone());
     let credential_validator = Arc::new(crate::CredentialRevisionValidator::new(
         credentials.clone(),
         clock.clone(),
     ));
-    let mut config_service =
-        ConfigService::new(model_publication_resolver, executable_agent_registrar)
-            .with_credential_reference_validator(credential_validator.clone())
-            .with_resources(resource_store.clone());
+    let mut config_service = ConfigService::new(
+        model_publication_resolver,
+        executable_agent_registrar,
+        tool_configuration_compiler.clone(),
+    )
+    .with_credential_reference_validator(credential_validator.clone())
+    .with_resources(resource_store.clone());
     for resolver in plugin_publication_resolvers {
         config_service = config_service.with_plugin_publication_resolver(resolver);
     }
@@ -627,6 +630,14 @@ async fn report_webhook_inventory(webhooks: &dyn WebhookStore, secrets: &dyn Sec
         Err(error) => eprintln!("webhook inventory reconciliation failed: {error}"),
         _ => {}
     }
+}
+
+fn scoped_tool_catalog(global_tools: Vec<ToolDescriptor>) -> Arc<dyn ToolCatalogSource> {
+    Arc::new(ScopedToolCatalog::new(
+        global_tools,
+        RESERVED_ADMIN_SCOPE,
+        awaken_admin_assistant::admin_tool_descriptors(),
+    ))
 }
 
 #[cfg(test)]

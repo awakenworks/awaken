@@ -13,15 +13,15 @@ bounded_context = "agent-runtime"
 layer = "contract"
 kinds = ["types"]
 authority = "web-policy"
-# Session authoring consumes this pure vocabulary without linking the Web
-# execution extension; the neutral Agent kernel retains opaque tool settings.
+# Protocol adapters consume this pure kernel without linking providers or
+# credentials; general Session authoring retains opaque tool settings.
 separation = "contract"
 
 [dependencies]
 serde.workspace = true
-
-[dev-dependencies]
 serde_json.workspace = true
+serde_path_to_error = "0.1"
+url.workspace = true
 
 [lints]
 workspace = true

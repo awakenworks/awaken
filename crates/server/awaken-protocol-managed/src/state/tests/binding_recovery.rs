@@ -476,16 +476,16 @@ async fn rehydrated_session_restores_persisted_config() {
         persisted.visible_mcp_servers().is_empty(),
         "T1 execution visibility has not been acknowledged"
     );
-    persisted.tools = crate::project::session_tool_configuration(&[
-        awaken_session_configuration_contract::AgentTool::Custom {
+    persisted.tools =
+        crate::project::session_tool_configuration(&[crate::tools::AgentTool::Custom {
             name: "durable-tool".into(),
             description: "Client-executed tool".into(),
-            input_schema: awaken_session_configuration_contract::CustomToolInputSchema::from_value(
+            input_schema: crate::tools::CustomToolInputSchema::from_value(
                 serde_json::json!({"type": "object"}),
             )
             .unwrap(),
-        },
-    ]);
+        }])
+        .expect("valid durable client tool fixture");
     let session = state
         .rehydrated_session("sesn_1", DEFAULT_SCOPE, persisted)
         .expect("valid durable projection");
@@ -503,7 +503,7 @@ async fn rehydrated_session_restores_persisted_config() {
     );
     assert!(matches!(
         &session.agent.tools[..],
-        [awaken_session_configuration_contract::AgentTool::Custom { name, .. }] if name == "durable-tool"
+        [crate::tools::AgentTool::Custom { name, .. }] if name == "durable-tool"
     ));
     assert!(
         session.resources.is_empty(),

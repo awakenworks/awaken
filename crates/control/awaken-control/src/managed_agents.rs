@@ -16,6 +16,8 @@ use awaken_agent_contract::AgentSkillBinding;
 use awaken_config_service::{
     ConfigPlane, RESERVED_ADMIN_SCOPE, parse_managed_model_id, render_managed_model_id,
 };
+use awaken_protocol_managed::tools::{AgentTool, CustomToolInputSchema};
+use awaken_protocol_managed::tools::{compile_agent_tools, resolved_toolsets};
 use awaken_protocol_managed::types::agent::{
     AdvisorRosterEntry, AdvisorRosterEntryKind, Agent, AgentCreateParams, AgentListParams,
     AgentMcpServer, AgentSkill, AgentUpdateParams, MultiagentConfig as WireMultiagent,
@@ -25,10 +27,7 @@ use awaken_protocol_managed::{ManagedAgentError, ManagedAgentRepository};
 use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
 use awaken_runtime_contract::agent_bindings::ToolsetPolicy;
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_session_configuration_contract::{
-    AgentTool, CustomToolInputSchema, preserve_runtime_agent_overrides, resolved_toolsets,
-    toolset_policies, validate_agent_tools,
-};
+use awaken_session_configuration_contract::preserve_runtime_agent_overrides;
 use awaken_tenancy::ScopeId;
 use awaken_time::WallClock;
 
@@ -540,9 +539,10 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         }
         if let Some(tools) = params.tools {
             let tools = tools.unwrap_or_default();
-            validate_agent_tools(&tools).map_err(ManagedAgentError::Invalid)?;
+            let compiled = compile_agent_tools(&tools)
+                .map_err(|error| ManagedAgentError::Invalid(error.to_string()))?;
             config.tool_ids.clear();
-            let mut replacement = toolset_policies(&tools);
+            let mut replacement = compiled.toolsets;
             let allowed_runtime_override_ids =
                 self.plane.runtime_agent_override_ids(&scope, &config);
             preserve_runtime_agent_overrides(

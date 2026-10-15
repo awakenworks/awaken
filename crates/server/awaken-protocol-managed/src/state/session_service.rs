@@ -18,8 +18,6 @@ use awaken_session_application_contract::LifecycleFactNotifier;
 
 use super::ManagedState;
 #[cfg(any(test, feature = "test-support"))]
-use super::mcp_attachment::UnsupportedMcpAttachmentRealizer;
-#[cfg(any(test, feature = "test-support"))]
 use crate::routes::vaults::VaultState;
 
 impl ManagedState {
@@ -33,12 +31,13 @@ impl ManagedState {
         runtime: impl awaken_session_execution_contract::CompleteSessionRuntime + 'static,
     ) -> Self {
         let clock = awaken_time::system_clock();
-        Self::from_fixture_parts(
+        crate::state::test_support::managed_state_from_parts(
             Arc::new(runtime),
             None,
             awaken_protocol_managed_testkit::ephemeral_session_repository().await,
             awaken_protocol_managed_testkit::environment_fixture(clock.clone()).execution,
             clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         )
     }
 
@@ -54,12 +53,13 @@ impl ManagedState {
     {
         let runtime = Arc::new(runtime);
         let clock = awaken_time::system_clock();
-        Self::from_fixture_parts(
+        crate::state::test_support::managed_state_from_parts(
             runtime.clone(),
             Some(runtime),
             awaken_protocol_managed_testkit::ephemeral_session_repository().await,
             awaken_protocol_managed_testkit::environment_fixture(clock.clone()).execution,
             clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         )
     }
 
@@ -174,28 +174,6 @@ impl ManagedState {
                 .set_executable_projection_refresh(refresh)
                 .expect("ManagedState fixture executable projection refresh binds once");
         })
-    }
-
-    /// Store-agnostic volatile constructor: the caller supplies the Session
-    /// repository and Environment execution projection behind their ports. No
-    /// MCP realizer means attachments are refused, never silently realized.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn from_fixture_parts(
-        runtime: Arc<dyn awaken_session_execution_contract::CompleteSessionRuntime>,
-        mcp_realizer: Option<Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
-        sessions_repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
-        environments: Arc<EnvironmentExecutionApplication>,
-        clock: Arc<dyn awaken_time::WallClock>,
-    ) -> Self {
-        let application = awaken_session_application::SessionApplicationBuilder::fixture(
-            runtime,
-            mcp_realizer.unwrap_or_else(|| Arc::new(UnsupportedMcpAttachmentRealizer)),
-            awaken_session_application::SessionPersistence::new(sessions_repo, clock),
-            environments.clone(),
-        )
-        .build()
-        .expect("valid fixture Session application");
-        Self::from_application(application.into(), environments, Default::default())
     }
 
     /// Wire a projection sink (a webhook dispatcher) so committed session lifecycle
