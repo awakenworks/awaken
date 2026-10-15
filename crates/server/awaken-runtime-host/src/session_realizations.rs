@@ -18,6 +18,8 @@ use awaken_session_application_contract::DelegatedRun;
 
 mod execution_authority;
 mod projection_receipt;
+mod resource_preparation;
+pub(crate) use resource_preparation::ResourcePreparation;
 mod state;
 pub(crate) use execution_authority::ExecutionAuthority;
 pub(crate) use projection_receipt::FrozenProjectionReceipt;
@@ -69,6 +71,16 @@ pub(crate) struct SessionRealizationAccess<'a> {
 
 /// Where the host keeps installed Sessions, as the realizer reaches them.
 pub(crate) trait SessionRealizationSource: Send + Sync {
+    /// Enter the installed-slot owner's canonical permit kernel. This is the
+    /// same exclusion and replacement retry that Host admission uses.
+    fn acquire_realization<'a>(
+        &'a self,
+        session: &'a str,
+    ) -> futures_util::future::BoxFuture<
+        'a,
+        awaken_session_realization_contract::SessionRealizationPermit,
+    >;
+
     /// Visit one Session under the lock; with `create`, an absent Session is
     /// installed empty first, otherwise an absent Session is not visited. A
     /// poisoned lock is reported, never unwound through.
@@ -78,6 +90,15 @@ pub(crate) trait SessionRealizationSource: Send + Sync {
         create: bool,
         visit: &mut dyn FnMut(SessionRealizationAccess<'_>),
     ) -> Result<(), InstalledSessionsPoisoned>;
+
+    /// Validate and retain an exact immutable publication under the same slot
+    /// lock. This is the only publication write available to the selector;
+    /// ordinary realization visitors still cannot mutate frozen inputs.
+    fn retain_publication(
+        &self,
+        session: &str,
+        publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
+    ) -> Result<(), HostError>;
 
     /// Publish one completed requirements compilation under the original slot
     /// lock. Frozen inputs remain readonly to ordinary visit callbacks.
@@ -101,6 +122,23 @@ pub(crate) struct InstalledSessionsPoisoned;
 pub(crate) struct SessionRealizations(Arc<dyn SessionRealizationSource>);
 
 impl SessionRealizations {
+    /// Hold the Session's current realization allocation, revalidating any
+    /// removal/recreation during the wait through the canonical slot owner.
+    pub(crate) async fn acquire_realization(
+        &self,
+        session: &str,
+    ) -> awaken_session_realization_contract::SessionRealizationPermit {
+        self.0.acquire_realization(session).await
+    }
+
+    pub(crate) fn retain_publication(
+        &self,
+        session: &str,
+        publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
+    ) -> Result<(), HostError> {
+        self.0.retain_publication(session, publication)
+    }
+
     pub(crate) fn publish_resource_requirements(
         &self,
         session: &str,

@@ -33,6 +33,7 @@ impl ManagedHost {
     ) {
         *self
             .host
+            .realizer
             .environment_binding_sink
             .write()
             .expect("test receipt sink lock poisoned") = Some(sink);
@@ -150,14 +151,16 @@ impl ManagedHost {
         self.host
             .project_session_init(thread, &init)
             .map_err(to_run_error)?;
-        self.stage_resource_manifest(
-            thread,
-            &init.workspace_id,
-            init.resource_revision,
-            &init.resources,
-            None,
-        )
-        .await?;
+        self.host
+            .realizer
+            .stage_resource_manifest(
+                thread,
+                &init.workspace_id,
+                init.resource_revision,
+                &init.resources,
+                None,
+            )
+            .await?;
         self.complete_session_preparation(thread, &init.environment);
         Ok(())
     }

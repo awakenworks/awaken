@@ -32,11 +32,14 @@ async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
     // publication without a Control-frozen baseline/Session execution marker.
     host.register_thread_workspace(thread, "workspace");
     host.register_thread_agent_projection(thread, snapshot.root_agent_id.0.as_str());
-    host.retain_session_publication(thread, Some(&snapshot))
+    host.realizer
+        .publication
+        .retain_session_publication(thread, Some(&snapshot))
         .unwrap();
     host.install_environment_projection(thread, &eager_environment())
         .unwrap();
     let provider = host
+        .realizer
         .projected_session_environment_provider(thread, None)
         .expect("RR1 canonical projected provider");
     let spec = host

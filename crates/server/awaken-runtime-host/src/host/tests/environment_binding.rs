@@ -56,6 +56,7 @@ async fn captured_environment_intent_survives_renewal_without_rebuilding_adopt()
         )
         .from_binding("original-source");
         let effect = host
+            .realizer
             .authorize_environment_effect_before_io(thread, &requested)
             .await
             .unwrap();
@@ -126,6 +127,7 @@ async fn managed_projection_without_a_lease_never_falls_back_to_unowned() {
             None,
         );
         let missing = host
+            .realizer
             .authorize_environment_effect_before_io(thread, &intent)
             .await;
         if !marker && !baseline && !closed {
@@ -151,6 +153,7 @@ async fn managed_projection_without_a_lease_never_falls_back_to_unowned() {
         });
         crate::ManagedHost::new(host.clone()).install_test_environment_binding_sink(sink.clone());
         let error = match host
+            .realizer
             .authorize_environment_effect_before_io(thread, &intent)
             .await
         {
@@ -342,6 +345,7 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
     });
 
     let ordinary = host
+        .realizer
         .authorize_environment_effect_before_io(
             thread,
             &host.realizer.new_environment_effect_intent(
@@ -364,6 +368,7 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
     host.installed_sessions
         .update_run(thread, |run| run.session_dispatch = true);
     let managed = host
+        .realizer
         .authorize_environment_effect_before_io(
             thread,
             &host.realizer.new_environment_effect_intent(

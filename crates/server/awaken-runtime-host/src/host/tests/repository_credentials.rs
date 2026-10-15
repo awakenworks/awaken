@@ -495,6 +495,8 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         "P2 same injected verifier Arc"
     );
     runtime
+        .host
+        .realizer
         .validate_thread_resource_bindings("platform-mediated")
         .await
         .expect("P2 installed binding uses same Stage verifier");

@@ -12,6 +12,7 @@ mod context;
 mod environment_lifecycle;
 mod environment_realization;
 mod input_projection;
+mod quiescence;
 mod run_ingress;
 
 use super::*;
@@ -19,7 +20,6 @@ pub(super) use crate::config::{SessionToolsetProjection, project_session_tool_ov
 use crate::host::session_ctx::{RuntimeContextPurpose, runtime_context_cache_reuse_admitted};
 pub(crate) use crate::session_environment::{
     AuthorizedSessionEnvironmentEffect, BoundEnvironmentPreparationMode,
-    CanonicalSessionProjection, EnvironmentBindingPersistenceError,
     SessionEnvironmentAdoptionDisposition, SessionEnvironmentUnavailablePolicy,
 };
 pub(crate) use content_delivery::SkillDeliveryEvidence;

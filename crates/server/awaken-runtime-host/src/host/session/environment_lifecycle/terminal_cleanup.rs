@@ -178,7 +178,7 @@ impl SharedHost {
             .map(TerminalEnvironmentPreparation::artifact_capture_mode)
             .unwrap_or(Some(crate::provisioning::ArtifactCaptureMode::Live));
         let artifact_receipts = if let Some(capture_mode) = artifact_capture_mode {
-            let harvester = self.artifact_harvester();
+            let harvester = self.realizer.artifacts.clone();
             let fence = Some(crate::ResourceOperationFence::Terminal(effect.clone()));
             // Live root preparation has already moved the exact owner behind
             // the Retiring fence, so the generic Resident lookup cannot recover
@@ -289,7 +289,8 @@ impl SharedHost {
         &self,
         effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
     ) -> Result<awaken_session_state_contract::SessionCleanupDisposalReceipt, HostError> {
-        let sessions = &self.realizer.cleanup.sessions;
+        let realizer = &self.realizer;
+        let sessions = &realizer.cleanup.sessions;
         let session_id = &effect.command.session_id;
         let root_realization = sessions
             .read_realization(session_id.as_str(), |r| r.realization.clone())
@@ -300,9 +301,9 @@ impl SharedHost {
                 )
             })?;
         let _root_realization = root_realization.lock().await;
-        self.realizer.cleanup.disposal_authorization(&effect)?;
+        realizer.cleanup.disposal_authorization(&effect)?;
         let _lifecycle = sessions.lock_lifecycle(session_id.as_str()).await;
-        let authorization = self.realizer.cleanup.disposal_authorization(&effect)?;
+        let authorization = realizer.cleanup.disposal_authorization(&effect)?;
         let prepared_environment = if effect.command.restore_target.is_none() {
             // Disposal decision table TD0. Causes: C1 the aggregate has
             // durably admitted one exact Preparation; C2 the process-local
@@ -343,7 +344,7 @@ impl SharedHost {
                 Some(expected),
             ) if &request == expected => {
                 let provider =
-                    self.projected_session_environment_provider(session_id.as_str(), None)?;
+                    realizer.projected_session_environment_provider(session_id.as_str(), None)?;
                 let previous_resources = sessions
                     .read_realization(session_id.as_str(), |r| {
                         r.resource_transition
@@ -351,13 +352,12 @@ impl SharedHost {
                             .map(|transition| transition.previous().resources.clone())
                     })
                     .flatten();
-                let spec = self.realizer.session_environment_adoption_spec(
+                let spec = realizer.session_environment_adoption_spec(
                     session_id.as_str(),
                     provider,
                     previous_resources.as_ref(),
                 );
-                let authority = self
-                    .realizer
+                let authority = realizer
                     .execution
                     .provider_effect_authority(session_id.as_str(), authorization.effect_fence())?;
                 provider
@@ -405,15 +405,14 @@ impl SharedHost {
                 // deletion of that same exact terminal physical owner.
                 if !provider_proved_absence {
                     let environment = retirement.owned.environment();
-                    let exact_authorization =
-                        self.realizer.cleanup.disposal_authorization(&effect)?;
+                    let exact_authorization = realizer.cleanup.disposal_authorization(&effect)?;
                     if exact_authorization != authorization {
                         return Err(HostError::unavailable_classified(
                             "session_terminal_cleanup_disposal_changed",
                             "terminal disposal authorization changed under its lifecycle lock",
                         ));
                     }
-                    let authority = self.realizer.execution.provider_effect_authority(
+                    let authority = realizer.execution.provider_effect_authority(
                         effect.command.session_id.as_str(),
                         authorization.effect_fence(),
                     )?;
@@ -447,7 +446,7 @@ impl SharedHost {
             }
         }
         sessions.end_terminal_disposal(session_id.as_str());
-        self.realizer.cleanup.disposal_authorization(&effect)?;
+        realizer.cleanup.disposal_authorization(&effect)?;
         Ok(awaken_session_state_contract::SessionCleanupDisposalReceipt::new(&effect.command))
     }
 

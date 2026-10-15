@@ -32,6 +32,8 @@ impl SharedHost {
         // identity; current publication only enriches its model label. Managed
         // can recover an empty label from the Session's already-frozen profile.
         let advisor_model = self
+            .realizer
+            .publication
             .resolve_session_publication(session_id, None, delivered)
             .ok()
             .and_then(|(_, _, publication, _)| publication)

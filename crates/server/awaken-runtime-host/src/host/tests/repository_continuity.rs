@@ -214,6 +214,8 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
         crate::session_resource::SessionResourceTransition::new(manifest.clone(), manifest.clone())
             .unwrap();
     managed
+        .host
+        .realizer
         .apply_session_inputs_with_context(thread, &transition, None, Some(&lease))
         .await
         .expect("R1 adoption must not replay the main-branch initialization");

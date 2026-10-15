@@ -938,7 +938,9 @@ async fn projected_acp_rejects_a_provider_with_split_tool_and_process_paths() {
             ),
         )
         .build();
-    host.retain_session_publication("projected-acp", Some(&publication))
+    host.realizer
+        .publication
+        .retain_session_publication("projected-acp", Some(&publication))
         .expect("install exact immutable Agent publication");
 
     let root = tempfile::tempdir().unwrap();
@@ -1912,14 +1914,18 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
     std::fs::write(&output, b"committed before response loss").unwrap();
 
     let ordinary = host
-        .artifact_harvester()
+        .realizer
+        .artifacts
+        .clone()
         .harvest("artifact-response-loss")
         .await
         .expect("H1 ordinary");
     let (_cleanup, effect) =
         root_terminal_cleanup_effect(host.as_ref(), "artifact-response-loss", lease).await;
     let terminal = host
-        .artifact_harvester()
+        .realizer
+        .artifacts
+        .clone()
         .harvest_with_fence(
             "artifact-response-loss",
             Some(crate::ResourceOperationFence::Terminal(effect.clone())),
@@ -1937,7 +1943,9 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
             r.environment_owner = crate::installed_session::SessionEnvironmentOwner::Vacant;
         });
     let recovered = host
-        .artifact_harvester()
+        .realizer
+        .artifacts
+        .clone()
         .harvest_with_fence(
             "artifact-response-loss",
             Some(crate::ResourceOperationFence::Terminal(effect.clone())),
@@ -1956,7 +1964,9 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
         .await
         .expect("H3 logical delete");
     let after_delete = host
-        .artifact_harvester()
+        .realizer
+        .artifacts
+        .clone()
         .harvest_with_fence(
             "artifact-response-loss",
             Some(crate::ResourceOperationFence::Terminal(effect)),
@@ -1965,7 +1975,9 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
         .expect("H3 tombstone readback");
     assert_eq!(after_delete.receipts, terminal.receipts, "H3");
     assert!(
-        host.artifact_harvester()
+        host.realizer
+            .artifacts
+            .clone()
             .harvest("artifact-response-loss")
             .await
             .expect("H4 ordinary absent")
@@ -2085,7 +2097,9 @@ async fn receipt_only_terminal_harvest_skips_a_present_container() {
         terminal_cleanup_test_lease(),
     );
     let recovered = host
-        .artifact_harvester()
+        .realizer
+        .artifacts
+        .clone()
         .harvest_with_fence_mode(
             thread,
             Some(crate::ResourceOperationFence::Terminal(effect)),
@@ -2116,7 +2130,9 @@ async fn receipt_only_terminal_harvest_skips_a_present_container() {
     );
 
     assert!(
-        host.artifact_harvester()
+        host.realizer
+            .artifacts
+            .clone()
             .harvest("ordinary-absent")
             .await
             .expect("B3 ordinary absence")
@@ -2132,7 +2148,9 @@ async fn receipt_only_terminal_harvest_skips_a_present_container() {
         "B3 zero additional recovery"
     );
     let error = host
-        .artifact_harvester()
+        .realizer
+        .artifacts
+        .clone()
         .harvest_with_fence_mode("ordinary-absent", None, ArtifactCaptureMode::ReceiptOnly)
         .await
         .expect_err("B4 non-terminal receipt-only must fail closed");
@@ -2200,6 +2218,72 @@ async fn terminal_artifact_recovery_requires_the_root_workspace_before_catalog_i
             .load(std::sync::atomic::Ordering::SeqCst),
         0,
         "H5/E5 zero catalog reads"
+    );
+}
+
+#[tokio::test]
+async fn retained_artifact_harvester_observes_late_realization_without_retaining_host() {
+    // Ownership decision table: R1 a harvester is captured before Session
+    // installation => no outputs; R2 the same Session slot later receives an
+    // Environment => the captured component sees that exact Environment;
+    // R3 the Host is dropped => publication still uses the selected authority,
+    // without a strong back-reference; R4 replay => one durable File identity.
+    let storage = tempfile::tempdir().unwrap();
+    let host = crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test")
+        .await
+        .build()
+        .expect("Host");
+    let harvester = host.realizer.artifacts.clone();
+    let application = host.file_application().expect("File application");
+    assert!(
+        harvester
+            .harvest("late-output")
+            .await
+            .unwrap()
+            .receipts
+            .is_empty(),
+        "R1"
+    );
+
+    host.register_thread_workspace("late-output", "workspace-late");
+    let spec = agent_run_sandbox_spec("late-output");
+    let environment = Arc::new(
+        crate::session_environment::SandboxEnvironment::workdir(
+            LocalProvider::new(storage.path())
+                .create_sandbox(&spec)
+                .await
+                .unwrap(),
+        )
+        .into_session_environment(),
+    );
+    host.install_test_resident_session_environment("late-output", environment);
+    let output = storage
+        .path()
+        .join("late-output")
+        .join(spec.outputs_path.trim_start_matches('/'))
+        .join("report.txt");
+    std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+    std::fs::write(output, b"installed after the harvester").unwrap();
+    let weak_host = Arc::downgrade(&host);
+    drop(host);
+    assert!(weak_host.upgrade().is_none(), "R3 no Host ownership cycle");
+
+    let first = harvester.harvest("late-output").await.expect("R2/R3");
+    assert_eq!(first.receipts.len(), 1, "R2");
+    assert_eq!(
+        application
+            .bytes("workspace-late", &first.receipts[0].record.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .1,
+        b"installed after the harvester",
+        "R3 exact publisher"
+    );
+    let replay = harvester.harvest("late-output").await.expect("R4");
+    assert_eq!(
+        replay.receipts[0].record.id, first.receipts[0].record.id,
+        "R4"
     );
 }
 

@@ -35,6 +35,24 @@ pub(crate) struct ResourceStaging {
 }
 
 impl ResourceStaging {
+    pub(crate) fn thread_session_mounts(
+        &self,
+        thread: &str,
+    ) -> Vec<awaken_provisioning_contract::MountRequirement> {
+        self.sessions
+            .modify_session(thread, |slot| {
+                crate::provisioning::project_session_mounts(
+                    slot.realization.resources.mounts.clone(),
+                    slot.inputs
+                        .baseline
+                        .as_ref()
+                        .map(|baseline| baseline.mounts.as_slice()),
+                    slot.realization.content_delivery,
+                )
+            })
+            .unwrap_or_default()
+    }
+
     pub(crate) fn register_thread_memory(&self, thread: &str, memory: Option<Arc<MemoryBinding>>) {
         self.sessions.update_realization(thread, |r| {
             r.memory_bindings.clear();
@@ -64,3 +82,6 @@ impl ResourceStaging {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

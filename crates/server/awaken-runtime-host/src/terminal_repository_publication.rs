@@ -15,10 +15,10 @@ use awaken_session_state_contract::{
 };
 use awaken_session_types::RunError;
 
-use crate::ManagedHost;
 use crate::host_error::to_run_error;
+use crate::realization_executor::RealizationExecutor;
 
-impl ManagedHost {
+impl RealizationExecutor {
     /// Execute one aggregate-derived terminal Repository publication without
     /// installing another Resource generation. The command's `ResolvedInput`
     /// is compiled through the ordinary staging projection. Local and remote
@@ -29,9 +29,9 @@ impl ManagedHost {
         command: SessionRepositoryPublicationCommand,
         lease: &SessionRealizationLease,
     ) -> Result<SessionRepositoryPublicationEffect, RunError> {
-        let staging = &self.host.realizer.staging;
-        let cleanup = &self.host.realizer.cleanup;
-        let workspace = self.host.thread_workspace(command.session_id.as_str());
+        let staging = &self.staging;
+        let cleanup = &self.cleanup;
+        let workspace = self.publication.workspace(command.session_id.as_str());
 
         // The canonical driver may install only the frozen aggregate after a
         // Worker restart. Hold the existing realization/lifecycle lock order
@@ -41,11 +41,9 @@ impl ManagedHost {
         // effect locks are held; every boundary therefore re-reads the current
         // same-generation lease rather than extending the asserted value.
         let _realization = self
-            .host
-            .installed_sessions
-            .acquire_realization_with(command.session_id.as_str(), |_| ())
-            .await
-            .0;
+            .sessions
+            .acquire_realization(command.session_id.as_str())
+            .await;
         let _lifecycle = staging
             .sessions
             .lock_lifecycle(command.session_id.as_str())
@@ -93,7 +91,6 @@ impl ManagedHost {
             .sandbox_effect_fence(command.effect_id.clone())
             .map_err(|error| RunError::internal(error.to_string()))?;
         let prepared = self
-            .host
             .prepare_bound_environment_for_effect_under_lifecycle(
                 command.session_id.as_str(),
                 binding,
@@ -137,7 +134,7 @@ impl ManagedHost {
         let effect = staging
             .publish_repository_activation(
                 command.session_id.as_str(),
-                self.host.local_workspace(),
+                self.publication.local_workspace(),
                 staged.repositories.first().expect("checked"),
                 &staged.binding_checks,
                 environment.repositories().as_ref(),

@@ -1,8 +1,8 @@
 // @formal entrypoint resource_catalog.artifact_publication_receipt_requires_exact_publication_identity
 // @formal entrypoint sandbox.workspace_path_projection_is_one_logical_root_and_never_discloses_provider_host_paths
 //! Session provisioning and capability advertisement. ResourceStaging owns the
-//! neutral sandbox projection and Repository effects; SharedHost composes the
-//! artifact harvester and advertises managed tool/skill/delegate sets. The staged
+//! neutral sandbox projection and Repository effects; the realization executor owns
+//! artifact harvesting through the selected Resource authority. The staged
 //! resource mounts retain ADR-0038's one physical projection.
 
 use crate::staged_resources::{RepositoryActivation, ResourceBindingCheck, StagedResources};
@@ -10,7 +10,6 @@ use awaken_session_configuration_contract::resource as session_resource;
 use awaken_session_realization_contract::ResourceOperationFence;
 use std::sync::Arc;
 
-use crate::host::SharedHost;
 use awaken_provisioning_contract as pc;
 use awaken_resource_contract::{ArtifactPublicationError, RepositoryBindingVerifierError};
 #[cfg(test)]
@@ -122,50 +121,6 @@ pub(crate) fn project_environment(
         provisioning: environment.sandbox_provisioning,
         idle_retention: environment.idle_retention.clone(),
     }
-}
-
-/// Whether any exact execution candidate launches an opaque ACP process inside
-/// the Session Sandbox. Backend-owned ACP is realized outside that projected
-/// Sandbox, so it must not strengthen this requirement.
-#[must_use]
-pub(crate) fn model_candidates_require_opaque_process<'a>(
-    candidates: impl IntoIterator<Item = &'a awaken_runtime_contract::resolved::ResolvedModelCandidate>,
-) -> bool {
-    candidates.into_iter().any(|candidate| {
-        matches!(
-            awaken_runtime_contract::resolved::Backend::from_ref(candidate.binding().identity().2),
-            awaken_runtime_contract::resolved::Backend::Acp(_)
-        ) && !matches!(
-            candidate.provisioning(),
-            awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { .. }
-        )
-    })
-}
-
-/// Project the one effective frozen model set used by Session realization.
-/// A complete baseline override replaces the Agent route, exactly matching
-/// `resolve_canonical_session_projection`; otherwise the retained immutable
-/// Agent publication supplies primary plus fallbacks. Absence never triggers a
-/// mutable catalog lookup at this physical-effect boundary.
-#[must_use]
-pub(crate) fn frozen_session_requires_opaque_process(
-    published: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
-    baseline: Option<&awaken_session_configuration_contract::SessionBaseline>,
-) -> bool {
-    if let Some(publication) = baseline
-        .and_then(|baseline| baseline.model_override.as_ref())
-        .and_then(|override_| override_.publication.as_deref())
-    {
-        return model_candidates_require_opaque_process(
-            std::iter::once(&publication.primary).chain(publication.candidates.iter()),
-        );
-    }
-    published.is_some_and(|snapshot| {
-        model_candidates_require_opaque_process(
-            std::iter::once(&snapshot.resolved_spec.model_binding)
-                .chain(snapshot.resolved_spec.model_candidates.iter()),
-        )
-    })
 }
 
 /// Project every Session path cause once into the two neutral views consumed by
@@ -421,26 +376,6 @@ fn repository_http_basic_credential(
     Ok(pc::RepositoryHttpBasicCredential::new(username, password))
 }
 
-impl SharedHost {
-    pub(crate) fn artifact_harvester(&self) -> ArtifactHarvester {
-        ArtifactHarvester {
-            sessions: self.realizer.sessions.clone(),
-            local_workspace: self.local_workspace.clone(),
-            publisher: self.resources.artifact_publisher.clone(),
-        }
-    }
-
-    /// Persist every Agent-authored output before the environment can be disposed.
-    /// The `(Session, logical path, content)` harvest key makes retries idempotent;
-    /// Files API reads only this durable catalog and never scan the Sandbox.
-    pub async fn harvest_thread_artifacts(
-        &self,
-        thread: &str,
-    ) -> Result<HarvestedArtifacts, ArtifactPublicationError> {
-        self.artifact_harvester().harvest(thread).await
-    }
-}
-
 /// The single Runtime-to-Resources application edge for Session outputs.
 ///
 /// It is cloneable so the same operation can decorate direct, durable, and
@@ -470,6 +405,24 @@ pub struct HarvestedArtifacts {
 }
 
 impl ArtifactHarvester {
+    pub(crate) fn new(
+        sessions: crate::session_realizations::SessionRealizations,
+        local_workspace: String,
+        publisher: Arc<dyn awaken_resource_contract::ArtifactPublisher<ResourceOperationFence>>,
+    ) -> Self {
+        Self {
+            sessions,
+            local_workspace,
+            publisher,
+        }
+    }
+
+    pub(crate) fn publisher(
+        &self,
+    ) -> Arc<dyn awaken_resource_contract::ArtifactPublisher<ResourceOperationFence>> {
+        self.publisher.clone()
+    }
+
     pub(crate) fn current_claim(
         &self,
         thread: &str,

@@ -1530,6 +1530,7 @@ mod tests {
         };
         let control = RecoveryControl::fixed(frozen);
         let delegate = host
+            .realizer
             .environment_binding_sink
             .read()
             .unwrap()

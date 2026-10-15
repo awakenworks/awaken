@@ -8,11 +8,10 @@
 
 use super::*;
 use crate::host_error::to_run_error;
-use crate::session_environment::{
-    CanonicalSessionProjection, SessionEnvironmentAdoptionDisposition, requires_local_environment,
-};
+use crate::session_environment::SessionEnvironmentAdoptionDisposition;
 use awaken_session_configuration_contract::mcp as session_mcp;
 use awaken_session_configuration_contract::resource as session_resource;
+use awaken_session_realization_contract::{CanonicalSessionProjection, requires_local_environment};
 
 pub(super) struct WorkerProjectionSynchronizer<'a> {
     pub(super) host: &'a SharedHost,
@@ -172,8 +171,8 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
         // installed.
         let lifecycle_guard = realizations.lock_lifecycle(session_id.as_str()).await;
         if self.claim.is_some() {
-            let (canonical_publication, model_candidate) = self
-                .host
+            let (canonical_publication, model_candidate) = exec
+                .publication
                 .resolve_canonical_session_projection(
                     &projection.workspace_id,
                     CanonicalSessionProjection::Baseline(&projection.baseline),
@@ -281,8 +280,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
             .generation()
             .map(|generation| generation.id());
         let adoption = if let Some(binding) = projection.environment.binding() {
-            let provider = self
-                .host
+            let provider = exec
                 .projected_session_environment_provider(session_id.as_str(), None)
                 .map_err(to_run_error)?;
             self.host
@@ -834,6 +832,7 @@ mod tests {
                 .lock_lifecycle(thread)
                 .await;
             let effect = host
+                .realizer
                 .authorize_environment_effect_before_io(
                     thread,
                     &host.realizer.new_environment_effect_intent(
@@ -1505,6 +1504,7 @@ mod tests {
     ) {
         let staging = &host.realizer.staging;
         let provider = host
+            .realizer
             .projected_session_environment_provider(thread, None)
             .expect("select frozen provider for LegacyDirect fixture");
         let spec = staging.sandbox_spec_for_provider(thread, provider);
@@ -1712,7 +1712,9 @@ mod tests {
         managed.install_test_environment_binding_sink(sink.clone());
         let snapshot = test_activation(thread, run).snapshot;
         host.register_thread_agent_projection(thread, snapshot.root_agent_id.0.as_str());
-        host.retain_session_publication(thread, Some(&snapshot))
+        host.realizer
+            .publication
+            .retain_session_publication(thread, Some(&snapshot))
             .unwrap();
         host.install_environment_projection(thread, &eager_environment())
             .unwrap();

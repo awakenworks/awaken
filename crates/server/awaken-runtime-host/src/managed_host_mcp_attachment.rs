@@ -54,6 +54,7 @@ impl awaken_session_mcp::McpStagingSession for ManagedHost {
     fn supports_secret_egress_without_bypass(&self, session: &str) -> Result<bool, RunError> {
         let provider = self
             .host
+            .realizer
             .projected_session_environment_provider(session, None)
             .map_err(to_run_error)?;
         Ok(provider

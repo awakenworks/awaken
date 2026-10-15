@@ -85,8 +85,10 @@ impl SharedHost {
             &latest.id,
             &thread_id,
             || async {
-                let (workspace, _, installed, _) =
-                    self.resolve_session_publication(thread, agent, None)?;
+                let (workspace, _, installed, _) = self
+                    .realizer
+                    .publication
+                    .resolve_session_publication(thread, agent, None)?;
                 let frozen_model_ref = installed
                     .as_ref()
                     .map_or(self.agent.model_ref.as_str(), |root| {

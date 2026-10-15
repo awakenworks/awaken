@@ -2095,6 +2095,8 @@ async fn cold_worker_file_staging_uses_only_the_claim_bound_source() {
         "W1 desired-only staging does not publish active completion"
     );
     managed
+        .host
+        .realizer
         .validate_thread_resource_bindings("remote-file-ok")
         .await
         .expect("W1 has no redundant local File catalog check");

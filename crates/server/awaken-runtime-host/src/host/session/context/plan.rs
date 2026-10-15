@@ -41,9 +41,10 @@ pub(super) async fn prepare(
     // Resolve the immutable publication before selecting an environment.
     // Environment identity is a consequence of provisioning, not of the ACP
     // executor or a process-wide sandbox default.
+    let publication = &host.realizer.publication;
     let (workspace, selected_agent, installed, model_candidate) =
-        host.resolve_session_publication(thread, agent, published_snapshot)?;
-    host.retain_session_publication(thread, installed.as_ref())?;
+        publication.resolve_session_publication(thread, agent, published_snapshot)?;
+    publication.retain_session_publication(thread, installed.as_ref())?;
     let fallback_model_ref = claimed_attempt.as_ref().map_or_else(
         || {
             let frozen_model_ref = installed
@@ -160,21 +161,14 @@ pub(super) async fn prepare(
     // publication and before Environment, MCP, tool, or commit realization.
     // A late rejection would be semantically correct but would still leak a
     // physical Session side effect for work that can never be admitted.
-    let background_tasks_enabled = installed.as_ref().map_or_else(
-        || {
-            host.tools
-                .plugin_ids
-                .iter()
-                .any(|id| id == awaken_ext_background_task::BACKGROUND_TASK_PLUGIN_ID)
-        },
-        |snapshot| {
-            snapshot
-                .resolved_spec
-                .plugin_ids
-                .iter()
-                .any(|id| id == awaken_ext_background_task::BACKGROUND_TASK_PLUGIN_ID)
-        },
-    );
+    let plugin_ids = installed
+        .as_ref()
+        .map_or(host.tools.plugin_ids.as_slice(), |snapshot| {
+            snapshot.resolved_spec.plugin_ids.as_slice()
+        });
+    let background_tasks_enabled = plugin_ids
+        .iter()
+        .any(|id| id == awaken_ext_background_task::BACKGROUND_TASK_PLUGIN_ID);
     if background_tasks_enabled && execution_backend.is_acp() {
         return Err(HostError::bad_request(
             "background_task requires the Native backend so the canonical tool executor remains process-addressable",
@@ -199,7 +193,7 @@ pub(super) async fn prepare(
         ));
     }
     let a2a_only = installed.as_ref().is_some_and(|snapshot| {
-        !crate::host::completion::requires_local_environment(&snapshot.resolved_spec)
+        !awaken_session_realization_contract::requires_local_environment(&snapshot.resolved_spec)
     });
     if a2a_only && host.session_has_local_environment_inputs(thread, installed.as_ref()) {
         return Err(HostError::bad_request(

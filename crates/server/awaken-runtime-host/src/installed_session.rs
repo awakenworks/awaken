@@ -239,6 +239,16 @@ impl crate::session_realizations::SessionRunQuery for SessionRunBinding {
 }
 
 impl crate::session_realizations::SessionRealizationSource for InstalledSessions {
+    fn acquire_realization<'a>(
+        &'a self,
+        session: &'a str,
+    ) -> futures_util::future::BoxFuture<
+        'a,
+        awaken_session_realization_contract::SessionRealizationPermit,
+    > {
+        Box::pin(async move { self.acquire_realization_with(session, |_| ()).await.0 })
+    }
+
     fn visit(
         &self,
         session: &str,
@@ -254,6 +264,22 @@ impl crate::session_realizations::SessionRealizationSource for InstalledSessions
         })
         .map_err(|_| InstalledSessionsPoisoned)?;
         Ok(())
+    }
+
+    fn retain_publication(
+        &self,
+        session: &str,
+        publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
+    ) -> Result<(), crate::host_error::HostError> {
+        self.update(session, |slot| {
+            slot.inputs.validate_publication(publication)?;
+            if let Some(publication) = publication {
+                slot.replace_frozen_with(|next| {
+                    next.published_snapshot = Some(publication.clone());
+                });
+            }
+            Ok(())
+        })
     }
 
     fn publish_resource_requirements(

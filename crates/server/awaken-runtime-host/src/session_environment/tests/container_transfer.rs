@@ -70,6 +70,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
             None,
         );
         let effect = host
+            .realizer
             .authorize_environment_effect_before_io(thread, &intent)
             .await
             .unwrap();
@@ -148,6 +149,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
         let handle = original.lifecycle().handle();
         let binding = serde_json::to_string(&handle).unwrap();
         let identity = host
+            .realizer
             .persist_authorized_environment_binding(thread, binding.clone(), &effect)
             .await
             .unwrap_or_else(|failure| panic!("W0 actual binding CAS: {}", failure.error));

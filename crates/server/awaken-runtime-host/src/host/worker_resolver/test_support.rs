@@ -284,6 +284,7 @@ pub(crate) async fn available_local_environment_binding(
         None,
     );
     let effect = host
+        .realizer
         .authorize_environment_effect_before_io(thread, &intent)
         .await
         .expect("admit original available-Environment Create under its existing Root");
@@ -301,6 +302,7 @@ pub(crate) async fn available_local_environment_binding(
             ..
         } => {
             let provider = host
+                .realizer
                 .projected_session_environment_provider(thread, None)
                 .expect("select available-Environment provider from frozen projection");
             let spec = host
@@ -336,6 +338,7 @@ pub(crate) async fn available_local_environment_binding(
         }
     };
     let identity = host
+        .realizer
         .persist_authorized_environment_binding(thread, binding.clone(), &effect)
         .await
         .unwrap_or_else(|failure| {

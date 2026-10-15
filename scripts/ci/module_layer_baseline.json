@@ -1,8 +1,5 @@
 {
   "upward-edges": {
-    "environment_continuation -> crate": [
-      "ManagedHost"
-    ],
     "host::session::environment_lifecycle -> host::session": [
       "*"
     ],
@@ -14,21 +11,11 @@
     ],
     "host::worker_resolver::session_realization -> host::worker_resolver": [
       "*"
-    ],
-    "managed_resource_projection -> crate": [
-      "ManagedHost"
-    ],
-    "provisioning -> host": [
-      "SharedHost"
-    ],
-    "terminal_repository_publication -> crate": [
-      "ManagedHost"
     ]
   },
   "shared-host-impl": {
-    "host::session::environment_lifecycle": 16,
-    "host::session::environment_realization": 15,
-    "host::terminal_reconciliation": 1,
-    "provisioning": 2
+    "host::session::environment_lifecycle": 14,
+    "host::session::environment_realization": 6,
+    "host::terminal_reconciliation": 1
   }
 }
