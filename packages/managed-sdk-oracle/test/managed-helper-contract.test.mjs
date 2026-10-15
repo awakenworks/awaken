@@ -8,13 +8,8 @@ import test from 'node:test';
 
 import { managedExportFingerprint } from '../src/extract-exports.mjs';
 import { resolveSdkPackage } from '../src/package-source.mjs';
+import { MANAGED_HELPER_PACKAGES as PACKAGE_ALIASES } from './support/managed-helper-packages.mjs';
 
-const PACKAGE_ALIASES = Object.freeze([
-  '@anthropic-ai/sdk-oldest',
-  '@anthropic-ai/sdk-user-profiles-legacy',
-  '@anthropic-ai/sdk-current',
-  '@anthropic-ai/sdk-candidate',
-]);
 const SCOPE = JSON.parse(readFileSync(resolve(import.meta.dirname, '../config/scope.json'), 'utf8'));
 
 // Causal graph: C1 an official Managed helper is statically exported from one
@@ -370,6 +365,10 @@ async function assertAgentToolset(module, Anthropic, label) {
       /(?:outside (?:the allowed roots|the session's working directory)|escapes workdir)/u,
     );
 
+    // BashSession and betaBashTool execute in managed-bash-contract.test.mjs.
+    // The official implementation requires /bin/bash; other helpers also run
+    // natively on Windows so filesystem and path behavior stay covered there.
+
     const cleanupSkills = await module.setupSkills({ workdir });
     assert.equal(typeof cleanupSkills, 'function', `${label}: no-op skill cleanup`);
     await cleanupSkills();
@@ -429,35 +428,6 @@ async function assertAgentToolset(module, Anthropic, label) {
   }
 }
 
-async function assertBashHelpers(module, label) {
-  const workdir = mkdtempSync(resolve(tmpdir(), 'managed-bash-helper-contract-'));
-  const ctx = { workdir, maxFileBytes: 16 * 1024 };
-  let shell;
-  let bash;
-  try {
-    shell = new module.BashSession(workdir, { PATH: process.env.PATH ?? '' });
-    assert.deepEqual(await shell.exec('printf first'), { output: 'first', exitCode: 0 });
-    await shell.exec('export MANAGED_HELPER_STATE=preserved');
-    assert.deepEqual(
-      await shell.exec('printf %s "$MANAGED_HELPER_STATE"'),
-      { output: 'preserved', exitCode: 0 },
-      `${label}: BashSession preserves shell state`,
-    );
-    shell.close();
-    assert.equal(shell.closed, true);
-    await assert.rejects(() => shell.exec('true'), /terminated/u);
-    bash = module.betaBashTool(ctx);
-    assert.equal(await bash.run({ command: 'printf helper' }), 'helper');
-    await assert.rejects(() => bash.run({ command: '' }), /command is required/u);
-    bash.close();
-    bash = undefined;
-  } finally {
-    if (shell && !shell.closed) shell.close();
-    bash?.close();
-    rmSync(workdir, { recursive: true, force: true });
-  }
-}
-
 for (const packageAlias of PACKAGE_ALIASES) {
   test(`${packageAlias}: portable Managed helper exports have executable semantics`, async () => {
     const sdk = resolveSdkPackage(packageAlias);
@@ -474,13 +444,6 @@ for (const packageAlias of PACKAGE_ALIASES) {
     await assertAgentToolset(modules.get('tools/agent-toolset/node.mjs'), Anthropic, label);
   });
 
-  test(`${packageAlias}: POSIX Bash helpers preserve shell state and lifecycle`, {
-    skip: process.platform === 'win32' ? 'official SDK requires /bin/bash; executed in Linux' : false,
-  }, async () => {
-    const sdk = resolveSdkPackage(packageAlias);
-    const module = await import(moduleURL(sdk.root, 'tools/agent-toolset/node.mjs'));
-    await assertBashHelpers(module, `${packageAlias}@${sdk.version}`);
-  });
 }
 
 test('the behavior ownership catalog is neither stale nor permissive', () => {

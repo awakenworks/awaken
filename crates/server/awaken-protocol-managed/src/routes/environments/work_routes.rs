@@ -20,18 +20,15 @@ use crate::types::environment::{
 };
 use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate};
 use awaken_environment_execution_application::{
-    EnvironmentExecutionApplication, EnvironmentExecutionError,
+    EnvironmentExecutionError, SessionWorkLeaseControl, WorkConsumer, WorkMetadataPatch,
+    WorkQueries,
 };
-use awaken_worker_contract::{HeartbeatCondition, HeartbeatResult, LeaseHeartbeat};
+use awaken_executable_environment_contract::{HeartbeatCondition, HeartbeatResult, LeaseHeartbeat};
 
 fn map_execution_error(error: EnvironmentExecutionError) -> WireError {
     match error {
         EnvironmentExecutionError::EnvironmentNotFound => not_found("environment"),
-        EnvironmentExecutionError::Registration(error) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ErrorResponse::new("api_error", error.to_string())),
-        ),
-        EnvironmentExecutionError::WorkQueue(error) => (
+        error => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ErrorResponse::new("api_error", error.to_string())),
         ),
@@ -41,7 +38,10 @@ fn map_execution_error(error: EnvironmentExecutionError) -> WireError {
 /// The Work routes' state: the execution projection and the Coordinator's wall
 /// clock, whose reading every queue operation is stamped and judged with.
 pub(crate) struct WorkRoutes {
-    pub(crate) environments: Arc<EnvironmentExecutionApplication>,
+    pub(crate) queries: WorkQueries,
+    pub(crate) consumer: WorkConsumer,
+    pub(crate) metadata: WorkMetadataPatch,
+    pub(crate) session_leases: SessionWorkLeaseControl,
     pub(crate) clock: Arc<dyn awaken_time::WallClock>,
 }
 
@@ -51,9 +51,9 @@ pub(super) async fn list_work(
     Path(id): Path<String>,
     ManagedQuery(page): ManagedQuery<PageQuery>,
 ) -> Result<Json<PageCursor<Work>>, WireError> {
-    let state = &routes.environments;
-    let data: Vec<Work> = state
-        .list_work(&id)
+    let data: Vec<Work> = routes
+        .queries
+        .list(&id)
         .await
         .map_err(map_execution_error)?
         .iter()
@@ -71,7 +71,6 @@ pub(super) async fn poll_work(
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> Result<Json<Option<Work>>, WireError> {
-    let state = &routes.environments;
     let poll = parse_poll_params(raw.as_deref())?;
     // The official SDK sends worker identity in `Anthropic-Worker-ID`, not in
     // the query string. Long polling repeatedly drives the same authoritative
@@ -84,8 +83,9 @@ pub(super) async fn poll_work(
     let poller_id = worker_id(&headers).unwrap_or(&lease_owner);
     let started = awaken_time::mono::Stopwatch::start();
     loop {
-        let claimed = state
-            .claim_work_with_session_access(
+        let claimed = routes
+            .consumer
+            .claim(
                 &id,
                 &lease_owner,
                 poller_id,
@@ -165,14 +165,27 @@ pub(crate) struct HeartbeatParams {
     expected_last_heartbeat: Option<String>,
 }
 
+impl HeartbeatParams {
+    fn into_heartbeat(self) -> LeaseHeartbeat {
+        LeaseHeartbeat {
+            condition: match self.expected_last_heartbeat {
+                None => HeartbeatCondition::Unconditional,
+                Some(value) if value == "NO_HEARTBEAT" => HeartbeatCondition::First,
+                Some(value) => HeartbeatCondition::Matching(value),
+            },
+            desired_ttl_seconds: self.desired_ttl_seconds,
+        }
+    }
+}
+
 /// `GET /v1/environments/:id/work/stats` — the queue's depth + pending count.
 pub(super) async fn work_stats(
     State(routes): State<Arc<WorkRoutes>>,
     Path(id): Path<String>,
 ) -> Result<Json<WorkQueueStats>, WireError> {
-    let state = &routes.environments;
-    let s = state
-        .work_stats(&id, routes.clock.now_ms())
+    let s = routes
+        .queries
+        .stats(&id, routes.clock.now_ms())
         .await
         .map_err(map_execution_error)?;
     Ok(Json(WorkQueueStats {
@@ -188,9 +201,9 @@ pub(super) async fn retrieve_work(
     State(routes): State<Arc<WorkRoutes>>,
     Path((id, wid)): Path<(String, String)>,
 ) -> Result<Json<Work>, WireError> {
-    let state = &routes.environments;
-    let work = state
-        .get_work(&id, &wid)
+    let work = routes
+        .queries
+        .get(&id, &wid)
         .await
         .map_err(map_execution_error)?
         .ok_or_else(|| not_found("work"))?;
@@ -202,9 +215,9 @@ pub(super) async fn update_work(
     Path((id, wid)): Path<(String, String)>,
     ManagedJson(params): ManagedJson<WorkUpdateParams>,
 ) -> Result<Json<Work>, WireError> {
-    let state = &routes.environments;
-    let work = state
-        .update_work_metadata(&id, &wid, params.metadata)
+    let work = routes
+        .metadata
+        .apply(&id, &wid, params.metadata)
         .await
         .map_err(map_execution_error)?
         .ok_or_else(|| not_found("work"))?;
@@ -216,14 +229,13 @@ pub(super) async fn ack_work(
     State(routes): State<Arc<WorkRoutes>>,
     Path((id, wid)): Path<(String, String)>,
     headers: HeaderMap,
-    access: Option<Extension<awaken_worker_contract::WorkSessionAccess>>,
+    access: Option<Extension<awaken_executable_environment_contract::WorkSessionAccess>>,
 ) -> Result<Json<Work>, WireError> {
-    let state = &routes.environments;
     let result = if let Some(access) = access.as_deref() {
-        state.acknowledge_work_with_session_access(access).await
+        routes.session_leases.acknowledge(access).await
     } else {
         let owner = work_lease_owner(&headers)?;
-        state.acknowledge_work(&id, &wid, &owner).await
+        routes.consumer.acknowledge(&id, &wid, &owner).await
     }
     .map_err(map_execution_error)?;
     let work = worker_mutation(result)?;
@@ -235,23 +247,21 @@ pub(super) async fn heartbeat_work(
     State(routes): State<Arc<WorkRoutes>>,
     Path((id, wid)): Path<(String, String)>,
     headers: HeaderMap,
-    access: Option<Extension<awaken_worker_contract::WorkSessionAccess>>,
+    access: Option<Extension<awaken_executable_environment_contract::WorkSessionAccess>>,
     ManagedQuery(params): ManagedQuery<HeartbeatParams>,
 ) -> Result<Json<WorkHeartbeat>, WireError> {
-    let state = &routes.environments;
-    let command = LeaseHeartbeat {
-        condition: HeartbeatCondition::from_wire(params.expected_last_heartbeat.as_deref()),
-        desired_ttl_seconds: params.desired_ttl_seconds,
-    };
+    let command = params.into_heartbeat();
     let now_ms = routes.clock.now_ms();
     let heartbeat = if let Some(access) = access.as_deref() {
-        state
-            .heartbeat_work_with_session_access(access, now_ms, command)
+        routes
+            .session_leases
+            .heartbeat(access, now_ms, command)
             .await
     } else {
         let owner = work_lease_owner(&headers)?;
-        state
-            .heartbeat_work(&id, &wid, &owner, now_ms, command)
+        routes
+            .consumer
+            .heartbeat(&id, &wid, &owner, now_ms, command)
             .await
     }
     .map_err(map_execution_error)?;
@@ -332,10 +342,9 @@ pub(super) async fn stop_work(
     State(routes): State<Arc<WorkRoutes>>,
     Path((id, wid)): Path<(String, String)>,
     headers: HeaderMap,
-    access: Option<Extension<awaken_worker_contract::WorkSessionAccess>>,
+    access: Option<Extension<awaken_executable_environment_contract::WorkSessionAccess>>,
     body: Bytes,
 ) -> Result<Json<Work>, WireError> {
-    let state = &routes.environments;
     // The official SDK sends `{}` or `{force}`; retain the earlier empty-body
     // transport as the sole backwards-compatible alias and validate every
     // non-empty body against the exact 0.120 DTO.
@@ -346,21 +355,24 @@ pub(super) async fn stop_work(
             .map_err(|error| bad_request(format!("invalid Work stop request: {error}")))?
     };
     let result = if let Some(access) = access.as_deref() {
-        state.stop_work_with_session_access(access).await
+        routes.session_leases.stop(access).await
     } else {
         let owner = work_lease_owner(&headers)?;
-        state.stop_work(&id, &wid, &owner).await
+        routes.consumer.stop(&id, &wid, &owner).await
     }
     .map_err(map_execution_error)?;
     if matches!(
         result,
-        awaken_worker_contract::WorkMutationResult::PreconditionFailed
+        awaken_executable_environment_contract::WorkMutationResult::PreconditionFailed
     ) {
-        let current = state
-            .get_work(&id, &wid)
+        let current = routes
+            .queries
+            .get(&id, &wid)
             .await
             .map_err(map_execution_error)?;
-        if current.is_some_and(|work| work.state == awaken_worker_contract::WorkState::Stopped) {
+        if current.is_some_and(|work| {
+            work.state == awaken_executable_environment_contract::WorkState::Stopped
+        }) {
             return Err((
                 StatusCode::CONFLICT,
                 Json(ErrorResponse::new(
@@ -375,18 +387,20 @@ pub(super) async fn stop_work(
 }
 
 fn worker_mutation(
-    result: awaken_worker_contract::WorkMutationResult,
-) -> Result<awaken_worker_contract::WorkItem, WireError> {
+    result: awaken_executable_environment_contract::WorkMutationResult,
+) -> Result<awaken_executable_environment_contract::WorkItem, WireError> {
     match result {
-        awaken_worker_contract::WorkMutationResult::Accepted(work) => Ok(*work),
-        awaken_worker_contract::WorkMutationResult::PreconditionFailed => Err((
+        awaken_executable_environment_contract::WorkMutationResult::Accepted(work) => Ok(*work),
+        awaken_executable_environment_contract::WorkMutationResult::PreconditionFailed => Err((
             StatusCode::PRECONDITION_FAILED,
             Json(ErrorResponse::new(
                 "precondition_error",
                 "Worker does not own the current Work lease",
             )),
         )),
-        awaken_worker_contract::WorkMutationResult::NotFound => Err(not_found("work")),
+        awaken_executable_environment_contract::WorkMutationResult::NotFound => {
+            Err(not_found("work"))
+        }
     }
 }
 
@@ -449,7 +463,7 @@ mod tests {
             (
                 "M3",
                 EnvironmentExecutionError::WorkQueue(
-                    awaken_worker_contract::WorkQueueError::Storage(
+                    awaken_executable_environment_contract::WorkQueueError::Storage(
                         "queue outage".into(),
                     ),
                 ),
@@ -457,6 +471,36 @@ mod tests {
             ),
         ] {
             assert_eq!(map_execution_error(error).0, expected, "{rule}");
+        }
+    }
+
+    #[test]
+    fn heartbeat_query_keeps_the_protocol_sentinel_out_of_the_domain() {
+        // H1 omitted/null -> unconditional; H2 exact sentinel -> first;
+        // H3 opaque/case-distinct receipt -> matching, preserved byte for byte.
+        for (query, expected) in [
+            ("", HeartbeatCondition::Unconditional),
+            (
+                "expected_last_heartbeat=",
+                HeartbeatCondition::Unconditional,
+            ),
+            (
+                "expected_last_heartbeat=NO_HEARTBEAT",
+                HeartbeatCondition::First,
+            ),
+            (
+                "expected_last_heartbeat=no_heartbeat",
+                HeartbeatCondition::Matching("no_heartbeat".into()),
+            ),
+            (
+                "expected_last_heartbeat=a%2Bb%3D",
+                HeartbeatCondition::Matching("a+b=".into()),
+            ),
+        ] {
+            let params: HeartbeatParams = serde_urlencoded::from_str(query).unwrap();
+            let command = params.into_heartbeat();
+            assert_eq!(command.condition, expected, "{query}");
+            assert_eq!(command.desired_ttl_seconds, None);
         }
     }
 }

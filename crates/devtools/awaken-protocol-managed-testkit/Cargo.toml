@@ -21,7 +21,6 @@ awaken-executable-environment-contract.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-session-repository-contract.workspace = true
 awaken-session-execution-contract.workspace = true
-awaken-worker-contract.workspace = true
 awaken-executable-environment-catalog.workspace = true
 awaken-env-store = { workspace = true, features = ["test-support"] }
 awaken-time.workspace = true

@@ -20,6 +20,7 @@ enables = ["awaken-model-catalog-store"]
 # NOT depend on the awaken-coordinator data-plane bin — the two planes are siblings the
 # composition root (awaken-cli) weaves together.
 [dependencies]
+awaken-executable-environment-contract.workspace = true
 awaken-tool-contract.workspace = true
 awaken-data-governance-contract.workspace = true
 awaken-service-lifecycle.workspace = true

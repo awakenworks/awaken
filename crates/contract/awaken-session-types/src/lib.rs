@@ -249,3 +249,6 @@ mod tests {
 )]
 #[serde(transparent)]
 pub struct SessionRevision(pub u64);
+
+mod worker_lease;
+pub use worker_lease::SessionWorkLease;

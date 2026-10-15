@@ -4,9 +4,11 @@
 //! self-hosted environment hand a run to exactly one worker. These properties assert it
 //! over ALL enqueue/claim counts the generator produces, not just the pinned unit case.
 
+use awaken_executable_environment_contract::{
+    EnvironmentWorkLifecycle, SessionWorkStore, WorkConsumer, WorkQueries, WorkState,
+};
 use awaken_session_types::SessionId;
 use awaken_work_store::{InMemoryWorkQueue, LEASE_TTL_MS};
-use awaken_worker_contract::{WorkQueue, WorkState};
 use proptest::prelude::*;
 
 fn block<F: std::future::Future>(f: F) -> F::Output {

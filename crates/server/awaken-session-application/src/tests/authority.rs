@@ -22,6 +22,16 @@ mod lost_root_cas_replay;
 mod unattempted_archive_witness;
 pub(super) mod unattempted_profiled_release;
 
+async fn authority_repository(
+    context: &str,
+) -> Arc<awaken_session_store::SqliteManagedSessionRepository> {
+    Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .expect(context),
+    )
+}
+
 fn coordinated_session(id: &str) -> PersistedSession {
     let mut session = persisted(id, false, "idle");
     let environment = session
@@ -691,11 +701,8 @@ async fn repository_saga_application(
     registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     ingress: Arc<dyn CredentialMaterialIngress>,
 ) -> SessionApplication {
-    let sessions: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("Session repository"),
-    );
+    let sessions: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        authority_repository("Session repository").await;
     let mut app = application(sessions, Arc::new(RecordingEnvironmentSource::default()));
     app.set_resource_registry(registry);
     app.set_credential_material_ingress(ingress);
@@ -728,11 +735,8 @@ async fn repository_configuration_replays_only_the_exact_registry_aggregate() {
     // replay receipt; the Session application creates no side store or cache.
     let registry = super::creation::ephemeral_resource_registry().await;
     let repository_id = managed_repository_id("repo-replay");
-    let sessions: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("Session repository"),
-    );
+    let sessions: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        authority_repository("Session repository").await;
 
     let mut original = application(
         sessions.clone(),
@@ -1182,11 +1186,8 @@ async fn repository_retirement_requires_durable_owner_before_any_vault_effect() 
     // | A2 | absent | n/a | forged | yes | E3 + E4, no Vault effect |
     let registry = super::creation::ephemeral_resource_registry().await;
     let ingress = Arc::new(FaultInjectingCredentialMaterialIngress::default());
-    let sessions: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("Session repository"),
-    );
+    let sessions: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        authority_repository("Session repository").await;
 
     let markerless_id = "retirement-markerless";
     let markerless_credential = awaken_credential_contract::CredentialRef {
@@ -1438,11 +1439,7 @@ async fn root_mutation_cause_effect_decision_table() {
     // M5: C2+C3+C5+!C6 => E5; M6: C2+C3+C5+C6 => E6.
     // A lower-time candidate and a nonempty replay-only fact make a
     // candidate fallback, repeated write, or outbox append observable.
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("session repository"),
-    );
+    let repo = authority_repository("session repository").await;
     create(repo.as_ref(), persisted("mutation", false, "idle")).await;
     let app = application(
         repo.clone(),
@@ -1616,11 +1613,7 @@ async fn root_mutation_cause_effect_decision_table() {
 async fn create_session_root_classifies_insert_replay_and_conflicts() {
     use crate::SessionCreationError::{Conflict, IdempotencyMismatch};
     use crate::creation::{CompleteSessionCreateResult, CompleteSessionRoot};
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("session repository"),
-    );
+    let repo = authority_repository("session repository").await;
     let app = application(
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
@@ -1763,11 +1756,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
     // Constraint: the Session root and its SessionCleanupOperation are the only
     // intent/receipt authority; selector resolution is repeated from each CAS
     // winner and the archived replay uses that same frozen intent.
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("profiled Repository publication repository"),
-    );
+    let repo = authority_repository("profiled Repository publication repository").await;
     let mut session = persisted("profiled-publication", false, "idle");
     session.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
         binding: "profiled-publication-source".into(),
@@ -2374,11 +2363,8 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
     // the only transition authority; replays cannot create another terminal fact.
     // Decision rule: execute L1-L9 and require every accepted, blocked, raced,
     // forced, and delete effect in the table above.
-    let durable_repo: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("session repository"),
-    );
+    let durable_repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        authority_repository("session repository").await;
     let repo = Arc::new(FaultingSessionRepository::new(durable_repo));
     create(repo.as_ref(), persisted("archive-race", false, "idle")).await;
     create(repo.as_ref(), persisted("archive-running", false, "idle")).await;
@@ -2645,11 +2631,8 @@ async fn terminal_edges_wait_for_every_accepted_event_effect_anchor() {
     // `processed=false` intentionally covers both a merely queued command and
     // crash-after-effect/before-root-CAS: the effect owner may make replay a
     // no-op, but terminal admission cannot infer that fact or drop provenance.
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("Session repository"),
-    );
+    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        authority_repository("Session repository").await;
     for session_id in [
         "batch-before-archive",
         "batch-before-force",
@@ -3214,15 +3197,11 @@ async fn session_work_authority_classifies_scope_before_queue_access() {
     // | W3 | present | self-hosted/nonterminal | stopped | wake + Leased |
     // | W4 | present | self-hosted/terminal | stopped | Unowned; no wake |
     // | W5 | present | self-hosted/nonterminal renewal | stopped | Unowned; no wake |
-    use awaken_worker_contract::{
-        SessionWorkAcquisition, SessionWorkLeaseAuthority, SessionWorkOwnership,
-    };
+    use awaken_session_application_contract::{SessionWorkAcquisition, SessionWorkOwnership};
 
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("session repository"),
-    );
+    use awaken_session_application_contract::SessionWorkerLeaseAuthority;
+
+    let repo = authority_repository("session repository").await;
     create(repo.as_ref(), persisted("cloud-work", false, "idle")).await;
     create(repo.as_ref(), persisted("self-work", true, "idle")).await;
     create(repo.as_ref(), persisted("renewal-work", true, "idle")).await;
@@ -3349,11 +3328,7 @@ async fn run_activity_fence_decision_table() {
     // admission/completion and terminal truth dominates every replay. Decision rule:
     // execute A1-A9 to cover completion order, duplicates, terminal state,
     // policy rejection, and Worker preparation.
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("session repository"),
-    );
+    let repo = authority_repository("session repository").await;
     create(
         repo.as_ref(),
         persisted("activity-oldest-first", false, "idle"),
@@ -3634,11 +3609,7 @@ async fn recovered_scalar_activity_is_settled_or_superseded_without_parallel_tru
     // closes Idle; E2 C3 installs only the successor in the active set; E3 the
     // predecessor completion is fenced; E4 the successor closes Idle. Rules:
     // A10=C1+C2=>E1; A11=C1+C3+C4(old)=>E2+E3; A12=C1+C3+C4(new)=>E4.
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("session repository"),
-    );
+    let repo = authority_repository("session repository").await;
     let app = application(
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
@@ -3704,11 +3675,7 @@ async fn operation_activity_replay_uses_the_root_receipt_as_its_only_epoch_autho
     // | O2 | races absent/present | active | concurrent op-a | E2 |
     // | O3 | present | settled | retry op-a | E3 |
     // | O4 | absent | idle | op-b | E4 |
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("session repository"),
-    );
+    let repo = authority_repository("session repository").await;
     create(
         repo.as_ref(),
         persisted("activity-operation", false, "idle"),
@@ -3784,11 +3751,7 @@ async fn recovered_child_settlement_uses_the_claimed_dispatch_agent_without_a_pa
     // | R2 | absent | foreign-agent | absent | E2 |
     // | R3 | absent | __awaken_advisor__ | absent | E2 |
     // | R4 | absent | blank/legacy | absent | E2 |
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("child settlement recovery repository"),
-    );
+    let repo = authority_repository("child settlement recovery repository").await;
     let cases = [
         ("R1", "coord-child", true),
         ("R2", "foreign-agent", false),
@@ -3918,11 +3881,7 @@ async fn coordinated_follow_up_admission_uses_existing_thread_authorities() {
         ),
     ] {
         let session_id = format!("follow-up-{rule}");
-        let repo = Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-                .await
-                .expect("follow-up repository"),
-        );
+        let repo = authority_repository("follow-up repository").await;
         create(repo.as_ref(), coordinated_session(&session_id)).await;
         let runtime = Arc::new(RecordingAgentAdmissionRuntime::new([
             AgentAdmissionOutcome::Accepted,
@@ -3997,11 +3956,7 @@ async fn coordinated_follow_up_admission_uses_existing_thread_authorities() {
 
     for rule in ["A6", "A7", "A8"] {
         let session_id = format!("follow-up-{rule}");
-        let repo = Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-                .await
-                .expect("follow-up target repository"),
-        );
+        let repo = authority_repository("follow-up target repository").await;
         create(repo.as_ref(), coordinated_session(&session_id)).await;
         let runtime = Arc::new(RecordingAgentAdmissionRuntime::new([]));
         runtime.set_admission_observations([Ok(None)]);
@@ -4095,11 +4050,7 @@ async fn foreground_resume_reuses_exact_ticket_coordination_path() {
     // | F2 | exact | stable | wrong tool or kind | n/a | E1 |
     // | F3 | exact | stable | exact | accepted | E2+E3 |
     // | F4 | exact | stable | exact | rejected | E4 |
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("foreground resume repository"),
-    );
+    let repo = authority_repository("foreground resume repository").await;
     for session_id in ["foreground-resume", "foreground-resume-rejected"] {
         create(repo.as_ref(), persisted(session_id, false, "idle")).await;
     }
@@ -4266,11 +4217,7 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
     // | P4R | unavailable | exact retry after CAS | unknown | E2+E4 |
     // | P5 | accepted | first/replay | Awaiting | E5 |
     // | P6 | accepted Primary | first | pending | E6 |
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("reply activity repository"),
-    );
+    let repo = authority_repository("reply activity repository").await;
     for session_id in [
         "reply-accepted",
         "reply-rejected",
@@ -4540,11 +4487,7 @@ async fn reached_budget_allows_only_the_exact_required_action_continuation() {
     // | A1 | reached | new operation | n/a | E1 |
     // | A2 | reached | tool reply | yes | E2 |
     // | A3 | reached | tool reply | no | E3 |
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("required-action budget repository"),
-    );
+    let repo = authority_repository("required-action budget repository").await;
     for session_id in ["reached-valid-reply", "reached-invalid-reply"] {
         let mut session = persisted(session_id, false, "idle");
         session.budget = awaken_session_budget_contract::SessionBudgetState::Active {
@@ -4667,11 +4610,7 @@ async fn root_activity_cas_is_the_only_budget_admission_choke() {
     // |---|---|---|---|---|
     // | G1 | reached | list roster | none | E1 |
     // | G2 | reached | spawn child | rejects | E2+E3 |
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("budget choke repository"),
-    );
+    let repo = authority_repository("budget choke repository").await;
     let mut session = coordinated_session("budget-admission-choke");
     session.budget = awaken_session_budget_contract::SessionBudgetState::Active {
         max_list_cost_minor: 1,
@@ -4751,11 +4690,7 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
     // | B4 | Ended + cancelled | live | absent | E4 |
     // | B5 | Failed | live | interrupt port | E5 |
     // | B6 | Ended | live, lifecycle missing | absent | E6 |
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("boundary repository"),
-    );
+    let repo = authority_repository("boundary repository").await;
     create(repo.as_ref(), persisted("boundary-awaiting", false, "idle")).await;
     create(
         repo.as_ref(),
@@ -5004,11 +4939,7 @@ async fn boundary_redelivery_accepts_an_older_exact_run_without_settling_its_suc
     // | R2 | cold | present | older | source settled + successor active | boundary | E1+E2 |
     // | R3 | cold | absent | successor latest | successor active | n/a | E3 |
     // | R4 | warm | present | latest | source active | Running | E3 (B3) |
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("redelivery repository"),
-    );
+    let repo = authority_repository("redelivery repository").await;
     let session_id = "boundary-redelivery";
     create(repo.as_ref(), persisted(session_id, false, "idle")).await;
     let runtime = Arc::new(RecordingAgentAdmissionRuntime::new([]));
@@ -5185,11 +5116,7 @@ async fn completed_child_without_a_committed_reply_settles_without_a_report_run(
     // | Rule | Completed | committed selected reply | Effect |
     // | M1   | yes       | yes                      | E1 (S6) |
     // | M2   | yes       | no                       | E2      |
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("missing-report repository"),
-    );
+    let repo = authority_repository("missing-report repository").await;
     create(
         repo.as_ref(),
         persisted("completed-without-report", false, "idle"),
@@ -5259,11 +5186,7 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
     // |---|---|---:|---|---|
     // | A1 | Advisor | 1 | none | E1+E2+E3 |
     // | A2 | Advisor | 1 | same child | E1+E2+E3 |
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("Advisor usage repository"),
-    );
+    let repo = authority_repository("Advisor usage repository").await;
     create(repo.as_ref(), persisted("advisor-usage", false, "idle")).await;
     let runtime = Arc::new(
         RecordingBoundaryBudgetRuntime::new(awaken_session_budget_contract::SessionUsage {
@@ -5582,11 +5505,7 @@ async fn model_request_admission_reconciles_root_and_child_usage_at_one_cas() {
     // | G2 | root | reaches | no/yes | E2+E3 |
     // | G3 | child | below | no | E1 |
     // | G4 | child | reaches | no/yes | E2+E3 |
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("request gate repository"),
-    );
+    let repo = authority_repository("request gate repository").await;
     let snapshot = awaken_session_budget_contract::ManagedListPriceSnapshot {
         snapshot_id: "request-gate-prices-v1".into(),
         version: 1,
@@ -5742,11 +5661,7 @@ async fn child_boundary_reconciles_budget_before_the_report_request_gate() {
     // | B1 | Awaiting | reaches | first | E1 + E2 |
     // | B2 | Ended | reaches | first | E1 + E3 |
     // | B3 | Ended | already reached | replay | E4 + same E3 delivery |
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("boundary budget repository"),
-    );
+    let repo = authority_repository("boundary budget repository").await;
     let price_snapshot = awaken_session_budget_contract::ManagedListPriceSnapshot {
         snapshot_id: "boundary-price-v1".into(),
         version: 1,
@@ -5942,11 +5857,7 @@ async fn concurrent_child_cap_crossing_has_one_root_cas_winner_and_no_second_led
     // | Rule | In-flight | Aggregate cost | Settlement | Effects |
     // |---|---:|---|---|---|
     // | C1 | 2 | reaches cap | concurrent | E1+E2+E3+E4 |
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("concurrent budget repository"),
-    );
+    let repo = authority_repository("concurrent budget repository").await;
     let mut session = coordinated_session("concurrent-child-budget");
     session.budget = awaken_session_budget_contract::SessionBudgetState::active(
         1,
@@ -6128,11 +6039,7 @@ async fn mixed_update_commits_one_receipted_root_before_realization_and_replays_
     // | M1 | yes | commits | retryable failure | no | E1 + E2 |
     // | M2 | same command | already committed | succeeds | exact | E3 |
     let session_id = "mixed-update-one-root";
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("mixed update repository"),
-    );
+    let repo = authority_repository("mixed update repository").await;
     let mut session = persisted(session_id, false, "idle");
     session.budget = awaken_session_budget_contract::SessionBudgetState::Active {
         max_list_cost_minor: 10,
@@ -6329,11 +6236,7 @@ async fn mixed_update_commits_one_receipted_root_before_realization_and_replays_
 /// | U3 | terminal | any/absent | reject, no mutation |
 #[tokio::test]
 async fn update_admission_uses_only_durable_session_status() {
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("session repository"),
-    );
+    let repo = authority_repository("session repository").await;
     create(repo.as_ref(), persisted("update-idle", false, "idle")).await;
     create(repo.as_ref(), persisted("update-running", false, "running")).await;
     create(
@@ -6392,11 +6295,7 @@ async fn profiled_update_authority_separates_public_agent_and_credential_lifecyc
     // compatible and does not become an agent hidden-axis mutation.
     // Rules U1=Managed+C2=>E1, U2/U3=profiled+C2=>E2,
     // U4=profiled+C3=>E3, U5=C4=>E4, U6=profiled+C5=>E5.
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("profiled update repository"),
-    );
+    let repo = authority_repository("profiled update repository").await;
     for (id, policy) in [
         (
             "update-managed-policy",
@@ -6584,11 +6483,7 @@ async fn budget_update_lifecycle_follows_the_one_way_decision_table() {
     // enforcement; E5 removed cannot become active again.
     // Decision table: B1 absent+present=>E1; B2 active+present+C3=>E2; B3
     // active+present+!C3=>E3; B4 active+absent=>E4; B5 removed+present=>E5.
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("session repository"),
-    );
+    let repo = authority_repository("session repository").await;
     let mut active = persisted("budget-active", false, "idle");
     let snapshot = awaken_session_budget_contract::ManagedListPriceSnapshot {
         snapshot_id: "prices-v1".into(),
@@ -6721,11 +6616,7 @@ async fn budget_update_resumes_exact_committed_pauses_without_activity_leaks() {
     };
     use awaken_session_budget_contract::SessionBudgetState;
 
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("budget resume repository"),
-    );
+    let repo = authority_repository("budget resume repository").await;
     let snapshot = awaken_session_budget_contract::ManagedListPriceSnapshot {
         snapshot_id: "resume-prices-v1".into(),
         version: 1,
@@ -6952,11 +6843,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         )
         .for_environment("env-7")
     }
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("session repository"),
-    );
+    let repo = authority_repository("session repository").await;
     let current = crate::session_resource::SessionRealizationLease {
         owner: "runtime-a".into(),
         runtime_incarnation: "runtime-a/boot-1".into(),
@@ -7272,11 +7159,7 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
         (false, true, true, Some(1)),
         (false, false, true, Some(1)),
     ] {
-        let repo = Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-                .await
-                .expect("session repository"),
-        );
+        let repo = authority_repository("session repository").await;
         let now = u64::try_from(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -7932,11 +7815,7 @@ async fn complete_recovery_scan_reaches_page_two_and_purge_fails_closed() {
     // | F4 | 256 active rows | non-advancing cursor | E3 |
     use awaken_resource_contract::ResourcePurgeGuard as _;
 
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("paged Session repository"),
-    );
+    let repo = authority_repository("paged Session repository").await;
     for index in 0..256 {
         create(
             repo.as_ref(),

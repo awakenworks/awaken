@@ -423,10 +423,8 @@ impl SessionApplication {
             return Ok(());
         };
         self.environments
-            .retire_session_work(
-                &baseline.environment.environment_id,
-                session.session_id.as_str(),
-            )
+            .assignment
+            .retire_session(&baseline.environment.environment_id, &session.session_id)
             .await
             .map(|_| ())
             .map_err(|error| {

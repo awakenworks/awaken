@@ -39,26 +39,25 @@ The named harnesses in the strict gate invoke production pure functions directly
     exactly terminal truth.
 - `awaken-session-execution-contract`: awaiting outcomes cannot be terminal or failed;
   - ended outcomes carry the only failure authority and no pending tool.
-- `awaken-worker-contract` (Session work): only queued WorkQueue items are claimable;
+- `awaken-executable-environment-contract` (Environment Work): only queued items are claimable;
   - only active WorkQueue items accept lease extension;
   - Work mutations require a present row, exact owner/epoch authority, and the
     matching command condition through one kernel used by all three backends;
   - stopping a WorkQueue item is absorbing.
   - the first heartbeat receipt is authorized once and every later heartbeat
     requires the matching receipt.
-  - stopped Session Work is revived only by a claimed nonterminal Run after an
-    initial acquisition found no lease; realization renewal remains inert.
-  - Session cleanup advances only through
-    `NotRequested -> Fenced -> Requested -> Completed`, and every identity,
-    and canonical artifact-completion axis is mandatory. Adapter-returned
-    booleans are deliberately not accepted as independent proof evidence.
+- `awaken-session-application-contract`: only a claimed nonterminal Run can revive
+  stopped Work after acquisition finds no lease; realization renewal remains inert.
+- `awaken-session-state-contract`: cleanup follows only
+  `NotRequested -> Fenced -> Requested -> Completed`, requiring every identity and
+  canonical artifact-completion axis; adapter booleans are not independent proof evidence.
   - a first Delete request always hides, terminalizes when needed, and requests
     cleanup together; Deleting/Deleted replays are inert.
   - a Session tombstone is admitted only for a hidden, terminal aggregate with
     verified cleanup completion.
-  - Session realization reuses only one exact live owner/incarnation; every
-    restart or authorized reassignment advances the epoch exactly once and
-    exhaustion fails closed.
+- `awaken-session-realization-contract`: Session realization reuses one exact live
+  owner/incarnation; restart or authorized reassignment advances the epoch exactly
+  once, and exhaustion fails closed.
 - `awaken-dispatch-contract`
   - distinct parent-Session affinity retains the child's own Run/Thread; claim
     advances one exact lease epoch and preserves the frozen dispatch; the physical

@@ -556,9 +556,10 @@ impl SessionApplication {
             .filter(|baseline| baseline.environment.self_hosted)
         {
             self.environments
-                .wake_session_work(
+                .assignment
+                .wake_session(
                     &baseline.environment.environment_id,
-                    recovered.session.session_id.as_str(),
+                    &recovered.session.session_id,
                 )
                 .await
                 .map_err(|error| {

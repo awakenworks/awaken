@@ -631,7 +631,9 @@ mod tests {
             &self,
             _claim: &awaken_dispatch_contract::RunClaim,
             _session_id: &str,
-            _session_work_authority: Option<&awaken_worker_contract::SessionWorkAuthorityReceipt>,
+            _session_work_authority: Option<
+                &awaken_session_application_contract::SessionWorkAuthorityReceipt,
+            >,
             _continuation: Option<
                 &awaken_session_configuration_contract::resource::SessionRealizationLease,
             >,
@@ -1539,13 +1541,8 @@ mod tests {
         (host, control, directive, original_handle, roots)
     }
 
-    #[test]
-    fn cold_worker_adopts_the_frozen_environment_before_recovering_stdio_mcp() {
-        // Construct and poll recovery on the canonical composed-test root.
-        awaken_service_lifecycle::run_composed_async_test(cold_worker_recovery_case);
-    }
-
-    async fn cold_worker_recovery_case() {
+    #[tokio::test]
+    async fn cold_worker_adopts_the_frozen_environment_before_recovering_stdio_mcp() {
         /* Cold remote-Session recovery cause/effect graph: C1 Control returns a
          * frozen Session with an opaque resident-Environment binding; C2 the new
          * Worker process has no resident Runtime/Environment; C3 the claimed Run
@@ -1574,6 +1571,7 @@ mod tests {
          * | R2 | ready | yes | no | yes | either | reuse resident Environment |
          * | R3 | ready | no | no | yes | either | E4 |
          * | R4 | no | no | yes | no | either | ordinary resume (covered by O1) |
+         * R5/R6 run as separate cold_rebuild/cold_continuity tests below.
          * | R5 | missing | no | yes | no | rebuild | E5: pending, no accepted Source closure/access |
          * | R6 | missing | no | yes | no | continuity | fail closed |
          * | R7 | none yet | no | yes | yes | either | E7; install publication, then stage |
@@ -2042,13 +2040,16 @@ mod tests {
             error.to_string().contains("exact claimed Agent snapshot"),
             "R3/E4: {error}"
         );
+    }
 
+    // These rows have independent Root/Host lifecycles. Separate test futures
+    // keep nested cold construction within the default Windows test stack;
+    // every original physical-result and authority assertion remains below.
+    #[tokio::test]
+    async fn cold_rebuild_preserves_original_materialization_without_source_closure() {
+        let storage = tempfile::tempdir().expect("storage");
         let rebuild_thread = "cold-missing-environment";
         let rebuild_activation = test_activation(rebuild_thread, "run-cold-missing-environment");
-        // The owned missing-source workflow includes nested Host/Root futures.
-        // Heap-indirect at its async call boundary so neither matrix row retains
-        // that whole workflow in this test's default-stack frame. Outcomes and
-        // the original authority/deadline are unchanged; no stack limit is raised.
         let (rebuild_host, rebuild_control, rebuild_directive, missing_handle, rebuild_roots) =
             Box::pin(missing_environment_recovery_fixture(
                 storage.path(),
@@ -2124,7 +2125,11 @@ mod tests {
             after_rebuild.environment_materialization, before_rebuild.environment_materialization,
             "R5 original Create intent remains captured; no target receipt fills history"
         );
+    }
 
+    #[tokio::test]
+    async fn cold_continuity_rejects_a_physically_missing_environment() {
+        let storage = tempfile::tempdir().expect("storage");
         let continuity_thread = "cold-continuity-missing";
         let continuity_activation =
             test_activation(continuity_thread, "run-cold-continuity-missing");

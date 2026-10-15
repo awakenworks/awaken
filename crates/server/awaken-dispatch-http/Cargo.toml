@@ -27,7 +27,6 @@ awaken-session-realization-contract.workspace = true
 awaken-session-execution-contract.workspace = true
 awaken-session-state-contract.workspace = true
 awaken-session-types.workspace = true
-awaken-worker-contract.workspace = true
 awaken-worker-transport-security.workspace = true
 async-trait.workspace = true
 axum.workspace = true
@@ -41,6 +40,8 @@ tokio = { workspace = true, features = ["time"] }
 test-support = []
 
 [dev-dependencies]
+awaken-executable-environment-contract.workspace = true
+awaken-worker-contract.workspace = true
 awaken-runtime-host-testkit.workspace = true
 awaken-worker-registry = { workspace = true, features = ["test-support"] }
 awaken-worker-transport-security = { workspace = true, features = ["kubernetes"] }

@@ -23,7 +23,6 @@ mod registry;
 mod relay_route;
 mod requirements;
 mod run_claim;
-mod session_work;
 
 pub use awaken_credential_contract::{
     CredentialObservationState as WorkerCredentialState, CredentialRef as WorkerCredentialRevision,
@@ -68,7 +67,6 @@ pub use requirements::{
     can_claim_locally, manifest_recovery_matches_installed, sandbox_tool_recovery_is_compatible,
 };
 pub use run_claim::RunClaim;
-pub use session_work::*;
 
 #[cfg(test)]
 use awaken_acp_contract::{AcpCapabilityObservation, AcpCapabilityObservationState};
@@ -1562,6 +1560,3 @@ mod tests {
         }
     }
 }
-
-mod session_work_source;
-pub use session_work_source::SessionWorkSource;

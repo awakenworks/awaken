@@ -16,13 +16,16 @@ use awaken_agent_contract::McpTarget;
 use awaken_environment_contract::EnvItem;
 use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError;
 use awaken_session_application_contract::LifecycleFactNotifier;
+use awaken_session_configuration_contract::{
+    is_native_session_runtime, validate_sandbox_provisioning_runtime,
+};
 use awaken_session_repository_contract::SessionRepository;
 use awaken_session_execution_contract::{McpAttachmentRealizer, SessionEnvironmentBindingSink};
 #[cfg(test)]
 use awaken_session_state_contract::SessionExecutionState;
 use awaken_session_types::RunError;
 use {
-    awaken_session_configuration_contract::{EnvironmentSnapshot, SandboxProvisioning},
+    awaken_session_configuration_contract::EnvironmentSnapshot,
     awaken_session_types::SessionRuntimePlacement,
 };
 use {
@@ -269,24 +272,39 @@ pub use awaken_session_application_contract::{
 pub type ResolvedSessionEnvironment =
     awaken_executable_environment_contract::ResolvedSessionEnvironment<EnvironmentSnapshot>;
 use awaken_executable_environment_contract::SessionEnvironmentProjectionSource;
-use awaken_worker_contract::{SessionWorkSource, WorkerObservationSource};
-/// One required Environment assembly, with query and Work roles from their owners.
-/// A query-only provider cannot supply the complete application capability.
+use awaken_worker_contract::WorkerObservationSource;
+
+/// Required Environment roles projected from one coherent application source.
+/// Construction is explicit and has no optional capability discovery.
 ///
 /// ```compile_fail
+/// use std::sync::Arc;
 /// use awaken_executable_environment_contract::SessionEnvironmentProjectionSource;
-/// use awaken_session_application::SessionEnvironmentSource;
-/// fn complete<T: SessionEnvironmentSource>() {}
-/// fn query_only<T: SessionEnvironmentProjectionSource<Snapshot = awaken_session_configuration_contract::EnvironmentSnapshot>>() { complete::<T>(); }
+/// use awaken_session_application::SessionEnvironments;
+/// fn query_only<T: SessionEnvironmentProjectionSource<Snapshot = awaken_session_configuration_contract::EnvironmentSnapshot> + 'static>(source: Arc<T>) {
+///     let _: SessionEnvironments = source.into();
+/// }
 /// ```
-pub trait SessionEnvironmentSource:
-    SessionEnvironmentProjectionSource<Snapshot = EnvironmentSnapshot> + SessionWorkSource
-{
+#[derive(Clone)]
+pub struct SessionEnvironments {
+    projection: Arc<dyn SessionEnvironmentProjectionSource<Snapshot = EnvironmentSnapshot>>,
+    assignment: Arc<dyn awaken_session_application_contract::SessionWorkerAssignment>,
+    leases: Arc<dyn awaken_session_application_contract::SessionWorkerLeases>,
 }
-impl<
-    T: SessionEnvironmentProjectionSource<Snapshot = EnvironmentSnapshot> + SessionWorkSource + ?Sized,
-> SessionEnvironmentSource for T
+impl<T> From<Arc<T>> for SessionEnvironments
+where
+    T: SessionEnvironmentProjectionSource<Snapshot = EnvironmentSnapshot>
+        + awaken_session_application_contract::SessionWorkerAssignment
+        + awaken_session_application_contract::SessionWorkerLeases
+        + 'static,
 {
+    fn from(source: Arc<T>) -> Self {
+        Self {
+            projection: source.clone(),
+            assignment: source.clone(),
+            leases: source,
+        }
+    }
 }
 
 pub(crate) use awaken_session_configuration_contract::mcp as session_mcp;

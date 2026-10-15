@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use awaken_worker_contract::WorkQueue;
+use awaken_executable_environment_contract::SessionWorkStore;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn colocated_process_stores_share_wal_and_wait_for_transient_writers() {

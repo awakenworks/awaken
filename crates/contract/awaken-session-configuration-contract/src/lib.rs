@@ -69,3 +69,6 @@ pub trait EnvironmentWarmupSource: Send + Sync {
 }
 
 use awaken_session_types::SessionRuntimePlacement;
+
+mod worker_provisioning;
+pub use worker_provisioning::{is_native_session_runtime, validate_sandbox_provisioning_runtime};

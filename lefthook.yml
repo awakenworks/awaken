@@ -324,7 +324,7 @@ pre-commit:
     # Generated wire artifacts are derived from the admin-config and Managed
     # DTOs; a DTO edit without regeneration is refused here, not at release.
     generated-contracts:
-      glob: "{contracts/**/*,scripts/contract/**/*,crates/control/awaken-admin-config-api/**/*.rs,crates/server/awaken-protocol-managed/src/**/*.rs}"
+      glob: "{.gitattributes,contracts/**/*,scripts/contract/**/*,crates/control/awaken-admin-config-api/**/*.rs,crates/server/awaken-protocol-managed/src/**/*.rs}"
       run: scripts/contract/generate-contracts.sh --check
 
     # 6. Every relative Markdown link resolves to a real file and anchor.

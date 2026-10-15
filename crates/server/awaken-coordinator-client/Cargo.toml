@@ -14,6 +14,7 @@ separation = "isolation"
 isolates = ["reqwest"]
 
 [dependencies]
+awaken-session-application-contract.workspace = true
 awaken-credential-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-dispatch-contract.workspace = true
@@ -23,7 +24,6 @@ awaken-session-realization-contract.workspace = true
 awaken-session-execution-contract.workspace = true
 awaken-session-state-contract.workspace = true
 awaken-session-types.workspace = true
-awaken-worker-contract.workspace = true
 awaken-outbound-http = { workspace = true }
 awaken-observability.workspace = true
 awaken-worker-transport-security.workspace = true

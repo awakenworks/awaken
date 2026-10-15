@@ -53,9 +53,9 @@ cargo run --locked -q -p awaken-control --features schema --example export_mcp_s
 python3 - "$tmp/schemas.json" "$tmp/openapi.generated.json" "$tmp/mcp.schemas.json" <<'PYMCP'
 import json,pathlib,sys
 schemas_path,openapi_path,mcp_path=map(pathlib.Path,sys.argv[1:])
-extra=json.loads(mcp_path.read_text())
+extra=json.loads(mcp_path.read_text(encoding='utf-8'))
 for path,is_openapi in [(schemas_path,False),(openapi_path,True)]:
-    root=json.loads(path.read_text())
+    root=json.loads(path.read_text(encoding='utf-8'))
     target=root['components']['schemas'] if is_openapi else root['schemas']
     for key,value in extra["schemas"].items():
         if key in target and target[key]!=value: raise ValueError('conflicting schema '+key)
@@ -113,7 +113,7 @@ import json, pathlib, sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
 schema = data["schemas"]["ModelSelection"]
 schema.setdefault("title", "ModelSelection")
-pathlib.Path(sys.argv[2]).write_text(json.dumps(schema), encoding="utf-8")
+pathlib.Path(sys.argv[2]).write_text(json.dumps(schema), encoding="utf-8", newline="\n")
 PY
     "$python_bin" "$repo_root/scripts/contract/schema_to_typescript.py" build \
         "$tmp/schemas.json" "$tmp/model-config.codegen.json"

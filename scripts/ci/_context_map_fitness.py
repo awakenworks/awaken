@@ -70,7 +70,7 @@ ALLOWED_CONTEXT_PAIRS: dict[str, frozenset[str]] = {
     "deployment": frozenset({"config", "resources", "session"}),
     "dispatch": frozenset({"access", "credentials", "environment", "execution", "session"}),
     "environment": frozenset(
-        {"access", "credentials", "dispatch", "execution", "resources", "sandbox", "session"}
+        {"access", "credentials", "execution", "resources", "sandbox", "session"}
     ),
     # execution -> governance: the Run boundary consults the consent port and the
     # ACP session home erases captured content; ADR-0086 §2 moved those ports out

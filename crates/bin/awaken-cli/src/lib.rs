@@ -1462,6 +1462,7 @@ mod process_role_surface_tests {
         assert_eq!(observed["work_claims_active"], false);
         assert_eq!(observed["session_realizations_active"], false);
         domain_work
+            .assignment()
             .enqueue_session(
                 "domain-env",
                 &awaken_session_types::SessionId::from("domain-session"),
@@ -1469,6 +1470,7 @@ mod process_role_surface_tests {
             .await
             .unwrap();
         domain_work
+            .consumer()
             .claim("domain-env", &domain_identity.lease_owner(), 0)
             .await
             .unwrap()
@@ -1493,6 +1495,7 @@ mod process_role_surface_tests {
         assert_eq!(occupied["work_claims_active"], true, "R4");
         assert_eq!(
             domain_work
+                .worker_leases()
                 .release_owner(&domain_identity.lease_owner())
                 .await
                 .unwrap(),

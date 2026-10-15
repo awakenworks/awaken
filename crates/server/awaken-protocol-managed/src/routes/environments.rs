@@ -88,7 +88,10 @@ pub fn environment_work_router(
     clock: Arc<dyn awaken_time::WallClock>,
 ) -> Router {
     let state = Arc::new(work_routes::WorkRoutes {
-        environments,
+        queries: environments.work_queries(),
+        consumer: environments.work_consumer(),
+        metadata: environments.work_metadata(),
+        session_leases: environments.session_work_leases(),
         clock,
     });
     Router::new()
@@ -121,65 +124,37 @@ pub fn environment_work_router(
 }
 
 fn map_environment_application_error(error: EnvironmentApplicationError) -> WireError {
+    use awaken_environment_contract::{CreateEnvironmentError, EnvironmentStoreError};
+    use awaken_provisioning_contract::SandboxExecutionPolicyError;
     let message = error.to_string();
     match error {
-        EnvironmentApplicationError::Create(
-            awaken_environment_contract::CreateEnvironmentError::IdempotencyConflict,
-        ) => (
-            StatusCode::CONFLICT,
-            Json(ErrorResponse::new("conflict_error", message)),
-        ),
-        EnvironmentApplicationError::Create(
-            awaken_environment_contract::CreateEnvironmentError::InvalidConfig(_),
-        )
-        | EnvironmentApplicationError::Store(
-            awaken_environment_contract::EnvironmentStoreError::InvalidConfig(_),
-        ) => (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(ErrorResponse::new("invalid_request_error", message)),
-        ),
         EnvironmentApplicationError::NotFound => not_found("environment"),
-        EnvironmentApplicationError::BuiltinImmutable | EnvironmentApplicationError::Archived => (
+        EnvironmentApplicationError::Policy(SandboxExecutionPolicyError::NotFound) => {
+            not_found("sandbox execution policy")
+        }
+        EnvironmentApplicationError::Create(CreateEnvironmentError::IdempotencyConflict)
+        | EnvironmentApplicationError::BuiltinImmutable
+        | EnvironmentApplicationError::Archived
+        | EnvironmentApplicationError::Store(
+            EnvironmentStoreError::RevisionConflict | EnvironmentStoreError::RevisionExhausted,
+        )
+        | EnvironmentApplicationError::Policy(SandboxExecutionPolicyError::VersionConflict) => (
             StatusCode::CONFLICT,
             Json(ErrorResponse::new("conflict_error", message)),
         ),
-        EnvironmentApplicationError::Store(
-            awaken_environment_contract::EnvironmentStoreError::RevisionConflict
-            | awaken_environment_contract::EnvironmentStoreError::RevisionExhausted,
-        ) => (
-            StatusCode::CONFLICT,
-            Json(ErrorResponse::new("conflict_error", message)),
-        ),
-        EnvironmentApplicationError::Policy(
-            awaken_provisioning_contract::SandboxExecutionPolicyError::NotFound,
-        ) => not_found("sandbox execution policy"),
-        EnvironmentApplicationError::Policy(
-            awaken_provisioning_contract::SandboxExecutionPolicyError::VersionConflict,
-        ) => (
-            StatusCode::CONFLICT,
-            Json(ErrorResponse::new("conflict_error", message)),
-        ),
-        EnvironmentApplicationError::Policy(
-            awaken_provisioning_contract::SandboxExecutionPolicyError::Disabled
-            | awaken_provisioning_contract::SandboxExecutionPolicyError::Invalid(_),
+        EnvironmentApplicationError::Create(CreateEnvironmentError::InvalidConfig(_))
+        | EnvironmentApplicationError::Store(EnvironmentStoreError::InvalidConfig(_))
+        | EnvironmentApplicationError::Policy(
+            SandboxExecutionPolicyError::Disabled | SandboxExecutionPolicyError::Invalid(_),
         ) => (
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(ErrorResponse::new("invalid_request_error", message)),
         ),
-        EnvironmentApplicationError::Policy(
-            awaken_provisioning_contract::SandboxExecutionPolicyError::StoreFailed(_),
-        )
-        | EnvironmentApplicationError::PolicyStoreUnavailable => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ErrorResponse::new("api_error", message)),
-        ),
-        EnvironmentApplicationError::Create(
-            awaken_environment_contract::CreateEnvironmentError::Store(_),
-        )
+        EnvironmentApplicationError::Policy(SandboxExecutionPolicyError::StoreFailed(_))
+        | EnvironmentApplicationError::PolicyStoreUnavailable
+        | EnvironmentApplicationError::Create(CreateEnvironmentError::Store(_))
         | EnvironmentApplicationError::Registration(_)
-        | EnvironmentApplicationError::Store(
-            awaken_environment_contract::EnvironmentStoreError::Backend(_),
-        )
+        | EnvironmentApplicationError::Store(EnvironmentStoreError::Backend(_))
         | EnvironmentApplicationError::RegistrationInvariant(_) => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ErrorResponse::new("api_error", message)),

@@ -4368,16 +4368,16 @@ impl awaken_executable_environment_contract::SessionEnvironmentProjectionSource
 }
 
 #[async_trait::async_trait]
-impl awaken_worker_contract::SessionWorkSource for RecordingEnvironmentSource {
-    async fn enqueue_session_work(
+impl awaken_session_application_contract::SessionWorkerAssignment for RecordingEnvironmentSource {
+    async fn enqueue_session(
         &self,
         _environment_id: &str,
-        session_id: &str,
-    ) -> Result<String, awaken_worker_contract::WorkQueueError> {
-        if self.failures.lock().unwrap().contains(session_id) {
-            return Err(awaken_worker_contract::WorkQueueError::Storage(
-                format!("injected failure for {session_id}").into(),
-            ));
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<String, awaken_session_types::RunError> {
+        if self.failures.lock().unwrap().contains(session_id.as_str()) {
+            return Err(awaken_session_types::RunError::unavailable(format!(
+                "injected failure for {session_id}"
+            )));
         }
         self.dispatched
             .lock()
@@ -4387,57 +4387,63 @@ impl awaken_worker_contract::SessionWorkSource for RecordingEnvironmentSource {
         Ok(format!("work:{session_id}"))
     }
 
-    async fn wake_session_work(
+    async fn wake_session(
         &self,
         _environment_id: &str,
-        session_id: &str,
-    ) -> Result<String, awaken_worker_contract::WorkQueueError> {
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<String, awaken_session_types::RunError> {
         self.awakened.lock().unwrap().insert(session_id.to_string());
         Ok(format!("work:{session_id}"))
     }
 
-    async fn retire_session_work(
+    async fn retire_session(
         &self,
         _environment_id: &str,
-        session_id: &str,
-    ) -> Result<Option<awaken_worker_contract::WorkItem>, awaken_worker_contract::WorkQueueError>
-    {
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<(), awaken_session_types::RunError> {
         self.retired.lock().unwrap().push(session_id.to_string());
-        Ok(None)
+        Ok(())
     }
+}
 
-    async fn acquire_session_work(
+#[async_trait::async_trait]
+impl awaken_session_application_contract::SessionWorkerLeases for RecordingEnvironmentSource {
+    async fn acquire_session(
         &self,
         environment_id: &str,
-        session_id: &str,
+        session_id: &awaken_session_types::SessionId,
         worker_owner: &str,
         now_ms: u64,
-    ) -> Result<
-        Option<awaken_worker_contract::SessionWorkLease>,
-        awaken_worker_contract::WorkQueueError,
-    > {
-        Ok(self.awakened.lock().unwrap().contains(session_id).then(|| {
-            awaken_worker_contract::SessionWorkLease::granted(
-                format!("work:{session_id}"),
-                environment_id,
-                SessionId::from(session_id),
-                worker_owner,
-                awaken_lease_contract::fence::Epoch::FIRST,
-                awaken_time::Expiry::from_epoch_ms(now_ms.saturating_add(30_000)),
-            )
-        }))
+    ) -> Result<Option<awaken_session_types::SessionWorkLease>, awaken_session_types::RunError>
+    {
+        Ok(self
+            .awakened
+            .lock()
+            .unwrap()
+            .contains(session_id.as_str())
+            .then(|| {
+                awaken_session_types::SessionWorkLease::from_persisted(
+                    format!("work:{session_id}"),
+                    environment_id,
+                    session_id.clone(),
+                    worker_owner,
+                    (awaken_lease_contract::fence::Epoch::FIRST).get(),
+                    now_ms.saturating_add(30_000),
+                )
+                .expect("canonical grant has a nonzero epoch")
+            }))
     }
 
-    async fn release_session_work(
+    async fn release_session(
         &self,
-        _lease: &awaken_worker_contract::SessionWorkLease,
-    ) -> Result<bool, awaken_worker_contract::WorkQueueError> {
+        _lease: &awaken_session_types::SessionWorkLease,
+    ) -> Result<bool, awaken_session_types::RunError> {
         Ok(false)
     }
-    async fn release_worker_session_work(
+    async fn release_owner(
         &self,
         _worker_owner: &str,
-    ) -> Result<usize, awaken_worker_contract::WorkQueueError> {
+    ) -> Result<usize, awaken_session_types::RunError> {
         Ok(0)
     }
 }
@@ -4520,7 +4526,7 @@ async fn create(
 
 fn application(
     repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
-    environments: Arc<dyn SessionEnvironmentSource>,
+    environments: impl Into<SessionEnvironments>,
 ) -> SessionApplication {
     application_with_configuration(repo, environments, Default::default())
 }
@@ -4528,7 +4534,7 @@ fn application(
 fn application_with_runtime(
     runtime: Arc<dyn awaken_session_execution_contract::CompleteSessionRuntime>,
     repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
-    environments: Arc<dyn SessionEnvironmentSource>,
+    environments: impl Into<SessionEnvironments>,
 ) -> SessionApplication {
     configured_application(runtime, repo, environments, Default::default())
 }
@@ -4536,7 +4542,7 @@ fn application_with_runtime(
 fn configured_application(
     runtime: Arc<dyn awaken_session_execution_contract::CompleteSessionRuntime>,
     repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
-    environments: Arc<dyn SessionEnvironmentSource>,
+    environments: impl Into<SessionEnvironments>,
     configuration: SessionApplicationConfiguration,
 ) -> SessionApplication {
     SessionApplicationBuilder::fixture(
@@ -4587,7 +4593,7 @@ async fn complete_runtime_composition_does_not_require_optional_role_discovery()
 
 fn application_with_configuration(
     repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
-    environments: Arc<dyn SessionEnvironmentSource>,
+    environments: impl Into<SessionEnvironments>,
     configuration: SessionApplicationConfiguration,
 ) -> SessionApplication {
     SessionApplicationBuilder::fixture(

@@ -762,6 +762,9 @@ use awaken_dispatch_http::WorkerDispatchAuthority;
 
 mod environment_renewal {
     use super::*;
+
+    use awaken_session_application_contract::SessionWorkerLeaseAuthority;
+    use awaken_session_application_contract::{SessionWorkAcquisition, SessionWorkOwnership};
     use awaken_session_configuration_contract::resource::SessionRealizationLease;
     use awaken_session_repository_contract::SessionRepository;
     use awaken_session_state_contract::{
@@ -769,10 +772,7 @@ mod environment_renewal {
         SessionEnvironmentEffectIntent, SessionEnvironmentEffectKind, SessionEnvironmentReceipt,
         SessionEnvironmentState,
     };
-    use awaken_worker_contract::{
-        SessionWorkAcquisition, SessionWorkLease, SessionWorkLeaseAuthority, SessionWorkOwnership,
-        WorkQueueError,
-    };
+    use awaken_session_types::SessionWorkLease;
     use {
         awaken_session_configuration_contract::{
             EnvironmentFingerprint, EnvironmentSnapshot, SessionBaseline, SessionBaselineInputs,
@@ -786,26 +786,26 @@ mod environment_renewal {
     struct ObservedWork(SessionWorkOwnership);
 
     #[async_trait::async_trait]
-    impl SessionWorkLeaseAuthority for ObservedWork {
+    impl SessionWorkerLeaseAuthority for ObservedWork {
         async fn acquire_session_work(
             &self,
             _session_id: &awaken_session_types::SessionId,
             _worker_owner: &str,
             _now_ms: u64,
             _acquisition: SessionWorkAcquisition,
-        ) -> Result<SessionWorkOwnership, WorkQueueError> {
+        ) -> Result<SessionWorkOwnership, awaken_session_types::RunError> {
             Ok(self.0.clone())
         }
         async fn release_session_work(
             &self,
             _lease: &SessionWorkLease,
-        ) -> Result<bool, WorkQueueError> {
+        ) -> Result<bool, awaken_session_types::RunError> {
             Ok(false)
         }
         async fn release_worker_session_work(
             &self,
             _worker_owner: &str,
-        ) -> Result<usize, WorkQueueError> {
+        ) -> Result<usize, awaken_session_types::RunError> {
             Ok(0)
         }
     }
@@ -957,7 +957,7 @@ mod environment_renewal {
                     clock.clone(),
                 ),
             );
-            let work = SessionWorkLease::granted(
+            let work = SessionWorkLease::from_persisted(
                 format!("work:{session_id}"),
                 "environment-renewal",
                 session_id.clone().into(),
@@ -966,9 +966,10 @@ mod environment_renewal {
                 } else {
                     identity.lease_owner()
                 },
-                awaken_lease_contract::fence::Epoch::FIRST,
-                awaken_time::Expiry::from_epoch_ms(1_000),
-            );
+                (awaken_lease_contract::fence::Epoch::FIRST).get(),
+                1_000,
+            )
+            .expect("canonical grant has a nonzero epoch");
             let service = WorkerDispatchService::new(
                 Arc::new(MemoryDispatchStore::new(clock.clone()))
                     as Arc<dyn WorkerDispatchAuthority>,

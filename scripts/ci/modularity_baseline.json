@@ -353,7 +353,7 @@
     "awaken-sandbox-local::provider.rs::create_sandbox_inner": 213,
     "awaken-sandbox-local::realization_marker.rs::begin": 244,
     "awaken-session-application::activity.rs::begin_activity_for_operation_with_policy": 152,
-    "awaken-session-application::activity.rs::settle_activity_observed_for_event": 170,
+    "awaken-session-application::activity.rs::settle_activity_observed_for_event": 167,
     "awaken-session-application::continuation.rs::advance_environment_continuation": 187,
     "awaken-session-application::coordination.rs::send_session_agent_message": 156,
     "awaken-session-application::creation.rs::create_session_with_completion": 256,
@@ -384,12 +384,12 @@
   },
   "crate-budget": {
     "awaken-protocol-managed": {
-      "deps": 37,
+      "deps": 36,
       "lines": 24420,
       "reason": "W20 (plan 9.11): Session lifecycle and deployment decisions move to their application services; the adapter keeps protocol translation only"
     },
     "awaken-session-executor": {
-      "deps": 45,
+      "deps": 44,
       "lines": 35921,
       "reason": "runtime-host split (plan 10.4 slices R, E, H): lines hold host plus the realizer being extracted in place (+142 approved 2026-10-10 for the SessionRealizations view, leaves with the realization crate; +24 approved 2026-10-10 for k8s_unschedulable_wait_secs settings, leaves with the deployment configuration to the composition root); host_lines may only fall; target < 20000 lines, about 26-28 dependencies",
       "host_lines": 24522

@@ -54,7 +54,6 @@ pub use awaken_protocol_managed::ManagedState;
 use awaken_provisioning_contract::SandboxExecutionPolicyStore;
 use awaken_session_repository_contract::SessionStore;
 use awaken_session_execution_contract::{CompleteSessionRuntime, McpAttachmentRealizer};
-use awaken_worker_contract::WorkQueue;
 
 /// A fresh in-memory durable Session repository.
 #[must_use]
@@ -81,8 +80,7 @@ pub struct EnvironmentFixture {
 /// `clock` is the test's wall clock; the Work queue and the Environment
 /// registry both stamp with it.
 pub fn environment_fixture(clock: Arc<dyn awaken_time::WallClock>) -> EnvironmentFixture {
-    let work: Arc<dyn WorkQueue> =
-        Arc::new(awaken_work_store::InMemoryWorkQueue::new(clock.clone()));
+    let work = Arc::new(awaken_work_store::InMemoryWorkQueue::new(clock.clone()));
     let catalog =
         Arc::new(awaken_executable_environment_catalog::ExecutableEnvironmentCatalog::new());
     catalog

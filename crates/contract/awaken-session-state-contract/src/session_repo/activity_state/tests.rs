@@ -3,6 +3,36 @@ use super::*;
 use crate::SessionRevision;
 use crate::session_repo::{PersistedSession, mutation_tests::session};
 
+#[test]
+fn activity_settlement_uses_exact_observation_and_execution_state() {
+    // All three aggregate observations crossed with every execution state:
+    // unknown/replay stutters; a non-final removal retains execution; only the
+    // final exact removal during Running closes the interval.
+    for execution in [
+        SessionExecutionState::Preparing,
+        SessionExecutionState::Activating,
+        SessionExecutionState::ActivationFailed,
+        SessionExecutionState::Running,
+        SessionExecutionState::Rescheduling,
+        SessionExecutionState::Idle,
+        SessionExecutionState::Terminated,
+    ] {
+        for observation in [None, Some(false), Some(true)] {
+            let expected = match (observation, execution) {
+                (None, _) => SessionActivitySettlementPlan::Stutter,
+                (Some(true), SessionExecutionState::Running) => {
+                    SessionActivitySettlementPlan::CloseRunningInterval
+                }
+                _ => SessionActivitySettlementPlan::RetainExecution,
+            };
+            assert_eq!(
+                SessionActivitySettlementPlan::from_epoch_settlement(observation, execution),
+                expected
+            );
+        }
+    }
+}
+
 fn assert_frame(
     actual: &PersistedSession,
     mut expected: PersistedSession,
