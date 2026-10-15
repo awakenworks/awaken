@@ -167,16 +167,11 @@ impl K8sWorkerCreateLedger {
                 .metadata
                 .annotations
                 .as_ref()
-                .is_some_and(|expected| {
-                    observed
-                        .metadata
-                        .annotations
-                        .as_ref()
-                        .is_some_and(|actual| {
-                            expected
-                                .iter()
-                                .all(|(key, value)| actual.get(key) == Some(value))
-                        })
+                .zip(observed.metadata.annotations.as_ref())
+                .is_some_and(|(expected, actual)| {
+                    expected
+                        .iter()
+                        .all(|(key, value)| actual.get(key) == Some(value))
                 })
         {
             return Err(backend(
@@ -192,6 +187,24 @@ impl K8sWorkerCreateLedger {
         Ok(uid.to_owned())
     }
 
+    fn verified_worker_object(
+        &self,
+        worker_namespace: &str,
+        worker_name: &str,
+        worker_uid: &str,
+    ) -> Result<ConfigMap, RuntimeError> {
+        if [worker_namespace, worker_name, worker_uid]
+            .into_iter()
+            .any(|v| v.trim().is_empty() || v.trim() != v)
+            || worker_namespace != self.sandbox_namespace
+        {
+            return Err(backend(
+                "Kubernetes Create ledger Worker Pod identity is invalid",
+            ));
+        }
+        Ok(self.desired(worker_namespace, worker_name, worker_uid))
+    }
+
     /// Initialize only during verified Worker registration. A 409 reads the
     /// exact object rather than treating a stable name as proof. The Registry
     /// later rejects any same-incarnation retry that observes another UID.
@@ -201,16 +214,7 @@ impl K8sWorkerCreateLedger {
         worker_name: &str,
         worker_uid: &str,
     ) -> Result<(String, String), RuntimeError> {
-        if [worker_namespace, worker_name, worker_uid]
-            .into_iter()
-            .any(|part| part.trim().is_empty() || part.trim() != part)
-            || worker_namespace != self.sandbox_namespace
-        {
-            return Err(backend(
-                "Kubernetes Create ledger Worker Pod identity is invalid",
-            ));
-        }
-        let desired = self.desired(worker_namespace, worker_name, worker_uid);
+        let desired = self.verified_worker_object(worker_namespace, worker_name, worker_uid)?;
         capacity::validate_candidate(&desired, &WorkerCreateLedgerState::fresh())?;
         let name = desired.name_any();
         let api: Api<ConfigMap> = Api::namespaced(self.client.clone(), &self.control_namespace);
@@ -221,6 +225,20 @@ impl K8sWorkerCreateLedger {
         };
         let uid = self.verify(&desired, &observed)?;
         Ok((name, uid))
+    }
+
+    /// Read an existing original bootstrap anchor. Recovery cannot create a
+    /// replacement ledger to turn missing historical evidence into emptiness.
+    pub async fn existing_worker_anchor(
+        &self,
+        worker_namespace: &str,
+        worker_name: &str,
+        worker_uid: &str,
+    ) -> Result<(String, String), RuntimeError> {
+        let desired = self.verified_worker_object(worker_namespace, worker_name, worker_uid)?;
+        let api: Api<ConfigMap> = Api::namespaced(self.client.clone(), &self.control_namespace);
+        let observed = api.get(&desired.name_any()).await.map_err(backend)?;
+        Ok((desired.name_any(), self.verify(&desired, &observed)?))
     }
 
     fn expected(&self, binding: K8sLedgerBinding<'_>) -> Result<ConfigMap, RuntimeError> {
@@ -355,7 +373,7 @@ impl K8sWorkerCreateLedger {
             ));
         }
         let encoded = serde_json::to_string(process).map_err(backend)?;
-        self.cas_object(binding, |object, _| {
+        self.cas_object(binding, |object, state| {
             let data = object.data.get_or_insert_with(Default::default);
             match data.get("worker_process_binding") {
                 Some(existing) if existing == &encoded => Ok(((), false)),
@@ -363,6 +381,11 @@ impl K8sWorkerCreateLedger {
                     "Worker Create ledger cannot replace its process binding",
                 )),
                 None => {
+                    if !state.admits_first_process_binding() {
+                        return Err(backend(
+                            "sealed Worker cannot admit its first process binding",
+                        ));
+                    }
                     data.insert("worker_process_binding".into(), encoded.clone());
                     Ok(((), true))
                 }
@@ -592,6 +615,28 @@ impl K8sWorkerCreateLedger {
         self.mutate(binding, |state| Ok(((), state.seal_worker())))
             .await
     }
+
+    /// Deny future first process binding and Create entry in one original
+    /// ConfigMap CAS. This never initializes a missing ledger and does not
+    /// assert Registry absence, physical exit or Session cleanup completion.
+    pub async fn seal_unattempted_worker(
+        &self,
+        binding: K8sLedgerBinding<'_>,
+    ) -> Result<(), RuntimeError> {
+        self.cas_object(binding, |object, state| {
+            if object
+                .data
+                .as_ref()
+                .is_some_and(|data| data.contains_key("worker_process_binding"))
+            {
+                return Err(backend(
+                    "Worker bootstrap already retained a process participant",
+                ));
+            }
+            Ok(((), state.seal_unattempted_worker()?))
+        })
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -609,6 +654,7 @@ mod tests {
         stored: Arc<Mutex<Option<Value>>>,
         calls: Arc<Mutex<Vec<String>>>,
         conflict: Arc<AtomicBool>,
+        conflicting_data: Arc<Mutex<Option<Value>>>,
         lose_finish_reply: Arc<AtomicBool>,
     }
 
@@ -617,22 +663,25 @@ mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let lost = Arc::new(Mutex::new(false));
         let conflict = Arc::new(AtomicBool::new(false));
+        let conflicting_data = Arc::new(Mutex::new(None::<Value>));
         let lose_finish_reply = Arc::new(AtomicBool::new(false));
         let service = tower::service_fn({
-            let (stored, calls, lost, conflict, lose_finish_reply) = (
+            let (stored, calls, lost, conflict, lose_finish_reply, conflicting_data) = (
                 stored.clone(),
                 calls.clone(),
                 lost.clone(),
                 conflict.clone(),
                 lose_finish_reply.clone(),
+                conflicting_data.clone(),
             );
             move |request: Request<Body>| {
-                let (stored, calls, lost, conflict, lose_finish_reply) = (
+                let (stored, calls, lost, conflict, lose_finish_reply, conflicting_data) = (
                     stored.clone(),
                     calls.clone(),
                     lost.clone(),
                     conflict.clone(),
                     lose_finish_reply.clone(),
+                    conflicting_data.clone(),
                 );
                 async move {
                     let path = request.uri().path().to_owned();
@@ -682,6 +731,7 @@ mod tests {
                             let mut current = stored.lock().unwrap();
                             let existing = current.as_mut().expect("PUT follows GET");
                             if conflict.swap(false, Ordering::SeqCst) {
+                                if let Some(data)=conflicting_data.lock().unwrap().take() {existing["data"]=data;}
                                 existing["metadata"]["resourceVersion"] = json!("2");
                                 (409, json!({"apiVersion":"v1","kind":"Status","status":"Failure","code":409,"reason":"Conflict"}))
                             } else if request_body["metadata"]["uid"] != existing["metadata"]["uid"]
@@ -725,6 +775,7 @@ mod tests {
             stored,
             calls,
             conflict,
+            conflicting_data,
             lose_finish_reply,
         }
     }
@@ -1055,6 +1106,243 @@ mod tests {
                 *stored.lock().unwrap(),
                 before,
                 "Q1–Q7/{cause} exact bytes remain"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn bootstrap_anchor_reads_original_uid_without_initializing_missing_evidence() {
+        // A1 original exact object -> return original name/UID using GET only.
+        // A2 missing/foreign/terminating object -> error, no POST/PUT/backfill.
+        for cause in ["exact", "missing", "foreign", "terminating"] {
+            let Fixture {
+                ledger,
+                stored,
+                calls,
+                ..
+            } = fixture(false);
+            let expected = ledger
+                .initialize("awaken-system", "worker", "pod-uid")
+                .await
+                .unwrap();
+            {
+                let mut guard = stored.lock().unwrap();
+                match cause {
+                    "missing" => *guard = None,
+                    "foreign" => {
+                        guard.as_mut().unwrap()["metadata"]["annotations"][WORKER_UID] =
+                            json!("foreign")
+                    }
+                    "terminating" => {
+                        guard.as_mut().unwrap()["metadata"]["deletionTimestamp"] =
+                            json!("2026-10-15T00:00:00Z")
+                    }
+                    _ => {}
+                }
+            }
+            let before = stored.lock().unwrap().clone();
+            let start = calls.lock().unwrap().len();
+            let observed = ledger
+                .existing_worker_anchor("awaken-system", "worker", "pod-uid")
+                .await;
+            assert_eq!(observed.is_ok(), cause == "exact", "A1/A2 {cause}");
+            if cause == "exact" {
+                assert_eq!(observed.unwrap(), expected);
+            }
+            assert_eq!(&calls.lock().unwrap()[start..], ["GET"], "A1/A2 read-only");
+            assert_eq!(
+                *stored.lock().unwrap(),
+                before,
+                "A2 retained original bytes"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn bootstrap_seal_and_binding_recompute_after_competing_cas() {
+        // X1 seal PUT races an already-admitted process -> reload sees binding,
+        // refuse empty-bootstrap closure. X2 first-binding PUT races seal ->
+        // reload sees closed admission and refuses. Neither stale writer may
+        // overwrite the competing owner's original bytes.
+        for seal_wins in [false, true] {
+            let Fixture {
+                ledger,
+                stored,
+                conflict,
+                conflicting_data,
+                ..
+            } = fixture(false);
+            let (name, uid) = ledger
+                .initialize("awaken-system", "worker", "pod-uid")
+                .await
+                .unwrap();
+            let binding = K8sLedgerBinding {
+                worker_namespace: "awaken-system",
+                worker_name: "worker",
+                worker_uid: "pod-uid",
+                ledger_name: &name,
+                ledger_uid: &uid,
+                configuration_fingerprint: ledger.configuration_fingerprint(),
+            };
+            let process:PodProcessBinding=serde_json::from_value(json!({"namespace":"awaken-system","name":"worker","uid":"pod-uid","node":"node-a","containers":[],"retained":true})).unwrap();
+            let mut competing = stored.lock().unwrap().as_ref().unwrap()["data"].clone();
+            if seal_wins {
+                let mut state =
+                    WorkerCreateLedgerState::decode(competing["ledger"].as_str().unwrap()).unwrap();
+                state.seal_worker();
+                competing["ledger"] = json!(state.encode().unwrap());
+            } else {
+                competing["worker_process_binding"] =
+                    json!(serde_json::to_string(&process).unwrap());
+            }
+            *conflicting_data.lock().unwrap() = Some(competing.clone());
+            conflict.store(true, Ordering::SeqCst);
+            let result = if seal_wins {
+                ledger.retain_process_binding(binding, &process).await
+            } else {
+                ledger.seal_unattempted_worker(binding).await
+            };
+            assert!(result.is_err(), "X1/X2 stale admission rejected");
+            assert_eq!(
+                stored.lock().unwrap().as_ref().unwrap()["data"],
+                competing,
+                "X1/X2 competing bytes retained"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn unattempted_worker_seal_is_exact_and_never_backfills_participants() {
+        // C1 original fresh ledger + no process/tickets; C2 absent/legacy
+        // ledger or a retained process/ticket. R1 C1 -> same Worker seal, exact
+        // replay stutters and late binding/Create are refused. R2 C2 -> error,
+        // original bytes unchanged. This is admission denial, not exit proof.
+        for cause in ["empty", "bound", "ticket", "legacy", "missing"] {
+            let Fixture {
+                ledger,
+                stored,
+                calls,
+                ..
+            } = fixture(false);
+            let (name, uid) = ledger
+                .initialize("awaken-system", "worker", "pod-uid")
+                .await
+                .unwrap();
+            let binding = K8sLedgerBinding {
+                worker_namespace: "awaken-system",
+                worker_name: "worker",
+                worker_uid: "pod-uid",
+                ledger_name: &name,
+                ledger_uid: &uid,
+                configuration_fingerprint: ledger.configuration_fingerprint(),
+            };
+            if cause == "bound" {
+                let process:PodProcessBinding=serde_json::from_value(json!({"namespace":"awaken-system","name":"worker","uid":"pod-uid","node":"node-a","containers":[],"retained":true})).unwrap();
+                ledger
+                    .retain_process_binding(binding, &process)
+                    .await
+                    .unwrap();
+            } else if cause == "ticket" {
+                let request =
+                    CreateTicketRequest::new("effect-a", "pods", "ns", "pod", "a".repeat(64))
+                        .unwrap();
+                ledger.admit_request(binding, &request).await.unwrap();
+            } else if cause == "legacy" {
+                let mut guard = stored.lock().unwrap();
+                let object = guard.as_mut().unwrap();
+                let encoded = object["data"]["ledger"].as_str().unwrap();
+                let mut state: Value = serde_json::from_str(encoded).unwrap();
+                state.as_object_mut().unwrap().remove("capture_policy");
+                object["data"]["ledger"] = json!(state.to_string());
+            } else if cause == "missing" {
+                *stored.lock().unwrap() = None;
+            }
+            let before = stored.lock().unwrap().clone();
+            let result = ledger.seal_unattempted_worker(binding).await;
+            assert_eq!(result.is_ok(), cause == "empty", "R1/R2 {cause}");
+            if cause == "empty" {
+                let writes = calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|method| *method == "PUT")
+                    .count();
+                ledger.seal_unattempted_worker(binding).await.unwrap();
+                assert_eq!(
+                    calls
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .filter(|method| *method == "PUT")
+                        .count(),
+                    writes,
+                    "R1 replay"
+                );
+                let request =
+                    CreateTicketRequest::new("effect-a", "pods", "ns", "pod", "a".repeat(64))
+                        .unwrap();
+                assert_eq!(
+                    ledger.admit_request(binding, &request).await.unwrap().0,
+                    TicketAdmission::Sealed,
+                    "R1 late Create"
+                );
+            } else {
+                assert_eq!(*stored.lock().unwrap(), before, "R2 no backfill/mutation");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn sealed_worker_cannot_gain_its_first_registration_process_binding() {
+        // Cause graph: C1 Worker seal wins the existing ConfigMap CAS; C2 a
+        // first process-binding response arrives late; C3 binding was already
+        // durable before seal. R1 C1+C2 -> reject, no binding/PUT; R2 C3 -> exact
+        // replay remains readable and cannot replace the original. This is a
+        // denial fence, not proof that an absent Worker never executed.
+        for bound_first in [false, true] {
+            let Fixture { ledger, calls, .. } = fixture(false);
+            let (name, uid) = ledger
+                .initialize("awaken-system", "worker", "pod-uid")
+                .await
+                .unwrap();
+            let binding = K8sLedgerBinding {
+                worker_namespace: "awaken-system",
+                worker_name: "worker",
+                worker_uid: "pod-uid",
+                ledger_name: &name,
+                ledger_uid: &uid,
+                configuration_fingerprint: ledger.configuration_fingerprint(),
+            };
+            let process:PodProcessBinding=serde_json::from_value(json!({"namespace":"awaken-system","name":"worker","uid":"pod-uid","node":"node-a","containers":[],"retained":true})).unwrap();
+            if bound_first {
+                ledger
+                    .retain_process_binding(binding, &process)
+                    .await
+                    .unwrap();
+            }
+            ledger.seal_worker(binding).await.unwrap();
+            let writes = calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|method| *method == "PUT")
+                .count();
+            let result = ledger.retain_process_binding(binding, &process).await;
+            assert_eq!(result.is_ok(), bound_first, "R1/R2");
+            assert_eq!(
+                calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|method| *method == "PUT")
+                    .count(),
+                writes,
+                "R1/R2 no new binding after seal"
+            );
+            assert_eq!(
+                ledger.read_process_binding(binding).await.unwrap(),
+                bound_first.then_some(process),
+                "R1/R2 original bytes only"
             );
         }
     }

@@ -1007,3 +1007,46 @@ Repository retirement/publication and the selected provider fence. The
 reference copies its Session id, effect id and preparation fingerprint; it
 creates no receipt and does not mean physical deletion completed. Consumers
 require it alongside execution closure before early recovery.
+
+## Amendment 2026-10-15: seal also fences first Worker process enrollment
+
+Reuse unchanged: the original Worker Create ledger, exact Pod/ConfigMap UID and
+configuration witness, resourceVersion CAS, and immutable process-binding
+replay. Modify its existing first-binding admission: after `seal_worker`, the
+same ConfigMap cannot acquire a previously absent `worker_process_binding`.
+No new store, registration status or cleanup receipt is added.
+
+The seal and first binding serialize through the existing `cas_object` owner.
+If binding wins, its original bytes remain retained and an identical replay is
+allowed. If seal wins, a late preparation cannot establish first binding or
+cross registration's required physical-preparation boundary. This deny-only
+invariant does not turn missing Registry data into closure or permit deleting
+retained evidence. Bootstrap replacement still needs its separate complete
+owner observations and the normal release fence.
+
+The Coordinator's existing Worker boundary composes that provider operation
+with Registry reads before and after sealing. It accepts only an exact
+Kubernetes Worker id and an existing fresh ledger with no process binding or
+Create ticket. A registered Worker, missing/corrupt/legacy ledger, changed UID,
+CAS conflict or concurrent registration refuses this path. The response names
+the original ledger anchor without inventing an incarnation or process exit.
+The private mutation requires `worker:close-bootstrap`, distinct from the
+read-only observation permission. Unsupported transports remain unavailable.
+
+Static ownership stays Registry -> registration truth, Kubernetes transport ->
+original provider ledger and CAS, Coordinator boundary -> authenticated
+composition, and Cloud -> the existing retained release Saga. Dynamically,
+validate/authenticate -> Registry absent -> conditional original-ledger seal ->
+Registry absent recheck -> return original anchor. Seal is deny-only and
+absorbing: failures after it preserve that fence rather than reopening the old
+Pod. The release owner still drains admission, scales the old domain to zero,
+observes its terminal topology, and proves a new UID/image/Registry before
+reopening. This contract does not acknowledge any old Session cleanup.
+
+The existing ledger also owns one ticket-completion transition. Worker results
+and provider isolation observations retain their distinct eligibility checks;
+request/result validation, immutable ticket matching, conflict refusal and
+the final status write are shared inside that same state machine. No second
+completion path or persistence mechanism is introduced. Its decision-table
+tests include rejected-to-isolated observations, pending reservation replay,
+terminal-guard restrictions and unchanged state on refusal.

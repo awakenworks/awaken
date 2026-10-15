@@ -156,6 +156,12 @@ pub enum TicketOrigin {
     TerminalGuard,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CompletionSource {
+    Worker,
+    Isolation,
+}
+
 pub(super) fn valid_isolation_id(value: &str) -> bool {
     value.len() == 32
         && value
@@ -375,107 +381,77 @@ impl WorkerCreateLedgerState {
         request: &CreateTicketRequest,
         result: TicketResult,
     ) -> Result<bool, RuntimeError> {
-        request.validate()?;
-        result.validate()?;
-        if self.capture_policy.is_some() {
-            super::capture::validate_fresh_result(&result)?;
-        }
-        let ticket = self
-            .tickets
-            .get_mut(&request.key())
-            .ok_or_else(|| backend("Kubernetes Create result has no prior admitted request"))?;
-        if ticket.request != *request {
-            return Err(backend(
-                "Kubernetes Create result belongs to another exact request",
-            ));
-        }
-        if ticket.origin != TicketOrigin::Worker {
-            return Err(backend(
-                "provider terminal guard cannot accept a Worker Create result",
-            ));
-        }
-        if matches!(result, TicketResult::Isolated { .. }) {
-            return Err(backend(
-                "Kubernetes Create isolation requires the sealed physical observation path",
-            ));
-        }
-        match &ticket.status {
-            TicketStatus::InFlight => {
-                ticket.status = TicketStatus::Finished(result);
-                Ok(true)
-            }
-            TicketStatus::Finished(existing) if existing == &result => Ok(false),
-            TicketStatus::Finished(_) => Err(backend(
-                "Kubernetes Create result conflicts with durable completion",
-            )),
-        }
+        self.complete_ticket(request, result, CompletionSource::Worker)
     }
 
-    /// A verified same-name reservation can close a request even when the
-    /// original POST was definitively rejected before the reservation CAS.
-    /// The caller must obtain the physical observation first; this pure state
-    /// transition never infers it from the HTTP status.
+    /// Only the provider's original sealed reservation may record isolation.
+    /// A definitive rejection may become Isolated after its reservation wins.
     pub fn finish_isolation(
         &mut self,
         request: &CreateTicketRequest,
         result: TicketResult,
+    ) -> Result<bool, RuntimeError> {
+        self.complete_ticket(request, result, CompletionSource::Isolation)
+    }
+
+    fn complete_ticket(
+        &mut self,
+        request: &CreateTicketRequest,
+        result: TicketResult,
+        source: CompletionSource,
     ) -> Result<bool, RuntimeError> {
         request.validate()?;
         result.validate()?;
         if self.capture_policy.is_some() {
             super::capture::validate_fresh_result(&result)?;
         }
-        if !matches!(
-            result,
-            TicketResult::Isolated { .. } | TicketResult::Created { .. }
-        ) {
-            return Err(backend("Kubernetes Create isolation result is invalid"));
-        }
+        let sealed = self.worker_group_is_sealed(&request.group);
         let ticket = self
-            .ticket(request)
-            .ok_or_else(|| backend("Kubernetes Create isolation has no admitted request"))?;
-        if ticket.origin == TicketOrigin::TerminalGuard
-            && !matches!(result, TicketResult::Isolated { .. })
-        {
+            .tickets
+            .get_mut(&request.key())
+            .filter(|ticket| ticket.request == *request)
+            .ok_or_else(|| backend("Kubernetes Create completion has no exact admitted request"))?;
+        let isolation = source == CompletionSource::Isolation;
+        let permitted = match (source, &result, ticket.origin) {
+            (
+                CompletionSource::Worker,
+                TicketResult::Created { .. } | TicketResult::RejectedNoEffect { .. },
+                TicketOrigin::Worker,
+            ) => true,
+            (CompletionSource::Isolation, TicketResult::Isolated { .. }, _)
+            | (CompletionSource::Isolation, TicketResult::Created { .. }, TicketOrigin::Worker) => {
+                sealed && valid_isolation_id(&ticket.isolation_id)
+            }
+            _ => false,
+        };
+        if !permitted {
             return Err(backend(
-                "provider terminal guard cannot claim an original Pod Create result",
+                "Kubernetes Create completion lacks its original authority",
             ));
         }
-        if !valid_isolation_id(&ticket.isolation_id) || !self.worker_group_is_sealed(&request.group)
+        let next = TicketStatus::Finished(result);
+        let same = ticket.status == next;
+        if same && !(isolation && ticket.isolation_pending) {
+            return Ok(false);
+        }
+        let reservation_won = isolation
+            && matches!(
+                ticket.status,
+                TicketStatus::Finished(TicketResult::RejectedNoEffect { .. })
+            )
+            && matches!(next, TicketStatus::Finished(TicketResult::Isolated { .. }));
+        if (isolation && !ticket.isolation_pending)
+            || (!same && ticket.status != TicketStatus::InFlight && !reservation_won)
         {
-            return Err(backend("Kubernetes Create isolation lacks a sealed Worker"));
+            return Err(backend(
+                "Kubernetes Create completion conflicts with durable completion",
+            ));
         }
-        let ticket = self.tickets.get_mut(&request.key()).expect("checked above");
-        if !ticket.isolation_pending {
-            return if ticket.status == TicketStatus::Finished(result) {
-                Ok(false)
-            } else {
-                Err(backend(
-                    "Kubernetes Create isolation had no prior reservation admission",
-                ))
-            };
+        ticket.status = next;
+        if isolation {
+            ticket.isolation_pending = false;
         }
-        match &ticket.status {
-            TicketStatus::InFlight => {
-                ticket.status = TicketStatus::Finished(result);
-                ticket.isolation_pending = false;
-                Ok(true)
-            }
-            TicketStatus::Finished(TicketResult::RejectedNoEffect { .. })
-                if matches!(result, TicketResult::Isolated { .. }) =>
-            {
-                ticket.status = TicketStatus::Finished(result);
-                ticket.isolation_pending = false;
-                Ok(true)
-            }
-            TicketStatus::Finished(existing) if existing == &result => {
-                ticket.isolation_pending = false;
-                Ok(true)
-            }
-            _ => Err(backend(
-                "Kubernetes Create isolation conflicts with durable completion",
-            )),
-        }
+        Ok(!same || isolation)
     }
 
     /// CAS this marker before an inert same-Kind POST. A result from the old POST
@@ -535,6 +511,21 @@ impl WorkerCreateLedgerState {
         let changed = !self.worker_sealed;
         self.worker_sealed = true;
         changed
+    }
+
+    /// The same seal excludes first process enrollment as well as Create tickets.
+    /// Existing identical process bytes are replayed by the CAS owner separately.
+    pub(super) fn admits_first_process_binding(&self) -> bool {
+        !self.worker_sealed
+    }
+
+    /// Close a fresh empty bootstrap through the original Worker seal. Legacy
+    /// capture or any admitted request needs ordinary owner reconciliation.
+    pub(super) fn seal_unattempted_worker(&mut self) -> Result<bool, RuntimeError> {
+        if self.capture_policy.is_none() || !self.tickets.is_empty() {
+            return Err(backend("Worker bootstrap enrollment is not provably empty"));
+        }
+        Ok(self.seal_worker())
     }
 
     /// Extend the already sealed Worker group with one provider-owned Pod name
@@ -648,6 +639,162 @@ mod tests {
             digest.to_string().repeat(64),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn completion_sources_share_writes_without_sharing_authority() {
+        // Causes: C1 Worker/provider source; C2 Worker/terminal-guard origin;
+        // C3 sealed Worker+group; C4 original nonce; C5 reservation pending;
+        // C6 prior status; C7 observed result. Effects: E1 write exact result;
+        // E2 identical replay stutters; E3 refusal changes no bytes; E4 only
+        // provider completion clears pending (Worker completion preserves it).
+        // Decision rows below cover C6 x C7. Constraints: Worker cannot report
+        // isolation or complete a terminal guard; provider requires C3+C4,
+        // cannot report a rejection, and a guard accepts only Isolated. Without
+        // C5 provider may only replay identical accepted results. Invalid
+        // contexts are deliberate negative controls, never persisted fixtures.
+        let created = |uid: &str| TicketResult::Created { uid: uid.into() };
+        let isolated = |uid: &str| TicketResult::Isolated { uid: uid.into() };
+        let rejected = TicketResult::RejectedNoEffect { code: 403 };
+        let statuses = [
+            TicketStatus::InFlight,
+            TicketStatus::Finished(created("a")),
+            TicketStatus::Finished(rejected.clone()),
+            TicketStatus::Finished(isolated("a")),
+        ];
+        let results = [
+            created("a"),
+            created("b"),
+            rejected,
+            isolated("a"),
+            isolated("b"),
+        ];
+        let worker = [
+            [Some(true), Some(true), Some(true), None, None],
+            [Some(false), None, None, None, None],
+            [None, None, Some(false), None, None],
+            [None, None, None, None, None],
+        ];
+        let provider = [
+            [Some(true), Some(true), None, Some(true), Some(true)],
+            [Some(true), None, None, None, None],
+            [None, None, None, Some(true), Some(true)],
+            [None, None, None, Some(true), None],
+        ];
+        for source in [CompletionSource::Worker, CompletionSource::Isolation] {
+            for origin in [TicketOrigin::Worker, TicketOrigin::TerminalGuard] {
+                for sealed in [false, true] {
+                    for nonce in [false, true] {
+                        for pending in [false, true] {
+                            for (row, status) in statuses.iter().enumerate() {
+                                for (column, result) in results.iter().enumerate() {
+                                    let candidate = request("completion", 'a');
+                                    let mut state = WorkerCreateLedgerState::fresh();
+                                    state.admit(&candidate, ISOLATION_ID).unwrap();
+                                    if sealed {
+                                        state.seal_worker();
+                                        state.seal_group(&candidate.group).unwrap();
+                                    }
+                                    let ticket = state.tickets.get_mut(&candidate.key()).unwrap();
+                                    ticket.origin = origin;
+                                    ticket.status = status.clone();
+                                    ticket.isolation_pending = pending;
+                                    if !nonce {
+                                        ticket.isolation_id.clear();
+                                    }
+                                    let before = state.clone();
+                                    let expected = match source {
+                                        CompletionSource::Worker
+                                            if origin == TicketOrigin::Worker =>
+                                        {
+                                            worker[row][column]
+                                        }
+                                        CompletionSource::Isolation
+                                            if sealed
+                                                && nonce
+                                                && (origin == TicketOrigin::Worker
+                                                    || column >= 3) =>
+                                        {
+                                            if pending {
+                                                provider[row][column]
+                                            } else {
+                                                (provider[row][column].is_some()
+                                                    && *status
+                                                        == TicketStatus::Finished(result.clone()))
+                                                .then_some(false)
+                                            }
+                                        }
+                                        _ => None,
+                                    };
+                                    let observed =
+                                        state.complete_ticket(&candidate, result.clone(), source);
+                                    assert_eq!(
+                                        observed.ok(),
+                                        expected,
+                                        "source={} origin={origin:?} sealed={sealed} nonce={nonce} pending={pending} row={row} column={column}",
+                                        source == CompletionSource::Isolation
+                                    );
+                                    if expected.is_none() || expected == Some(false) {
+                                        assert_eq!(state, before, "E2/E3");
+                                    } else {
+                                        let ticket = state.tickets.get(&candidate.key()).unwrap();
+                                        assert_eq!(
+                                            ticket.status,
+                                            TicketStatus::Finished(result.clone()),
+                                            "E1"
+                                        );
+                                        assert_eq!(
+                                            ticket.isolation_pending,
+                                            pending && source == CompletionSource::Worker,
+                                            "E4"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bootstrap_seal_and_create_admission_have_no_unsafe_interleaving() {
+        // Exhaust both orderings and cold replay over fresh/legacy capture.
+        // S1 fresh close wins -> all later Create and first process enrollment
+        // denied, including after decode. S2 ticket wins -> bootstrap close
+        // refuses; no empty-scope proof. S3 legacy -> never certify emptiness.
+        for fresh in [false, true] {
+            for close_first in [false, true] {
+                let mut state = if fresh {
+                    WorkerCreateLedgerState::fresh()
+                } else {
+                    WorkerCreateLedgerState::default()
+                };
+                let candidate = request("pod", 'a');
+                if !close_first {
+                    assert_eq!(
+                        state.admit(&candidate, ISOLATION_ID).unwrap(),
+                        TicketAdmission::Forward
+                    );
+                }
+                let closed = state.seal_unattempted_worker();
+                assert_eq!(closed.is_ok(), fresh && close_first, "S1/S2/S3");
+                if fresh && close_first {
+                    let recovered =
+                        WorkerCreateLedgerState::decode(&state.encode().unwrap()).unwrap();
+                    assert!(
+                        !recovered.admits_first_process_binding(),
+                        "S1 cold binding fence"
+                    );
+                    assert_eq!(
+                        state.admit(&candidate, ISOLATION_ID).unwrap(),
+                        TicketAdmission::Sealed,
+                        "S1 late Create"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

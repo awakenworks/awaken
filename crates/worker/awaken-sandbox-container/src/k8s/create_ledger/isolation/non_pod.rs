@@ -21,34 +21,29 @@ fn only_keys(value: Option<&Value>, allowed: &[&str]) -> bool {
 }
 
 fn inert_container(value: &Value) -> bool {
-    only_keys(
-        Some(value),
-        &[
-            "name",
-            "image",
-            "imagePullPolicy",
-            "command",
-            "resources",
-            "terminationMessagePath",
-            "terminationMessagePolicy",
-        ],
-    ) && value.pointer("/name") == Some(&json!("isolation"))
-        && value.pointer("/image") == Some(&json!("invalid.invalid/awaken-create-isolation:never"))
-        && value.pointer("/imagePullPolicy") == Some(&json!("Never"))
-        && value.pointer("/command") == Some(&json!(["/bin/false"]))
-        && value
-            .pointer("/resources")
-            .is_none_or(|resources| resources == &json!({}))
-        && value
-            .pointer("/terminationMessagePath")
-            .is_none_or(|path| path == "/dev/termination-log")
-        && value
-            .pointer("/terminationMessagePolicy")
-            .is_none_or(|policy| policy == "File")
+    let required = json!({
+        "name":"isolation", "image":"invalid.invalid/awaken-create-isolation:never",
+        "imagePullPolicy":"Never", "command":["/bin/false"]
+    });
+    let defaults = json!({
+        "resources":{}, "terminationMessagePath":"/dev/termination-log",
+        "terminationMessagePolicy":"File"
+    });
+    required
+        .as_object()
+        .expect("fixed required fields")
+        .iter()
+        .all(|(key, expected)| value.get(key) == Some(expected))
+        && value.as_object().is_some_and(|fields| {
+            fields.iter().all(|(key, actual)| {
+                required.get(key) == Some(actual) || defaults.get(key) == Some(actual)
+            })
+        })
 }
 
 fn inert_template_spec(value: &Value, restart: &str, affinity: bool) -> bool {
-    let allowed = if affinity {
+    only_keys(
+        Some(value),
         &[
             "affinity",
             "automountServiceAccountToken",
@@ -58,37 +53,20 @@ fn inert_template_spec(value: &Value, restart: &str, affinity: bool) -> bool {
             "schedulerName",
             "securityContext",
             "terminationGracePeriodSeconds",
-        ][..]
-    } else {
-        &[
-            "automountServiceAccountToken",
-            "containers",
-            "dnsPolicy",
-            "restartPolicy",
-            "schedulerName",
-            "securityContext",
-            "terminationGracePeriodSeconds",
-        ][..]
-    };
-    only_keys(Some(value), allowed)
-        && value.pointer("/automountServiceAccountToken") == Some(&json!(false))
+        ],
+    ) && (affinity || value.get("affinity").is_none())
+        && value.get("automountServiceAccountToken") == Some(&json!(false))
+        && [
+            ("restartPolicy", json!(restart)),
+            ("dnsPolicy", json!("ClusterFirst")),
+            ("schedulerName", json!("default-scheduler")),
+            ("securityContext", json!({})),
+            ("terminationGracePeriodSeconds", json!(30)),
+        ]
+        .into_iter()
+        .all(|(key, expected)| value.get(key).is_none_or(|actual| actual == &expected))
         && value
-            .pointer("/restartPolicy")
-            .is_none_or(|policy| policy == restart)
-        && value
-            .pointer("/dnsPolicy")
-            .is_none_or(|policy| policy == "ClusterFirst")
-        && value
-            .pointer("/schedulerName")
-            .is_none_or(|name| name == "default-scheduler")
-        && value
-            .pointer("/securityContext")
-            .is_none_or(|context| context == &json!({}))
-        && value
-            .pointer("/terminationGracePeriodSeconds")
-            .is_none_or(|seconds| seconds == 30)
-        && value
-            .pointer("/containers")
+            .get("containers")
             .and_then(Value::as_array)
             .is_some_and(|containers| containers.len() == 1 && inert_container(&containers[0]))
 }
@@ -509,6 +487,100 @@ mod tests {
             .status(code)
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap()
+    }
+
+    #[test]
+    fn inert_container_requires_every_original_field_and_only_exact_defaults() {
+        // C1 complete inert command; C2 required field absent/changed/null;
+        // C3 optional default absent/exact/foreign/null; C4 added field.
+        // K1 C1 with absent/exact C3 -> accept; K2 C2 or foreign/null C3
+        // or C4 -> refuse. The key set and values come from the same shape.
+        let original = json!({"name":"isolation","image":"invalid.invalid/awaken-create-isolation:never",
+            "imagePullPolicy":"Never","command":["/bin/false"]});
+        assert!(inert_container(&original), "K1 absent defaults");
+        for key in ["name", "image", "imagePullPolicy", "command"] {
+            for change in [None, Some(Value::Null), Some(json!("foreign"))] {
+                let mut observed = original.clone();
+                let fields = observed.as_object_mut().unwrap();
+                match change {
+                    Some(value) => {
+                        fields.insert(key.into(), value);
+                    }
+                    None => {
+                        fields.remove(key);
+                    }
+                }
+                assert!(!inert_container(&observed), "K2 required {key}");
+            }
+        }
+        for (key, default) in [
+            ("resources", json!({})),
+            ("terminationMessagePath", json!("/dev/termination-log")),
+            ("terminationMessagePolicy", json!("File")),
+        ] {
+            for (value, accepted) in [
+                (default, true),
+                (Value::Null, false),
+                (json!("foreign"), false),
+            ] {
+                let mut observed = original.clone();
+                observed[key] = value;
+                assert_eq!(inert_container(&observed), accepted, "K1/K2 default {key}");
+            }
+        }
+        let mut unknown = original;
+        unknown["env"] = json!([]);
+        assert!(!inert_container(&unknown), "K2 unknown field");
+    }
+
+    #[test]
+    fn inert_template_defaults_keep_the_same_closed_field_law() {
+        // C1 Job/DaemonSet template; C2 optional API-default field absent,
+        // exact, foreign or null; C3 affinity key; C4 unknown/executable field.
+        // T1 absent/exact C2 -> accept shape; T2 foreign/null -> refuse;
+        // T3 C3 permitted only for DaemonSet (outer reader still verifies its
+        // exact unschedulable affinity); T4 C4 -> refuse. No effect authority.
+        for (restart, affinity) in [("Never", false), ("Always", true)] {
+            let base = json!({"automountServiceAccountToken":false,"containers":[{
+                "name":"isolation","image":"invalid.invalid/awaken-create-isolation:never",
+                "imagePullPolicy":"Never","command":["/bin/false"]
+            }]});
+            assert!(inert_template_spec(&base, restart, affinity), "T1 absent");
+            for (key, default) in [
+                ("restartPolicy", json!(restart)),
+                ("dnsPolicy", json!("ClusterFirst")),
+                ("schedulerName", json!("default-scheduler")),
+                ("securityContext", json!({})),
+                ("terminationGracePeriodSeconds", json!(30)),
+            ] {
+                for (value, accepted) in [
+                    (default, true),
+                    (json!("foreign"), false),
+                    (Value::Null, false),
+                ] {
+                    let mut observed = base.clone();
+                    observed[key] = value;
+                    assert_eq!(
+                        inert_template_spec(&observed, restart, affinity),
+                        accepted,
+                        "T1/T2 {key}"
+                    );
+                }
+            }
+            for (key, accepted) in [
+                ("affinity", affinity),
+                ("nodeName", false),
+                ("volumes", false),
+            ] {
+                let mut observed = base.clone();
+                observed[key] = json!({});
+                assert_eq!(
+                    inert_template_spec(&observed, restart, affinity),
+                    accepted,
+                    "T3/T4 {key}"
+                );
+            }
+        }
     }
 
     #[test]

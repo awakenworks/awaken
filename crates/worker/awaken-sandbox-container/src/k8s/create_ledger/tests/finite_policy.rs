@@ -120,6 +120,7 @@ async fn fresh_cas_recomputes_conflicts_and_lost_finish_reply_from_original_stat
         calls,
         conflict,
         lose_finish_reply,
+        ..
     } = fixture(false);
     let (name, uid) = ledger
         .initialize("awaken-system", "worker", "pod-uid")

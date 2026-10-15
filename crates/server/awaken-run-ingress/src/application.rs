@@ -25,6 +25,18 @@ use awaken_dispatch_execution::validate_commit_dispatch_binding;
 /// Lookup is read-only and retryable: it must not launch or stop execution.
 #[async_trait::async_trait]
 pub trait WorkerExecutionBindingSource: Send + Sync {
+    /// Deny a fresh, provably unbound bootstrap through its original provider
+    /// ledger. This returns that original anchor only; it is not Registry
+    /// absence, process-exit evidence or Session cleanup acknowledgement.
+    async fn seal_unattempted_worker(
+        &self,
+        _worker_id: &str,
+        _expected: &crate::WorkerCreateLedger,
+    ) -> Result<crate::WorkerCreateLedger, ApplicationError> {
+        Err(ApplicationError::unavailable(
+            "Worker bootstrap sealing is unavailable",
+        ))
+    }
     /// Prepare provider-owned physical evidence before the Registry's first
     /// insert. The caller atomically freezes a Create ledger UID when present;
     /// the process binding must already be durable before any registration

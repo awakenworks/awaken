@@ -36,6 +36,7 @@
 /internal/v1/executable-environments/register | 404 | 404 | 404 | 404 | 404
 /internal/v1/executable-environments/withdraw | 404 | 404 | 404 | 404 | 404
 /internal/v1/managed-credential-rollouts | 404 | 404 | 404 | 404 | 404
+/internal/v1/workers/bootstrap/close | 404 | 404 | 404 | 404 | 404
 /internal/v1/workers/domain | 404 | 404 | 404 | 404 | 404
 /internal/v1/workers/mcp-relay-destination | 404 | 404 | 404 | 404 | 404
 /internal/v1/workers/observations | 404 | 404 | 404 | 404 | 404
