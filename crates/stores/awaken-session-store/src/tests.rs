@@ -1080,30 +1080,11 @@ async fn postgres_normalization_and_index_repair_share_one_crash_boundary() {
 }
 
 pub(super) async fn postgres_test_admin() -> Option<(String, sqlx::postgres::PgPool)> {
-    /* Postgres fixture admission decision table. Causes: C1 the caller
-     * explicitly configured AWAKEN_TEST_DATABASE_URL; C2 that database is
-     * reachable. Effects: E1 return the live pool; E2 allow an ordinary local
-     * self-skip; E3 fail the test. Rules: PG1=C1+C2=>E1,
-     * PG2=!C1+!C2=>E2, PG3=C1+!C2=>E3. A configured release-gate substrate can
-     * therefore never turn a connection regression into a green skip. */
-    let configured = match std::env::var("AWAKEN_TEST_DATABASE_URL") {
-        Ok(url) => Some(url),
-        Err(std::env::VarError::NotPresent) => None,
-        Err(std::env::VarError::NotUnicode(_)) => {
-            panic!("AWAKEN_TEST_DATABASE_URL is not valid Unicode")
-        }
-    };
-    let url = configured.clone().unwrap_or_else(|| {
-        "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_owned()
-    });
-    match sqlx::postgres::PgPool::connect(&url).await {
-        Ok(pool) => Some((url, pool)),
-        Err(error) if configured.is_none() => {
-            println!("[skip] no Postgres reachable: {error}");
-            None
-        }
-        Err(error) => panic!("configured AWAKEN_TEST_DATABASE_URL is unreachable: {error}"),
-    }
+    // Only an absent optional fixture skips. Required absence, invalid input,
+    // and configured connection failures reject through the shared admission.
+    let url = awaken_reliability_testkit::postgres_fixture_url()?;
+    let pool = awaken_reliability_testkit::postgres_fixture_pool(&url).await;
+    Some((url, pool))
 }
 
 pub(super) fn scoped_postgres_url(base: &str, schema: &str) -> String {

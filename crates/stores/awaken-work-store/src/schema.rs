@@ -655,18 +655,15 @@ mod tests {
     #[tokio::test]
     async fn postgres_published_v3_converges_with_the_same_domain_effects() {
         use sqlx::Executor;
-        use sqlx::postgres::{PgPool, PgPoolOptions};
+        use sqlx::postgres::PgPoolOptions;
 
         // Same W1 causes/effects as SQLite: exact V3 + duplicate valid Session
         // projections => earliest row, V6+convergence, and enforced constraints.
         // Backend DDL differs; the Work identity and terminal effects do not.
-        let url = std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
-            "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".into()
-        });
-        let Ok(admin) = PgPool::connect(&url).await else {
-            println!("[skip] no Postgres reachable");
+        let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
             return;
         };
+        let admin = awaken_reliability_testkit::postgres_fixture_pool(&url).await;
         admin
             .execute("DROP SCHEMA IF EXISTS t_work_queue_migration CASCADE")
             .await

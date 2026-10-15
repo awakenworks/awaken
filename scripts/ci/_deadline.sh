@@ -17,7 +17,17 @@ run_with_deadline() (
       # Native Windows Cargo cannot discover a Unix shebang/symlink addon.
       # Its Rustup/Cargo process tree is owned by the Windows Job in this same
       # deadline authority. POSIX Cargo admission retains its protocol below.
-      python3 "$deadline_dir/deadline.py" "$seconds" -- "$@"
+      local native_entry
+      native_entry=$(cygpath -m "$deadline_dir/deadline.py") || return 2
+      case "$1" in
+        *.sh)
+          set -- "$(cygpath -m "$(command -v bash)")" "$(cygpath -m "$1")" "${@:2}"
+          ;;
+        /*) set -- "$(cygpath -m "$1")" "${@:2}" ;;
+      esac
+      # Convert only the executable/script coordinates we own. MSYS rewriting
+      # arbitrary argv corrupts Docker container paths, bind mounts and data.
+      MSYS2_ARG_CONV_EXCL='*' python3 "$native_entry" "$seconds" -- "$@"
       return
       ;;
   esac

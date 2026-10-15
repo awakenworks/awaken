@@ -7,9 +7,8 @@
 //!
 //! They run against a real Postgres (the commit transaction and scoped recovery
 //! reads cannot be exercised otherwise). The URL comes from
-//! `AWAKEN_TEST_DATABASE_URL`, defaulting to the local dev container. If no
-//! Postgres is reachable the test prints a skip notice and returns, so the suite
-//! still passes on a machine without a database.
+//! `AWAKEN_TEST_DATABASE_URL`. An absent optional fixture reports a skip;
+//! configured or required fixtures must work.
 
 use std::sync::Arc;
 
@@ -42,9 +41,8 @@ use sqlx::postgres::PgPool;
 use sqlx::types::Json;
 
 fn database_url() -> String {
-    std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
-    })
+    awaken_reliability_testkit::postgres_fixture_url()
+        .expect("PostgreSQL schema URL requires an admitted fixture")
 }
 
 /// The URL with `search_path` pinned to `schema`, for the `connect()` test which
@@ -58,22 +56,10 @@ fn database_url_in_schema(schema: &str) -> String {
 /// A pool isolated to a fresh, empty Postgres schema. The production store takes
 /// no table prefix (one runtime is one component); test isolation lives entirely
 /// here, via `search_path`, and never leaks into the store's API. Returns `None`
-/// (skip) when no Postgres is reachable.
+/// for an absent optional fixture.
 async fn schema_pool(schema: &'static str) -> Option<PgPool> {
-    let admin = match PgPool::connect(&database_url()).await {
-        Ok(pool) => pool,
-        Err(err) => {
-            // Fixture decision rule: an explicit acceptance URL failing to
-            // connect rejects the run; only an absent URL plus an unavailable
-            // optional development database permits the historical local skip.
-            assert!(
-                std::env::var_os("AWAKEN_TEST_DATABASE_URL").is_none(),
-                "configured PostgreSQL fixture must be reachable: {err}"
-            );
-            println!("[skip] no Postgres reachable: {err}");
-            return None;
-        }
-    };
+    let url = awaken_reliability_testkit::postgres_fixture_url()?;
+    let admin = awaken_reliability_testkit::postgres_fixture_pool(&url).await;
     let _ = admin
         .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
         .await;

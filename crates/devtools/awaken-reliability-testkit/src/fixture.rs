@@ -80,11 +80,7 @@ pub fn assert_postgres_fixture_child_contract(test_name: &str) {
 /// absence. Once Some is returned, callers must require connection/setup to
 /// succeed rather than erase either failure into a skipped test.
 pub fn postgres_fixture_url() -> Option<String> {
-    let required = match std::env::var("AWAKEN_TEST_REQUIRE_POSTGRES") {
-        Err(std::env::VarError::NotPresent) => false,
-        Ok(value) if value == "1" => true,
-        _ => panic!("AWAKEN_TEST_REQUIRE_POSTGRES must be 1 or unset"),
-    };
+    let required = postgres_fixture_required(std::env::var("AWAKEN_TEST_REQUIRE_POSTGRES"));
     let configured = admit_postgres_fixture(std::env::var("AWAKEN_TEST_DATABASE_URL"), required);
     if configured.is_none() {
         // Direct stderr stays visible even when libtest captures successful
@@ -97,6 +93,25 @@ pub fn postgres_fixture_url() -> Option<String> {
         .expect("report PostgreSQL fixture admission");
     }
     configured
+}
+
+/// Connect an admitted PostgreSQL fixture URL. Connection failure rejects the
+/// verification run; schema isolation and domain laws remain with the caller.
+#[cfg(feature = "postgres")]
+pub async fn postgres_fixture_pool(url: &str) -> sqlx::PgPool {
+    awaken_sql_storage::postgres_pool_options()
+        .acquire_timeout(std::time::Duration::from_secs(5))
+        .connect(url)
+        .await
+        .expect("configured PostgreSQL fixture must connect")
+}
+
+fn postgres_fixture_required(value: Result<String, std::env::VarError>) -> bool {
+    match value {
+        Err(std::env::VarError::NotPresent) => false,
+        Ok(value) if value == "1" => true,
+        _ => panic!("AWAKEN_TEST_REQUIRE_POSTGRES must be 1 or unset"),
+    }
 }
 
 fn admit_postgres_fixture(
@@ -162,6 +177,52 @@ mod tests {
         assert_eq!(
             admit_postgres_fixture(Ok("exact-value".into()), true),
             Some("exact-value".into())
+        );
+    }
+
+    #[test]
+    fn required_switch_distinguishes_absence_one_and_invalid() {
+        assert!(!postgres_fixture_required(Err(
+            std::env::VarError::NotPresent
+        )));
+        assert!(postgres_fixture_required(Ok("1".into())));
+        for invalid in [
+            Ok("".into()),
+            Ok("0".into()),
+            Ok("true".into()),
+            Err(std::env::VarError::NotUnicode(
+                "never disclose this value".into(),
+            )),
+        ] {
+            let error =
+                std::panic::catch_unwind(|| postgres_fixture_required(invalid)).unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<&str>().copied(),
+                Some("AWAKEN_TEST_REQUIRE_POSTGRES must be 1 or unset")
+            );
+        }
+    }
+
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn postgres_fixture_pool_connects_when_configured() {
+        let Some(url) = postgres_fixture_url() else {
+            return;
+        };
+        let pool = postgres_fixture_pool(&url).await;
+        let observed: i32 = sqlx::query_scalar("SELECT 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(observed, 1);
+        pool.close().await;
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn postgres_fixture_pool_admission_respects_configuration() {
+        assert_postgres_fixture_child_contract(
+            "fixture::tests::postgres_fixture_pool_connects_when_configured",
         );
     }
 }

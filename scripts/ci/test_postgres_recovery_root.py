@@ -4,15 +4,28 @@
 import os
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 import _strict_unittest as strict_unittest
+from _native_shell import bash_executable
 
 
 DRILL = Path(__file__).resolve().with_name("postgres_recovery_drill.sh")
 DEADLINE = DRILL.with_name("deadline.py")
+
+
+def directory_alias(alias, target):
+    if os.name == "nt":
+        # Git Bash recognizes directory junctions as links (-L). Unlike
+        # symbolic links they require no Windows symlink privilege, while
+        # preserving both physical-parent admission and linked-leaf refusal.
+        import _winapi
+        _winapi.CreateJunction(str(target), str(alias))
+    else:
+        alias.symlink_to(target, target_is_directory=True)
 
 
 def invoke_fixture(command, **kwargs):
@@ -23,11 +36,43 @@ def invoke_fixture(command, **kwargs):
                           timeout=75, **kwargs)
 
 
+def fixture_environment(binary):
+    observer = binary / "fixture-resource-observer"
+    values = {}
+    if os.name == "nt":
+        from _native_test_launcher import native_fixture_launcher
+        # Native Python cannot execute a shebang fixture. Both commands enter
+        # the same private dispatcher; never fall through to a real Docker.
+        observer = observer.with_suffix(".exe")
+        for executable in (binary / "docker.exe", observer):
+            shutil.copyfile(native_fixture_launcher(), executable)
+        values.update(AWAKEN_FIXTURE_PROGRAM=sys.executable,
+                      AWAKEN_FIXTURE_SCRIPT=str(binary / "docker"))
+    values["AWAKEN_HOST_ADMISSION"] = str(observer)
+    return values
+
+
+def recovery_root_argument(value):
+    if os.name != "nt" or not str(value):
+        return str(value)
+    # The real producer exports a Bash path, not a native Windows path. Keep
+    # traversal components lexical so the negative partition stays meaningful.
+    return subprocess.check_output(
+        [bash_executable(), "-c", 'cygpath -u -- "$1"', "fixture-path", str(value)],
+        text=True, timeout=15,
+    ).strip()
+
+
 def write_startup_docker(path):
     """One fake Docker boundary for real producer startup and cleanup tests."""
     path.write_text(f"#!{sys.executable}\n" + '''import json, os, sys
 from pathlib import Path
 args = sys.argv[1:]
+if "--profile" in args:
+    eligible = os.environ.get("AWAKEN_TEST_REFUSE_RESOURCES") != "1"
+    print(json.dumps({"schema_version": 1, "profile": "cargo", "eligible": eligible,
+                      "problems": [] if eligible else ["fixture pressure"]}))
+    sys.exit(0 if eligible else 75)
 mode = os.environ.get("AWAKEN_TEST_STARTUP_FAILURE", "create")
 if report := os.environ.get("AWAKEN_TEST_DOCKER_CALLS"):
     with open(report, "a") as out:
@@ -79,7 +124,7 @@ class RecoveryRootTests(unittest.TestCase):
             parent = fixture / "configured parent"
             parent.mkdir()
             alias = fixture / "parent-alias"
-            alias.symlink_to(parent, target_is_directory=True)
+            directory_alias(alias, parent)
             caller = fixture / "caller-owned"
             caller.mkdir()
             (caller / "sentinel").write_bytes(b"preserved")
@@ -88,15 +133,16 @@ class RecoveryRootTests(unittest.TestCase):
             report = fixture / "allocation.json"
             docker = binary / "docker"
             write_startup_docker(docker)
+            fixture_values = fixture_environment(binary)
             for selected in (parent, f"{parent}///", alias):
                 with self.subTest(rule="P1/P2", parent=str(selected)):
                     report.unlink(missing_ok=True)
                     result = invoke_fixture(
-                        ["bash", str(DRILL.with_name("pg_tests.sh")), "--require-docker"],
+                        [bash_executable(), str(DRILL.with_name("pg_tests.sh")), "--require-docker"],
                         env=dict(os.environ, TMPDIR=str(selected),
+                                 **fixture_values,
                                  PATH=f"{binary}{os.pathsep}{os.environ['PATH']}",
                                  CARGO_TARGET_DIR=str(fixture / "target"),
-                                 AWAKEN_HOST_ADMISSION=str(binary / "fixture-resource-observer"),
                                  AWAKEN_ADMISSION_PROFILE="cargo",
                                  AWAKEN_RECOVERY_ROOT=str(caller),
                                  AWAKEN_TEST_ALLOCATION=str(report)),
@@ -134,6 +180,7 @@ class RecoveryRootTests(unittest.TestCase):
             binary = fixture / "bin"
             binary.mkdir()
             write_startup_docker(binary / "docker")
+            fixture_values = fixture_environment(binary)
             calls = fixture / "calls.jsonl"
             for mode, phase, status in (("create", "postgres-create", 73),
                                         ("port", "postgres-port", 0),
@@ -142,11 +189,11 @@ class RecoveryRootTests(unittest.TestCase):
                 with self.subTest(mode=mode):
                     calls.unlink(missing_ok=True)
                     result = invoke_fixture(
-                        ["bash", str(DRILL.with_name("pg_tests.sh")), "--require-docker"],
+                        [bash_executable(), str(DRILL.with_name("pg_tests.sh")), "--require-docker"],
                         env=dict(os.environ, TMPDIR=str(fixture),
+                                 **fixture_values,
                                  PATH=f"{binary}{os.pathsep}{os.environ['PATH']}",
                                  CARGO_TARGET_DIR=str(fixture / "target"),
-                                 AWAKEN_HOST_ADMISSION=str(binary / "fixture-resource-observer"),
                                  AWAKEN_ADMISSION_PROFILE="cargo",
                                  AWAKEN_TEST_STARTUP_FAILURE=mode,
                                  AWAKEN_TEST_DOCKER_CALLS=str(calls),
@@ -180,11 +227,12 @@ class RecoveryRootTests(unittest.TestCase):
             observer.write_text('#!/bin/sh\nprintf \'%s\\n\' \'{"schema_version":1,"profile":"cargo","eligible":false,"problems":["fixture pressure"]}\'\nexit 75\n')
             calls.unlink(missing_ok=True)
             result = invoke_fixture(
-                ["bash", str(DRILL.with_name("pg_tests.sh")), "--require-docker"],
+                [bash_executable(), str(DRILL.with_name("pg_tests.sh")), "--require-docker"],
                 env=dict(os.environ, TMPDIR=str(fixture),
+                         **fixture_values,
                          PATH=f"{binary}{os.pathsep}{os.environ['PATH']}",
                          CARGO_TARGET_DIR=str(fixture / "target"),
-                         AWAKEN_HOST_ADMISSION=str(observer), AWAKEN_ADMISSION_PROFILE="cargo",
+                         AWAKEN_TEST_REFUSE_RESOURCES="1", AWAKEN_ADMISSION_PROFILE="cargo",
                          AWAKEN_TEST_DOCKER_CALLS=str(calls)),
                 text=True, capture_output=True,
             )
@@ -209,7 +257,7 @@ class RecoveryRootTests(unittest.TestCase):
             parent = fixture / "configured parent"
             parent.mkdir()
             alias = fixture / "parent-alias"
-            alias.symlink_to(parent, target_is_directory=True)
+            directory_alias(alias, parent)
             binary = fixture / "bin"
             binary.mkdir()
             docker = binary / "docker"
@@ -229,11 +277,11 @@ class RecoveryRootTests(unittest.TestCase):
                     os.environ,
                     PATH=f"{binary}{os.pathsep}{os.environ['PATH']}",
                     TMPDIR=str(selected_parent),
-                    AWAKEN_RECOVERY_ROOT=str(root),
+                    AWAKEN_RECOVERY_ROOT=recovery_root_argument(root),
                     AWAKEN_TEST_DOCKER_CALLS=str(calls),
                 )
                 return invoke_fixture(
-                    ["bash", str(DRILL), "fixture-pg", "fixture-objects", "fixture-image"],
+                    [bash_executable(), str(DRILL), "fixture-pg", "fixture-objects", "fixture-image"],
                     cwd=fixture, env=env, text=True, capture_output=True,
                 )
 
@@ -273,7 +321,7 @@ class RecoveryRootTests(unittest.TestCase):
                 path.rename(retained)
                 for symlink in (False, True):
                     if symlink:
-                        path.symlink_to(retained, target_is_directory=True)
+                        directory_alias(path, retained)
                     try:
                         with self.subTest(rule="R3", leaf=leaf, symlink=symlink):
                             result = invoke(owned, parent)
@@ -286,6 +334,8 @@ class RecoveryRootTests(unittest.TestCase):
                         # rename error, and clean only our private fixture.
                         if path.is_symlink():
                             path.unlink()
+                        elif os.name == "nt" and path.is_junction():
+                            path.rmdir()
                         (retained / "content-before-target.txt").unlink(missing_ok=True)
                         (owned / "content-before-target.txt").unlink(missing_ok=True)
                 retained.rename(path)

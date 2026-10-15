@@ -179,7 +179,7 @@ container-k8s = ["awaken-worker-transport-security/kubernetes", "dep:awaken-sand
 [dev-dependencies]
 awaken-executable-environment-contract.workspace = true
 # Captures the Session adoption's correlated rollout diagnostics in its tests.
-awaken-reliability-testkit = { workspace = true, features = ["tracing"] }
+awaken-reliability-testkit = { workspace = true, features = ["tracing", "postgres"] }
 awaken-tool-relay = { workspace = true, features = ["test-support"] }
 awaken-lease-contract.workspace = true
 awaken-worker = { workspace = true, features = ["container-k8s"] }

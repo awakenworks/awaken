@@ -2,8 +2,8 @@
 //! Live Postgres admin-store conformance (feature `postgres`): the same
 //! store ports the sqlite backend serves, exercised against a real Postgres.
 //! Isolated in its own schema (baked into the connection URL's `search_path`), so
-//! it coexists with any other schema in the test database. Skips when no Postgres
-//! is reachable (`AWAKEN_TEST_DATABASE_URL`).
+//! it coexists with any other schema in the test database. Only an absent
+//! optional `AWAKEN_TEST_DATABASE_URL` skips; configured fixtures must work.
 #![cfg(feature = "postgres")]
 
 use awaken_admin_config_api::PostgresAdminStore;
@@ -71,26 +71,11 @@ async fn postgres_agent_input_rollback_replay_and_corrupt_key_readback() {
     assert!(store.list_agent_inputs("retry-workspace").await.is_err());
 }
 
-fn base_url() -> String {
-    std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
-    })
-}
-
 /// Drop+recreate `schema`, then return a connection URL whose `search_path` is
-/// that schema (via libpq `options`), or `None` when Postgres is unreachable.
+/// that schema (via libpq `options`), or `None` for an absent optional fixture.
 async fn schema_url(schema: &str) -> Option<String> {
-    let admin = match PgPool::connect(&base_url()).await {
-        Ok(pool) => pool,
-        Err(err) => {
-            assert!(
-                std::env::var_os("AWAKEN_TEST_DATABASE_URL").is_none(),
-                "explicit PostgreSQL fixture must be reachable: {err}"
-            );
-            println!("[skip] no Postgres reachable: {err}");
-            return None;
-        }
-    };
+    let url = awaken_reliability_testkit::postgres_fixture_url()?;
+    let admin = awaken_reliability_testkit::postgres_fixture_pool(&url).await;
     let _ = admin
         .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
         .await;
@@ -99,12 +84,10 @@ async fn schema_url(schema: &str) -> Option<String> {
         .await
         .expect("create schema");
     admin.close().await;
-    let sep = if base_url().contains('?') { '&' } else { '?' };
+    let sep = if url.contains('?') { '&' } else { '?' };
     Some(format!(
         "{}{}options=-c%20search_path%3D{}",
-        base_url(),
-        sep,
-        schema
+        url, sep, schema
     ))
 }
 
