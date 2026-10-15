@@ -124,7 +124,7 @@ impl awaken_dispatch_contract::DispatchControlReads for FlakyDispatchStore {
 
 #[cfg(feature = "test-support")]
 #[async_trait::async_trait]
-impl awaken_dispatch_contract::SessionRunReservations for FlakyDispatchStore {
+impl awaken_dispatch_contract::SessionRunAdmissionReads for FlakyDispatchStore {
     async fn observe_session_run_admission(
         &self,
         run_id: &RunId,
@@ -134,7 +134,11 @@ impl awaken_dispatch_contract::SessionRunReservations for FlakyDispatchStore {
     > {
         self.inner.observe_session_run_admission(run_id).await
     }
+}
 
+#[cfg(feature = "test-support")]
+#[async_trait::async_trait]
+impl awaken_dispatch_contract::SessionRunReservations for FlakyDispatchStore {
     async fn reserve_session_run(
         &self,
         request: awaken_dispatch::RunDispatch,

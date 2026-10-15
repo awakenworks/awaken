@@ -627,10 +627,12 @@ impl awaken_session_execution_contract::SessionCoordinationReads for ManagedHost
             ));
         }
         let run = command.run_id();
-        let observed = self
+        let source = self
             .host
             .coordinator_dispatch()
-            .map_err(|error| RunError::unavailable(error.message))?
+            .map_err(|error| RunError::unavailable(error.message))?;
+        let reads: &dyn awaken_dispatch_contract::SessionRunAdmissionReads = source.as_ref();
+        let observed = reads
             .observe_session_run_admission(&run)
             .await
             .map_err(|error| RunError::unavailable(error.to_string()))?;

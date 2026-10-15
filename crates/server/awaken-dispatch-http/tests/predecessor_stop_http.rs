@@ -1003,6 +1003,111 @@ async fn durable_process_exit_survives_release_failure_and_worker_replacement() 
 }
 
 #[tokio::test]
+async fn closing_entry_still_records_local_exit_while_the_complete_scope_is_unknown() {
+    // CE causes: C1 Runtime already closed entry; C2 original Worker is
+    // expired/live; C3 provider exit is exact/unknown; C4 evidence release
+    // succeeds/fails; C5 complete-attempt evidence is unknown/missing/unavailable.
+    // CE1 C1+expired+exact -> commit the original Worker exit, then release;
+    // CE2 live|unknown -> no fabricated exit; CE3 release failure -> keep the
+    // committed exit and return unavailable, then reuse it without another stop.
+    // CE4 missing/unavailable full evidence still permits the independent local
+    // fact, while the original full-scope error remains unavailable to callers.
+    // The existing reported_local_entry_closure... case covers positive full
+    // evidence without adding a whole-Worker-stop requirement.
+    // Every rule retains the same occupied physical slot and refuses successor
+    // entry: local exit never upgrades complete-scope uncertainty into closure.
+    for (expired, exited, release_fails, scope) in [
+        (true, true, false, "unknown"),
+        (true, false, false, "unknown"),
+        (false, true, false, "unknown"),
+        (true, true, true, "unknown"),
+        (true, true, false, "missing"),
+        (true, true, false, "unavailable"),
+    ] {
+        let f = Fixture::new(
+            Arc::new(MemoryWorkerDirectory::new()),
+            true,
+            if expired { 50 } else { 1_000 },
+            5_000,
+        )
+        .await;
+        f.store.close_attempt(&f.old).await.unwrap();
+        let original = f.store.load_physical_attempt(&f.old.run_id).await.unwrap();
+        *f.stop.result.lock().unwrap() = Ok(exited.then(|| "exact-local-exit".into()));
+        if release_fails {
+            *f.stop.evidence_release_result.lock().unwrap() = Err("release unavailable".into());
+        }
+        let full_probe = (scope == "unavailable").then(|| {
+            let probe = AttemptStopProbe::install(&f);
+            *probe.result.lock().unwrap() = Err("full scope unavailable".into());
+            probe.release.add_permits(1);
+            probe
+        });
+        f.stop.release.add_permits(1);
+        if scope == "missing" {
+            let observed = stop_expired_predecessor(
+                f.store.as_ref(),
+                f.directory.as_ref(),
+                f.stop.as_ref(),
+                None,
+                &f.next,
+                200,
+            )
+            .await
+            .unwrap();
+            assert!(
+                matches!(observed, Some(WorkerProcessStopStatus::Exited(_))),
+                "CE4"
+            );
+        } else {
+            let result = f.begin().await;
+            assert_eq!(
+                result.0,
+                if release_fails || scope == "unavailable" {
+                    reqwest::StatusCode::SERVICE_UNAVAILABLE
+                } else {
+                    reqwest::StatusCode::OK
+                }
+            );
+        }
+        let recorded = f
+            .directory
+            .incarnation(f.binding.worker())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            recorded.process_exit.is_some(),
+            expired && exited,
+            "CE1/CE2"
+        );
+        assert_eq!(
+            f.store.load_physical_attempt(&f.old.run_id).await.unwrap(),
+            original
+        );
+        assert_eq!(f.stop.calls.lock().unwrap().len(), usize::from(expired));
+        if expired && exited {
+            *f.stop.evidence_release_result.lock().unwrap() = Ok(());
+            if let Some(probe) = full_probe {
+                *probe.result.lock().unwrap() = Ok(None);
+                probe.release.add_permits(1);
+            }
+            assert_eq!(f.begin().await.1["admission"], "blocked", "CE1/CE3");
+            assert_eq!(
+                f.stop.calls.lock().unwrap().len(),
+                1,
+                "CE3 no repeated stop"
+            );
+            assert_eq!(f.stop.evidence_release_calls.lock().unwrap().len(), 2);
+            assert_eq!(
+                f.store.load_physical_attempt(&f.old.run_id).await.unwrap(),
+                original
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn local_exit_receipt_keeps_its_subject_and_rejects_empty_provider_evidence() {
     // R15 valid local receipt binds the exact original process and nonempty
     // provider revision. R16 cached receipt for another closed domain => reject
@@ -1406,9 +1511,13 @@ async fn reported_local_entry_closure_recovers_without_stopping_a_healthy_worker
     // repeated close and late ordinary ACK. H1=C1+C3 => one retained closing
     // slot, ACK fenced. H2=!C2 => no retirement/no process kill. H3=C2 => exact
     // Coordinator retirement; unrelated Worker activity remains admitted.
-    let f = Fixture::new(Arc::new(MemoryWorkerDirectory::new()), true, 50, 5_000).await;
+    // Keep the Worker lease live independently of the expired Dispatch lease.
+    // A heartbeat at 200 cannot renew a Worker lease that expired at 150;
+    // ignoring that rejection would make the claimed healthy case invalid.
+    let f = Fixture::new(Arc::new(MemoryWorkerDirectory::new()), true, 1_000, 5_000).await;
     let old_worker = f.binding.worker().clone();
-    f.directory
+    let heartbeat = f
+        .directory
         .heartbeat(
             &old_worker,
             WorkerHeartbeat {
@@ -1424,6 +1533,11 @@ async fn reported_local_entry_closure_recovers_without_stopping_a_healthy_worker
         )
         .await
         .unwrap();
+    assert_eq!(
+        heartbeat,
+        awaken_dispatch::RegistryMutation::Applied,
+        "H0 live Worker premise"
+    );
     let probe = AttemptStopProbe::install(&f);
     for _ in 0..2 {
         let reply = reqwest::Client::new()
@@ -1441,7 +1555,9 @@ async fn reported_local_entry_closure_recovers_without_stopping_a_healthy_worker
         awaken_dispatch::SettleOutcome::Fenced
     );
     probe.release.add_permits(1);
-    assert_eq!(f.begin().await.1["admission"], "blocked");
+    let pending = f.begin().await;
+    assert_eq!(pending.0, reqwest::StatusCode::OK, "H2: {}", pending.1);
+    assert_eq!(pending.1["admission"], "blocked");
     f.assert_occupied().await;
     assert!(
         f.stop.calls.lock().unwrap().is_empty(),

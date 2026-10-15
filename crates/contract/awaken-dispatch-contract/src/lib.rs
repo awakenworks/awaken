@@ -65,7 +65,7 @@ pub use dispatch::{
     DispatchAdministration, DispatchAttemptControl, DispatchClaimOwnership, DispatchClaims,
     DispatchCommitAuthority, DispatchControlClaims, DispatchControlReads, DispatchEnqueue,
     DispatchExecution, DispatchMaintenance, DispatchReads, DispatchSettlement,
-    SessionReservationAuthority, SessionRunReservations,
+    SessionReservationAuthority, SessionRunAdmissionReads, SessionRunReservations,
 };
 pub use dispatch_transition::{
     CancelTransition, DispatchTransition, DispatchTransitionError, GuardedTransition,

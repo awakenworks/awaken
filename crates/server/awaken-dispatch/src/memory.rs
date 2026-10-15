@@ -1505,7 +1505,7 @@ impl awaken_dispatch_contract::DispatchControlReads for MemoryDispatchStore {
 }
 
 #[async_trait]
-impl awaken_dispatch_contract::SessionRunReservations for MemoryDispatchStore {
+impl awaken_dispatch_contract::SessionRunAdmissionReads for MemoryDispatchStore {
     async fn observe_session_run_admission(
         &self,
         run_id: &RunId,
@@ -1529,7 +1529,10 @@ impl awaken_dispatch_contract::SessionRunReservations for MemoryDispatchStore {
             }),
         )
     }
+}
 
+#[async_trait]
+impl awaken_dispatch_contract::SessionRunReservations for MemoryDispatchStore {
     async fn reserve_session_run(
         &self,
         request: RunDispatch,
@@ -1799,7 +1802,7 @@ impl awaken_dispatch_contract::DispatchAttemptRecordReads for MemoryDispatchStor
 mod admission_observation_tests {
     use super::MemoryDispatchStore;
     use awaken_agent_contract::agent::run::Id as RunId;
-    use awaken_dispatch_contract::{DispatchError, SessionRunReservations};
+    use awaken_dispatch_contract::{DispatchError, SessionRunAdmissionReads};
 
     #[tokio::test]
     async fn admission_observation_propagates_poison_without_false_absence() {

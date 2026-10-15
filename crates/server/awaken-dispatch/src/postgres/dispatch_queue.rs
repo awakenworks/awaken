@@ -1587,7 +1587,7 @@ impl awaken_dispatch_contract::DispatchControlReads for PostgresDispatchStore {
 }
 
 #[async_trait]
-impl awaken_dispatch_contract::SessionRunReservations for PostgresDispatchStore {
+impl awaken_dispatch_contract::SessionRunAdmissionReads for PostgresDispatchStore {
     async fn observe_session_run_admission(
         &self,
         run_id: &RunId,
@@ -1610,7 +1610,10 @@ impl awaken_dispatch_contract::SessionRunReservations for PostgresDispatchStore 
         }
         Ok(SessionRunAdmissionObservation::Missing)
     }
+}
 
+#[async_trait]
+impl awaken_dispatch_contract::SessionRunReservations for PostgresDispatchStore {
     async fn reserve_session_run(
         &self,
         request: RunDispatch,

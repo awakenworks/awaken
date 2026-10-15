@@ -9,7 +9,7 @@ use awaken_dispatch::{
 };
 use awaken_dispatch_contract::{
     DispatchControlReads, DispatchCursor, DispatchError, DispatchOperationalFeed,
-    SessionRunAdmissionObservation, SessionRunReservations,
+    SessionRunAdmissionObservation, SessionRunAdmissionReads, SessionRunReservations,
 };
 
 fn id(value: &str) -> RunId {
@@ -39,6 +39,12 @@ async fn assert_bounded_query_conformance(
     // O8 changed full input never borrows root SessionCommand identity.
     // O5 malformed/legacy tombstone and O9 error propagation/type exclusion are
     // owned by the adjacent real corruption cases and original Worker doctest.
+    // O10 C1 this exact store is viewed through its read-only admission role;
+    // C2 Missing/Live/Completed/legacy inputs still yield O1-O4 with unchanged
+    // rows/cursors. E1 the reader uses the original snapshot, E2 it cannot
+    // reserve/activate/reject/enqueue (the contract's compile-fail test), and E3
+    // the Worker view cannot acquire it (the existing erasure compile-fail).
+    let admission_reads: &dyn SessionRunAdmissionReads = store;
     let empty_rows = store.list_dispatches().await.unwrap();
     let empty_feed = store
         .events_after(DispatchCursor::default(), 128, None)
@@ -46,7 +52,7 @@ async fn assert_bounded_query_conformance(
         .unwrap();
     let empty_completion = store.completion_events_after(0, 128).await.unwrap();
     assert_eq!(
-        store
+        admission_reads
             .observe_session_run_admission(&id("query-c"))
             .await
             .unwrap(),
@@ -84,7 +90,7 @@ async fn assert_bounded_query_conformance(
     for request in &originals {
         for _ in 0..2 {
             assert_eq!(
-                store
+                admission_reads
                     .observe_session_run_admission(request.run_id())
                     .await
                     .unwrap(),

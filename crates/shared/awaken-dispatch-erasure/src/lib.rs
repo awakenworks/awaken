@@ -42,7 +42,7 @@ use awaken_dispatch_contract::{
     ContinuationAdmission, DispatchAdministration, DispatchAttemptControl, DispatchClaimOwnership,
     DispatchClaims, DispatchCommitAuthority, DispatchControlClaims, DispatchControlReads,
     DispatchEnqueue, DispatchExecution, DispatchMaintenance, DispatchReads, DispatchSettlement,
-    SessionContinuationOutbox, SessionRunReservations,
+    SessionContinuationOutbox, SessionRunAdmissionReads, SessionRunReservations,
 };
 
 /// Worker queue view, without local commit, maintenance or continuation authority.
@@ -84,7 +84,7 @@ use awaken_dispatch_contract::{
 /// Admission input is also Coordinator-only; no claim-as-read escape exists.
 /// ```compile_fail,E0599
 /// use awaken_dispatch_erasure::AnyDispatchStore;
-/// use awaken_dispatch_contract::SessionRunReservations;
+/// use awaken_dispatch_contract::SessionRunAdmissionReads;
 /// use awaken_agent_contract::agent::run::Id;
 /// async fn observe(worker: &AnyDispatchStore) {
 ///     worker.observe_session_run_admission(&Id("peer".into())).await;
@@ -434,14 +434,17 @@ impl DispatchMaintenance for AnyCoordinatorDispatch {
     }
 }
 #[async_trait]
-impl SessionRunReservations for AnyCoordinatorDispatch {
+impl SessionRunAdmissionReads for AnyCoordinatorDispatch {
     async fn observe_session_run_admission(
         &self,
         run_id: &RunId,
     ) -> Result<awaken_dispatch_contract::SessionRunAdmissionObservation, DispatchError> {
         delegate_owner!(self, observe_session_run_admission(run_id))
     }
+}
 
+#[async_trait]
+impl SessionRunReservations for AnyCoordinatorDispatch {
     async fn reserve_session_run(
         &self,
         request: RunDispatch,
