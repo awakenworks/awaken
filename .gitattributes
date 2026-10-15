@@ -14,10 +14,3 @@ packages/managed-sdk-oracle/src/*.generated.ts text eol=lf
 # Reviewed compiler patches and upstream templates carry raw-byte digests.
 *.patch text eol=lf
 deploy/storage/local-pv/chart/** text eol=lf
-# Generated contracts are compared byte-for-byte across Windows and Linux.
-contracts/*.json text eol=lf
-contracts/*.d.ts text eol=lf
-contracts/anthropic-managed/*.json text eol=lf
-crates/server/awaken-protocol-managed/contracts/*.json text eol=lf
-packages/managed-sdk-oracle/fixtures/generated/*.ts text eol=lf
-packages/managed-sdk-oracle/src/*.generated.ts text eol=lf
