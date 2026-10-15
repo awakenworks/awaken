@@ -516,43 +516,48 @@ impl crate::host::SharedHost {
     /// matching durable intent. Recovery is resource-binding-owned rather than
     /// dependent on whether the parent Agent selects the Memory plugin: a child
     /// may have selected extraction even when its parent did not.
-    pub(crate) async fn bind_thread_memory_recovery(
-        &self,
-        session_thread: &str,
+    pub(crate) fn bind_thread_memory_recovery<'a>(
+        &'a self,
+        session_thread: &'a str,
         commit: Arc<HostCommit>,
-    ) -> Result<usize, crate::HostError> {
-        let realizations = self.installed_sessions.realizations();
-        // A database-less execution Worker owns only the frozen Memory data-plane
-        // binding. The Coordinator's guarded settlement observer is the sole
-        // owner of remote terminal observation and its durable extraction outbox;
-        // probing the Worker's fail-closed repository here would duplicate that
-        // authority and prevent an otherwise valid claimed Runtime from starting.
-        if !self.authority.observes_terminal_memory_locally() {
-            return Ok(0);
-        }
-        let bindings = realizations
-            .read_realization(session_thread, |r| {
-                let mut bindings: Vec<Arc<MemoryBinding>> = Vec::new();
-                for memory in r
-                    .staging
-                    .memory_bindings
-                    .values()
-                    .cloned()
-                    .chain(r.staging.memory.iter().cloned())
-                {
-                    if !bindings
-                        .iter()
-                        .any(|existing| Arc::ptr_eq(existing, &memory))
+    ) -> std::pin::Pin<
+        Box<impl std::future::Future<Output = Result<usize, crate::HostError>> + Send + 'a>,
+    > {
+        // Keep extraction recovery's typed state out of enclosing context polls,
+        // including resident-cache hits during the next Run of the same Session.
+        Box::pin(async move {
+            let realizations = self.installed_sessions.realizations();
+            // A database-less execution Worker owns only the frozen Memory data-plane
+            // binding. The Coordinator's guarded settlement observer is the sole
+            // owner of remote terminal observation and its durable extraction outbox;
+            // probing the Worker's fail-closed repository here would duplicate that
+            // authority and prevent an otherwise valid claimed Runtime from starting.
+            if !self.authority.observes_terminal_memory_locally() {
+                return Ok(0);
+            }
+            let bindings = realizations
+                .read_realization(session_thread, |r| {
+                    let mut bindings: Vec<Arc<MemoryBinding>> = Vec::new();
+                    for memory in r
+                        .staging
+                        .memory_bindings
+                        .values()
+                        .cloned()
+                        .chain(r.staging.memory.iter().cloned())
                     {
-                        bindings.push(memory);
+                        if !bindings
+                            .iter()
+                            .any(|existing| Arc::ptr_eq(existing, &memory))
+                        {
+                            bindings.push(memory);
+                        }
                     }
-                }
-                bindings
-            })
-            .unwrap_or_default();
-        let mut scheduled = 0;
-        for binding in bindings {
-            if binding.extraction_enabled
+                    bindings
+                })
+                .unwrap_or_default();
+            let mut scheduled = 0;
+            for binding in bindings {
+                if binding.extraction_enabled
                 && self
                     .resources
                     .memory
@@ -567,8 +572,9 @@ impl crate::host::SharedHost {
             {
                 scheduled += 1;
             }
-        }
-        Ok(scheduled)
+            }
+            Ok(scheduled)
+        })
     }
 
     /// Install one already-resolved MemoryStore binding for a thread. This is an
