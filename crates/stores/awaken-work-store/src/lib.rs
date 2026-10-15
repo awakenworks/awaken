@@ -4,7 +4,7 @@
 // @formal entrypoint work.lease_authority_snapshot_and_owner_mutations_are_atomic
 // @formal entrypoint work.single_active_claim
 // @formal entrypoint work.terminal_lease_clear
-//! Durable [`WorkQueue`] backend: the self-hosted environment work queue over a
+//! Durable Work queue backends: the self-hosted environment work queue over a
 //! store, so a session dispatched to a self-hosted environment survives a restart
 //! and can be claimed by a worker on any node. SQLite (embedded, single machine)
 //! lands here; the Postgres backend (distributed) shares the one portable bundle,
@@ -22,14 +22,17 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use awaken_executable_environment_contract::{
+    EnvironmentWorkLifecycle, HeartbeatResult, LeaseHeartbeat, LeaseReceipt, QueueStats,
+    SessionAccessAuthenticator, SessionAccessDigest, SessionWorkLeaseControl,
+    SessionWorkReleaseAdmission, SessionWorkStore, SessionWorkerLeaseStore, WorkClaim,
+    WorkConsumer, WorkItem, WorkMetadataPatch, WorkMutationResult, WorkQueries, WorkQueueError,
+    WorkSessionAccess, WorkerLeaseObservation, session_work_release_admission,
+};
+use awaken_session_types::SessionWorkLease;
 use awaken_time::WallClock;
 #[cfg(all(test, not(feature = "loom")))]
 use awaken_time::system_clock;
-use awaken_worker_contract::{
-    HeartbeatResult, LeaseHeartbeat, LeaseReceipt, QueueStats, SessionAccessDigest,
-    SessionWorkLease, SessionWorkReleaseAdmission, WorkClaim, WorkItem, WorkMutationResult,
-    WorkQueue, WorkQueueError, WorkSessionAccess, session_work_release_admission,
-};
 fn storage(error: impl std::fmt::Display) -> WorkQueueError {
     WorkQueueError::Storage(error.to_string().into())
 }
@@ -51,7 +54,6 @@ pub use lease_book::{LEASE_TTL_MS, LeaseBook, POLLER_WINDOW_MS};
 mod backends;
 use backends::pg_row_to_item;
 mod mutation;
-use awaken_time::Expiry;
 use mutation::{
     LeaseAuthorityCommand, LeaseAuthorityDecision, LeaseAuthorityTuple, LeaseFence,
     StoredLeaseAuthorityInput, apply_metadata_patch, claim_stored_lease_authority,
@@ -89,93 +91,7 @@ pub struct SqliteWorkQueue {
 }
 
 #[async_trait]
-impl WorkQueue for SqliteWorkQueue {
-    async fn enqueue_session(
-        &self,
-        env_id: &str,
-        session_id: &awaken_session_types::SessionId,
-    ) -> Result<String, WorkQueueError> {
-        let created_at = self.clock.observed_at();
-        let mut conn = self.connection().await?;
-        Self::insert(
-            &mut conn,
-            env_id,
-            "session",
-            Some(session_id.as_str()),
-            created_at,
-        )
-        .await
-    }
-
-    async fn wake_session(
-        &self,
-        env_id: &str,
-        session_id: &awaken_session_types::SessionId,
-    ) -> Result<String, WorkQueueError> {
-        let session_id = session_id.as_str();
-        let created_at = self.clock.observed_at();
-        let mut conn = self.connection().await?;
-        let work_id =
-            Self::insert(&mut conn, env_id, "session", Some(session_id), created_at).await?;
-        let mut tx = backends::immediate(&mut conn).await?;
-        sqlx::query(
-            "UPDATE work_queue_item SET state = 'queued', acknowledged_at = NULL, \
-             latest_heartbeat_at = NULL, started_at = NULL, stop_requested_at = NULL, \
-             stopped_at = NULL, lease_owner = NULL, lease_expires_ms = NULL, \
-             lease_refreshed_ms = NULL, session_token_sha256 = NULL WHERE work_id = ?1 AND environment_id = ?2 \
-             AND data_type = 'session' AND data_id = ?3 AND state = 'stopped'",
-        )
-        .bind(&work_id)
-        .bind(env_id)
-        .bind(session_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(storage)?;
-        tx.commit().await.map_err(storage)?;
-        Ok(work_id)
-    }
-
-    async fn enqueue_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
-        let created_at = self.clock.observed_at();
-        let mut conn = self.connection().await?;
-        Self::insert(&mut conn, env_id, "healthcheck", None, created_at).await
-    }
-
-    async fn ensure_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
-        let created_at = self.clock.observed_at();
-        let mut conn = self.connection().await?;
-        let mut tx = backends::immediate(&mut conn).await?;
-        if let Some(id) = sqlx::query_scalar::<_, String>(
-            "SELECT work_id FROM work_queue_item WHERE environment_id = ?1 AND data_type = 'healthcheck' ORDER BY seq ASC LIMIT 1",
-        )
-        .bind(env_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(storage)?
-        {
-            tx.commit().await.map_err(storage)?;
-            return Ok(id);
-        }
-        let next: i64 =
-            sqlx::query_scalar("SELECT COALESCE(MAX(seq), -1) + 1 FROM work_queue_item")
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(storage)?;
-        let work_id = format!("work_{next:016}");
-        sqlx::query(
-            "INSERT INTO work_queue_item (work_id, seq, environment_id, data_type, data_id, metadata_json, state, created_at) VALUES (?1, ?2, ?3, 'healthcheck', ?1, '{}', 'queued', ?4)",
-        )
-        .bind(&work_id)
-        .bind(next)
-        .bind(env_id)
-        .bind(created_at)
-        .execute(&mut *tx)
-        .await
-        .map_err(storage)?;
-        tx.commit().await.map_err(storage)?;
-        Ok(work_id)
-    }
-
+impl WorkQueries for SqliteWorkQueue {
     async fn list(&self, env_id: &str) -> Result<Vec<WorkItem>, WorkQueueError> {
         let mut conn = self.connection().await?;
         sqlx::query(&format!(
@@ -196,6 +112,48 @@ impl WorkQueue for SqliteWorkQueue {
         Self::owned(&mut tx, env_id, wid).await
     }
 
+    async fn stats(&self, env_id: &str, now_ms: u64) -> Result<QueueStats, WorkQueueError> {
+        let mut conn = self.connection().await?;
+        // The oldest unfinished item's own durable acceptance instant.
+        // A drained queue has no such row, so the absence is the answer
+        // rather than something to stand in for.
+        let oldest_queued_at: Option<String> = sqlx::query_scalar(
+            "SELECT created_at FROM work_queue_item \
+             WHERE environment_id = ?1 \
+               AND state IN ('queued', 'starting', 'active', 'stopping') \
+             ORDER BY created_at ASC, seq ASC LIMIT 1",
+        )
+        .bind(env_id)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(storage)?;
+        let mut count = async |state_clause: &str| -> Result<usize, WorkQueueError> {
+            sqlx::query_scalar::<_, i64>(&format!(
+                "SELECT COUNT(*) FROM work_queue_item WHERE environment_id = ?1 AND {state_clause}"
+            ))
+            .bind(env_id)
+            .fetch_one(&mut *conn)
+            .await
+            .map(|count| count as usize)
+            .map_err(storage)
+        };
+        let depth = count("state = 'queued'").await?;
+        let pending = count("state IN ('starting', 'active', 'stopping')").await?;
+        drop(conn);
+        // Parity with the in-memory queue: oldest stays set while an item is still
+        // processing (queued OR pending), and pollers are counted from the liveness
+        // book, not proxied from the active count.
+        Ok(QueueStats {
+            depth,
+            pending,
+            oldest_queued_at,
+            workers_polling: self.book.workers_polling(env_id, now_ms),
+        })
+    }
+}
+
+#[async_trait]
+impl WorkConsumer for SqliteWorkQueue {
     async fn claim(
         &self,
         env_id: &str,
@@ -243,6 +201,68 @@ impl WorkQueue for SqliteWorkQueue {
         .await
     }
 
+    async fn ack(
+        &self,
+        env_id: &str,
+        wid: &str,
+        worker_id: &str,
+    ) -> Result<WorkMutationResult, WorkQueueError> {
+        let acknowledged_at = self.clock.observed_at();
+        let mut conn = self.connection().await?;
+        Self::ack_inner(
+            &mut conn,
+            env_id,
+            wid,
+            worker_id,
+            LeaseFence::OwnerOnly,
+            acknowledged_at,
+        )
+        .await
+    }
+
+    async fn heartbeat(
+        &self,
+        env_id: &str,
+        wid: &str,
+        worker_id: &str,
+        now_ms: u64,
+        heartbeat: LeaseHeartbeat,
+    ) -> Result<HeartbeatResult, WorkQueueError> {
+        let mut conn = self.connection().await?;
+        Self::heartbeat_inner(
+            &mut conn,
+            env_id,
+            wid,
+            worker_id,
+            LeaseFence::OwnerOnly,
+            now_ms,
+            heartbeat,
+        )
+        .await
+    }
+
+    async fn stop(
+        &self,
+        env_id: &str,
+        wid: &str,
+        worker_id: &str,
+    ) -> Result<WorkMutationResult, WorkQueueError> {
+        let stopped_at = self.clock.observed_at();
+        let mut conn = self.connection().await?;
+        Self::stop_inner(
+            &mut conn,
+            env_id,
+            wid,
+            worker_id,
+            LeaseFence::OwnerOnly,
+            stopped_at,
+        )
+        .await
+    }
+}
+
+#[async_trait]
+impl SessionAccessAuthenticator for SqliteWorkQueue {
     async fn authenticate_session_access(
         &self,
         presented: &SessionAccessDigest,
@@ -274,26 +294,10 @@ impl WorkQueue for SqliteWorkQueue {
         )
         .transpose()
     }
+}
 
-    async fn ack(
-        &self,
-        env_id: &str,
-        wid: &str,
-        worker_id: &str,
-    ) -> Result<WorkMutationResult, WorkQueueError> {
-        let acknowledged_at = self.clock.observed_at();
-        let mut conn = self.connection().await?;
-        Self::ack_inner(
-            &mut conn,
-            env_id,
-            wid,
-            worker_id,
-            LeaseFence::OwnerOnly,
-            acknowledged_at,
-        )
-        .await
-    }
-
+#[async_trait]
+impl SessionWorkLeaseControl for SqliteWorkQueue {
     async fn ack_with_session_access(
         &self,
         access: &WorkSessionAccess,
@@ -307,27 +311,6 @@ impl WorkQueue for SqliteWorkQueue {
             &access.lease_owner,
             LeaseFence::Exact(access.lease_epoch),
             acknowledged_at,
-        )
-        .await
-    }
-
-    async fn heartbeat(
-        &self,
-        env_id: &str,
-        wid: &str,
-        worker_id: &str,
-        now_ms: u64,
-        heartbeat: LeaseHeartbeat,
-    ) -> Result<HeartbeatResult, WorkQueueError> {
-        let mut conn = self.connection().await?;
-        Self::heartbeat_inner(
-            &mut conn,
-            env_id,
-            wid,
-            worker_id,
-            LeaseFence::OwnerOnly,
-            now_ms,
-            heartbeat,
         )
         .await
     }
@@ -351,25 +334,6 @@ impl WorkQueue for SqliteWorkQueue {
         .await
     }
 
-    async fn stop(
-        &self,
-        env_id: &str,
-        wid: &str,
-        worker_id: &str,
-    ) -> Result<WorkMutationResult, WorkQueueError> {
-        let stopped_at = self.clock.observed_at();
-        let mut conn = self.connection().await?;
-        Self::stop_inner(
-            &mut conn,
-            env_id,
-            wid,
-            worker_id,
-            LeaseFence::OwnerOnly,
-            stopped_at,
-        )
-        .await
-    }
-
     async fn stop_with_session_access(
         &self,
         access: &WorkSessionAccess,
@@ -386,34 +350,53 @@ impl WorkQueue for SqliteWorkQueue {
         )
         .await
     }
+}
 
-    async fn has_owner_claims(&self, worker_owner: &str) -> Result<bool, WorkQueueError> {
+#[async_trait]
+impl SessionWorkStore for SqliteWorkQueue {
+    async fn enqueue_session(
+        &self,
+        env_id: &str,
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<String, WorkQueueError> {
+        let created_at = self.clock.observed_at();
         let mut conn = self.connection().await?;
-        sqlx::query_scalar::<_, bool>(HAS_OWNER_CLAIMS)
-            .bind(worker_owner)
-            .fetch_one(&mut *conn)
-            .await
-            .map_err(storage)
+        Self::insert(
+            &mut conn,
+            env_id,
+            "session",
+            Some(session_id.as_str()),
+            created_at,
+        )
+        .await
     }
 
-    async fn release_owner(&self, worker_owner: &str) -> Result<usize, WorkQueueError> {
+    async fn wake_session(
+        &self,
+        env_id: &str,
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<String, WorkQueueError> {
+        let session_id = session_id.as_str();
+        let created_at = self.clock.observed_at();
         let mut conn = self.connection().await?;
-        let cleared = reclaimed_lease_authority();
-        let released = sqlx::query(
-            "UPDATE work_queue_item SET stop_requested_at = NULL, stopped_at = NULL, \
-             state = 'queued', lease_owner = ?1, lease_expires_ms = ?2, \
-             lease_refreshed_ms = ?3, latest_heartbeat_at = NULL, session_token_sha256 = NULL \
-             WHERE data_type = 'session' AND state = 'active' AND lease_owner = ?4",
+        let work_id =
+            Self::insert(&mut conn, env_id, "session", Some(session_id), created_at).await?;
+        let mut tx = backends::immediate(&mut conn).await?;
+        sqlx::query(
+            "UPDATE work_queue_item SET state = 'queued', acknowledged_at = NULL, \
+             latest_heartbeat_at = NULL, started_at = NULL, stop_requested_at = NULL, \
+             stopped_at = NULL, lease_owner = NULL, lease_expires_ms = NULL, \
+             lease_refreshed_ms = NULL, session_token_sha256 = NULL WHERE work_id = ?1 AND environment_id = ?2 \
+             AND data_type = 'session' AND data_id = ?3 AND state = 'stopped'",
         )
-        .bind(cleared.owner)
-        .bind(cleared.expires_at)
-        .bind(cleared.refreshed_at)
-        .bind(worker_owner)
-        .execute(&mut *conn)
+        .bind(&work_id)
+        .bind(env_id)
+        .bind(session_id)
+        .execute(&mut *tx)
         .await
-        .map_err(storage)?
-        .rows_affected();
-        usize::try_from(released).map_err(storage)
+        .map_err(storage)?;
+        tx.commit().await.map_err(storage)?;
+        Ok(work_id)
     }
 
     async fn retire_session(
@@ -453,6 +436,29 @@ impl WorkQueue for SqliteWorkQueue {
         let item = Self::owned(&mut tx, env_id, &work_id).await?;
         tx.commit().await.map_err(storage)?;
         Ok(item)
+    }
+}
+
+#[async_trait]
+impl SessionWorkerLeaseStore for SqliteWorkQueue {
+    async fn release_owner(&self, worker_owner: &str) -> Result<usize, WorkQueueError> {
+        let mut conn = self.connection().await?;
+        let cleared = reclaimed_lease_authority();
+        let released = sqlx::query(
+            "UPDATE work_queue_item SET stop_requested_at = NULL, stopped_at = NULL, \
+             state = 'queued', lease_owner = ?1, lease_expires_ms = ?2, \
+             lease_refreshed_ms = ?3, latest_heartbeat_at = NULL, session_token_sha256 = NULL \
+             WHERE data_type = 'session' AND state = 'active' AND lease_owner = ?4",
+        )
+        .bind(cleared.owner)
+        .bind(cleared.expires_at)
+        .bind(cleared.refreshed_at)
+        .bind(worker_owner)
+        .execute(&mut *conn)
+        .await
+        .map_err(storage)?
+        .rows_affected();
+        usize::try_from(released).map_err(storage)
     }
 
     async fn release_session(&self, lease: &SessionWorkLease) -> Result<bool, WorkQueueError> {
@@ -494,7 +500,10 @@ impl WorkQueue for SqliteWorkQueue {
                 expires_at: expires,
             },
             lease.owner().to_owned(),
-            LeaseFence::Exact(lease.tenure().epoch()),
+            LeaseFence::Exact(
+                awaken_lease_contract::fence::Epoch::from_persisted(lease.epoch())
+                    .expect("transfer epoch is nonzero"),
+            ),
         )?
         else {
             return Ok(false);
@@ -529,7 +538,22 @@ impl WorkQueue for SqliteWorkQueue {
         self.acquire_session_inner(env_id, session_id, worker_owner, now_ms)
             .await
     }
+}
 
+#[async_trait]
+impl WorkerLeaseObservation for SqliteWorkQueue {
+    async fn has_owner_claims(&self, worker_owner: &str) -> Result<bool, WorkQueueError> {
+        let mut conn = self.connection().await?;
+        sqlx::query_scalar::<_, bool>(HAS_OWNER_CLAIMS)
+            .bind(worker_owner)
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(storage)
+    }
+}
+
+#[async_trait]
+impl WorkMetadataPatch for SqliteWorkQueue {
     async fn update_metadata(
         &self,
         env_id: &str,
@@ -553,44 +577,49 @@ impl WorkQueue for SqliteWorkQueue {
         tx.commit().await.map_err(storage)?;
         Ok(item)
     }
+}
 
-    async fn stats(&self, env_id: &str, now_ms: u64) -> Result<QueueStats, WorkQueueError> {
+#[async_trait]
+impl EnvironmentWorkLifecycle for SqliteWorkQueue {
+    async fn enqueue_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
+        let created_at = self.clock.observed_at();
         let mut conn = self.connection().await?;
-        // The oldest unfinished item's own durable acceptance instant.
-        // A drained queue has no such row, so the absence is the answer
-        // rather than something to stand in for.
-        let oldest_queued_at: Option<String> = sqlx::query_scalar(
-            "SELECT created_at FROM work_queue_item \
-             WHERE environment_id = ?1 \
-               AND state IN ('queued', 'starting', 'active', 'stopping') \
-             ORDER BY created_at ASC, seq ASC LIMIT 1",
+        Self::insert(&mut conn, env_id, "healthcheck", None, created_at).await
+    }
+
+    async fn ensure_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
+        let created_at = self.clock.observed_at();
+        let mut conn = self.connection().await?;
+        let mut tx = backends::immediate(&mut conn).await?;
+        if let Some(id) = sqlx::query_scalar::<_, String>(
+            "SELECT work_id FROM work_queue_item WHERE environment_id = ?1 AND data_type = 'healthcheck' ORDER BY seq ASC LIMIT 1",
         )
         .bind(env_id)
-        .fetch_optional(&mut *conn)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage)?
+        {
+            tx.commit().await.map_err(storage)?;
+            return Ok(id);
+        }
+        let next: i64 =
+            sqlx::query_scalar("SELECT COALESCE(MAX(seq), -1) + 1 FROM work_queue_item")
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(storage)?;
+        let work_id = format!("work_{next:016}");
+        sqlx::query(
+            "INSERT INTO work_queue_item (work_id, seq, environment_id, data_type, data_id, metadata_json, state, created_at) VALUES (?1, ?2, ?3, 'healthcheck', ?1, '{}', 'queued', ?4)",
+        )
+        .bind(&work_id)
+        .bind(next)
+        .bind(env_id)
+        .bind(created_at)
+        .execute(&mut *tx)
         .await
         .map_err(storage)?;
-        let mut count = async |state_clause: &str| -> Result<usize, WorkQueueError> {
-            sqlx::query_scalar::<_, i64>(&format!(
-                "SELECT COUNT(*) FROM work_queue_item WHERE environment_id = ?1 AND {state_clause}"
-            ))
-            .bind(env_id)
-            .fetch_one(&mut *conn)
-            .await
-            .map(|count| count as usize)
-            .map_err(storage)
-        };
-        let depth = count("state = 'queued'").await?;
-        let pending = count("state IN ('starting', 'active', 'stopping')").await?;
-        drop(conn);
-        // Parity with the in-memory queue: oldest stays set while an item is still
-        // processing (queued OR pending), and pollers are counted from the liveness
-        // book, not proxied from the active count.
-        Ok(QueueStats {
-            depth,
-            pending,
-            oldest_queued_at,
-            workers_polling: self.book.workers_polling(env_id, now_ms),
-        })
+        tx.commit().await.map_err(storage)?;
+        Ok(work_id)
     }
 
     async fn remove_env(&self, env_id: &str) -> Result<(), WorkQueueError> {
@@ -615,7 +644,7 @@ impl WorkQueue for SqliteWorkQueue {
     }
 }
 
-/// A Postgres-backed [`WorkQueue`] — the network-DB sibling over the same
+/// A Postgres-backed Work queue — the network-DB sibling over the same
 /// `work_queue` migration scope, for distributed deployments. Claims run in a
 /// transaction that mirrors the SQLite semantics (the single-active-per-env cap);
 /// the transaction locks the environment rows before the single-active decision.
@@ -627,74 +656,7 @@ pub struct PostgresWorkQueue {
 }
 
 #[async_trait]
-impl WorkQueue for PostgresWorkQueue {
-    async fn enqueue_session(
-        &self,
-        env_id: &str,
-        session_id: &awaken_session_types::SessionId,
-    ) -> Result<String, WorkQueueError> {
-        self.insert(env_id, "session", Some(session_id.as_str()))
-            .await
-    }
-
-    async fn wake_session(
-        &self,
-        env_id: &str,
-        session_id: &awaken_session_types::SessionId,
-    ) -> Result<String, WorkQueueError> {
-        let work_id = self
-            .insert(env_id, "session", Some(session_id.as_str()))
-            .await?;
-        sqlx::query(
-            "UPDATE work_queue_item SET state = 'queued', acknowledged_at = NULL, \
-             latest_heartbeat_at = NULL, started_at = NULL, stop_requested_at = NULL, \
-             stopped_at = NULL, lease_owner = NULL, lease_expires_ms = NULL, \
-             lease_refreshed_ms = NULL, session_token_sha256 = NULL WHERE work_id = $1 AND environment_id = $2 \
-             AND data_type = 'session' AND data_id = $3 AND state = 'stopped'",
-        )
-        .bind(&work_id)
-        .bind(env_id)
-        .bind(session_id.as_str())
-        .execute(&self.pool)
-        .await
-        .map_err(storage)?;
-        Ok(work_id)
-    }
-
-    async fn enqueue_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
-        self.insert(env_id, "healthcheck", None).await
-    }
-
-    async fn ensure_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
-        let mut tx = self.pool.begin().await.map_err(storage)?;
-        sqlx::query("LOCK TABLE work_queue_item IN SHARE ROW EXCLUSIVE MODE")
-            .execute(&mut *tx)
-            .await
-            .map_err(storage)?;
-        if let Some(id) = sqlx::query_scalar::<_, String>(
-            "SELECT work_id FROM work_queue_item WHERE environment_id = $1 AND data_type = 'healthcheck' ORDER BY seq ASC LIMIT 1",
-        )
-        .bind(env_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(storage)?
-        {
-            tx.commit().await.map_err(storage)?;
-            return Ok(id);
-        }
-        let next: i64 =
-            sqlx::query_scalar("SELECT COALESCE(MAX(seq), -1) + 1 FROM work_queue_item")
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(storage)?;
-        let work_id = format!("work_{next:016}");
-        sqlx::query("INSERT INTO work_queue_item (work_id, seq, environment_id, data_type, data_id, metadata_json, state, created_at) VALUES ($1, $2, $3, 'healthcheck', $1, '{}', 'queued', $4)")
-            .bind(&work_id).bind(next).bind(env_id).bind(self.clock.observed_at())
-            .execute(&mut *tx).await.map_err(storage)?;
-        tx.commit().await.map_err(storage)?;
-        Ok(work_id)
-    }
-
+impl WorkQueries for PostgresWorkQueue {
     async fn list(&self, env_id: &str) -> Result<Vec<WorkItem>, WorkQueueError> {
         sqlx::query(&format!(
             "SELECT {COLS} FROM work_queue_item WHERE environment_id = $1 ORDER BY seq ASC"
@@ -712,6 +674,47 @@ impl WorkQueue for PostgresWorkQueue {
         self.fetch_owned(env_id, wid).await
     }
 
+    async fn stats(&self, env_id: &str, now_ms: u64) -> Result<QueueStats, WorkQueueError> {
+        let count = |clause: &'static str| {
+            let pool = self.pool.clone();
+            let env = env_id.to_string();
+            async move {
+                sqlx::query_scalar::<_, i64>(&format!(
+                    "SELECT COUNT(*) FROM work_queue_item WHERE environment_id = $1 AND {clause}"
+                ))
+                .bind(env)
+                .fetch_one(&pool)
+                .await
+                .map_err(storage)
+                .map(|count| count as usize)
+            }
+        };
+        let depth = count("state = 'queued'").await?;
+        let pending = count("state IN ('starting', 'active', 'stopping')").await?;
+        // Parity with the in-memory queue: oldest is the oldest unfinished item's
+        // own durable acceptance instant, and pollers come from the liveness book
+        // (not the active-count proxy).
+        let oldest_queued_at: Option<String> = sqlx::query_scalar(
+            "SELECT created_at FROM work_queue_item \
+             WHERE environment_id = $1 \
+               AND state IN ('queued', 'starting', 'active', 'stopping') \
+             ORDER BY created_at ASC, seq ASC LIMIT 1",
+        )
+        .bind(env_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage)?;
+        Ok(QueueStats {
+            depth,
+            pending,
+            oldest_queued_at,
+            workers_polling: self.book.workers_polling(env_id, now_ms),
+        })
+    }
+}
+
+#[async_trait]
+impl WorkConsumer for PostgresWorkQueue {
     async fn claim(
         &self,
         env_id: &str,
@@ -756,6 +759,48 @@ impl WorkQueue for PostgresWorkQueue {
         .await
     }
 
+    async fn ack(
+        &self,
+        env_id: &str,
+        wid: &str,
+        worker_id: &str,
+    ) -> Result<WorkMutationResult, WorkQueueError> {
+        self.ack_inner(env_id, wid, worker_id, LeaseFence::OwnerOnly)
+            .await
+    }
+
+    async fn heartbeat(
+        &self,
+        env_id: &str,
+        wid: &str,
+        worker_id: &str,
+        now_ms: u64,
+        heartbeat: LeaseHeartbeat,
+    ) -> Result<HeartbeatResult, WorkQueueError> {
+        self.heartbeat_inner(
+            env_id,
+            wid,
+            worker_id,
+            LeaseFence::OwnerOnly,
+            now_ms,
+            heartbeat,
+        )
+        .await
+    }
+
+    async fn stop(
+        &self,
+        env_id: &str,
+        wid: &str,
+        worker_id: &str,
+    ) -> Result<WorkMutationResult, WorkQueueError> {
+        self.stop_inner(env_id, wid, worker_id, LeaseFence::OwnerOnly)
+            .await
+    }
+}
+
+#[async_trait]
+impl SessionAccessAuthenticator for PostgresWorkQueue {
     async fn authenticate_session_access(
         &self,
         presented: &SessionAccessDigest,
@@ -787,17 +832,10 @@ impl WorkQueue for PostgresWorkQueue {
         })
         .transpose()
     }
+}
 
-    async fn ack(
-        &self,
-        env_id: &str,
-        wid: &str,
-        worker_id: &str,
-    ) -> Result<WorkMutationResult, WorkQueueError> {
-        self.ack_inner(env_id, wid, worker_id, LeaseFence::OwnerOnly)
-            .await
-    }
-
+#[async_trait]
+impl SessionWorkLeaseControl for PostgresWorkQueue {
     async fn ack_with_session_access(
         &self,
         access: &WorkSessionAccess,
@@ -807,25 +845,6 @@ impl WorkQueue for PostgresWorkQueue {
             &access.work_id,
             &access.lease_owner,
             LeaseFence::Exact(access.lease_epoch),
-        )
-        .await
-    }
-
-    async fn heartbeat(
-        &self,
-        env_id: &str,
-        wid: &str,
-        worker_id: &str,
-        now_ms: u64,
-        heartbeat: LeaseHeartbeat,
-    ) -> Result<HeartbeatResult, WorkQueueError> {
-        self.heartbeat_inner(
-            env_id,
-            wid,
-            worker_id,
-            LeaseFence::OwnerOnly,
-            now_ms,
-            heartbeat,
         )
         .await
     }
@@ -847,16 +866,6 @@ impl WorkQueue for PostgresWorkQueue {
         .await
     }
 
-    async fn stop(
-        &self,
-        env_id: &str,
-        wid: &str,
-        worker_id: &str,
-    ) -> Result<WorkMutationResult, WorkQueueError> {
-        self.stop_inner(env_id, wid, worker_id, LeaseFence::OwnerOnly)
-            .await
-    }
-
     async fn stop_with_session_access(
         &self,
         access: &WorkSessionAccess,
@@ -869,33 +878,41 @@ impl WorkQueue for PostgresWorkQueue {
         )
         .await
     }
+}
 
-    async fn has_owner_claims(&self, worker_owner: &str) -> Result<bool, WorkQueueError> {
-        sqlx::query_scalar::<_, bool>(HAS_OWNER_CLAIMS)
-            .bind(worker_owner)
-            .fetch_one(&self.pool)
+#[async_trait]
+impl SessionWorkStore for PostgresWorkQueue {
+    async fn enqueue_session(
+        &self,
+        env_id: &str,
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<String, WorkQueueError> {
+        self.insert(env_id, "session", Some(session_id.as_str()))
             .await
-            .map_err(storage)
     }
 
-    async fn release_owner(&self, worker_owner: &str) -> Result<usize, WorkQueueError> {
-        let cleared = reclaimed_lease_authority();
-        let released = sqlx::query(
-            "UPDATE work_queue_item SET stop_requested_at = NULL, stopped_at = NULL, \
-             state = 'queued', lease_owner = $1, lease_expires_ms = $2, \
-             lease_refreshed_ms = $3, latest_heartbeat_at = NULL, session_token_sha256 = NULL \
-             WHERE data_type = 'session' AND state = 'active' AND lease_owner = $4",
+    async fn wake_session(
+        &self,
+        env_id: &str,
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<String, WorkQueueError> {
+        let work_id = self
+            .insert(env_id, "session", Some(session_id.as_str()))
+            .await?;
+        sqlx::query(
+            "UPDATE work_queue_item SET state = 'queued', acknowledged_at = NULL, \
+             latest_heartbeat_at = NULL, started_at = NULL, stop_requested_at = NULL, \
+             stopped_at = NULL, lease_owner = NULL, lease_expires_ms = NULL, \
+             lease_refreshed_ms = NULL, session_token_sha256 = NULL WHERE work_id = $1 AND environment_id = $2 \
+             AND data_type = 'session' AND data_id = $3 AND state = 'stopped'",
         )
-        .bind(cleared.owner)
-        .bind(cleared.expires_at)
-        .bind(cleared.refreshed_at)
-        .bind(worker_owner)
+        .bind(&work_id)
+        .bind(env_id)
+        .bind(session_id.as_str())
         .execute(&self.pool)
         .await
-        .map_err(storage)?
-        .rows_affected();
-        usize::try_from(released)
-            .map_err(|_| WorkQueueError::Storage("released row count overflow".into()))
+        .map_err(storage)?;
+        Ok(work_id)
     }
 
     async fn retire_session(
@@ -931,6 +948,29 @@ impl WorkQueue for PostgresWorkQueue {
         .await
         .map_err(storage)?;
         self.fetch_owned(env_id, &work_id).await
+    }
+}
+
+#[async_trait]
+impl SessionWorkerLeaseStore for PostgresWorkQueue {
+    async fn release_owner(&self, worker_owner: &str) -> Result<usize, WorkQueueError> {
+        let cleared = reclaimed_lease_authority();
+        let released = sqlx::query(
+            "UPDATE work_queue_item SET stop_requested_at = NULL, stopped_at = NULL, \
+             state = 'queued', lease_owner = $1, lease_expires_ms = $2, \
+             lease_refreshed_ms = $3, latest_heartbeat_at = NULL, session_token_sha256 = NULL \
+             WHERE data_type = 'session' AND state = 'active' AND lease_owner = $4",
+        )
+        .bind(cleared.owner)
+        .bind(cleared.expires_at)
+        .bind(cleared.refreshed_at)
+        .bind(worker_owner)
+        .execute(&self.pool)
+        .await
+        .map_err(storage)?
+        .rows_affected();
+        usize::try_from(released)
+            .map_err(|_| WorkQueueError::Storage("released row count overflow".into()))
     }
 
     async fn release_session(&self, lease: &SessionWorkLease) -> Result<bool, WorkQueueError> {
@@ -970,7 +1010,10 @@ impl WorkQueue for PostgresWorkQueue {
                 expires_at: expires,
             },
             lease.owner().to_owned(),
-            LeaseFence::Exact(lease.tenure().epoch()),
+            LeaseFence::Exact(
+                awaken_lease_contract::fence::Epoch::from_persisted(lease.epoch())
+                    .expect("transfer epoch is nonzero"),
+            ),
         )?
         else {
             return Ok(false);
@@ -1046,14 +1089,17 @@ impl WorkQueue for PostgresWorkQueue {
             })?;
             let expires_at_unix_ms = u64::try_from(current.3.unwrap_or_default())
                 .map_err(|_| WorkQueueError::Storage("negative Session Work expiry".into()))?;
-            return Ok(Some(SessionWorkLease::granted(
-                work_id,
-                env_id,
-                session_id.clone(),
-                owner,
-                epoch,
-                Expiry::from_epoch_ms(expires_at_unix_ms),
-            )));
+            return Ok(Some(
+                SessionWorkLease::from_persisted(
+                    work_id,
+                    env_id,
+                    session_id.clone(),
+                    owner,
+                    (epoch).get(),
+                    expires_at_unix_ms,
+                )
+                .expect("canonical grant has a nonzero epoch"),
+            ));
         }
         let epoch = if current.0 == "active" && current.1.as_deref() == Some(worker_owner) {
             let Some(next_authority) = renew_stored_lease_authority(
@@ -1126,16 +1172,33 @@ impl WorkQueue for PostgresWorkQueue {
             granted
         };
         tx.commit().await.map_err(storage)?;
-        Ok(Some(SessionWorkLease::granted(
-            work_id,
-            env_id,
-            session_id.clone(),
-            worker_owner,
-            epoch,
-            Expiry::from_epoch_ms(now_ms.saturating_add(HEARTBEAT_TTL_SECONDS * 1_000)),
-        )))
+        Ok(Some(
+            SessionWorkLease::from_persisted(
+                work_id,
+                env_id,
+                session_id.clone(),
+                worker_owner,
+                (epoch).get(),
+                now_ms.saturating_add(HEARTBEAT_TTL_SECONDS * 1_000),
+            )
+            .expect("canonical grant has a nonzero epoch"),
+        ))
     }
+}
 
+#[async_trait]
+impl WorkerLeaseObservation for PostgresWorkQueue {
+    async fn has_owner_claims(&self, worker_owner: &str) -> Result<bool, WorkQueueError> {
+        sqlx::query_scalar::<_, bool>(HAS_OWNER_CLAIMS)
+            .bind(worker_owner)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(storage)
+    }
+}
+
+#[async_trait]
+impl WorkMetadataPatch for PostgresWorkQueue {
     async fn update_metadata(
         &self,
         env_id: &str,
@@ -1158,43 +1221,42 @@ impl WorkQueue for PostgresWorkQueue {
         .map_err(storage)?;
         self.fetch_owned(env_id, wid).await
     }
+}
 
-    async fn stats(&self, env_id: &str, now_ms: u64) -> Result<QueueStats, WorkQueueError> {
-        let count = |clause: &'static str| {
-            let pool = self.pool.clone();
-            let env = env_id.to_string();
-            async move {
-                sqlx::query_scalar::<_, i64>(&format!(
-                    "SELECT COUNT(*) FROM work_queue_item WHERE environment_id = $1 AND {clause}"
-                ))
-                .bind(env)
-                .fetch_one(&pool)
-                .await
-                .map_err(storage)
-                .map(|count| count as usize)
-            }
-        };
-        let depth = count("state = 'queued'").await?;
-        let pending = count("state IN ('starting', 'active', 'stopping')").await?;
-        // Parity with the in-memory queue: oldest is the oldest unfinished item's
-        // own durable acceptance instant, and pollers come from the liveness book
-        // (not the active-count proxy).
-        let oldest_queued_at: Option<String> = sqlx::query_scalar(
-            "SELECT created_at FROM work_queue_item \
-             WHERE environment_id = $1 \
-               AND state IN ('queued', 'starting', 'active', 'stopping') \
-             ORDER BY created_at ASC, seq ASC LIMIT 1",
+#[async_trait]
+impl EnvironmentWorkLifecycle for PostgresWorkQueue {
+    async fn enqueue_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
+        self.insert(env_id, "healthcheck", None).await
+    }
+
+    async fn ensure_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        sqlx::query("LOCK TABLE work_queue_item IN SHARE ROW EXCLUSIVE MODE")
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+        if let Some(id) = sqlx::query_scalar::<_, String>(
+            "SELECT work_id FROM work_queue_item WHERE environment_id = $1 AND data_type = 'healthcheck' ORDER BY seq ASC LIMIT 1",
         )
         .bind(env_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
-        .map_err(storage)?;
-        Ok(QueueStats {
-            depth,
-            pending,
-            oldest_queued_at,
-            workers_polling: self.book.workers_polling(env_id, now_ms),
-        })
+        .map_err(storage)?
+        {
+            tx.commit().await.map_err(storage)?;
+            return Ok(id);
+        }
+        let next: i64 =
+            sqlx::query_scalar("SELECT COALESCE(MAX(seq), -1) + 1 FROM work_queue_item")
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(storage)?;
+        let work_id = format!("work_{next:016}");
+        sqlx::query("INSERT INTO work_queue_item (work_id, seq, environment_id, data_type, data_id, metadata_json, state, created_at) VALUES ($1, $2, $3, 'healthcheck', $1, '{}', 'queued', $4)")
+            .bind(&work_id).bind(next).bind(env_id).bind(self.clock.observed_at())
+            .execute(&mut *tx).await.map_err(storage)?;
+        tx.commit().await.map_err(storage)?;
+        Ok(work_id)
     }
 
     async fn remove_env(&self, env_id: &str) -> Result<(), WorkQueueError> {
@@ -1225,7 +1287,7 @@ impl WorkQueue for PostgresWorkQueue {
 mod tests {
     use super::LEASE_TTL_MS;
     use super::*;
-    use awaken_worker_contract::{WorkPayload, WorkState};
+    use awaken_executable_environment_contract::{WorkPayload, WorkState};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 

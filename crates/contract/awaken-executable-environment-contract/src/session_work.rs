@@ -1,13 +1,10 @@
-// @formal entrypoint session_run.execution_requires_dispatch_work_and_realization_owner
-// @formal entrypoint session_run.stale_work_epoch_cannot_observe_authoritative_thread_commit
 // @formal entrypoint session_time.utc_projection_domain_is_total_exact_and_idempotent
-// @formal entrypoint session_work.only_a_claimed_nonterminal_run_may_revive_stopped_work
 // @formal entrypoint session_work.release_requires_exact_owner_and_epoch
 // @formal entrypoint work.heartbeat_compare_and_set
 // @formal entrypoint work.pre_heartbeat_worker_identity
 // @formal entrypoint work.single_active_claim
 // @formal entrypoint work.terminal_lease_clear
-//! The environment work-queue port + its neutral vocabulary (ADR self-hosted work).
+//! Environment-owned work coordination and its neutral vocabulary (ADR self-hosted work).
 //!
 //! The port the environments work-queue routes drive, plus the neutral domain shapes
 //! in its signatures. The in-memory reference backend and the shared lease
@@ -19,14 +16,17 @@ use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use awaken_agent_contract::RedactedString;
-use awaken_lease_contract::fence::{Epoch, Lease, Tenure, TenureScope, ZeroEpoch};
+use awaken_lease_contract::fence::Epoch;
+#[cfg(test)]
+use awaken_session_application_contract::SessionWorkOwnership;
+use awaken_session_types::SessionWorkLease;
 use awaken_session_types::{SessionContractErrorDetail, SessionId};
-use awaken_time::Expiry;
+
 // The UTC calendar codec is owned by the wall-clock port, so a Work receipt and
 // an Environment record spell the same reading identically.
 #[cfg(kani)]
 use awaken_time::utc::bounded_rfc3339_nanos;
-pub use awaken_time::utc::{MAX_RFC3339_NANOS, format_rfc3339_utc_nanos, parse_rfc3339_utc_nanos};
+use awaken_time::utc::{MAX_RFC3339_NANOS, format_rfc3339_utc_nanos, parse_rfc3339_utc_nanos};
 #[cfg(test)]
 use awaken_time::utc::{civil_from_days, days_from_civil, days_in_month};
 
@@ -283,517 +283,6 @@ pub struct WorkSessionAccess {
     pub expires_at_unix_ms: u64,
 }
 
-/// The lease family of Session Work: which Work item binds which Session in
-/// which Environment (the subject), held by one execution owner.
-///
-/// A receipt or lease compared without the Work item or Environment could be
-/// satisfied by another Work item of the same Session; the subject carries all
-/// three so that can never happen. Consumers: [`SessionWorkLease`] and
-/// [`SessionWorkAuthorityReceipt`].
-#[derive(Debug)]
-pub struct SessionWork;
-
-impl TenureScope for SessionWork {
-    /// `(work_id, environment_id, session_id)`.
-    type Subject = (String, String, SessionId);
-    /// The exact authenticated execution owner. For a registered Worker this is
-    /// its incarnation-qualified lease owner, not the reusable display id.
-    type Holder = String;
-}
-
-/// Durable authority currently binding one Session work item to one Worker.
-/// This value is intentionally not part of the Managed wire object: public
-/// workers use the standard header/heartbeat protocol, while Awaken's private
-/// Run ingress consumes it only as a subordinate ownership fence.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SessionWorkLease(Lease<SessionWork>);
-
-impl SessionWorkLease {
-    /// The lease a WorkQueue transaction just granted or observed: `owner`
-    /// holds `session_id`'s Work item `work_id` in `environment_id` at
-    /// `epoch` until `expires`.
-    #[must_use]
-    pub fn granted(
-        work_id: impl Into<String>,
-        environment_id: impl Into<String>,
-        session_id: SessionId,
-        owner: impl Into<String>,
-        epoch: Epoch,
-        expires: Expiry,
-    ) -> Self {
-        Self(Lease::new(
-            Tenure::granted(
-                (work_id.into(), environment_id.into(), session_id),
-                owner.into(),
-                epoch,
-            ),
-            expires,
-        ))
-    }
-
-    /// Decode a lease from the WorkQueue's persisted coordinates. `None` for a
-    /// zero epoch: the queue's claim advances an unleased item to epoch 1, so a
-    /// row carrying 0 was never granted.
-    #[must_use]
-    pub fn from_persisted(
-        work_id: impl Into<String>,
-        environment_id: impl Into<String>,
-        session_id: SessionId,
-        owner: impl Into<String>,
-        epoch: u64,
-        expires_at_unix_ms: u64,
-    ) -> Option<Self> {
-        Some(Self::granted(
-            work_id,
-            environment_id,
-            session_id,
-            owner,
-            Epoch::from_persisted(epoch)?,
-            Expiry::from_epoch_ms(expires_at_unix_ms),
-        ))
-    }
-
-    #[must_use]
-    pub const fn lease(&self) -> &Lease<SessionWork> {
-        &self.0
-    }
-
-    /// The complete identity of this grant, ignoring its renewable expiry.
-    #[must_use]
-    pub const fn tenure(&self) -> &Tenure<SessionWork> {
-        self.0.tenure()
-    }
-
-    #[must_use]
-    pub fn work_id(&self) -> &str {
-        &self.0.tenure().subject().0
-    }
-
-    #[must_use]
-    pub fn environment_id(&self) -> &str {
-        &self.0.tenure().subject().1
-    }
-
-    #[must_use]
-    pub fn session_id(&self) -> &SessionId {
-        &self.0.tenure().subject().2
-    }
-
-    #[must_use]
-    pub fn owner(&self) -> &str {
-        self.0.tenure().holder()
-    }
-
-    /// The persisted lease epoch (never zero).
-    #[must_use]
-    pub const fn epoch(&self) -> u64 {
-        self.0.tenure().epoch().get()
-    }
-
-    #[must_use]
-    pub fn expires_at_unix_ms(&self) -> u64 {
-        self.0.expires().to_epoch_ms()
-    }
-}
-
-/// Exact, secret-free proof of the Work authority observed when a registered
-/// Worker entered one Session attempt.
-///
-/// The authority is private so production callers cannot assemble it from
-/// unrelated strings or silently replace a stale epoch with a later one. A
-/// leased receipt is exactly the lease's [`Tenure`] (Work, Environment,
-/// Session, owner, epoch). Wire input is still untrusted: the Coordinator
-/// always compares this receipt with a fresh observation from the canonical
-/// WorkQueue before exposing committed Thread truth or admitting a Session
-/// effect.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(
-    try_from = "SessionWorkAuthorityReceiptWire",
-    into = "SessionWorkAuthorityReceiptWire"
-)]
-pub struct SessionWorkAuthorityReceipt(ReceiptAuthority);
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum ReceiptAuthority {
-    NotRequired {
-        session_id: SessionId,
-        worker_owner: String,
-    },
-    Leased(Tenure<SessionWork>),
-}
-
-/// The persisted spelling of [`SessionWorkAuthorityReceipt`], unchanged from
-/// the shape the receipt had before it embedded a tenure.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct SessionWorkAuthorityReceiptWire {
-    session_id: SessionId,
-    worker_owner: String,
-    authority: SessionWorkAuthorityCoordinate,
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum SessionWorkAuthorityCoordinate {
-    NotRequired,
-    Leased {
-        work_id: String,
-        environment_id: String,
-        epoch: u64,
-    },
-}
-
-impl TryFrom<SessionWorkAuthorityReceiptWire> for SessionWorkAuthorityReceipt {
-    type Error = ZeroEpoch;
-
-    fn try_from(wire: SessionWorkAuthorityReceiptWire) -> Result<Self, Self::Error> {
-        Ok(Self(match wire.authority {
-            SessionWorkAuthorityCoordinate::NotRequired => ReceiptAuthority::NotRequired {
-                session_id: wire.session_id,
-                worker_owner: wire.worker_owner,
-            },
-            SessionWorkAuthorityCoordinate::Leased {
-                work_id,
-                environment_id,
-                epoch,
-            } => ReceiptAuthority::Leased(Tenure::granted(
-                (work_id, environment_id, wire.session_id),
-                wire.worker_owner,
-                Epoch::try_from(epoch)?,
-            )),
-        }))
-    }
-}
-
-impl From<SessionWorkAuthorityReceipt> for SessionWorkAuthorityReceiptWire {
-    fn from(receipt: SessionWorkAuthorityReceipt) -> Self {
-        match receipt.0 {
-            ReceiptAuthority::NotRequired {
-                session_id,
-                worker_owner,
-            } => Self {
-                session_id,
-                worker_owner,
-                authority: SessionWorkAuthorityCoordinate::NotRequired,
-            },
-            ReceiptAuthority::Leased(tenure) => {
-                let epoch = tenure.epoch().get();
-                let worker_owner = tenure.holder().clone();
-                let (work_id, environment_id, session_id) = tenure.subject().clone();
-                Self {
-                    session_id,
-                    worker_owner,
-                    authority: SessionWorkAuthorityCoordinate::Leased {
-                        work_id,
-                        environment_id,
-                        epoch,
-                    },
-                }
-            }
-        }
-    }
-}
-
-const fn exact_session_work_coordinate(
-    session_matches: bool,
-    owner_matches: bool,
-    scope_matches: bool,
-    environment_matches: bool,
-) -> bool {
-    session_matches && owner_matches && scope_matches && environment_matches
-}
-
-impl SessionWorkAuthorityReceipt {
-    /// Issue a receipt only from the complete result returned by the canonical
-    /// acquisition port. `Unowned` and a foreign owner cannot mint authority.
-    #[must_use]
-    fn from_acquired(
-        session_id: &str,
-        worker_owner: &str,
-        ownership: &SessionWorkOwnership,
-    ) -> Option<Self> {
-        Some(Self(match ownership {
-            SessionWorkOwnership::NotRequired => ReceiptAuthority::NotRequired {
-                session_id: SessionId::from(session_id),
-                worker_owner: worker_owner.to_string(),
-            },
-            SessionWorkOwnership::Unowned => return None,
-            SessionWorkOwnership::Leased(lease)
-                if lease.session_id() == session_id && lease.owner() == worker_owner =>
-            {
-                ReceiptAuthority::Leased(lease.tenure().clone())
-            }
-            SessionWorkOwnership::Leased(_) => return None,
-        }))
-    }
-
-    #[must_use]
-    pub fn session_id(&self) -> &SessionId {
-        match &self.0 {
-            ReceiptAuthority::NotRequired { session_id, .. } => session_id,
-            ReceiptAuthority::Leased(tenure) => &tenure.subject().2,
-        }
-    }
-
-    #[must_use]
-    pub fn worker_owner(&self) -> &str {
-        match &self.0 {
-            ReceiptAuthority::NotRequired { worker_owner, .. } => worker_owner,
-            ReceiptAuthority::Leased(tenure) => tenure.holder(),
-        }
-    }
-
-    /// Compare every stable coordinate with a new canonical observation. Lease
-    /// expiry is deliberately omitted: renewal may extend time, while Work id,
-    /// Environment, Session, owner, and epoch — the complete tenure — must
-    /// remain identical.
-    #[must_use]
-    pub fn matches_observation(&self, ownership: &SessionWorkOwnership) -> bool {
-        match (&self.0, ownership) {
-            (ReceiptAuthority::NotRequired { .. }, SessionWorkOwnership::NotRequired) => true,
-            (ReceiptAuthority::Leased(tenure), SessionWorkOwnership::Leased(lease)) => {
-                tenure == lease.tenure()
-            }
-            _ => false,
-        }
-    }
-
-    /// Compare the receipt with the immutable realization facts projected by
-    /// the Session facade, without depending back on its directive type.
-    #[must_use]
-    pub fn binds_realization(
-        &self,
-        session_id: &str,
-        runtime_incarnation: &str,
-        environment_self_hosted: bool,
-        environment_id: &str,
-    ) -> bool {
-        let (scope_matches, environment_matches) = match &self.0 {
-            ReceiptAuthority::NotRequired { .. } => (!environment_self_hosted, true),
-            ReceiptAuthority::Leased(tenure) => (
-                environment_self_hosted,
-                tenure.subject().1 == environment_id,
-            ),
-        };
-        exact_session_work_coordinate(
-            self.session_id() == session_id,
-            self.worker_owner() == runtime_incarnation,
-            scope_matches,
-            environment_matches,
-        )
-    }
-}
-
-/// Acquire through the one Work authority and seal its complete stable
-/// coordinate into a receipt. Callers cannot construct or alter the typed
-/// receipt through Rust fields; a decoded wire value remains only an assertion
-/// until [`SessionWorkAuthorityReceipt::matches_observation`] succeeds.
-pub async fn acquire_session_work_receipt(
-    authority: &dyn SessionWorkLeaseAuthority,
-    session_id: &SessionId,
-    worker_owner: &str,
-    now_ms: u64,
-    acquisition: SessionWorkAcquisition,
-) -> Result<Option<SessionWorkAuthorityReceipt>, WorkQueueError> {
-    let ownership = authority
-        .acquire_session_work(session_id, worker_owner, now_ms, acquisition)
-        .await?;
-    Ok(SessionWorkAuthorityReceipt::from_acquired(
-        session_id.as_str(),
-        worker_owner,
-        &ownership,
-    ))
-}
-
-/// One-byte distinguishable spellings of a Work lease coordinate. Effect
-/// authority proofs vary the owner through this fixture; receipt minting uses
-/// its exact owned row. All values enter through the production lease adapter.
-#[cfg(kani)]
-fn proof_representative_lease(
-    session: bool,
-    owner: bool,
-    work: bool,
-    environment: bool,
-    epoch: bool,
-    expiry: bool,
-) -> SessionWorkLease {
-    SessionWorkLease::from_persisted(
-        if work { "k" } else { "K" },
-        if environment { "e" } else { "E" },
-        SessionId::from(if session { "s" } else { "S" }),
-        if owner { "w" } else { "W" },
-        if epoch { 1 } else { 2 },
-        if expiry { 10 } else { 20 },
-    )
-    .expect("representative epochs are nonzero")
-}
-
-#[cfg(kani)]
-/// @obligation session_run.stale_work_epoch_cannot_observe_authoritative_thread_commit
-#[kani::proof]
-fn session_work_receipt_kind_and_minting_are_exact() {
-    // Causes: K1 the observed authority kind differs; K2 the acquisition is
-    // unowned; K3 Session or owner differs at minting. Effects: K1 never
-    // matches a leased receipt; K2-K3 mint nothing. A Work-free receipt matches
-    // only Work-free. Four symbolic minting rows and concrete cross-kind rows
-    // keep this branch separate from the executable coordinate matrix.
-    let session_matches: bool = kani::any();
-    let owner_matches: bool = kani::any();
-    let acquired = SessionWorkOwnership::Leased(proof_representative_lease(
-        true, true, true, true, true, true,
-    ));
-    let receipt = SessionWorkAuthorityReceipt::from_acquired("s", "w", &acquired)
-        .expect("an exactly owned acquisition mints a receipt");
-
-    // Cross-kind rows: a leased receipt never matches a Work-free or unowned
-    // observation, and a NotRequired receipt matches only its own kind.
-    assert!(!receipt.matches_observation(&SessionWorkOwnership::NotRequired));
-    assert!(!receipt.matches_observation(&SessionWorkOwnership::Unowned));
-    let free =
-        SessionWorkAuthorityReceipt::from_acquired("s", "w", &SessionWorkOwnership::NotRequired)
-            .expect("a Work-free acquisition mints a receipt");
-    assert!(free.matches_observation(&SessionWorkOwnership::NotRequired));
-    assert!(!free.matches_observation(&SessionWorkOwnership::Unowned));
-    assert!(!free.matches_observation(&acquired));
-
-    // The minting door is part of the same derivation: unowned Work mints no
-    // authority, and a foreign Session or owner cannot mint one either.
-    assert!(
-        SessionWorkAuthorityReceipt::from_acquired("s", "w", &SessionWorkOwnership::Unowned)
-            .is_none(),
-        "unowned Work mints no authority"
-    );
-    assert_eq!(
-        SessionWorkAuthorityReceipt::from_acquired(
-            if session_matches { "s" } else { "S" },
-            if owner_matches { "w" } else { "W" },
-            &acquired,
-        )
-        .is_some(),
-        session_matches && owner_matches,
-        "a leased acquisition mints authority only for its exact Session and owner"
-    );
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SessionWorkOwnership {
-    NotRequired,
-    Unowned,
-    Leased(SessionWorkLease),
-}
-
-#[derive(Clone, Copy)]
-enum SessionWorkEffectAuthority {
-    NotRequired,
-    Unowned,
-    Leased,
-}
-
-const fn session_work_effect_policy(
-    authority: SessionWorkEffectAuthority,
-    owner_matches: bool,
-) -> bool {
-    match authority {
-        SessionWorkEffectAuthority::NotRequired => true,
-        SessionWorkEffectAuthority::Unowned => false,
-        SessionWorkEffectAuthority::Leased => owner_matches,
-    }
-}
-
-impl SessionWorkOwnership {
-    /// Whether this observed Work authority permits the authenticated Worker
-    /// to enter or renew Session realization effects.
-    #[must_use]
-    pub fn permits_effect_for(&self, worker_owner: &str) -> bool {
-        let (authority, owner_matches) = match self {
-            Self::NotRequired => (SessionWorkEffectAuthority::NotRequired, false),
-            Self::Unowned => (SessionWorkEffectAuthority::Unowned, false),
-            Self::Leased(lease) => (
-                SessionWorkEffectAuthority::Leased,
-                lease.owner() == worker_owner,
-            ),
-        };
-        session_work_effect_policy(authority, owner_matches)
-    }
-}
-
-/// Cause authorizing a private registered Worker to acquire Session Work.
-/// A live claimed Run may repair a stopped Work projection after an admission /
-/// predecessor-retirement race. Realization renewal carries no driving event
-/// and may only renew or acquire already-dispatched Work; it cannot resurrect a
-/// stopped Session after its Run has settled.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SessionWorkAcquisition {
-    ClaimedRun,
-    RealizationRenewal,
-}
-
-/// Whether an absent Session Work lease may be repaired through the canonical
-/// wake path. A live claimed Run is the only durable intent that can authorize
-/// revival; renewal and terminal Session observations must remain inert.
-#[must_use]
-pub const fn session_work_revival_is_authorized(
-    acquisition: SessionWorkAcquisition,
-    session_is_terminal: bool,
-    lease_was_acquired: bool,
-) -> bool {
-    !lease_was_acquired
-        && !session_is_terminal
-        && matches!(acquisition, SessionWorkAcquisition::ClaimedRun)
-}
-
-#[cfg(kani)]
-/// @obligation session_work.only_a_claimed_nonterminal_run_may_revive_stopped_work
-#[kani::proof]
-fn stopped_session_work_is_revived_only_by_a_claimed_nonterminal_run() {
-    let session_is_terminal: bool = kani::any();
-    let lease_was_acquired: bool = kani::any();
-    let claimed_run: bool = kani::any();
-    let acquisition = if claimed_run {
-        SessionWorkAcquisition::ClaimedRun
-    } else {
-        SessionWorkAcquisition::RealizationRenewal
-    };
-
-    assert_eq!(
-        session_work_revival_is_authorized(acquisition, session_is_terminal, lease_was_acquired,),
-        claimed_run && !session_is_terminal && !lease_was_acquired
-    );
-}
-
-/// Coordinator-side view that subordinates private Run execution to the one
-/// public Environment Work ownership decision without exposing the Work store.
-#[async_trait]
-pub trait SessionWorkLeaseAuthority: Send + Sync {
-    /// Notify the existing Session lifecycle supervisor that Worker placement
-    /// evidence changed. This is an edge-triggered hint only: the supervisor
-    /// re-reads the Session, WorkQueue, and Worker registry authorities before
-    /// performing any mutation or effect.
-    fn request_lifecycle_reconciliation(&self) {}
-
-    async fn acquire_session_work(
-        &self,
-        session_id: &SessionId,
-        worker_owner: &str,
-        now_ms: u64,
-        acquisition: SessionWorkAcquisition,
-    ) -> Result<SessionWorkOwnership, WorkQueueError>;
-
-    /// Release the exact Session Work lease after the registered Worker's Run
-    /// has committed and is ready to settle. `false` means the caller no longer
-    /// owns that Session Work and grants no further execution authority. A
-    /// current Dispatch claim may still close Done when its exact Run has
-    /// committed Ended truth; terminal cleanup deliberately retires Work before
-    /// waiting for that closure. Other settlement requires the live Work fence.
-    async fn release_session_work(&self, lease: &SessionWorkLease) -> Result<bool, WorkQueueError>;
-
-    /// Return every non-terminal Session Work lease owned by one exact registered
-    /// Worker incarnation to the queue during authority loss or deregistration.
-    async fn release_worker_session_work(
-        &self,
-        worker_owner: &str,
-    ) -> Result<usize, WorkQueueError>;
-}
-
 /// Result of a mutation that only the current work owner may perform.
 #[derive(Clone, Debug)]
 pub enum WorkMutationResult {
@@ -844,16 +333,6 @@ pub enum HeartbeatCondition {
 }
 
 impl HeartbeatCondition {
-    /// Build the domain condition from the optional Managed query parameter.
-    #[must_use]
-    pub fn from_wire(expected: Option<&str>) -> Self {
-        match expected {
-            None => Self::Unconditional,
-            Some("NO_HEARTBEAT") => Self::First,
-            Some(value) => Self::Matching(value.to_string()),
-        }
-    }
-
     /// Whether `actual` authorizes this heartbeat write.
     #[must_use]
     pub fn permits(&self, actual: Option<&str>) -> bool {
@@ -929,45 +408,34 @@ pub struct QueueStats {
     pub workers_polling: i64,
 }
 
+/// Storage failures stay in Environment; Session ports translate at their application adapter.
+///
+/// ```compile_fail,E0277
+/// use awaken_executable_environment_contract::WorkQueueError;
+/// fn no_implicit_session_conversion(error: WorkQueueError) -> awaken_session_types::RunError {
+///     error.into()
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum WorkQueueError {
     #[error("work queue storage failure: {0}")]
     Storage(SessionContractErrorDetail),
 }
 
-/// The port the environments work-queue routes drive. In-memory by default; a
-/// durable impl (sqlite / postgres) backs it at parity. Membership is enforced by
-/// the port: an operation on a `wid` that does not belong to `env_id` returns
-/// `None`, which the route maps to a `work not found` 404.
+/// Read-only Work items and queue observations. No operation grants or renews authority.
 #[async_trait]
-pub trait WorkQueue: Send + Sync {
-    /// Ensure one `session` work item exists for `(env_id, session_id)` and
-    /// return its canonical work id. Replays are idempotent so a durable Session
-    /// reconciliation loop can safely close a commit-before-dispatch crash gap.
-    async fn enqueue_session(
-        &self,
-        env_id: &str,
-        session_id: &SessionId,
-    ) -> Result<String, WorkQueueError>;
-    /// Explicitly wake an existing stopped Session work item, or create it when
-    /// absent. Unlike reconciliation's [`Self::enqueue_session`], this command
-    /// is driven only by a new admitted Session event, so a completed idle item
-    /// cannot be continuously resurrected by the background supervisor.
-    async fn wake_session(
-        &self,
-        env_id: &str,
-        session_id: &SessionId,
-    ) -> Result<String, WorkQueueError>;
-    /// Seed a `healthcheck` work item (its inner id is the work id); returns it.
-    async fn enqueue_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError>;
-    /// Return the one healthcheck for an Environment, creating it when absent.
-    /// This convergence operation is safe to replay after an Environment create
-    /// committed but the caller lost the response.
-    async fn ensure_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError>;
+pub trait WorkQueries: Send + Sync {
     /// All work items in `env_id`, ascending by id (enqueue order).
     async fn list(&self, env_id: &str) -> Result<Vec<WorkItem>, WorkQueueError>;
     /// The work item under `wid` when it belongs to `env_id`.
     async fn get(&self, env_id: &str, wid: &str) -> Result<Option<WorkItem>, WorkQueueError>;
+    /// Queue stats for `env_id` as of `now_ms` (for the `workers_polling` window).
+    async fn stats(&self, env_id: &str, now_ms: u64) -> Result<QueueStats, WorkQueueError>;
+}
+
+/// Environment-credential Worker polling and owner mutations. Session access is bound atomically at claim.
+#[async_trait]
+pub trait WorkConsumer: Send + Sync {
     /// Poll as `worker_id` at wall time `now_ms`: first reclaim any `active` item
     /// whose lease has lapsed (its worker went away), then lease the oldest queued
     /// item (queued→active) when none is actively leased. `None` when the queue is
@@ -1001,7 +469,8 @@ pub trait WorkQueue: Send + Sync {
     /// echoed in [`WorkClaim::session_access`]; otherwise it is discarded. The
     /// queue never generates or sees the bearer itself.
     ///
-    /// The default fails closed. The one it replaced dropped `session_access`
+    /// Required, without a default: a backend must atomically bind the digest
+    /// or explicitly refuse the claim. The historical default dropped `session_access`
     /// and returned the claim anyway: the caller had already minted a bearer and
     /// was told the claim succeeded, while the digest it must be compared
     /// against was never persisted — every later request under that bearer then
@@ -1016,53 +485,7 @@ pub trait WorkQueue: Send + Sync {
         now_ms: u64,
         reclaim_older_than_ms: Option<u64>,
         session_access: &SessionAccessDigest,
-    ) -> Result<Option<WorkClaim>, WorkQueueError> {
-        let _ = (
-            env_id,
-            lease_owner,
-            poller_id,
-            now_ms,
-            reclaim_older_than_ms,
-            session_access,
-        );
-        Err(WorkQueueError::Storage(
-            "this WorkQueue backend cannot bind a Session-access digest to a claim".into(),
-        ))
-    }
-    /// Resolve one bearer digest against the current live Work lease. Expired,
-    /// reclaimed, stopped, retired, or replaced leases return `None`.
-    async fn authenticate_session_access(
-        &self,
-        _presented: &SessionAccessDigest,
-        _now_ms: u64,
-    ) -> Result<Option<WorkSessionAccess>, WorkQueueError> {
-        Ok(None)
-    }
-    /// Apply an acknowledgement only while the exact lease epoch recovered
-    /// from a sessions token is still current. Backends that do not issue
-    /// sessions tokens fail closed unless they explicitly implement this seam.
-    async fn ack_with_session_access(
-        &self,
-        _access: &WorkSessionAccess,
-    ) -> Result<WorkMutationResult, WorkQueueError> {
-        Ok(WorkMutationResult::PreconditionFailed)
-    }
-    /// Extend only the exact lease epoch recovered from a sessions token.
-    async fn heartbeat_with_session_access(
-        &self,
-        _access: &WorkSessionAccess,
-        _now_ms: u64,
-        _heartbeat: LeaseHeartbeat,
-    ) -> Result<HeartbeatResult, WorkQueueError> {
-        Ok(HeartbeatResult::PreconditionFailed)
-    }
-    /// Stop only the exact lease epoch recovered from a sessions token.
-    async fn stop_with_session_access(
-        &self,
-        _access: &WorkSessionAccess,
-    ) -> Result<WorkMutationResult, WorkQueueError> {
-        Ok(WorkMutationResult::PreconditionFailed)
-    }
+    ) -> Result<Option<WorkClaim>, WorkQueueError>;
     /// Acknowledge receipt (queued→starting), stamping `acknowledged_at`.
     async fn ack(
         &self,
@@ -1087,14 +510,64 @@ pub trait WorkQueue: Send + Sync {
         wid: &str,
         worker_id: &str,
     ) -> Result<WorkMutationResult, WorkQueueError>;
-    /// Registered-Worker authority teardown. Only active Session items with the
-    /// exact incarnation-qualified owner are returned to the queue, so a live
-    /// non-terminal Session can be adopted by a fresh incarnation.
-    async fn release_owner(&self, worker_owner: &str) -> Result<usize, WorkQueueError>;
-    /// Whether any persisted Work lease still names this exact owner. Expiry is
-    /// not release: this read never reclaims, clears or extends lease authority.
-    /// It is occupancy evidence only, never process-exit or replay permission.
-    async fn has_owner_claims(&self, worker_owner: &str) -> Result<bool, WorkQueueError>;
+}
+
+/// Resolve a bearer digest against a live lease. This port grants no mutation capability.
+#[async_trait]
+pub trait SessionAccessAuthenticator: Send + Sync {
+    /// Resolve one bearer digest against the current live Work lease. Expired,
+    /// reclaimed, stopped, retired, or replaced leases return `None`.
+    async fn authenticate_session_access(
+        &self,
+        _presented: &SessionAccessDigest,
+        _now_ms: u64,
+    ) -> Result<Option<WorkSessionAccess>, WorkQueueError>;
+}
+
+/// Mutate only the exact epoch authenticated by a Session bearer. Never fall back to an owner-only check.
+#[async_trait]
+pub trait SessionWorkLeaseControl: Send + Sync {
+    /// Apply an acknowledgement only while the exact lease epoch recovered
+    /// from a sessions token is still current. Each backend must implement
+    /// this exact-epoch fence explicitly.
+    async fn ack_with_session_access(
+        &self,
+        _access: &WorkSessionAccess,
+    ) -> Result<WorkMutationResult, WorkQueueError>;
+    /// Extend only the exact lease epoch recovered from a sessions token.
+    async fn heartbeat_with_session_access(
+        &self,
+        _access: &WorkSessionAccess,
+        _now_ms: u64,
+        _heartbeat: LeaseHeartbeat,
+    ) -> Result<HeartbeatResult, WorkQueueError>;
+    /// Stop only the exact lease epoch recovered from a sessions token.
+    async fn stop_with_session_access(
+        &self,
+        _access: &WorkSessionAccess,
+    ) -> Result<WorkMutationResult, WorkQueueError>;
+}
+
+/// Session lifecycle projection into its Environment queue: enqueue, explicitly wake, or retire.
+#[async_trait]
+pub trait SessionWorkStore: Send + Sync {
+    /// Ensure one `session` work item exists for `(env_id, session_id)` and
+    /// return its canonical work id. Replays are idempotent so a durable Session
+    /// reconciliation loop can safely close a commit-before-dispatch crash gap.
+    async fn enqueue_session(
+        &self,
+        env_id: &str,
+        session_id: &SessionId,
+    ) -> Result<String, WorkQueueError>;
+    /// Explicitly wake an existing stopped Session work item, or create it when
+    /// absent. Unlike reconciliation's [`Self::enqueue_session`], this command
+    /// is driven only by a new admitted Session event, so a completed idle item
+    /// cannot be continuously resurrected by the background supervisor.
+    async fn wake_session(
+        &self,
+        env_id: &str,
+        session_id: &SessionId,
+    ) -> Result<String, WorkQueueError>;
     /// Coordinator-owned terminal projection. This is not a Worker mutation:
     /// it retires the canonical item after the Session terminal fence and
     /// therefore intentionally does not require the former lease owner.
@@ -1103,12 +576,19 @@ pub trait WorkQueue: Send + Sync {
         env_id: &str,
         session_id: &SessionId,
     ) -> Result<Option<WorkItem>, WorkQueueError>;
+}
+
+/// Registered Worker lease storage. The Session application alone decides whether Work is required or may revive.
+#[async_trait]
+pub trait SessionWorkerLeaseStore: Send + Sync {
+    /// Registered-Worker authority teardown. Only active Session items with the
+    /// exact incarnation-qualified owner are returned to the queue, so a live
+    /// non-terminal Session can be adopted by a fresh incarnation.
+    async fn release_owner(&self, worker_owner: &str) -> Result<usize, WorkQueueError>;
     /// Registered-Worker settlement transition. Retire only the exact current
     /// Session Work owner and lease epoch in one store compare-and-set; a stale
     /// request must never retire a successor lease from the same incarnation.
-    async fn release_session(&self, _lease: &SessionWorkLease) -> Result<bool, WorkQueueError> {
-        Ok(false)
-    }
+    async fn release_session(&self, lease: &SessionWorkLease) -> Result<bool, WorkQueueError>;
     /// Private registered-Worker adapter over the same WorkQueue authority.
     /// It claims the exact queued Session or renews that exact current owner.
     /// When the exact Session is actively held by another owner, return that
@@ -1122,6 +602,20 @@ pub trait WorkQueue: Send + Sync {
         worker_owner: &str,
         now_ms: u64,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError>;
+}
+
+/// Read-only persisted owner occupancy, including expired but unreleased claims.
+#[async_trait]
+pub trait WorkerLeaseObservation: Send + Sync {
+    /// Whether any persisted Work lease still names this exact owner. Expiry is
+    /// not release: this read never reclaims, clears or extends lease authority.
+    /// It is occupancy evidence only, never process-exit or replay permission.
+    async fn has_owner_claims(&self, worker_owner: &str) -> Result<bool, WorkQueueError>;
+}
+
+/// Patch Work metadata: Some(value) upserts, None removes. Lease and lifecycle fields are outside this capability.
+#[async_trait]
+pub trait WorkMetadataPatch: Send + Sync {
     /// Merge a metadata patch (a string upserts and None deletes the key).
     async fn update_metadata(
         &self,
@@ -1129,8 +623,17 @@ pub trait WorkQueue: Send + Sync {
         wid: &str,
         patch: BTreeMap<String, Option<String>>,
     ) -> Result<Option<WorkItem>, WorkQueueError>;
-    /// Queue stats for `env_id` as of `now_ms` (for the `workers_polling` window).
-    async fn stats(&self, env_id: &str, now_ms: u64) -> Result<QueueStats, WorkQueueError>;
+}
+
+/// Environment registration convergence and withdrawal cleanup. Kept out of Worker and query roles.
+#[async_trait]
+pub trait EnvironmentWorkLifecycle: Send + Sync {
+    /// Seed a `healthcheck` work item (its inner id is the work id); returns it.
+    async fn enqueue_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError>;
+    /// Return the one healthcheck for an Environment, creating it when absent.
+    /// This convergence operation is safe to replay after an Environment create
+    /// committed but the caller lost the response.
+    async fn ensure_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError>;
     /// Drop all work for `env_id` (on environment delete).
     async fn remove_env(&self, env_id: &str) -> Result<(), WorkQueueError>;
 }
@@ -1143,99 +646,10 @@ mod tests {
         work_lease_mutation_admission,
     };
 
-    /// A leased receipt is exactly the lease's tenure, on an unchanged wire.
-    ///
-    /// Held: Work `k`, Environment `e`, Session `s`, owner `w`, epoch 3.
-    /// | Rule | observation / wire                      | effect            |
-    /// | T1   | same tenure, renewed expiry             | matches           |
-    /// | T2   | other Work item of the same Session     | no match          |
-    /// | T3   | other Environment                       | no match          |
-    /// | T4   | other owner                             | no match          |
-    /// | T5   | successor epoch                         | no match          |
-    /// | T6   | foreign Session                         | no match          |
-    /// | T7   | any subset of five stable coordinates   | match iff none    |
-    /// |      | changed, with either expiry            |                  |
-    /// | W1   | receipt encodes                         | the flat wire     |
-    /// | W2   | that wire decodes                       | the same receipt  |
-    /// | W3   | a leased wire with epoch 0              | refused on decode |
-    #[test]
-    fn a_leased_receipt_is_the_exact_tenure_on_an_unchanged_wire() {
-        let lease =
-            |work: &str, environment: &str, session: &str, owner: &str, epoch: u64, expiry: u64| {
-                SessionWorkOwnership::Leased(
-                    SessionWorkLease::from_persisted(
-                        work,
-                        environment,
-                        session.into(),
-                        owner,
-                        epoch,
-                        expiry,
-                    )
-                    .unwrap(),
-                )
-            };
-        let receipt = super::SessionWorkAuthorityReceipt::from_acquired(
-            "s",
-            "w",
-            &lease("k", "e", "s", "w", 3, 10),
-        )
-        .expect("an owned acquisition mints a receipt");
-        for (rule, observation, matches) in [
-            ("T1", lease("k", "e", "s", "w", 3, 99), true),
-            ("T2", lease("k2", "e", "s", "w", 3, 10), false),
-            ("T3", lease("k", "e2", "s", "w", 3, 10), false),
-            ("T4", lease("k", "e", "s", "w2", 3, 10), false),
-            ("T5", lease("k", "e", "s", "w", 4, 10), false),
-            ("T6", lease("k", "e", "foreign", "w", 3, 10), false),
-        ] {
-            assert_eq!(receipt.matches_observation(&observation), matches, "{rule}");
-        }
-        // T7 cause/effect matrix: bits 0-4 independently alter Session,
-        // owner, Work, Environment and epoch; bit 5 alters only expiry. Every
-        // feasible combination yields a match exactly when bits 0-4 are clear.
-        // This joint table complements the bounded Kani minting/kind proof.
-        for changed in 0_u8..64 {
-            let observation = lease(
-                if changed & 4 == 0 { "k" } else { "K" },
-                if changed & 8 == 0 { "e" } else { "E" },
-                if changed & 1 == 0 { "s" } else { "S" },
-                if changed & 2 == 0 { "w" } else { "W" },
-                if changed & 16 == 0 { 3 } else { 4 },
-                if changed & 32 == 0 { 10 } else { 99 },
-            );
-            assert_eq!(
-                receipt.matches_observation(&observation),
-                changed & 31 == 0,
-                "T7 changed={changed}"
-            );
-        }
-        let wire = serde_json::to_value(&receipt).unwrap();
-        assert_eq!(
-            wire,
-            serde_json::json!({
-                "session_id": "s",
-                "worker_owner": "w",
-                "authority": {"kind": "leased", "work_id": "k", "environment_id": "e", "epoch": 3},
-            }),
-            "W1"
-        );
-        assert_eq!(
-            serde_json::from_value::<super::SessionWorkAuthorityReceipt>(wire.clone()).unwrap(),
-            receipt,
-            "W2"
-        );
-        let mut zero = wire;
-        zero["authority"]["epoch"] = 0.into();
-        assert!(
-            serde_json::from_value::<super::SessionWorkAuthorityReceipt>(zero).is_err(),
-            "W3"
-        );
-    }
-
     /// A backend that does not bind the digest refuses the claim.
     ///
-    /// Decision table for the `claim_with_session_access` default. Causes:
-    /// D1 an implementation that overrides nothing; D2 the same call on an
+    /// Decision table for an explicit `claim_with_session_access` refusal. Causes:
+    /// D1 an adapter that cannot bind a digest; D2 an unqualified call on that
     /// implementation that binds the digest. Effects: E1 a refusal naming the
     /// missing capability; E2 a claim whose `session_access` carries the exact
     /// digest presented. Rules D1 => E1, D2 => E2.
@@ -1252,29 +666,29 @@ mod tests {
         struct Unbinding;
 
         #[async_trait::async_trait]
-        impl WorkQueue for Unbinding {
-            async fn enqueue_session(
+        impl WorkConsumer for Unbinding {
+            async fn claim_with_session_access(
                 &self,
-                _: &str,
-                _: &SessionId,
-            ) -> Result<String, WorkQueueError> {
-                Ok("work_1".into())
+                env_id: &str,
+                lease_owner: &str,
+                poller_id: &str,
+                now_ms: u64,
+                reclaim_older_than_ms: Option<u64>,
+                session_access: &SessionAccessDigest,
+            ) -> Result<Option<WorkClaim>, WorkQueueError> {
+                let _ = (
+                    env_id,
+                    lease_owner,
+                    poller_id,
+                    now_ms,
+                    reclaim_older_than_ms,
+                    session_access,
+                );
+                Err(WorkQueueError::Storage(
+                    "this WorkQueue backend cannot bind a Session-access digest to a claim".into(),
+                ))
             }
-            async fn wake_session(&self, _: &str, _: &SessionId) -> Result<String, WorkQueueError> {
-                Ok("work_1".into())
-            }
-            async fn enqueue_healthcheck(&self, _: &str) -> Result<String, WorkQueueError> {
-                Ok("work_1".into())
-            }
-            async fn ensure_healthcheck(&self, _: &str) -> Result<String, WorkQueueError> {
-                Ok("work_1".into())
-            }
-            async fn list(&self, _: &str) -> Result<Vec<WorkItem>, WorkQueueError> {
-                Ok(Vec::new())
-            }
-            async fn get(&self, _: &str, _: &str) -> Result<Option<WorkItem>, WorkQueueError> {
-                Ok(None)
-            }
+
             async fn claim(
                 &self,
                 _: &str,
@@ -1319,47 +733,6 @@ mod tests {
             ) -> Result<WorkMutationResult, WorkQueueError> {
                 Ok(WorkMutationResult::NotFound)
             }
-            async fn release_owner(&self, _: &str) -> Result<usize, WorkQueueError> {
-                Ok(0)
-            }
-            async fn has_owner_claims(&self, _: &str) -> Result<bool, WorkQueueError> {
-                Ok(false)
-            }
-            async fn retire_session(
-                &self,
-                _: &str,
-                _: &SessionId,
-            ) -> Result<Option<WorkItem>, WorkQueueError> {
-                Ok(None)
-            }
-            async fn acquire_session(
-                &self,
-                _: &str,
-                _: &SessionId,
-                _: &str,
-                _: u64,
-            ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
-                Ok(None)
-            }
-            async fn update_metadata(
-                &self,
-                _: &str,
-                _: &str,
-                _: BTreeMap<String, Option<String>>,
-            ) -> Result<Option<WorkItem>, WorkQueueError> {
-                Ok(None)
-            }
-            async fn stats(&self, _: &str, _: u64) -> Result<QueueStats, WorkQueueError> {
-                Ok(QueueStats {
-                    depth: 0,
-                    pending: 0,
-                    oldest_queued_at: None,
-                    workers_polling: 0,
-                })
-            }
-            async fn remove_env(&self, _: &str) -> Result<(), WorkQueueError> {
-                Ok(())
-            }
         }
 
         fn item() -> WorkItem {
@@ -1385,7 +758,7 @@ mod tests {
             .claim_with_session_access("env", "owner", "poller", 0, None, &digest)
             .await;
         let Err(WorkQueueError::Storage(detail)) = refused else {
-            panic!("D1/E1: the default must refuse, not hand back a digest-less claim");
+            panic!("D1/E1: the adapter must refuse, not hand back a digest-less claim");
         };
         assert!(
             detail.to_string().contains("Session-access digest"),
@@ -1409,7 +782,7 @@ mod tests {
         // C2 required Work is absent/retired or leased; C3 the observed lease
         // names the authenticated Worker. Effects: E1 permit C1 and exact
         // C2+C3; E2 deny absent Work and a foreign owner. The four rows cover
-        // every semantic observation produced by SessionWorkLeaseAuthority;
+        // every semantic observation produced by SessionWorkerLeaseAuthority;
         // lease identity/epoch validity remains inside that authoritative
         // queue read.
         //
@@ -1536,38 +909,6 @@ mod tests {
 #[cfg(kani)]
 mod verification {
     use super::*;
-
-    /// @obligation session_run.execution_requires_dispatch_work_and_realization_owner
-    #[kani::proof]
-    fn session_work_effect_requires_not_required_scope_or_exact_owner() {
-        // Complete policy domain, entered through the production wrapper so the
-        // owner fact is the one the code derives rather than a free symbol:
-        // every closed observed Work-authority class crossed with an exact and
-        // a foreign owner spelling. Causes: observed ownership kind and whether
-        // the authenticated owner is the lease's own. Effect: only a Work-free
-        // scope, or a lease whose owner is exactly the authenticated one,
-        // permits a realization effect.
-        // Bounds: the observed ownership *kind* is enumerated concretely for the
-        // same reason as the receipt harness -- a symbolic variant carrying a
-        // String payload does not terminate -- while the owner comparison the
-        // wrapper actually performs stays symbolic.
-        let owner_matches: bool = kani::any();
-        let leased = SessionWorkOwnership::Leased(proof_representative_lease(
-            true,
-            owner_matches,
-            true,
-            true,
-            true,
-            true,
-        ));
-        assert_eq!(
-            leased.permits_effect_for("w"),
-            owner_matches,
-            "a lease permits effects only for its exact current owner"
-        );
-        assert!(SessionWorkOwnership::NotRequired.permits_effect_for("w"));
-        assert!(!SessionWorkOwnership::Unowned.permits_effect_for("w"));
-    }
 
     fn symbolic_state(tag: u8) -> WorkState {
         match tag % 5 {

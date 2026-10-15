@@ -58,8 +58,7 @@
     "DurableRunOperations": 15,
     "EnvRegistry": 13,
     "MemoryRepository": 20,
-    "Sandbox": 15,
-    "WorkQueue": 24
+    "Sandbox": 15
   },
   "duplicate-type": {
     "Command": 2,
@@ -77,7 +76,7 @@
     "awaken-session-execution-contract": 52,
     "awaken-session-state-contract": 8,
     "awaken-tenancy": 2,
-    "awaken-worker-contract": 5
+    "awaken-worker-contract": 2
   },
   "renamed-reexport": {
     "awaken-runtime-contract": 9,

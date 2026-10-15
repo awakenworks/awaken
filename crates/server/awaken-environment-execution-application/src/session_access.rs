@@ -14,8 +14,8 @@
 //! transaction and later resolves a presented digest to that lease.
 
 use awaken_agent_contract::RedactedString;
+use awaken_executable_environment_contract::SessionAccessDigest;
 use awaken_iam_core::{EntropySource, OsEntropy};
-use awaken_worker_contract::SessionAccessDigest;
 use base64::Engine as _;
 use sha2::{Digest, Sha256};
 

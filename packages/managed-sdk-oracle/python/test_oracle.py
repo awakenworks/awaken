@@ -207,6 +207,7 @@ def decode(sse):
                 subprocess.run(
                     ["cmd.exe", "/d", "/c", "mklink", "/J", "sdk-alias", "sdk"],
                     cwd=container, check=True, capture_output=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
                 )
             else:
                 alias_root.symlink_to(real_root, target_is_directory=True)

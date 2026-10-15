@@ -320,7 +320,9 @@ impl WorkerControlClient {
         identity: &WorkerIdentity,
         claim: &RunClaim,
         session_id: &str,
-        session_work_authority: Option<&awaken_worker_contract::SessionWorkAuthorityReceipt>,
+        session_work_authority: Option<
+            &awaken_session_application_contract::SessionWorkAuthorityReceipt,
+        >,
         continuation: Option<
             &awaken_session_configuration_contract::resource::SessionRealizationLease,
         >,

@@ -57,3 +57,16 @@ pub use session_services::{
     CredentialMaterialRotationCommand, CredentialPlaintext, SessionCredentialAccessRequest,
     SessionCredentialSource, SessionParticipantProvenance,
 };
+
+mod worker_lease;
+pub use worker_lease::{
+    SessionWorkAuthorityReceipt, SessionWorkerLeaseAuthority, acquire_session_work_receipt,
+};
+
+mod worker_lease_types;
+use worker_lease_types::SessionWork;
+pub use worker_lease_types::{
+    SessionWorkAcquisition, SessionWorkOwnership, session_work_revival_is_authorized,
+};
+mod worker_assignment;
+pub use worker_assignment::{SessionWorkerAssignment, SessionWorkerLeases};

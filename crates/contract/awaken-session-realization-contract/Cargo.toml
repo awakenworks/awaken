@@ -14,6 +14,7 @@ authority = "session-realization"
 separation = "contract"
 
 [dependencies]
+awaken-session-application-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-time.workspace = true
 awaken-lease-contract.workspace = true

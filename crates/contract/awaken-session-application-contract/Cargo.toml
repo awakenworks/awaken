@@ -9,11 +9,12 @@ context = "coordinator"
 product = "platform"
 bounded_context = "session"
 layer = "contract"
-kinds = ["spi"]
+kinds = ["types", "spi"]
 authority = "session-application"
 separation = "contract"
 
 [dependencies]
+awaken-lease-contract.workspace = true
 awaken-credential-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-time.workspace = true

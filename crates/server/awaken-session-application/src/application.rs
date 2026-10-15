@@ -111,7 +111,7 @@ pub struct SessionApplication {
     mcp_realizer: Arc<dyn McpAttachmentRealizer>,
     credential_source: Option<Arc<dyn SessionCredentialSource>>,
     credential_material_ingress: Option<Arc<dyn CredentialMaterialIngress>>,
-    environments: Arc<dyn SessionEnvironmentSource>,
+    environments: SessionEnvironments,
     config_source: Option<Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>>,
     model_publication_resolver:
         Option<Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>>,
@@ -384,7 +384,7 @@ impl SessionApplication {
         &self,
         environment_id: &str,
     ) -> Result<Option<EnvItem>, ExecutableEnvironmentRegistrationError> {
-        self.environments.get(environment_id).await
+        self.environments.projection.get(environment_id).await
     }
 
     /// Whether the Control projection marks an Agent unavailable for launch.
@@ -429,6 +429,7 @@ impl SessionApplication {
         let required_revision = exact_publication.map(|binding| binding.revision);
         let resolved = if let Some(binding) = exact_publication {
             self.environments
+                .projection
                 .resolve_exact_for_session(
                     &binding.environment_id,
                     binding.revision,
@@ -438,6 +439,7 @@ impl SessionApplication {
                 .await
         } else {
             self.environments
+                .projection
                 .resolve_current_for_session(&environment_id, published_backend_ref, mcp_targets)
                 .await
         }
@@ -467,13 +469,17 @@ impl SessionApplication {
     pub async fn dispatch_session_work(
         &self,
         session: &PersistedSession,
-    ) -> Result<bool, awaken_worker_contract::WorkQueueError> {
-        dispatch_session_work(self.environments.as_ref(), session).await
+    ) -> Result<bool, awaken_session_types::RunError> {
+        dispatch_session_work(self.environments.assignment.as_ref(), session).await
     }
 
     /// Restore every missing Session-to-WorkQueue projection from durable truth.
     pub async fn reconcile_work_dispatches(&self) -> WorkDispatchReconciliation {
-        reconcile_work_dispatches(self.sessions_repo.as_ref(), self.environments.as_ref()).await
+        reconcile_work_dispatches(
+            self.sessions_repo.as_ref(),
+            self.environments.assignment.as_ref(),
+        )
+        .await
     }
 
     pub fn environment_binding_sink(&self) -> Arc<dyn SessionEnvironmentBindingSink> {
@@ -492,8 +498,8 @@ impl SessionApplication {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn replace_environment_source(&mut self, source: Arc<dyn SessionEnvironmentSource>) {
-        self.environments = source;
+    pub fn replace_environment_source(&mut self, source: impl Into<SessionEnvironments>) {
+        self.environments = source.into();
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -800,32 +806,10 @@ impl SessionApplication {
     }
 }
 
-fn is_native_session_runtime(runtime: Option<&str>) -> bool {
-    runtime.is_none_or(|backend_ref| {
-        matches!(
-            awaken_runtime_contract::resolved::Backend::from_ref(backend_ref),
-            awaken_runtime_contract::resolved::Backend::Native
-        )
-    })
-}
-
-fn validate_sandbox_provisioning_runtime(
-    provisioning: SandboxProvisioning,
-    runtime: Option<&str>,
-) -> Result<(), RunError> {
-    if provisioning == SandboxProvisioning::OnToolUse && !is_native_session_runtime(runtime) {
-        return Err(RunError::bad_request(format!(
-            "sandbox_provisioning_unsupported: `on_tool_use` requires a native backend, got `{}`",
-            runtime.unwrap_or_default()
-        )));
-    }
-    Ok(())
-}
-
 async fn dispatch_session_work(
-    environments: &dyn SessionEnvironmentSource,
+    assignments: &dyn awaken_session_application_contract::SessionWorkerAssignment,
     session: &PersistedSession,
-) -> Result<bool, awaken_worker_contract::WorkQueueError> {
+) -> Result<bool, awaken_session_types::RunError> {
     if session.is_terminal() {
         // Keep the externally auditable terminal guard at the effect boundary.
         // The shared plan below repeats the same immutable fact so recovery and
@@ -843,18 +827,15 @@ async fn dispatch_session_work(
     // Terminal Work retirement belongs exclusively to the recoverable resource
     // cleanup driver. A second reconciler would duplicate the external attempt
     // and obscure its durable completion boundary.
-    environments
-        .enqueue_session_work(
-            &baseline.environment.environment_id,
-            session.session_id.as_str(),
-        )
+    assignments
+        .enqueue_session(&baseline.environment.environment_id, &session.session_id)
         .await?;
     Ok(true)
 }
 
 async fn reconcile_work_dispatches(
     sessions: &dyn SessionRepository,
-    environments: &dyn SessionEnvironmentSource,
+    assignments: &dyn awaken_session_application_contract::SessionWorkerAssignment,
 ) -> WorkDispatchReconciliation {
     let mut report = WorkDispatchReconciliation::default();
     let candidates = match scan_recovery_candidates(sessions, false).await {
@@ -885,7 +866,7 @@ async fn reconcile_work_dispatches(
                 continue;
             }
         };
-        match dispatch_session_work(environments, &session).await {
+        match dispatch_session_work(assignments, &session).await {
             Ok(true) => report.settled += 1,
             Ok(false) => {}
             Err(error) => report.failures.push(WorkDispatchFailure {
@@ -905,13 +886,13 @@ fn claim_once(fence: &AtomicBool) -> bool {
 async fn self_hosted_work_environment(
     application: &SessionApplication,
     session_id: &awaken_session_types::SessionId,
-) -> Result<Option<(String, bool)>, awaken_worker_contract::WorkQueueError> {
+) -> Result<Option<(String, bool)>, awaken_session_types::RunError> {
     let session = match application.session_repository().get(session_id).await {
         Ok(session) => session,
         Err(SessionRepositoryError::NotFound) => return Ok(None),
         Err(error) => {
-            return Err(awaken_worker_contract::WorkQueueError::Storage(
-                error.to_string().into(),
+            return Err(awaken_session_types::RunError::unavailable(
+                error.to_string(),
             ));
         }
     };
@@ -927,7 +908,7 @@ async fn self_hosted_work_environment(
 }
 
 #[async_trait::async_trait]
-impl awaken_worker_contract::SessionWorkLeaseAuthority for SessionApplication {
+impl awaken_session_application_contract::SessionWorkerLeaseAuthority for SessionApplication {
     fn request_lifecycle_reconciliation(&self) {
         SessionApplication::request_lifecycle_reconciliation(self);
     }
@@ -937,10 +918,12 @@ impl awaken_worker_contract::SessionWorkLeaseAuthority for SessionApplication {
         session_id: &awaken_session_types::SessionId,
         worker_owner: &str,
         now_ms: u64,
-        acquisition: awaken_worker_contract::SessionWorkAcquisition,
-    ) -> Result<awaken_worker_contract::SessionWorkOwnership, awaken_worker_contract::WorkQueueError>
-    {
-        use awaken_worker_contract::SessionWorkOwnership;
+        acquisition: awaken_session_application_contract::SessionWorkAcquisition,
+    ) -> Result<
+        awaken_session_application_contract::SessionWorkOwnership,
+        awaken_session_types::RunError,
+    > {
+        use awaken_session_application_contract::SessionWorkOwnership;
 
         let Some((environment_id, terminal)) =
             self_hosted_work_environment(self, session_id).await?
@@ -949,9 +932,10 @@ impl awaken_worker_contract::SessionWorkLeaseAuthority for SessionApplication {
         };
         let acquired = self
             .environments
-            .acquire_session_work(&environment_id, session_id.as_str(), worker_owner, now_ms)
+            .leases
+            .acquire_session(&environment_id, session_id, worker_owner, now_ms)
             .await?;
-        if !awaken_worker_contract::session_work_revival_is_authorized(
+        if !awaken_session_application_contract::session_work_revival_is_authorized(
             acquisition,
             terminal,
             acquired.is_some(),
@@ -966,11 +950,13 @@ impl awaken_worker_contract::SessionWorkLeaseAuthority for SessionApplication {
         // the one WorkQueue path and retry acquisition exactly once. Terminal
         // Sessions are excluded above and can never be resurrected here.
         self.environments
-            .wake_session_work(&environment_id, session_id.as_str())
+            .assignment
+            .wake_session(&environment_id, session_id)
             .await?;
         Ok(self
             .environments
-            .acquire_session_work(&environment_id, session_id.as_str(), worker_owner, now_ms)
+            .leases
+            .acquire_session(&environment_id, session_id, worker_owner, now_ms)
             .await?
             .map(SessionWorkOwnership::Leased)
             .unwrap_or(SessionWorkOwnership::Unowned))
@@ -978,8 +964,8 @@ impl awaken_worker_contract::SessionWorkLeaseAuthority for SessionApplication {
 
     async fn release_session_work(
         &self,
-        lease: &awaken_worker_contract::SessionWorkLease,
-    ) -> Result<bool, awaken_worker_contract::WorkQueueError> {
+        lease: &awaken_session_types::SessionWorkLease,
+    ) -> Result<bool, awaken_session_types::RunError> {
         let Some((environment_id, _terminal)) =
             self_hosted_work_environment(self, lease.session_id()).await?
         else {
@@ -988,16 +974,14 @@ impl awaken_worker_contract::SessionWorkLeaseAuthority for SessionApplication {
         if lease.environment_id() != environment_id {
             return Ok(false);
         }
-        self.environments.release_session_work(lease).await
+        self.environments.leases.release_session(lease).await
     }
 
     async fn release_worker_session_work(
         &self,
         worker_owner: &str,
-    ) -> Result<usize, awaken_worker_contract::WorkQueueError> {
-        self.environments
-            .release_worker_session_work(worker_owner)
-            .await
+    ) -> Result<usize, awaken_session_types::RunError> {
+        self.environments.leases.release_owner(worker_owner).await
     }
 }
 

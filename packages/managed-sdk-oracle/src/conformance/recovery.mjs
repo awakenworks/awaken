@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { writePrivateFile } from './private-file.mjs';
 
 import {
   currentAndCandidateClients,
@@ -62,12 +63,9 @@ export function validateRecoveryState(state) {
 export function writeRecoveryState(stateFile, state) {
   validateRecoveryState(state);
   assert.equal(fs.existsSync(stateFile), false, 'recovery state file must be new');
-  const temporary = `${stateFile}.tmp-${process.pid}`;
+  const temporary = `${stateFile}.tmp-${crypto.randomUUID()}`;
+  writePrivateFile(temporary, `${JSON.stringify(state, null, 2)}\n`);
   try {
-    fs.writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, {
-      mode: 0o600,
-      flag: 'wx',
-    });
     // Publishing through a hard link is both atomic and no-replace. Unlike a
     // preflight exists check followed by rename, a concurrent writer cannot be
     // silently overwritten between those two operations.

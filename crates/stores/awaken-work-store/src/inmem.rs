@@ -1,7 +1,7 @@
 // @formal entrypoint session_work.release_requires_exact_owner_and_epoch
 // @formal entrypoint work.heartbeat_compare_and_set
 // @formal entrypoint work.lease_authority_snapshot_and_owner_mutations_are_atomic
-//! In-memory reference [`WorkQueue`] backend.
+//! In-memory reference Work queue backend.
 //!
 //! This executable specification is available only to unit tests and consumers that
 //! explicitly enable `test-support`. Product composition must select SQLite or
@@ -15,13 +15,16 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
-use awaken_time::WallClock;
-use awaken_worker_contract::{
-    HeartbeatResult, LeaseHeartbeat, LeaseReceipt, QueueStats, SessionAccessDigest,
-    SessionWorkLease, SessionWorkReleaseAdmission, WorkClaim, WorkItem, WorkLeaseMutationAdmission,
-    WorkMutationResult, WorkPayload, WorkQueue, WorkQueueError, WorkSessionAccess, WorkState,
+use awaken_executable_environment_contract::{
+    EnvironmentWorkLifecycle, HeartbeatResult, LeaseHeartbeat, LeaseReceipt, QueueStats,
+    SessionAccessAuthenticator, SessionAccessDigest, SessionWorkLeaseControl,
+    SessionWorkReleaseAdmission, SessionWorkStore, SessionWorkerLeaseStore, WorkClaim,
+    WorkConsumer, WorkItem, WorkLeaseMutationAdmission, WorkMetadataPatch, WorkMutationResult,
+    WorkPayload, WorkQueries, WorkQueueError, WorkSessionAccess, WorkState, WorkerLeaseObservation,
     session_work_release_admission, work_lease_mutation_admission,
 };
+use awaken_session_types::SessionWorkLease;
+use awaken_time::WallClock;
 
 use super::{LEASE_TTL_MS, LeaseBook, heartbeat_at};
 use awaken_time::WallClockExt;
@@ -232,109 +235,7 @@ impl InMemoryWorkQueue {
 }
 
 #[async_trait]
-impl WorkQueue for InMemoryWorkQueue {
-    async fn enqueue_session(
-        &self,
-        env_id: &str,
-        session_id: &awaken_session_types::SessionId,
-    ) -> Result<String, WorkQueueError> {
-        let mut authority = self.authority.lock().unwrap();
-        self.enqueue_session_inner(&mut authority.works, env_id, session_id.as_str())
-    }
-
-    async fn wake_session(
-        &self,
-        env_id: &str,
-        session_id: &awaken_session_types::SessionId,
-    ) -> Result<String, WorkQueueError> {
-        let mut authority = self.authority.lock().unwrap();
-        let InMemoryQueueAuthority {
-            works,
-            book,
-            session_token_sha256,
-        } = &mut *authority;
-        if let Some(existing) = works.values_mut().find(|work| {
-            work.environment_id == env_id
-                && matches!(&work.data, WorkPayload::Session { id } if id == session_id)
-        }) {
-            if existing.state == WorkState::Stopped {
-                existing.state = WorkState::Queued;
-                existing.acknowledged_at = None;
-                existing.latest_heartbeat_at = None;
-                existing.started_at = None;
-                existing.stop_requested_at = None;
-                existing.stopped_at = None;
-                book.release(&existing.id);
-                session_token_sha256.remove(&existing.id);
-            }
-            return Ok(existing.id.clone());
-        }
-        let id = self.next_id();
-        works.insert(
-            id.clone(),
-            WorkItem {
-                id: id.clone(),
-                environment_id: env_id.to_string(),
-                data: WorkPayload::Session {
-                    id: session_id.to_string(),
-                },
-                metadata: BTreeMap::new(),
-                state: WorkState::Queued,
-                created_at: self.clock.observed_at(),
-                acknowledged_at: None,
-                latest_heartbeat_at: None,
-                started_at: None,
-                stop_requested_at: None,
-                stopped_at: None,
-            },
-        );
-        Ok(id)
-    }
-
-    async fn enqueue_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
-        // A healthcheck's inner id is the work id itself (self-reference).
-        let id = self.next_id();
-        self.store(
-            id.clone(),
-            env_id,
-            WorkPayload::HealthCheck { id: id.clone() },
-        );
-        Ok(id)
-    }
-
-    async fn ensure_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
-        let mut authority = self.authority.lock().unwrap();
-        let InMemoryQueueAuthority { works, .. } = &mut *authority;
-        if let Some(existing) = works
-            .values()
-            .find(|work| {
-                work.environment_id == env_id
-                    && matches!(work.data, WorkPayload::HealthCheck { .. })
-            })
-            .map(|work| work.id.clone())
-        {
-            return Ok(existing);
-        }
-        let id = self.next_id();
-        works.insert(
-            id.clone(),
-            WorkItem {
-                id: id.clone(),
-                environment_id: env_id.to_string(),
-                data: WorkPayload::HealthCheck { id: id.clone() },
-                metadata: BTreeMap::new(),
-                state: WorkState::Queued,
-                created_at: self.clock.observed_at(),
-                acknowledged_at: None,
-                latest_heartbeat_at: None,
-                started_at: None,
-                stop_requested_at: None,
-                stopped_at: None,
-            },
-        );
-        Ok(id)
-    }
-
+impl WorkQueries for InMemoryWorkQueue {
     async fn list(&self, env_id: &str) -> Result<Vec<WorkItem>, WorkQueueError> {
         Ok(self
             .authority
@@ -351,6 +252,65 @@ impl WorkQueue for InMemoryWorkQueue {
         Ok(self.with_owned(env_id, wid, |w, _| w.clone()))
     }
 
+    async fn stats(&self, env_id: &str, now_ms: u64) -> Result<QueueStats, WorkQueueError> {
+        let mut authority = self.authority.lock().unwrap();
+        let InMemoryQueueAuthority { works, book, .. } = &mut *authority;
+        let in_env: Vec<&WorkItem> = works
+            .values()
+            .filter(|w| w.environment_id == env_id)
+            .collect();
+        // `depth` = items waiting to be claimed; `pending` = items a worker has
+        // claimed and is currently processing (the SDK's queue-stats semantics).
+        let queued = in_env
+            .iter()
+            .filter(|w| w.state == WorkState::Queued)
+            .count();
+        let pending = in_env
+            .iter()
+            .filter(|w| {
+                matches!(
+                    w.state,
+                    WorkState::Starting | WorkState::Active | WorkState::Stopping
+                )
+            })
+            .count();
+        // `workers_polling` = distinct workers that polled within the liveness window
+        // (the SDK's ~30s semantics), tracked from the `worker_id` each poll carries —
+        // not the 0/1 active-item proxy the clockless build was limited to.
+        let workers_polling = book.workers_polling(env_id, now_ms);
+        // `oldest_queued_at` is the acceptance instant of the oldest item still
+        // QUEUED or being PROCESSED (the SDK's semantics), so it stays set once a
+        // worker claims the last queued item — not just while `depth > 0`. Only a
+        // fully drained queue (all stopped) has no such row, and then the absence
+        // is the answer.
+        let oldest_queued_at = in_env
+            .iter()
+            .filter(|w| {
+                matches!(
+                    w.state,
+                    WorkState::Queued
+                        | WorkState::Starting
+                        | WorkState::Active
+                        | WorkState::Stopping
+                )
+            })
+            .min_by(|left, right| {
+                left.created_at
+                    .cmp(&right.created_at)
+                    .then_with(|| left.id.cmp(&right.id))
+            })
+            .map(|w| w.created_at.clone());
+        Ok(QueueStats {
+            depth: queued,
+            pending,
+            oldest_queued_at,
+            workers_polling,
+        })
+    }
+}
+
+#[async_trait]
+impl WorkConsumer for InMemoryWorkQueue {
     async fn claim(
         &self,
         env_id: &str,
@@ -400,6 +360,104 @@ impl WorkQueue for InMemoryWorkQueue {
         )
     }
 
+    async fn ack(
+        &self,
+        env_id: &str,
+        wid: &str,
+        worker_id: &str,
+    ) -> Result<WorkMutationResult, WorkQueueError> {
+        let mut authority = self.authority.lock().unwrap();
+        let InMemoryQueueAuthority { works, book, .. } = &mut *authority;
+        let Some(work) = works
+            .get_mut(wid)
+            .filter(|work| work.environment_id == env_id)
+        else {
+            return Ok(WorkMutationResult::NotFound);
+        };
+        if !book.is_owned_by(wid, worker_id) {
+            return Ok(WorkMutationResult::PreconditionFailed);
+        }
+        work.acknowledged_at = Some(self.clock.observed_at());
+        work.state = work.state.after_ack();
+        Ok(WorkMutationResult::accepted(work.clone()))
+    }
+
+    async fn heartbeat(
+        &self,
+        env_id: &str,
+        wid: &str,
+        worker_id: &str,
+        now_ms: u64,
+        heartbeat: LeaseHeartbeat,
+    ) -> Result<HeartbeatResult, WorkQueueError> {
+        Ok(self
+            .with_owned(env_id, wid, |w, book| {
+                if !book.is_owned_by(wid, worker_id) {
+                    return HeartbeatResult::PreconditionFailed;
+                }
+                if !heartbeat
+                    .condition
+                    .permits(w.latest_heartbeat_at.as_deref())
+                {
+                    return HeartbeatResult::PreconditionFailed;
+                }
+                let extended = w.state.can_extend_lease();
+                let last_heartbeat = heartbeat_at(now_ms, w.latest_heartbeat_at.as_deref());
+                if extended {
+                    w.latest_heartbeat_at = Some(last_heartbeat.clone());
+                    let ttl = heartbeat
+                        .desired_ttl_seconds
+                        .unwrap_or(HEARTBEAT_TTL_SECONDS)
+                        .max(1);
+                    book.lease_for(wid, now_ms, ttl.saturating_mul(1000));
+                }
+                HeartbeatResult::Accepted(LeaseReceipt {
+                    last_heartbeat,
+                    lease_extended: extended,
+                    state: w.state,
+                    ttl_seconds: heartbeat
+                        .desired_ttl_seconds
+                        .unwrap_or(HEARTBEAT_TTL_SECONDS)
+                        .max(1),
+                })
+            })
+            .unwrap_or(HeartbeatResult::NotFound))
+    }
+
+    async fn stop(
+        &self,
+        env_id: &str,
+        wid: &str,
+        worker_id: &str,
+    ) -> Result<WorkMutationResult, WorkQueueError> {
+        let mut authority = self.authority.lock().unwrap();
+        let InMemoryQueueAuthority {
+            works,
+            book,
+            session_token_sha256,
+        } = &mut *authority;
+        let Some(work) = works
+            .get_mut(wid)
+            .filter(|work| work.environment_id == env_id)
+        else {
+            return Ok(WorkMutationResult::NotFound);
+        };
+        if !book.is_owned_by(wid, worker_id) {
+            return Ok(WorkMutationResult::PreconditionFailed);
+        }
+        let stopped_at = self.clock.observed_at();
+        work.stop_requested_at = Some(stopped_at.clone());
+        work.stopped_at = Some(stopped_at);
+        work.state = work.state.after_stop();
+        let out = work.clone();
+        book.release(wid);
+        session_token_sha256.remove(wid);
+        Ok(WorkMutationResult::accepted(out))
+    }
+}
+
+#[async_trait]
+impl SessionAccessAuthenticator for InMemoryWorkQueue {
     async fn authenticate_session_access(
         &self,
         presented: &SessionAccessDigest,
@@ -436,7 +494,10 @@ impl WorkQueue for InMemoryWorkQueue {
             },
         ))
     }
+}
 
+#[async_trait]
+impl SessionWorkLeaseControl for InMemoryWorkQueue {
     async fn ack_with_session_access(
         &self,
         access: &WorkSessionAccess,
@@ -535,133 +596,66 @@ impl WorkQueue for InMemoryWorkQueue {
         session_token_sha256.remove(&access.work_id);
         Ok(WorkMutationResult::accepted(out))
     }
+}
 
-    async fn ack(
+#[async_trait]
+impl SessionWorkStore for InMemoryWorkQueue {
+    async fn enqueue_session(
         &self,
         env_id: &str,
-        wid: &str,
-        worker_id: &str,
-    ) -> Result<WorkMutationResult, WorkQueueError> {
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<String, WorkQueueError> {
         let mut authority = self.authority.lock().unwrap();
-        let InMemoryQueueAuthority { works, book, .. } = &mut *authority;
-        let Some(work) = works
-            .get_mut(wid)
-            .filter(|work| work.environment_id == env_id)
-        else {
-            return Ok(WorkMutationResult::NotFound);
-        };
-        if !book.is_owned_by(wid, worker_id) {
-            return Ok(WorkMutationResult::PreconditionFailed);
-        }
-        work.acknowledged_at = Some(self.clock.observed_at());
-        work.state = work.state.after_ack();
-        Ok(WorkMutationResult::accepted(work.clone()))
+        self.enqueue_session_inner(&mut authority.works, env_id, session_id.as_str())
     }
 
-    async fn heartbeat(
+    async fn wake_session(
         &self,
         env_id: &str,
-        wid: &str,
-        worker_id: &str,
-        now_ms: u64,
-        heartbeat: LeaseHeartbeat,
-    ) -> Result<HeartbeatResult, WorkQueueError> {
-        Ok(self
-            .with_owned(env_id, wid, |w, book| {
-                if !book.is_owned_by(wid, worker_id) {
-                    return HeartbeatResult::PreconditionFailed;
-                }
-                if !heartbeat
-                    .condition
-                    .permits(w.latest_heartbeat_at.as_deref())
-                {
-                    return HeartbeatResult::PreconditionFailed;
-                }
-                let extended = w.state.can_extend_lease();
-                let last_heartbeat = heartbeat_at(now_ms, w.latest_heartbeat_at.as_deref());
-                if extended {
-                    w.latest_heartbeat_at = Some(last_heartbeat.clone());
-                    let ttl = heartbeat
-                        .desired_ttl_seconds
-                        .unwrap_or(HEARTBEAT_TTL_SECONDS)
-                        .max(1);
-                    book.lease_for(wid, now_ms, ttl.saturating_mul(1000));
-                }
-                HeartbeatResult::Accepted(LeaseReceipt {
-                    last_heartbeat,
-                    lease_extended: extended,
-                    state: w.state,
-                    ttl_seconds: heartbeat
-                        .desired_ttl_seconds
-                        .unwrap_or(HEARTBEAT_TTL_SECONDS)
-                        .max(1),
-                })
-            })
-            .unwrap_or(HeartbeatResult::NotFound))
-    }
-
-    async fn stop(
-        &self,
-        env_id: &str,
-        wid: &str,
-        worker_id: &str,
-    ) -> Result<WorkMutationResult, WorkQueueError> {
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<String, WorkQueueError> {
         let mut authority = self.authority.lock().unwrap();
         let InMemoryQueueAuthority {
             works,
             book,
             session_token_sha256,
         } = &mut *authority;
-        let Some(work) = works
-            .get_mut(wid)
-            .filter(|work| work.environment_id == env_id)
-        else {
-            return Ok(WorkMutationResult::NotFound);
-        };
-        if !book.is_owned_by(wid, worker_id) {
-            return Ok(WorkMutationResult::PreconditionFailed);
-        }
-        let stopped_at = self.clock.observed_at();
-        work.stop_requested_at = Some(stopped_at.clone());
-        work.stopped_at = Some(stopped_at);
-        work.state = work.state.after_stop();
-        let out = work.clone();
-        book.release(wid);
-        session_token_sha256.remove(wid);
-        Ok(WorkMutationResult::accepted(out))
-    }
-
-    async fn has_owner_claims(&self, worker_owner: &str) -> Result<bool, WorkQueueError> {
-        let authority = self.authority.lock().unwrap();
-        Ok(authority
-            .works
-            .keys()
-            .any(|id| authority.book.is_owned_by(id, worker_owner)))
-    }
-
-    async fn release_owner(&self, worker_owner: &str) -> Result<usize, WorkQueueError> {
-        let mut authority = self.authority.lock().unwrap();
-        let InMemoryQueueAuthority {
-            works,
-            book,
-            session_token_sha256,
-        } = &mut *authority;
-        let mut released = 0;
-        for (id, work) in works.iter_mut() {
-            if work.state == WorkState::Active
-                && matches!(&work.data, WorkPayload::Session { .. })
-                && book.is_owned_by(id, worker_owner)
-            {
-                work.stop_requested_at = None;
-                work.stopped_at = None;
-                work.latest_heartbeat_at = None;
-                work.state = WorkState::Queued;
-                book.release(id);
-                session_token_sha256.remove(id);
-                released += 1;
+        if let Some(existing) = works.values_mut().find(|work| {
+            work.environment_id == env_id
+                && matches!(&work.data, WorkPayload::Session { id } if id == session_id)
+        }) {
+            if existing.state == WorkState::Stopped {
+                existing.state = WorkState::Queued;
+                existing.acknowledged_at = None;
+                existing.latest_heartbeat_at = None;
+                existing.started_at = None;
+                existing.stop_requested_at = None;
+                existing.stopped_at = None;
+                book.release(&existing.id);
+                session_token_sha256.remove(&existing.id);
             }
+            return Ok(existing.id.clone());
         }
-        Ok(released)
+        let id = self.next_id();
+        works.insert(
+            id.clone(),
+            WorkItem {
+                id: id.clone(),
+                environment_id: env_id.to_string(),
+                data: WorkPayload::Session {
+                    id: session_id.to_string(),
+                },
+                metadata: BTreeMap::new(),
+                state: WorkState::Queued,
+                created_at: self.clock.observed_at(),
+                acknowledged_at: None,
+                latest_heartbeat_at: None,
+                started_at: None,
+                stop_requested_at: None,
+                stopped_at: None,
+            },
+        );
+        Ok(id)
     }
 
     async fn retire_session(
@@ -689,6 +683,34 @@ impl WorkQueue for InMemoryWorkQueue {
         book.release(wid);
         session_token_sha256.remove(wid);
         Ok(Some(item))
+    }
+}
+
+#[async_trait]
+impl SessionWorkerLeaseStore for InMemoryWorkQueue {
+    async fn release_owner(&self, worker_owner: &str) -> Result<usize, WorkQueueError> {
+        let mut authority = self.authority.lock().unwrap();
+        let InMemoryQueueAuthority {
+            works,
+            book,
+            session_token_sha256,
+        } = &mut *authority;
+        let mut released = 0;
+        for (id, work) in works.iter_mut() {
+            if work.state == WorkState::Active
+                && matches!(&work.data, WorkPayload::Session { .. })
+                && book.is_owned_by(id, worker_owner)
+            {
+                work.stop_requested_at = None;
+                work.stopped_at = None;
+                work.latest_heartbeat_at = None;
+                work.state = WorkState::Queued;
+                book.release(id);
+                session_token_sha256.remove(id);
+                released += 1;
+            }
+        }
+        Ok(released)
     }
 
     async fn release_session(&self, lease: &SessionWorkLease) -> Result<bool, WorkQueueError> {
@@ -779,7 +801,21 @@ impl WorkQueue for InMemoryWorkQueue {
         }
         Ok(authority.current_session_lease(env_id, session_id, now_ms))
     }
+}
 
+#[async_trait]
+impl WorkerLeaseObservation for InMemoryWorkQueue {
+    async fn has_owner_claims(&self, worker_owner: &str) -> Result<bool, WorkQueueError> {
+        let authority = self.authority.lock().unwrap();
+        Ok(authority
+            .works
+            .keys()
+            .any(|id| authority.book.is_owned_by(id, worker_owner)))
+    }
+}
+
+#[async_trait]
+impl WorkMetadataPatch for InMemoryWorkQueue {
     async fn update_metadata(
         &self,
         env_id: &str,
@@ -800,61 +836,52 @@ impl WorkQueue for InMemoryWorkQueue {
             w.clone()
         }))
     }
+}
 
-    async fn stats(&self, env_id: &str, now_ms: u64) -> Result<QueueStats, WorkQueueError> {
+#[async_trait]
+impl EnvironmentWorkLifecycle for InMemoryWorkQueue {
+    async fn enqueue_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
+        // A healthcheck's inner id is the work id itself (self-reference).
+        let id = self.next_id();
+        self.store(
+            id.clone(),
+            env_id,
+            WorkPayload::HealthCheck { id: id.clone() },
+        );
+        Ok(id)
+    }
+
+    async fn ensure_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
         let mut authority = self.authority.lock().unwrap();
-        let InMemoryQueueAuthority { works, book, .. } = &mut *authority;
-        let in_env: Vec<&WorkItem> = works
+        let InMemoryQueueAuthority { works, .. } = &mut *authority;
+        if let Some(existing) = works
             .values()
-            .filter(|w| w.environment_id == env_id)
-            .collect();
-        // `depth` = items waiting to be claimed; `pending` = items a worker has
-        // claimed and is currently processing (the SDK's queue-stats semantics).
-        let queued = in_env
-            .iter()
-            .filter(|w| w.state == WorkState::Queued)
-            .count();
-        let pending = in_env
-            .iter()
-            .filter(|w| {
-                matches!(
-                    w.state,
-                    WorkState::Starting | WorkState::Active | WorkState::Stopping
-                )
+            .find(|work| {
+                work.environment_id == env_id
+                    && matches!(work.data, WorkPayload::HealthCheck { .. })
             })
-            .count();
-        // `workers_polling` = distinct workers that polled within the liveness window
-        // (the SDK's ~30s semantics), tracked from the `worker_id` each poll carries —
-        // not the 0/1 active-item proxy the clockless build was limited to.
-        let workers_polling = book.workers_polling(env_id, now_ms);
-        // `oldest_queued_at` is the acceptance instant of the oldest item still
-        // QUEUED or being PROCESSED (the SDK's semantics), so it stays set once a
-        // worker claims the last queued item — not just while `depth > 0`. Only a
-        // fully drained queue (all stopped) has no such row, and then the absence
-        // is the answer.
-        let oldest_queued_at = in_env
-            .iter()
-            .filter(|w| {
-                matches!(
-                    w.state,
-                    WorkState::Queued
-                        | WorkState::Starting
-                        | WorkState::Active
-                        | WorkState::Stopping
-                )
-            })
-            .min_by(|left, right| {
-                left.created_at
-                    .cmp(&right.created_at)
-                    .then_with(|| left.id.cmp(&right.id))
-            })
-            .map(|w| w.created_at.clone());
-        Ok(QueueStats {
-            depth: queued,
-            pending,
-            oldest_queued_at,
-            workers_polling,
-        })
+            .map(|work| work.id.clone())
+        {
+            return Ok(existing);
+        }
+        let id = self.next_id();
+        works.insert(
+            id.clone(),
+            WorkItem {
+                id: id.clone(),
+                environment_id: env_id.to_string(),
+                data: WorkPayload::HealthCheck { id: id.clone() },
+                metadata: BTreeMap::new(),
+                state: WorkState::Queued,
+                created_at: self.clock.observed_at(),
+                acknowledged_at: None,
+                latest_heartbeat_at: None,
+                started_at: None,
+                stop_requested_at: None,
+                stopped_at: None,
+            },
+        );
+        Ok(id)
     }
 
     async fn remove_env(&self, env_id: &str) -> Result<(), WorkQueueError> {

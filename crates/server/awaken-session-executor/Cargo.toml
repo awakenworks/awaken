@@ -39,7 +39,6 @@ awaken-session-event-contract.workspace = true
 # Per-Session MCP lifecycle and Worker relay; the Session slot holds its state.
 awaken-session-mcp.workspace = true
 awaken-session-types.workspace = true
-awaken-worker-contract.workspace = true
 awaken-environment-contract.workspace = true
 # The topology-neutral Session realization and terminal-cleanup drivers over
 # contract ports; the Session application and this Host's Workers both call them.
@@ -105,6 +104,7 @@ test-support = [
 k8s-tests = ["awaken-sandbox-container/k8s"]
 
 [dev-dependencies]
+awaken-worker-contract.workspace = true
 # Managed fixtures use the real Session Root/sink and its existing Store port.
 awaken-session-application = { workspace = true, features = ["test-support"] }
 awaken-session-repository-contract.workspace = true

@@ -488,55 +488,55 @@ impl awaken_executable_environment_contract::SessionEnvironmentProjectionSource
 }
 
 #[async_trait::async_trait]
-impl awaken_worker_contract::SessionWorkSource for AdmissionEnvironment {
-    async fn enqueue_session_work(
+impl awaken_session_application_contract::SessionWorkerAssignment for AdmissionEnvironment {
+    async fn enqueue_session(
         &self,
         _environment_id: &str,
-        _session_id: &str,
-    ) -> Result<String, awaken_worker_contract::WorkQueueError> {
+        _session_id: &awaken_session_types::SessionId,
+    ) -> Result<String, awaken_session_types::RunError> {
         unreachable!("local admission does not dispatch WorkQueue work")
     }
 
-    async fn wake_session_work(
+    async fn wake_session(
         &self,
         _environment_id: &str,
-        _session_id: &str,
-    ) -> Result<String, awaken_worker_contract::WorkQueueError> {
+        _session_id: &awaken_session_types::SessionId,
+    ) -> Result<String, awaken_session_types::RunError> {
         unreachable!("local admission does not wake WorkQueue work")
     }
 
-    async fn retire_session_work(
+    async fn retire_session(
         &self,
         _environment_id: &str,
-        _session_id: &str,
-    ) -> Result<Option<awaken_worker_contract::WorkItem>, awaken_worker_contract::WorkQueueError>
-    {
+        _session_id: &awaken_session_types::SessionId,
+    ) -> Result<(), awaken_session_types::RunError> {
         unreachable!("local admission does not retire WorkQueue work")
     }
+}
 
-    async fn acquire_session_work(
+#[async_trait::async_trait]
+impl awaken_session_application_contract::SessionWorkerLeases for AdmissionEnvironment {
+    async fn acquire_session(
         &self,
         _environment_id: &str,
-        _session_id: &str,
+        _session_id: &awaken_session_types::SessionId,
         _worker_owner: &str,
         _now_ms: u64,
-    ) -> Result<
-        Option<awaken_worker_contract::SessionWorkLease>,
-        awaken_worker_contract::WorkQueueError,
-    > {
+    ) -> Result<Option<awaken_session_types::SessionWorkLease>, awaken_session_types::RunError>
+    {
         Ok(None)
     }
 
-    async fn release_session_work(
+    async fn release_session(
         &self,
-        _lease: &awaken_worker_contract::SessionWorkLease,
-    ) -> Result<bool, awaken_worker_contract::WorkQueueError> {
+        _lease: &awaken_session_types::SessionWorkLease,
+    ) -> Result<bool, awaken_session_types::RunError> {
         Ok(false)
     }
-    async fn release_worker_session_work(
+    async fn release_owner(
         &self,
         _worker_owner: &str,
-    ) -> Result<usize, awaken_worker_contract::WorkQueueError> {
+    ) -> Result<usize, awaken_session_types::RunError> {
         Ok(0)
     }
 }
