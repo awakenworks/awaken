@@ -666,12 +666,15 @@ impl RuntimeRunContext {
 
     #[must_use]
     pub fn with_tool_capability_narrowing(mut self, narrowing: ToolCapabilityNarrowing) -> Self {
-        self.tool_capability_narrowing = narrowing;
+        self.tool_capability_narrowing = self.tool_capability_narrowing.intersect(narrowing);
         self
     }
 
     #[must_use]
     pub fn with_tool_permission_policy(mut self, policy: Arc<dyn ToolPermissionPolicy>) -> Self {
+        self.tool_capability_narrowing = self
+            .tool_capability_narrowing
+            .intersect(policy.tool_capability_narrowing());
         self.tool_permission_policy = Some(policy);
         self
     }
@@ -735,6 +738,42 @@ impl RuntimeRunContext {
 #[cfg(test)]
 mod child_run_tests {
     use super::*;
+
+    #[test]
+    fn tool_capability_context_composition_cannot_restore_removed_authority() {
+        use ToolCapabilityNarrowing::{
+            Configured as C, ConfiguredWithInheritedToolsets as I, DenyAll as D,
+        };
+        // Decision table: C1 current/configured/inherited/denied x C2 supplied
+        // ceiling. R1 either D -> D; R2 neither D and either I -> I; R3 C+C -> C.
+        // The same exact value reaches a child; no later Configured setter can
+        // restore a removed capability. Expected rows are independent constants.
+        for (current, ceiling, expected) in [
+            (C, C, C),
+            (C, I, I),
+            (C, D, D),
+            (I, C, I),
+            (I, I, I),
+            (I, D, D),
+            (D, C, D),
+            (D, I, D),
+            (D, D, D),
+        ] {
+            let context = RuntimeRunContext::new()
+                .with_tool_capability_narrowing(current)
+                .with_tool_capability_narrowing(ceiling);
+            assert_eq!(context.tool_capability_narrowing, expected);
+            assert_eq!(context.for_child_run().tool_capability_narrowing, expected);
+        }
+        // R4 the fixed DenyAllTools policy declares the same whole-Run ceiling
+        // before model/client/provider surfaces are built. A later setter or
+        // child clone cannot restore configured tools behind that policy.
+        let context = RuntimeRunContext::new()
+            .with_tool_permission_policy(Arc::new(crate::permission::DenyAllTools::new("closed")))
+            .with_tool_capability_narrowing(C);
+        assert_eq!(context.tool_capability_narrowing, D);
+        assert_eq!(context.for_child_run().tool_capability_narrowing, D);
+    }
 
     struct CurrentOwnership;
 

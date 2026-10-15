@@ -38,28 +38,66 @@ impl RunAttemptExecutor for Runtime {
         command: ResumeCommand,
         context: RuntimeRunContext,
     ) -> Result<RunState> {
-        // The common resume binder checks the live source before applying the
-        // activation. An eager overlay here would erase a conflicting source.
-        let reader = context.reader.clone().ok_or_else(|| {
-            Error::Execution("RunAttemptExecutor::resume requires committed history".to_string())
-        })?;
-        if let Some(ticket) = reader.resume_ticket(&command.run_id) {
-            validate_activation_toolsets(&activation, &ticket)?;
-        }
-        // Resume is the single ingress for an activated retry. A rebuilt Runtime
-        // starts without its predecessor's in-memory snapshot registry, so retain
-        // the exact immutable snapshot carried by this activation before resolving
-        // the committed resume ticket.
-        resume_with_continuation(
+        resume_activated(
             self,
+            activation,
             command,
-            reader.as_ref(),
             context,
             ResumeContinuation::NativeLoop,
-            Some(&activation),
         )
         .await
     }
+}
+
+/// A model-free owned continuation supplied with its immutable activation.
+/// This state-free command role uses the same activated admission and existing
+/// continuation kernel; it adds no responsibility to the Runtime service.
+pub async fn resume_activated_tool_batch(
+    runtime: &Runtime,
+    activation: RunActivation,
+    command: ResumeCommand,
+    context: RuntimeRunContext,
+) -> Result<RunState> {
+    resume_activated(
+        runtime,
+        activation,
+        command,
+        context,
+        ResumeContinuation::ToolBatch,
+    )
+    .await
+}
+
+/// Activated Native and model-free roles share one input admission before the
+/// existing continuation kernel. Neither adapter overwrites live sources first.
+pub(crate) async fn resume_activated(
+    runtime: &Runtime,
+    activation: RunActivation,
+    command: ResumeCommand,
+    context: RuntimeRunContext,
+    continuation: ResumeContinuation,
+) -> Result<RunState> {
+    // The common resume binder checks the live source before applying the
+    // activation. An eager overlay here would erase a conflicting source.
+    let reader = context.reader.clone().ok_or_else(|| {
+        Error::Execution("RunAttemptExecutor::resume requires committed history".to_string())
+    })?;
+    if let Some(ticket) = reader.resume_ticket(&command.run_id) {
+        validate_activation_toolsets(&activation, &ticket)?;
+    }
+    // Resume is the single ingress for an activated retry. A rebuilt Runtime
+    // starts without its predecessor's in-memory snapshot registry, so retain
+    // the exact immutable snapshot carried by this activation before resolving
+    // the committed resume ticket.
+    resume_with_continuation(
+        runtime,
+        command,
+        reader.as_ref(),
+        context,
+        continuation,
+        Some(&activation),
+    )
+    .await
 }
 
 /// Bind the supplied immutable value to the existing ticket. The SDK uses
@@ -336,11 +374,6 @@ pub(crate) async fn resume_tool_batch(
     reader: &dyn CommittedThreadView,
     context: RuntimeRunContext,
 ) -> Result<RunState> {
-    if context.commit.is_none() {
-        return Err(Error::Execution(
-            "tool-batch handoff requires a durable commit coordinator".to_string(),
-        ));
-    }
     resume_with_continuation(
         runtime,
         command,
@@ -350,6 +383,15 @@ pub(crate) async fn resume_tool_batch(
         None,
     )
     .await
+}
+
+fn require_tool_resume_commit(context: &RuntimeRunContext) -> Result<()> {
+    if context.commit.is_none() {
+        return Err(Error::Execution(
+            "tool-batch handoff requires a durable commit coordinator".into(),
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) async fn recover_tool_batch(
@@ -426,19 +468,33 @@ fn load_resumed_tool_batch(
     Ok(Some(batch))
 }
 
-pub(crate) async fn resume_with_continuation(
+/// Synchronous resume admission: preserve role-specific refusal precedence,
+/// bind the exact current input once and require durable tool publication before
+/// checkpoint reads, environment realization or any execution-domain entry.
+fn admit_resume(
     runtime: &Runtime,
-    command: ResumeCommand,
+    command: &ResumeCommand,
     reader: &dyn CommittedThreadView,
     context: RuntimeRunContext,
     continuation: ResumeContinuation,
     activation: Option<&RunActivation>,
-) -> Result<RunState> {
+) -> Result<(ResumeTicket, RuntimeRunContext, Option<ResumeCommit>)> {
+    // Preserve the original model-free role's early missing-port refusal.
+    // Activated and bare roles now share this same admission.
+    if continuation == ResumeContinuation::ToolBatch {
+        require_tool_resume_commit(&context)?;
+    }
     let ticket = reader
         .resume_ticket(&command.run_id)
         .ok_or(awaken_runtime_contract::resume::ResumeError::NotWaiting)?;
-    validate_resume(&ticket, &command)?;
+    validate_resume(&ticket, command)?;
     let context = bind_resume_context(runtime, context, &ticket, activation)?;
+    // Native tool tickets need the same atomic approval/result boundary.
+    // Validate command and context first, keeping their existing precedence;
+    // ordinary input pauses retain their original stateless behavior.
+    if continuation == ResumeContinuation::NativeLoop && ticket.tool_call().is_some() {
+        require_tool_resume_commit(&context)?;
+    }
     // Delegation continuation retains its execution ticket across child turns
     // and is not a ToolResult consumption. Every other named resume operation
     // is carried to the first commit that replaces this exact ticket.
@@ -455,6 +511,20 @@ pub(crate) async fn resume_with_continuation(
             "tool-batch handoff requires an awaiting permission or client result".to_string(),
         ));
     }
+
+    Ok((ticket, context, resume_commit))
+}
+
+pub(crate) async fn resume_with_continuation(
+    runtime: &Runtime,
+    command: ResumeCommand,
+    reader: &dyn CommittedThreadView,
+    context: RuntimeRunContext,
+    continuation: ResumeContinuation,
+    activation: Option<&RunActivation>,
+) -> Result<RunState> {
+    let (ticket, context, resume_commit) =
+        admit_resume(runtime, &command, reader, context, continuation, activation)?;
 
     let context_messages = fresh_resume_context(
         &reader.committed_messages(&command.thread_id),
@@ -483,6 +553,7 @@ pub(crate) async fn resume_with_continuation(
             .await;
         }
     };
+    let context = model_operation::narrow_recovered_context(&store, context, false)?;
     let snapshot = match activation {
         Some(activation) => activation.snapshot.clone(),
         None => runtime

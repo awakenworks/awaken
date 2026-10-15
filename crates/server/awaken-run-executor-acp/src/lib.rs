@@ -552,6 +552,34 @@ impl AcpRunExecutor {
         permission_resume: Option<PermissionResume>,
     ) -> Result<RunState> {
         let mut context = activation.narrow_context(context);
+        if let Some(state) = self.prepare_owned_tools(&activation, &mut context).await? {
+            return Ok(state);
+        }
+        // An opaque tool-transparent ACP process has no negotiated NoTools
+        // execution profile. Refuse that capability before restoring/launching
+        // it; a permission callback alone cannot attest its native syscalls.
+        if context
+            .tool_capability_narrowing
+            .disabled_reason()
+            .is_some()
+        {
+            let disposition = RunDisposition::ended(
+                activation.run_id.clone(),
+                EndCause::Error(Failure::CapabilityBound),
+            );
+            let state = disposition.state();
+            commit(
+                &context,
+                Vec::new(),
+                permission_resume.as_ref(),
+                &activation.thread_id,
+                disposition,
+                activation.input,
+                Vec::new(),
+            )
+            .await?;
+            return Ok(state);
+        }
         // Restore the CLI's portable session-home before launch and harvest it after,
         // so a local-dir CLI's session recovers across directories/machines. A
         // Gateway (server-side) or stateless adapter has no local session-home → the
@@ -560,9 +588,6 @@ impl AcpRunExecutor {
         if let Some((key, plan)) = &home {
             verify_attempt_ownership(context.ownership.as_deref()).await?;
             self.session_home.restore(key, plan).await;
-        }
-        if let Some(state) = self.prepare_owned_tools(&activation, &mut context).await? {
-            return Ok(state);
         }
         let mut cleanup = CleanupScope::new(context.physical_quiescence.clone());
         let result = self
@@ -839,43 +864,39 @@ impl AcpRunExecutor {
             Some(neutral) => Box::new(neutral.recording_into(audit.clone())),
             None => Box::new(AllowAll),
         };
-        let narrowed_permission =
-            context
-                .tool_permission_policy
-                .as_deref()
-                .map(|narrowing| NarrowedPermissionResolver {
-                    base: attempt_permission.as_ref(),
-                    narrowing,
-                    audit: &audit,
-                });
-        let configured_permission = narrowed_permission
+        let resumed_permission = permission_resume.as_ref().map(|decision| {
+            ResumedPermissionResolver::new(
+                attempt_permission.as_ref(),
+                decision,
+                self.permission_grant_observer.as_deref(),
+            )
+        });
+        let configured_permission = resumed_permission
             .as_ref()
             .map_or(attempt_permission.as_ref(), |resolver| {
                 resolver as &dyn PermissionResolver
             });
+        let narrowed_permission = NarrowedPermissionResolver {
+            base: configured_permission,
+            narrowing: context.tool_permission_policy.as_deref(),
+            capability: context.tool_capability_narrowing,
+            audit: &audit,
+        };
         let owned_permission = self.owned_tool_continuation.as_ref().map(|continuation| {
             tool_continuation::OwnedToolPermissionResolver {
-                base: configured_permission,
+                base: &narrowed_permission,
                 continuation: continuation.as_ref(),
             }
         });
-        let configured_permission = owned_permission
-            .as_ref()
-            .map_or(configured_permission, |resolver| {
-                resolver as &dyn PermissionResolver
-            });
+        let configured_permission = owned_permission.as_ref().map_or(
+            &narrowed_permission as &dyn PermissionResolver,
+            |resolver| resolver as &dyn PermissionResolver,
+        );
         let aliased_permission = AliasedMcpPermissionResolver {
             base: configured_permission,
             mcp_server_names: &mcp_server_names,
         };
         let base_permission = &aliased_permission as &dyn PermissionResolver;
-        let resumed_permission = permission_resume.as_ref().map(|decision| {
-            ResumedPermissionResolver::new(
-                base_permission,
-                decision,
-                self.permission_grant_observer.as_deref(),
-            )
-        });
 
         loop {
             verify_attempt_ownership(context.ownership.as_deref()).await?;
@@ -933,12 +954,7 @@ impl AcpRunExecutor {
             };
 
             let process = session.process.clone();
-            let permission = resumed_permission
-                .as_ref()
-                .map_or(base_permission, |resolver| {
-                    resolver as &dyn PermissionResolver
-                });
-            let mut config = TurnConfig::new(permission);
+            let mut config = TurnConfig::new(base_permission);
             config.max_turn_requests = activation.snapshot.resolved_spec.max_steps;
             config.mcp_servers = session.mcp_session_servers.clone();
             config.session_id = acp_session_id.take();

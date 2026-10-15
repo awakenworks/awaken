@@ -57,7 +57,11 @@ pub(super) async fn commit(
             matches!(block, ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == &pending.call_id)
         })
     {
-        let reason = if pending.allow {
+        let reason = if pending.allow && context.tool_capability_narrowing.disabled_reason().is_some() {
+            "Tool request was not executed: tools are disabled for this Run. An earlier approval cannot restore removed authority."
+        } else if pending.allow && context.tool_permission_policy.is_some() {
+            "Tool request was not executed before this permission continuation ended. Earlier approval does not override current Run restrictions or approve a changed request."
+        } else if pending.allow {
             "Tool request was not executed: the resumed agent did not reissue the approved tool with its exact arguments before this permission continuation ended. A changed request requires its own approval."
         } else {
             "Tool request was not executed because permission was denied."
@@ -74,6 +78,28 @@ pub(super) async fn commit(
     // Opaque ACP permissions retain the explicit RunAttemptExecutor authority;
     // client execution reuses the same batch with an ExternalResult wait.
     let mut state = state;
+    use awaken_runtime_contract::permission::RunToolCapability;
+    let run_id = disposition.run_id();
+    let commands = context
+        .reader
+        .as_ref()
+        .map(|reader| reader.committed_state(thread_id))
+        .unwrap_or_default();
+    let recorded = RunToolCapability::recorded(&commands, run_id)
+        .map_err(|error| Error::Commit(error.to_string()))?;
+    let mut store = awaken_tool_contract::tool_batch::store_from_run_commands(commands, run_id);
+    RunToolCapability::project_recorded(&mut store, recorded);
+    let fresh = context
+        .reader
+        .as_ref()
+        .is_none_or(|reader| reader.run(run_id).is_none());
+    RunToolCapability::stage(
+        &mut store,
+        &mut state,
+        context.tool_capability_narrowing,
+        fresh,
+    )
+    .map_err(|error| Error::Commit(error.to_string()))?;
     if let Some(ticket) = disposition.resume_ticket()
         && let AwaitTarget::ToolCall {
             reason,

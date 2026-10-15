@@ -587,6 +587,8 @@ async fn a_tool_alias_reverse_maps_to_canonical_before_the_permission_gate() {
 struct PermissionEffectProbe {
     commit: Arc<MemoryCommitCoordinator>,
     calls: Arc<Mutex<Vec<ToolCall>>>,
+    domains: Arc<AtomicUsize>,
+    replay_safe: bool,
     fail: bool,
 }
 
@@ -594,6 +596,19 @@ struct PermissionEffectProbe {
 impl RawTool for PermissionEffectProbe {
     fn id(&self) -> &str {
         "echo"
+    }
+
+    fn execution_domain(&self) -> awaken_tool_contract::tool_batch::ToolExecutionDomain {
+        self.domains.fetch_add(1, Ordering::SeqCst);
+        Default::default()
+    }
+
+    fn recovery_capability(&self) -> awaken_tool_contract::tool::ToolRecoveryCapability {
+        if self.replay_safe {
+            awaken_tool_contract::tool::ToolRecoveryCapability::ReplaySafe
+        } else {
+            awaken_tool_contract::tool::ToolRecoveryCapability::NonRecoverable
+        }
     }
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
@@ -667,8 +682,10 @@ struct PermissionHandoffFixture {
     runtime: Runtime,
     commit: Arc<MemoryCommitCoordinator>,
     calls: Arc<Mutex<Vec<ToolCall>>>,
+    domains: Arc<AtomicUsize>,
     command: ResumeCommand,
     arguments: serde_json::Value,
+    activation: RunActivation,
 }
 
 impl PermissionHandoffFixture {
@@ -677,6 +694,10 @@ impl PermissionHandoffFixture {
     }
 
     async fn awaiting_calls(fail_tool: bool, count: usize) -> Self {
+        Self::awaiting_with_recovery(fail_tool, count, false).await
+    }
+
+    async fn awaiting_with_recovery(fail_tool: bool, count: usize, replay_safe: bool) -> Self {
         // Deliberately contains quotes, backslashes, line breaks and 2/3/4-byte
         // UTF-8 characters, at a size above the real 16k Write failure. This is
         // committed data; no model in the resumed Runtime can regenerate it.
@@ -684,11 +705,19 @@ impl PermissionHandoffFixture {
         assert!(arguments["text"].as_str().unwrap().chars().count() > 16_073);
         let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
         let calls = Arc::new(Mutex::new(Vec::new()));
+        let domains = Arc::new(AtomicUsize::new(0));
         let tool = Arc::new(PermissionEffectProbe {
             commit: commit.clone(),
             calls: calls.clone(),
+            domains: domains.clone(),
+            replay_safe,
             fail: fail_tool,
         });
+        let mut activation = activation();
+        if replay_safe {
+            activation.snapshot.resolved_spec.tool_descriptors[0].recovery_policy =
+                awaken_tool_contract::tool::ToolRecoveryPolicy::replay_safe();
+        }
         let initial = Runtime::new()
             .with_llm(Arc::new(ToolThenText {
                 calls: AtomicUsize::new(0),
@@ -699,7 +728,7 @@ impl PermissionHandoffFixture {
             .with_gate(Arc::new(PermissionGate::new(Arc::new(AskByCall))));
         assert_eq!(
             initial
-                .execute(activation(), context(&commit))
+                .execute(activation.clone(), context(&commit))
                 .await
                 .unwrap(),
             RunState::Awaiting
@@ -713,13 +742,15 @@ impl PermissionHandoffFixture {
         let runtime = Runtime::new()
             .with_tool(tool)
             .with_gate(Arc::new(PermissionGate::new(Arc::new(AskByCall))));
-        runtime.register_snapshot(snapshot());
+        runtime.register_snapshot(activation.snapshot.clone());
         Self {
             runtime,
             commit,
             calls,
+            domains,
             command,
             arguments,
+            activation,
         }
     }
 
@@ -738,6 +769,124 @@ impl PermissionHandoffFixture {
                 _ => None,
             })
             .collect()
+    }
+}
+
+#[tokio::test]
+async fn denied_approval_resume_never_prepares_or_enters_the_tool() {
+    // Causes: C1 exact approval from a real Awaiting commit; C2 current
+    // Configured/DenyAll/per-Run DenyAllTools; C3 Native/model-free continuation.
+    // R1 Configured
+    // enters the original domain once and invokes once (the existing H1 test
+    // covers the model-free success). R2 DenyAll refuses before lazy domain
+    // preparation, any commit, confirmation or ticket consumption. The original
+    // Ask decision remains intact; no second host decision replaces approval.
+    for policy in [false, true] {
+        for native in [false, true] {
+            let fixture = PermissionHandoffFixture::awaiting(false).await;
+            let before = fixture.commit.committed();
+            let commits = fixture.commit.commit_count();
+            let domains = fixture.domains.load(Ordering::SeqCst);
+            let restricted = if policy {
+                context(&fixture.commit).with_tool_permission_policy(Arc::new(
+                    awaken_runtime_contract::permission::DenyAllTools::new(
+                        "current Run restriction",
+                    ),
+                ))
+            } else {
+                context(&fixture.commit).with_tool_capability_narrowing(
+                    awaken_runtime_contract::permission::ToolCapabilityNarrowing::DenyAll,
+                )
+            };
+            let result = if native {
+                fixture
+                    .runtime
+                    .resume(fixture.command.clone(), fixture.commit.as_ref(), restricted)
+                    .await
+            } else {
+                fixture
+                    .runtime
+                    .resume_tool_batch(fixture.command.clone(), fixture.commit.as_ref(), restricted)
+                    .await
+            };
+            assert!(result.is_err(), "R2 narrowed approval must be refused");
+            assert_eq!(
+                fixture.domains.load(Ordering::SeqCst),
+                domains,
+                "R2 lazy execution-domain preparation is already an entry boundary"
+            );
+            assert!(fixture.calls.lock().unwrap().is_empty());
+            assert_eq!(fixture.commit.commit_count(), commits);
+            assert_eq!(fixture.commit.committed().state, before.state);
+            assert_eq!(fixture.commit.committed().messages, before.messages);
+            assert_eq!(fixture.commit.committed().events, before.events);
+            assert!(
+                fixture
+                    .commit
+                    .resume_ticket_for(&fixture.command.run_id)
+                    .is_some()
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn tool_resume_without_commit_never_prepares_or_enters_execution() {
+    // Causes: exact current permission ticket with original Configured input;
+    // read port present, commit port absent; bare/activated model-free/Native
+    // continuation. All three must refuse before domain preparation, invocation,
+    // confirmation, ticket consumption or writes. The existing H1/H7 controls
+    // prove a working coordinator allows once and a rejected commit prevents it.
+    // Start with the original bare role as the negative-control boundary.
+    for entry in [1, 2, 0] {
+        let fixture = PermissionHandoffFixture::awaiting(false).await;
+        let before = fixture.commit.committed();
+        let commits = fixture.commit.commit_count();
+        let domains = fixture.domains.load(Ordering::SeqCst);
+        let context = RuntimeRunContext::new().with_reader(fixture.commit.clone());
+        let result = match entry {
+            1 => {
+                fixture
+                    .runtime
+                    .resume_tool_batch(fixture.command.clone(), fixture.commit.as_ref(), context)
+                    .await
+            }
+            2 => {
+                awaken_runtime::resume_activated_tool_batch(
+                    &fixture.runtime,
+                    fixture.activation.clone(),
+                    fixture.command.clone(),
+                    context,
+                )
+                .await
+            }
+            _ => {
+                fixture
+                    .runtime
+                    .resume(fixture.command.clone(), fixture.commit.as_ref(), context)
+                    .await
+            }
+        };
+        assert!(
+            result.is_err(),
+            "P0 persistence is mandatory for every tool-resume role"
+        );
+        assert_eq!(
+            fixture.domains.load(Ordering::SeqCst),
+            domains,
+            "P0 no lazy I/O"
+        );
+        assert!(fixture.calls.lock().unwrap().is_empty());
+        assert_eq!(fixture.commit.commit_count(), commits);
+        assert_eq!(fixture.commit.committed().state, before.state);
+        assert_eq!(fixture.commit.committed().messages, before.messages);
+        assert_eq!(fixture.commit.committed().events, before.events);
+        assert!(
+            fixture
+                .commit
+                .resume_ticket_for(&fixture.command.run_id)
+                .is_some()
+        );
     }
 }
 
@@ -1056,6 +1205,71 @@ async fn tool_batch_handoff_commit_failure_preserves_the_execution_boundary() {
 }
 
 #[tokio::test]
+async fn executing_recovery_checks_current_restrictions_before_domain_reentry() {
+    // C1 the original approval commit succeeds, its real effect returns, then
+    // the result commit fails; C2 the pinned policy AND actual tool advertise
+    // ReplaySafe; C3 current Configured/capability DenyAll/policy DenyAllTools.
+    // R1 C1+C2+Configured -> one permitted reentry and one published result.
+    // R2 either restriction -> refusal before another domain preparation or
+    // invocation, no state/message/event writes, original Executing retained.
+    // This uses the real H8 crash prefix, not an invented Executing state.
+    for restriction in 0..3 {
+        let fixture = PermissionHandoffFixture::awaiting_with_recovery(false, 1, true).await;
+        let rejecting = Arc::new(RejectHandoffCommit {
+            inner: fixture.commit.clone(),
+            calls: AtomicUsize::new(0),
+            reject_at: 1,
+        });
+        assert!(
+            fixture
+                .runtime
+                .resume_tool_batch(
+                    fixture.command.clone(),
+                    fixture.commit.as_ref(),
+                    RuntimeRunContext::new().with_commit(rejecting),
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(fixture.calls.lock().unwrap().len(), 1);
+        assert!(fixture.results().is_empty());
+        let before = fixture.commit.committed();
+        let commits = fixture.commit.commit_count();
+        let domains = fixture.domains.load(Ordering::SeqCst);
+        let context = context(&fixture.commit).with_reader(fixture.commit.clone());
+        let context = match restriction {
+            1 => context.with_tool_capability_narrowing(
+                awaken_runtime_contract::permission::ToolCapabilityNarrowing::DenyAll,
+            ),
+            2 => context.with_tool_permission_policy(Arc::new(
+                awaken_runtime_contract::permission::DenyAllTools::new("reclaim restriction"),
+            )),
+            _ => context,
+        };
+        let mut activation = fixture.activation.clone();
+        activation.input.clear();
+        let recovered = fixture
+            .runtime
+            .recover_tool_batch(activation, context)
+            .await;
+        if restriction == 0 {
+            assert_eq!(recovered.unwrap(), RunState::Running, "R1");
+            assert_eq!(fixture.calls.lock().unwrap().len(), 2, "R1");
+            assert_eq!(fixture.domains.load(Ordering::SeqCst), domains + 1, "R1");
+            assert_eq!(fixture.results(), vec![("call-1".into(), false)]);
+        } else {
+            assert!(recovered.is_err(), "R2");
+            assert_eq!(fixture.calls.lock().unwrap().len(), 1, "R2");
+            assert_eq!(fixture.domains.load(Ordering::SeqCst), domains, "R2");
+            assert_eq!(fixture.commit.commit_count(), commits, "R2");
+            assert_eq!(fixture.commit.committed().state, before.state, "R2");
+            assert_eq!(fixture.commit.committed().messages, before.messages, "R2");
+            assert_eq!(fixture.commit.committed().events, before.events, "R2");
+        }
+    }
+}
+
+#[tokio::test]
 async fn tool_batch_handoff_preserves_the_remaining_calls_and_publication_barrier() {
     // H9: two ordered calls, both Ask. Approve first => execute only first,
     // commit its private batch result and a ticket for second, return Awaiting
@@ -1289,35 +1503,42 @@ async fn a_per_run_deny_all_narrowing_audits_no_policy_even_over_a_stating_gate(
     // | Rule | narrowing | host policy basis | decision | decided_by | policy |
     // |---|---|---|---|---|---|
     // | N1 | DenyAll | always_allow | deny | run_narrowing | - |
-    let ran = Arc::new(AtomicUsize::new(0));
-    let runtime = Runtime::new()
-        .with_llm(Arc::new(ToolThenText {
-            calls: AtomicUsize::new(0),
-            requests: Arc::new(Mutex::new(Vec::new())),
-            tool_calls: echo_calls(serde_json::json!({"text": "ping"}), 1),
-        }))
-        .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
-        .with_gate(Arc::new(PermissionGate::new(Arc::new(BasisPolicy(
-            ToolPermissionRuling::policy(
-                ToolPermissionVerdict::Allow,
-                PermissionBasis::fixed(PermissionPolicy::AlwaysAllow),
-            ),
-        )))));
-    runtime.register_snapshot(snapshot());
-    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
-    runtime
-        .execute(activation().without_tools(), context(&commit))
-        .await
-        .expect("the restricted Run completes");
-    assert_eq!(
-        audited_rows(&commit),
-        vec![(
-            "deny".to_string(),
-            Some("run_narrowing".to_string()),
-            None,
-            None
-        )],
-        "N1"
-    );
-    assert_eq!(ran.load(Ordering::SeqCst), 0, "N1");
+    // N2: no host gate is installed; the same real narrowing still owns its audit.
+    for host in [true, false] {
+        let ran = Arc::new(AtomicUsize::new(0));
+        let runtime = Runtime::new()
+            .with_llm(Arc::new(ToolThenText {
+                calls: AtomicUsize::new(0),
+                requests: Arc::new(Mutex::new(Vec::new())),
+                tool_calls: echo_calls(serde_json::json!({"text": "ping"}), 1),
+            }))
+            .with_tool(Arc::new(EchoTool { ran: ran.clone() }));
+        let runtime = if host {
+            runtime.with_gate(Arc::new(PermissionGate::new(Arc::new(BasisPolicy(
+                ToolPermissionRuling::policy(
+                    ToolPermissionVerdict::Allow,
+                    PermissionBasis::fixed(PermissionPolicy::AlwaysAllow),
+                ),
+            )))))
+        } else {
+            runtime
+        };
+        runtime.register_snapshot(snapshot());
+        let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+        runtime
+            .execute(activation().without_tools(), context(&commit))
+            .await
+            .expect("the restricted Run completes");
+        assert_eq!(
+            audited_rows(&commit),
+            vec![(
+                "deny".to_string(),
+                Some("run_narrowing".to_string()),
+                None,
+                None
+            )],
+            "N1"
+        );
+        assert_eq!(ran.load(Ordering::SeqCst), 0, "N1");
+    }
 }

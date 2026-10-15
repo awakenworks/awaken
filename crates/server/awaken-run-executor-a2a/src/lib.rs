@@ -49,7 +49,6 @@ use awaken_runtime_contract::execution::{
     AttemptRecoveryMode, Cancellation, Error, ExecutorCapabilities, Result, RunAttemptExecutor,
     RunExecutor, Wait, verify_attempt_ownership,
 };
-use awaken_runtime_contract::permission::ToolCapabilityNarrowing;
 use awaken_runtime_contract::resolved::ResolvedModelCandidate;
 #[cfg(test)]
 use awaken_runtime_contract::resume::ResumeResult;
@@ -408,6 +407,14 @@ mod tests {
 
     #[test]
     fn remote_execution_fails_closed_when_tool_denial_cannot_be_proven() {
+        // Causes: original/current ceiling, exact inherited inputs and a live
+        // Run policy. ConfiguredWithInheritedToolsets is the existing frozen
+        // input-format marker and preserves configured authority; it is required
+        // by coordinated child admission. Actual DenyAll or a Run policy still
+        // refuses before remote effects. The existing caller consults this
+        // boundary before resolving a transport or sending/resuming a task.
+        let configured = activation("a2a:https://agent.example");
+        assert!(ensure_supported_narrowing(&configured, &RuntimeRunContext::new()).is_ok());
         let restricted = activation("a2a:https://agent.example").without_tools();
         let error = ensure_supported_narrowing(&restricted, &RuntimeRunContext::new())
             .expect_err("an opaque remote Agent cannot enforce local tool denial");
@@ -419,6 +426,28 @@ mod tests {
         assert!(
             ensure_supported_narrowing(&activation("a2a:https://agent.example"), &context).is_err(),
             "process-local narrowing must not be silently ignored either"
+        );
+        let current = RuntimeRunContext::new().with_tool_capability_narrowing(
+            awaken_runtime_contract::permission::ToolCapabilityNarrowing::DenyAll,
+        );
+        assert!(ensure_supported_narrowing(&configured, &current).is_err());
+        let inherited =
+            awaken_runtime_contract::activation::InheritedToolsets::with_caller(Vec::new(), None);
+        assert!(
+            ensure_supported_narrowing(
+                &configured
+                    .clone()
+                    .with_inherited_toolsets(Some(inherited.clone())),
+                &RuntimeRunContext::new(),
+            )
+            .is_ok()
+        );
+        assert!(
+            ensure_supported_narrowing(
+                &configured,
+                &RuntimeRunContext::new().with_inherited_toolsets(Some(inherited)),
+            )
+            .is_ok()
         );
     }
 
