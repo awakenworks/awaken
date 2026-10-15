@@ -1,4 +1,5 @@
 mod capture_tests;
+mod closed_worker;
 mod fixture;
 use super::*;
 use awaken_lease_testkit::ManualClock;

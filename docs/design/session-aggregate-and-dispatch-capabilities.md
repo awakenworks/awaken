@@ -84,6 +84,16 @@ protected. Exact complete-attempt evidence keeps its existing retirement path
 without requiring a whole Worker stop; missing complete evidence still retains
 the original physical slot and every external obligation.
 
+The existing closed-Worker command carries that exact incarnation's immutable
+Create ledger anchor from Registry. Kubernetes evidence release seals this same
+provider ledger and original request group before releasing the Worker Pod
+retention fence. Closed-idle release uses this same seal/join implementation.
+A missing
+historical anchor stays absent; a missing, foreign or unavailable recorded
+ledger refuses release and retries with the already retained process exit.
+The seal excludes future Create admission, not existing participant execution or
+cleanup. Its existing per-group join still owns completion of admitted requests.
+
 Local composition constructs `AnyCoordinatorDispatch` from an owner implementing
 `DurableDispatch`, then uses `DispatchBinding::local`. Its cached Worker view
 retains the exact queue owner. Remote composition uses

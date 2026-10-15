@@ -74,11 +74,18 @@ pub trait WorkerExecutionBindingSource: Send + Sync {
 /// ```
 pub struct ClosedWorkerExecution {
     binding: crate::AttemptExecutionBinding,
+    create_ledger: Option<crate::WorkerCreateLedger>,
 }
 
 impl ClosedWorkerExecution {
     pub fn binding(&self) -> &crate::AttemptExecutionBinding {
         &self.binding
+    }
+
+    /// Original Registry anchor, never a current-name lookup or a newly
+    /// initialized replacement. Historical absence grants no Create closure.
+    pub fn original_create_ledger(&self) -> Option<&crate::WorkerCreateLedger> {
+        self.create_ledger.as_ref()
     }
 
     /// Trusted adapters call this only after observing exact local process exit.
@@ -273,6 +280,7 @@ pub trait WorkerExecutionStopSource: Send + Sync {
     async fn release_closed_idle_worker_evidence(
         &self,
         _identity: &crate::WorkerIdentity,
+        _original_create_ledger: Option<&crate::WorkerCreateLedger>,
     ) -> Result<(), ApplicationError> {
         Ok(())
     }
@@ -447,7 +455,9 @@ pub async fn release_closed_idle_worker_evidence(
             ));
         }
     }
-    source.release_closed_idle_worker_evidence(identity).await
+    source
+        .release_closed_idle_worker_evidence(identity, record.create_ledger.as_ref())
+        .await
 }
 
 /// Read the original Dispatch physical-slot authority for a complete Worker
@@ -753,8 +763,16 @@ async fn independently_close_worker(
     {
         return Ok(None);
     }
+    let Some(original_worker) = directory
+        .incarnation(binding.worker())
+        .await
+        .map_err(|error| ApplicationError::unavailable(error.to_string()))?
+    else {
+        return Ok(None);
+    };
     let closed = ClosedWorkerExecution {
         binding: binding.clone(),
+        create_ledger: original_worker.create_ledger,
     };
     let observation = if let Some(exit) = persisted_worker_exit(directory, binding).await? {
         WorkerProcessStopStatus::Exited(exit)
@@ -803,12 +821,14 @@ async fn persisted_worker_exit(
     directory: &dyn crate::WorkerDirectory,
     binding: &crate::AttemptExecutionBinding,
 ) -> Result<Option<ObservedWorkerProcessExit>, ApplicationError> {
-    let receipt = directory
+    let record = directory
         .incarnation(binding.worker())
         .await
-        .map_err(|error| ApplicationError::unavailable(error.to_string()))?
-        .and_then(|record| record.process_exit);
-    let Some(receipt) = receipt else {
+        .map_err(|error| ApplicationError::unavailable(error.to_string()))?;
+    let Some(record) = record else {
+        return Ok(None);
+    };
+    let Some(receipt) = record.process_exit else {
         return Ok(None);
     };
     if receipt.provider_id() != binding.provider_id()
@@ -820,6 +840,7 @@ async fn persisted_worker_exit(
     }
     let closed = ClosedWorkerExecution {
         binding: binding.clone(),
+        create_ledger: record.create_ledger,
     };
     let WorkerProcessStopStatus::Exited(exit) = closed.observed_exit(receipt.evidence_ref())?
     else {
