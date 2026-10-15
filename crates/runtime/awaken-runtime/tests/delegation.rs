@@ -11,7 +11,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::awaiting::AwaitReason;
 use awaken_agent_contract::agent::content::ContentBlock;
@@ -29,6 +29,9 @@ use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 #[path = "harness/run_input.rs"]
 mod run_input;
 use run_input::MarkPlugin;
+
+#[path = "delegation/reader_sealing.rs"]
+mod reader_sealing;
 
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
@@ -234,6 +237,7 @@ fn step_to_result(step: &Step) -> Result<DelegationStep, DelegationExecutionErro
 /// A delegation executor whose `run` and `resume` yield configured [`Step`]s, and
 /// which records the `(handle, typed result)` each resume was called with.
 struct MockRunDelegationService {
+    handles_calls: AtomicBool,
     parallel: bool,
     run_step: Step,
     resume_step: Step,
@@ -501,6 +505,7 @@ impl RawTool for ObservedRawTool {
 impl MockRunDelegationService {
     fn new(run_step: Step, resume_step: Step) -> Self {
         Self {
+            handles_calls: AtomicBool::new(true),
             parallel: false,
             run_step,
             resume_step,
@@ -518,6 +523,9 @@ impl RunDelegationService for MockRunDelegationService {
     }
     fn tool_id(&self) -> &str {
         DELEGATE_TOOL
+    }
+    fn handles_tool(&self, tool_id: &str) -> bool {
+        self.handles_calls.load(Ordering::SeqCst) && tool_id == DELEGATE_TOOL
     }
     fn target_agent_id(
         &self,
