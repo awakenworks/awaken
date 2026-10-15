@@ -12,19 +12,24 @@
 //! Session ownership fencing, and injected-clock observation are the port's
 //! observable contract, not one backend's behaviour.
 
+use awaken_executable_environment_contract::{
+    EnvironmentWorkLifecycle, HeartbeatCondition, HeartbeatResult, LeaseHeartbeat,
+    SessionAccessAuthenticator, SessionWorkLeaseControl, SessionWorkStore, SessionWorkerLeaseStore,
+    WorkConsumer, WorkMetadataPatch, WorkMutationResult, WorkQueries, WorkState,
+    WorkerLeaseObservation,
+};
 use awaken_lease_testkit::ManualClock;
 use awaken_session_types::SessionId;
 use awaken_time::WallClock;
 use awaken_time::utc::epoch_millis_to_rfc3339;
-use awaken_worker_contract::{
-    HeartbeatCondition, HeartbeatResult, LeaseHeartbeat, WorkMutationResult, WorkQueue, WorkState,
-};
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 /// Fixture digest for Session access assertions: a deterministic 64-hex value.
 #[must_use]
-pub fn session_access_digest(seed: u64) -> awaken_worker_contract::SessionAccessDigest {
-    awaken_worker_contract::SessionAccessDigest::from_hex(format!("{seed:064x}"))
+pub fn session_access_digest(
+    seed: u64,
+) -> awaken_executable_environment_contract::SessionAccessDigest {
+    awaken_executable_environment_contract::SessionAccessDigest::from_hex(format!("{seed:064x}"))
         .expect("fixture digest is hex")
 }
 
@@ -32,7 +37,7 @@ pub fn session_access_digest(seed: u64) -> awaken_worker_contract::SessionAccess
 
 /// The single-active-lease cap: with items queued, repeated claims at one instant hand
 /// out exactly ONE lease, and exactly one item is Active.
-pub async fn single_active_cap<Q: WorkQueue>(q: &Q) {
+pub async fn single_active_cap<Q: WorkBackend>(q: &Q) {
     for i in 0..5 {
         q.enqueue_session("env", &SessionId::from(format!("s{i}")))
             .await
@@ -60,7 +65,7 @@ pub async fn single_active_cap<Q: WorkQueue>(q: &Q) {
 
 /// Reclaim is exact at the TTL boundary: a live lease caps the env until `now == expiry`,
 /// then the lapsed item is reclaimable.
-pub async fn reclaim_at_ttl<Q: WorkQueue>(q: &Q, lease_ttl_ms: u64) {
+pub async fn reclaim_at_ttl<Q: WorkBackend>(q: &Q, lease_ttl_ms: u64) {
     q.enqueue_session("env", &SessionId::from("s0"))
         .await
         .expect("enqueue");
@@ -86,7 +91,7 @@ pub async fn reclaim_at_ttl<Q: WorkQueue>(q: &Q, lease_ttl_ms: u64) {
 
 /// Requested reclaim age is measured from the last lease refresh, independently
 /// of the TTL selected by that heartbeat.
-pub async fn requested_reclaim_uses_refresh_clock<Q: WorkQueue>(q: &Q) {
+pub async fn requested_reclaim_uses_refresh_clock<Q: WorkBackend>(q: &Q) {
     let id = q
         .enqueue_session("env", &SessionId::from("s0"))
         .await
@@ -127,7 +132,7 @@ pub async fn requested_reclaim_uses_refresh_clock<Q: WorkQueue>(q: &Q) {
 }
 
 /// Environments lease independently: a claim in one never touches another's cap.
-pub async fn env_isolation<Q: WorkQueue>(q: &Q) {
+pub async fn env_isolation<Q: WorkBackend>(q: &Q) {
     q.enqueue_session("env_a", &SessionId::from("a0"))
         .await
         .expect("enqueue a");
@@ -161,7 +166,7 @@ pub async fn env_isolation<Q: WorkQueue>(q: &Q) {
 }
 
 /// Stopping the active item frees the next, and no item is lost or duplicated.
-pub async fn stop_frees_next<Q: WorkQueue>(q: &Q) {
+pub async fn stop_frees_next<Q: WorkBackend>(q: &Q) {
     for i in 0..3 {
         q.enqueue_session("env", &SessionId::from(format!("s{i}")))
             .await
@@ -189,7 +194,7 @@ pub async fn stop_frees_next<Q: WorkQueue>(q: &Q) {
 }
 
 /// remove_env purges everything: no items, nothing to claim.
-pub async fn remove_env_purges<Q: WorkQueue>(q: &Q) {
+pub async fn remove_env_purges<Q: WorkBackend>(q: &Q) {
     for i in 0..3 {
         q.enqueue_session("env", &SessionId::from(format!("s{i}")))
             .await
@@ -208,7 +213,7 @@ pub async fn remove_env_purges<Q: WorkQueue>(q: &Q) {
 
 /// Session dispatch is a durable projection: exact replay converges to one row,
 /// while either identity coordinate changing creates independent work.
-pub async fn session_enqueue_is_idempotent<Q: WorkQueue>(q: &Q) {
+pub async fn session_enqueue_is_idempotent<Q: WorkBackend>(q: &Q) {
     // Cause/effect graph: C1 same Environment; C2 same Session; C3 concurrent or
     // sequential replay. Effects: E1 C1+C2 always returns one canonical work id;
     // E2 changing either coordinate produces a distinct item. Constraints: a
@@ -247,7 +252,7 @@ pub async fn session_enqueue_is_idempotent<Q: WorkQueue>(q: &Q) {
 /// The official heartbeat compare token is an atomic CAS: first succeeds once,
 /// the returned token advances monotonically, and a stale token cannot extend
 /// the lease after a newer heartbeat has committed.
-pub async fn heartbeat_compare_and_extend<Q: WorkQueue>(q: &Q) {
+pub async fn heartbeat_compare_and_extend<Q: WorkBackend>(q: &Q) {
     let id = q
         .enqueue_session("env", &SessionId::from("s0"))
         .await
@@ -368,7 +373,7 @@ pub async fn heartbeat_compare_and_extend<Q: WorkQueue>(q: &Q) {
 /// reject; checking the complete lease and Work projection detects a false
 /// return after a partial mutation. L9 is an accepted replay, not a new owner-
 /// authorized effect: the stopped row intentionally no longer stores its owner.
-pub async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkQueue>(q: &Q) {
+pub async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkBackend>(q: &Q) {
     let id = q
         .enqueue_session("env", &SessionId::from("session"))
         .await
@@ -456,7 +461,7 @@ pub async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkQueue>(q: &
         WorkState::Active,
         "L6/E2 successor remains authoritative"
     );
-    let projection = |work: &awaken_worker_contract::WorkItem| {
+    let projection = |work: &awaken_executable_environment_contract::WorkItem| {
         (
             work.id.clone(),
             work.environment_id.clone(),
@@ -472,7 +477,7 @@ pub async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkQueue>(q: &
     };
     let active = q.get("env", &id).await.unwrap().unwrap();
     let with = |work: &str, environment: &str, session: &str, owner: &str, epoch: u64| {
-        awaken_worker_contract::SessionWorkLease::from_persisted(
+        awaken_session_types::SessionWorkLease::from_persisted(
             work,
             environment,
             SessionId::from(session),
@@ -552,7 +557,7 @@ pub async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkQueue>(q: &
 /// 60-second lease stalls every restart; permanently stopping a non-terminal
 /// Session makes recovery impossible; releasing by reusable worker id would revoke
 /// a replacement generation. Exact incarnation requeue avoids all three.
-pub async fn graceful_owner_release_is_exact<Q: WorkQueue>(q: &Q) {
+pub async fn graceful_owner_release_is_exact<Q: WorkBackend>(q: &Q) {
     let first = q
         .enqueue_session("env-a", &SessionId::from("first"))
         .await
@@ -607,7 +612,7 @@ pub async fn graceful_owner_release_is_exact<Q: WorkQueue>(q: &Q) {
 }
 
 pub async fn exact_owner_observation_is_read_only(
-    q: &impl WorkQueue,
+    q: &impl WorkBackend,
     clock: &ManualClock,
     lease_ttl_ms: u64,
 ) {
@@ -685,7 +690,7 @@ pub async fn exact_owner_observation_is_read_only(
     );
 }
 
-pub async fn reclaim_age_boundary_cases(q: &impl WorkQueue) {
+pub async fn reclaim_age_boundary_cases(q: &impl WorkBackend) {
     // Adapter decision table: live TTL throughout; absent age or age > now
     // must retain the current lease. age == now selects refresh zero;
     // after re-claim at time one, age 1000 at time 1001 selects refresh one.
@@ -737,7 +742,7 @@ pub async fn reclaim_age_boundary_cases(q: &impl WorkQueue) {
 /// Diffusion: the sibling objects in the same store — the Environment's
 /// healthcheck item and a second Session item accepted later — are checked too,
 /// so a fix that reached only the one converted path fails here.
-pub async fn observation_timestamps_are_the_injected_clock<Q: WorkQueue>(
+pub async fn observation_timestamps_are_the_injected_clock<Q: WorkBackend>(
     q: &Q,
     clock: &ManualClock,
 ) {
@@ -761,7 +766,11 @@ pub async fn observation_timestamps_are_the_injected_clock<Q: WorkQueue>(
     assert_eq!(listed.len(), 3, "R1 fixture");
     for item in &listed {
         let expected = match &item.data {
-            awaken_worker_contract::WorkPayload::Session { id } if id == &second => LATER,
+            awaken_executable_environment_contract::WorkPayload::Session { id }
+                if id == &second =>
+            {
+                LATER
+            }
             _ => ACCEPTED,
         };
         assert_eq!(
@@ -853,7 +862,7 @@ pub async fn observation_timestamps_are_the_injected_clock<Q: WorkQueue>(
 /// Run the whole contract against a freshly-built backend `Q`. The factory takes
 /// the clock so the observation rules can name the instants they expect;
 /// `clock` is the caller's timeline for every rule that does not.
-pub async fn run_suite<Q: WorkQueue, F: std::future::Future<Output = Q>>(
+pub async fn run_suite<Q: WorkBackend, F: std::future::Future<Output = Q>>(
     clock: Arc<dyn WallClock>,
     fresh_with: impl Fn(Arc<dyn WallClock>) -> F,
     lease_ttl_ms: u64,
@@ -874,17 +883,239 @@ pub async fn run_suite<Q: WorkQueue, F: std::future::Future<Output = Q>>(
     exact_owner_observation_is_read_only(&owner_queue, &owner_clock, lease_ttl_ms).await;
     reclaim_age_boundary_cases(&fresh().await).await;
     session_access::capability_and_metadata_contract(&fresh().await, lease_ttl_ms).await;
+    role_views_share_state_without_widening_authority(&fresh().await, lease_ttl_ms).await;
     let clock = Arc::new(ManualClock::new(0));
     let queue = fresh_with(clock.clone()).await;
     observation_timestamps_are_the_injected_clock(&queue, &clock).await;
+}
+
+/// Decision sequence for separately injected roles over the same backend.
+/// R1 a metadata upsert/delete is visible to queries but preserves the complete
+/// live lease and lifecycle; R2 a foreign Environment or absent Work stays
+/// absent; R3 same-owner reclaim advances epoch and invalidates the old bearer;
+/// R4 exact-epoch mutation refuses the old proof while the owner-only protocol
+/// still accepts the current credential owner; R5 withdrawal clears item,
+/// credential and owner-occupancy observations.
+pub async fn role_views_share_state_without_widening_authority<Q: WorkBackend>(
+    backend: &Q,
+    lease_ttl_ms: u64,
+) {
+    let queries: &dyn WorkQueries = backend;
+    let consumer: &dyn WorkConsumer = backend;
+    let authentication: &dyn SessionAccessAuthenticator = backend;
+    let control: &dyn SessionWorkLeaseControl = backend;
+    let metadata: &dyn WorkMetadataPatch = backend;
+    let assignment: &dyn SessionWorkStore = backend;
+    let lifecycle: &dyn EnvironmentWorkLifecycle = backend;
+    let occupancy: &dyn WorkerLeaseObservation = backend;
+    let work_id = assignment
+        .enqueue_session(
+            "role-env",
+            &awaken_session_types::SessionId::from("role-session"),
+        )
+        .await
+        .unwrap();
+    let first_digest = session_access_digest(91);
+    consumer
+        .claim_with_session_access("role-env", "same-owner", "poller", 0, None, &first_digest)
+        .await
+        .unwrap()
+        .expect("R1 claim");
+    let first_access = authentication
+        .authenticate_session_access(&first_digest, 0)
+        .await
+        .unwrap()
+        .expect("R1 complete proof");
+    let before = queries.get("role-env", &work_id).await.unwrap().unwrap();
+    metadata
+        .update_metadata(
+            "role-env",
+            &work_id,
+            BTreeMap::from([
+                ("keep".into(), Some("one".into())),
+                ("remove".into(), Some("old".into())),
+            ]),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let patched = metadata
+        .update_metadata(
+            "role-env",
+            &work_id,
+            BTreeMap::from([("keep".into(), Some("two".into())), ("remove".into(), None)]),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        patched.metadata,
+        BTreeMap::from([("keep".into(), "two".into())]),
+        "R1 patch semantics"
+    );
+    let read = queries.get("role-env", &work_id).await.unwrap().unwrap();
+    assert_eq!(read.metadata, patched.metadata, "R1 shared state");
+    assert_eq!(read.state, before.state, "R1 state");
+    assert_eq!(read.created_at, before.created_at, "R1 acceptance");
+    assert_eq!(read.started_at, before.started_at, "R1 started");
+    assert_eq!(read.acknowledged_at, before.acknowledged_at, "R1 ack");
+    assert_eq!(
+        read.latest_heartbeat_at, before.latest_heartbeat_at,
+        "R1 heartbeat"
+    );
+    assert_eq!(
+        read.stop_requested_at, before.stop_requested_at,
+        "R1 stop intent"
+    );
+    assert_eq!(read.stopped_at, before.stopped_at, "R1 terminal");
+    assert_eq!(
+        authentication
+            .authenticate_session_access(&first_digest, 0)
+            .await
+            .unwrap(),
+        Some(first_access.clone()),
+        "R1 authority unchanged"
+    );
+    for (environment, work) in [("foreign-env", work_id.as_str()), ("role-env", "missing")] {
+        assert!(
+            metadata
+                .update_metadata(environment, work, BTreeMap::from([("keep".into(), None)]))
+                .await
+                .unwrap()
+                .is_none(),
+            "R2 isolation"
+        );
+    }
+    assert_eq!(
+        queries
+            .get("role-env", &work_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .metadata,
+        patched.metadata,
+        "R2 no side effect"
+    );
+    let next_digest = session_access_digest(92);
+    consumer
+        .claim_with_session_access(
+            "role-env",
+            "same-owner",
+            "poller",
+            lease_ttl_ms,
+            None,
+            &next_digest,
+        )
+        .await
+        .unwrap()
+        .expect("R3 exact expiry reclaim");
+    let next_access = authentication
+        .authenticate_session_access(&next_digest, lease_ttl_ms)
+        .await
+        .unwrap()
+        .expect("R3 successor");
+    assert!(
+        next_access.lease_epoch > first_access.lease_epoch,
+        "R3 epoch advances"
+    );
+    assert!(
+        authentication
+            .authenticate_session_access(&first_digest, lease_ttl_ms)
+            .await
+            .unwrap()
+            .is_none(),
+        "R3 old bearer revoked"
+    );
+    assert!(
+        matches!(
+            control
+                .ack_with_session_access(&first_access)
+                .await
+                .unwrap(),
+            WorkMutationResult::PreconditionFailed
+        ),
+        "R4 old ack"
+    );
+    assert!(
+        matches!(
+            control
+                .heartbeat_with_session_access(
+                    &first_access,
+                    lease_ttl_ms,
+                    LeaseHeartbeat::unconditional()
+                )
+                .await
+                .unwrap(),
+            HeartbeatResult::PreconditionFailed
+        ),
+        "R4 old heartbeat"
+    );
+    assert!(
+        matches!(
+            control
+                .stop_with_session_access(&first_access)
+                .await
+                .unwrap(),
+            WorkMutationResult::PreconditionFailed
+        ),
+        "R4 old stop"
+    );
+    assert!(
+        consumer
+            .ack("role-env", &work_id, "same-owner")
+            .await
+            .unwrap()
+            .is_accepted(),
+        "R4 owner-only protocol"
+    );
+    assert!(
+        control
+            .heartbeat_with_session_access(
+                &next_access,
+                lease_ttl_ms + 1,
+                LeaseHeartbeat::unconditional()
+            )
+            .await
+            .unwrap()
+            .into_receipt()
+            .is_some(),
+        "R4 exact current proof"
+    );
+    assert!(
+        authentication
+            .authenticate_session_access(&next_digest, lease_ttl_ms + 1)
+            .await
+            .unwrap()
+            .is_some(),
+        "R5 live authority before purge"
+    );
+    lifecycle.remove_env("role-env").await.unwrap();
+    assert!(
+        !occupancy.has_owner_claims("same-owner").await.unwrap(),
+        "R5 no dangling owner occupancy"
+    );
+    assert!(
+        queries.list("role-env").await.unwrap().is_empty(),
+        "R5 purge visible"
+    );
+    assert!(
+        authentication
+            .authenticate_session_access(&next_digest, lease_ttl_ms + 1)
+            .await
+            .unwrap()
+            .is_none(),
+        "R5 authority gone"
+    );
 }
 
 // ── Backend rows: each must pass the identical suite ─────────────────────────────
 
 pub mod session_access {
     //! The portable capability/metadata sequence formerly covered only PostgreSQL.
-    use super::session_access_digest;
-    use awaken_worker_contract::{HeartbeatResult, LeaseHeartbeat, WorkMutationResult, WorkQueue};
+    use super::{WorkBackend, session_access_digest};
+    use awaken_executable_environment_contract::{
+        HeartbeatResult, LeaseHeartbeat, WorkMutationResult,
+    };
     use std::collections::BTreeMap;
 
     /// Cause/effect sequence: queued healthcheck + two Sessions => FIFO/cap; an
@@ -894,7 +1125,7 @@ pub mod session_access {
     /// accepted; purge => empty. These are sequential state constraints rather than
     /// independent Boolean combinations. Each transition checks its effect before
     /// triggering the next, and all backends run this same sequence.
-    pub async fn capability_and_metadata_contract(q: &impl WorkQueue, lease_ttl_ms: u64) {
+    pub async fn capability_and_metadata_contract(q: &impl WorkBackend, lease_ttl_ms: u64) {
         let hc = q.enqueue_healthcheck("env_a").await.expect("enqueue");
         let w1 = q
             .enqueue_session("env_a", &awaken_session_types::SessionId::from("s1"))
@@ -1033,4 +1264,31 @@ pub mod session_access {
             "remove_env purges"
         );
     }
+}
+
+/// Test-only aggregate for the shared backend contract suite.
+pub trait WorkBackend:
+    WorkQueries
+    + WorkConsumer
+    + SessionAccessAuthenticator
+    + SessionWorkLeaseControl
+    + SessionWorkStore
+    + SessionWorkerLeaseStore
+    + WorkerLeaseObservation
+    + WorkMetadataPatch
+    + EnvironmentWorkLifecycle
+{
+}
+impl<
+    T: WorkQueries
+        + WorkConsumer
+        + SessionAccessAuthenticator
+        + SessionWorkLeaseControl
+        + SessionWorkStore
+        + SessionWorkerLeaseStore
+        + WorkerLeaseObservation
+        + WorkMetadataPatch
+        + EnvironmentWorkLifecycle,
+> WorkBackend for T
+{
 }

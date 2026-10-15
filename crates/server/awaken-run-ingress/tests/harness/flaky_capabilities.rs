@@ -66,7 +66,7 @@ impl ClaimedCheckpointTransport for FlakyDispatchStore {
     async fn load_recovery_snapshot(
         &self,
         _: &RunClaim,
-        _: Option<&awaken_worker_contract::SessionWorkAuthorityReceipt>,
+        _: Option<&awaken_session_application_contract::SessionWorkAuthorityReceipt>,
     ) -> Result<RunRecoverySnapshot, DispatchError> {
         unreachable!("empty scheduler fixture must not read remote recovery")
     }

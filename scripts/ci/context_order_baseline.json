@@ -4,7 +4,6 @@
     "awaken-credential-materializer -> awaken-provisioning-contract": "credential custody receives credential-contract values; Execution translates (ADR-0088 decision 4)",
     "awaken-credential-materializer -> awaken-worker-contract": "credential custody receives credential-contract values; Execution translates (ADR-0088 decision 4)",
     "awaken-credential-vault -> awaken-provisioning-contract": "credential custody receives credential-contract values; Execution translates (ADR-0088 decision 4)",
-    "awaken-environment-execution-application -> awaken-worker-contract": "S3: the Session work items move out of dispatch with the worker contract",
     "awaken-environment-package-image-builder -> awaken-sandbox-container": "depend on the sandbox contract, not its implementations; the composition root wires them",
     "awaken-provisioning-contract -> awaken-resource-contract": "resource reference values move with the environment contract they describe",
     "awaken-run-executor-a2a -> awaken-protocol-a2a": "shared wire types move down into a contract; the executor stops depending on the serving adapter",

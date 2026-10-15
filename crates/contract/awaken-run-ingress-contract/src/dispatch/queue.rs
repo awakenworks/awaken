@@ -32,7 +32,9 @@ pub trait ClaimedCheckpointTransport: Send + Sync {
     async fn load_recovery_snapshot(
         &self,
         claim: &RunClaim,
-        session_work_authority: Option<&awaken_worker_contract::SessionWorkAuthorityReceipt>,
+        session_work_authority: Option<
+            &awaken_session_application_contract::SessionWorkAuthorityReceipt,
+        >,
     ) -> Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, DispatchError>;
 }
 

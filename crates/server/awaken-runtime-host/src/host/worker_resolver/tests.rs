@@ -1078,7 +1078,9 @@ impl awaken_session_realization_contract::ClaimedSessionRealizationControl
         &self,
         claim: &ingress::RunClaim,
         _session_id: &str,
-        _session_work_authority: Option<&awaken_worker_contract::SessionWorkAuthorityReceipt>,
+        _session_work_authority: Option<
+            &awaken_session_application_contract::SessionWorkAuthorityReceipt,
+        >,
         continuation: Option<&crate::session_resource::SessionRealizationLease>,
     ) -> Result<
         Option<awaken_session_realization_contract::SessionRealizationDirective>,

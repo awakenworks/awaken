@@ -46,6 +46,23 @@ pub enum SessionActivitySettlementPlan {
     CloseRunningInterval,
 }
 
+impl SessionActivitySettlementPlan {
+    /// Derive the effect from the aggregate's epoch-settlement observation.
+    /// `None` denotes an unknown or duplicate epoch; `Some(false)` leaves other
+    /// activities active, while `Some(true)` settles the final exact activity.
+    /// Only the final observation during Running may close its interval.
+    pub const fn from_epoch_settlement(
+        settlement: Option<bool>,
+        execution: SessionExecutionState,
+    ) -> Self {
+        session_activity_settlement_plan(
+            settlement.is_some(),
+            matches!(settlement, Some(true)),
+            matches!(execution, SessionExecutionState::Running),
+        )
+    }
+}
+
 /// Decide the logical effect after the aggregate's exact epoch set has applied
 /// a removal. Only removal of the final current epoch may close Running.
 pub const fn session_activity_settlement_plan(

@@ -61,6 +61,7 @@ test-support = ["durable", "awaken-dispatch-execution/test-support"]
 nats = ["durable", "dep:async-nats", "dep:futures-lite"]
 
 [dev-dependencies]
+awaken-session-application-contract.workspace = true
 awaken-worker-contract.workspace = true
 awaken-lease-testkit.workspace = true
 awaken-store-conformance.workspace = true

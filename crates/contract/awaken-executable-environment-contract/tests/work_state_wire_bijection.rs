@@ -6,7 +6,7 @@
 //! double-executed. Exhaustive over the (finite) variant set = a complete proof of the
 //! round-trip; property-based over arbitrary strings for the fail-closed direction.
 
-use awaken_worker_contract::WorkState;
+use awaken_executable_environment_contract::WorkState;
 use proptest::prelude::*;
 
 /// The complete variant set. If a variant is added, `as_str` grows an arm (compiler-

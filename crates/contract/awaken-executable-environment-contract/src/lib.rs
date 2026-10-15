@@ -16,3 +16,6 @@ pub use registration::*;
 
 mod session_projection;
 pub use session_projection::{ResolvedSessionEnvironment, SessionEnvironmentProjectionSource};
+
+mod session_work;
+pub use session_work::*;

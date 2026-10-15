@@ -2,13 +2,13 @@
 // @formal surface obligation=work.terminal_lease_clear
 // @formal reason: Projects the neutral WorkQueue claim and its one-time Session bearer into the official
 // @formal reason: wire shape without owning lease or token state.
-//! The environment work-queue port now lives in `awaken-worker-contract` (a
+//! The environment work-queue port now lives in `awaken-executable-environment-contract` (a
 //! contract/ leaf); this module consumes it and owns the neutral→wire projection
 //! (`WorkItem` → the Anthropic `BetaSelfHostedWork`), the one place the wire shape is
 //! named.
 
-use awaken_worker_contract::WorkState as DomainWorkState;
-use awaken_worker_contract::{ClaimedWork, WorkItem, WorkPayload};
+use awaken_executable_environment_contract::WorkState as DomainWorkState;
+use awaken_executable_environment_contract::{ClaimedWork, WorkItem, WorkPayload};
 
 use crate::types::environment::{Work, WorkData, WorkObjectType, WorkState as WireWorkState};
 
@@ -16,13 +16,6 @@ use crate::types::environment::{Work, WorkData, WorkObjectType, WorkState as Wir
 /// `secret` is always `null` (no per-lease token is minted here).
 #[must_use]
 pub(crate) fn project_work(item: &WorkItem) -> Work {
-    project_work_with_secret(item, None)
-}
-
-/// Poll-only projection. Retrieval/list/update never receive a secret; this
-/// function makes that visibility boundary explicit at the single projector.
-#[must_use]
-pub(crate) fn project_work_with_secret(item: &WorkItem, secret: Option<String>) -> Work {
     Work {
         id: item.id.clone(),
         object_type: WorkObjectType::Work,
@@ -30,7 +23,7 @@ pub(crate) fn project_work_with_secret(item: &WorkItem, secret: Option<String>) 
         data: project_payload(&item.data),
         metadata: item.metadata.clone(),
         state: project_state(item.state),
-        secret: secret.into(),
+        secret: None.into(),
         acknowledged_at: item.acknowledged_at.clone().into(),
         latest_heartbeat_at: item.latest_heartbeat_at.clone().into(),
         created_at: item.created_at.clone(),
@@ -54,7 +47,9 @@ pub(crate) fn project_claim(claim: &ClaimedWork) -> Work {
         base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(serde_json::to_vec(&payload).expect("Work secret envelope serializes"))
     });
-    project_work_with_secret(&claim.item, secret)
+    let mut work = project_work(&claim.item);
+    work.secret = secret.into();
+    work
 }
 
 pub(crate) const fn project_state(state: DomainWorkState) -> WireWorkState {
@@ -78,7 +73,7 @@ fn project_payload(data: &WorkPayload) -> WorkData {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_worker_contract::WorkState;
+    use awaken_executable_environment_contract::WorkState;
     use base64::Engine as _;
     use std::collections::BTreeMap;
 

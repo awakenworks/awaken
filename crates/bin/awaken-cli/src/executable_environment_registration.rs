@@ -11,7 +11,6 @@ use awaken_executable_environment_catalog::{
     executable_environment_registration_router_with_authenticator,
 };
 use awaken_executable_environment_contract::ExecutableEnvironmentRegistrar;
-use awaken_worker_contract::WorkQueue;
 use axum::Router;
 
 use crate::PostgresSchemaMode;
@@ -28,18 +27,21 @@ pub(crate) struct ExecutableEnvironmentWiring {
 
 impl ExecutableEnvironmentWiring {
     #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn local(work: Arc<dyn WorkQueue>) -> Result<Self, String> {
+    pub(crate) fn local(
+        work: impl Into<awaken_environment_execution_application::WorkQueue>,
+    ) -> Result<Self, String> {
         Self::local_with_image_builds(work, None)
     }
 
     fn local_with_image_builds(
-        work: Arc<dyn WorkQueue>,
+        work: impl Into<awaken_environment_execution_application::WorkQueue>,
         image_builds: Option<Arc<awaken_environment_image_build::EnvironmentImageBuildCoordinator>>,
     ) -> Result<Self, String> {
+        let work = work.into();
         let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
         let registrar = coordinator_registrar(
             Arc::new(LocalExecutableEnvironmentRegistrar::new(catalog.clone())),
-            work,
+            work.lifecycle(),
             image_builds.as_ref(),
         );
         Ok(Self {
@@ -64,7 +66,7 @@ impl ExecutableEnvironmentWiring {
     async fn coordinator(
         deployment: &ResolvedDeployment,
         schema: PostgresSchemaMode,
-        work: Arc<dyn WorkQueue>,
+        work: awaken_environment_execution_application::WorkQueue,
         service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
         postgres_pools: &mut crate::postgres_pools::ProcessPostgresPools,
         clock: Arc<dyn awaken_time::WallClock>,
@@ -98,7 +100,8 @@ impl ExecutableEnvironmentWiring {
         );
         let image_builds =
             open_image_builds(deployment, schema, service_lifecycle, postgres_pools, clock).await?;
-        let registrar = coordinator_registrar(durable.clone(), work, image_builds.as_ref());
+        let registrar =
+            coordinator_registrar(durable.clone(), work.lifecycle(), image_builds.as_ref());
         let private_router = executable_environment_registration_router_with_authenticator(
             registrar.clone(),
             authenticator,
@@ -117,7 +120,7 @@ pub(crate) async fn for_runtime_role(
     role: Role,
     deployment: &ResolvedDeployment,
     schema: PostgresSchemaMode,
-    work: Arc<dyn WorkQueue>,
+    work: awaken_environment_execution_application::WorkQueue,
     service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
     postgres_pools: &mut crate::postgres_pools::ProcessPostgresPools,
     clock: Arc<dyn awaken_time::WallClock>,
@@ -148,7 +151,7 @@ pub(crate) async fn for_runtime_role(
 
 fn coordinator_registrar(
     registrar: Arc<dyn ExecutableEnvironmentRegistrar>,
-    work: Arc<dyn WorkQueue>,
+    work: Arc<dyn awaken_executable_environment_contract::EnvironmentWorkLifecycle>,
     image_builds: Option<&Arc<awaken_environment_image_build::EnvironmentImageBuildCoordinator>>,
 ) -> Arc<dyn ExecutableEnvironmentRegistrar> {
     let registrar = match image_builds {

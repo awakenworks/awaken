@@ -729,7 +729,9 @@ mod tests {
             &self,
             _claim: &RunClaim,
             _session_id: &str,
-            _session_work_authority: Option<&awaken_worker_contract::SessionWorkAuthorityReceipt>,
+            _session_work_authority: Option<
+                &awaken_session_application_contract::SessionWorkAuthorityReceipt,
+            >,
             _continuation: Option<
                 &awaken_session_configuration_contract::resource::SessionRealizationLease,
             >,

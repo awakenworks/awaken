@@ -81,7 +81,7 @@ impl ClaimedCheckpointTransport for Authority {
     async fn load_recovery_snapshot(
         &self,
         _: &RunClaim,
-        _: Option<&awaken_worker_contract::SessionWorkAuthorityReceipt>,
+        _: Option<&awaken_session_application_contract::SessionWorkAuthorityReceipt>,
     ) -> Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, DispatchError>
     {
         panic!("checkpoint operations cannot select committed recovery")

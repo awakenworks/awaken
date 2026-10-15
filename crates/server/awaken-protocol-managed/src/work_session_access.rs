@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::RedactedString;
 use awaken_environment_execution_application::EnvironmentExecutionApplication;
-use awaken_worker_contract::WorkSessionAccess;
+use awaken_executable_environment_contract::WorkSessionAccess;
 use axum::Json;
 use axum::extract::{Request, State};
 use axum::http::{Method, StatusCode};
@@ -141,7 +141,8 @@ pub async fn work_session_guard(
     let access = match state
         .environments
         // The token's expiry is judged on the Session application's clock.
-        .authenticate_session_access(&token, state.sessions.roles.clock.now_ms())
+        .session_access()
+        .authenticate(&token, state.sessions.roles.clock.now_ms())
         .await
     {
         Ok(Some(access)) => access,

@@ -123,6 +123,15 @@ evidence from drifting from the external expectation:
   a pre-aborted poller performs zero requests. A newly exported symbol
   therefore fails as unowned even when its entrypoint and file fingerprint were
   already known.
+  BashSession and betaBashTool execute separately in
+  `test/managed-bash-contract.test.mjs`, because the official implementation
+  launches `/bin/bash`. Native Windows runs delegate these four contracts to
+  the WSL distribution selected by `AWAKEN_TEST_WSL_DISTRO` (Linux Node.js 22+);
+  a missing runtime or any failed/skipped delegated contract fails the gate.
+  The remaining helpers execute natively on every platform. Recovery records
+  are created privately before writing: POSIX mode `0600`, or a protected
+  Windows DACL granting only the current owner access. Atomic no-replace hard
+  link publication preserves that file's permissions.
 - The generated oracle also fingerprints the transitive `.mjs` dependency
   closure rooted at the supported resources, Client, Session accumulator,
   EnvironmentWorker, Agent Toolset, and typed helper entrypoints. Shared client

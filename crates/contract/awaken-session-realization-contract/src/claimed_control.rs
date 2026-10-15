@@ -10,7 +10,8 @@
 //! claim-free Session application APIs, so `RunClaim` never enters the durable
 //! Session aggregate.
 
-use awaken_worker_contract::{RunClaim, SessionWorkAuthorityReceipt};
+use awaken_session_application_contract::SessionWorkAuthorityReceipt;
+use awaken_worker_contract::RunClaim;
 
 use crate::{
     SessionRealizationControl, SessionRealizationControlDisposition,

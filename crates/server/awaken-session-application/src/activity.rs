@@ -13,10 +13,11 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_session_event_contract::SessionEventProjectionAnchor;
 #[cfg(any(test, kani))]
 use awaken_session_state_contract::session_activity_open_plan;
+#[cfg(test)]
+use awaken_session_state_contract::session_activity_settlement_plan;
 use awaken_session_state_contract::{
     IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionActivitySettlementPlan,
     SessionEventDispatchSettlementEffect, SessionExecutionState, SessionRuntimeIntervalObservation,
-    session_activity_settlement_plan,
 };
 use awaken_session_types::RunError;
 use awaken_session_types::SessionRevision;
@@ -84,9 +85,6 @@ const fn activity_projection_revision_matches(
 /// @obligation session_event_batch.run_reservation_precedes_distinct_activity_receipt
 /// @obligation session_execution.activity_receipts_are_unique_durable_and_exactly_settled
 /// @obligation session_execution.initial_event_path_reaches_idle_only_after_full_settlement
-/// @proof-input-debt free_symbol session_activity_settlement_plan exact_epoch_removed
-/// @proof-input-debt free_symbol session_activity_settlement_plan execution_running
-/// @proof-input-debt free_symbol session_activity_settlement_plan last_active
 #[kani::proof]
 fn session_activity_open_and_settlement_plans_are_total_exact_and_fail_closed() {
     // Admission causes: all seven execution states, arbitrary current/exact
@@ -171,17 +169,20 @@ fn session_activity_open_and_settlement_plans_are_total_exact_and_fail_closed() 
         activity_projection_revision_matches(current_revision, projected_revision),
         projected_revision.is_none_or(|projected| projected == current_revision)
     );
-    let removed = kani::any();
-    let last = kani::any();
-    let running = kani::any();
-    let settlement = session_activity_settlement_plan(removed, last, running);
+    let observation: Option<bool> = kani::any();
+    let settlement = SessionActivitySettlementPlan::from_epoch_settlement(observation, execution);
     assert_eq!(
         settlement == SessionActivitySettlementPlan::CloseRunningInterval,
-        removed && last && running
+        observation == Some(true) && execution == SessionExecutionState::Running
     );
     assert_eq!(
         settlement == SessionActivitySettlementPlan::Stutter,
-        !removed
+        observation.is_none()
+    );
+    assert_eq!(
+        settlement == SessionActivitySettlementPlan::RetainExecution,
+        observation.is_some()
+            && (observation != Some(true) || execution != SessionExecutionState::Running)
     );
 }
 
@@ -922,11 +923,8 @@ impl SessionApplication {
                 }
                 None => session.activity().settle_activity_epoch(expected_epoch),
             };
-            let settlement_plan = session_activity_settlement_plan(
-                settlement.is_some(),
-                settlement == Some(true),
-                session.execution == SessionExecutionState::Running,
-            );
+            let settlement_plan =
+                SessionActivitySettlementPlan::from_epoch_settlement(settlement, session.execution);
             if settlement_plan == SessionActivitySettlementPlan::Stutter {
                 return Ok(session.into_snapshot());
             }

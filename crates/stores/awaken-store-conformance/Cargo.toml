@@ -13,6 +13,7 @@ authority = "store-conformance"
 separation = "test-support"
 
 [dependencies]
+awaken-executable-environment-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-credential-contract.workspace = true
 awaken-deployment-contract.workspace = true

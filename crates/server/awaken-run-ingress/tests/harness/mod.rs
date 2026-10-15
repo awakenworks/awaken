@@ -1444,12 +1444,16 @@ pub fn database_url() -> String {
 }
 
 /// A configured gate must fail; only an optional developer probe may skip.
-pub fn postgres_connection_result<T>(result: Result<T, sqlx::Error>, required: bool) -> Option<T> {
+pub fn postgres_connection_result<T>(
+    result: Result<T, sqlx::Error>,
+    required: bool,
+    report_skip: impl FnOnce(&str),
+) -> Option<T> {
     match result {
         Ok(value) => Some(value),
         Err(error) if required => panic!("configured PostgreSQL test gate is unavailable: {error}"),
         Err(_) => {
-            println!("[skip] optional development PostgreSQL is unavailable");
+            report_skip("[skip] optional development PostgreSQL is unavailable");
             None
         }
     }
@@ -1459,6 +1463,7 @@ pub async fn pool() -> Option<PgPool> {
     postgres_connection_result(
         PgPool::connect(&database_url()).await,
         std::env::var_os("AWAKEN_TEST_DATABASE_URL").is_some(),
+        |message| println!("{message}"),
     )
 }
 

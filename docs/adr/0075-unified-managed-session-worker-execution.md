@@ -496,8 +496,9 @@ The reduced decision table for the interacting ownership causes is:
 
 ### Added
 
-`SessionWorkLeaseAuthority` is a narrow internal adapter over the existing
-`WorkQueue`; `WorkMutationResult` exposes its existing atomic mutation outcome.
+`SessionWorkerLeaseAuthority` is the Session-owned acquisition and release
+decision port over the existing Environment Work authority. Queue adapters expose
+separate caller roles; `WorkMutationResult` retains the atomic mutation outcome.
 The existing claim input now carries the lease owner and poller observation
 separately. None adds storage, a registry, a poller, or another source of truth.
 New decision-table coverage and this canonical decision record verify the

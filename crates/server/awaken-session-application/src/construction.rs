@@ -18,7 +18,7 @@ use std::sync::Arc;
 use crate::{
     CredentialMaterialIngress, McpAttachmentRealizer, SessionApplication,
     SessionApplicationBuildError, SessionApplicationConfiguration, SessionCredentialSource,
-    SessionEnvironmentSource, SessionExecutionAdmission, SessionExecutor, SessionPersistence,
+    SessionEnvironments, SessionExecutionAdmission, SessionExecutor, SessionPersistence,
 };
 
 /// Material ingress always includes the matching credential read capability.
@@ -92,7 +92,7 @@ pub struct SessionApplicationBuilder {
     runtime: SessionExecutor,
     mcp: Arc<dyn McpAttachmentRealizer>,
     persistence: SessionPersistence,
-    environments: Arc<dyn SessionEnvironmentSource>,
+    environments: SessionEnvironments,
     execution: SessionExecutionAdmission,
     configuration: SessionApplicationConfiguration,
     credentials: Option<SessionCredentials>,
@@ -110,7 +110,7 @@ impl SessionApplicationBuilder {
         runtime: impl Into<SessionExecutor>,
         mcp: Arc<dyn McpAttachmentRealizer>,
         persistence: SessionPersistence,
-        environments: Arc<dyn SessionEnvironmentSource>,
+        environments: impl Into<SessionEnvironments>,
     ) -> Self {
         Self::new(
             runtime,
@@ -126,14 +126,14 @@ impl SessionApplicationBuilder {
         runtime: impl Into<SessionExecutor>,
         mcp: Arc<dyn McpAttachmentRealizer>,
         persistence: SessionPersistence,
-        environments: Arc<dyn SessionEnvironmentSource>,
+        environments: impl Into<SessionEnvironments>,
         execution: SessionExecutionAdmission,
     ) -> Self {
         Self {
             runtime: runtime.into(),
             mcp,
             persistence,
-            environments,
+            environments: environments.into(),
             execution,
             configuration: SessionApplicationConfiguration::default(),
             credentials: None,

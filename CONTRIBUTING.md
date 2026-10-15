@@ -20,6 +20,25 @@ commands and their flags by `check_gate_arguments.py`).
   absent tool and the check group it costs ([`gate_tools.json`](scripts/ci/gate_tools.json)
   declares them all).
 
+For native Windows checks, use Git Bash for shell gates. In PowerShell,
+select the same shell for pnpm scripts and hooks:
+
+```powershell
+$env:PNPM_CONFIG_SCRIPT_SHELL = 'C:\Program Files\Git\bin\bash.exe'
+$env:PYTHONUTF8 = '1'
+```
+
+Use your Git installation's path; this setting applies to the current
+PowerShell session. These settings keep quoted test patterns and `.sh`
+entry points under the same shell, and read repository sources as UTF-8.
+
+The official Managed SDK's Bash helpers require `/bin/bash`. On Windows,
+install Node.js 22 or newer in a WSL Linux distribution and select it for the
+SDK test gate with `$env:AWAKEN_TEST_WSL_DISTRO = 'your-distribution'`.
+The gate runs all four Bash helper contracts there and fails if that runtime
+is unavailable. Other SDK tests, including filesystem confinement and private
+recovery-file permissions, still execute in native Windows Node.js.
+
 ## The four entry points
 
 | Scope | Command | Notes |

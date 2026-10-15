@@ -25,20 +25,39 @@ fn configured_postgres_failure_cannot_pass_as_a_skipped_test() {
     // never green without executing SQL. No process-global env mutation needed.
     for required in [false, true] {
         assert_eq!(
-            harness::postgres_connection_result(Ok(7), required),
+            harness::postgres_connection_result(Ok(7), required, |_| {
+                panic!("a connected fixture must not report a skip")
+            }),
             Some(7)
         );
     }
+    // Capture the simulated optional probe's diagnostic: this test executes all
+    // four gate rules, so emitting a real skip would misreport its own outcome.
+    let mut diagnostic = String::new();
     assert_eq!(
-        harness::postgres_connection_result::<()>(Err(sqlx::Error::PoolClosed), false),
+        harness::postgres_connection_result::<()>(Err(sqlx::Error::PoolClosed), false, |message| {
+            diagnostic.push_str(message);
+        }),
         None
     );
+    assert_eq!(
+        diagnostic,
+        "[skip] optional development PostgreSQL is unavailable"
+    );
+    let failure = std::panic::catch_unwind(|| {
+        harness::postgres_connection_result::<()>(Err(sqlx::Error::PoolClosed), true, |_| {
+            panic!("a required fixture must fail before reporting a skip")
+        })
+    })
+    .expect_err("a configured database failure must panic");
+    let message = failure
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| failure.downcast_ref::<&str>().copied())
+        .expect("fixture gate panic message");
     assert!(
-        std::panic::catch_unwind(|| harness::postgres_connection_result::<()>(
-            Err(sqlx::Error::PoolClosed),
-            true
-        ))
-        .is_err()
+        message.starts_with("configured PostgreSQL test gate is unavailable:"),
+        "required failure must come from the gate, not the skip reporter: {message}"
     );
 }
 

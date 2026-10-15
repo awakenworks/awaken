@@ -61,7 +61,7 @@ pub(super) async fn in_memory_process_stores() -> ProcessStores {
             dream_process_store: sessions,
             capture_sink: captured_content.clone(),
             captured_content_eraser: captured_content,
-            environment_work: Arc::new(awaken_work_store::InMemoryWorkQueue::new(clock.clone())),
+            environment_work: Arc::new(awaken_work_store::InMemoryWorkQueue::new(clock.clone())).into(),
         }),
     }
 }

@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import test from 'node:test';
+import { writePrivateFile } from '../src/conformance/private-file.mjs';
 
 import {
   assertRecoverySdkIdentity,
@@ -241,10 +243,36 @@ function completeRecoveryState() {
   };
 }
 
+function assertPrivateFile(file) {
+  if (process.platform !== 'win32') {
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+    return;
+  }
+  const script = `
+    $ErrorActionPreference = 'Stop'
+    [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+    $file = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $acl = [IO.File]::GetAccessControl($file)
+    $owner = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+    if (!$acl.AreAccessRulesProtected -or $rules.Count -ne 1 -or
+      $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $owner -or
+      $rules[0].IdentityReference.Value -ne $owner -or $rules[0].IsInherited -or
+      $rules[0].AccessControlType -ne 'Allow' -or $rules[0].FileSystemRights -ne 'FullControl') { exit 1 }
+  `;
+  const result = spawnSync(path.join(process.env.SystemRoot, 'System32',
+    'WindowsPowerShell', 'v1.0', 'powershell.exe'), [
+    '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand',
+    Buffer.from(script, 'utf16le').toString('base64'),
+  ], { input: JSON.stringify(file), encoding: 'utf8', windowsHide: true });
+  if (result.error) throw result.error;
+  assert.equal(result.status, 0, `owner-only protected Windows DACL: ${result.stderr}`);
+}
+
 test('recovery state has one closed, atomic wire format', () => {
   // Grammar/commit table: the exact eleven-field v1 record is admitted; missing,
   // extra, blank, wrong-version, or wrong-role states fail before any service
-  // read. Persistence publishes the whole 0600 file by an atomic no-replace
+  // read. Persistence publishes the whole owner-only file by an atomic no-replace
   // hard link and refuses to
   // overwrite prior evidence, so a partial/stale phase cannot impersonate it.
   const state = completeRecoveryState();
@@ -269,19 +297,41 @@ test('recovery state has one closed, atomic wire format', () => {
     writeRecoveryState(stateFile, state);
     assert.deepEqual(JSON.parse(fs.readFileSync(stateFile, 'utf8')), state);
     assert.throws(() => writeRecoveryState(stateFile, state), /must be new/u);
+    assert.deepEqual(fs.readdirSync(directory), ['state.json'], 'only the complete publication remains');
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
 
-test('POSIX recovery-state permissions restrict access to its owner', {
-  skip: process.platform === 'win32' ? 'POSIX mode bits; executed in Linux' : false,
-}, () => {
+test('recovery-state permissions restrict access to its owner on the native platform', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-recovery-mode-'));
   try {
     const stateFile = path.join(directory, 'state.json');
     writeRecoveryState(stateFile, completeRecoveryState());
-    assert.equal(fs.statSync(stateFile).mode & 0o777, 0o600);
+    assertPrivateFile(stateFile);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('private file creation preserves UTF-8 and exclusive ownership for Unicode and long paths', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-private-'));
+  try {
+    const contents = '恢复记录\n';
+    for (const file of [
+      path.join(directory, "恢复 ' evidence.json"),
+      path.join(directory, 'a'.repeat(120), 'b'.repeat(120), 'state.json'),
+    ]) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      writePrivateFile(file, contents);
+      assert.equal(fs.readFileSync(file, 'utf8'), contents);
+      assertPrivateFile(file);
+      assert.throws(() => writePrivateFile(file, 'replacement'));
+      assert.equal(fs.readFileSync(file, 'utf8'), contents);
+      assert.deepEqual(fs.readdirSync(path.dirname(file)), [path.basename(file)]);
+    }
+    assert.throws(() => writePrivateFile(path.join(directory, 'missing', 'state'), contents));
+    assert.equal(fs.existsSync(path.join(directory, 'missing')), false);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }

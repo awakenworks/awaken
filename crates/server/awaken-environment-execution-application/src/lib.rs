@@ -5,13 +5,24 @@
 //! Session snapshot compilation, executable-registration convergence, and
 //! Environment-scoped work commands.
 
+#[cfg(test)]
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+mod work_ports;
+pub use work_ports::WorkQueue;
+mod work_roles;
+pub use work_roles::{
+    SessionAccessAuthenticator, SessionWorkLeaseControl, WorkConsumer, WorkMetadataPatch,
+    WorkQueries,
+};
 mod session_access;
 pub use session_access::SESSION_TOKEN_PREFIX;
 
 use awaken_environment_contract::{EnvItem, EnvironmentConfig, EnvironmentNetworking};
+#[cfg(test)]
+use awaken_executable_environment_contract::WorkItem;
+use awaken_executable_environment_contract::WorkQueueError;
 use awaken_executable_environment_contract::{
     EnvironmentImageBuildError, EnvironmentImageReadiness,
 };
@@ -21,10 +32,8 @@ use awaken_executable_environment_contract::{
     ExecutableEnvironmentRegistrationSource, ExecutableEnvironmentWithdrawal,
     ExecutableEnvironmentWithdrawalOutcome,
 };
-use awaken_worker_contract::{
-    ClaimedWork, HeartbeatResult, LeaseHeartbeat, QueueStats, WorkItem, WorkQueue, WorkQueueError,
-    WorkSessionAccess,
-};
+#[cfg(test)]
+use awaken_executable_environment_contract::{HeartbeatResult, LeaseHeartbeat, QueueStats};
 
 /// Application-level failure returned to outer transports.
 #[derive(Debug, thiserror::Error)]
@@ -39,7 +48,7 @@ pub enum EnvironmentExecutionError {
 
 /// Coordinator-owned executable projection and WorkQueue application service.
 pub struct EnvironmentExecutionApplication {
-    work: Arc<dyn WorkQueue>,
+    work: WorkQueue,
     execution_source: Arc<dyn ExecutableEnvironmentRegistrationSource>,
     image_readiness: Option<Arc<dyn EnvironmentImageReadiness>>,
     cloud_native_credential_realization:
@@ -49,11 +58,11 @@ pub struct EnvironmentExecutionApplication {
 impl EnvironmentExecutionApplication {
     #[must_use]
     pub fn new(
-        work: Arc<dyn WorkQueue>,
+        work: impl Into<WorkQueue>,
         execution_source: Arc<dyn ExecutableEnvironmentRegistrationSource>,
     ) -> Self {
         Self {
-            work,
+            work: work.into(),
             execution_source,
             image_readiness: None,
             cloud_native_credential_realization: None,
@@ -85,7 +94,7 @@ impl EnvironmentExecutionApplication {
         &self,
         worker_owner: &str,
     ) -> Result<bool, WorkQueueError> {
-        self.work.has_owner_claims(worker_owner).await
+        self.work.observation.has_owner_claims(worker_owner).await
     }
 
     pub async fn get(
@@ -232,212 +241,6 @@ impl EnvironmentExecutionApplication {
                 registration.is_some_and(|registration| registration.definition.is_self_hosted())
             })
     }
-
-    async fn require_environment(
-        &self,
-        environment_id: &str,
-    ) -> Result<(), EnvironmentExecutionError> {
-        if self
-            .execution_source
-            .current_registration(environment_id)
-            .await?
-            .is_some()
-        {
-            Ok(())
-        } else {
-            Err(EnvironmentExecutionError::EnvironmentNotFound)
-        }
-    }
-
-    pub async fn list_work(
-        &self,
-        environment_id: &str,
-    ) -> Result<Vec<WorkItem>, EnvironmentExecutionError> {
-        self.require_environment(environment_id).await?;
-        Ok(self.work.list(environment_id).await?)
-    }
-
-    pub async fn claim_work(
-        &self,
-        environment_id: &str,
-        lease_owner: &str,
-        poller_id: &str,
-        now_ms: u64,
-        reclaim_older_than_ms: Option<u64>,
-    ) -> Result<Option<WorkItem>, EnvironmentExecutionError> {
-        self.require_environment(environment_id).await?;
-        Ok(self
-            .work
-            .claim_with_reclaim(
-                environment_id,
-                lease_owner,
-                poller_id,
-                now_ms,
-                reclaim_older_than_ms,
-            )
-            .await?)
-    }
-
-    /// Claim through the same WorkQueue transaction while returning the
-    /// one-time per-Session capability needed by the official Environment
-    /// Worker. The bearer is minted here; the queue binds only its digest to
-    /// the new lease epoch, and the cleartext is returned only when that bind
-    /// happened (the claimed item is Session work).
-    pub async fn claim_work_with_session_access(
-        &self,
-        environment_id: &str,
-        lease_owner: &str,
-        poller_id: &str,
-        now_ms: u64,
-        reclaim_older_than_ms: Option<u64>,
-    ) -> Result<Option<ClaimedWork>, EnvironmentExecutionError> {
-        self.require_environment(environment_id).await?;
-        let minted = session_access::mint_session_access();
-        let claim = self
-            .work
-            .claim_with_session_access(
-                environment_id,
-                lease_owner,
-                poller_id,
-                now_ms,
-                reclaim_older_than_ms,
-                &minted.digest,
-            )
-            .await?;
-        claim
-            .map(|claim| {
-                let sessions_token = match claim.session_access {
-                    None => None,
-                    Some(bound) if bound == minted.digest => Some(minted.cleartext),
-                    Some(_) => {
-                        return Err(EnvironmentExecutionError::WorkQueue(
-                            WorkQueueError::Storage(
-                                "WorkQueue bound a Session access digest it was not given".into(),
-                            ),
-                        ));
-                    }
-                };
-                Ok(ClaimedWork {
-                    item: claim.item,
-                    sessions_token,
-                })
-            })
-            .transpose()
-    }
-
-    /// Resolve one per-Session bearer through the durable WorkQueue lease its
-    /// digest was bound to. The application owns no credential cache or
-    /// fallback token directory.
-    pub async fn authenticate_session_access(
-        &self,
-        presented: &awaken_agent_contract::RedactedString,
-        now_ms: u64,
-    ) -> Result<Option<WorkSessionAccess>, EnvironmentExecutionError> {
-        Ok(self
-            .work
-            .authenticate_session_access(&session_access::session_access_digest(presented), now_ms)
-            .await?)
-    }
-
-    pub async fn work_stats(
-        &self,
-        environment_id: &str,
-        now_ms: u64,
-    ) -> Result<QueueStats, EnvironmentExecutionError> {
-        self.require_environment(environment_id).await?;
-        Ok(self.work.stats(environment_id, now_ms).await?)
-    }
-
-    pub async fn get_work(
-        &self,
-        environment_id: &str,
-        work_id: &str,
-    ) -> Result<Option<WorkItem>, EnvironmentExecutionError> {
-        self.require_environment(environment_id).await?;
-        Ok(self.work.get(environment_id, work_id).await?)
-    }
-
-    pub async fn update_work_metadata(
-        &self,
-        environment_id: &str,
-        work_id: &str,
-        patch: BTreeMap<String, Option<String>>,
-    ) -> Result<Option<WorkItem>, EnvironmentExecutionError> {
-        self.require_environment(environment_id).await?;
-        Ok(self
-            .work
-            .update_metadata(environment_id, work_id, patch)
-            .await?)
-    }
-
-    pub async fn acknowledge_work(
-        &self,
-        environment_id: &str,
-        work_id: &str,
-        worker_id: &str,
-    ) -> Result<awaken_worker_contract::WorkMutationResult, EnvironmentExecutionError> {
-        self.require_environment(environment_id).await?;
-        Ok(self.work.ack(environment_id, work_id, worker_id).await?)
-    }
-
-    /// Acknowledge only if the exact lease epoch recovered from the Work secret
-    /// is still current. This closes the authenticate-then-reclaim race without
-    /// changing the Environment-key mutation path.
-    pub async fn acknowledge_work_with_session_access(
-        &self,
-        access: &WorkSessionAccess,
-    ) -> Result<awaken_worker_contract::WorkMutationResult, EnvironmentExecutionError> {
-        self.require_environment(&access.environment_id).await?;
-        Ok(self.work.ack_with_session_access(access).await?)
-    }
-
-    pub async fn heartbeat_work(
-        &self,
-        environment_id: &str,
-        work_id: &str,
-        worker_id: &str,
-        now_ms: u64,
-        heartbeat: LeaseHeartbeat,
-    ) -> Result<HeartbeatResult, EnvironmentExecutionError> {
-        self.require_environment(environment_id).await?;
-        Ok(self
-            .work
-            .heartbeat(environment_id, work_id, worker_id, now_ms, heartbeat)
-            .await?)
-    }
-
-    /// Heartbeat only the exact Work-secret lease epoch.
-    pub async fn heartbeat_work_with_session_access(
-        &self,
-        access: &WorkSessionAccess,
-        now_ms: u64,
-        heartbeat: LeaseHeartbeat,
-    ) -> Result<HeartbeatResult, EnvironmentExecutionError> {
-        self.require_environment(&access.environment_id).await?;
-        Ok(self
-            .work
-            .heartbeat_with_session_access(access, now_ms, heartbeat)
-            .await?)
-    }
-
-    pub async fn stop_work(
-        &self,
-        environment_id: &str,
-        work_id: &str,
-        worker_id: &str,
-    ) -> Result<awaken_worker_contract::WorkMutationResult, EnvironmentExecutionError> {
-        self.require_environment(environment_id).await?;
-        Ok(self.work.stop(environment_id, work_id, worker_id).await?)
-    }
-
-    /// Stop only the exact Work-secret lease epoch.
-    pub async fn stop_work_with_session_access(
-        &self,
-        access: &WorkSessionAccess,
-    ) -> Result<awaken_worker_contract::WorkMutationResult, EnvironmentExecutionError> {
-        self.require_environment(&access.environment_id).await?;
-        Ok(self.work.stop_with_session_access(access).await?)
-    }
 }
 
 #[async_trait::async_trait]
@@ -491,90 +294,104 @@ impl awaken_executable_environment_contract::SessionEnvironmentProjectionSource
     }
 }
 
+fn session_work_unavailable(error: WorkQueueError) -> awaken_session_types::RunError {
+    let WorkQueueError::Storage(detail) = error;
+    awaken_session_types::RunError::unavailable(detail.to_string())
+}
+
 #[async_trait::async_trait]
-impl awaken_worker_contract::SessionWorkSource for EnvironmentExecutionApplication {
-    async fn enqueue_session_work(
+impl awaken_session_application_contract::SessionWorkerAssignment
+    for EnvironmentExecutionApplication
+{
+    async fn enqueue_session(
         &self,
         environment_id: &str,
-        session_id: &str,
-    ) -> Result<String, WorkQueueError> {
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<String, awaken_session_types::RunError> {
         self.work
-            .enqueue_session(
-                environment_id,
-                &awaken_session_types::SessionId::from(session_id),
-            )
+            .assignment
+            .enqueue_session(environment_id, session_id)
             .await
+            .map_err(session_work_unavailable)
     }
 
-    async fn wake_session_work(
+    async fn wake_session(
         &self,
         environment_id: &str,
-        session_id: &str,
-    ) -> Result<String, WorkQueueError> {
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<String, awaken_session_types::RunError> {
         self.work
-            .wake_session(
-                environment_id,
-                &awaken_session_types::SessionId::from(session_id),
-            )
+            .assignment
+            .wake_session(environment_id, session_id)
             .await
+            .map_err(session_work_unavailable)
     }
 
-    async fn retire_session_work(
+    async fn retire_session(
         &self,
         environment_id: &str,
-        session_id: &str,
-    ) -> Result<Option<WorkItem>, WorkQueueError> {
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<(), awaken_session_types::RunError> {
         self.work
-            .retire_session(
-                environment_id,
-                &awaken_session_types::SessionId::from(session_id),
-            )
+            .assignment
+            .retire_session(environment_id, session_id)
             .await
+            .map(|_| ())
+            .map_err(session_work_unavailable)
     }
+}
 
-    async fn release_session_work(
+#[async_trait::async_trait]
+impl awaken_session_application_contract::SessionWorkerLeases for EnvironmentExecutionApplication {
+    async fn release_session(
         &self,
-        lease: &awaken_worker_contract::SessionWorkLease,
-    ) -> Result<bool, WorkQueueError> {
-        self.work.release_session(lease).await
+        lease: &awaken_session_types::SessionWorkLease,
+    ) -> Result<bool, awaken_session_types::RunError> {
+        self.work
+            .worker_leases
+            .release_session(lease)
+            .await
+            .map_err(session_work_unavailable)
     }
 
-    async fn acquire_session_work(
+    async fn acquire_session(
         &self,
         environment_id: &str,
-        session_id: &str,
+        session_id: &awaken_session_types::SessionId,
         worker_owner: &str,
         now_ms: u64,
-    ) -> Result<Option<awaken_worker_contract::SessionWorkLease>, WorkQueueError> {
+    ) -> Result<Option<awaken_session_types::SessionWorkLease>, awaken_session_types::RunError>
+    {
         self.work
-            .acquire_session(
-                environment_id,
-                &awaken_session_types::SessionId::from(session_id),
-                worker_owner,
-                now_ms,
-            )
+            .worker_leases
+            .acquire_session(environment_id, session_id, worker_owner, now_ms)
             .await
+            .map_err(session_work_unavailable)
     }
 
-    async fn release_worker_session_work(
+    async fn release_owner(
         &self,
         worker_owner: &str,
-    ) -> Result<usize, WorkQueueError> {
-        self.work.release_owner(worker_owner).await
+    ) -> Result<usize, awaken_session_types::RunError> {
+        self.work
+            .worker_leases
+            .release_owner(worker_owner)
+            .await
+            .map_err(session_work_unavailable)
     }
 }
 
 /// Registration and WorkQueue intent converge before Control receives an acknowledgement.
 pub struct CoordinatorEnvironmentRegistrar {
     delegate: Arc<dyn ExecutableEnvironmentRegistrar>,
-    work: Arc<dyn WorkQueue>,
+    work: Arc<dyn awaken_executable_environment_contract::EnvironmentWorkLifecycle>,
 }
 
 impl CoordinatorEnvironmentRegistrar {
     #[must_use]
     pub fn new(
         delegate: Arc<dyn ExecutableEnvironmentRegistrar>,
-        work: Arc<dyn WorkQueue>,
+        work: Arc<dyn awaken_executable_environment_contract::EnvironmentWorkLifecycle>,
     ) -> Self {
         Self { delegate, work }
     }
@@ -800,6 +617,10 @@ fn session_network_policy(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_executable_environment_contract::{
+        EnvironmentWorkLifecycle, SessionWorkStore, SessionWorkerLeaseStore, WorkConsumer,
+        WorkQueries, WorkerLeaseObservation,
+    };
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use awaken_environment_contract::{
@@ -808,8 +629,8 @@ mod tests {
     use awaken_executable_environment_catalog::{
         ExecutableEnvironmentCatalog, LocalExecutableEnvironmentRegistrar,
     };
+    use awaken_executable_environment_contract::HeartbeatCondition;
     use awaken_work_store::InMemoryWorkQueue;
-    use awaken_worker_contract::HeartbeatCondition;
 
     fn registration(
         id: &str,
@@ -1392,7 +1213,7 @@ mod tests {
         let (_, _, registrar, application) = fixture();
         assert!(
             matches!(
-                application.list_work("missing").await,
+                application.work_queries().list("missing").await,
                 Err(EnvironmentExecutionError::EnvironmentNotFound)
             ),
             "W1"
@@ -1403,19 +1224,23 @@ mod tests {
             .unwrap();
         assert!(
             application
-                .get_work("worker", "missing")
+                .work_queries()
+                .get("worker", "missing")
                 .await
                 .unwrap()
                 .is_none(),
             "W2"
         );
         let claimed = application
-            .claim_work("worker", "worker-a", "worker-a", 10, None)
+            .work_consumer()
+            .claim("worker", "worker-a", "worker-a", 10, None)
             .await
             .unwrap()
-            .expect("healthcheck is claimable");
+            .expect("healthcheck is claimable")
+            .item;
         let accepted = application
-            .heartbeat_work(
+            .work_consumer()
+            .heartbeat(
                 "worker",
                 &claimed.id,
                 "worker-a",
@@ -1429,7 +1254,8 @@ mod tests {
             .unwrap();
         assert!(matches!(accepted, HeartbeatResult::Accepted(_)), "W3");
         let stale = application
-            .heartbeat_work(
+            .work_consumer()
+            .heartbeat(
                 "worker",
                 &claimed.id,
                 "worker-a",
@@ -1449,34 +1275,23 @@ mod tests {
         fail_ensure: AtomicBool,
         fail_list: AtomicBool,
         fail_remove: AtomicBool,
+        fail_session_operations: AtomicBool,
+    }
+
+    impl FailingConvergenceQueue {
+        fn require_session_storage(&self, operation: &str) -> Result<(), WorkQueueError> {
+            if self.fail_session_operations.load(Ordering::SeqCst) {
+                Err(WorkQueueError::Storage(
+                    format!("session storage outage: {operation}").into(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
     }
 
     #[async_trait::async_trait]
-    impl WorkQueue for FailingConvergenceQueue {
-        async fn enqueue_session(
-            &self,
-            env: &str,
-            session: &awaken_session_types::SessionId,
-        ) -> Result<String, WorkQueueError> {
-            self.inner.enqueue_session(env, session).await
-        }
-        async fn wake_session(
-            &self,
-            env: &str,
-            session: &awaken_session_types::SessionId,
-        ) -> Result<String, WorkQueueError> {
-            self.inner.wake_session(env, session).await
-        }
-        async fn enqueue_healthcheck(&self, env: &str) -> Result<String, WorkQueueError> {
-            self.inner.enqueue_healthcheck(env).await
-        }
-        async fn ensure_healthcheck(&self, env: &str) -> Result<String, WorkQueueError> {
-            if self.fail_ensure.load(Ordering::SeqCst) {
-                Err(WorkQueueError::Storage("ensure outage".into()))
-            } else {
-                self.inner.ensure_healthcheck(env).await
-            }
-        }
+    impl awaken_executable_environment_contract::WorkQueries for FailingConvergenceQueue {
         async fn list(&self, env: &str) -> Result<Vec<WorkItem>, WorkQueueError> {
             if self.fail_list.load(Ordering::SeqCst) {
                 Err(WorkQueueError::Storage("list outage".into()))
@@ -1486,6 +1301,27 @@ mod tests {
         }
         async fn get(&self, env: &str, work: &str) -> Result<Option<WorkItem>, WorkQueueError> {
             self.inner.get(env, work).await
+        }
+        async fn stats(&self, env: &str, now: u64) -> Result<QueueStats, WorkQueueError> {
+            self.inner.stats(env, now).await
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_executable_environment_contract::WorkConsumer for FailingConvergenceQueue {
+        async fn claim_with_session_access(
+            &self,
+            env: &str,
+            owner: &str,
+            poller: &str,
+            now: u64,
+            reclaim: Option<u64>,
+            digest: &awaken_executable_environment_contract::SessionAccessDigest,
+        ) -> Result<Option<awaken_executable_environment_contract::WorkClaim>, WorkQueueError>
+        {
+            self.inner
+                .claim_with_session_access(env, owner, poller, now, reclaim, digest)
+                .await
         }
         async fn claim_with_reclaim(
             &self,
@@ -1514,7 +1350,8 @@ mod tests {
             env: &str,
             work: &str,
             worker: &str,
-        ) -> Result<awaken_worker_contract::WorkMutationResult, WorkQueueError> {
+        ) -> Result<awaken_executable_environment_contract::WorkMutationResult, WorkQueueError>
+        {
             self.inner.ack(env, work, worker).await
         }
         async fn heartbeat(
@@ -1534,15 +1371,90 @@ mod tests {
             env: &str,
             work: &str,
             worker: &str,
-        ) -> Result<awaken_worker_contract::WorkMutationResult, WorkQueueError> {
+        ) -> Result<awaken_executable_environment_contract::WorkMutationResult, WorkQueueError>
+        {
             self.inner.stop(env, work, worker).await
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_executable_environment_contract::SessionAccessAuthenticator
+        for FailingConvergenceQueue
+    {
+        async fn authenticate_session_access(
+            &self,
+            digest: &awaken_executable_environment_contract::SessionAccessDigest,
+            now: u64,
+        ) -> Result<Option<awaken_executable_environment_contract::WorkSessionAccess>, WorkQueueError>
+        {
+            self.inner.authenticate_session_access(digest, now).await
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_executable_environment_contract::SessionWorkLeaseControl for FailingConvergenceQueue {
+        async fn ack_with_session_access(
+            &self,
+            access: &awaken_executable_environment_contract::WorkSessionAccess,
+        ) -> Result<awaken_executable_environment_contract::WorkMutationResult, WorkQueueError>
+        {
+            self.inner.ack_with_session_access(access).await
+        }
+        async fn heartbeat_with_session_access(
+            &self,
+            access: &awaken_executable_environment_contract::WorkSessionAccess,
+            now: u64,
+            heartbeat: LeaseHeartbeat,
+        ) -> Result<HeartbeatResult, WorkQueueError> {
+            self.inner
+                .heartbeat_with_session_access(access, now, heartbeat)
+                .await
+        }
+        async fn stop_with_session_access(
+            &self,
+            access: &awaken_executable_environment_contract::WorkSessionAccess,
+        ) -> Result<awaken_executable_environment_contract::WorkMutationResult, WorkQueueError>
+        {
+            self.inner.stop_with_session_access(access).await
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SessionWorkStore for FailingConvergenceQueue {
+        async fn enqueue_session(
+            &self,
+            env: &str,
+            session: &awaken_session_types::SessionId,
+        ) -> Result<String, WorkQueueError> {
+            self.require_session_storage("enqueue")?;
+            self.inner.enqueue_session(env, session).await
+        }
+        async fn wake_session(
+            &self,
+            env: &str,
+            session: &awaken_session_types::SessionId,
+        ) -> Result<String, WorkQueueError> {
+            self.require_session_storage("wake")?;
+            self.inner.wake_session(env, session).await
         }
         async fn retire_session(
             &self,
             env: &str,
             session: &awaken_session_types::SessionId,
         ) -> Result<Option<WorkItem>, WorkQueueError> {
+            self.require_session_storage("retire")?;
             self.inner.retire_session(env, session).await
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SessionWorkerLeaseStore for FailingConvergenceQueue {
+        async fn release_session(
+            &self,
+            lease: &awaken_session_types::SessionWorkLease,
+        ) -> Result<bool, WorkQueueError> {
+            self.require_session_storage("release")?;
+            self.inner.release_session(lease).await
         }
         async fn acquire_session(
             &self,
@@ -1550,15 +1462,25 @@ mod tests {
             session: &awaken_session_types::SessionId,
             worker: &str,
             now: u64,
-        ) -> Result<Option<awaken_worker_contract::SessionWorkLease>, WorkQueueError> {
+        ) -> Result<Option<awaken_session_types::SessionWorkLease>, WorkQueueError> {
+            self.require_session_storage("acquire")?;
             self.inner.acquire_session(env, session, worker, now).await
         }
         async fn release_owner(&self, worker_owner: &str) -> Result<usize, WorkQueueError> {
+            self.require_session_storage("release_owner")?;
             self.inner.release_owner(worker_owner).await
         }
+    }
+
+    #[async_trait::async_trait]
+    impl WorkerLeaseObservation for FailingConvergenceQueue {
         async fn has_owner_claims(&self, worker_owner: &str) -> Result<bool, WorkQueueError> {
             self.inner.has_owner_claims(worker_owner).await
         }
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_executable_environment_contract::WorkMetadataPatch for FailingConvergenceQueue {
         async fn update_metadata(
             &self,
             env: &str,
@@ -1567,8 +1489,19 @@ mod tests {
         ) -> Result<Option<WorkItem>, WorkQueueError> {
             self.inner.update_metadata(env, work, patch).await
         }
-        async fn stats(&self, env: &str, now: u64) -> Result<QueueStats, WorkQueueError> {
-            self.inner.stats(env, now).await
+    }
+
+    #[async_trait::async_trait]
+    impl EnvironmentWorkLifecycle for FailingConvergenceQueue {
+        async fn enqueue_healthcheck(&self, env: &str) -> Result<String, WorkQueueError> {
+            self.inner.enqueue_healthcheck(env).await
+        }
+        async fn ensure_healthcheck(&self, env: &str) -> Result<String, WorkQueueError> {
+            if self.fail_ensure.load(Ordering::SeqCst) {
+                Err(WorkQueueError::Storage("ensure outage".into()))
+            } else {
+                self.inner.ensure_healthcheck(env).await
+            }
         }
         async fn remove_env(&self, env: &str) -> Result<(), WorkQueueError> {
             if self.fail_remove.load(Ordering::SeqCst) {
@@ -1577,6 +1510,105 @@ mod tests {
                 self.inner.remove_env(env).await
             }
         }
+    }
+
+    #[tokio::test]
+    async fn session_ports_classify_storage_outages_without_widening_error_conversions() {
+        use awaken_session_application_contract::{
+            SessionWorkerAssignment as Assignment, SessionWorkerLeases as Leases,
+        };
+        use awaken_session_types::{RunErrorClassification, SessionId, SessionWorkLease};
+
+        // E1 each Session operation preserves storage unavailability and its
+        // operation-specific detail. E2 no failure grants authority or creates
+        // work. E3 storage recovery permits the same enqueue to commit once.
+        // Six independent failure rows cover enqueue/wake/retire/acquire/release/
+        // release_owner; queue queries observe effects independently of errors.
+        let work = Arc::new(FailingConvergenceQueue {
+            inner: InMemoryWorkQueue::new(awaken_time::system_clock()),
+            fail_ensure: AtomicBool::new(false),
+            fail_list: AtomicBool::new(false),
+            fail_remove: AtomicBool::new(false),
+            fail_session_operations: AtomicBool::new(true),
+        });
+        let application = EnvironmentExecutionApplication::new(
+            work.clone(),
+            Arc::new(ExecutableEnvironmentCatalog::new()),
+        );
+        let session = SessionId::from("session-a");
+        let lease =
+            SessionWorkLease::from_persisted("work", "env", session.clone(), "owner", 1, 100)
+                .expect("nonzero observation");
+        let errors = [
+            (
+                "enqueue",
+                Assignment::enqueue_session(&application, "env", &session)
+                    .await
+                    .unwrap_err(),
+            ),
+            (
+                "wake",
+                Assignment::wake_session(&application, "env", &session)
+                    .await
+                    .unwrap_err(),
+            ),
+            (
+                "retire",
+                Assignment::retire_session(&application, "env", &session)
+                    .await
+                    .unwrap_err(),
+            ),
+            (
+                "acquire",
+                Leases::acquire_session(&application, "env", &session, "owner", 0)
+                    .await
+                    .unwrap_err(),
+            ),
+            (
+                "release",
+                Leases::release_session(&application, &lease)
+                    .await
+                    .unwrap_err(),
+            ),
+            (
+                "release_owner",
+                Leases::release_owner(&application, "owner")
+                    .await
+                    .unwrap_err(),
+            ),
+        ];
+        for (operation, error) in errors {
+            assert_eq!(
+                error.classification(),
+                RunErrorClassification::Unavailable,
+                "{operation}"
+            );
+            assert_eq!(
+                error.message,
+                format!("session storage outage: {operation}")
+            );
+        }
+        assert!(
+            work.inner.list("env").await.unwrap().is_empty(),
+            "E2 no assignment"
+        );
+        assert!(
+            !work.inner.has_owner_claims("owner").await.unwrap(),
+            "E2 no authority"
+        );
+        work.fail_session_operations.store(false, Ordering::SeqCst);
+        let id = Assignment::enqueue_session(&application, "env", &session)
+            .await
+            .unwrap();
+        assert_eq!(
+            work.inner.list("env").await.unwrap().len(),
+            1,
+            "E3 committed once"
+        );
+        assert!(
+            work.inner.get("env", &id).await.unwrap().is_some(),
+            "E3 exact assignment"
+        );
     }
 
     #[tokio::test]
@@ -1598,6 +1630,7 @@ mod tests {
             fail_ensure: AtomicBool::new(true),
             fail_list: AtomicBool::new(false),
             fail_remove: AtomicBool::new(false),
+            fail_session_operations: AtomicBool::new(false),
         });
         let registrar = CoordinatorEnvironmentRegistrar::new(
             Arc::new(LocalExecutableEnvironmentRegistrar::new(catalog.clone())),
@@ -1698,7 +1731,7 @@ mod tests {
         );
         assert!(
             matches!(
-                catalog_failure.list_work("environment-a").await,
+                catalog_failure.work_queries().list("environment-a").await,
                 Err(EnvironmentExecutionError::Registration(
                     ExecutableEnvironmentRegistrationError::Storage(_)
                 ))
@@ -1712,6 +1745,7 @@ mod tests {
             fail_ensure: AtomicBool::new(false),
             fail_list: AtomicBool::new(false),
             fail_remove: AtomicBool::new(false),
+            fail_session_operations: AtomicBool::new(false),
         });
         let registrar = CoordinatorEnvironmentRegistrar::new(
             Arc::new(LocalExecutableEnvironmentRegistrar::new(catalog.clone())),
@@ -1729,7 +1763,7 @@ mod tests {
         let application = EnvironmentExecutionApplication::new(work, catalog);
         assert!(
             matches!(
-                application.list_work("environment-a").await,
+                application.work_queries().list("environment-a").await,
                 Err(EnvironmentExecutionError::WorkQueue(
                     WorkQueueError::Storage(_)
                 ))
@@ -1765,7 +1799,8 @@ mod tests {
             .unwrap();
         let claimed = loop {
             let claimed = application
-                .claim_work_with_session_access("worker", "owner-a", "poller", now, None)
+                .work_consumer()
+                .claim("worker", "owner-a", "poller", now, None)
                 .await
                 .unwrap()
                 .expect("queued work");
@@ -1783,7 +1818,8 @@ mod tests {
         };
         let token = claimed.sessions_token.expect("A2 bearer");
         let access = application
-            .authenticate_session_access(&token, now)
+            .session_access()
+            .authenticate(&token, now)
             .await
             .unwrap()
             .expect("A2 bound digest");
@@ -1794,7 +1830,8 @@ mod tests {
         );
         assert!(
             application
-                .authenticate_session_access(
+                .session_access()
+                .authenticate(
                     &awaken_agent_contract::RedactedString::new("sk-ant-req-other"),
                     now,
                 )
@@ -1805,14 +1842,16 @@ mod tests {
         );
         let reclaimed_at = now + awaken_work_store::LEASE_TTL_MS;
         let replacement = application
-            .claim_work_with_session_access("worker", "owner-b", "poller", reclaimed_at, None)
+            .work_consumer()
+            .claim("worker", "owner-b", "poller", reclaimed_at, None)
             .await
             .unwrap()
             .expect("A4 reclaim");
         let replacement_token = replacement.sessions_token.expect("A4 fresh bearer");
         assert!(
             application
-                .authenticate_session_access(&token, reclaimed_at)
+                .session_access()
+                .authenticate(&token, reclaimed_at)
                 .await
                 .unwrap()
                 .is_none(),
@@ -1820,7 +1859,8 @@ mod tests {
         );
         assert_eq!(
             application
-                .authenticate_session_access(&replacement_token, reclaimed_at)
+                .session_access()
+                .authenticate(&replacement_token, reclaimed_at)
                 .await
                 .unwrap()
                 .expect("A4 replacement")
