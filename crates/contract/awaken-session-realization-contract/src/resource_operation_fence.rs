@@ -44,3 +44,14 @@ impl From<RunClaim> for ResourceOperationFence {
         Self::Run(claim)
     }
 }
+
+impl ResourceOperationFence {
+    /// Original Run identity only; consumers retain their own data contract
+    /// and callers still validate the existing live authority independently.
+    pub fn run_claim_identity(&self) -> Option<(&str, &str, u64)> {
+        match self {
+            Self::Run(claim) => Some((&claim.run_id.0, &claim.owner, claim.epoch)),
+            _ => None,
+        }
+    }
+}

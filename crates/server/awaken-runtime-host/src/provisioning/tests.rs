@@ -2644,6 +2644,7 @@ impl awaken_resource_contract::ArtifactPublisher<crate::ResourceOperationFence>
             self.inner
                 .replace_capture(
                     awaken_resource_contract::ReplaceArtifactCapture {
+                        origin: None,
                         workspace_id: workspace.into(),
                         session_id: session.into(),
                         expected_revision: current.as_ref().unwrap().revision,
@@ -2705,6 +2706,7 @@ impl awaken_resource_contract::ArtifactPublisher<crate::ResourceOperationFence>
             return Ok(
                 awaken_resource_contract::ReplaceArtifactCaptureOutcome::Applied(
                     awaken_resource_contract::ArtifactCapture {
+                        origin: None,
                         workspace_id: request.workspace_id,
                         session_id: request.session_id,
                         revision: request.expected_revision + 1,
@@ -2776,6 +2778,7 @@ async fn artifact_capture_failures_do_not_publish_partial_or_rebased_sets() {
             );
         let application = dependencies.resources.file_application.clone().unwrap();
         let request = awaken_resource_contract::ReplaceArtifactCapture {
+            origin: None,
             workspace_id: "workspace-a".into(),
             session_id: "capture-fault".into(),
             expected_revision: 0,

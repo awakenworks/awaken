@@ -273,6 +273,20 @@ Released and Failed generations; `SessionCleanupOperation` owns terminal receipt
 
 ## Resource Input Component Catalog
 
+Artifact capture retains the original publishing Run reference beside its
+existing complete File-id selection and revision. The reference is observation
+data, not a claim or authorization grant. The Coordinator and Worker publication
+boundaries derive it only while holding their existing exact Run claim guard;
+Resources persists it through the same capture CAS. There is no second artifact
+store or receipt registry. A legacy capture has no Run reference and remains
+unknown. A terminal capture may retain an existing reference only when its
+complete File selection is unchanged; changed selections cannot borrow it.
+Session execution observation reads this original catalog fact under the
+existing Workspace/Session ownership check. GA and Beta File metadata remain
+unchanged. This establishes publication under a Run, not authorship of every
+byte; independent verification still needs actual command, content and deployed
+cohort evidence.
+
 | Component | Status | Owner | Responsibility | Must not own |
 |---|---|---|---|---|
 | `ResourceCatalog` / `ResourceConfigSource` / `ResourceCatalogRules` | Existing | Resource Catalog | Memory/Repository definitions, immutable config versions, current version and lifecycle state; the narrow resolution port returns only the selected config version; one backend-neutral rules object defines creation, publication, lifecycle, and config-identity invariants for every adapter | content bytes, IAM policy/decision/envelope, principal, sandbox paths |

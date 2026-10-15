@@ -984,6 +984,7 @@ async fn terminal_artifact_uses_current_root_for_an_expired_asserted_generation(
     // foreign generation and foreign Worker reject without changing the head.
     let capture_fence = ResourceOperationFence::Terminal(asserted.clone());
     let capture = awaken_resource_contract::ReplaceArtifactCapture {
+        origin: None,
         workspace_id: "workspace-artifacts".into(),
         session_id: "session-terminal-artifact".into(),
         expected_revision: 0,
@@ -1143,6 +1144,7 @@ async fn checkpoint_release_is_unscoped_idempotent_and_terminal_rebindable() {
     // A stale operation must be rejected before any capture catalog I/O.
     let capture_fence = checkpoint.fence.as_ref().unwrap();
     let capture = awaken_resource_contract::ReplaceArtifactCapture {
+        origin: None,
         workspace_id: checkpoint.workspace_id.clone(),
         session_id: checkpoint.session_id.clone(),
         expected_revision: 0,
@@ -1562,6 +1564,7 @@ async fn complete_capture_round_trip_is_fenced_and_never_rebases_stale_outputs()
             .await
             .unwrap();
         let request = ReplaceArtifactCapture {
+            origin: None,
             workspace_id: workspace.into(),
             session_id: session.into(),
             expected_revision: revision as u64,
@@ -1597,7 +1600,17 @@ async fn complete_capture_round_trip_is_fenced_and_never_rebases_stale_outputs()
         .unwrap()
         .unwrap();
     assert_eq!(stable.file_ids, [published[0].clone()]);
+    // R11 capture provenance comes from the authorized original claim, not
+    // a caller label. Both the client and a raw authenticated Worker request
+    // reject foreign Run/owner/epoch before any catalog replacement.
+    let original = stable.origin.as_ref().expect("R11 original Run reference");
+    assert_eq!(
+        (&*original.run_id, &*original.owner, original.epoch.get()),
+        (&*claim.run_id.0, &*claim.owner, claim.epoch),
+        "R11 exact original claim"
+    );
     let request = ReplaceArtifactCapture {
+        origin: None,
         workspace_id: workspace.into(),
         session_id: session.into(),
         expected_revision: 3,
@@ -1631,6 +1644,54 @@ async fn complete_capture_round_trip_is_fenced_and_never_rebases_stale_outputs()
     );
     let reads = counting.capture_reads.load(Ordering::SeqCst);
     let replacements = counting.capture_replaces.load(Ordering::SeqCst);
+    for field in 0..3 {
+        let mut forged = request.clone();
+        forged.origin = stable.origin.clone();
+        let origin = forged.origin.as_mut().unwrap();
+        match field {
+            0 => origin.run_id = "foreign-run".into(),
+            1 => origin.owner = "foreign-owner".into(),
+            _ => origin.epoch = std::num::NonZeroU64::new(u64::MAX).unwrap(),
+        }
+        assert!(
+            publisher
+                .replace_capture(forged.clone(), Some(&fence))
+                .await
+                .is_err(),
+            "R11 client {field}"
+        );
+        let payload = awaken_resource_worker_http::ArtifactCaptureRequest {
+            operation_fence: fence.clone(),
+            identity: Some(identity.clone()),
+            operation: awaken_resource_worker_http::ArtifactCaptureOperation::Replace {
+                request: forged,
+            },
+        };
+        let url = format!(
+            "http://{address}{}",
+            awaken_resource_worker_http::ARTIFACT_CAPTURE_PATH
+        );
+        let response = upstream
+            .authorize_request(
+                "POST",
+                awaken_resource_worker_http::ARTIFACT_CAPTURE_PATH,
+                upstream.http_client().post(&url).json(&payload),
+            )
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            reqwest::StatusCode::FORBIDDEN,
+            "R11 server {field}"
+        );
+        assert_eq!(
+            counting.capture_replaces.load(Ordering::SeqCst),
+            replacements,
+            "R11 zero replacements"
+        );
+    }
     let mut stale_claim = claim.clone();
     stale_claim.epoch += 1;
     let stale_fence = ResourceOperationFence::Run(stale_claim);
@@ -1740,6 +1801,7 @@ async fn complete_capture_round_trip_is_fenced_and_never_rebases_stale_outputs()
         Some(stable)
     );
     let lost = awaken_resource_contract::ReplaceArtifactCapture {
+        origin: None,
         workspace_id: workspace.into(),
         session_id: session.into(),
         expected_revision: 3,
@@ -1818,6 +1880,7 @@ async fn complete_capture_round_trip_is_fenced_and_never_rebases_stale_outputs()
         .await
         .unwrap();
     let child_capture = ReplaceArtifactCapture {
+        origin: None,
         workspace_id: workspace.into(),
         session_id: child_session.clone(),
         expected_revision: 0,
@@ -1874,6 +1937,7 @@ async fn complete_capture_round_trip_is_fenced_and_never_rebases_stale_outputs()
             publisher
                 .replace_capture(
                     ReplaceArtifactCapture {
+                        origin: None,
                         workspace_id: workspace.into(),
                         session_id: session.into(),
                         expected_revision: 4,
@@ -1942,6 +2006,7 @@ async fn complete_capture_round_trip_is_fenced_and_never_rebases_stale_outputs()
             publisher
                 .replace_capture(
                     awaken_resource_contract::ReplaceArtifactCapture {
+                        origin: None,
                         workspace_id: workspace.into(),
                         session_id: session.into(),
                         expected_revision: 4,
@@ -2030,6 +2095,7 @@ async fn capture_client_rejects_wrong_operation_scope_revision_and_file_set() {
                 assert!(
                     peer.replace_capture(
                         awaken_resource_contract::ReplaceArtifactCapture {
+                            origin: None,
                             workspace_id: "workspace".into(),
                             session_id: "session".into(),
                             expected_revision: 0,

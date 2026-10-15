@@ -36,6 +36,7 @@ fn file(id: &str, path: &str) -> FileRecord {
 
 fn request(revision: u64, ids: &[&str]) -> ReplaceArtifactCapture {
     ReplaceArtifactCapture {
+        origin: None,
         workspace_id: "capture-workspace".into(),
         session_id: "capture-session".into(),
         expected_revision: revision,
@@ -386,6 +387,121 @@ async fn contract(catalog: Arc<dyn FileCatalog>) {
             .revision,
         1
     );
+    origin_contract(catalog.as_ref()).await;
+}
+
+async fn origin_contract(catalog: &dyn FileCatalog) {
+    // O1 live boundary's reference + complete valid selection/current revision
+    // -> persist exact source with the existing capture CAS. O2 unqualified
+    // terminal replay with identical ids preserves it; O3 changed ids clear it.
+    // O4 a new original Run replaces it only through a fresh CAS; stale replay
+    // conflicts. O5 competing sources/sets from one revision -> one winner,
+    // never mixed coordinates. This is the same contract on memory/SQLite/PG.
+    let origin: awaken_resource_contract::ArtifactCaptureRunReference =
+        serde_json::from_value(serde_json::json!({
+            "run_id":"origin-run-a","owner":"worker-a","epoch":7,
+        }))
+        .unwrap();
+    for id in ["origin-a", "origin-b"] {
+        let mut record = file(id, "origin.txt");
+        record.scope_id = Some("origin-session".into());
+        record.harvest_key = Some(harvest_idempotency_key(
+            "origin-session",
+            "origin.txt",
+            &record.blob_id,
+        ));
+        catalog.create_file(record).await.unwrap();
+    }
+    let mut first = request(0, &["origin-a"]);
+    first.session_id = "origin-session".into();
+    first.origin = Some(origin.clone());
+    let applied = catalog
+        .replace_artifact_capture(first.clone())
+        .await
+        .unwrap();
+    first.verify_outcome(&applied).unwrap();
+    let observed = catalog
+        .artifact_capture("capture-workspace", "origin-session")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        observed.origin,
+        Some(origin.clone()),
+        "O1 exact persisted reference"
+    );
+    let mut terminal = first.clone();
+    terminal.expected_revision = 1;
+    terminal.origin = None;
+    let replay = catalog
+        .replace_artifact_capture(terminal.clone())
+        .await
+        .unwrap();
+    terminal.verify_outcome(&replay).unwrap();
+    assert!(
+        matches!(replay,Outcome::Applied(capture) if capture.origin==Some(origin.clone())),
+        "O2 unchanged terminal selection"
+    );
+    terminal.expected_revision = 2;
+    terminal.file_ids = vec!["origin-b".into()];
+    assert!(
+        matches!(catalog.replace_artifact_capture(terminal.clone()).await.unwrap(),Outcome::Applied(capture) if capture.origin.is_none()),
+        "O3 changed selection"
+    );
+    let mut next = terminal;
+    next.expected_revision = 3;
+    let mut successor = origin.clone();
+    successor.run_id = "origin-run-b".into();
+    successor.epoch = std::num::NonZeroU64::new(8).unwrap();
+    next.origin = Some(successor.clone());
+    assert!(
+        matches!(catalog.replace_artifact_capture(next.clone()).await.unwrap(),Outcome::Applied(capture) if capture.origin==Some(successor.clone())),
+        "O4 new original capture"
+    );
+    assert_eq!(
+        catalog.replace_artifact_capture(first).await.unwrap(),
+        Outcome::Conflict,
+        "O4 stale cannot overwrite"
+    );
+    assert!(
+        matches!(catalog.replace_artifact_capture(next.clone()).await.unwrap(),Outcome::Replayed(capture) if capture.origin==Some(successor.clone())),
+        "O4 exact replay"
+    );
+    let mut left = next.clone();
+    left.expected_revision = 4;
+    left.file_ids = vec!["origin-a".into()];
+    left.origin = Some(origin);
+    next.expected_revision = 4;
+    let (a, b) = tokio::join!(
+        catalog.replace_artifact_capture(left.clone()),
+        catalog.replace_artifact_capture(next.clone())
+    );
+    let outcomes = [a.unwrap(), b.unwrap()];
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, Outcome::Applied(_)))
+            .count(),
+        1,
+        "O5 one CAS winner"
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| **outcome == Outcome::Conflict)
+            .count(),
+        1,
+        "O5 one conflict"
+    );
+    let stored = catalog
+        .artifact_capture("capture-workspace", "origin-session")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        outcomes.contains(&Outcome::Applied(stored)),
+        "O5 stored set and source belong to the same winner"
+    );
 }
 
 // D1 persisted zero/negative revision, malformed JSON, blank/duplicate or
@@ -400,6 +516,16 @@ const CORRUPT_CAPTURES: &[(i64, &str)] = &[
     (1, r#"[" "]"#),
     (1, r#"["a","a"]"#),
     (1, r#"["b","a"]"#),
+];
+
+// D2 invalid JSON, missing coordinates, zero epoch, or blank original owner is
+// a corrupt stored observation. Neither read nor replacement may erase it.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+const CORRUPT_ORIGINS: &[&str] = &[
+    "not-json",
+    "{}",
+    r#"{"run_id":"run","owner":"worker","epoch":0}"#,
+    r#"{"run_id":"run","owner":" ","epoch":7}"#,
 ];
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
@@ -436,7 +562,7 @@ async fn sqlite_corrupt_capture_is_neither_read_nor_replaced() {
         .unwrap();
     for (index, &(revision, ids)) in CORRUPT_CAPTURES.iter().enumerate() {
         let session = format!("corrupt-{index}");
-        sqlx::query("INSERT INTO file_store_artifact_capture VALUES (?1,?2,?3,?4)")
+        sqlx::query("INSERT INTO file_store_artifact_capture (workspace_id,session_id,revision,file_ids_json) VALUES (?1,?2,?3,?4)")
             .bind("capture-workspace")
             .bind(&session)
             .bind(revision)
@@ -453,6 +579,20 @@ async fn sqlite_corrupt_capture_is_neither_read_nor_replaced() {
         .await
         .unwrap();
         assert_eq!(unchanged, (revision, ids.into()), "D1 no rewrite");
+    }
+    for (index, origin) in CORRUPT_ORIGINS.iter().enumerate() {
+        let session = format!("origin-corrupt-{index}");
+        sqlx::query("INSERT INTO file_store_artifact_capture (workspace_id,session_id,revision,file_ids_json,origin_json) VALUES (?1,?2,1,'[]',?3)")
+            .bind("capture-workspace").bind(&session).bind(origin).execute(&connection).await.unwrap();
+        reject_corrupt(&store, &session).await;
+        let unchanged: String = sqlx::query_scalar(
+            "SELECT origin_json FROM file_store_artifact_capture WHERE session_id=?1",
+        )
+        .bind(&session)
+        .fetch_one(&connection)
+        .await
+        .unwrap();
+        assert_eq!(&unchanged, origin, "D2 no origin backfill/repair");
     }
 }
 
@@ -480,6 +620,16 @@ async fn sqlite_capture_contract_and_reopen() {
         current(&reopened).await.unwrap().revision,
         6,
         "R10 durable read after reopen"
+    );
+    let origin = reopened
+        .artifact_capture("capture-workspace", "origin-session")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(origin.revision, 5, "O5 original CAS survives reopening");
+    assert!(
+        origin.origin.is_some(),
+        "O1-O5 original reference survives reopening"
     );
 }
 
@@ -584,6 +734,54 @@ async fn sqlite_v5_upgrade_preserves_files_without_guessing_a_capture() {
     assert_eq!(current(&store).await.unwrap().revision, 1, "M3");
 }
 
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn sqlite_v6_capture_migrates_without_guessing_its_run() {
+    // M4 original V6 capture + upgrade to origin column -> preserve selected
+    // ids/revision and leave origin unknown, including repeated schema apply.
+    use awaken_file_store::schema::{BUNDLE_ID, NS, file_store_bundle};
+    let full = file_store_bundle().unwrap();
+    let legacy =
+        awaken_scoped_migration::MigrationBundle::new(BUNDLE_ID, full.migrations()[..6].to_vec())
+            .unwrap();
+    let connection = awaken_sqlite_pool::EmbeddedSqlite::memory()
+        .open()
+        .await
+        .unwrap();
+    awaken_scoped_migration::sqlite::SqliteMigrationRunner::with_prefix(
+        connection.sqlx().clone(),
+        NS,
+    )
+    .unwrap()
+    .run_bundle(&legacy)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO file_store_artifact_capture (workspace_id,session_id,revision,file_ids_json) VALUES ('capture-workspace','legacy-v6',1,'[]')")
+        .execute(&connection).await.unwrap();
+    let store = awaken_file_store::sqlite::SqliteFileStore::over(connection);
+    store.ensure_schema().await.unwrap();
+    let observed = store
+        .artifact_capture("capture-workspace", "legacy-v6")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(observed.revision, 1, "M4 revision");
+    assert!(observed.file_ids.is_empty(), "M4 exact set");
+    assert!(
+        observed.origin.is_none(),
+        "M4 historical provenance remains unknown"
+    );
+    store.ensure_schema().await.unwrap();
+    assert_eq!(
+        store
+            .artifact_capture("capture-workspace", "legacy-v6")
+            .await
+            .unwrap(),
+        Some(observed),
+        "M4 replay"
+    );
+}
+
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn postgres_capture_contract_and_reconnect() {
@@ -610,6 +808,16 @@ async fn postgres_capture_contract_and_reconnect() {
         6,
         "R10 durable read after reconnect"
     );
+    let origin = reopened
+        .artifact_capture("capture-workspace", "origin-session")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(origin.revision, 5, "O5 original CAS survives reconnection");
+    assert!(
+        origin.origin.is_some(),
+        "O1-O5 original reference survives reconnection"
+    );
 
     // M1-M3 repeat the SQLite migration rules against an actual PostgreSQL
     // schema in the same explicitly isolated test database.
@@ -617,7 +825,7 @@ async fn postgres_capture_contract_and_reconnect() {
     let pool = sqlx::PgPool::connect(&url).await.unwrap();
     for (index, &(revision, ids)) in CORRUPT_CAPTURES.iter().enumerate() {
         let session = format!("corrupt-{index}");
-        sqlx::query("INSERT INTO file_store_artifact_capture VALUES ($1,$2,$3,$4)")
+        sqlx::query("INSERT INTO file_store_artifact_capture (workspace_id,session_id,revision,file_ids_json) VALUES ($1,$2,$3,$4)")
             .bind("capture-workspace")
             .bind(&session)
             .bind(revision)
@@ -634,6 +842,20 @@ async fn postgres_capture_contract_and_reconnect() {
         .await
         .unwrap();
         assert_eq!(unchanged, (revision, ids.into()), "D1 no rewrite");
+    }
+    for (index, origin) in CORRUPT_ORIGINS.iter().enumerate() {
+        let session = format!("origin-corrupt-{index}");
+        sqlx::query("INSERT INTO file_store_artifact_capture (workspace_id,session_id,revision,file_ids_json,origin_json) VALUES ($1,$2,1,'[]',$3)")
+            .bind("capture-workspace").bind(&session).bind(origin).execute(&pool).await.unwrap();
+        reject_corrupt(&reopened, &session).await;
+        let unchanged: String = sqlx::query_scalar(
+            "SELECT origin_json FROM file_store_artifact_capture WHERE session_id=$1",
+        )
+        .bind(&session)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(&unchanged, origin, "D2 no origin backfill/repair");
     }
     pool.close().await;
     let migration_url = postgres_test_support::isolated_postgres_url("t_file_capture_migration")

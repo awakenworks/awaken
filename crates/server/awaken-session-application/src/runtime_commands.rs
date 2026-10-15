@@ -351,7 +351,32 @@ impl SessionApplication {
             })
             .transpose()?
             .unwrap_or_default();
+        use crate::SessionProjectionRecoveryError as CaptureReadError;
+        let artifact_capture = if let Some(files) = &self.resource_files {
+            let capture = files
+                .artifact_capture(workspace_id, session_id.as_str())
+                .await
+                .map_err(|_| {
+                    CaptureReadError::Unavailable(
+                        "Session artifact capture catalog is unavailable".into(),
+                    )
+                })?;
+            capture
+                .as_ref()
+                .map_or(Ok(()), |capture| {
+                    capture.verify_scope(workspace_id, session_id.as_str())
+                })
+                .map_err(|_| {
+                    CaptureReadError::Unavailable(
+                        "Session artifact capture identity differs from its original owner".into(),
+                    )
+                })?;
+            capture
+        } else {
+            None
+        };
         Ok(SessionExecutionObservation {
+            artifact_capture,
             recovery: self
                 .runtime()
                 .coordination_reads()

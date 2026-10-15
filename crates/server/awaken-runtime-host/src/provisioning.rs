@@ -644,15 +644,15 @@ impl ArtifactHarvester {
             receipt.verify(&publication)?;
             receipts.push(receipt);
         }
-        let replacement = awaken_resource_contract::ReplaceArtifactCapture {
-            workspace_id: workspace,
-            session_id: thread.into(),
+        let replacement = awaken_resource_contract::ReplaceArtifactCapture::new(
+            workspace,
+            thread.into(),
             expected_revision,
-            file_ids: receipts
+            receipts
                 .iter()
                 .map(|receipt| receipt.record.id.clone())
                 .collect(),
-        };
+        );
         let outcome = self
             .publisher
             .replace_capture(replacement.clone(), fence.as_ref())

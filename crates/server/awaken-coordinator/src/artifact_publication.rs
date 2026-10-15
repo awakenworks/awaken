@@ -250,7 +250,7 @@ impl ArtifactPublisher<ResourceOperationFence> for ClaimFencedArtifactPublisher 
 
     async fn replace_capture(
         &self,
-        request: awaken_resource_contract::ReplaceArtifactCapture,
+        mut request: awaken_resource_contract::ReplaceArtifactCapture,
         fence: Option<&ResourceOperationFence>,
     ) -> Result<awaken_resource_contract::ReplaceArtifactCaptureOutcome, ArtifactPublicationError>
     {
@@ -261,6 +261,7 @@ impl ArtifactPublisher<ResourceOperationFence> for ClaimFencedArtifactPublisher 
         let _guard = self
             .authorize_effect(fence, &request.workspace_id, &request.session_id, scope)
             .await?;
+        request.bind_run_origin(fence.and_then(ResourceOperationFence::run_claim_identity))?;
         self.inner.replace_capture(request, fence).await
     }
 
@@ -648,6 +649,7 @@ mod tests {
         // Exact renewed root reaches the inner owner; expired/foreign roots and
         // foreign Workspace do not even read the capture catalog.
         let command = awaken_resource_contract::ReplaceArtifactCapture {
+            origin: None,
             workspace_id: "workspace".into(),
             session_id: "session".into(),
             expected_revision: 0,
@@ -811,6 +813,7 @@ mod tests {
             let _ = peer
                 .replace_capture(
                     awaken_resource_contract::ReplaceArtifactCapture {
+                        origin: None,
                         workspace_id: workspace.into(),
                         session_id: session.into(),
                         expected_revision: 0,
@@ -943,6 +946,7 @@ mod tests {
             let _ = peer
                 .replace_capture(
                     awaken_resource_contract::ReplaceArtifactCapture {
+                        origin: None,
                         workspace_id: workspace.into(),
                         session_id: session.into(),
                         expected_revision: 0,
