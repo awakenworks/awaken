@@ -701,4 +701,35 @@ machines:
             StateMachineConfigError::EventEmitTarget(_)
         ));
     }
+
+    #[test]
+    fn yaml_parsing_keeps_json_configuration_semantics() {
+        // YAML's JSON subset must preserve every configuration coordinate:
+        // scope/key, result conditions, emissions and continuation settings.
+        // The independent JSON decoder remains the compatibility oracle.
+        let yaml = StateMachineConfig::from_yaml_str(READ_BEFORE_WRITE).unwrap();
+        let json = StateMachineConfig::from_json_str(READ_BEFORE_WRITE).unwrap();
+        assert_eq!(format!("{yaml:?}"), format!("{json:?}"));
+        assert_eq!(yaml.into_machines().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn yaml_rejects_ambiguous_documents_and_recursive_aliases() {
+        // Duplicate root/machine fields, a second document, and recursive
+        // aliases cannot silently choose a different workflow definition.
+        for content in [
+            "machines: []\nmachines: []\n",
+            "machines:\n  - name: first\n    name: second\n    initial: idle\n",
+            "machines: []\n---\nmachines: []\n",
+            "machines: &loop [*loop]\n",
+        ] {
+            assert!(
+                matches!(
+                    StateMachineConfig::from_yaml_str(content),
+                    Err(StateMachineConfigError::Parse(_))
+                ),
+                "{content}"
+            );
+        }
+    }
 }

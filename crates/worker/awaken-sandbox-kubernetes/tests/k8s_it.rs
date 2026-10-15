@@ -504,7 +504,7 @@ async fn k8s_exact_restore_survives_provider_replacement_with_the_same_pvc_fence
     // Abort/join the caller only after real API deletion intent;
     // release only test-owned finalizers and require the product result.
     const TEST_FINALIZER: &str = "awaken.dev/k8s-it-restore-hold";
-    let client = kube::Client::try_default()
+    let client = awaken_sandbox_kubernetes::connect_control_client()
         .await
         .expect("KR4 read cleanup state");
     let pods = kube::Api::<k8s_openapi::api::core::v1::Pod>::namespaced(client.clone(), "default");
@@ -688,7 +688,9 @@ async fn create_fails_closed_on_a_pids_limit_k8s_cannot_enforce() {
     // The release annotation is the product-owned inverse from API state back
     // to this Session scope. The test intentionally does not duplicate the
     // adapter's private stable-name projection merely to prove zero mutation.
-    let client = kube::Client::try_default().await.unwrap();
+    let client = awaken_sandbox_kubernetes::connect_control_client()
+        .await
+        .unwrap();
     let pods = kube::Api::<k8s_openapi::api::core::v1::Pod>::namespaced(client, "default");
     let leaked = pods
         .list(&kube::api::ListParams::default())
@@ -773,7 +775,7 @@ async fn a_terminal_pod_is_replaced_under_its_observed_identity_fence() {
         ),
         "KTR1 V3 original-set handle carries retained claim UID"
     );
-    let client = kube::Client::try_default()
+    let client = awaken_sandbox_kubernetes::connect_control_client()
         .await
         .expect("connect a read-only test client");
     let pods = kube::Api::<k8s_openapi::api::core::v1::Pod>::namespaced(client, "default");
@@ -1003,7 +1005,9 @@ async fn terminal_control_pod_is_cleaned_without_reopening_live_control() {
         )
         .await
         .expect("KC1 exact physical disposal");
-    let client = kube::Client::try_default().await.unwrap();
+    let client = awaken_sandbox_kubernetes::connect_control_client()
+        .await
+        .unwrap();
     let pods = kube::Api::<k8s_openapi::api::core::v1::Pod>::namespaced(client, &namespace);
     assert!(
         pods.get_opt(&pod).await.unwrap().is_none(),
@@ -1166,7 +1170,9 @@ async fn orphaned_claim_replays_only_under_the_same_create_effect() {
         other => panic!("KPV3 C1 expected Pod+claim V3 original-set handle, got {other:?}"),
     };
 
-    let client = kube::Client::try_default().await.unwrap();
+    let client = awaken_sandbox_kubernetes::connect_control_client()
+        .await
+        .unwrap();
     let pods = kube::Api::<k8s_openapi::api::core::v1::Pod>::namespaced(client.clone(), "default");
     let claims = kube::Api::<k8s_openapi::api::core::v1::PersistentVolumeClaim>::namespaced(
         client, "default",
@@ -1397,7 +1403,9 @@ async fn missing_handle_reconstructs_a_live_original_pod_and_claim_for_terminal_
         storage_class_name: None,
         size: "1Gi".into(),
     };
-    let client = kube::Client::try_default().await.unwrap();
+    let client = awaken_sandbox_kubernetes::connect_control_client()
+        .await
+        .unwrap();
     let joined = Arc::new(JoinedPair {
         client: client.clone(),
         namespace: namespace.clone(),
@@ -1568,7 +1576,9 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
         other => panic!("KPV5 C1 expected Pod+claim V3 original-set handle, got {other:?}"),
     };
 
-    let client = kube::Client::try_default().await.unwrap();
+    let client = awaken_sandbox_kubernetes::connect_control_client()
+        .await
+        .unwrap();
     let pods = kube::Api::<k8s_openapi::api::core::v1::Pod>::namespaced(client.clone(), "default");
     let claims = kube::Api::<k8s_openapi::api::core::v1::PersistentVolumeClaim>::namespaced(
         client, "default",
@@ -1850,7 +1860,9 @@ async fn rebuild_delete_wins_before_cleanup_gate_without_mutating_the_retained_c
         other => panic!("KPV6 C1 expected Pod+claim V3 original-set handle, got {other:?}"),
     };
 
-    let client = kube::Client::try_default().await.unwrap();
+    let client = awaken_sandbox_kubernetes::connect_control_client()
+        .await
+        .unwrap();
     let pods = kube::Api::<k8s_openapi::api::core::v1::Pod>::namespaced(client.clone(), "default");
     let claims = kube::Api::<k8s_openapi::api::core::v1::PersistentVolumeClaim>::namespaced(
         client, "default",
@@ -2111,7 +2123,9 @@ async fn terminal_cleanup_fences_the_claim_before_releasing_the_source_pod() {
         other => panic!("KPV4 C1 expected Pod+claim V3 original-set handle, got {other:?}"),
     };
 
-    let client = kube::Client::try_default().await.unwrap();
+    let client = awaken_sandbox_kubernetes::connect_control_client()
+        .await
+        .unwrap();
     let pods = kube::Api::<k8s_openapi::api::core::v1::Pod>::namespaced(client.clone(), "default");
     let claims = kube::Api::<k8s_openapi::api::core::v1::PersistentVolumeClaim>::namespaced(
         client, "default",
@@ -2360,7 +2374,9 @@ async fn foreign_pod_is_rejected_before_continuation_claim_creation() {
         "KPV2 E1: {error}"
     );
 
-    let client = kube::Client::try_default().await.unwrap();
+    let client = awaken_sandbox_kubernetes::connect_control_client()
+        .await
+        .unwrap();
     let claims = kube::Api::<k8s_openapi::api::core::v1::PersistentVolumeClaim>::namespaced(
         client, "default",
     );

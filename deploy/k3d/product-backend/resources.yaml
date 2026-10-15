@@ -442,6 +442,8 @@ spec:
     matchLabels:
       app.kubernetes.io/name: awaken
       app.kubernetes.io/component: internal-backend
+    matchExpressions:
+      - { key: app, operator: NotIn, values: [awaken-sandbox] }
   policyTypes: ["Ingress"]
   ingress:
     - from:

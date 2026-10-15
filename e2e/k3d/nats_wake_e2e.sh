@@ -120,15 +120,16 @@ wait_nats() {
 }
 
 render_overlay() {
-  # Reuse the canonical topology and Kustomize image transformer. No copied
-  # Deployment or hand-maintained YAML replacement becomes a second authority.
-  python3 - "$DEPLOY_DIR/nats-wake" "$CLUSTER" "$NS" "$RUN_DIR/kustomization.yaml" <<'OVERLAY'
-import json, os, sys
+  # Render one immutable base from the canonical topology. A local file resource
+  # keeps the image/namespace overlay portable across checkout/tmp volumes.
+  kubectl kustomize "$DEPLOY_DIR/nats-wake" > "$RUN_DIR/nats-base.yaml" || return $?
+  python3 - "$CLUSTER" "$NS" "$RUN_DIR/kustomization.yaml" <<'OVERLAY'
+import json, sys
 from pathlib import Path
-Path(sys.argv[4]).write_text(json.dumps({
+Path(sys.argv[3]).write_text(json.dumps({
     "apiVersion": "kustomize.config.k8s.io/v1beta1", "kind": "Kustomization",
-    "namespace": sys.argv[3], "resources": [os.path.relpath(sys.argv[1], Path(sys.argv[4]).parent)],
-    "images": [{"name": "awaken-topology", "newName": sys.argv[2], "newTag": "local"}],
+    "namespace": sys.argv[2], "resources": ["nats-base.yaml"],
+    "images": [{"name": "awaken-topology", "newName": sys.argv[1], "newTag": "local"}],
 }))
 OVERLAY
 }

@@ -116,7 +116,9 @@ async fn a_namespace_quota_refusal_returns_capacity_and_succeeds_once_raised() {
     if !requested() {
         return;
     }
-    let client = Client::try_default().await.expect("kube client");
+    let client = awaken_sandbox_kubernetes::connect_control_client()
+        .await
+        .expect("kube client");
     let namespace = ScratchNamespace::create(client.clone(), "quota").await;
     let quotas = Api::<ResourceQuota>::namespaced(client.clone(), &namespace.name);
     let quota: ResourceQuota = serde_json::from_value(serde_json::json!({
@@ -191,7 +193,9 @@ async fn an_unschedulable_pod_is_disposed_and_returns_capacity_after_the_bound()
     if !requested() {
         return;
     }
-    let client = Client::try_default().await.expect("kube client");
+    let client = awaken_sandbox_kubernetes::connect_control_client()
+        .await
+        .expect("kube client");
     let namespace = ScratchNamespace::create(client, "unschedulable").await;
     let provider = ContainerProvider::new(
         Arc::new(namespace.runtime(Duration::from_secs(5)).await),

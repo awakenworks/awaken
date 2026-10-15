@@ -348,12 +348,14 @@ def self_test() -> None:
         root = Path(temporary)
         (root / "scripts/ci").mkdir(parents=True)
         (root / "e2e/k3d").mkdir(parents=True)
+        fixture_index: set[str] = set()
 
         def write(relative: str, body: str, executable: bool = True) -> None:
             path = root / relative
             path.write_text(body, encoding="utf-8")
             if executable:
                 path.chmod(0o755)
+                fixture_index.add(relative)
 
         write("scripts/ci/check-all.sh", "run e2e x e2e/direct.sh\n", executable=False)
         write("e2e/direct.sh", "bash e2e/k3d/transitive.sh\n")
@@ -368,7 +370,9 @@ def self_test() -> None:
         assert "e2e/k3d/transitive.sh" in reached, "C2"
         assert "e2e/orphan.sh" not in reached, "C3 a docstring mention is not a lane"
 
-        present = executables(root)
+        # The published mode is the authority on Windows too; X_OK can be true
+        # for every file in a temporary fixture without a real Git index.
+        present = executables(root, fixture_index)
         errors = unselected_errors(reached, present)
         assert not [e for e in errors if "e2e/direct.sh" in e], "C1/E1"
         assert not [e for e in errors if "transitive.sh" in e], "C2/E1"
@@ -392,9 +396,10 @@ def self_test() -> None:
             UNSELECTED_EXECUTABLES.pop("e2e/gone.sh", None)
 
         write("e2e/plain.rs", "fn main() {}\n", executable=False)
-        assert not evidence_errors(root, reached, {"e2e/direct.sh"}), "C8/E1"
-        assert evidence_errors(root, reached, {"e2e/orphan.sh"}), "C9/E2 the reported defect"
-        assert not evidence_errors(root, reached, {"e2e/plain.rs"}), "C10/E1"
+        assert not evidence_errors(root, reached, {"e2e/direct.sh"}, fixture_index), "C8/E1"
+        assert evidence_errors(root, reached, {"e2e/orphan.sh"}, fixture_index), "C9/E2 the reported defect"
+        assert not evidence_errors(root, reached, {"e2e/plain.rs"}, fixture_index), "C10/E1"
+        assert evidence_errors(root, reached, {"e2e/plain.rs"}, {"e2e/plain.rs"}), "C11 executable source cannot hide behind its extension"
 
         ledger = {"features": [{"requirements": [{"evidence": ["e2e/orphan.sh", "e2e/plain.rs"]}]}]}
         assert evidence_paths(ledger) == {"e2e/orphan.sh", "e2e/plain.rs"}, "ledger walk"

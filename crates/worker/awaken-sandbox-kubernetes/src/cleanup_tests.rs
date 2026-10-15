@@ -1713,8 +1713,10 @@ async fn fixture_with_cut(
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let mut runtime = K8sRuntime::for_test(addr);
-    runtime.clients.control =
-        Client::try_from(kube::Config::new(format!("http://{addr}").parse().unwrap())).unwrap();
+    runtime.clients.control = awaken_outbound_http::kubernetes_control_client(kube::Config::new(
+        format!("http://{addr}").parse().unwrap(),
+    ))
+    .unwrap();
     let volume = awaken_sandbox_container::K8sContinuationVolume {
         storage_class_name: None,
         size: "1Gi".into(),
@@ -2238,8 +2240,10 @@ async fn delayed_pod_create_cannot_be_closed_by_a_replacement_runtime() {
     if let Ok(addr) = std::env::var("AWAKEN_K8S_CREATE_CHILD_ADDR") {
         let addr: std::net::SocketAddr = addr.parse().unwrap();
         let mut runtime = K8sRuntime::for_test(addr);
-        runtime.clients.control =
-            Client::try_from(kube::Config::new(format!("http://{addr}").parse().unwrap())).unwrap();
+        runtime.clients.control = awaken_outbound_http::kubernetes_control_client(
+            kube::Config::new(format!("http://{addr}").parse().unwrap()),
+        )
+        .unwrap();
         let fingerprint: pc::SandboxRealizationFingerprint =
             serde_json::from_value(json!("delayed-create-fingerprint")).unwrap();
         let fence = pc::SandboxEffectFence::new(

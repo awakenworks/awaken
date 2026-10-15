@@ -34,7 +34,7 @@ awaken-agent-channel.workspace = true
 awaken-local-process.workspace = true
 awaken-sandbox-control.workspace = true
 awaken-sandbox-control-transport.workspace = true
-awaken-outbound-http.workspace = true
+awaken-outbound-http = { workspace = true, features = ["kubernetes"] }
 # Pod channels reuse the one topology factory (direct or reverse dial).
 awaken-connection-plan.workspace = true
 async-trait.workspace = true

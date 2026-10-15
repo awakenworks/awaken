@@ -33,8 +33,6 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, Status};
 use kube::Api;
 #[cfg(test)]
-use kube::Client;
-#[cfg(test)]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[cfg(test)]
@@ -91,7 +89,6 @@ mod restore;
 mod runtime_contract;
 mod sandbox_control;
 mod terminal_evidence;
-pub(crate) use awaken_outbound_http::install_rustls_crypto_provider;
 #[cfg(test)]
 use channel::accept_reverse_on;
 use client::K8sClients;

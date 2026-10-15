@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use k8s_openapi::api::networking::v1::NetworkPolicy;
+use k8s_openapi::api::networking::v1::{NetworkPolicy, NetworkPolicyEgressRule, NetworkPolicySpec};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector;
 use kube::Api;
 use kube::api::ListParams;
@@ -98,48 +98,59 @@ pub(super) async fn attest(
     })
 }
 
-fn selector_matches(selector: Option<&LabelSelector>, labels: &BTreeMap<String, String>) -> bool {
-    // An omitted selector cannot prove exclusion from an additive policy.
-    // Treat it conservatively as matching, just like an empty selector.
-    selector.is_none_or(|selector| {
-        selector
-            .match_labels
+fn selector_may_match(selector: Option<&LabelSelector>, labels: &BTreeMap<String, String>) -> bool {
+    // Attestation knows the sandbox's network classification, not every label
+    // a realization can carry. Missing selectors/coordinates cannot prove that
+    // an additive allow rule excludes the sandbox.
+    let Some(selector) = selector else {
+        return true;
+    };
+    if !selector.match_labels.as_ref().is_none_or(|expected| {
+        expected
             .iter()
-            .flatten()
-            .all(|(key, value)| labels.get(key) == Some(value))
-            && selector
-                .match_expressions
-                .iter()
-                .flatten()
-                .all(|requirement| {
-                    let value = labels.get(&requirement.key);
-                    let values = requirement.values.as_deref().unwrap_or_default();
-                    match requirement.operator.as_str() {
-                        "In" => value.is_some_and(|value| values.contains(value)),
-                        "NotIn" => value.is_some_and(|value| !values.contains(value)),
-                        "Exists" => value.is_some(),
-                        "DoesNotExist" => value.is_none(),
-                        _ => false,
+            .all(|(key, value)| labels.get(key).is_none_or(|actual| actual == value))
+    }) {
+        return false;
+    }
+    selector
+        .match_expressions
+        .as_ref()
+        .is_none_or(|requirements| {
+            requirements.iter().all(|requirement| {
+                let value = labels.get(&requirement.key);
+                let values = requirement.values.as_deref().unwrap_or_default();
+                match requirement.operator.as_str() {
+                    "In" if !values.is_empty() => value.is_none_or(|value| values.contains(value)),
+                    "NotIn" if !values.is_empty() => {
+                        value.is_none_or(|value| !values.contains(value))
                     }
-                })
+                    "Exists" if values.is_empty() => true,
+                    "DoesNotExist" if values.is_empty() => value.is_none(),
+                    _ => true,
+                }
+            })
+        })
+}
+
+fn controls(spec: &NetworkPolicySpec, policy_type: &str) -> bool {
+    spec.policy_types
+        .as_ref()
+        .is_some_and(|types| types.iter().any(|candidate| candidate == policy_type))
+        || (policy_type == "Ingress" && spec.ingress.is_some())
+        || (policy_type == "Egress" && spec.egress.is_some())
+}
+
+fn excludes_egress(policy: &NetworkPolicy, labels: &BTreeMap<String, String>) -> bool {
+    policy.spec.as_ref().is_some_and(|spec| {
+        !selector_may_match(spec.pod_selector.as_ref(), labels)
+            || spec.egress.as_ref().is_none_or(Vec::is_empty)
     })
 }
 
-fn controls(policy: &NetworkPolicy, policy_type: &str) -> bool {
+fn excludes_ingress(policy: &NetworkPolicy, labels: &BTreeMap<String, String>) -> bool {
     policy.spec.as_ref().is_some_and(|spec| {
-        spec.policy_types
-            .iter()
-            .flatten()
-            .any(|candidate| candidate == policy_type)
-            || (policy_type == "Ingress" && spec.ingress.is_some())
-            || (policy_type == "Egress" && spec.egress.is_some())
-    })
-}
-
-fn allows_egress_to(policy: &NetworkPolicy, labels: &BTreeMap<String, String>) -> bool {
-    policy.spec.as_ref().is_some_and(|spec| {
-        selector_matches(spec.pod_selector.as_ref(), labels)
-            && spec.egress.as_ref().is_some_and(|rules| !rules.is_empty())
+        !selector_may_match(spec.pod_selector.as_ref(), labels)
+            || spec.ingress.as_ref().is_none_or(Vec::is_empty)
     })
 }
 
@@ -153,16 +164,24 @@ fn has_exact_labels(selector: Option<&LabelSelector>, expected: &BTreeMap<String
     })
 }
 
-fn has_exact_namespace(selector: Option<&LabelSelector>) -> bool {
-    selector.is_some_and(|selector| {
-        selector.match_labels.as_ref().is_some_and(|labels| {
-            labels.len() == 1
-                && labels
-                    .get("kubernetes.io/metadata.name")
-                    .is_some_and(|name| !name.trim().is_empty())
-                && has_exact_labels(Some(selector), labels)
-        })
+fn ingress_is_not_widened(policies: &[NetworkPolicy]) -> bool {
+    ["restricted", "open", "allowlist"].into_iter().all(|mode| {
+        let labels = super::sandbox_network_labels(Some(mode));
+        policies
+            .iter()
+            .all(|policy| excludes_ingress(policy, &labels))
     })
+}
+
+fn has_exact_namespace(selector: Option<&LabelSelector>) -> bool {
+    let Some(labels) = selector.and_then(|selector| selector.match_labels.as_ref()) else {
+        return false;
+    };
+    labels.len() == 1
+        && labels
+            .get("kubernetes.io/metadata.name")
+            .is_some_and(|name| !name.trim().is_empty())
+        && has_exact_labels(selector, labels)
 }
 
 fn attests_contract(policies: &[NetworkPolicy]) -> bool {
@@ -175,8 +194,8 @@ fn attests_contract(policies: &[NetworkPolicy]) -> bool {
                 has_exact_labels(
                     spec.pod_selector.as_ref(),
                     &super::sandbox_network_labels(None),
-                ) && controls(policy, "Ingress")
-                    && controls(policy, "Egress")
+                ) && controls(spec, "Ingress")
+                    && controls(spec, "Egress")
                     && spec.ingress.as_ref().is_none_or(Vec::is_empty)
                     && spec.egress.as_ref().is_none_or(Vec::is_empty)
             })
@@ -185,17 +204,20 @@ fn attests_contract(policies: &[NetworkPolicy]) -> bool {
         policy.metadata.name.as_deref() == Some(SANDBOX_OPEN_POLICY)
             && policy.spec.as_ref().is_some_and(|spec| {
                 has_exact_labels(spec.pod_selector.as_ref(), &open)
-                    && controls(policy, "Egress")
+                    && controls(spec, "Egress")
                     && spec.egress.as_ref().is_some_and(|rules| {
                         rules.len() == 1 && rules[0].to.is_none() && rules[0].ports.is_none()
                     })
             })
     });
+    let restricted_is_not_widened = policies
+        .iter()
+        .all(|policy| excludes_egress(policy, &restricted));
+
     deny.is_some()
         && open_allow.is_some()
-        && policies
-            .iter()
-            .all(|policy| !allows_egress_to(policy, &restricted))
+        && restricted_is_not_widened
+        && ingress_is_not_widened(policies)
 }
 
 fn attests_allowlist_contract(
@@ -207,46 +229,43 @@ fn attests_allowlist_contract(
         policy.metadata.name.as_deref() == Some(SANDBOX_ALLOWLIST_POLICY)
             && policy.spec.as_ref().is_some_and(|spec| {
                 has_exact_labels(spec.pod_selector.as_ref(), &allowlist)
-                    && controls(policy, "Egress")
-                    && spec.egress.as_ref().is_some_and(|rules| {
-                        rules.len() == 1
-                            && rules[0].to.as_ref().is_some_and(|peers| {
-                                peers.len() == 1
-                                    && peers[0].ip_block.is_none()
-                                    && has_exact_namespace(peers[0].namespace_selector.as_ref())
-                                    && has_exact_labels(
-                                            peers[0].pod_selector.as_ref(),
-                                            &BTreeMap::from([(
-                                                "app.kubernetes.io/component".to_owned(),
-                                                "egress-gateway".to_owned(),
-                                            )]),
-                                        )
-                            })
-                            && rules[0].ports.as_ref().is_some_and(|ports| {
-                                ports.len() == 1 + usize::from(expected_repository_port.is_some())
-                                    && ports.iter().all(|port| {
-                                        port.protocol.as_deref() == Some("TCP")
-                                            && matches!(port.port.as_ref(), Some(k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::Int(value)) if *value > 0)
-                                    })
-                                    && expected_repository_port.is_none_or(|expected| {
-                                        ports[1].port.as_ref() == Some(&k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::Int(i32::from(expected)))
-                                            && ports[0].port != ports[1].port
-                                    })
-                            })
-                    })
+                    && controls(spec, "Egress")
+                    && matches!(spec.egress.as_deref(), Some([rule]) if exact_gateway_rule(rule, expected_repository_port))
             })
     });
     exact.is_some()
+        && attests_contract(policies)
         && policies.iter().all(|policy| {
-            !allows_egress_to(policy, &allowlist)
-                || policy.metadata.name.as_deref() == Some(SANDBOX_ALLOWLIST_POLICY)
+            policy.metadata.name.as_deref() == Some(SANDBOX_ALLOWLIST_POLICY)
+                || excludes_egress(policy, &allowlist)
+        })
+}
+
+fn exact_gateway_rule(rule: &NetworkPolicyEgressRule, repository_port: Option<u16>) -> bool {
+    let (Some([peer]), Some(ports)) = (rule.to.as_deref(), rule.ports.as_deref()) else {
+        return false;
+    };
+    peer.ip_block.is_none()
+        && has_exact_namespace(peer.namespace_selector.as_ref())
+        && has_exact_labels(peer.pod_selector.as_ref(), &BTreeMap::from([(
+            "app.kubernetes.io/component".into(), "egress-gateway".into(),
+        )]))
+        && ports.len() == 1 + usize::from(repository_port.is_some())
+        && ports.iter().all(|port| {
+            port.protocol.as_deref() == Some("TCP") && port.end_port.is_none()
+                && matches!(port.port.as_ref(), Some(k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::Int(value)) if *value > 0)
+        })
+        && repository_port.is_none_or(|expected| {
+            ports[1].port.as_ref() == Some(&k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::Int(i32::from(expected)))
+                && ports[0].port != ports[1].port
         })
 }
 
 #[cfg(test)]
 mod tests {
     use k8s_openapi::api::networking::v1::{
-        NetworkPolicyEgressRule, NetworkPolicyPort, NetworkPolicySpec,
+        NetworkPolicyEgressRule, NetworkPolicyIngressRule, NetworkPolicyPeer, NetworkPolicyPort,
+        NetworkPolicySpec,
     };
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelectorRequirement, ObjectMeta};
     use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
@@ -274,22 +293,64 @@ mod tests {
     }
 
     fn canonical() -> Vec<NetworkPolicy> {
-        // Independent wire fixture: literal selectors and peers remain the
-        // oracle for the runtime labels; do not reuse its label projection.
-        serde_json::from_value(serde_json::json!([
-            {"metadata":{"name":SANDBOX_DENY_POLICY},"spec":{
-                "podSelector":{"matchLabels":{"app":"awaken-sandbox"}},
-                "policyTypes":["Ingress","Egress"],"egress":[]}},
-            {"metadata":{"name":SANDBOX_OPEN_POLICY},"spec":{
-                "podSelector":{"matchLabels":{"app":"awaken-sandbox","awaken-egress":"open"}},
-                "policyTypes":["Egress"],"egress":[{}]}},
-            {"metadata":{"name":SANDBOX_ALLOWLIST_POLICY},"spec":{
-                "podSelector":{"matchLabels":{"app":"awaken-sandbox","awaken-egress":"allowlist"}},
-                "policyTypes":["Egress"],"egress":[{
-                    "to":[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"awaken-cloud"}},
-                        "podSelector":{"matchLabels":{"app.kubernetes.io/component":"egress-gateway"}}}],
-                    "ports":[{"protocol":"TCP","port":8081}]}]}}
-        ])).unwrap()
+        vec![
+            policy(
+                SANDBOX_DENY_POLICY,
+                LabelSelector {
+                    match_labels: Some(BTreeMap::from([("app".into(), "awaken-sandbox".into())])),
+                    ..Default::default()
+                },
+                &["Ingress", "Egress"],
+                Some(Vec::new()),
+            ),
+            policy(
+                SANDBOX_OPEN_POLICY,
+                LabelSelector {
+                    match_labels: Some(BTreeMap::from([
+                        ("app".into(), "awaken-sandbox".into()),
+                        ("awaken-egress".into(), "open".into()),
+                    ])),
+                    ..Default::default()
+                },
+                &["Egress"],
+                Some(vec![NetworkPolicyEgressRule::default()]),
+            ),
+            policy(
+                SANDBOX_ALLOWLIST_POLICY,
+                LabelSelector {
+                    match_labels: Some(BTreeMap::from([
+                        ("app".into(), "awaken-sandbox".into()),
+                        ("awaken-egress".into(), "allowlist".into()),
+                    ])),
+                    ..Default::default()
+                },
+                &["Egress"],
+                Some(vec![NetworkPolicyEgressRule {
+                    to: Some(vec![NetworkPolicyPeer {
+                        namespace_selector: Some(LabelSelector {
+                            match_labels: Some(BTreeMap::from([(
+                                "kubernetes.io/metadata.name".into(),
+                                "awaken-cloud".into(),
+                            )])),
+                            ..Default::default()
+                        }),
+                        pod_selector: Some(LabelSelector {
+                            match_labels: Some(BTreeMap::from([(
+                                "app.kubernetes.io/component".into(),
+                                "egress-gateway".into(),
+                            )])),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }]),
+                    ports: Some(vec![NetworkPolicyPort {
+                        protocol: Some("TCP".into()),
+                        port: Some(IntOrString::Int(8081)),
+                        end_port: None,
+                    }]),
+                }]),
+            ),
+        ]
     }
 
     #[test]
@@ -368,32 +429,132 @@ mod tests {
     }
 
     #[test]
-    fn an_omitted_selector_cannot_attest_exact_labels_or_hide_additive_egress() {
-        // P6 newly optional generated selector + named canonical rule -> no
-        // exact-label proof. P7 another egress rule with no selector -> may
-        // select all Pods, so both restricted and allowlist evidence fail.
-        // This preserves the original attestation owner and never substitutes
-        // guessed labels or an empty named canonical contract.
+    fn missing_policy_coordinates_never_establish_isolation() {
+        // Every required policy needs both its spec and exact selector. Missing
+        // observations cannot become empty selectors or a partial allowlist proof.
         for index in 0..3 {
             let mut policies = canonical();
             policies[index].spec.as_mut().unwrap().pod_selector = None;
-            if index < 2 {
-                assert!(!attests_contract(&policies), "P6");
-            } else {
-                assert!(!attests_allowlist_contract(&policies, None), "P6 allowlist");
-            }
+            assert!(!attests_contract(&policies), "selector {index}");
+            assert!(
+                !attests_allowlist_contract(&policies, None),
+                "selector {index}"
+            );
+            policies[index].spec = None;
+            assert!(!attests_contract(&policies), "spec {index}");
+            assert!(!attests_allowlist_contract(&policies, None), "spec {index}");
         }
+        assert!(!attests_allowlist_contract(&canonical()[1..], None));
+    }
+
+    #[test]
+    fn unknown_selectors_cannot_hide_additive_egress() {
+        // Missing/empty selectors, unobserved labels, negative membership and
+        // malformed requirements may select a sandbox. Only a proved exclusion
+        // may keep the existing isolation evidence (the earlier P5 control).
+        let requirement = |key: &str, operator: &str, values: &[&str]| {
+            Some(LabelSelector {
+                match_expressions: Some(vec![LabelSelectorRequirement {
+                    key: key.into(),
+                    operator: operator.into(),
+                    values: Some(values.iter().map(|value| (*value).into()).collect()),
+                }]),
+                ..Default::default()
+            })
+        };
+        let selectors = [
+            None,
+            Some(LabelSelector::default()),
+            Some(LabelSelector {
+                match_labels: Some(BTreeMap::from([(
+                    "awaken-session".into(),
+                    "possible-session".into(),
+                )])),
+                ..Default::default()
+            }),
+            requirement("unobserved", "In", &["possible"]),
+            requirement("unobserved", "NotIn", &["foreign"]),
+            requirement("unobserved", "Exists", &[]),
+            requirement("unobserved", "DoesNotExist", &[]),
+            requirement("app", "Unrecognized", &["awaken-sandbox"]),
+            requirement("app", "In", &[]),
+            requirement("app", "Exists", &["invalid"]),
+        ];
+        for selector in selectors {
+            let mut extra = policy(
+                "additive",
+                LabelSelector::default(),
+                &["Egress"],
+                Some(vec![NetworkPolicyEgressRule::default()]),
+            );
+            extra.spec.as_mut().unwrap().pod_selector = selector.clone();
+            let mut policies = canonical();
+            policies.push(extra);
+            assert!(!attests_contract(&policies), "{selector:?}");
+            assert!(!attests_allowlist_contract(&policies, None), "{selector:?}");
+        }
+    }
+
+    #[test]
+    fn additive_ingress_is_rejected_for_every_sandbox_class() {
+        // Each network class keeps the canonical ingress deny. An unrelated
+        // app is a concrete exclusion; missing/unknown coordinates are not.
+        for mode in ["restricted", "open", "allowlist", "unrelated"] {
+            let selector = LabelSelector {
+                match_labels: Some(if mode == "unrelated" {
+                    BTreeMap::from([("app".into(), "other-application".into())])
+                } else {
+                    super::super::sandbox_network_labels(Some(mode))
+                }),
+                ..Default::default()
+            };
+            let mut extra = policy("additive-ingress", selector, &["Ingress"], None);
+            extra.spec.as_mut().unwrap().ingress = Some(vec![NetworkPolicyIngressRule::default()]);
+            let mut policies = canonical();
+            policies.push(extra);
+            assert_eq!(attests_contract(&policies), mode == "unrelated", "{mode}");
+            assert_eq!(
+                attests_allowlist_contract(&policies, None),
+                mode == "unrelated",
+                "{mode}"
+            );
+        }
+    }
+
+    #[test]
+    fn published_product_ingress_explicitly_excludes_sandbox_labels() {
+        // The real product overlay shares the Sandbox namespace. Its backend
+        // ingress may use labels outside the attestor's known coordinates, so
+        // it must explicitly exclude the immutable Sandbox app label.
+        let documents = serde_saphyr::from_multiple::<serde_json::Value>(include_str!(
+            "../../../../deploy/k3d/product-backend/resources.yaml"
+        ))
+        .unwrap();
+        let ingress = documents
+            .into_iter()
+            .filter(|document| document["kind"] == "NetworkPolicy")
+            .map(|document| serde_json::from_value::<NetworkPolicy>(document).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(ingress.len(), 1, "the published overlay's ingress contract");
         let mut policies = canonical();
-        let mut extra = policy(
-            "unqualified-egress",
-            LabelSelector::default(),
-            &["Egress"],
-            Some(vec![NetworkPolicyEgressRule::default()]),
+        policies.extend(ingress);
+        assert!(attests_contract(&policies));
+        assert!(attests_allowlist_contract(&policies, None));
+        policies
+            .last_mut()
+            .unwrap()
+            .spec
+            .as_mut()
+            .unwrap()
+            .pod_selector
+            .as_mut()
+            .unwrap()
+            .match_expressions = None;
+        assert!(
+            !attests_contract(&policies),
+            "unobserved labels cannot prove exclusion"
         );
-        extra.spec.as_mut().unwrap().pod_selector = None;
-        policies.push(extra);
-        assert!(!attests_contract(&policies), "P7");
-        assert!(!attests_allowlist_contract(&policies, None), "P7 allowlist");
+        assert!(!attests_allowlist_contract(&policies, None));
     }
 
     #[test]
@@ -431,6 +592,12 @@ mod tests {
         ports(&mut policies)[1].protocol = Some("UDP".into());
         assert!(!attests_allowlist_contract(&policies, Some(8444)), "G3 UDP");
         ports(&mut policies)[1].protocol = Some("TCP".into());
+        ports(&mut policies)[1].end_port = Some(9000);
+        assert!(
+            !attests_allowlist_contract(&policies, Some(8444)),
+            "G3 range"
+        );
+        ports(&mut policies)[1].end_port = None;
         ports(&mut policies).push(NetworkPolicyPort {
             protocol: Some("TCP".into()),
             port: Some(IntOrString::Int(9000)),
@@ -440,5 +607,34 @@ mod tests {
             !attests_allowlist_contract(&policies, Some(8444)),
             "G3 third port"
         );
+    }
+
+    #[test]
+    fn an_omitted_selector_cannot_attest_exact_labels_or_hide_additive_egress() {
+        // P6 newly optional generated selector + named canonical rule -> no
+        // exact-label proof. P7 another egress rule with no selector -> may
+        // select all Pods, so both restricted and allowlist evidence fail.
+        // This preserves the original attestation owner and never substitutes
+        // guessed labels or an empty named canonical contract.
+        for index in 0..3 {
+            let mut policies = canonical();
+            policies[index].spec.as_mut().unwrap().pod_selector = None;
+            if index < 2 {
+                assert!(!attests_contract(&policies), "P6");
+            } else {
+                assert!(!attests_allowlist_contract(&policies, None), "P6 allowlist");
+            }
+        }
+        let mut policies = canonical();
+        let mut extra = policy(
+            "unqualified-egress",
+            LabelSelector::default(),
+            &["Egress"],
+            Some(vec![NetworkPolicyEgressRule::default()]),
+        );
+        extra.spec.as_mut().unwrap().pod_selector = None;
+        policies.push(extra);
+        assert!(!attests_contract(&policies), "P7");
+        assert!(!attests_allowlist_contract(&policies, None), "P7 allowlist");
     }
 }

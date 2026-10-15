@@ -4,8 +4,41 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import {execFileSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import {startCalcFixture} from './mcp_calc_fixture.mjs';
 import {assertContainerFixtureReachable, ensureCanonicalSandboxImage} from './sandbox_image.mjs';
+
+const pathVariable = Object.keys(process.env).find(name => name.toUpperCase() === 'PATH') || 'PATH';
+
+async function installCommands(directory, commands) {
+  // POSIX execs shebang files; native Windows CreateProcess needs an actual PE.
+  // Reuse the ACP fixture's role dispatcher, keeping the real shell/CLI boundary
+  // and the same argument/repair/cleanup assertions on both platforms.
+  if (process.platform !== 'win32') {
+    for (const [name, source] of Object.entries(commands)) {
+      await fs.writeFile(path.join(directory, name), `#!${process.execPath}\n${source}`, {mode:0o755});
+    }
+    return;
+  }
+  const dispatch = path.join(directory, 'dispatch.cjs');
+  await fs.writeFile(dispatch, "const path=require('node:path');const role=process.argv[2];process.argv.splice(1,1);require(path.join(__dirname,role+'.fixture.cjs'));\n");
+  const parent = path.join(process.env.CARGO_TARGET_DIR || path.resolve('target'), 'debug', 'deps');
+  await fs.mkdir(parent, {recursive:true});
+  const build = await fs.mkdtemp(path.join(parent, 'awaken-native-test-tool-'));
+  try {
+    const compiler = process.env.RUSTC || 'rustc';
+    const wrapper = process.env.RUSTC_WRAPPER;
+    const output = path.join(build, 'fixture.exe');
+    execFileSync(wrapper || compiler, [...(wrapper ? [compiler] : []), '--edition=2024',
+      fileURLToPath(new URL('./acp_host_fixture_launcher.rs', import.meta.url)), '-o', output],
+    {env:{...process.env, AWAKEN_FIXTURE_NODE:process.execPath, AWAKEN_FIXTURE_SCRIPT:dispatch}});
+    for (const [name, source] of Object.entries(commands)) {
+      await fs.writeFile(path.join(directory, name + '.fixture.cjs'), source);
+      await fs.copyFile(output, path.join(directory, name + '.exe'));
+    }
+  } finally {await fs.rm(build, {recursive:true,force:true});}
+}
 
 test('canonical image admission verifies selected ACP runtimes on reuse and after build', async () => {
   // Causes: C1=image exists; C2=all base/role contract labels; C3=documented
@@ -26,7 +59,7 @@ test('canonical image admission verifies selected ACP runtimes on reuse and afte
       'deploy/images/sandbox/Dockerfile', 'deploy/images/sandbox/Dockerfile.dockerignore',
       'deploy/images/sandbox/hermes-acp-bootstrap.py', 'deploy/images/sandbox/install-acp-runtimes.py',
       'deploy/images/sandbox/verify-acp-runtimes.py',
-      'scripts/ci/_deadline.sh', 'scripts/ci/deadline.py',
+      'scripts/ci/_deadline.sh', 'scripts/ci/deadline.py', 'scripts/ci/_windows_job.py',
       'e2e/cargo_binary.mjs', 'e2e/executable_snapshot.mjs']) {
       const destination = path.join(root, relative);
       await fs.mkdir(path.dirname(destination), { recursive:true });
@@ -36,13 +69,12 @@ test('canonical image admission verifies selected ACP runtimes on reuse and afte
     const calls = path.join(root, 'calls'); const state = path.join(root, 'built');
     const executable = path.join(bin, 'sandbox');
     await fs.writeFile(executable, '#!/bin/sh\nexit 0\n', { mode:0o755 });
-    await fs.writeFile(path.join(bin, 'cargo'), `#!${process.execPath}
+    await installCommands(bin, {cargo:`
 const args=process.argv.slice(2);
 if(args[0]==='build') console.log(JSON.stringify({reason:'compiler-artifact',target:{name:'awaken-sandbox',kind:['bin']},executable:process.env.ADMISSION_BINARY}));
 else if(args[0]==='metadata') console.log(JSON.stringify({build_directory:process.env.ADMISSION_CACHE}));
 else console.log('{}');
-`, { mode:0o755 });
-    await fs.writeFile(path.join(bin, 'docker'), `#!${process.execPath}
+`, docker:`
 const fs=require('node:fs'),crypto=require('node:crypto'),args=process.argv.slice(2),mode=process.env.ADMISSION_MODE;
 fs.appendFileSync(process.env.ADMISSION_CALLS,JSON.stringify(args)+'\\n');
 const repaired=fs.existsSync(process.env.ADMISSION_STATE);
@@ -70,8 +102,8 @@ if(args[0]==='image'){
  if(repaired||mode!=='roles')roles.push('control-forwarder');
  console.error('unknown role (expected: '+roles.join(' | ')+')');process.exit(1);
 }else if(!repaired&&((mode==='base'&&args.includes('/bin/sh'))||(mode==='hand'&&args.includes('hand'))||(mode==='publish'&&args.includes('repository-publish-noreplace'))||(mode==='reader'&&args.includes('read-tree-nofollow'))||(mode==='tools'&&args.includes('/bin/sh'))))process.exit(1);
-`, { mode:0o755 });
-    Object.assign(process.env, { PATH:bin + path.delimiter + previous.PATH,
+`});
+    Object.assign(process.env, { [pathVariable]:bin + path.delimiter + previous[pathVariable],
       ADMISSION_CALLS:calls, ADMISSION_STATE:state, ADMISSION_BINARY:executable, ADMISSION_CACHE:path.join(root, 'cache'),
       AWAKEN_SANDBOX_RUST_TOOLCHAIN_IMAGE:'verified-toolchain-seed' });
     const staticInputs = ['Dockerfile', 'Dockerfile.dockerignore', 'hermes-acp-bootstrap.py',
@@ -158,16 +190,13 @@ test('fixture route admission uses exact substrate and never converts transport 
   // This executable CLI fixture checks process/argv/error handling. Real
   // network reachability is independently required by the service launcher.
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cowork-route-test-'));
-  const previous = {path:process.env.PATH, log:process.env.ROUTE_TEST_LOG, mode:process.env.ROUTE_TEST_MODE};
+  const previous = {path:process.env[pathVariable], log:process.env.ROUTE_TEST_LOG, mode:process.env.ROUTE_TEST_MODE};
   try {
     const log = path.join(root, 'calls');
-    for (const name of ['docker', 'podman', 'kubectl']) {
-      await fs.writeFile(path.join(root, name), `#!${process.execPath}
-` +
+    await installCommands(root, Object.fromEntries(['docker', 'podman', 'kubectl'].map(name => [name,
         `const fs=require('node:fs');fs.appendFileSync(process.env.ROUTE_TEST_LOG,JSON.stringify(process.argv.slice(2))+'\\n');` +
-        `if(process.argv.includes('--write-out')){process.stdout.write('CLI notice\\nAWAKEN_FIXTURE_HTTP='+(process.env.ROUTE_TEST_MODE==='fail'?'000':process.env.ROUTE_TEST_MODE));process.exitCode=process.env.ROUTE_TEST_MODE==='fail'?28:0;}`, {mode:0o700});
-    }
-    process.env.PATH = root + path.delimiter + previous.path;
+        `if(process.argv.includes('--write-out')){process.stdout.write('CLI notice\\nAWAKEN_FIXTURE_HTTP='+(process.env.ROUTE_TEST_MODE==='fail'?'000':process.env.ROUTE_TEST_MODE));process.exitCode=process.env.ROUTE_TEST_MODE==='fail'?28:0;}`])));
+    process.env[pathVariable] = root + path.delimiter + previous.path;
     process.env.ROUTE_TEST_LOG = log;
     for (const engine of ['docker','podman','k8s']) {
       for (const mode of ['200','401','503','000','fail']) {
@@ -189,7 +218,7 @@ test('fixture route admission uses exact substrate and never converts transport 
     }
     assert.equal(await fs.readFile(log,'utf8'), '');
   } finally {
-    process.env.PATH = previous.path;
+    process.env[pathVariable] = previous.path;
     for (const [key, value] of [['ROUTE_TEST_LOG',previous.log],['ROUTE_TEST_MODE',previous.mode]]) {
       if(value === undefined) delete process.env[key]; else process.env[key] = value;
     }

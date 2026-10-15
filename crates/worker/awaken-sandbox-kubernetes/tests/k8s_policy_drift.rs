@@ -21,7 +21,9 @@ async fn additive_sandbox_egress_drift_revokes_runtime_readiness() {
         .await
         .expect("D1 canonical policy graph");
     let policies = kube::Api::<NetworkPolicy>::namespaced(
-        kube::Client::try_default().await.expect("kube client"),
+        awaken_sandbox_kubernetes::connect_control_client()
+            .await
+            .expect("kube client"),
         "default",
     );
     let drift = serde_json::json!({
