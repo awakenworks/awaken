@@ -11,6 +11,187 @@ fn verify_container_projection(expected: &Container, observed: &Container) -> bo
 }
 
 #[tokio::test]
+async fn retained_api_defaults_are_symmetric_but_custom_scheduling_stays_exact() {
+    // Four rows cross absent/defaulted expected and observed representations.
+    // A retained Create response is an expected projection too. Exact API
+    // defaults are equivalent in both directions; changing priority or one
+    // default-toleration coordinate on either side must remain a mismatch.
+    let runtime = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap());
+    let plan = super::super::ephemeral_plan();
+    let mut base = runtime.pod("retained-api-defaults", &plan);
+    realization::stamp_pod_realization(&mut base).unwrap();
+    // Scheduler assignment is observed only when absent from the declaration;
+    // a retained or explicitly declared assignment cannot disappear or move.
+    for (declared, actual, accepts) in [
+        (None, None, true),
+        (None, Some("node-a"), true),
+        (Some("node-a"), Some("node-a"), true),
+        (Some("node-a"), None, false),
+        (Some("node-a"), Some("node-b"), false),
+    ] {
+        let mut expected = base.clone();
+        let mut observed = base.clone();
+        expected.spec.as_mut().unwrap().node_name = declared.map(str::to_owned);
+        observed.spec.as_mut().unwrap().node_name = actual.map(str::to_owned);
+        assert_eq!(
+            verify_pod_projection(&expected, &observed, None).is_ok(),
+            accepts,
+            "node row"
+        );
+    }
+    let defaulted = |mut pod: Pod| {
+        let spec = pod.spec.as_mut().unwrap();
+        spec.priority = Some(0);
+        spec.host_users = Some(true);
+        spec.host_network = Some(false);
+        spec.host_pid = Some(false);
+        spec.host_ipc = Some(false);
+        spec.share_process_namespace = Some(false);
+        spec.set_hostname_as_fqdn = Some(false);
+        spec.tolerations = Some(
+            [
+                "node.kubernetes.io/not-ready",
+                "node.kubernetes.io/unreachable",
+            ]
+            .into_iter()
+            .map(|key| k8s_openapi::api::core::v1::Toleration {
+                key: Some(key.into()),
+                operator: Some("Exists".into()),
+                effect: Some("NoExecute".into()),
+                toleration_seconds: Some(300),
+                ..Default::default()
+            })
+            .collect(),
+        );
+        pod
+    };
+    for expected_defaulted in [false, true] {
+        for observed_defaulted in [false, true] {
+            let expected = if expected_defaulted {
+                defaulted(base.clone())
+            } else {
+                base.clone()
+            };
+            let observed = if observed_defaulted {
+                defaulted(base.clone())
+            } else {
+                base.clone()
+            };
+            assert!(
+                verify_pod_projection(&expected, &observed, None).is_ok(),
+                "default rows"
+            );
+        }
+    }
+    for changed_expected in [false, true] {
+        for cause in [
+            "priority",
+            "key",
+            "operator",
+            "effect",
+            "value",
+            "seconds-before",
+            "seconds-after",
+            "seconds-absent",
+        ] {
+            let mut expected = defaulted(base.clone());
+            let mut observed = defaulted(base.clone());
+            let changed = if changed_expected {
+                &mut expected
+            } else {
+                &mut observed
+            };
+            let spec = changed.spec.as_mut().unwrap();
+            let toleration = &mut spec.tolerations.as_mut().unwrap()[0];
+            match cause {
+                "priority" => spec.priority = Some(1),
+                "key" => toleration.key = Some("custom-node".into()),
+                "operator" => toleration.operator = Some("Equal".into()),
+                "effect" => toleration.effect = Some("NoSchedule".into()),
+                "value" => toleration.value = Some("custom-value".into()),
+                "seconds-before" => toleration.toleration_seconds = Some(299),
+                "seconds-after" => toleration.toleration_seconds = Some(301),
+                "seconds-absent" => toleration.toleration_seconds = None,
+                _ => unreachable!(),
+            }
+            assert!(
+                verify_pod_projection(&expected, &observed, None).is_err(),
+                "{cause}, expected={changed_expected}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn api_defaults_never_erase_explicit_security_drift() {
+    // Each Boolean default has an independent negative control on either side.
+    // Equal API forms pass in the preceding table; flipping one policy value
+    // must fail even when the original realization annotations are copied.
+    let runtime = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap());
+    let base = runtime.pod("security-defaults", &super::super::ephemeral_plan());
+    for (field, default) in [
+        ("hostUsers", true),
+        ("setHostnameAsFQDN", false),
+        ("shareProcessNamespace", false),
+        ("hostNetwork", false),
+        ("hostPID", false),
+        ("hostIPC", false),
+        ("enableServiceLinks", true),
+    ] {
+        // The production Pod deliberately disables service links. Give this
+        // row its declared default explicitly before flipping it, so its
+        // negative control cannot accidentally repeat an existing false value.
+        let mut row = base.clone();
+        let mut spec = serde_json::to_value(row.spec.as_ref().unwrap()).unwrap();
+        spec[field] = serde_json::Value::Bool(default);
+        row.spec = Some(serde_json::from_value(spec).unwrap());
+        realization::stamp_pod_realization(&mut row).unwrap();
+        assert!(verify_pod_projection(&row, &row, None).is_ok(), "{field}");
+        for changed_expected in [false, true] {
+            let mut expected = row.clone();
+            let mut observed = row.clone();
+            let changed = if changed_expected {
+                &mut expected
+            } else {
+                &mut observed
+            };
+            let mut spec = serde_json::to_value(changed.spec.as_ref().unwrap()).unwrap();
+            spec[field] = serde_json::Value::Bool(!default);
+            changed.spec = Some(serde_json::from_value(spec).unwrap());
+            assert!(
+                verify_pod_projection(&expected, &observed, None).is_err(),
+                "{field}, expected={changed_expected}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn projection_diagnostics_name_fields_without_exposing_execution_values() {
+    let runtime = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap());
+    let mut expected = runtime.pod("private-projection-name", &super::super::ephemeral_plan());
+    expected.spec.as_mut().unwrap().containers[0].args =
+        Some(vec!["private-expected-input".into()]);
+    realization::stamp_pod_realization(&mut expected).unwrap();
+    let mut observed = expected.clone();
+    observed.metadata.name = Some("private-observed-name".into());
+    observed.spec.as_mut().unwrap().containers[0].args =
+        Some(vec!["private-observed-input".into()]);
+    let message = verify_pod_projection(&expected, &observed, None)
+        .unwrap_err()
+        .to_string();
+    assert!(message.contains("containers"));
+    for private in [
+        "private-projection-name",
+        "private-observed-name",
+        "private-expected-input",
+        "private-observed-input",
+    ] {
+        assert!(!message.contains(private), "diagnostics leaked {private}");
+    }
+}
+
+#[tokio::test]
 async fn historical_directory_init_keeps_exact_projection_and_digest() {
     // Historical projection decision table: H1 new Pod => no directory init;
     // H2 exact old mkdir/image/mount/security + original digest => adopt without

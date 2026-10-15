@@ -140,12 +140,8 @@ pub struct SessionApplication {
     execution_admission: SessionExecutionAdmission,
     /// Disposable keyset position for one bounded preparation-candidate page
     /// per poll. The root and its CAS remain the scheduling authority.
-    session_preparation_cursors: tokio::sync::Mutex<
-        BTreeMap<
-            String,
-            Arc<tokio::sync::Mutex<Option<awaken_session_state_contract::SessionScanCursor>>>,
-        >,
-    >,
+    session_preparation_cursors:
+        tokio::sync::Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<Option<SessionScanCursor>>>>>,
     runtime_incarnation: String,
     #[cfg(any(test, feature = "test-support"))]
     mutation_sequence: AtomicU64,

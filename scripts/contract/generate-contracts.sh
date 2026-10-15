@@ -87,7 +87,7 @@ for path,is_openapi in [(schemas_path,False),(openapi_path,True)]:
                     for part in ref[2:].split("/"): node=node[part.replace("~1","/").replace("~0","~")]
                 for v in value.values(): check_refs(v)
         check_refs(root)
-    path.write_text(json.dumps(root,indent=2,ensure_ascii=False,sort_keys=True)+'\n')
+    path.write_text(json.dumps(root,indent=2,ensure_ascii=False,sort_keys=True)+'\n', encoding='utf-8', newline='\n')
 PYMCP
 
 # 2. TS types via the lockfile-pinned generator. The helper merges every root

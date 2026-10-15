@@ -99,8 +99,7 @@ pub(super) fn verify_pod_projection(
         .spec
         .clone()
         .ok_or_else(|| backend("observed Kubernetes restore Pod has no specification"))?;
-    api_defaults::normalize_pod_spec(&mut expected_spec, false);
-    api_defaults::normalize_pod_spec(&mut observed_spec, true);
+    api_defaults::normalize_pod_pair(&mut expected_spec, &mut observed_spec);
     let expected_labels = expected.metadata.labels.as_ref();
     let observed_labels = observed.metadata.labels.as_ref();
     let exact_labels = expected_labels.is_some_and(|expected| {
@@ -114,9 +113,27 @@ pub(super) fn verify_pod_projection(
         || expected_spec != observed_spec
         || has_forbidden_sandbox_namespace_shape(&observed_spec)
     {
-        return Err(backend(
-            "Kubernetes restore Pod differs from the complete immutable security projection",
-        ));
+        // Report schema field names only. Projection values can contain
+        // execution inputs, so diagnostics must never print either full spec.
+        let expected_fields = serde_json::to_value(&expected_spec).map_err(backend)?;
+        let observed_fields = serde_json::to_value(&observed_spec).map_err(backend)?;
+        let fields = expected_fields
+            .as_object()
+            .into_iter()
+            .flat_map(|object| object.keys())
+            .chain(
+                observed_fields
+                    .as_object()
+                    .into_iter()
+                    .flat_map(|object| object.keys()),
+            )
+            .filter(|key| expected_fields.get(*key) != observed_fields.get(*key))
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        return Err(backend(format!(
+            "Kubernetes restore Pod differs from the complete immutable security projection (spec fields: {})",
+            fields.into_iter().collect::<Vec<_>>().join(", ")
+        )));
     }
     realization::verify_realization(&expected, observed, disposal)
 }
