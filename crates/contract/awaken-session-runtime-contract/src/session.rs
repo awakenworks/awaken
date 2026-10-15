@@ -798,8 +798,8 @@ mod kani_proofs {
 
 mod execution_recovery;
 pub use execution_recovery::{
-    SessionExecutionClosureReference, SessionExecutionRecoveryGap,
-    SessionExecutionRecoveryObservation,
+    SessionExecutionClosureReference, SessionExecutionOperationFootprint,
+    SessionExecutionRecoveryGap, SessionExecutionRecoveryObservation,
 };
 
 mod execution_observation;
