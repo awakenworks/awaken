@@ -210,6 +210,7 @@ class ExecutionTests(unittest.TestCase):
     @staticmethod
     def cargo_fixture(fixture: Path, body: str) -> dict[str, str]:
         from formal_sources import detached_git_environment
+        (fixture / "target").mkdir(exist_ok=True)
         binary = fixture / "bin"
         binary.mkdir(exist_ok=True)
         cargo = binary / "cargo"
@@ -648,7 +649,7 @@ exit 0
 ''')
                 commands = {
                     "uname": "#!/bin/sh\necho MINGW64_NT\n",
-                    "cygpath": '#!/bin/sh\n[ "$1" = -w ] || exit 2\necho /owned/git-bash\n',
+                    "cygpath": '#!/bin/sh\ncase "$1" in\n-w) echo /owned/git-bash ;;\n-m) printf "%s\\n" "$2" ;;\n*) exit 2 ;;\nesac\n',
                     "node": '''#!/bin/sh
 if [ "$1" = --input-type=module ]; then echo /owned/hand; else echo E2E >> "$CALL_LOG"; fi
 ''',
