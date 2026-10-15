@@ -98,3 +98,22 @@ pub fn assert_configuration_contract(tests: &[&str]) {
         }
     }
 }
+/// Observe the same moving clock that issues PostgreSQL fixture leases.
+#[allow(dead_code)] // Other HTTP suites share this module without expiry waits.
+pub fn postgres_clock(
+    pool: &sqlx::PgPool,
+) -> impl awaken_dispatch_testkit::ConformanceClock + use<> {
+    let pool = pool.clone();
+    awaken_dispatch_testkit::ObservedStoreClock::new(move || {
+        let pool = pool.clone();
+        async move {
+            let now: i64 = sqlx::query_scalar(
+                "SELECT FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("configured PostgreSQL authority clock must answer");
+            u64::try_from(now).expect("PostgreSQL authority clock is after the Unix epoch")
+        }
+    })
+}

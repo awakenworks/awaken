@@ -19,7 +19,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_dispatch::MemoryDispatchStore;
 use awaken_dispatch_contract::RunDispatch;
 use awaken_dispatch_contract::dispatch::{DispatchOutcome, RunClaim, SettleOutcome};
-use awaken_dispatch_testkit::{AuthoritativeWallClock, ConformanceClock, ManualStoreClock};
+use awaken_dispatch_testkit::{ConformanceClock, ManualStoreClock};
 use awaken_runtime_contract::activation::RunActivation;
 
 mod harness;
@@ -146,10 +146,10 @@ async fn postgres_backend_binds_and_recovers() {
     let Some(pool) = harness::schema_pool("t_sandbox_binding").await else {
         return;
     };
-    let store = awaken_dispatch::PostgresDispatchStore::with_pool(pool)
+    let store = awaken_dispatch::PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("migrate isolated schema (incl. V0011 sandbox column)");
-    binding_survives_a_recovery_claim(&store, &AuthoritativeWallClock).await;
+    binding_survives_a_recovery_claim(&store, &harness::postgres_clock(&pool)).await;
 }
 
 use awaken_dispatch_testkit::ConformanceDispatch;

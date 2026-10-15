@@ -919,7 +919,10 @@ async fn postgres_guarded_admission_uses_one_process_connection_and_rejects_fore
                 .unwrap()
         };
         if rule == "expired" {
-            AuthoritativeWallClock
+            // The original max=1 pool is intentionally occupied by the guard.
+            // Reuse the independent pool to observe the same DB authority,
+            // preserving P4's expiry while the original guard remains held.
+            postgres_support::postgres_clock(&foreign.pool())
                 .advance_past(snapshot.expires_at_ms)
                 .await;
         }
