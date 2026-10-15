@@ -30,6 +30,7 @@ must pretend to implement. Select the smallest role required by a consumer:
 | Local executor | `LocalWorkerDispatch`, including the two exact epoch fences |
 | Terminal discovery | `TerminalRecoveryDispatch` |
 | Attempt evidence reader | `PhysicalAttemptReads` |
+| Original Run input reader | `SessionRunAdmissionReads` |
 | Reservation writer | `SessionRunReservations` |
 | Reservation fence holder | `SessionReservationAuthority` |
 | Local scheduling service | Execution-owned `ControlDispatch` bundle |
@@ -39,6 +40,13 @@ The remaining leaf roles cover claims, execution, claim ownership, commit
 authority, settlement, ordinary reads, maintenance, attempt control, control
 claims and control reads. `InboxRead` is separate from Inbox writes. Role
 bundles live with their consumers; the existing contract crate owns the leaves.
+
+`SessionRunAdmissionReads` extracts the existing original-request/completion
+query from reservation commands. Memory, SQLite, PostgreSQL and the Coordinator
+erasure delegate to the same original implementation. A reader receives no
+reserve, activate, reject, enqueue or lease authority. Missing and legacy facts
+remain unknown; the query cannot mint a replay or recovery admission. Existing
+reservation writers inherit this read role and keep their command semantics.
 
 Physical Install and Replace retain an `AttemptAdmitted` operation in the same
 Dispatch transaction as their slot mutation. The existing operational feed
