@@ -22,6 +22,33 @@ struct ExactPod {
     reads: AtomicUsize,
 }
 
+struct BootstrapPermissionAuth;
+impl awaken_service_auth_contract::ServiceRequestAuthenticator for BootstrapPermissionAuth {
+    fn authenticate(
+        &self,
+        authorization: Option<&[u8]>,
+        requirement: awaken_service_auth_contract::ServiceAuthorizationRequirement<'_>,
+    ) -> Result<
+        awaken_service_auth_contract::AuthenticatedService,
+        awaken_service_auth_contract::ServiceAuthError,
+    > {
+        assert_eq!(
+            requirement.audience,
+            awaken_service_auth_contract::COORDINATOR_SERVICE_AUDIENCE
+        );
+        assert_eq!(requirement.permission, WORKER_BOOTSTRAP_CLOSE_PERMISSION);
+        match authorization {
+            Some(b"Bearer observe-only") => {
+                Err(awaken_service_auth_contract::ServiceAuthError::Forbidden)
+            }
+            Some(b"Bearer broad-token") => Ok(
+                awaken_service_auth_contract::AuthenticatedService::new("controller"),
+            ),
+            _ => Err(awaken_service_auth_contract::ServiceAuthError::Unauthorized),
+        }
+    }
+}
+
 #[async_trait]
 impl crate::WorkerRelayTargetObserver for ExactPod {
     async fn ip_for(
@@ -203,6 +230,7 @@ async fn destination_boundary_requires_exact_auth_root_registry_and_pod() {
         environments,
         sessions,
         relay_targets: Some(pod.clone()),
+        bindings: None,
         clock: clock.clone(),
         authenticator: awaken_service_auth_contract::static_token_authenticator("broad-token")
             .unwrap(),
@@ -212,6 +240,59 @@ async fn destination_boundary_requires_exact_auth_root_registry_and_pod() {
     };
     let query = format!("session_id=relay-session&attachment_id={attachment}&version=1");
     let app = domain_router_with_authenticator(state.clone());
+    // B1 missing/wrong/relay credential -> 401 before provider calls; B2 exact
+    // control credential + unregistered id + original provider seal -> 200;
+    // B3 return the original anchor, never a synthetic incarnation.
+    let bootstrap = Arc::new(super::tests::BootstrapBinding {
+        calls: 0.into(),
+        mode: 0,
+        directory: directory.clone(),
+    });
+    let mut bootstrap_state = state.clone();
+    bootstrap_state.bindings = Some(bootstrap.clone());
+    bootstrap_state.authenticator = Arc::new(BootstrapPermissionAuth);
+    let bootstrap_app = domain_router_with_authenticator(bootstrap_state);
+    for token in [
+        None,
+        Some("wrong"),
+        Some("relay-token"),
+        Some("observe-only"),
+        Some("broad-token"),
+    ] {
+        let mut request = Request::post(WORKER_BOOTSTRAP_CLOSE_PATH)
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(token) = token {
+            request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        let response=bootstrap_app.clone().oneshot(request.body(Body::from(r#"{"worker_id":"k8s:ns:unstarted:uid-b","create_ledger":{"provider_id":"provider","namespace":"control","name":"original-ledger","uid":"original-uid","configuration_fingerprint":"original-config"}}"#)).unwrap()).await.unwrap();
+        assert_eq!(
+            response.status(),
+            if token == Some("broad-token") {
+                StatusCode::OK
+            } else if token == Some("observe-only") {
+                StatusCode::FORBIDDEN
+            } else {
+                StatusCode::UNAUTHORIZED
+            },
+            "B1/B2"
+        );
+        if response.status() == StatusCode::OK {
+            let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+                .await
+                .unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert!(value.get("incarnation_id").is_none(), "B3");
+            assert_eq!(
+                value["create_ledger"]["uid"], "original-uid",
+                "B3 original anchor"
+            );
+        }
+    }
+    assert_eq!(
+        bootstrap.calls.load(Ordering::SeqCst),
+        1,
+        "B1 provider untouched on auth refusal"
+    );
     for token in [None, Some("wrong"), Some("broad-token")] {
         assert_eq!(
             get(app.clone(), &query, token).await.status(),

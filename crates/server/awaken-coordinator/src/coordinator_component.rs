@@ -348,6 +348,7 @@ pub async fn build_coordinator_component(
                 environments: environments.clone(),
                 sessions: session_application.clone(),
                 relay_targets: worker_relay_targets.clone(),
+                bindings: worker_execution_bindings.clone(),
                 clock: clock.clone(),
                 authenticator: authenticator.clone(),
                 relay_authenticator: relay_destination_authenticator.clone(),

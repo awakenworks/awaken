@@ -1,11 +1,14 @@
 // @formal surface obligation=observation_reconcile.evidence_aba_has_fresh_fence
 // @formal surface obligation=worker_credential.stale_heartbeat_never_rolls_back_revision
-// @formal reason: HTTP boundary for authoritative Worker observations.
-//! Authenticated, read-only Control-to-Coordinator Worker observation boundary.
+// @formal surface obligation=sandbox.admission_never_weakens_isolation
+// @formal reason: Authoritative Worker reads and deny-only bootstrap enrollment CAS.
+//! Authenticated private Worker observations and bootstrap admission closure.
 //!
 //! Worker registration and heartbeat authority remains the Coordinator-owned
-//! [`WorkerDirectory`](awaken_worker_registry::WorkerDirectory). Split Control receives only this secret-free projection;
-//! it never opens the registry database or gains mutation capability.
+//! [`WorkerDirectory`](awaken_worker_registry::WorkerDirectory). Observation readers
+//! receive only a secret-free projection. Bootstrap closure requires its separate
+//! permission and can only seal an original, unregistered provider enrollment;
+//! it cannot create a Registry incarnation, process exit or Session cleanup receipt.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,7 +20,7 @@ use awaken_worker_registry::{
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
@@ -25,6 +28,8 @@ use crate::SharedHost;
 
 pub const WORKER_OBSERVATIONS_PATH: &str = "/internal/v1/workers/observations";
 pub const WORKER_OBSERVE_PERMISSION: &str = "worker:observe";
+pub(crate) const WORKER_BOOTSTRAP_CLOSE_PATH: &str = "/internal/v1/workers/bootstrap/close";
+const WORKER_BOOTSTRAP_CLOSE_PERMISSION: &str = "worker:close-bootstrap";
 pub(crate) const WORKER_DOMAIN_PATH: &str = "/internal/v1/workers/domain";
 pub use awaken_worker_contract::WORKER_RELAY_DESTINATION_PATH;
 #[cfg(all(test, feature = "test-support"))]
@@ -48,6 +53,7 @@ pub(crate) struct DomainState {
         Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
     pub(crate) sessions: Arc<awaken_session_application::SessionApplication>,
     pub(crate) relay_targets: Option<Arc<dyn crate::WorkerRelayTargetObserver>>,
+    pub(crate) bindings: Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
     pub(crate) clock: Arc<dyn awaken_time::WallClock>,
     pub(crate) authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
     pub(crate) relay_authenticator:
@@ -75,8 +81,121 @@ struct WorkerRelayQuery {
 pub(crate) fn domain_router_with_authenticator(state: DomainState) -> Router {
     Router::new()
         .route(WORKER_DOMAIN_PATH, get(handle_domain))
+        .route(WORKER_BOOTSTRAP_CLOSE_PATH, post(handle_bootstrap_close))
         .route(WORKER_RELAY_DESTINATION_PATH, get(handle_relay_destination))
         .with_state(state)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BootstrapCloseRequest {
+    worker_id: String,
+    create_ledger: awaken_worker_contract::WorkerCreateLedger,
+}
+
+#[derive(Serialize)]
+struct BootstrapCloseObservation {
+    worker_id: String,
+    create_ledger: awaken_worker_contract::WorkerCreateLedger,
+}
+
+fn validate_bootstrap_request(
+    worker_id: &str,
+    expected: &awaken_worker_contract::WorkerCreateLedger,
+) -> Result<(), StatusCode> {
+    if worker_id.trim().is_empty() || worker_id.trim() != worker_id || worker_id.len() > 1024 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    expected.validate().map_err(|_| StatusCode::BAD_REQUEST)
+}
+
+async fn handle_bootstrap_close(
+    State(state): State<DomainState>,
+    headers: HeaderMap,
+    Json(request): Json<BootstrapCloseRequest>,
+) -> axum::response::Response {
+    let requirement = awaken_service_auth_contract::ServiceAuthorizationRequirement::new(
+        awaken_service_auth_contract::COORDINATOR_SERVICE_AUDIENCE,
+        WORKER_BOOTSTRAP_CLOSE_PERMISSION,
+    );
+    if let Err(error) = state.authenticator.authenticate(
+        headers.get(header::AUTHORIZATION).map(|h| h.as_bytes()),
+        requirement,
+    ) {
+        return match error {
+            awaken_service_auth_contract::ServiceAuthError::Unauthorized => {
+                StatusCode::UNAUTHORIZED
+            }
+            awaken_service_auth_contract::ServiceAuthError::Forbidden => StatusCode::FORBIDDEN,
+            _ => StatusCode::SERVICE_UNAVAILABLE,
+        }
+        .into_response();
+    }
+    if let Err(status) = validate_bootstrap_request(&request.worker_id, &request.create_ledger) {
+        return status.into_response();
+    }
+    match state
+        .sessions
+        .has_unfinished_worker_realizations(&request.worker_id)
+        .await
+    {
+        Ok(false) => {}
+        Ok(true) => return StatusCode::CONFLICT.into_response(),
+        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    }
+    match close_bootstrap(
+        state.directory.as_ref(),
+        state.bindings.as_deref(),
+        request.worker_id,
+        request.create_ledger,
+    )
+    .await
+    {
+        Ok(observation) => match state
+            .sessions
+            .has_unfinished_worker_realizations(&observation.worker_id)
+            .await
+        {
+            Ok(false) => (StatusCode::OK, Json(observation)).into_response(),
+            Ok(true) => StatusCode::CONFLICT.into_response(),
+            Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        },
+        Err(status) => status.into_response(),
+    }
+}
+
+async fn close_bootstrap(
+    directory: &dyn WorkerDirectory,
+    bindings: Option<&dyn awaken_dispatch::WorkerExecutionBindingSource>,
+    worker_id: String,
+    expected: awaken_worker_contract::WorkerCreateLedger,
+) -> Result<BootstrapCloseObservation, StatusCode> {
+    validate_bootstrap_request(&worker_id, &expected)?;
+    match directory.current(&worker_id).await {
+        Ok(None) => {}
+        Ok(Some(_)) => return Err(StatusCode::CONFLICT),
+        Err(_) => return Err(StatusCode::SERVICE_UNAVAILABLE),
+    }
+    let bindings = bindings.ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let anchor = bindings
+        .seal_unattempted_worker(&worker_id, &expected)
+        .await
+        .map_err(|_| StatusCode::CONFLICT)?;
+    if anchor != expected {
+        return Err(StatusCode::CONFLICT);
+    }
+    // First binding and seal share provider CAS. A registration that already
+    // passed that boundary retains a binding and cannot produce this result.
+    // Recheck the original Registry after the deny fence; never invent an
+    // incarnation or turn an unavailable observation into absence.
+    match directory.current(&worker_id).await {
+        Ok(None) => Ok(BootstrapCloseObservation {
+            worker_id,
+            create_ledger: anchor,
+        }),
+        Ok(Some(_)) => Err(StatusCode::CONFLICT),
+        Err(_) => Err(StatusCode::SERVICE_UNAVAILABLE),
+    }
 }
 
 async fn handle_relay_destination(
@@ -460,6 +579,7 @@ impl awaken_worker_contract::WorkerIncarnationSource for HttpWorkerObservationSo
 
 #[cfg(test)]
 mod tests {
+    use awaken_worker_contract::WorkerCurrentSource;
     use awaken_worker_contract::WorkerIncarnationSource;
     use awaken_worker_registry::WorkerObservationSource;
     use axum::body::Body;
@@ -467,6 +587,145 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
+
+    pub(super) struct BootstrapBinding {
+        pub(super) calls: std::sync::atomic::AtomicUsize,
+        pub(super) mode: u8,
+        pub(super) directory: Arc<awaken_worker_registry::MemoryWorkerDirectory>,
+    }
+
+    #[async_trait]
+    impl awaken_dispatch::WorkerExecutionBindingSource for BootstrapBinding {
+        async fn seal_unattempted_worker(
+            &self,
+            worker_id: &str,
+            _expected: &awaken_dispatch::WorkerCreateLedger,
+        ) -> Result<awaken_dispatch::WorkerCreateLedger, awaken_dispatch::ApplicationError>
+        {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.mode == 1 {
+                return Err(awaken_dispatch::ApplicationError::unavailable(
+                    "ledger unknown",
+                ));
+            }
+            if self.mode == 2 {
+                self.directory
+                    .register(
+                        awaken_worker_contract::WorkerRegistration {
+                            worker_id: worker_id.into(),
+                            incarnation_id: "racing-registration".into(),
+                            manifest: Default::default(),
+                            create_ledger: None,
+                        },
+                        1,
+                        100,
+                    )
+                    .await
+                    .unwrap();
+            }
+            awaken_worker_contract::WorkerCreateLedger::new(
+                "provider",
+                "control",
+                "original-ledger",
+                if self.mode == 3 {
+                    "replaced-uid"
+                } else {
+                    "original-uid"
+                },
+                "original-config",
+            )
+            .map_err(|e| awaken_dispatch::ApplicationError::internal(e.to_string()))
+        }
+        async fn binding_for(
+            &self,
+            _: &awaken_dispatch::WorkerIdentity,
+        ) -> Result<awaken_dispatch::AttemptExecutionBinding, awaken_dispatch::ApplicationError>
+        {
+            unreachable!("bootstrap never invents an incarnation")
+        }
+    }
+
+    #[tokio::test]
+    async fn bootstrap_close_requires_original_deny_fence_and_two_authoritative_registry_reads() {
+        // C1 no original registration; C2 provider can seal the exact existing
+        // unbound fresh ledger; C3 second Registry read is still absent.
+        // R1 C1+C2+C3 -> original anchor, no fake incarnation; R2 !C1 -> no
+        // provider mutation; R3 !C2/missing provider -> refusal; R4 registration
+        // races provider response -> refusal. Absence alone never succeeds.
+        for cause in [
+            "empty",
+            "registered",
+            "unknown-ledger",
+            "changed-anchor",
+            "race",
+            "no-provider",
+            "invalid-id",
+        ] {
+            let directory = Arc::new(awaken_worker_registry::MemoryWorkerDirectory::new());
+            let id = "k8s:ns:worker:uid";
+            if cause == "registered" {
+                directory
+                    .register(
+                        awaken_worker_contract::WorkerRegistration {
+                            worker_id: id.into(),
+                            incarnation_id: "original".into(),
+                            manifest: Default::default(),
+                            create_ledger: None,
+                        },
+                        1,
+                        100,
+                    )
+                    .await
+                    .unwrap();
+            }
+            let binding = BootstrapBinding {
+                calls: 0.into(),
+                mode: match cause {
+                    "unknown-ledger" => 1,
+                    "race" => 2,
+                    "changed-anchor" => 3,
+                    _ => 0,
+                },
+                directory: directory.clone(),
+            };
+            let result = close_bootstrap(
+                directory.as_ref(),
+                (cause != "no-provider")
+                    .then_some(&binding as &dyn awaken_dispatch::WorkerExecutionBindingSource),
+                if cause == "invalid-id" {
+                    " ".into()
+                } else {
+                    id.into()
+                },
+                awaken_worker_contract::WorkerCreateLedger::new(
+                    "provider",
+                    "control",
+                    "original-ledger",
+                    "original-uid",
+                    "original-config",
+                )
+                .unwrap(),
+            )
+            .await;
+            assert_eq!(result.is_ok(), cause == "empty", "{cause}");
+            assert_eq!(
+                binding.calls.load(std::sync::atomic::Ordering::SeqCst),
+                usize::from(matches!(
+                    cause,
+                    "empty" | "unknown-ledger" | "race" | "changed-anchor"
+                )),
+                "{cause} early refusal"
+            );
+            if let Ok(observed) = result {
+                assert_eq!(observed.worker_id, id);
+                assert_eq!(observed.create_ledger.uid(), "original-uid");
+                assert!(
+                    directory.current(id).await.unwrap().is_none(),
+                    "R1 no Registry fabrication"
+                );
+            }
+        }
+    }
 
     struct FixedSource;
 
