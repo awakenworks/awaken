@@ -2530,171 +2530,313 @@ async fn sdk_supplied_activation_preserves_live_context_and_command_precedence()
     // admission and its existing source-error precedence; SDK/common absence
     // still restores the original ticket. Both refuse live-source mismatch.
     // One real producer/matrix tests both roles, without a second fixture.
+    // RI18 original/caller DenyAll x warm/rebuilt Runtime. Keep the original
+    // warm caller-only row; the four cold capability rows require the resumed
+    // ceiling to be their intersection. An original DenyAll cannot be relaxed
+    // by a newly constructed Configured activation with the same coordinates.
+    // RI19 no inherited sources + both Configured -> tools stay advertised;
+    // inherited sources may independently narrow the tool surface. Every row
+    // still checks RI14/15/17 identity and refusal precedence before inference.
     use awaken_runtime_contract::activation::InheritedToolsets;
     use std::sync::atomic::AtomicUsize;
     let a = InheritedToolsets::with_caller(Vec::new(), None);
     let b = InheritedToolsets::with_caller(Vec::new(), Some(&a));
     let cases = [None, Some(a.clone()), Some(b.clone())];
-    for public_entry in [true, false] {
-        for ticket_source in [None, Some(a.clone())] {
-            for supplied_source in &cases {
-                for live_source in &cases {
-                    let llm = std::sync::Arc::new(SucceedingLlm {
-                        requests: Default::default(),
-                        text: "done",
-                        response_delay: std::time::Duration::ZERO,
-                    });
-                    let tool = std::sync::Arc::new(CountingRawTool(AtomicUsize::new(0)));
-                    let runtime = Runtime::new().with_llm(llm.clone()).with_tool(tool);
-                    let store =
-                        std::sync::Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new(
-                            awaken_time::system_clock(),
-                        ));
-                    let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder(
-                        "sdk-source-matrix",
-                    )
-                    .model(
-                        ModelBinding::parse("test", "model", "native")
-                            .expect("RI14 exact test model coordinates"),
-                    )
-                    .tool(ToolDescriptor::pinned(
-                        "test",
-                        "ownership-probe",
-                        "probe",
-                        serde_json::json!({"type":"object"}),
-                    ))
-                    .build();
-                    let original = RunActivation::new(
-                        RunId("sdk-matrix-run".into()),
-                        ThreadId("sdk-matrix-thread".into()),
-                        snapshot,
-                        vec![user_message()],
-                    )
-                    .with_inherited_toolsets(ticket_source.clone());
-                    let pause = awaken_runtime_contract::pause::PauseSignal::new();
-                    pause.request();
-                    assert_eq!(
-                        runtime
-                            .execute(
-                                original.clone(),
-                                RuntimeRunContext::new()
-                                    .with_store(store.clone())
+    for (original_denied, supplied_denied, cold, initial_reader, legacy, pause_again) in [
+        (false, true, false, true, false, false),
+        (false, false, true, true, false, false),
+        (true, false, true, true, false, false),
+        (true, true, true, true, false, false),
+        (false, true, true, true, false, false),
+        (true, false, true, false, false, false),
+        (false, false, true, true, true, false),
+        (true, false, true, true, true, false),
+        (false, true, true, true, false, true),
+    ] {
+        // RI20 includes the bare public SDK entry without a supplied activation;
+        // RI21 original commit-only SDK input must retain its durable ceiling.
+        for entry in 0..3 {
+            let public_entry = entry == 0;
+            for ticket_source in [None, Some(a.clone())] {
+                for supplied_source in &cases {
+                    for live_source in &cases {
+                        let llm = std::sync::Arc::new(SucceedingLlm {
+                            requests: Default::default(),
+                            text: "done",
+                            response_delay: std::time::Duration::ZERO,
+                        });
+                        let tool = std::sync::Arc::new(CountingRawTool(AtomicUsize::new(0)));
+                        let runtime = Runtime::new().with_llm(llm.clone()).with_tool(tool.clone());
+                        let store =
+                            std::sync::Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new(
+                                awaken_time::system_clock(),
+                            ));
+                        let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder(
+                            "sdk-source-matrix",
+                        )
+                        .model(
+                            ModelBinding::parse("test", "model", "native")
+                                .expect("RI14 exact test model coordinates"),
+                        )
+                        .tool(ToolDescriptor::pinned(
+                            "test",
+                            "ownership-probe",
+                            "probe",
+                            serde_json::json!({"type":"object"}),
+                        ))
+                        .build();
+                        let base = RunActivation::new(
+                            RunId("sdk-matrix-run".into()),
+                            ThreadId("sdk-matrix-thread".into()),
+                            snapshot,
+                            vec![user_message()],
+                        )
+                        .with_inherited_toolsets(ticket_source.clone());
+                        let original = if original_denied {
+                            base.clone().without_tools()
+                        } else {
+                            base.clone()
+                        };
+                        let pause = awaken_runtime_contract::pause::PauseSignal::new();
+                        pause.request();
+                        assert_eq!(
+                            runtime
+                                .execute(
+                                    original.clone(),
+                                    if initial_reader {
+                                        RuntimeRunContext::new().with_store(store.clone())
+                                    } else {
+                                        RuntimeRunContext::new().with_commit(store.clone())
+                                    }
                                     .with_pause(pause)
+                                )
+                                .await
+                                .unwrap(),
+                            RunState::Awaiting
+                        );
+                        // RI22 old wire has no original ceiling, whether the
+                        // old input was Configured or DenyAll. Restore that
+                        // actual pause prefix through the original coordinator,
+                        // omitting only the new command; never append a clear.
+                        let store = if legacy {
+                            use awaken_runtime_contract::CommitCoordinator as _;
+                            use awaken_runtime_contract::permission::RunToolCapability;
+                            let retained = store.committed();
+                            let ticket = store.resume_ticket(&original.run_id).unwrap();
+                            let old = std::sync::Arc::new(
+                                awaken_store_inmem::MemoryCommitCoordinator::new(
+                                    awaken_time::system_clock(),
+                                ),
+                            );
+                            old.commit(ThreadCommit::assemble(
+                                original.thread_id.clone(),
+                                RunDisposition::awaiting(ticket),
+                                true,
+                                retained.messages,
+                                retained
+                                    .state
+                                    .into_iter()
+                                    .filter(|command| command.key != RunToolCapability::address())
+                                    .collect(),
+                                Vec::new(),
+                            ))
+                            .await
+                            .unwrap();
+                            old
+                        } else {
+                            store
+                        };
+                        let ticket = store.resume_ticket(&original.run_id).unwrap();
+                        let supplied = base.with_inherited_toolsets(supplied_source.clone());
+                        let supplied = if supplied_denied {
+                            supplied.without_tools()
+                        } else {
+                            supplied
+                        };
+                        let runtime = if cold {
+                            Runtime::new().with_llm(llm.clone()).with_tool(tool)
+                        } else {
+                            runtime
+                        };
+                        if entry == 2 {
+                            runtime.register_snapshot(original.snapshot.clone());
+                        }
+                        let context = RuntimeRunContext::new()
+                            .with_store(store.clone())
+                            .with_inherited_toolsets(live_source.clone());
+                        let context = if entry == 2 && supplied_denied {
+                            context.with_tool_capability_narrowing(
+                                awaken_runtime_contract::permission::ToolCapabilityNarrowing::DenyAll,
+                            )
+                        } else {
+                            context
+                        };
+                        // RI23 an accepted NoTools attempt pauses again. A
+                        // later Configured attempt may not restore tools for
+                        // this same Run. Earlier one-resume rows stay unchanged.
+                        let context = if pause_again {
+                            let pause = awaken_runtime_contract::pause::PauseSignal::new();
+                            pause.request();
+                            context.with_pause(pause)
+                        } else {
+                            context
+                        };
+                        let mut wrong = ResumeCommand::from_ticket(
+                            &ticket,
+                            ResumeResult::Input("continue".into()),
+                            0,
+                        );
+                        wrong.correlation_id = "wrong-current-command".into();
+                        let before = llm.requests.lock().unwrap().len();
+                        let refused = if public_entry {
+                            awaken_runtime_contract::execution::RunAttemptExecutor::resume(
+                                &runtime,
+                                supplied.clone(),
+                                wrong,
+                                context.clone(),
                             )
                             .await
-                            .unwrap(),
-                        RunState::Awaiting
-                    );
-                    let ticket = store.resume_ticket(&original.run_id).unwrap();
-                    let supplied = original
-                        .clone()
-                        .with_inherited_toolsets(supplied_source.clone())
-                        .without_tools();
-                    let context = RuntimeRunContext::new()
-                        .with_store(store.clone())
-                        .with_inherited_toolsets(live_source.clone());
-                    let mut wrong = ResumeCommand::from_ticket(
-                        &ticket,
-                        ResumeResult::Input("continue".into()),
-                        0,
-                    );
-                    wrong.correlation_id = "wrong-current-command".into();
-                    let before = llm.requests.lock().unwrap().len();
-                    let refused = if public_entry {
-                        awaken_runtime_contract::execution::RunAttemptExecutor::resume(
-                            &runtime,
-                            supplied.clone(),
-                            wrong,
-                            context.clone(),
-                        )
-                        .await
-                    } else {
-                        run_commands::resume_with_continuation(
-                            &runtime,
-                            wrong,
-                            store.as_ref(),
-                            context.clone(),
-                            ResumeContinuation::NativeLoop,
-                            Some(&supplied),
-                        )
-                        .await
-                    };
-                    let strict_source_matches = *supplied_source == ticket_source;
-                    let error = refused.unwrap_err();
-                    assert_eq!(
-                        error.code(),
-                        if public_entry && !strict_source_matches {
-                            "execution_failed"
+                        } else if entry == 2 {
+                            runtime.resume(wrong, store.as_ref(), context.clone()).await
                         } else {
-                            "resume_correlation_mismatch"
-                        },
-                        "RI15/RI17 each role retains its original rejection precedence"
-                    );
-                    assert_eq!(
-                        llm.requests.lock().unwrap().len(),
-                        before,
-                        "RI15 zero model entry"
-                    );
-                    let command = ResumeCommand::from_ticket(
-                        &ticket,
-                        ResumeResult::Input("continue".into()),
-                        0,
-                    );
-                    let result = if public_entry {
-                        awaken_runtime_contract::execution::RunAttemptExecutor::resume(
-                            &runtime,
-                            supplied.clone(),
-                            command,
-                            context,
-                        )
-                        .await
-                    } else {
-                        run_commands::resume_with_continuation(
-                            &runtime,
-                            command,
-                            store.as_ref(),
-                            context,
-                            ResumeContinuation::NativeLoop,
-                            Some(&supplied),
-                        )
-                        .await
-                    };
-                    let context_matches = live_source.is_none() || *live_source == ticket_source;
-                    let supplied_matches = if public_entry {
-                        strict_source_matches
-                    } else {
-                        supplied_source.is_none() || *supplied_source == ticket_source
-                    };
-                    assert_eq!(
-                        result.is_ok(),
-                        context_matches && supplied_matches,
-                        "RI14 public={public_entry} ticket={ticket_source:?} supplied={supplied_source:?} live={live_source:?}"
-                    );
-                    if result.is_ok() {
-                        assert!(
-                            llm.requests
-                                .lock()
-                                .unwrap()
-                                .last()
-                                .unwrap()
-                                .tools
-                                .is_empty(),
-                            "RI16 DenyAll value not relaxed"
+                            run_commands::resume_with_continuation(
+                                &runtime,
+                                wrong,
+                                store.as_ref(),
+                                context.clone(),
+                                ResumeContinuation::NativeLoop,
+                                Some(&supplied),
+                            )
+                            .await
+                        };
+                        let strict_source_matches = *supplied_source == ticket_source;
+                        let error = refused.unwrap_err();
+                        assert_eq!(
+                            error.code(),
+                            if public_entry && !strict_source_matches {
+                                "execution_failed"
+                            } else {
+                                "resume_correlation_mismatch"
+                            },
+                            "RI15/RI17 each role retains its original rejection precedence"
                         );
-                        assert!(
-                            store.resume_ticket(&original.run_id).is_none(),
-                            "RI14 exact accepted ticket consumed"
-                        );
-                    } else {
                         assert_eq!(
                             llm.requests.lock().unwrap().len(),
                             before,
-                            "RI14 refusal has no model effect"
+                            "RI15 zero model entry"
                         );
-                        assert!(
-                            store.resume_ticket(&original.run_id).is_some(),
-                            "RI14 refusal keeps ticket"
+                        let command = ResumeCommand::from_ticket(
+                            &ticket,
+                            ResumeResult::Input("continue".into()),
+                            0,
                         );
+                        let mut result = if public_entry {
+                            awaken_runtime_contract::execution::RunAttemptExecutor::resume(
+                                &runtime,
+                                supplied.clone(),
+                                command,
+                                context,
+                            )
+                            .await
+                        } else if entry == 2 {
+                            runtime.resume(command, store.as_ref(), context).await
+                        } else {
+                            run_commands::resume_with_continuation(
+                                &runtime,
+                                command,
+                                store.as_ref(),
+                                context,
+                                ResumeContinuation::NativeLoop,
+                                Some(&supplied),
+                            )
+                            .await
+                        };
+                        if pause_again && result.is_ok() {
+                            assert_eq!(
+                                result.as_ref().unwrap(),
+                                &RunState::Awaiting,
+                                "RI23 current NoTools is accepted before another pause"
+                            );
+                            let next = store.resume_ticket(&original.run_id).unwrap();
+                            result = runtime
+                                .resume(
+                                    ResumeCommand::from_ticket(
+                                        &next,
+                                        ResumeResult::Input("continue".into()),
+                                        0,
+                                    ),
+                                    store.as_ref(),
+                                    RuntimeRunContext::new()
+                                        .with_store(store.clone())
+                                        .with_inherited_toolsets(ticket_source.clone()),
+                                )
+                                .await;
+                        }
+                        let context_matches =
+                            live_source.is_none() || *live_source == ticket_source;
+                        let supplied_matches = if public_entry {
+                            strict_source_matches
+                        } else if entry == 2 {
+                            true
+                        } else {
+                            supplied_source.is_none() || *supplied_source == ticket_source
+                        };
+                        assert_eq!(
+                            result.is_ok(),
+                            context_matches && supplied_matches,
+                            "RI14 public={public_entry} ticket={ticket_source:?} supplied={supplied_source:?} live={live_source:?}"
+                        );
+                        if result.is_ok() {
+                            if original_denied || supplied_denied || legacy {
+                                assert!(
+                                    llm.requests
+                                        .lock()
+                                        .unwrap()
+                                        .last()
+                                        .unwrap()
+                                        .tools
+                                        .is_empty(),
+                                    "RI16/RI18 original={original_denied} caller={supplied_denied} cold={cold}: DenyAll value not relaxed"
+                                );
+                            } else if ticket_source.is_none() {
+                                assert!(
+                                    !llm.requests
+                                        .lock()
+                                        .unwrap()
+                                        .last()
+                                        .unwrap()
+                                        .tools
+                                        .is_empty(),
+                                    "RI19 Configured control retains its tool surface"
+                                );
+                            }
+                            if legacy {
+                                use awaken_runtime_contract::permission::RunToolCapability;
+                                assert!(
+                                    RunToolCapability::recorded(
+                                        &store.committed_state(&original.thread_id),
+                                        &original.run_id,
+                                    )
+                                    .unwrap()
+                                    .is_none(),
+                                    "RI22 unknown history is not backfilled"
+                                );
+                            }
+                            assert!(
+                                store.resume_ticket(&original.run_id).is_none(),
+                                "RI14 exact accepted ticket consumed"
+                            );
+                        } else {
+                            assert_eq!(
+                                llm.requests.lock().unwrap().len(),
+                                before,
+                                "RI14 refusal has no model effect"
+                            );
+                            assert!(
+                                store.resume_ticket(&original.run_id).is_some(),
+                                "RI14 refusal keeps ticket"
+                            );
+                        }
                     }
                 }
             }

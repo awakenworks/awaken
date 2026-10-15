@@ -37,12 +37,16 @@ pub(crate) async fn run_agent_loop(
 ) -> Result<RunState> {
     let run_id = activation.run_id.clone();
     let thread_id = activation.thread_id.clone();
+    let fresh_run = context
+        .reader
+        .as_ref()
+        .is_none_or(|reader| reader.run(&run_id).is_none());
     let committed_state = context
         .reader
         .as_ref()
         .map(|reader| reader.committed_state(&thread_id))
         .unwrap_or_default();
-    let (store, recovery) =
+    let (mut store, recovery) =
         model_operation::recover_checkpoint(committed_state, &context, &run_id, &thread_id).await;
     let resume_checkpoint = match recovery? {
         model_operation::RecoveryObservation::Ready(checkpoint) => checkpoint,
@@ -59,6 +63,7 @@ pub(crate) async fn run_agent_loop(
             .await;
         }
     };
+    let context = model_operation::narrow_recovered_context(&store, context, fresh_run)?;
     let resolved = resolve_activation_snapshot(
         runtime,
         &activation.snapshot,
@@ -186,19 +191,14 @@ pub(crate) async fn run_agent_loop(
     // may never gain this marker after effects could already have happened.
     // Journalled tool-bearing Runs record each effect domain before entry;
     // unqualified callbacks and delegated/shared Sandbox Runs remain opaque.
-    let fresh_run = context
-        .reader
-        .as_ref()
-        .is_some_and(|reader| reader.run(&run_id).is_none());
-    let seed_state = if fresh_run && (model_only_surface || journalled_surface) {
-        vec![ActiveNativeAttemptCoverage::write(&if model_only_surface {
-            NativeAttemptCoverage::ModelOnlyV1
-        } else {
-            NativeAttemptCoverage::JournalledV1
-        })]
-    } else {
-        Vec::new()
-    };
+    let seed_state = initial_run_state(
+        fresh_run,
+        context.reader.is_some(),
+        model_only_surface,
+        journalled_surface,
+        &context,
+        &mut store,
+    )?;
     if continuation == ResumeContinuation::ToolBatch {
         return drive_tool_batch(
             runtime,
@@ -233,6 +233,36 @@ pub(crate) async fn run_agent_loop(
     )
     .await?;
     finalize(runtime, &context, &thread_id, run_id, step_result).await
+}
+
+/// Seed the original first Running commit. Direct SDK callers may supply only
+/// the commit port; their activation input must still be recorded. Native crash
+/// coverage continues to require positive fresh-history evidence. A reader that
+/// already retains this Run never backfills either fact.
+fn initial_run_state(
+    fresh: bool,
+    has_reader: bool,
+    model_only: bool,
+    journalled: bool,
+    context: &RuntimeRunContext,
+    store: &mut Store,
+) -> Result<Vec<StateCommand>> {
+    let mut state = Vec::new();
+    if fresh && has_reader && (model_only || journalled) {
+        state.push(ActiveNativeAttemptCoverage::write(&if model_only {
+            NativeAttemptCoverage::ModelOnlyV1
+        } else {
+            NativeAttemptCoverage::JournalledV1
+        }));
+    }
+    awaken_runtime_contract::permission::RunToolCapability::stage(
+        store,
+        &mut state,
+        context.tool_capability_narrowing,
+        fresh,
+    )
+    .map_err(|error| Error::Commit(error.to_string()))?;
+    Ok(state)
 }
 
 /// Tracks the active plugins' live tool-face version and lazily re-resolves the

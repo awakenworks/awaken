@@ -1621,6 +1621,10 @@ async fn delegation_resume_distinguishes_cached_absent_and_malformed_delivery() 
         "absent",
         "live-usage",
         "malformed",
+        "cached-denied",
+        "absent-denied",
+        "cached-policy",
+        "absent-policy",
     ] {
         let executor = Arc::new(MockRunDelegationService::new(
             Step::Awaiting(serde_json::json!({"task": "remote-42"})),
@@ -1650,7 +1654,7 @@ async fn delegation_resume_distinguishes_cached_absent_and_malformed_delivery() 
                 cache_creation_tokens: 19,
             },
         );
-        if matches!(mode, "cached" | "cached-rejected" | "malformed") {
+        if mode.starts_with("cached") || mode == "malformed" {
             let mut inbox = ChildRunResultInbox::default();
             inbox
                 .record(
@@ -1705,13 +1709,39 @@ async fn delegation_resume_distinguishes_cached_absent_and_malformed_delivery() 
             );
             assert!(executor.resumed_with.lock().unwrap().is_empty(), "U1");
         }
-        let result = runtime
-            .resume(
-                resume_command("continue"),
-                commit.as_ref(),
-                RuntimeRunContext::new().with_commit(commit.clone()),
+        // N3/N4: a current capability/policy restriction prevents a new child
+        // continuation on a cache miss, with exact ticket/state/message/event
+        // stutter. N5/N6: the same restriction still consumes a complete cached
+        // envelope once; consuming a durable result grants no new execution.
+        let context = RuntimeRunContext::new().with_commit(commit.clone());
+        let context = if mode.ends_with("denied") {
+            context.with_tool_capability_narrowing(
+                awaken_runtime_contract::permission::ToolCapabilityNarrowing::DenyAll,
             )
+        } else if mode.ends_with("policy") {
+            context.with_tool_permission_policy(Arc::new(
+                awaken_runtime_contract::permission::DenyAllTools::new("child restriction"),
+            ))
+        } else {
+            context
+        };
+        let result = runtime
+            .resume(resume_command("continue"), commit.as_ref(), context)
             .await;
+        if matches!(mode, "absent-denied" | "absent-policy") {
+            assert!(result.is_err(), "N3/N4 no new child entry");
+            assert!(executor.resumed_with.lock().unwrap().is_empty(), "N3/N4");
+            let after = commit.committed();
+            assert_eq!(after.state, before.state, "N3/N4");
+            assert_eq!(after.messages, before.messages, "N3/N4");
+            assert_eq!(after.events, before.events, "N3/N4");
+            assert_eq!(
+                commit.resume_ticket_for(&RunId("run-1".into())),
+                ticket,
+                "N3/N4"
+            );
+            continue;
+        }
         if mode == "malformed" {
             let expected = PendingChildRunResults::load(&Store::rebuild(&before.state))
                 .unwrap_err()

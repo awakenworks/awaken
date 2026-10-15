@@ -97,6 +97,24 @@ async fn commit_model_operations(
 ) {
     use awaken_runtime_contract::model_operation::ActiveModelOperation;
     for operation in operations {
+        // These positive recovery prefixes originate from a current Configured
+        // activation. Record its input at the first fixture commit, before any
+        // synthetic model effect. Legacy absence is covered by RI22, not guessed
+        // into Configured during recovery.
+        use awaken_runtime_contract::permission::{RunToolCapability, ToolCapabilityNarrowing};
+        let mut view = awaken_tool_contract::tool_batch::store_from_run_commands(
+            durable.committed_state(&ThreadId("thread-1".into())),
+            &RunId("run-1".into()),
+        );
+        let mut state = Vec::new();
+        RunToolCapability::stage(
+            &mut view,
+            &mut state,
+            ToolCapabilityNarrowing::Configured,
+            durable.run(&RunId("run-1".into())).is_none(),
+        )
+        .unwrap();
+        state.push(ActiveModelOperation::write(&Some(operation)));
         awaken_runtime_contract::CommitCoordinator::commit(
             durable,
             awaken_runtime_contract::ThreadCommit::assemble(
@@ -104,7 +122,7 @@ async fn commit_model_operations(
                 awaken_runtime_contract::RunDisposition::running(RunId("run-1".into())),
                 true,
                 Vec::new(),
-                vec![ActiveModelOperation::write(&Some(operation))],
+                state,
                 Vec::new(),
             ),
         )
@@ -1741,7 +1759,25 @@ async fn one_model_step_commits_facts_and_streams_progress() {
     // Lifecycle and model observations share the same committed audit log.
     // Two operation StatePatch facts supplement the existing lifecycle/usage
     // facts; they must not create another model usage observation.
-    assert_eq!(committed.events.len(), 5);
+    // The original five lifecycle/model facts remain, plus exactly one
+    // StatePatch for the first Run ceiling; no extra model observation.
+    assert_eq!(committed.events.len(), 6);
+    assert_eq!(
+        awaken_runtime_contract::permission::RunToolCapability::recorded(
+            &committed.state,
+            &RunId("run-1".into()),
+        )
+        .unwrap(),
+        Some(awaken_runtime_contract::permission::ToolCapabilityNarrowing::Configured)
+    );
+    assert_eq!(
+        committed
+            .state
+            .iter()
+            .filter(|command| command.key.0 == "runtime.run_tool_capability.v1")
+            .count(),
+        1
+    );
     assert_eq!(
         committed_model_requests(&commit),
         vec![ModelRequestObservation::default()]

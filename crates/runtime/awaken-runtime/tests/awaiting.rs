@@ -752,90 +752,159 @@ async fn declared_client_tool_awaits_external_result_without_entering_host_execu
     // | C3 | C2 + operation O1 | exact durable delivery | ticket absent + ResumeApplied(O1) |
     // Constraints/invariants: the client-executed descriptor is the sole owner;
     // System context and its correlated Tool result commit adjacently and once.
+    // C5: the current attempt becomes DenyAll after the client request was
+    // issued. Its already-computed exact result still settles once; accepting
+    // that fact enters neither a Host executor nor another client request.
+    for denied in [false, true] {
+        let ran = Arc::new(AtomicUsize::new(0));
+        let runtime = runtime(ran.clone());
+        let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+        let mut activation = activation();
+        activation.snapshot.resolved_spec.tool_descriptors[0] =
+            activation.snapshot.resolved_spec.tool_descriptors[0]
+                .clone()
+                .with_kind(ToolKind::ClientExecuted);
+
+        let outcome = runtime
+            .execute(
+                activation,
+                RuntimeRunContext::new().with_commit(commit.clone()),
+            )
+            .await
+            .expect("client tool call is admitted");
+        assert_eq!(outcome, RunState::Awaiting);
+        assert_eq!(ran.load(Ordering::SeqCst), 0);
+        let ticket = commit
+            .resume_ticket_for(&RunId("run-1".into()))
+            .expect("external result ticket is durable");
+        assert_eq!(ticket.reason(), AwaitReason::ExternalEvent);
+        assert_eq!(ticket.call_id(), Some("call-1"));
+        // C6: a valid existing client result also needs the original write
+        // boundary. Native continuation with only the read port must neither
+        // accept the delivery nor consume its ticket before persistence exists.
+        let before = commit.committed();
+        let count = commit.commit_count();
+        assert!(
+            runtime
+                .resume(
+                    ResumeCommand::from_ticket(
+                        &ticket,
+                        ResumeResult::ToolResult(ToolOutput::ok("call-1", "client-computed")),
+                        0
+                    ),
+                    commit.as_ref(),
+                    RuntimeRunContext::new().with_reader(commit.clone()),
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(commit.commit_count(), count);
+        assert_eq!(commit.committed().state, before.state);
+        assert_eq!(commit.committed().messages, before.messages);
+        assert_eq!(commit.committed().events, before.events);
+        assert!(commit.resume_ticket_for(&RunId("run-1".into())).is_some());
+        // C4: an external model loop may select the tool-only continuation. It must
+        // settle the same batch and return Running without entering Native inference.
+        let ticket_correlation_id = ticket.correlation_id.clone();
+        let system = Message::text(
+            MessageId("session-system-tool-reply".into()),
+            Role::System,
+            "reply context",
+        );
+
+        let outcome = runtime
+            .resume_tool_batch(
+                ResumeCommand {
+                    operation_id: Some("client-result-operation-1".into()),
+                    correlation_id: ticket.correlation_id,
+                    run_id: RunId("run-1".into()),
+                    thread_id: ThreadId("thread-1".into()),
+                    snapshot_id: ExecutableAgentSnapshotId(SNAPSHOT_ID.into()),
+                    catalog_fingerprint: CatalogFingerprint(FINGERPRINT.into()),
+                    result: ResumeResult::ToolResult(ToolOutput::ok("call-1", "client-computed")),
+                    context_messages: vec![system.clone()],
+                    now_ms: 0,
+                },
+                commit.as_ref(),
+                RuntimeRunContext::new()
+                    .with_commit(commit.clone())
+                    .with_tool_capability_narrowing(if denied {
+                        awaken_runtime_contract::permission::ToolCapabilityNarrowing::DenyAll
+                    } else {
+                        awaken_runtime_contract::permission::ToolCapabilityNarrowing::Configured
+                    })
+                    .with_tool_output_spiller(Arc::new(PrefixSpiller)),
+            )
+            .await
+            .expect("exact client result settles the shared tool batch");
+        assert_eq!(
+            outcome,
+            RunState::Running,
+            "C4 returns to the external loop"
+        );
+        assert_eq!(ran.load(Ordering::SeqCst), 0);
+        assert!(
+            commit.resume_ticket_for(&RunId("run-1".into())).is_none(),
+            "C3 accepted delivery consumes its ticket"
+        );
+        let committed = commit.committed();
+        let receipts = committed
+            .events
+            .iter()
+            .filter(|event| event.kind == EventKind::ResumeApplied)
+            .collect::<Vec<_>>();
+        assert_eq!(receipts.len(), 1, "C3 emits one durable receipt");
+        assert_eq!(
+            receipts[0].payload,
+            serde_json::json!({
+                "operation_id": "client-result-operation-1",
+                "correlation_id": ticket_correlation_id,
+            }),
+            "C3 receipt retains the exact ingress identity"
+        );
+        assert!(
+            committed.messages.windows(2).any(|messages| {
+                messages[0] == system
+                    && messages[1].role == Role::Tool
+                    && messages[1].text_content() == "preview: client-computed"
+            }),
+            "C2: stable System is adjacent to and precedes the correlated Tool result"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_tool_free_run_never_issues_a_client_execution_ticket() {
+    // C1 ClientExecuted descriptor; C2 model emits that unadvertised call;
+    // C3 immutable Run DenyAll. R1 -> terminal CapabilityBound, zero Host
+    // invocation, zero external-result ticket and no host permission decision.
+    // The adjacent Configured/C5 test preserves legitimate client ownership
+    // and consumption of a result already requested before narrowing.
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = runtime(ran.clone());
     let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
-    let mut activation = activation();
-    activation.snapshot.resolved_spec.tool_descriptors[0] =
-        activation.snapshot.resolved_spec.tool_descriptors[0]
-            .clone()
-            .with_kind(ToolKind::ClientExecuted);
-
-    let outcome = runtime
-        .execute(
-            activation,
-            RuntimeRunContext::new().with_commit(commit.clone()),
-        )
-        .await
-        .expect("client tool call is admitted");
-    assert_eq!(outcome, RunState::Awaiting);
-    assert_eq!(ran.load(Ordering::SeqCst), 0);
-    let ticket = commit
-        .resume_ticket_for(&RunId("run-1".into()))
-        .expect("external result ticket is durable");
-    assert_eq!(ticket.reason(), AwaitReason::ExternalEvent);
-    assert_eq!(ticket.call_id(), Some("call-1"));
-    // C4: an external model loop may select the tool-only continuation. It must
-    // settle the same batch and return Running without entering Native inference.
-    let ticket_correlation_id = ticket.correlation_id.clone();
-    let system = Message::text(
-        MessageId("session-system-tool-reply".into()),
-        Role::System,
-        "reply context",
-    );
-
-    let outcome = runtime
-        .resume_tool_batch(
-            ResumeCommand {
-                operation_id: Some("client-result-operation-1".into()),
-                correlation_id: ticket.correlation_id,
-                run_id: RunId("run-1".into()),
-                thread_id: ThreadId("thread-1".into()),
-                snapshot_id: ExecutableAgentSnapshotId(SNAPSHOT_ID.into()),
-                catalog_fingerprint: CatalogFingerprint(FINGERPRINT.into()),
-                result: ResumeResult::ToolResult(ToolOutput::ok("call-1", "client-computed")),
-                context_messages: vec![system.clone()],
-                now_ms: 0,
-            },
-            commit.as_ref(),
-            RuntimeRunContext::new()
-                .with_commit(commit.clone())
-                .with_tool_output_spiller(Arc::new(PrefixSpiller)),
-        )
-        .await
-        .expect("exact client result settles the shared tool batch");
+    let mut activation = activation().without_tools();
+    activation.snapshot.resolved_spec.tool_descriptors[0].kind = ToolKind::ClientExecuted;
     assert_eq!(
-        outcome,
-        RunState::Running,
-        "C4 returns to the external loop"
+        runtime
+            .execute(
+                activation,
+                RuntimeRunContext::new().with_store(commit.clone())
+            )
+            .await
+            .unwrap(),
+        RunState::Ended(EndCause::Error(
+            awaken_agent_contract::agent::run::Failure::CapabilityBound,
+        ))
     );
     assert_eq!(ran.load(Ordering::SeqCst), 0);
+    assert!(commit.resume_ticket_for(&RunId("run-1".into())).is_none());
     assert!(
-        commit.resume_ticket_for(&RunId("run-1".into())).is_none(),
-        "C3 accepted delivery consumes its ticket"
-    );
-    let committed = commit.committed();
-    let receipts = committed
-        .events
-        .iter()
-        .filter(|event| event.kind == EventKind::ResumeApplied)
-        .collect::<Vec<_>>();
-    assert_eq!(receipts.len(), 1, "C3 emits one durable receipt");
-    assert_eq!(
-        receipts[0].payload,
-        serde_json::json!({
-            "operation_id": "client-result-operation-1",
-            "correlation_id": ticket_correlation_id,
-        }),
-        "C3 receipt retains the exact ingress identity"
-    );
-    assert!(
-        committed.messages.windows(2).any(|messages| {
-            messages[0] == system
-                && messages[1].role == Role::Tool
-                && messages[1].text_content() == "preview: client-computed"
-        }),
-        "C2: stable System is adjacent to and precedes the correlated Tool result"
+        !commit
+            .committed()
+            .events
+            .iter()
+            .any(|event| event.kind == EventKind::PermissionDecided)
     );
 }
 
@@ -869,106 +938,143 @@ async fn resumed_requested_client_calls_keep_their_frozen_execution_owner() {
     // => second ExternalEvent ticket, zero Host invocation, one inference until both
     // results arrive. R2 C2 regular => existing Host permission gate. C3 cannot change
     // either decision. Completed first results stay behind the batch publication barrier.
-    for cold in [false, true] {
-        for second_client in [false, true] {
-            let ran = Arc::new(AtomicUsize::new(0));
-            let model = Arc::new(ToolThenText {
-                calls: AtomicUsize::new(0),
-                second_tool: true,
-            });
-            let mut act = activation();
-            act.snapshot.resolved_spec.tool_descriptors[0].kind = ToolKind::ClientExecuted;
-            let mut second = act.snapshot.resolved_spec.tool_descriptors[0].clone();
-            second.id = "lookup".into();
-            second.kind = if second_client {
-                ToolKind::ClientExecuted
-            } else {
-                ToolKind::Regular
-            };
-            act.snapshot.resolved_spec.tool_descriptors.push(second);
-            let frozen = act.snapshot.clone();
-            let make_runtime = || {
-                let runtime = Runtime::new()
-                    .with_llm(model.clone())
-                    .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
-                    .with_gate(Arc::new(SuspendGate));
-                runtime.register_snapshot(frozen.clone());
-                runtime
-            };
-            let mut runtime = make_runtime();
-            let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
-            assert_eq!(
-                runtime
-                    .execute(act, RuntimeRunContext::new().with_commit(commit.clone()))
-                    .await
-                    .unwrap(),
-                RunState::Awaiting
-            );
-            if cold {
-                runtime = make_runtime();
-            }
-            for index in 1..=2 {
-                let ticket = commit.resume_ticket_for(&RunId("run-1".into())).unwrap();
-                assert_eq!(ticket.reason(), AwaitReason::ExternalEvent);
-                assert_eq!(ticket.call_id(), Some(format!("call-{index}").as_str()));
-                let command = ResumeCommand {
-                    operation_id: Some(format!("reply-{index}")),
-                    correlation_id: ticket.correlation_id,
-                    run_id: RunId("run-1".into()),
-                    thread_id: ThreadId("thread-1".into()),
-                    snapshot_id: ExecutableAgentSnapshotId(SNAPSHOT_ID.into()),
-                    catalog_fingerprint: CatalogFingerprint(FINGERPRINT.into()),
-                    result: ResumeResult::ToolResult(ToolOutput::ok(
-                        format!("call-{index}"),
-                        format!("result-{index}"),
-                    )),
-                    context_messages: Vec::new(),
-                    now_ms: 0,
+    for denied in [false, true] {
+        for cold in [false, true] {
+            for second_client in [false, true] {
+                let ran = Arc::new(AtomicUsize::new(0));
+                let model = Arc::new(ToolThenText {
+                    calls: AtomicUsize::new(0),
+                    second_tool: true,
+                });
+                let mut act = activation();
+                act.snapshot.resolved_spec.tool_descriptors[0].kind = ToolKind::ClientExecuted;
+                let mut second = act.snapshot.resolved_spec.tool_descriptors[0].clone();
+                second.id = "lookup".into();
+                second.kind = if second_client {
+                    ToolKind::ClientExecuted
+                } else {
+                    ToolKind::Regular
                 };
-                let state = runtime
-                    .resume_tool_batch(
-                        command,
-                        commit.as_ref(),
-                        RuntimeRunContext::new().with_commit(commit.clone()),
-                    )
-                    .await
-                    .unwrap();
-                assert_eq!(ran.load(Ordering::SeqCst), 0);
-                assert_eq!(model.calls.load(Ordering::SeqCst), 1);
-                if index == 1 {
-                    assert_eq!(state, RunState::Awaiting);
-                    let next = commit.resume_ticket_for(&RunId("run-1".into())).unwrap();
-                    assert_eq!(next.call_id(), Some("call-2"));
-                    assert_eq!(
-                        next.reason(),
-                        if second_client {
-                            AwaitReason::ExternalEvent
-                        } else {
-                            AwaitReason::ToolPermission
-                        }
-                    );
-                    assert_eq!(
-                        commit
-                            .committed_messages(&ThreadId("thread-1".into()))
-                            .iter()
-                            .filter(|m| m.role == Role::Tool)
-                            .count(),
-                        0
-                    );
-                    if !second_client {
+                act.snapshot.resolved_spec.tool_descriptors.push(second);
+                let frozen = act.snapshot.clone();
+                let make_runtime = || {
+                    let runtime = Runtime::new()
+                        .with_llm(model.clone())
+                        .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
+                        .with_gate(Arc::new(SuspendGate));
+                    runtime.register_snapshot(frozen.clone());
+                    runtime
+                };
+                let mut runtime = make_runtime();
+                let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+                assert_eq!(
+                    runtime
+                        .execute(act, RuntimeRunContext::new().with_commit(commit.clone()))
+                        .await
+                        .unwrap(),
+                    RunState::Awaiting
+                );
+                if cold {
+                    runtime = make_runtime();
+                }
+                for index in 1..=2 {
+                    let ticket = commit.resume_ticket_for(&RunId("run-1".into())).unwrap();
+                    assert_eq!(ticket.reason(), AwaitReason::ExternalEvent);
+                    assert_eq!(ticket.call_id(), Some(format!("call-{index}").as_str()));
+                    let command = ResumeCommand {
+                        operation_id: Some(format!("reply-{index}")),
+                        correlation_id: ticket.correlation_id,
+                        run_id: RunId("run-1".into()),
+                        thread_id: ThreadId("thread-1".into()),
+                        snapshot_id: ExecutableAgentSnapshotId(SNAPSHOT_ID.into()),
+                        catalog_fingerprint: CatalogFingerprint(FINGERPRINT.into()),
+                        result: ResumeResult::ToolResult(ToolOutput::ok(
+                            format!("call-{index}"),
+                            format!("result-{index}"),
+                        )),
+                        context_messages: Vec::new(),
+                        now_ms: 0,
+                    };
+                    let state = runtime
+                        .resume_tool_batch(
+                            command,
+                            commit.as_ref(),
+                            RuntimeRunContext::new().with_commit(commit.clone())
+                                .with_tool_capability_narrowing(if denied {
+                                    awaken_runtime_contract::permission::ToolCapabilityNarrowing::DenyAll
+                                } else {
+                                    awaken_runtime_contract::permission::ToolCapabilityNarrowing::Configured
+                                }),
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(ran.load(Ordering::SeqCst), 0);
+                    assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+                    // N8: narrowing after the first client request may consume its
+                    // exact result, but cannot issue a Requested client sibling or
+                    // invoke a Host sibling. Warm/cold and both ownership branches
+                    // retain the first completed fact and close the batch once.
+                    if denied {
+                        use awaken_agent_contract::agent::state::StateKey;
+                        use awaken_tool_contract::tool_batch::{
+                            ActiveToolBatch, ToolBatchPhase, ToolCallPhase,
+                        };
+                        assert_eq!(
+                            state,
+                            if second_client {
+                                RunState::Ended(EndCause::Error(
+                                    awaken_agent_contract::agent::run::Failure::CapabilityBound,
+                                ))
+                            } else {
+                                RunState::Running
+                            }
+                        );
+                        assert!(commit.resume_ticket_for(&RunId("run-1".into())).is_none());
+                        let batch = ActiveToolBatch::load(&Store::rebuild(
+                            &commit.committed_state(&ThreadId("thread-1".into())),
+                        ))
+                        .unwrap()
+                        .unwrap();
+                        assert_eq!(batch.phase(), ToolBatchPhase::Finalized);
+                        assert!(matches!(&batch.calls()[0].phase,
+                            ToolCallPhase::Completed(output) if output.text().contains("result-1")));
                         break;
                     }
-                } else {
-                    assert_eq!(state, RunState::Running);
-                    assert!(commit.resume_ticket_for(&RunId("run-1".into())).is_none());
-                    let results: Vec<_> = commit
-                        .committed_messages(&ThreadId("thread-1".into()))
-                        .into_iter()
-                        .filter(|m| m.role == Role::Tool)
-                        .collect();
-                    assert_eq!(results.len(), 2);
-                    assert!(results[0].text_content().contains("result-1"));
-                    assert!(results[1].text_content().contains("result-2"));
+                    if index == 1 {
+                        assert_eq!(state, RunState::Awaiting);
+                        let next = commit.resume_ticket_for(&RunId("run-1".into())).unwrap();
+                        assert_eq!(next.call_id(), Some("call-2"));
+                        assert_eq!(
+                            next.reason(),
+                            if second_client {
+                                AwaitReason::ExternalEvent
+                            } else {
+                                AwaitReason::ToolPermission
+                            }
+                        );
+                        assert_eq!(
+                            commit
+                                .committed_messages(&ThreadId("thread-1".into()))
+                                .iter()
+                                .filter(|m| m.role == Role::Tool)
+                                .count(),
+                            0
+                        );
+                        if !second_client {
+                            break;
+                        }
+                    } else {
+                        assert_eq!(state, RunState::Running);
+                        assert!(commit.resume_ticket_for(&RunId("run-1".into())).is_none());
+                        let results: Vec<_> = commit
+                            .committed_messages(&ThreadId("thread-1".into()))
+                            .into_iter()
+                            .filter(|m| m.role == Role::Tool)
+                            .collect();
+                        assert_eq!(results.len(), 2);
+                        assert!(results[0].text_content().contains("result-1"));
+                        assert!(results[1].text_content().contains("result-2"));
+                    }
                 }
             }
         }

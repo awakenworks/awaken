@@ -1309,7 +1309,14 @@ async fn fresh_and_recovered_tool_uncertainty_use_the_same_terminal_decision() {
                     awaken_runtime_contract::RunDisposition::running(activation.run_id.clone()),
                     true,
                     Vec::new(),
-                    vec![ActiveToolBatch::write(&Some(batch))],
+                    // Current Requested control carries the same original
+                    // activation input as the fresh branch; no legacy upgrade.
+                    vec![
+                        awaken_runtime_contract::permission::RunToolCapability::write(&Some(
+                            activation.tool_capability_narrowing(),
+                        )),
+                        ActiveToolBatch::write(&Some(batch)),
+                    ],
                     Vec::new(),
                 ),
             )

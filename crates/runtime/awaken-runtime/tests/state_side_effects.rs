@@ -316,10 +316,30 @@ async fn tool_with_no_state_commits_nothing_extra() {
     assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
 
     let committed = commit.committed();
+    // The current original Configured input adds exactly one Runtime-owned
+    // fact. A tool still contributes no state, and every other key is refused.
+    assert_eq!(
+        committed
+            .state
+            .iter()
+            .filter(|command| command.key.0 == "runtime.run_tool_capability.v1")
+            .count(),
+        1
+    );
+    assert_eq!(
+        awaken_runtime_contract::permission::RunToolCapability::recorded(
+            &committed.state,
+            &RunId("run-1".into()),
+        )
+        .unwrap(),
+        Some(awaken_runtime_contract::permission::ToolCapabilityNarrowing::Configured)
+    );
     assert!(
         committed.state.iter().all(|command| matches!(
             command.key.0.as_str(),
-            "runtime.active_tool_batch.v1" | "runtime.model_operation.v1"
+            "runtime.active_tool_batch.v1"
+                | "runtime.model_operation.v1"
+                | "runtime.run_tool_capability.v1"
         )),
         "a tool staging no commands must commit only runtime recovery state, got {:?}",
         committed.state

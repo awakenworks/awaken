@@ -81,6 +81,34 @@ fn resumed_model_context(
     (resume_step_base, transcript, projected_context)
 }
 
+fn permission_confirmation(call: &ToolCall, result: PermissionConfirmation) -> EventDraft {
+    RunEvent::PermissionConfirmed {
+        tool_id: call.tool_id.clone(),
+        call_id: call.call_id.clone(),
+        result,
+    }
+    .into()
+}
+
+/// The original atomic approval frame: ticket consumption, Executing state and
+/// one confirmation share this ThreadCommit before the admitted tool is invoked.
+fn approved_tool_commit(
+    ticket: &ResumeTicket,
+    call: &ToolCall,
+    state: Vec<StateCommand>,
+    resume: Option<&ResumeCommit>,
+) -> Result<awaken_runtime_contract::ThreadCommit> {
+    assemble_attempt_commit(
+        ticket.thread_id.clone(),
+        RunDisposition::running(ticket.run_id.clone()),
+        true,
+        Vec::new(),
+        state,
+        vec![permission_confirmation(call, PermissionConfirmation::Allow)],
+        resume,
+    )
+}
+
 /// Rebuild the transcript and state from committed truth, inject a resumed
 /// `result` for the awaiting ticket, and drive the loop to its next terminal/awaiting
 /// checkpoint. Shared by the two resume entries — a validated `ResumeCommand`
@@ -108,6 +136,14 @@ pub(super) async fn drive_resumed(
     let (resume_step_base, mut transcript, projected_context) =
         resumed_model_context(resolved, run_id, thread_id, reader, context, &fresh_context);
     let context = &projected_context;
+    let mut authority_state = Vec::new();
+    awaken_runtime_contract::permission::RunToolCapability::stage(
+        &mut store,
+        &mut authority_state,
+        context.tool_capability_narrowing,
+        false,
+    )
+    .map_err(|error| Error::Commit(error.to_string()))?;
     // Keep the state already validated at recovery admission, including model
     // history and any child result committed by resume_delegation. Rebuilding
     // from the reader here would discard both the validated ordinal and local
@@ -178,29 +214,19 @@ pub(super) async fn drive_resumed(
             &mut approval_state,
         )?;
         approval_state.push(command.clone());
+        approval_state.extend(authority_state.iter().cloned());
         if let Some(coordinator) = &context.commit {
             coordinator
-                .commit(assemble_attempt_commit(
-                    thread_id.clone(),
-                    RunDisposition::running(run_id.clone()),
-                    true,
-                    Vec::new(),
+                .commit(approved_tool_commit(
+                    ticket,
+                    call,
                     approval_state,
-                    vec![
-                        // A person answered the ticket: a confirmation, not a
-                        // second decision of the gate.
-                        RunEvent::PermissionConfirmed {
-                            tool_id: call.tool_id.clone(),
-                            call_id: call_id.to_string(),
-                            result: PermissionConfirmation::Allow,
-                        }
-                        .into(),
-                    ],
                     resume_commit.as_ref(),
                 )?)
                 .await
                 .map_err(Error::from)?;
             resume_commit = None;
+            authority_state.clear();
         }
         store.apply(&command);
         decision_precommitted = true;
@@ -330,17 +356,8 @@ pub(super) async fn drive_resumed(
     seed_state.splice(0..0, delegation_state);
     let seed_audit = if decision_precommitted {
         Vec::new()
-    } else if let (Some(decision), Some((call_id, pending))) =
-        (permission_decision, ticket.tool_call())
-    {
-        vec![
-            RunEvent::PermissionConfirmed {
-                tool_id: pending.tool_id.clone(),
-                call_id: call_id.to_string(),
-                result: decision,
-            }
-            .into(),
-        ]
+    } else if let (Some(decision), Some(call)) = (permission_decision, pending_call.as_ref()) {
+        vec![permission_confirmation(call, decision)]
     } else {
         Vec::new()
     };
@@ -379,6 +396,12 @@ pub(super) async fn drive_resumed(
         resumed
     };
     let mut new_messages = fresh_context;
+    // An accepted restriction belongs to the Run admission, never to a tool's
+    // retained result envelope. Publish it beside the wrapped batch command.
+    for command in &authority_state {
+        store.apply(command);
+    }
+    seed_state.extend(authority_state);
     new_messages.extend(resumed_new_messages);
     if continuation == ResumeContinuation::ToolBatch {
         let mut ledger = StepLedger::new(transcript, new_messages, seed_state, seed_audit);
