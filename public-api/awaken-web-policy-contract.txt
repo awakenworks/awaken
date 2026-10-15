@@ -1,4 +1,36 @@
 pub mod awaken_web_policy_contract
+pub enum awaken_web_policy_contract::WebAdmissionFailure
+pub awaken_web_policy_contract::WebAdmissionFailure::DomainRejected
+pub awaken_web_policy_contract::WebAdmissionFailure::InvalidConfiguration(awaken_web_policy_contract::WebConfigurationIssue)
+pub awaken_web_policy_contract::WebAdmissionFailure::InvalidUrl(alloc::string::String)
+pub awaken_web_policy_contract::WebAdmissionFailure::SourceRejected
+impl core::error::Error for awaken_web_policy_contract::WebAdmissionFailure
+impl core::fmt::Display for awaken_web_policy_contract::WebAdmissionFailure
+pub fn awaken_web_policy_contract::WebAdmissionFailure::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum awaken_web_policy_contract::WebConfigurationCode
+pub awaken_web_policy_contract::WebConfigurationCode::ConflictingDomains
+pub awaken_web_policy_contract::WebConfigurationCode::InvalidDomain
+pub awaken_web_policy_contract::WebConfigurationCode::InvalidDomainCount
+pub awaken_web_policy_contract::WebConfigurationCode::InvalidLocation
+pub awaken_web_policy_contract::WebConfigurationCode::InvalidShape
+pub awaken_web_policy_contract::WebConfigurationCode::InvalidSources
+pub awaken_web_policy_contract::WebConfigurationCode::UnavailableClientTool
+pub awaken_web_policy_contract::WebConfigurationCode::WrongTool
+impl awaken_web_policy_contract::WebConfigurationCode
+pub const fn awaken_web_policy_contract::WebConfigurationCode::as_str(self) -> &'static str
+pub enum awaken_web_policy_contract::WebDomainFilter
+pub awaken_web_policy_contract::WebDomainFilter::Allow(alloc::vec::Vec<alloc::string::String>)
+pub awaken_web_policy_contract::WebDomainFilter::Block(alloc::vec::Vec<alloc::string::String>)
+impl awaken_web_policy_contract::WebDomainFilter
+pub fn awaken_web_policy_contract::WebDomainFilter::from_lists(core::option::Option<&[alloc::string::String]>, core::option::Option<&[alloc::string::String]>) -> core::result::Result<core::option::Option<Self>, awaken_web_policy_contract::WebConfigurationIssue>
+pub enum awaken_web_policy_contract::WebExecutionConfiguration
+pub awaken_web_policy_contract::WebExecutionConfiguration::WebFetch(awaken_web_policy_contract::WebFetchExecutionConfiguration)
+pub awaken_web_policy_contract::WebExecutionConfiguration::WebSearch(awaken_web_policy_contract::WebSearchExecutionConfiguration)
+impl awaken_web_policy_contract::WebExecutionConfiguration
+pub fn awaken_web_policy_contract::WebExecutionConfiguration::compile(&self, core::option::Option<&alloc::collections::btree::set::BTreeSet<&str>>) -> core::result::Result<serde_json::value::Value, awaken_web_policy_contract::WebConfigurationIssue>
+pub fn awaken_web_policy_contract::WebExecutionConfiguration::compile_value(&str, &serde_json::value::Value, core::option::Option<&alloc::collections::btree::set::BTreeSet<&str>>) -> core::result::Result<serde_json::value::Value, awaken_web_policy_contract::WebConfigurationIssue>
+pub fn awaken_web_policy_contract::WebExecutionConfiguration::parse(&str, &serde_json::value::Value, core::option::Option<&alloc::collections::btree::set::BTreeSet<&str>>) -> core::result::Result<Self, awaken_web_policy_contract::WebConfigurationIssue>
+pub fn awaken_web_policy_contract::WebExecutionConfiguration::validate(&self, core::option::Option<&alloc::collections::btree::set::BTreeSet<&str>>) -> core::result::Result<(), awaken_web_policy_contract::WebConfigurationIssue>
 pub enum awaken_web_policy_contract::WebUrlSourceFilter
 pub awaken_web_policy_contract::WebUrlSourceFilter::All
 pub awaken_web_policy_contract::WebUrlSourceFilter::Except
@@ -15,6 +47,38 @@ pub awaken_web_policy_contract::WebUrlSourceKind::UserInput
 pub enum awaken_web_policy_contract::WebUrlToolReference
 pub awaken_web_policy_contract::WebUrlToolReference::ToolReference
 pub awaken_web_policy_contract::WebUrlToolReference::ToolReference::name: alloc::string::String
+pub struct awaken_web_policy_contract::EffectiveWebFetchConfiguration
+pub awaken_web_policy_contract::EffectiveWebFetchConfiguration::domains: alloc::vec::Vec<awaken_web_policy_contract::WebDomainFilter>
+pub awaken_web_policy_contract::EffectiveWebFetchConfiguration::max_content_tokens: core::option::Option<u64>
+pub awaken_web_policy_contract::EffectiveWebFetchConfiguration::url_sources: alloc::vec::Vec<awaken_web_policy_contract::WebFetchUrlSources>
+impl awaken_web_policy_contract::EffectiveWebFetchConfiguration
+pub fn awaken_web_policy_contract::EffectiveWebFetchConfiguration::compose(core::option::Option<awaken_web_policy_contract::WebFetchExecutionConfiguration>, impl core::iter::traits::collect::IntoIterator<Item = awaken_web_policy_contract::WebFetchExecutionConfiguration>) -> core::result::Result<core::option::Option<Self>, awaken_web_policy_contract::WebConfigurationIssue>
+pub fn awaken_web_policy_contract::EffectiveWebFetchConfiguration::validate(&self) -> core::result::Result<(), awaken_web_policy_contract::WebConfigurationIssue>
+impl core::convert::From<awaken_web_policy_contract::WebFetchExecutionConfiguration> for awaken_web_policy_contract::EffectiveWebFetchConfiguration
+pub fn awaken_web_policy_contract::EffectiveWebFetchConfiguration::from(awaken_web_policy_contract::WebFetchExecutionConfiguration) -> Self
+pub struct awaken_web_policy_contract::EffectiveWebSearchConfiguration
+pub awaken_web_policy_contract::EffectiveWebSearchConfiguration::domains: alloc::vec::Vec<awaken_web_policy_contract::WebDomainFilter>
+pub awaken_web_policy_contract::EffectiveWebSearchConfiguration::user_location: core::option::Option<awaken_web_policy_contract::WebSearchUserLocation>
+impl awaken_web_policy_contract::EffectiveWebSearchConfiguration
+pub fn awaken_web_policy_contract::EffectiveWebSearchConfiguration::compose(core::option::Option<awaken_web_policy_contract::WebSearchExecutionConfiguration>, impl core::iter::traits::collect::IntoIterator<Item = awaken_web_policy_contract::WebSearchExecutionConfiguration>) -> core::result::Result<core::option::Option<Self>, awaken_web_policy_contract::WebConfigurationIssue>
+pub fn awaken_web_policy_contract::EffectiveWebSearchConfiguration::validate(&self) -> core::result::Result<(), awaken_web_policy_contract::WebConfigurationIssue>
+impl core::convert::From<awaken_web_policy_contract::WebSearchExecutionConfiguration> for awaken_web_policy_contract::EffectiveWebSearchConfiguration
+pub fn awaken_web_policy_contract::EffectiveWebSearchConfiguration::from(awaken_web_policy_contract::WebSearchExecutionConfiguration) -> Self
+pub struct awaken_web_policy_contract::WebConfigurationIssue
+pub awaken_web_policy_contract::WebConfigurationIssue::code: awaken_web_policy_contract::WebConfigurationCode
+pub awaken_web_policy_contract::WebConfigurationIssue::message: alloc::string::String
+pub awaken_web_policy_contract::WebConfigurationIssue::path: alloc::string::String
+impl core::error::Error for awaken_web_policy_contract::WebConfigurationIssue
+impl core::fmt::Display for awaken_web_policy_contract::WebConfigurationIssue
+pub fn awaken_web_policy_contract::WebConfigurationIssue::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct awaken_web_policy_contract::WebFetchExecutionConfiguration
+pub awaken_web_policy_contract::WebFetchExecutionConfiguration::domains: core::option::Option<awaken_web_policy_contract::WebDomainFilter>
+pub awaken_web_policy_contract::WebFetchExecutionConfiguration::max_content_tokens: core::option::Option<u64>
+pub awaken_web_policy_contract::WebFetchExecutionConfiguration::url_sources: core::option::Option<awaken_web_policy_contract::WebFetchUrlSources>
+impl awaken_web_policy_contract::WebFetchExecutionConfiguration
+pub fn awaken_web_policy_contract::WebFetchExecutionConfiguration::validate(&self, core::option::Option<&alloc::collections::btree::set::BTreeSet<&str>>) -> core::result::Result<(), awaken_web_policy_contract::WebConfigurationIssue>
+impl core::convert::From<awaken_web_policy_contract::WebFetchExecutionConfiguration> for awaken_web_policy_contract::EffectiveWebFetchConfiguration
+pub fn awaken_web_policy_contract::EffectiveWebFetchConfiguration::from(awaken_web_policy_contract::WebFetchExecutionConfiguration) -> Self
 pub struct awaken_web_policy_contract::WebFetchUrlSources
 pub awaken_web_policy_contract::WebFetchUrlSources::client_tool_results: core::option::Option<awaken_web_policy_contract::WebUrlSourceFilter>
 pub awaken_web_policy_contract::WebFetchUrlSources::server_tool_results: core::option::Option<awaken_web_policy_contract::WebUrlSourceFilter>
@@ -23,3 +87,23 @@ impl awaken_web_policy_contract::WebFetchUrlSources
 pub fn awaken_web_policy_contract::WebFetchUrlSources::permits(&self, awaken_web_policy_contract::WebUrlSourceKind, &str) -> bool
 pub fn awaken_web_policy_contract::WebFetchUrlSources::validate(&self, &alloc::collections::btree::set::BTreeSet<&str>) -> core::result::Result<(), alloc::string::String>
 pub fn awaken_web_policy_contract::WebFetchUrlSources::validate_intrinsic(&self) -> core::result::Result<(), alloc::string::String>
+pub struct awaken_web_policy_contract::WebSearchExecutionConfiguration
+pub awaken_web_policy_contract::WebSearchExecutionConfiguration::domains: core::option::Option<awaken_web_policy_contract::WebDomainFilter>
+pub awaken_web_policy_contract::WebSearchExecutionConfiguration::user_location: core::option::Option<awaken_web_policy_contract::WebSearchUserLocation>
+impl awaken_web_policy_contract::WebSearchExecutionConfiguration
+pub fn awaken_web_policy_contract::WebSearchExecutionConfiguration::validate(&self) -> core::result::Result<(), awaken_web_policy_contract::WebConfigurationIssue>
+impl core::convert::From<awaken_web_policy_contract::WebSearchExecutionConfiguration> for awaken_web_policy_contract::EffectiveWebSearchConfiguration
+pub fn awaken_web_policy_contract::EffectiveWebSearchConfiguration::from(awaken_web_policy_contract::WebSearchExecutionConfiguration) -> Self
+pub struct awaken_web_policy_contract::WebSearchUserLocation
+pub awaken_web_policy_contract::WebSearchUserLocation::city: core::option::Option<alloc::string::String>
+pub awaken_web_policy_contract::WebSearchUserLocation::country: core::option::Option<alloc::string::String>
+pub awaken_web_policy_contract::WebSearchUserLocation::region: core::option::Option<alloc::string::String>
+pub awaken_web_policy_contract::WebSearchUserLocation::timezone: core::option::Option<alloc::string::String>
+pub struct awaken_web_policy_contract::WebUrlSourceEvidence<'a>
+pub awaken_web_policy_contract::WebUrlSourceEvidence::canonical_url: &'a str
+pub awaken_web_policy_contract::WebUrlSourceEvidence::kind: awaken_web_policy_contract::WebUrlSourceKind
+pub awaken_web_policy_contract::WebUrlSourceEvidence::name: &'a str
+pub fn awaken_web_policy_contract::admit_fetch_url(&str, &[awaken_web_policy_contract::WebDomainFilter], &[awaken_web_policy_contract::WebFetchUrlSources], core::option::Option<&[awaken_web_policy_contract::WebUrlSourceEvidence<'_>]>) -> core::result::Result<url::Url, awaken_web_policy_contract::WebAdmissionFailure>
+pub fn awaken_web_policy_contract::domains_permit_any_url(&[awaken_web_policy_contract::WebDomainFilter]) -> bool
+pub fn awaken_web_policy_contract::url_matches_filter(&url::Url, &awaken_web_policy_contract::WebDomainFilter) -> bool
+pub fn awaken_web_policy_contract::url_matches_filters(&url::Url, &[awaken_web_policy_contract::WebDomainFilter]) -> bool

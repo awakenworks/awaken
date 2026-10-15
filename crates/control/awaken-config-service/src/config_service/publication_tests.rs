@@ -33,6 +33,7 @@ async fn publish_resolves_scope_access_once_into_the_persisted_snapshot() {
     let service = Arc::new(ConfigService::new(
         resolver.clone(),
         Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
+        std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     ));
     let plane = ConfigPlane::new(
         service,
@@ -233,7 +234,11 @@ async fn publish_never_installs_an_artifact_from_a_stale_source_revision() {
             inner: LocalExecutableAgentRegistrar::new(catalog.clone()),
             calls: std::sync::atomic::AtomicUsize::new(0),
         });
-        let service = ConfigService::new(Arc::new(FakeResolver), registrar.clone());
+        let service = ConfigService::new(
+            Arc::new(FakeResolver),
+            registrar.clone(),
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        );
         let registry = StalePublishRegistry { write };
         let err = service
             .publish(&scope(DEFAULT_SCOPE), &registry, "a", &[])
@@ -363,6 +368,7 @@ async fn config_plane_preserves_publish_intent_during_source_race() {
                 advanced: std::sync::atomic::AtomicBool::new(false),
             }),
             Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         );
         let plane = ConfigPlane::new(
             Arc::new(service),
@@ -445,7 +451,11 @@ async fn resolve_agent_config_derives_the_effective_compaction_window_for_both_r
             ))
         }
     }
-    let service = ConfigService::new(Arc::new(WindowResolver), test_registrar());
+    let service = ConfigService::new(
+        Arc::new(WindowResolver),
+        test_registrar(),
+        std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+    );
     let pin = || ModelSelection::Pinned(ModelBinding::new("p", "m-x", "b"));
     // Usable budget = context_window − max_output_tokens = 200k − 40k = 160k;
     // default trigger = 3/4 × 160k = 120k.
@@ -526,7 +536,11 @@ async fn resolve_agent_config_leaves_a_non_object_compact_untouched() {
             ))
         }
     }
-    let service = ConfigService::new(Arc::new(WindowResolver), test_registrar());
+    let service = ConfigService::new(
+        Arc::new(WindowResolver),
+        test_registrar(),
+        std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+    );
     let mut cfg = agent_config("a4");
     cfg.model_binding = ModelSelection::Pinned(ModelBinding::new("p", "m-x", "b"));
     cfg.plugin_config
@@ -609,6 +623,7 @@ async fn publish_pins_agent_model_catalog_and_session_defaults_revision() {
     let service = ConfigService::new(
         Arc::new(FakeResolver),
         Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
+        std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
     .with_resources(resources.clone());
     let plane = ConfigPlane::new(
@@ -760,6 +775,7 @@ async fn managed_projection_preserves_the_published_authoring_model_id() {
         Arc::new(ConfigService::new(
             Arc::new(FakeResolver),
             Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         )),
         store,
         Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
@@ -913,6 +929,7 @@ async fn reconcile_advances_source_revision_before_changed_policy_fingerprint() 
         Arc::new(ConfigService::new(
             Arc::new(FakeResolver),
             registrar.clone(),
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         )),
         store.clone(),
         tools.clone(),
@@ -934,6 +951,7 @@ async fn reconcile_advances_source_revision_before_changed_policy_fingerprint() 
         Arc::new(ConfigService::new(
             Arc::new(ChangedPolicyResolver),
             registrar,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         )),
         store.clone(),
         tools,
@@ -1173,65 +1191,197 @@ async fn validate_reports_a_resolver_failure_as_a_model_issue() {
 // ---- HTTP request_scope (F17) ----
 
 #[tokio::test]
-async fn durable_publication_survives_unavailable_registration_and_retry() {
-    // Cause/effect graph:
-    // C1 Control storage succeeds; C2 Coordinator registration is unavailable;
-    // C3 the same publication is retried through a healthy registrar.
-    // Effects: E1 the immutable publication remains durable after C2; E2 the
-    // HTTP edge reports retryable 503; E3 C3 installs that same fingerprint
-    // without a second publication row.
-    //
-    // Decision table:
-    // | Rule | C1 | Registrar | Effect |
-    // | R1 | T | unavailable | durable row + 503 |
-    // | R2 | existing | healthy | same row + current registration |
+async fn web_compilation_rejects_every_config_entry_before_publication_effects() {
+    use awaken_agent_contract::{
+        ToolExecutionPolicy, ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Effects(AtomicUsize);
+    #[async_trait::async_trait]
+    impl ModelPublicationResolver for Effects {
+        async fn resolve_models(
+            &self,
+            _: &ScopeId,
+            _: &ModelSelection,
+            _: &[ModelBinding],
+        ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err("model resolution must not run".into())
+        }
+    }
+    #[async_trait::async_trait]
+    impl crate::credential_reference::CredentialReferenceValidator for Effects {
+        async fn validate(
+            &self,
+            _: &ScopeId,
+            _: &awaken_runtime_contract::credential::CredentialRef,
+        ) -> Result<(), String> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err("credential validation must not run".into())
+        }
+    }
+    // The same disabled, later duplicate is invalid through put, validation,
+    // preview and durable publication. None may reach model/credential ports.
+    let effects = Arc::new(Effects(AtomicUsize::new(0)));
+    let mut service = ConfigService::new(
+        effects.clone(),
+        test_registrar(),
+        Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+    );
+    service.credential_reference_validator = Some(effects.clone());
     let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
-    let scope = ScopeId::from("wrkspc_registration_retry");
-    let unavailable = ConfigPlane::new(
-        Arc::new(ConfigService::new(
-            Arc::new(FakeResolver),
-            Arc::new(UnavailableRegistrar),
-        )),
+    let service = Arc::new(service);
+    let plane = ConfigPlane::new(
+        service.clone(),
         store.clone(),
         Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
     );
-    unavailable
-        .put(&scope, &agent_config("retry-agent"))
+    let workspace = scope("web-compiler-parity");
+    let registry = ScopedConfig::new(store.clone(), workspace.clone());
+    let mut config = agent_config("web-parity");
+    config.toolsets = vec![ToolsetPolicy {
+        source: ToolsetSource::Agent,
+        default: ToolExecutionPolicy::default(),
+        overrides: vec![
+            ToolPolicyOverride::with_optional_configuration(
+                "web_fetch",
+                ToolExecutionPolicy::default(),
+                Some(json!({"type":"web_fetch","max_content_tokens":0})),
+            ),
+            ToolPolicyOverride::with_optional_configuration(
+                "web_fetch",
+                ToolExecutionPolicy {
+                    enabled: false,
+                    ..Default::default()
+                },
+                Some(json!({"type":"web_fetch","domains":{"type":"allow","domains":[]}})),
+            ),
+        ],
+    }];
+    let path = "toolsets[0].overrides[1].configuration.domains.domains";
+    let error = service
+        .validate(&workspace, &config, &[])
         .await
+        .unwrap_err();
+    assert_eq!(error.path, path);
+    assert_eq!(error.code.as_deref(), Some("invalid_web_domain_count"));
+    let error = service.put(&registry, &config).await.unwrap_err();
+    assert!(
+        error.contains(path) && error.contains("invalid_web_domain_count"),
+        "{error}"
+    );
+    assert!(registry.get_config(&config.id).await.unwrap().is_none());
+    let inputs = AgentInputConfig {
+        agent_id: config.id.clone(),
+        environment: None,
+        inputs: vec![],
+        revision: 1,
+    };
+    let error = service
+        .preview(&workspace, &config.id, &config, inputs, &[])
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("invalid_web_domain_count"),
+        "{error}"
+    );
+    // Seed the real store directly to model a historical invalid frozen draft;
+    // publication must revalidate it rather than trust authoring's past result.
+    registry.put_config(&config).await.unwrap();
+    let error = service
+        .publish(&workspace, &registry, &config.id, &[])
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("invalid_web_domain_count"),
+        "{error}"
+    );
+    // Both audited final-write ports must compile before committing business
+    // state or an effect. A rejected draft leaves its original audit pending;
+    // correcting that same draft can commit through the same transaction.
+    for with_effect in [false, true] {
+        let mut candidate = config.clone();
+        candidate.id = format!("web-audit-{with_effect}");
+        let audit = awaken_agent_config::ManagementAuditRecord {
+            tool: "admin_patch_agent".into(),
+            call_id: candidate.id.clone(),
+            summary: "Web admission parity".into(),
+        };
+        assert_eq!(
+            plane
+                .record_management_audit(&workspace, &audit)
+                .await
+                .unwrap(),
+            AuditedConfigWrite::Applied
+        );
+        let effect = awaken_agent_config::ManagementEffect::UpsertAgentInputs {
+            config: AgentInputConfig {
+                agent_id: candidate.id.clone(),
+                environment: None,
+                inputs: vec![],
+                revision: 1,
+            },
+        };
+        let outcome = if with_effect {
+            plane
+                .put_with_audit_effect(&workspace, &candidate, 0, &audit, Some(&effect))
+                .await
+        } else {
+            plane
+                .put_with_audit(&workspace, &candidate, 0, &audit)
+                .await
+        };
+        let error = outcome.unwrap_err();
+        assert!(
+            error.contains(path) && error.contains("invalid_web_domain_count"),
+            "{error}"
+        );
+        assert!(
+            plane
+                .get_versioned(&workspace, &candidate.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            !plane
+                .get_management_audit(&workspace, &audit.tool, &audit.call_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .business_committed
+        );
+        assert!(
+            plane
+                .pending_management_effects(&workspace)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        candidate.toolsets[0].overrides.pop();
+        let applied = if with_effect {
+            plane
+                .put_with_audit_effect(&workspace, &candidate, 0, &audit, Some(&effect))
+                .await
+        } else {
+            plane
+                .put_with_audit(&workspace, &candidate, 0, &audit)
+                .await
+        }
         .unwrap();
-
-    let (status, _) = publish(
-        State(unavailable),
-        crate::config_routes::RequiredScope(scope.clone()),
-        None,
-        Path("retry-agent".into()),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "R1/E2");
-    let durable = store.list_published_scoped(&scope).await.unwrap();
-    assert_eq!(durable.len(), 1, "R1/E1");
-
-    let catalog = Arc::new(ExecutableAgentCatalog::new());
-    let retry = ConfigPlane::new(
-        Arc::new(ConfigService::new(
-            Arc::new(FakeResolver),
-            Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
-        )),
-        store.clone(),
-        Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
-    );
-    let registered = retry.publish(&scope, "retry-agent").await.unwrap();
-    assert_eq!(registered.fingerprint, durable[0].fingerprint, "R2/E3");
-    assert_eq!(store.list_published_scoped(&scope).await.unwrap().len(), 1);
-    assert_eq!(
-        catalog
-            .current(scope.as_str(), "retry-agent")
+        assert_eq!(applied, AuditedConfigWrite::Applied);
+        let durable = plane
+            .get_versioned(&workspace, &candidate.id)
+            .await
             .unwrap()
-            .snapshot
-            .fingerprint
-            .0,
-        durable[0].fingerprint,
-        "R2/E3"
-    );
+            .unwrap();
+        assert_eq!(
+            durable.config.toolsets[0].overrides[0]
+                .configuration
+                .as_ref()
+                .unwrap()["max_content_tokens"],
+            0
+        );
+    }
+    assert_eq!(effects.0.load(Ordering::SeqCst), 0);
 }

@@ -6,30 +6,20 @@
 use super::{
     EffectiveWebFetchConfiguration, WEB_FETCH_TOOL_ID, WebFetchArgs, WebFetchProvider,
     WebFetchProviderDescriptor, WebFetchRequest, WebProviderTarget, WebSearchCredentialResolver,
-    resolve_credential, sources, url_matches_filters,
+    resolve_credential, sources,
 };
 use async_trait::async_trait;
 use awaken_tool_contract::tool::{Tool, ToolError};
 use std::sync::Arc;
 
-pub(super) fn configured_web_fetch_url(
-    raw_url: &str,
-    configuration: Option<&EffectiveWebFetchConfiguration>,
-) -> Result<url::Url, ToolError> {
-    let url = url::Url::parse(raw_url)
-        .map_err(|error| ToolError::InvalidArguments(format!("url: {error}")))?;
-    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
-        return Err(ToolError::InvalidArguments(
-            "url: an HTTP(S) URL with a host is required".into(),
-        ));
+pub(super) fn admission_error(error: awaken_web_policy_contract::WebAdmissionFailure) -> ToolError {
+    match error {
+        awaken_web_policy_contract::WebAdmissionFailure::InvalidConfiguration(_)
+        | awaken_web_policy_contract::WebAdmissionFailure::InvalidUrl(_) => {
+            ToolError::InvalidArguments(error.to_string())
+        }
+        _ => ToolError::DefinitiveFailure(error.to_string()),
     }
-    if configuration.is_some_and(|configuration| !url_matches_filters(&url, &configuration.domains))
-    {
-        return Err(ToolError::DefinitiveFailure(
-            "url_not_allowed: web_fetch URL is outside the combined domain policy".into(),
-        ));
-    }
-    Ok(url)
 }
 
 pub(super) fn web_fetch_text_limit(
@@ -78,10 +68,16 @@ impl AdmittedFetch {
         configuration: Option<&EffectiveWebFetchConfiguration>,
         evidence: Option<&sources::VisibleUrls>,
     ) -> Result<Self, ToolError> {
-        let configured_url = configured_web_fetch_url(&args.url, configuration)?;
-        if let Some(configuration) = configuration {
-            sources::admit_url(&args.url, &configuration.url_sources, evidence)?;
-        }
+        let facts = evidence.map(sources::VisibleUrls::evidence);
+        let domains = configuration.map_or(&[][..], |value| value.domains.as_slice());
+        let source_policies = configuration.map_or(&[][..], |value| value.url_sources.as_slice());
+        let configured_url = awaken_web_policy_contract::admit_fetch_url(
+            &args.url,
+            domains,
+            source_policies,
+            facts.as_deref(),
+        )
+        .map_err(admission_error)?;
         Ok(Self {
             raw_url: args.url,
             configured_url,
@@ -154,6 +150,29 @@ mod tests {
     use super::super::*;
     use awaken_tool_contract::tool::ToolCall;
     use std::sync::Mutex;
+
+    fn observed_phase(
+        run_id: &str,
+        _: &[awaken_runtime_contract::Message],
+    ) -> awaken_runtime_contract::plugin::PhaseContext {
+        awaken_runtime_contract::plugin::PhaseContext {
+            run_id: awaken_runtime_contract::RunId(run_id.into()),
+            step: 0,
+            kind: awaken_runtime_contract::plugin::PhaseKind::AfterInference,
+        }
+    }
+
+    fn observed_input(
+        conversation: &[awaken_runtime_contract::Message],
+    ) -> Vec<awaken_runtime_contract::llm::ChatMessage> {
+        conversation
+            .iter()
+            .map(|message| awaken_runtime_contract::llm::ChatMessage {
+                role: message.role,
+                content: message.content.clone(),
+            })
+            .collect()
+    }
 
     #[tokio::test]
     async fn direct_http_provider_refuses_redirect_before_the_next_connection() {
@@ -239,8 +258,7 @@ mod tests {
         // R3 admitted URL -> exactly one credential attempt, whose failure
         // prevents dispatch and fallback. Both public executable entry points
         // share the private request construction above.
-        use awaken_runtime_contract::plugin::{PhaseContext, PhaseKind};
-        use awaken_runtime_contract::{Message, MessageId, Role, RunId, Store};
+        use awaken_runtime_contract::{Message, MessageId, Role, Store};
         use awaken_tool_contract::tool::with_tool_state_context;
         use awaken_web_policy_contract::WebFetchUrlSources;
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -339,20 +357,18 @@ mod tests {
         assert_eq!(credentials.0.load(Ordering::SeqCst), 0);
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         let mut state = Store::new();
-        let ctx = PhaseContext {
-            run_id: RunId("probe".into()),
-            step: 0,
-            kind: PhaseKind::BeforeInference {
-                run_input: vec![].into(),
-            },
-        };
         let conversation = vec![Message::text(
             MessageId("u".into()),
             Role::User,
             "https://outside.test/shown https://example.com/shown",
         )];
+        let ctx = observed_phase("probe", &conversation);
         for hook in &contributions.phase_hooks {
-            for command in hook.on_phase(&ctx, &conversation, &state).await.state {
+            for command in hook
+                .on_model_input(&ctx, &observed_input(&conversation), &conversation, &state)
+                .await
+                .state
+            {
                 state.apply(&command);
             }
         }
@@ -422,8 +438,7 @@ mod tests {
         // or unseen -> url_not_allowed with zero provider calls; R2 current
         // eligible URL -> exactly one effect; R3 restored view -> same rule;
         // R4 every C5 is applied. No second gate can be bypassed by direct call.
-        use awaken_runtime_contract::plugin::{PhaseContext, PhaseKind};
-        use awaken_runtime_contract::{Message, MessageId, Role, RunId, Store};
+        use awaken_runtime_contract::{Message, MessageId, Role, Store};
         use awaken_tool_contract::tool::with_tool_state_context;
         use awaken_web_policy_contract::WebFetchUrlSources;
         let provider = Arc::new(FakeFetchProvider {
@@ -493,16 +508,14 @@ mod tests {
             "R1 zero direct effect"
         );
         let mut state = Store::new();
-        let ctx = PhaseContext {
-            run_id: RunId("source-probe".into()),
-            step: 0,
-            kind: PhaseKind::BeforeInference {
-                run_input: vec![].into(),
-            },
-        };
         let conversation = vec![Message::text(MessageId("user".into()), Role::User, url)];
+        let ctx = observed_phase("source-probe", &conversation);
         for hook in &contributions.phase_hooks {
-            for command in hook.on_phase(&ctx, &conversation, &state).await.state {
+            for command in hook
+                .on_model_input(&ctx, &observed_input(&conversation), &conversation, &state)
+                .await
+                .state
+            {
                 state.apply(&command);
             }
         }
@@ -542,7 +555,7 @@ mod tests {
         // U1/U2/U3 literal IPv6, balanced path parentheses, and query ')'
         // must remain whole. R6 original shown URI -> one provider effect;
         // its former trimmed variant was NOT shown -> zero additional I/O.
-        // This consumes the actual BeforeInference view at the same boundary,
+        // This consumes the observed model input at the same boundary,
         // complementing the scanner's pure decision table rather than copying it.
         for (text, original, altered) in [
             ("http://[::1]", "http://[::1]", "http://[::1"),
@@ -564,8 +577,13 @@ mod tests {
         ] {
             let mut state = Store::new();
             let conversation = vec![Message::text(MessageId("uri".into()), Role::User, text)];
+            let ctx = observed_phase("source-probe", &conversation);
             for hook in &contributions.phase_hooks {
-                for command in hook.on_phase(&ctx, &conversation, &state).await.state {
+                for command in hook
+                    .on_model_input(&ctx, &observed_input(&conversation), &conversation, &state)
+                    .await
+                    .state
+                {
                     state.apply(&command);
                 }
             }

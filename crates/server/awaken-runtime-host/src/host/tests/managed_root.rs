@@ -319,6 +319,7 @@ impl ManagedSessionRootFixture {
                             .take()
                             .expect("one selected Persistence"),
                         environments,
+                        std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
                     )
                     .build()
                     .expect("valid fixture Session application"),

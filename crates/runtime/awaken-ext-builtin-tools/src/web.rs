@@ -29,7 +29,9 @@ use crate::erasure::erase_for;
 
 mod brave;
 pub use brave::BraveSearchProvider;
+mod compiler;
 mod configuration;
+pub use compiler::WebToolConfigurationCompiler;
 #[cfg(test)]
 use configuration::WebExecutionConfiguration;
 use configuration::{
@@ -580,6 +582,11 @@ impl WebSearchPlugin {
         config: Option<&Value>,
         form: CredentialConfigForm,
     ) -> Result<ConfiguredSearchRoute, PluginConfigError> {
+        if let Some(policy) = &self.execution_configuration {
+            policy
+                .validate()
+                .map_err(|error| PluginConfigError::new(WEB_SEARCH_PLUGIN_ID, error.to_string()))?;
+        }
         let config: WebSearchConfig =
             serde_json::from_value(config.cloned().ok_or_else(|| {
                 PluginConfigError::new(WEB_SEARCH_PLUGIN_ID, "config is required")
@@ -916,6 +923,11 @@ impl WebFetchPlugin {
         config: Option<&Value>,
         form: CredentialConfigForm,
     ) -> Result<ConfiguredFetchRoute, PluginConfigError> {
+        if let Some(policy) = &self.execution_configuration {
+            policy
+                .validate()
+                .map_err(|error| PluginConfigError::new(WEB_FETCH_PLUGIN_ID, error.to_string()))?;
+        }
         let value = config.cloned().unwrap_or_else(Self::default_config);
         let config: WebFetchConfig = serde_json::from_value(value)
             .map_err(|error| PluginConfigError::new(WEB_FETCH_PLUGIN_ID, error.to_string()))?;
@@ -1056,7 +1068,7 @@ impl Plugin for WebFetchPlugin {
             bound: CapabilityBound {
                 tools: IdBound::Exact(vec![WEB_FETCH_TOOL_ID.into()]),
                 phase_hooks: vec![
-                    awaken_runtime_contract::plugin::PhaseHookPoint::BeforeInference,
+                    awaken_runtime_contract::plugin::PhaseHookPoint::AfterInference,
                     awaken_runtime_contract::plugin::PhaseHookPoint::AfterTool,
                 ],
                 state_keys: IdBound::Exact(vec![sources::STATE_KEY.into()]),

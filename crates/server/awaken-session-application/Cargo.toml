@@ -12,6 +12,7 @@ layer = "application"
 authority = "session"
 
 [dependencies]
+awaken-tool-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-credential-contract.workspace = true
 awaken-environment-contract.workspace = true
@@ -49,6 +50,7 @@ test-support = [
 ]
 
 [dev-dependencies]
+awaken-ext-builtin-tools.workspace = true
 awaken-file-store = { workspace = true, features = ["test-support"] }
 awaken-lease-testkit.workspace = true
 awaken-worker-registry.workspace = true

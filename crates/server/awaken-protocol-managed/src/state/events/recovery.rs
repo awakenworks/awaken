@@ -390,9 +390,7 @@ impl ManagedState {
             .unwrap_or(record.session.agent.tools.as_slice())
             .iter()
             .filter_map(|tool| match tool {
-                awaken_session_configuration_contract::AgentTool::Custom { name, .. } => {
-                    Some(name.as_str())
-                }
+                crate::tools::AgentTool::Custom { name, .. } => Some(name.as_str()),
                 _ => None,
             })
             .collect::<std::collections::HashSet<_>>();

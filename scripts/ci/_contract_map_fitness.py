@@ -6,7 +6,7 @@ string literals and `cfg(test)` code are not scanned):
 * `target-map` (a hard rule, not a ratchet): every crate of layer `contract` is
   a target contract of `TARGET_MAP` or is listed there as merging into one. A
   crate listed as merging that no longer exists is an error too, so the list of
-  pending merges only shrinks. The map encodes plan 9.14: 26 target contracts,
+  pending merges only shrinks. The map encodes plan 9.14: 27 target contracts,
   of which `awaken-session-contract` is the only new name.
 * `contract-crates`: the number of contract crates.
 * `optional-role`: a method declared in a contract trait, or an inherent method
@@ -88,7 +88,10 @@ TARGET_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
     "awaken-tool-contract": ("SDK release", ()),
     "awaken-lease-contract": ("SDK release", ()),
     "awaken-time": ("SDK release", ()),
-    "awaken-runtime-contract": ("SDK release", ("awaken-web-policy-contract",)),
+    "awaken-runtime-contract": ("SDK release", ()),
+    # Existing separately published Web vocabulary owns the pure policy kernel;
+    # merging it into Runtime would reverse the extension ownership boundary.
+    "awaken-web-policy-contract": ("SDK release", ()),
     "awaken-session-types": ("Session", ()),
     "awaken-session-contract": ("Session", (
         "awaken-session-state-contract", "awaken-session-event-contract", "awaken-session-budget-contract",
@@ -507,8 +510,11 @@ def selftest() -> None:
     assert "listed boundary -> unlisted contract" in target_map_errors({"t", "old", "new"}, pending)[0], "T2"
     assert "pending merge -> absent crate" in target_map_errors({"t"}, pending)[0], "T3"
     merging = [crate for _boundary, merged in TARGET_MAP.values() for crate in merged]
-    # Plan 9.14 listed 12 pending merges; each landed merge removes its entry.
-    assert len(TARGET_MAP) == 26 and len(merging) == len(set(merging)) <= 12, "T4"
+    # Plan 9.14 listed 12 pending merges. The 2026-10-15 amendment retains
+    # the existing pure Web SDK as its own target without creating a crate.
+    assert len(TARGET_MAP) == 27 and len(merging) == len(set(merging)) <= 11, "T4"
+    assert TARGET_MAP["awaken-web-policy-contract"] == ("SDK release", ()), "T4 Web owner"
+    assert TARGET_MAP["awaken-runtime-contract"] == ("SDK release", ()), "T4 neutral Runtime"
     code = (
         "pub trait Session: Send {\n"
         "    fn realization(&self) -> Option<&dyn Realization> { None }\n"

@@ -707,6 +707,7 @@ fn assemble_session_plane(
             base.worker_directory.clone(),
             host.host.clone(),
         ),
+        std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
     .configuration(
         awaken_session_application::SessionApplicationConfiguration {

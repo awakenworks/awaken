@@ -49,6 +49,7 @@ async fn audit_plane() -> ManagementAuditPlane {
             Arc::new(LocalExecutableAgentRegistrar::new(Arc::new(
                 ExecutableAgentCatalog::new(),
             ))),
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         )),
         Arc::new(SqliteConfigStore::open_in_memory().await.unwrap()),
         Arc::new(StaticToolCatalog(vec![])),

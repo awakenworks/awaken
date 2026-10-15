@@ -927,7 +927,7 @@ OPTIONAL_TENANCY_EXEMPTIONS: dict[str, str] = {
     # not others. Absence is already fail-closed, not defaulted:
     # `publication_workspace` returns `None` and the handler answers 400
     # "publication execution workspace is required" without touching the store.
-    "crates/control/awaken-config-service/src/config_routes.rs::ExecutionWorkspace": (
+    "crates/control/awaken-control/src/config_routes.rs::ExecutionWorkspace": (
         "secondary publication coordinate; absence answers 400, never a default"
     ),
 }

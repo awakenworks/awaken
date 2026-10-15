@@ -85,7 +85,8 @@ impl BudgetLimit {
 }
 use serde_json::Value;
 
-use awaken_session_configuration_contract::{AgentTool, validate_agent_tools};
+use crate::tools::AgentTool;
+use crate::tools::compile_agent_tools;
 
 use super::agent::{AgentMcpServer, AgentSkill};
 use super::resource::{ResourceInput, SessionResource};
@@ -198,7 +199,7 @@ pub struct SessionUpdateParams {
 impl SessionUpdateParams {
     pub(crate) fn validate(&self) -> Result<(), String> {
         if let Some(tools) = self.agent.as_ref().and_then(|agent| agent.tools.as_ref()) {
-            validate_agent_tools(tools)?;
+            compile_agent_tools(tools).map_err(|error| error.to_string())?;
         }
         Ok(())
     }

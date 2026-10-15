@@ -43,6 +43,7 @@ async fn builder_rejects_invalid_configuration_before_observing_or_starting_serv
             SessionPersistence::new(store, clock.clone()),
             environment.clone(),
             SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe.clone()),
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         )
         .configuration(SessionApplicationConfiguration {
             local_realization_owner: owner.into(),
@@ -76,6 +77,7 @@ async fn builder_freezes_normalized_owner_and_preserves_exact_creation_replay() 
         Arc::new(NoopMcpRealizer),
         persistence,
         Arc::new(RecordingEnvironmentSource::default()),
+        std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
     .configuration(SessionApplicationConfiguration {
         local_realization_owner: "  runtime-a  ".into(),
@@ -134,6 +136,7 @@ async fn builder_enabled_retention_propagates_authority_failure_instead_of_silen
             Arc::new(NoopMcpRealizer),
             SessionPersistence::new(store.clone(), system_clock()),
             Arc::new(RecordingEnvironmentSource::default()),
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         )
         .resources(capability)
         .build()
@@ -257,6 +260,7 @@ async fn builder_freezes_execution_services_and_mount_checks_reject_foreign_inst
             SessionPersistence::new(store, clock.clone()),
             Arc::new(RecordingEnvironmentSource::default()),
             SessionExecutionAdmission::new(dispatch.clone(), workers.clone(), placement.clone()),
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         )
         .configuration(SessionApplicationConfiguration {
             execution_placement: topology,
@@ -354,4 +358,147 @@ fn fixture_execution_completion_validates_existing_bindings_before_filling_missi
     }
     assert_eq!(probe.0.load(Ordering::SeqCst), 0);
     assert_eq!(foreign.0.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn required_tool_compiler_precedes_session_creation_and_update_effects() {
+    let repository = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
+    compiler_precedes_effects(repository).await;
+}
+
+#[tokio::test]
+async fn required_tool_compiler_postgres_preserves_the_frozen_configuration() {
+    // An explicitly configured backend must run the same rejection/persistence
+    // table; the ordinary unconfigured run makes no PostgreSQL coverage claim.
+    let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+        return;
+    };
+    let repository = Arc::new(
+        awaken_session_store::PostgresManagedSessionRepository::connect(&url)
+            .await
+            .expect("configured Web policy PostgreSQL"),
+    );
+    compiler_precedes_effects(repository).await;
+}
+
+async fn compiler_precedes_effects(
+    repository: Arc<dyn awaken_session_repository_contract::SessionStore>,
+) {
+    use awaken_agent_contract::{
+        ToolExecutionPolicy, ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
+    };
+    let case_id = format!(
+        "{}-{}",
+        std::process::id(),
+        system_clock().now().as_unix_nanos()
+    );
+    let runtime = Arc::new(creation::RecordingCreateRuntime::default());
+    let environment = Arc::new(RecordingEnvironmentSource::default());
+    let app = application_with_runtime(runtime.clone(), repository.clone(), environment.clone());
+    let invalid = awaken_session_configuration_contract::SessionToolConfiguration {
+        toolsets: vec![ToolsetPolicy {
+            source: ToolsetSource::Agent,
+            default: ToolExecutionPolicy::default(),
+            overrides: vec![ToolPolicyOverride::with_optional_configuration(
+                "web_fetch",
+                ToolExecutionPolicy::default(),
+                Some(
+                    serde_json::json!({"type":"web_fetch","domains":{"type":"allow","domains":[]}}),
+                ),
+            )],
+        }],
+        client_tools: vec![],
+    };
+    // Both direct creation modes run the required real Web compiler before
+    // creating a durable root or requesting any runtime/environment effects.
+    for durable_only in [false, true] {
+        let id = format!(
+            "{}-{}",
+            if durable_only {
+                "web-invalid-accept"
+            } else {
+                "web-invalid-create"
+            },
+            &case_id
+        );
+        let mut command = creation::creation_command(&id);
+        command.tools = invalid.clone();
+        let result = if durable_only {
+            app.accept_session(command).await
+        } else {
+            app.create_session(command).await
+        };
+        let SessionCreationError::Rejected(error) = result.unwrap_err() else {
+            panic!("configuration must be rejected")
+        };
+        assert!(error.to_string().contains("invalid_web_domain_count"));
+        assert!(repository.get(&SessionId::from(id)).await.is_err());
+    }
+    let inherited_id = format!("web-invalid-inherited-{}", &case_id);
+    let mut inherited = creation::creation_command(&inherited_id);
+    inherited.intent.control.toolsets = invalid.toolsets.clone();
+    assert!(
+        matches!(app.create_session(inherited).await, Err(SessionCreationError::Rejected(error)) if error.code == "invalid_web_domain_count")
+    );
+    assert!(
+        repository
+            .get(&SessionId::from(inherited_id))
+            .await
+            .is_err()
+    );
+    assert_eq!(runtime.preparations.load(Ordering::SeqCst), 0);
+    assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 0);
+    assert_eq!(environment.dispatch_calls.load(Ordering::SeqCst), 0);
+    let mut accepted = creation::creation_command(&format!("web-update-{}", &case_id));
+    let mut expected = invalid.clone();
+    expected.toolsets[0].overrides[0].configuration = Some(serde_json::json!({
+        "type":"web_fetch", "max_content_tokens":0,
+        "domains":{"type":"allow","domains":["Example.com","Example.com"]},
+        "url_sources":{
+            "client_tool_results":{"type":"none"},
+            "server_tool_results":{"type":"all"},
+            "user_input":{"type":"all"}
+        }
+    }));
+    accepted.tools = expected.clone();
+    accepted.intent.control.toolsets = expected.toolsets.clone();
+    let created = app.create_session(accepted).await.unwrap();
+    assert_eq!(created.tools, expected);
+    assert_eq!(
+        created.frozen_baseline().unwrap().toolsets,
+        expected.toolsets
+    );
+    let cold = application_with_runtime(runtime.clone(), repository.clone(), environment);
+
+    let before = repository.get(&created.session_id).await.unwrap();
+    let effects_before = runtime.preparations.load(Ordering::SeqCst);
+    let error = cold
+        .update_session(
+            &created.session_id,
+            SessionUpdateCommand {
+                title: Some(SessionFieldUpdate::Replace("must not persist".into())),
+                metadata: None,
+                budget: None,
+                tools: Some(invalid),
+                mcp_update: None,
+                idempotency_key: None,
+                request_fingerprint: "invalid-web-update".into(),
+                if_match: Some(before.revision),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("invalid_web_domain_count"),
+        "{error}"
+    );
+    let after = repository.get(&created.session_id).await.unwrap();
+    assert_eq!(after.revision, before.revision);
+    assert_eq!(after.title, before.title);
+    assert_eq!(after.tools, before.tools);
+    assert_eq!(runtime.preparations.load(Ordering::SeqCst), effects_before);
 }

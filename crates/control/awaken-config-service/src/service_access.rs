@@ -11,9 +11,13 @@ impl ConfigService {
     pub fn new(
         model_publication_resolver: Arc<dyn ModelPublicationResolver>,
         registrar: Arc<dyn awaken_executable_agent_contract::ExecutableAgentRegistrar>,
+        tool_configuration_compiler: Arc<
+            dyn awaken_tool_contract::tool_configuration::ToolConfigurationCompiler,
+        >,
     ) -> Self {
         Self {
             registrar,
+            tool_configuration_compiler,
             resources: None,
             model_publication_resolver,
             credential_reference_validator: None,

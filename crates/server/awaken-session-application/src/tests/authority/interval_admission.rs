@@ -64,6 +64,7 @@ async fn named_activity_cas_replay_retains_original_raw_identity_before_first_cr
             Arc::new(NoopMcpRealizer),
             SessionPersistence::new(faulting.clone(), clock.clone()),
             Arc::new(RecordingEnvironmentSource::default()),
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         )
         .build()
         .expect("valid fixture Store/Clock composition"),

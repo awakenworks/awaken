@@ -2,6 +2,9 @@
 
 #![warn(unreachable_pub)]
 
+mod configuration;
+pub use configuration::*;
+
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Deserializer, Serialize};
@@ -95,23 +98,25 @@ impl<'de> Deserialize<'de> for WebUrlSourceFilter {
                 ));
             }
         };
-        if let Self::Only { tools } | Self::Except { tools } = &filter {
+        filter.validate_shape().map_err(serde::de::Error::custom)?;
+        Ok(filter)
+    }
+}
+
+impl WebUrlSourceFilter {
+    fn validate_shape(&self) -> Result<(), String> {
+        if let Self::Only { tools } | Self::Except { tools } = self {
             let names: BTreeSet<_> = tools.iter().map(WebUrlToolReference::name).collect();
             if tools.is_empty()
                 || tools.len() > 128
                 || names.len() != tools.len()
                 || names.iter().any(|name| name.is_empty())
             {
-                return Err(serde::de::Error::custom(
-                    "URL source tool lists require 1..128 distinct nonempty names",
-                ));
+                return Err("URL source tool lists require 1..128 distinct nonempty names".into());
             }
         }
-        Ok(filter)
+        Ok(())
     }
-}
-
-impl WebUrlSourceFilter {
     fn allows(&self, name: &str) -> bool {
         match self {
             Self::All {} => true,
@@ -157,6 +162,16 @@ impl WebFetchUrlSources {
 
     /// Intrinsic rules also apply when execution decodes frozen inherited input.
     pub fn validate_intrinsic(&self) -> Result<(), String> {
+        for rule in [
+            &self.client_tool_results,
+            &self.server_tool_results,
+            &self.user_input,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            rule.validate_shape()?;
+        }
         if self.user_input.as_ref().is_some_and(|rule| {
             !matches!(
                 rule,
@@ -274,6 +289,45 @@ mod tests {
                     .is_ok(),
                 valid
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod typed_source_shapes {
+    use super::*;
+    #[test]
+    fn typed_filters_cannot_bypass_closed_list_shapes() {
+        for tools in [
+            vec![],
+            vec![WebUrlToolReference::ToolReference {
+                name: String::new(),
+            }],
+            vec![
+                WebUrlToolReference::ToolReference {
+                    name: "web_search".into()
+                };
+                2
+            ],
+        ] {
+            for rule in [
+                WebUrlSourceFilter::Only {
+                    tools: tools.clone(),
+                },
+                WebUrlSourceFilter::Except {
+                    tools: tools.clone(),
+                },
+            ] {
+                for server in [false, true] {
+                    let policy = WebFetchUrlSources {
+                        client_tool_results: (!server).then_some(rule.clone()),
+                        server_tool_results: server.then_some(rule.clone()),
+                        user_input: None,
+                    };
+                    assert!(policy.validate_intrinsic().is_err());
+                    assert!(admit_fetch_url("https://example.com/", &[], &[policy], None).is_err());
+                }
+            }
         }
     }
 }

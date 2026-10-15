@@ -31,7 +31,7 @@ pub(super) async fn prepare_publication(
     expected_source_revision: Option<u64>,
     expected_resource_revision: Option<i64>,
 ) -> Result<PreparedPublication, PublishError> {
-    let versioned = registry
+    let mut versioned = registry
         .get_config_revision(id)
         .await
         .map_err(|error| PublishError::Store(error.to_string()))?
@@ -42,6 +42,11 @@ pub(super) async fn prepare_publication(
     if versioned.config.lifecycle() != awaken_agent_config::AgentLifecycle::Published {
         return Err(PublishError::Unavailable(id.to_string()));
     }
+    versioned.config = crate::tool_compilation::compile_tool_settings(
+        service.tool_configuration_compiler.as_ref(),
+        &versioned.config,
+    )
+    .map_err(|error| PublishError::Compile(error.to_string()))?;
     let source_revision = versioned.revision;
     let mut resolved = prepare_agent_publication(
         service.model_publication_resolver.as_ref(),

@@ -196,6 +196,43 @@ impl Id {
         self == &Self::agent_thread_report(child_run_id)
     }
 
+    /// Internal model-authored task input for a delegated Thread. Preserve the
+    /// existing message identity so recovery and command equivalence stay exact.
+    #[must_use]
+    pub fn agent_thread_input(child_run_id: &crate::agent::run::Id) -> Self {
+        Self(format!("{}-input", child_run_id.0))
+    }
+
+    /// Internal advisor request following the copied primary transcript.
+    #[must_use]
+    pub fn agent_advisor_input(child_run_id: &crate::agent::run::Id) -> Self {
+        Self(format!("{}-advisor-input", child_run_id.0))
+    }
+
+    /// Classify the existing internal task-input family by its length-delimited
+    /// child Run identity. A normal user message does not acquire this identity
+    /// from its role or prose, and no Web policy is interpreted here.
+    #[must_use]
+    pub fn is_agent_thread_input(&self) -> bool {
+        let Some(run) = self
+            .0
+            .strip_suffix("-advisor-input")
+            .or_else(|| self.0.strip_suffix("-input"))
+        else {
+            return false;
+        };
+        let Some(encoded) = run.strip_prefix("child-run:") else {
+            return false;
+        };
+        let Some((length, delegation)) = encoded.split_once(':') else {
+            return false;
+        };
+        length
+            .parse::<usize>()
+            .is_ok_and(|value| value.to_string() == length && value == delegation.len())
+            && delegation.starts_with("delegation:")
+    }
+
     /// Stable identity for one Session event input. The opaque operation id is
     /// retained behind a length-delimited Session coordinate so retries mint the
     /// same id without colliding with another Session's operation.
@@ -278,6 +315,33 @@ impl Message {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn internal_agent_input_identity_preserves_bytes_and_requires_canonical_child_coordinates() {
+        // I1 task/advisor deterministic identities keep existing bytes; I2
+        // normal user inputs, malformed lengths, noncanonical numeric lengths
+        // and a suffix peer do not become internal provenance by role/prose.
+        let child = crate::agent::delegation::DelegationOrigin::root(
+            crate::agent::run::Id("parent/父".into()),
+            "call:1",
+        )
+        .child_run_id();
+        let task = Id::agent_thread_input(&child);
+        let advisor = Id::agent_advisor_input(&child);
+        assert_eq!(task.0, format!("{}-input", child.0));
+        assert_eq!(advisor.0, format!("{}-advisor-input", child.0));
+        assert!(task.is_agent_thread_input());
+        assert!(advisor.is_agent_thread_input());
+        for value in [
+            "user-input",
+            "child-run:1:delegation:parent-input",
+            "child-run:011:delegation:-input",
+            "child-run:10:delegation-input",
+        ] {
+            assert!(!Id(value.into()).is_agent_thread_input(), "{value}");
+        }
+        assert!(!Id(format!("{}-peer", task.0)).is_agent_thread_input());
+    }
     use crate::agent::run::Id as RunId;
 
     /// Message-id cause/effect rules: canonical final ids recover only a Step;

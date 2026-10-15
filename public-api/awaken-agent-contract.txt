@@ -254,6 +254,8 @@ pub awaken_agent_contract::agent::message::Role::Tool
 pub awaken_agent_contract::agent::message::Role::User
 pub struct awaken_agent_contract::agent::message::Id(pub alloc::string::String)
 impl awaken_agent_contract::agent::message::Id
+pub fn awaken_agent_contract::agent::message::Id::agent_advisor_input(&awaken_agent_contract::agent::run::Id) -> Self
+pub fn awaken_agent_contract::agent::message::Id::agent_thread_input(&awaken_agent_contract::agent::run::Id) -> Self
 pub fn awaken_agent_contract::agent::message::Id::agent_thread_report(&awaken_agent_contract::agent::run::Id) -> Self
 pub fn awaken_agent_contract::agent::message::Id::assistant(&awaken_agent_contract::agent::run::Id, usize) -> Self
 pub fn awaken_agent_contract::agent::message::Id::assistant_coordinates(&self) -> core::option::Option<(&str, usize, core::option::Option<usize>)>
@@ -262,6 +264,7 @@ pub fn awaken_agent_contract::agent::message::Id::assistant_step_of(&self, &awak
 pub fn awaken_agent_contract::agent::message::Id::assistant_truncated(&awaken_agent_contract::agent::run::Id, usize, usize) -> Self
 pub fn awaken_agent_contract::agent::message::Id::assistant_truncated_response_of(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<(usize, usize)>
 pub fn awaken_agent_contract::agent::message::Id::continuation(&awaken_agent_contract::agent::run::Id, usize, usize) -> Self
+pub fn awaken_agent_contract::agent::message::Id::is_agent_thread_input(&self) -> bool
 pub fn awaken_agent_contract::agent::message::Id::is_agent_thread_report(&self) -> bool
 pub fn awaken_agent_contract::agent::message::Id::is_agent_thread_report_of(&self, &awaken_agent_contract::agent::run::Id) -> bool
 pub fn awaken_agent_contract::agent::message::Id::is_continuation_of(&self, &awaken_agent_contract::agent::run::Id) -> bool

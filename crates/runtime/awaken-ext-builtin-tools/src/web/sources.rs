@@ -10,8 +10,11 @@ use std::sync::{Arc, OnceLock};
 use async_trait::async_trait;
 use awaken_runtime_contract::plugin::{HookReaction, PhaseContext, PhaseHook, PhaseHookPoint};
 use awaken_runtime_contract::{ContentBlock, MergePolicy, Message, Role, Scope, Store};
+#[cfg(test)]
 use awaken_tool_contract::tool::ToolError;
-use awaken_web_policy_contract::{WebFetchUrlSources, WebUrlSourceKind};
+#[cfg(test)]
+use awaken_web_policy_contract::WebFetchUrlSources;
+use awaken_web_policy_contract::WebUrlSourceKind;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
@@ -29,7 +32,7 @@ pub(super) struct VisibleUrls {
 impl Default for VisibleUrls {
     fn default() -> Self {
         Self {
-            format: 2,
+            format: 3,
             outcome_witnesses: BTreeMap::new(),
             urls: BTreeMap::new(),
             observed_messages: BTreeSet::new(),
@@ -87,7 +90,7 @@ impl VisibleUrls {
                 &awaken_runtime_contract::StateKey(STATE_KEY.into()),
             )
             .and_then(|value| serde_json::from_value::<Self>(value.clone()).ok())
-            .filter(|facts| facts.format == 2)
+            .filter(|facts| facts.format == 3)
     }
 
     fn text(&mut self, source: WebUrlSourceKind, name: &str, text: &str) {
@@ -133,6 +136,7 @@ impl VisibleUrls {
 
     fn record_outcome(
         &mut self,
+        run_id: &awaken_runtime_contract::RunId,
         catalogue: &SourceCatalogue,
         call: &awaken_tool_contract::tool::ToolCall,
         output: &awaken_tool_contract::tool::ToolOutput,
@@ -143,6 +147,7 @@ impl VisibleUrls {
         if let Some(kind) = catalogue.0.get(&call.tool_id) {
             self.outcome_witnesses
                 .entry(outcome_fingerprint(
+                    run_id,
                     &call.tool_id,
                     &call.call_id,
                     &call.arguments,
@@ -155,30 +160,57 @@ impl VisibleUrls {
 
     /// Only a matching successful executed outcome can classify a tool result.
     /// This collector never consults the current catalogue to reclassify history.
-    fn observe_committed(&mut self, conversation: &[Message]) {
+    fn observe_input(
+        &mut self,
+        conversation: &[Message],
+        input: &[awaken_runtime_contract::llm::ChatMessage],
+    ) {
         let mut calls = BTreeMap::new();
         for message in conversation {
-            if message.id.is_agent_thread_report() {
+            if message.id.is_agent_thread_report() || message.id.is_agent_thread_input() {
                 self.observed_messages.insert(message.id.0.clone());
                 continue;
             }
+            // Context selection/materialization can hide or replace committed
+            // data. Refuse ambiguous equal content with no unique message origin.
+            let shown = !self.observed_messages.contains(&message.id.0)
+                && input
+                    .iter()
+                    .any(|shown| shown.role == message.role && shown.content == message.content)
+                && conversation
+                    .iter()
+                    .filter(|candidate| {
+                        candidate.role == message.role && candidate.content == message.content
+                    })
+                    .count()
+                    == 1;
             for block in &message.content {
                 match block {
                     ContentBlock::ToolUse { id, name, input }
                         if message.role == Role::Assistant =>
                     {
-                        calls.insert(id.clone(), (name.clone(), input));
+                        if let Some((run_id, _, _)) = message.id.assistant_coordinates() {
+                            calls.insert(
+                                id.clone(),
+                                (
+                                    awaken_runtime_contract::RunId(run_id.into()),
+                                    name.clone(),
+                                    input,
+                                ),
+                            );
+                        }
                     }
                     ContentBlock::ToolResult {
                         tool_use_id,
                         content,
                         is_error: false,
                     } if matches!(message.role, Role::User | Role::Tool) => {
-                        if let Some((name, input)) = calls.get(tool_use_id)
+                        if let Some((run_id, name, input)) = calls.get(tool_use_id)
+                            && shown
                             && !self.observed_messages.contains(&message.id.0)
                         {
                             let fingerprint =
-                                outcome_fingerprint(name, tool_use_id, input, content);
+                                outcome_fingerprint(run_id, name, tool_use_id, input, content);
                             if let Some(kinds) = self.outcome_witnesses.get(&fingerprint).cloned() {
                                 for kind in kinds {
                                     self.text(
@@ -190,43 +222,64 @@ impl VisibleUrls {
                             }
                         }
                     }
-                    ContentBlock::Text { text }
-                        if message.role == Role::User && !message.id.is_agent_thread_report() =>
-                    {
+                    ContentBlock::Text { text } if message.role == Role::User && shown => {
                         self.text(WebUrlSourceKind::UserInput, "", text);
                     }
                     _ => {}
                 }
             }
-            self.observed_messages.insert(message.id.0.clone());
+            if shown {
+                self.observed_messages.insert(message.id.0.clone());
+            }
         }
     }
 
-    fn permits(&self, raw: &str, policies: &[WebFetchUrlSources]) -> bool {
-        let Some(url) = canonical_url(raw) else {
-            return false;
-        };
-        // Every inherited policy must have at least one eligible source for
-        // this exact URL. Another policy cannot widen a caller's allowed set.
-        policies.iter().all(|policy| {
-            self.urls.iter().any(|(kind, sources)| {
-                sources
-                    .iter()
-                    .any(|(name, urls)| urls.contains(&url) && policy.permits(*kind, name))
+    pub(super) fn evidence(&self) -> Vec<awaken_web_policy_contract::WebUrlSourceEvidence<'_>> {
+        if self.format != 3 {
+            return Vec::new();
+        }
+        self.urls
+            .iter()
+            .flat_map(|(kind, names)| {
+                names.iter().flat_map(move |(name, urls)| {
+                    urls.iter().map(
+                        move |url| awaken_web_policy_contract::WebUrlSourceEvidence {
+                            kind: *kind,
+                            name,
+                            canonical_url: url,
+                        },
+                    )
+                })
             })
-        })
+            .collect()
+    }
+
+    #[cfg(test)]
+    fn permits(&self, raw: &str, policies: &[WebFetchUrlSources]) -> bool {
+        awaken_web_policy_contract::admit_fetch_url(raw, &[], policies, Some(&self.evidence()))
+            .is_ok()
+    }
+
+    fn reaction(self) -> HookReaction {
+        HookReaction::state(vec![awaken_runtime_contract::StateCommand::set(
+            Scope::Thread,
+            MergePolicy::Disjoint,
+            STATE_KEY,
+            serde_json::to_value(self).expect("derived URL sources serialize"),
+        )])
     }
 }
 
 fn outcome_fingerprint(
+    run_id: &awaken_runtime_contract::RunId,
     name: &str,
     call_id: &str,
     arguments: &serde_json::Value,
     content: &[ContentBlock],
 ) -> String {
     awaken_agent_contract::canonical_json_sha256(
-        "web-source-outcome-v2",
-        &(name, call_id, arguments, content),
+        "web-source-outcome-v3",
+        &(run_id, name, call_id, arguments, content),
     )
     .expect("tool outcome correlation values serialize")
 }
@@ -245,20 +298,9 @@ impl PhaseHook for UrlSourceRecorder {
         if let (Some(catalogue), awaken_runtime_contract::plugin::PhaseKind::AfterTool(outcome)) =
             (&self.0, &ctx.kind)
         {
-            visible.record_outcome(catalogue, &outcome.call, &outcome.output);
+            visible.record_outcome(&ctx.run_id, catalogue, &outcome.call, &outcome.output);
         }
         visible.reaction()
-    }
-}
-
-impl VisibleUrls {
-    fn reaction(self) -> HookReaction {
-        HookReaction::state(vec![awaken_runtime_contract::StateCommand::set(
-            Scope::Thread,
-            MergePolicy::Disjoint,
-            STATE_KEY,
-            serde_json::to_value(self).expect("derived URL sources serialize"),
-        )])
     }
 }
 
@@ -267,36 +309,39 @@ pub(super) struct UrlSourceObserver;
 #[async_trait]
 impl PhaseHook for UrlSourceObserver {
     fn point(&self) -> PhaseHookPoint {
-        PhaseHookPoint::BeforeInference
+        PhaseHookPoint::AfterInference
     }
 
-    async fn on_phase(
+    async fn on_phase(&self, _: &PhaseContext, _: &[Message], _: &Store) -> HookReaction {
+        HookReaction::default()
+    }
+
+    async fn on_model_input(
         &self,
-        _: &PhaseContext,
+        ctx: &PhaseContext,
+        input: &[awaken_runtime_contract::llm::ChatMessage],
         conversation: &[Message],
         state: &Store,
     ) -> HookReaction {
+        if ctx.kind != awaken_runtime_contract::plugin::PhaseKind::AfterInference {
+            return HookReaction::state(vec![]);
+        }
         let mut visible = VisibleUrls::load(state).unwrap_or_default();
-        visible.observe_committed(conversation);
+        visible.observe_input(conversation, input);
         visible.reaction()
     }
 }
 
-/// Pure admission consumes explicit source evidence; it never reads Thread State.
-pub(super) fn admit_url(
+#[cfg(test)]
+fn admit_url(
     url: &str,
     policies: &[WebFetchUrlSources],
     evidence: Option<&VisibleUrls>,
 ) -> Result<(), ToolError> {
-    if policies.is_empty()
-        || evidence.is_some_and(|facts| facts.format == 2 && facts.permits(url, policies))
-    {
-        Ok(())
-    } else {
-        Err(ToolError::DefinitiveFailure(
-            "url_not_allowed: URL was not shown by an allowed conversation source".into(),
-        ))
-    }
+    let facts = evidence.map(VisibleUrls::evidence);
+    awaken_web_policy_contract::admit_fetch_url(url, &[], policies, facts.as_deref())
+        .map(|_| ())
+        .map_err(super::configured_fetch::admission_error)
 }
 
 #[cfg(test)]
@@ -305,6 +350,132 @@ mod tests {
     use awaken_runtime_contract::{MessageId, RunId};
     use awaken_tool_contract::tool::with_tool_state_context;
     use serde_json::json;
+
+    fn observed_input(
+        conversation: &[Message],
+    ) -> Arc<[awaken_runtime_contract::llm::ChatMessage]> {
+        conversation
+            .iter()
+            .map(|message| awaken_runtime_contract::llm::ChatMessage {
+                role: message.role,
+                content: message.content.clone(),
+            })
+            .collect::<Vec<_>>()
+            .into()
+    }
+
+    #[tokio::test]
+    async fn reused_call_coordinates_in_another_run_cannot_transfer_source_ownership() {
+        // W1 a server outcome is executed but not shown; W2 a later Run's
+        // same-name client repeats identical call id/args/content; W3 only that
+        // client's committed result reaches inference. The old witness must
+        // not become server provenance for W3, including after view recovery.
+        use awaken_runtime_contract::plugin::{AfterToolContext, PhaseKind};
+        use awaken_tool_contract::tool::{ToolCall, ToolOutput};
+        let url = "https://example.com/reused";
+        let call = ToolCall {
+            call_id: "same-call".into(),
+            tool_id: "web_search".into(),
+            arguments: json!({"query":"same"}),
+        };
+        let output = ToolOutput::ok(&call.call_id, url);
+        let mut state = Store::new();
+        for (run_id, clients) in [("server-run", vec![]), ("client-run", vec!["web_search"])] {
+            let context = PhaseContext {
+                run_id: RunId(run_id.into()),
+                step: 0,
+                kind: PhaseKind::AfterTool(AfterToolContext {
+                    call: call.clone(),
+                    output: output.clone(),
+                }),
+            };
+            for command in UrlSourceRecorder(Some(Arc::new(catalogue(&clients))))
+                .on_phase(&context, &[], &state)
+                .await
+                .state
+            {
+                state.apply(&command);
+            }
+        }
+        let recovered: VisibleUrls = serde_json::from_value(
+            serde_json::to_value(VisibleUrls::load(&state).unwrap()).unwrap(),
+        )
+        .unwrap();
+        state = Store::new();
+        for command in recovered.reaction().state {
+            state.apply(&command);
+        }
+        let transcript = vec![
+            Message::new(
+                MessageId::assistant(&RunId("client-run".into()), 0),
+                Role::Assistant,
+                vec![ContentBlock::ToolUse {
+                    id: call.call_id.clone(),
+                    name: call.tool_id.clone(),
+                    input: call.arguments.clone(),
+                }],
+            ),
+            Message::new(
+                MessageId::tool_result(&call.call_id),
+                Role::Tool,
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: call.call_id,
+                    content: output.content,
+                    is_error: false,
+                }],
+            ),
+        ];
+        let before = PhaseContext {
+            run_id: RunId("client-run".into()),
+            step: 1,
+            kind: PhaseKind::AfterInference,
+        };
+        for command in UrlSourceObserver
+            .on_model_input(&before, &observed_input(&transcript), &transcript, &state)
+            .await
+            .state
+        {
+            state.apply(&command);
+        }
+        let facts = VisibleUrls::load(&state).unwrap();
+        let server =
+            serde_json::from_value(json!({"client_tool_results":"none","user_input":"none"}))
+                .unwrap();
+        let client =
+            serde_json::from_value(json!({"server_tool_results":"none","user_input":"none"}))
+                .unwrap();
+        assert!(!facts.permits(url, &[server]));
+        assert!(facts.permits(url, &[client]));
+    }
+
+    #[test]
+    fn model_authored_child_and_advisor_seeds_are_never_user_url_evidence() {
+        // I1 ordinary committed user text -> user evidence; I2 delegated task
+        // and advisor inputs use User role only for model transport -> none.
+        // Their existing canonical identities survive a cold view rebuild.
+        let child = awaken_agent_contract::agent::delegation::DelegationOrigin::root(
+            RunId("parent".into()),
+            "call",
+        )
+        .child_run_id();
+        let url = "https://example.com/model-invented";
+        let user_only = serde_json::from_value(
+            json!({"client_tool_results":"none","server_tool_results":"none"}),
+        )
+        .unwrap();
+        for id in [
+            MessageId::agent_thread_input(&child),
+            MessageId::agent_advisor_input(&child),
+        ] {
+            let mut facts = VisibleUrls::default();
+            facts.observe_committed(&[Message::text(id, Role::User, url)]);
+            assert!(!facts.permits(url, std::slice::from_ref(&user_only)));
+            assert!(super::admit_url(url, std::slice::from_ref(&user_only), Some(&facts)).is_err());
+        }
+        let mut facts = VisibleUrls::default();
+        facts.observe_committed(&[Message::text(MessageId("human".into()), Role::User, url)]);
+        assert!(facts.permits(url, &[user_only]));
+    }
 
     fn admit_url(url: &str, policies: &[WebFetchUrlSources]) -> Result<(), ToolError> {
         let evidence = awaken_tool_contract::tool::current_tool_state()
@@ -350,7 +521,7 @@ mod tests {
         };
         let transcript = vec![
             Message::new(
-                MessageId("assistant-call".into()),
+                MessageId::assistant(&RunId("r".into()), 0),
                 Role::Assistant,
                 vec![ContentBlock::ToolUse {
                     id: call.call_id.clone(),
@@ -372,9 +543,7 @@ mod tests {
         let before = PhaseContext {
             run_id: RunId("r".into()),
             step: 1,
-            kind: PhaseKind::BeforeInference {
-                run_input: vec![].into(),
-            },
+            kind: PhaseKind::AfterInference,
         };
         let server: WebFetchUrlSources =
             serde_json::from_value(json!({"client_tool_results":"none", "user_input":"none"}))
@@ -383,7 +552,7 @@ mod tests {
             serde_json::from_value(json!({"server_tool_results":"none", "user_input":"none"}))
                 .unwrap();
         let reaction = UrlSourceObserver
-            .on_phase(&before, &transcript, &state)
+            .on_model_input(&before, &observed_input(&transcript), &transcript, &state)
             .await;
         for command in reaction.state {
             state.apply(&command);
@@ -414,7 +583,7 @@ mod tests {
                 .permits(url, std::slice::from_ref(&client))
         );
         for command in UrlSourceObserver
-            .on_phase(&before, &transcript, &state)
+            .on_model_input(&before, &observed_input(&transcript), &transcript, &state)
             .await
             .state
         {
@@ -434,6 +603,7 @@ mod tests {
         ] {
             let mut facts = VisibleUrls::default();
             facts.record_outcome(
+                &RunId("r".into()),
                 &catalogue(&[]),
                 &call,
                 &ToolOutput {
@@ -463,7 +633,7 @@ mod tests {
             unsupported,
         ));
         for command in UrlSourceObserver
-            .on_phase(&before, &transcript, &damaged)
+            .on_model_input(&before, &observed_input(&transcript), &transcript, &damaged)
             .await
             .state
         {
@@ -477,6 +647,9 @@ mod tests {
     }
 
     impl VisibleUrls {
+        fn observe_committed(&mut self, conversation: &[Message]) {
+            self.observe_input(conversation, &observed_input(conversation));
+        }
         fn observe(&mut self, conversation: &[Message], catalogue: &SourceCatalogue) {
             use awaken_tool_contract::tool::{ToolCall, ToolOutput};
             let mut calls = BTreeMap::new();
@@ -486,22 +659,28 @@ mod tests {
                         ContentBlock::ToolUse { id, name, input }
                             if message.role == Role::Assistant =>
                         {
-                            calls.insert(
-                                id.clone(),
-                                ToolCall {
-                                    call_id: id.clone(),
-                                    tool_id: name.clone(),
-                                    arguments: input.clone(),
-                                },
-                            );
+                            if let Some((run_id, _, _)) = message.id.assistant_coordinates() {
+                                calls.insert(
+                                    id.clone(),
+                                    (
+                                        RunId(run_id.into()),
+                                        ToolCall {
+                                            call_id: id.clone(),
+                                            tool_id: name.clone(),
+                                            arguments: input.clone(),
+                                        },
+                                    ),
+                                );
+                            }
                         }
                         ContentBlock::ToolResult {
                             tool_use_id,
                             content,
                             is_error,
                         } if !self.observed_messages.contains(&message.id.0) => {
-                            if let Some(call) = calls.get(tool_use_id) {
+                            if let Some((run_id, call)) = calls.get(tool_use_id) {
                                 self.record_outcome(
+                                    run_id,
                                     catalogue,
                                     call,
                                     &ToolOutput {
@@ -575,7 +754,7 @@ mod tests {
         // narrowing. R1 C2+C3 -> allow; R2 !C2/C4/C5(missing) -> block before
         // the same fetch I/O boundary; R3 recovered State -> same result; R4 every C6 must allow.
         // Tools in one inference cannot authorize URLs not yet shown back to
-        // the model: only BeforeInference collects the transcript.
+        // the model: only the observed model input promotes matching shown messages.
         let url = "https://example.com/visible";
         let policy: WebFetchUrlSources = serde_json::from_value(json!({
             "user_input":"none", "server_tool_results":{"type":"only", "tools":[{"type":"tool_reference", "name":"web_search"}]}, "client_tool_results":"none"
@@ -585,7 +764,7 @@ mod tests {
         let conversation = vec![
             Message::text(MessageId("model".into()), Role::Assistant, url),
             Message::new(
-                MessageId("search".into()),
+                MessageId::assistant(&RunId("r".into()), 0),
                 Role::Assistant,
                 vec![ContentBlock::ToolUse {
                     id: "s1".into(),
@@ -606,9 +785,7 @@ mod tests {
         let ctx = PhaseContext {
             run_id: RunId("r".into()),
             step: 1,
-            kind: awaken_runtime_contract::plugin::PhaseKind::BeforeInference {
-                run_input: vec![].into(),
-            },
+            kind: awaken_runtime_contract::plugin::PhaseKind::AfterInference,
         };
         let mut recorded = VisibleUrls::default();
         recorded.observe(&conversation, &catalogue(&[]));
@@ -621,7 +798,7 @@ mod tests {
             serde_json::to_value(recorded).unwrap(),
         ));
         for command in UrlSourceObserver
-            .on_phase(&ctx, &conversation, &state)
+            .on_model_input(&ctx, &observed_input(&conversation), &conversation, &state)
             .await
             .state
         {
@@ -692,7 +869,7 @@ mod tests {
         let transcript = |name: &str| {
             vec![
                 Message::new(
-                    MessageId("call".into()),
+                    MessageId::assistant(&RunId("r".into()), 0),
                     Role::Assistant,
                     vec![ContentBlock::ToolUse {
                         id: "t1".into(),
@@ -739,13 +916,16 @@ mod tests {
         let ctx = PhaseContext {
             run_id: RunId("missing-catalogue".into()),
             step: 1,
-            kind: awaken_runtime_contract::plugin::PhaseKind::BeforeInference {
-                run_input: vec![].into(),
-            },
+            kind: awaken_runtime_contract::plugin::PhaseKind::AfterInference,
         };
         let mut state = Store::new();
         for command in UrlSourceObserver
-            .on_phase(&ctx, &transcript("web_search"), &state)
+            .on_model_input(
+                &ctx,
+                &observed_input(&transcript("web_search")),
+                &transcript("web_search"),
+                &state,
+            )
             .await
             .state
         {

@@ -2706,6 +2706,7 @@ async fn legacy_terminal_batches_resolve_under_root_cas_without_runtime_effects(
                 Arc::new(NoopMcpRealizer),
                 SessionPersistence::new(faulting.clone(), clock.clone()),
                 Arc::new(RecordingEnvironmentSource::default()),
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
             )
             .build()
             .expect("valid fixture Store/Clock composition");
@@ -2822,6 +2823,7 @@ async fn legacy_terminal_batches_resolve_under_root_cas_without_runtime_effects(
                 Arc::new(NoopMcpRealizer),
                 SessionPersistence::new(repository.clone(), Arc::new(ManualClock::new(900))),
                 Arc::new(RecordingEnvironmentSource::default()),
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
             )
             .build()
             .expect("valid fixture Store/Clock composition");

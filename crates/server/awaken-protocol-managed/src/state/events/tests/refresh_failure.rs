@@ -526,12 +526,13 @@ async fn session_usage_reads_closed_intervals_only_and_never_the_read_clock() {
     // usage; E2 active time is the durable closed total (0 s), never an
     // elapsed reading of the open interval. Rules: R1 C1+C2 => E1+E2.
     let clock = Arc::new(awaken_lease_testkit::ManualClock::new(1_000_000));
-    let state = ManagedState::from_fixture_parts(
+    let state = crate::state::test_support::managed_state_from_parts(
         Arc::new(LifecycleRuntime::default()),
         None,
         awaken_protocol_managed_testkit::ephemeral_session_repository().await,
         awaken_protocol_managed_testkit::environment_fixture(clock.clone()).execution,
         clock.clone(),
+        std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     );
     let session = state
         .create_session(

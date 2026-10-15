@@ -6,7 +6,12 @@
 
 pub mod tool;
 pub mod tool_batch;
+pub mod tool_configuration;
 pub mod tool_discovery;
+pub use tool_configuration::{
+    ToolConfigurationCompiler, ToolConfigurationError, ToolConfigurationInput,
+    compile_toolset_configurations,
+};
 pub mod typed;
 
 pub use tool::{

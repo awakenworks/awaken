@@ -72,7 +72,8 @@ use axum::{Json, Router};
 use serde::Deserialize;
 
 // This Scenario platform depends on each authoritative owner directly.
-pub use awaken_config_service::{ConfigService, capabilities_router, config_router};
+pub use awaken_config_service::ConfigService;
+pub use awaken_control::{capabilities_router, config_router};
 pub use awaken_ext_skills::{SkillContext, SkillSpec, parse_skill_md};
 pub use awaken_protocol_managed::{
     default_models, files_router, memory_stores_router, models_router, skills_router,
@@ -1439,6 +1440,7 @@ pub async fn build_config_router() -> Router {
         Arc::new(LocalExecutableAgentRegistrar::new(
             executable_agent_catalog.clone(),
         )),
+        std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     ));
     let plane = awaken_config_service::ConfigPlane::new(service.clone(), store, tools);
     // The management tool executables, backed by real ports (D3/D4): the capability

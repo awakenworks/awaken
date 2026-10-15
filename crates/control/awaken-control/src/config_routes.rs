@@ -16,10 +16,10 @@ use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use serde_json::{Value, json};
 
-use crate::config_plane::ConfigPlane;
 use crate::managed_agent::{agent_config_from_managed, managed_from_agent_config};
-use crate::publication::{PublishError, ValidationIssue};
-use crate::tool_catalog::RESERVED_ADMIN_SCOPE;
+use awaken_config_service::ConfigPlane;
+use awaken_config_service::RESERVED_ADMIN_SCOPE;
+use awaken_config_service::{PublishError, ValidationIssue};
 
 /// The config data-plane router: `/v1/config/agents/:id` (author) plus
 /// `/validate` and `/publish` (lifecycle).
@@ -53,6 +53,14 @@ fn valid_preview_id(id: &str) -> bool {
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
         })
+}
+
+fn validation_issue(issue: ValidationIssue) -> Value {
+    let mut value = json!({"path": issue.path, "message": issue.message, "severity":"error"});
+    if let Some(code) = issue.code {
+        value["code"] = Value::String(code);
+    }
+    value
 }
 
 fn problem_details(code: &str, title: &str, detail: impl Into<String>) -> Json<Value> {
@@ -106,7 +114,9 @@ async fn create_preview(
             Json(json!({ "error": "preview request requires config" })),
         );
     };
-    let config = match agent_config_from_managed(preview_id.clone(), config_body) {
+    let config = match agent_config_from_managed(preview_id.clone(), config_body)
+        .map_err(|issue| issue.to_string())
+    {
         Ok(config) => config,
         Err(error) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))),
     };
@@ -325,7 +335,15 @@ pub(crate) async fn list_configs(
                     }
                 };
                 let published = published_revisions.contains(&(config.id, versioned.revision));
-                data.push(managed_from_agent_config(&versioned.config, published));
+                match managed_from_agent_config(&versioned.config, published) {
+                    Ok(body) => data.push(body),
+                    Err(message) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({"error": message})),
+                        );
+                    }
+                }
             }
             (StatusCode::OK, Json(json!({ "data": data })))
         }
@@ -357,7 +375,15 @@ pub(crate) async fn get_config(
                     );
                 }
             };
-            let mut body = managed_from_agent_config(&versioned.config, published);
+            let mut body = match managed_from_agent_config(&versioned.config, published) {
+                Ok(body) => body,
+                Err(message) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"error":message})),
+                    );
+                }
+            };
             body.as_object_mut()
                 .expect("managed config is an object")
                 .insert("generation".to_string(), json!(versioned.revision));
@@ -431,7 +457,7 @@ pub(crate) async fn validate(
                 StatusCode::BAD_REQUEST,
                 Json(json!({
                     "valid": false,
-                    "issues": [{ "path": "", "message": error, "severity": "error" }],
+                    "issues": [validation_issue(error)],
                 })),
             );
         }
@@ -457,6 +483,7 @@ pub(crate) async fn validate(
                 .await
         }
         None => Err(ValidationIssue {
+            code: None,
             path: "model".into(),
             message: PublishError::ExecutionWorkspaceRequired.to_string(),
         }),
@@ -467,7 +494,7 @@ pub(crate) async fn validate(
             StatusCode::OK,
             Json(json!({
                 "valid": false,
-                "issues": [{ "path": issue.path, "message": issue.message, "severity": "error" }],
+                "issues": [validation_issue(issue)],
             })),
         ),
     }
@@ -485,10 +512,11 @@ pub(crate) async fn put_config(
             return (StatusCode::BAD_REQUEST, Json(json!({ "error": error })));
         }
     };
-    let mut config = match agent_config_from_managed(id.clone(), &body) {
-        Ok(config) => config,
-        Err(error) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))),
-    };
+    let mut config =
+        match agent_config_from_managed(id.clone(), &body).map_err(|issue| issue.to_string()) {
+            Ok(config) => config,
+            Err(error) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))),
+        };
     let current = match plane.get_versioned(&scope, &id).await {
         Ok(current) => current,
         Err(error) => {
@@ -800,14 +828,13 @@ fn publication_workspace<'a>(
 
 #[cfg(test)]
 mod publication_projection_tests {
+    use awaken_runtime_contract::resolved::ToolDescriptor;
     use std::sync::Arc;
 
     use awaken_config_store::SqliteConfigStore;
 
+    use super::test_support::{agent_config, failing_scoped_plane, test_service};
     use super::*;
-    use crate::config_service::resource_prompt_tests::{
-        agent_config, failing_scoped_plane, test_service,
-    };
 
     #[tokio::test]
     async fn config_get_controlled_put_preserves_runtime_only_policy_under_one_revision_fence() {
@@ -824,12 +851,11 @@ mod publication_projection_tests {
             ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
             ToolsetSource,
         };
-        use awaken_runtime_contract::resolved::ToolDescriptor;
 
         let plane = ConfigPlane::new(
             Arc::new(test_service()),
             Arc::new(SqliteConfigStore::open_in_memory().await.unwrap()),
-            Arc::new(crate::tool_catalog::StaticToolCatalog(vec![
+            Arc::new(awaken_config_service::StaticToolCatalog(vec![
                 ToolDescriptor::pinned(
                     "managed",
                     "agent_run",
@@ -1030,7 +1056,7 @@ mod publication_projection_tests {
         let plane = ConfigPlane::new(
             Arc::new(test_service()),
             Arc::new(SqliteConfigStore::open_in_memory().await.unwrap()),
-            Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
+            Arc::new(awaken_config_service::StaticToolCatalog(vec![])),
         );
         let scope = ScopeId::from("workspace-preset");
         let seeded = agent_config("preset-agent");
@@ -1133,7 +1159,7 @@ mod publication_projection_tests {
         let plane = ConfigPlane::new(
             Arc::new(test_service()),
             Arc::new(SqliteConfigStore::open_in_memory().await.unwrap()),
-            Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
+            Arc::new(awaken_config_service::StaticToolCatalog(vec![])),
         );
         let scope = ScopeId::from("workspace-unknown-key");
         let mut seeded = agent_config("prompted-agent");
@@ -1219,7 +1245,7 @@ mod publication_projection_tests {
         let plane = ConfigPlane::new(
             Arc::new(test_service()),
             Arc::new(SqliteConfigStore::open_in_memory().await.unwrap()),
-            Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
+            Arc::new(awaken_config_service::StaticToolCatalog(vec![])),
         );
         let owner = ScopeId::from("workspace-owner");
         plane.put(&owner, &agent_config("agent-a")).await.unwrap();
@@ -1262,7 +1288,7 @@ mod publication_projection_tests {
         let plane = ConfigPlane::new(
             Arc::new(test_service()),
             Arc::new(SqliteConfigStore::open_in_memory().await.unwrap()),
-            Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
+            Arc::new(awaken_config_service::StaticToolCatalog(vec![])),
         );
         let owner = ScopeId::from("workspace-owner");
         plane.put(&owner, &agent_config("agent-a")).await.unwrap();
@@ -1329,4 +1355,18 @@ mod publication_projection_tests {
             "R5"
         );
     }
+}
+
+#[cfg(test)]
+mod test_support;
+#[cfg(test)]
+mod integration_tests {
+    use super::test_support::*;
+    use super::*;
+    use awaken_agent_config::{ConfigRegistry, DEFAULT_SCOPE, ScopedConfigRegistry};
+    use awaken_config_service::ConfigService;
+    use awaken_config_store::SqliteConfigStore;
+    use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
+    use std::sync::Arc;
+    include!("config_routes/integration_tests.rs");
 }

@@ -37,8 +37,8 @@ pub use web::{
     WebSearchCredentialRequirement, WebSearchCredentialResolver, WebSearchExecutionConfiguration,
     WebSearchPlugin, WebSearchProvider, WebSearchProviderDescriptor, WebSearchProviderRegistry,
     WebSearchRegistryError, WebSearchRequest, WebSearchResult, WebSearchUserLocation,
-    managed_web_route_ref, web_fetch_descriptor, web_fetch_execution_configuration,
-    web_search_descriptor, web_search_execution_configuration,
+    WebToolConfigurationCompiler, managed_web_route_ref, web_fetch_descriptor,
+    web_fetch_execution_configuration, web_search_descriptor, web_search_execution_configuration,
 };
 
 /// The one complete static Hand registry used by every SessionEnvironment.

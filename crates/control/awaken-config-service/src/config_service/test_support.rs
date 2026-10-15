@@ -6,7 +6,7 @@
 // Shared fixtures for Config Service owner and adapter tests.
 //
 // Structural cause/effect coverage rationale: moving an item changes neither
-// runtime inputs nor domain decisions. The unchanged 105-test crate suite is
+// runtime inputs nor domain decisions. ConfigService and Control suites are
 // the regression oracle for method ownership, helper visibility, and test
 // identity; a runtime decision table is not applicable to this extraction.
 
@@ -31,7 +31,6 @@ use awaken_tenancy::ScopeId;
 use crate::binding_resolver::{PublicationResolutionError, ResolvedPublicationModels};
 use crate::publication::{PublishError, prepare_agent_publication};
 use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
-use awaken_tenancy::WorkspaceScope;
 
 fn scope(id: &str) -> ScopeId {
     ScopeId::from(id)
@@ -142,40 +141,12 @@ fn test_registrar() -> Arc<dyn ExecutableAgentRegistrar> {
     )))
 }
 
-fn test_service_and_catalog() -> (ConfigService, Arc<ExecutableAgentCatalog>) {
-    let catalog = Arc::new(ExecutableAgentCatalog::new());
-    let registrar = Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone()));
-    (
-        ConfigService::new(Arc::new(FakeResolver), registrar),
-        catalog,
-    )
-}
-
-struct UnavailableRegistrar;
-
-#[async_trait::async_trait]
-impl ExecutableAgentRegistrar for UnavailableRegistrar {
-    async fn register(
-        &self,
-        _registration: ExecutableAgentRegistration,
-    ) -> Result<ExecutableAgentRegistrationOutcome, ExecutableAgentRegistrationError> {
-        Err(ExecutableAgentRegistrationError::Unavailable(
-            "Coordinator is offline".into(),
-        ))
-    }
-
-    async fn withdraw(
-        &self,
-        _withdrawal: ExecutableAgentWithdrawal,
-    ) -> Result<ExecutableAgentWithdrawalOutcome, ExecutableAgentRegistrationError> {
-        Err(ExecutableAgentRegistrationError::Unavailable(
-            "Coordinator is offline".into(),
-        ))
-    }
-}
-
 pub(crate) fn test_service() -> ConfigService {
-    ConfigService::new(Arc::new(FakeResolver), test_registrar())
+    ConfigService::new(
+        Arc::new(FakeResolver),
+        test_registrar(),
+        std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+    )
 }
 
 struct FakeProviderResolver;
@@ -248,6 +219,7 @@ async fn plane_with(
     let mut service = ConfigService::new(
         resolver.unwrap_or_else(|| Arc::new(FakeResolver)),
         test_registrar(),
+        std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     );
     if let Some(resources) = resources {
         service = service.with_resources(resources);
@@ -562,8 +534,16 @@ impl ConfigRegistry for AdvancingPublishRegistry {
     }
 }
 
-/// A scope-bound registry whose reads and writes fail, so the HTTP handlers hit
-/// their 500 / 400 error arms (F19c / F21b).
+/// A config plane (the scope edge) over a shared real store handle, returned
+/// alongside the store so a test can read the durable rows directly.
+fn plane_over(store: Arc<SqliteConfigStore>) -> ConfigPlane {
+    ConfigPlane::new(
+        Arc::new(test_service()),
+        store,
+        Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
+    )
+}
+
 struct FailingScopedRegistry;
 #[async_trait::async_trait]
 impl ScopedConfigRegistry for FailingScopedRegistry {
@@ -619,20 +599,15 @@ impl ScopedConfigRegistry for FailingScopedRegistry {
     }
 }
 
-pub(crate) fn failing_scoped_plane() -> ConfigPlane {
-    ConfigPlane::new(
-        Arc::new(test_service()),
-        Arc::new(FailingScopedRegistry),
-        Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
-    )
-}
-
-/// A config plane (the scope edge) over a shared real store handle, returned
-/// alongside the store so a test can read the durable rows directly.
-fn plane_over(store: Arc<SqliteConfigStore>) -> ConfigPlane {
-    ConfigPlane::new(
-        Arc::new(test_service()),
-        store,
-        Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
+fn test_service_and_catalog() -> (ConfigService, Arc<ExecutableAgentCatalog>) {
+    let catalog = Arc::new(ExecutableAgentCatalog::new());
+    let registrar = Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone()));
+    (
+        ConfigService::new(
+            Arc::new(FakeResolver),
+            registrar,
+            Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        ),
+        catalog,
     )
 }

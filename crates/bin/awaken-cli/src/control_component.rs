@@ -35,7 +35,7 @@ pub(super) async fn control_component_for_process(
     model_supply: awaken_admin_config_api::ModelSupplyCapabilityView,
     managed_runtime_available: bool,
     local_acp_observations: &[awaken_acp_application::AcpHostObservation],
-    runtimes: Arc<dyn awaken_config_service::RuntimeCapabilitySource>,
+    runtimes: Arc<dyn awaken_control::RuntimeCapabilitySource>,
     resource_inventory: Option<Arc<dyn awaken_admin_assistant::ResourceInventory>>,
     environment_author: Arc<dyn awaken_environment_contract::EnvironmentAuthor>,
     environment_application: Arc<awaken_environment_application::EnvironmentApplication>,
@@ -80,6 +80,9 @@ pub(super) async fn control_component_for_process(
         )
     });
     awaken_control::build_control_component(awaken_control::ControlDependencies {
+        tool_configuration_compiler: std::sync::Arc::new(
+            awaken_ext_builtin_tools::WebToolConfigurationCompiler,
+        ),
         service_lifecycle: service_lifecycle.clone(),
         execution_workspace: execution_workspace.to_owned(),
         data_subject_org: data_subject_org.to_owned(),

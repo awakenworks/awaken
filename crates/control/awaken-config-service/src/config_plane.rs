@@ -165,8 +165,13 @@ impl ConfigPlane {
     ) -> Result<AuditedConfigWrite, String> {
         // `record_management_audit` is the sole begin owner. This final port
         // requires its exact pending row and commits business state atomically.
+        let config = crate::tool_compilation::compile_tool_settings(
+            self.service.tool_configuration_compiler.as_ref(),
+            config,
+        )
+        .map_err(|error| error.to_string())?;
         self.store
-            .put_config_with_audit_scoped(scope, config, expected_revision, audit)
+            .put_config_with_audit_scoped(scope, &config, expected_revision, audit)
             .await
             .map_err(|error| error.to_string())
     }
@@ -181,8 +186,13 @@ impl ConfigPlane {
     ) -> Result<AuditedConfigWrite, String> {
         // Effects share the same final transaction; this port never creates a
         // second audit-begin path when the pending row is absent.
+        let config = crate::tool_compilation::compile_tool_settings(
+            self.service.tool_configuration_compiler.as_ref(),
+            config,
+        )
+        .map_err(|error| error.to_string())?;
         self.store
-            .put_config_with_audit_effect_scoped(scope, config, expected_revision, audit, effect)
+            .put_config_with_audit_effect_scoped(scope, &config, expected_revision, audit, effect)
             .await
             .map_err(|error| error.to_string())
     }
@@ -323,7 +333,7 @@ impl ConfigPlane {
 
     /// Read the durable publication index once for a whole authoring list.
     /// Only exact published revisions qualify; a newer draft is not published.
-    pub(crate) async fn published_revisions(
+    pub async fn published_revisions(
         &self,
         scope: &ScopeId,
     ) -> Result<HashSet<(String, u64)>, String> {

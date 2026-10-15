@@ -16,6 +16,7 @@ use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_credential_vault::InMemorySecretStore;
 use awaken_credential_vault::repo::InMemoryCredentialRepo;
+use awaken_protocol_managed::tools::AgentTool;
 use awaken_protocol_managed::{ManagedState, VaultState, router, vault_router};
 use awaken_session_application_contract::{LifecycleFactNotifier, StepOutcome};
 use awaken_session_configuration_contract::SessionInit;
@@ -2615,7 +2616,7 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
     assert!(applied_headers.contains_key("etag"), "I1");
     let legacy_title: Option<Option<String>> = None;
     let legacy_metadata: Option<Option<std::collections::BTreeMap<String, Option<String>>>> = None;
-    let legacy_tools: Option<Vec<awaken_session_configuration_contract::AgentTool>> = None;
+    let legacy_tools: Option<Vec<AgentTool>> = None;
     let legacy_mcp = Some(vec![
         serde_json::from_value::<awaken_protocol_managed::types::agent::AgentMcpServer>(
             desired.clone(),
@@ -2803,11 +2804,9 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
     assert_eq!(
         awaken_protocol_managed::project::managed_tools(
             &h.repo.get(&SessionId::from(id)).await.unwrap().tools
-        ),
-        serde_json::from_value::<Vec<awaken_session_configuration_contract::AgentTool>>(
-            expected_tools
         )
-        .unwrap(),
+        .expect("valid durable tool configuration"),
+        serde_json::from_value::<Vec<AgentTool>>(expected_tools).unwrap(),
         "I6"
     );
     let state = h.state.lock().unwrap();
@@ -2953,11 +2952,9 @@ async fn idempotent_update_repairs_a_failed_post_commit_runtime_projection() {
     assert_eq!(
         awaken_protocol_managed::project::managed_tools(
             &h.repo.get(&SessionId::from(id)).await.unwrap().tools
-        ),
-        serde_json::from_value::<Vec<awaken_session_configuration_contract::AgentTool>>(
-            tools.clone()
         )
-        .unwrap(),
+        .expect("valid durable tool configuration"),
+        serde_json::from_value::<Vec<AgentTool>>(tools.clone()).unwrap(),
         "T1 durable truth"
     );
 

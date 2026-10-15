@@ -210,6 +210,20 @@ pub trait PhaseHook: Send + Sync {
         conversation: &[Message],
         state: &Store,
     ) -> HookReaction;
+
+    /// Optional factual observation for hooks subscribed to AfterInference.
+    /// Called for each successful logical model request after context selection
+    /// and content materialization; existing on_phase timing stays unchanged.
+    /// Input carries no credential bindings/grants or execution authorization.
+    async fn on_model_input(
+        &self,
+        _ctx: &PhaseContext,
+        _input: &[crate::llm::ChatMessage],
+        _conversation: &[Message],
+        _state: &Store,
+    ) -> HookReaction {
+        HookReaction::default()
+    }
 }
 
 #[cfg(test)]

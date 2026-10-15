@@ -47,7 +47,34 @@ pub enum PublishError {
 #[derive(Debug, Clone)]
 pub struct ValidationIssue {
     pub path: String,
+    pub code: Option<String>,
     pub message: String,
+}
+
+impl std::fmt::Display for ValidationIssue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(code) = &self.code {
+            write!(f, "{} [{}]: {}", self.path, code, self.message)
+        } else {
+            write!(f, "{}: {}", self.path, self.message)
+        }
+    }
+}
+impl std::error::Error for ValidationIssue {}
+
+impl From<String> for ValidationIssue {
+    fn from(message: String) -> Self {
+        Self {
+            path: String::new(),
+            code: None,
+            message,
+        }
+    }
+}
+impl From<&str> for ValidationIssue {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
 }
 
 /// Transient, secret-free result of reading every configuration source once.

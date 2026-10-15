@@ -16,7 +16,7 @@ use awaken_runtime_contract::agent_bindings::InferenceOptions;
 use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
 use serde_json::{Value, json};
 
-use crate::{parse_managed_model_id, render_managed_model_id};
+use awaken_config_service::{ValidationIssue, parse_managed_model_id, render_managed_model_id};
 
 fn managed_tool_id(value: &Value) -> Option<String> {
     match value {
@@ -63,11 +63,13 @@ fn managed_client_tool(value: &Value) -> Result<Option<ToolDescriptor>, String> 
 
 fn managed_toolset(
     value: &Value,
-) -> Result<Option<awaken_session_configuration_contract::AgentTool>, String> {
+) -> Result<Option<awaken_protocol_managed::tools::AgentTool>, String> {
     match value.get("type").and_then(Value::as_str) {
-        Some("agent_toolset_20260401" | "mcp_toolset") => serde_json::from_value(value.clone())
-            .map(Some)
-            .map_err(|error| error.to_string()),
+        Some("agent_toolset_20260401" | "mcp_toolset" | "custom") => {
+            serde_json::from_value(value.clone())
+                .map(Some)
+                .map_err(|error| error.to_string())
+        }
         _ => Ok(None),
     }
 }
@@ -164,7 +166,72 @@ fn reject_unmodelled_keys(body: &Value) -> Result<(), String> {
 }
 
 /// Parse a managed-shaped Agent object into the domain compile input.
-pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig, String> {
+fn managed_metadata(body: &Value) -> std::collections::BTreeMap<String, String> {
+    body.get("metadata")
+        .and_then(Value::as_object)
+        .map(|object| {
+            object
+                .iter()
+                .filter_map(|(key, value)| {
+                    value.as_str().map(|value| (key.clone(), value.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn managed_tool_configuration(
+    tools: &[Value],
+) -> Result<
+    (
+        Vec<ToolDescriptor>,
+        Vec<awaken_agent_contract::ToolsetPolicy>,
+    ),
+    ValidationIssue,
+> {
+    let mut clients = Vec::new();
+    let mut authored = Vec::new();
+    let mut positions = Vec::new();
+    for (index, value) in tools.iter().enumerate() {
+        let failure = |message| ValidationIssue {
+            path: format!("tools[{index}]"),
+            code: Some("invalid_managed_tool_shape".into()),
+            message,
+        };
+        if let Some(tool) = managed_client_tool(value).map_err(failure)? {
+            clients.push(tool);
+        }
+        if let Some(tool) = managed_toolset(value).map_err(failure)? {
+            authored.push(tool);
+            positions.push(index);
+        }
+    }
+    let compiled =
+        awaken_protocol_managed::tools::compile_agent_tools(&authored).map_err(|error| {
+            let mut path = error.path;
+            if let Some(rest) = path.strip_prefix("tools[")
+                && let Some((index, tail)) = rest.split_once(']')
+                && let Ok(index) = index.parse::<usize>()
+            {
+                path = format!("tools[{}]{tail}", positions[index]);
+            }
+            ValidationIssue {
+                path,
+                code: Some(error.code),
+                message: error.message,
+            }
+        })?;
+    Ok((clients, compiled.toolsets))
+}
+
+fn managed_max_steps(value: Option<&Value>) -> Result<Option<usize>, String> {
+    value.map_or(Ok(awaken_runtime_contract::DEFAULT_MAX_STEPS), |value| {
+        awaken_runtime_contract::deserialize_max_steps(value.clone())
+            .map_err(|error| format!("invalid max_steps: {error}"))
+    })
+}
+
+pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig, ValidationIssue> {
     reject_unmodelled_keys(body)?;
     let string = |key: &str| body.get(key).and_then(Value::as_str).map(str::to_string);
     let model_binding = managed_model_selection(body.get("model"))?;
@@ -206,18 +273,7 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
         Some(value) => serde_json::from_value(value).map_err(|error| error.to_string())?,
         None => Vec::new(),
     };
-    let metadata: std::collections::BTreeMap<String, String> = body
-        .get("metadata")
-        .and_then(Value::as_object)
-        .map(|object| {
-            object
-                .iter()
-                .filter_map(|(key, value)| {
-                    value.as_str().map(|value| (key.clone(), value.to_string()))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let metadata = managed_metadata(body);
     let mcp_servers = array("mcp_servers")
         .into_iter()
         .map(|value| {
@@ -246,36 +302,16 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
         .map_err(|error| format!("invalid delegation limits: {error}"))?
         .unwrap_or_default();
     let tools = array("tools");
-    let client_tools = tools
-        .iter()
-        .map(managed_client_tool)
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .flatten()
-        .collect();
-    let authored_toolsets = tools
-        .iter()
-        .map(managed_toolset)
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
-    awaken_session_configuration_contract::validate_agent_tools(&authored_toolsets)?;
+    let (client_tools, toolsets) = managed_tool_configuration(&tools)?;
     let config = AgentConfig {
         id,
         instructions: string("system").unwrap_or_default(),
-        max_steps: body.get("max_steps").map_or(
-            Ok(awaken_runtime_contract::DEFAULT_MAX_STEPS),
-            |value| {
-                awaken_runtime_contract::deserialize_max_steps(value.clone())
-                    .map_err(|error| format!("invalid max_steps: {error}"))
-            },
-        )?,
+        max_steps: managed_max_steps(body.get("max_steps"))?,
         delegation_limits,
         model_binding,
         inference,
         tool_ids: tools.iter().filter_map(managed_tool_id).collect(),
-        toolsets: awaken_session_configuration_contract::toolset_policies(&authored_toolsets),
+        toolsets,
         client_tools,
         plugin_ids: array("plugins")
             .iter()
@@ -342,7 +378,7 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
             .map_err(|error| format!("invalid compaction strategy: {error}"))?,
     };
     config.validate_managed_tool_bindings()?;
-    config.canonicalize_mutable_authoring()
+    config.canonicalize_mutable_authoring().map_err(Into::into)
 }
 
 fn managed_model_selection(model: Option<&Value>) -> Result<ModelSelection, String> {
@@ -411,7 +447,7 @@ fn managed_model_selection(model: Option<&Value>) -> Result<ModelSelection, Stri
 }
 
 /// Project a stored config into the managed-shaped object and its live state.
-pub fn managed_from_agent_config(config: &AgentConfig, published: bool) -> Value {
+pub fn managed_from_agent_config(config: &AgentConfig, published: bool) -> Result<Value, String> {
     let binding = config.model_binding.resolved();
     let model = match &config.model_binding {
         // The Managed model-id string stays the projection whenever it can
@@ -447,7 +483,8 @@ pub fn managed_from_agent_config(config: &AgentConfig, published: bool) -> Value
         .map(|id| Value::String(id.clone()))
         .collect::<Vec<_>>();
     tools.extend(
-        awaken_session_configuration_contract::resolved_toolsets(&config.toolsets)
+        awaken_protocol_managed::tools::resolved_toolsets(&config.toolsets)
+            .map_err(|error| error.to_string())?
             .into_iter()
             .map(|tool| serde_json::to_value(tool).expect("AgentTool serializes")),
     );
@@ -459,7 +496,7 @@ pub fn managed_from_agent_config(config: &AgentConfig, published: bool) -> Value
             "input_schema": tool.parameters,
         })
     }));
-    json!({
+    Ok(json!({
         "id": config.id,
         "type": "agent",
         "name": config.name,
@@ -487,12 +524,18 @@ pub fn managed_from_agent_config(config: &AgentConfig, published: bool) -> Value
         "tool_discovery": config.tool_discovery,
         "compaction": config.compaction,
         "published": published,
-    })
+    }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn parse_config(id: String, body: &Value) -> Result<AgentConfig, String> {
+        super::agent_config_from_managed(id, body).map_err(|issue| issue.message)
+    }
+    fn project_config(config: &AgentConfig, published: bool) -> Value {
+        super::managed_from_agent_config(config, published).expect("valid projection fixture")
+    }
 
     #[test]
     fn reads_every_managed_model_shape() {
@@ -500,7 +543,7 @@ mod tests {
         // C4 absent model. Effects: E1 Auto intent; E2 unresolved Target intent;
         // E3 the object id uses the same parser. Rules: C1/C4 -> E1,
         // C2/C3 -> E2; incomplete Pinned is never a parallel selection syntax.
-        let auto = agent_config_from_managed(
+        let auto = parse_config(
             "a".into(),
             &json!({
                 "model": { "mode": "auto" }
@@ -508,27 +551,23 @@ mod tests {
         )
         .expect("auto model");
         assert!(auto.model_binding.is_auto());
-        assert_eq!(
-            managed_from_agent_config(&auto, false)["model"]["mode"],
-            "auto"
-        );
+        assert_eq!(project_config(&auto, false)["model"]["mode"], "auto");
 
-        let from_string = agent_config_from_managed("a".into(), &json!({ "model": "gpt-x" }))
-            .expect("string model");
+        let from_string =
+            parse_config("a".into(), &json!({ "model": "gpt-x" })).expect("string model");
         assert_eq!(
             from_string.model_binding.target().unwrap().0.model_id,
             "gpt-x"
         );
 
-        let from_object =
-            agent_config_from_managed("a".into(), &json!({ "model": { "id": "claude" } }))
-                .expect("object model");
+        let from_object = parse_config("a".into(), &json!({ "model": { "id": "claude" } }))
+            .expect("object model");
         assert_eq!(
             from_object.model_binding.target().unwrap().0.model_id,
             "claude"
         );
 
-        let missing = agent_config_from_managed("a".into(), &json!({})).expect("absent model");
+        let missing = parse_config("a".into(), &json!({})).expect("absent model");
         assert!(missing.model_binding.is_auto());
         assert_eq!(
             missing.max_steps,
@@ -541,22 +580,17 @@ mod tests {
         // D1 omitted/null -> shared no-ceiling default; D2 positive -> preserve;
         // D3 zero/negative/fraction/string -> fail, never silently use default.
         for body in [json!({}), json!({"max_steps": null})] {
-            let config = agent_config_from_managed("a".into(), &body).unwrap();
+            let config = parse_config("a".into(), &body).unwrap();
             assert_eq!(config.max_steps, None, "D1");
-            assert!(managed_from_agent_config(&config, false)["max_steps"].is_null());
+            assert!(project_config(&config, false)["max_steps"].is_null());
         }
         for value in [json!(1), json!(40)] {
-            let config =
-                agent_config_from_managed("a".into(), &json!({"max_steps": value})).unwrap();
-            assert_eq!(
-                managed_from_agent_config(&config, false)["max_steps"],
-                value,
-                "D2"
-            );
+            let config = parse_config("a".into(), &json!({"max_steps": value})).unwrap();
+            assert_eq!(project_config(&config, false)["max_steps"], value, "D2");
         }
         for value in [json!(0), json!(-1), json!(1.5), json!("16")] {
             assert!(
-                agent_config_from_managed("a".into(), &json!({"max_steps": value})).is_err(),
+                parse_config("a".into(), &json!({"max_steps": value})).is_err(),
                 "D3"
             );
         }
@@ -571,7 +605,7 @@ mod tests {
         //
         // Decision rule L1: disabled_at and/or archived_at in authoring JSON
         // always project to Published.
-        let config = agent_config_from_managed(
+        let config = parse_config(
             "a".into(),
             &json!({
                 "disabled_at": "2026-07-29T00:00:00Z",
@@ -604,14 +638,9 @@ mod tests {
                 "api_dialect": "open_ai_chat"
             }
         });
-        let config = agent_config_from_managed("target".into(), &json!({ "model": wire.clone() }))
-            .expect("T1");
+        let config = parse_config("target".into(), &json!({ "model": wire.clone() })).expect("T1");
         assert_eq!(config.model_binding.backend_ref(), Some("genai"), "T1");
-        assert_eq!(
-            managed_from_agent_config(&config, false)["model"],
-            wire,
-            "T1"
-        );
+        assert_eq!(project_config(&config, false)["model"], wire, "T1");
 
         let configured = json!({
             "mode": "target",
@@ -620,16 +649,11 @@ mod tests {
             "configuration": { "mode": "plan" }
         });
         let config =
-            agent_config_from_managed("target-acp".into(), &json!({ "model": configured.clone() }))
-                .expect("T2");
-        assert_eq!(
-            managed_from_agent_config(&config, false)["model"],
-            configured,
-            "T2"
-        );
+            parse_config("target-acp".into(), &json!({ "model": configured.clone() })).expect("T2");
+        assert_eq!(project_config(&config, false)["model"], configured, "T2");
 
         assert!(
-            agent_config_from_managed(
+            parse_config(
                 "target-empty".into(),
                 &json!({ "model": { "mode": "target", "backend_ref": "genai", "target": { "model_id": "" } } }),
             )
@@ -639,7 +663,7 @@ mod tests {
 
         // T4 a target the Managed model-id string can spell in full keeps that
         // compatible projection, so object authoring never widens the wire.
-        let config = agent_config_from_managed(
+        let config = parse_config(
             "target-compatible".into(),
             &json!({
                 "model": {
@@ -651,7 +675,7 @@ mod tests {
         )
         .expect("T4");
         assert_eq!(
-            managed_from_agent_config(&config, false)["model"],
+            project_config(&config, false)["model"],
             json!("gpt-5;provider=openai;api=open_ai_chat"),
             "T4"
         );
@@ -672,7 +696,7 @@ mod tests {
         // D4 the untagged Managed `{provider_identity_ref, id, backend_ref}`
         //    pin is NOT this wire and keeps working.
         let rejected = |model: Value| {
-            agent_config_from_managed("m".into(), &json!({ "model": model })).expect_err("rejected")
+            parse_config("m".into(), &json!({ "model": model })).expect_err("rejected")
         };
         assert!(
             rejected(json!({ "mode": "chaos", "backend_ref": "acp:codex" }))
@@ -693,7 +717,7 @@ mod tests {
             .contains("exact model reference must be non-empty"),
             "D3"
         );
-        let pinned = agent_config_from_managed(
+        let pinned = parse_config(
             "pin".into(),
             &json!({
                 "model": {
@@ -718,7 +742,7 @@ mod tests {
         // their section was unusable instead of discovering it from behaviour.
         // C1 a well-formed strategy is kept; C2 a malformed one is an error;
         // C3 an absent/null section stays absent without complaint.
-        let kept = agent_config_from_managed(
+        let kept = parse_config(
             "compaction-ok".into(),
             &json!({ "compaction": { "window": 32_000, "keep_recent": 4 } }),
         )
@@ -729,7 +753,7 @@ mod tests {
             "C1"
         );
         assert!(
-            agent_config_from_managed(
+            parse_config(
                 "compaction-bad".into(),
                 // A console that sends its numbers as strings used to have the
                 // whole section dropped in silence.
@@ -740,14 +764,14 @@ mod tests {
             "C2"
         );
         assert!(
-            agent_config_from_managed("compaction-absent".into(), &json!({}))
+            parse_config("compaction-absent".into(), &json!({}))
                 .expect("C3")
                 .compaction
                 .is_none(),
             "C3"
         );
         assert!(
-            agent_config_from_managed(
+            parse_config(
                 "compaction-null".into(),
                 &json!({ "compaction": Value::Null })
             )
@@ -763,7 +787,7 @@ mod tests {
         // Cause graph / decision table: auto model preserves `{mode:auto}`;
         // config authoring keeps tool ids as ids; both present must keep both
         // effects (Managed wire typing belongs to its repository adapter).
-        let config = agent_config_from_managed(
+        let config = parse_config(
             "a".into(),
             &json!({
                 "model": { "mode": "auto" },
@@ -771,7 +795,7 @@ mod tests {
             }),
         )
         .expect("auto model with config tool");
-        let projected = managed_from_agent_config(&config, true);
+        let projected = project_config(&config, true);
         assert_eq!(projected["model"], json!({ "mode": "auto" }));
         assert_eq!(projected["tools"], json!(["bash"]));
     }
@@ -786,7 +810,7 @@ mod tests {
         // B1 exact backend, no model/provider -> BackendDefault + lossless wire
         // B2 missing backend                -> reject
         // B3 backend plus model/provider    -> reject as ambiguous
-        let config = agent_config_from_managed(
+        let config = parse_config(
             "local-codex".into(),
             &json!({
                 "model": { "mode": "backend_default", "backend_ref": "acp:codex" }
@@ -799,12 +823,12 @@ mod tests {
             "B1"
         );
         assert_eq!(
-            managed_from_agent_config(&config, false)["model"],
+            project_config(&config, false)["model"],
             json!({ "mode": "backend_default", "backend_ref": "acp:codex" }),
             "B1"
         );
         assert!(
-            agent_config_from_managed(
+            parse_config(
                 "invalid".into(),
                 &json!({ "model": { "mode": "backend_default" } }),
             )
@@ -812,7 +836,7 @@ mod tests {
             "B2"
         );
         assert!(
-            agent_config_from_managed(
+            parse_config(
                 "ambiguous".into(),
                 &json!({
                     "model": {
@@ -837,18 +861,13 @@ mod tests {
             }
         });
         let exact =
-            agent_config_from_managed("exact".into(), &json!({ "model": exact_wire.clone() }))
-                .expect("B4");
-        assert_eq!(
-            managed_from_agent_config(&exact, false)["model"],
-            exact_wire,
-            "B4"
-        );
+            parse_config("exact".into(), &json!({ "model": exact_wire.clone() })).expect("B4");
+        assert_eq!(project_config(&exact, false)["model"], exact_wire, "B4");
     }
 
     #[test]
     fn complete_runtime_binding_round_trips_losslessly() {
-        let config = agent_config_from_managed(
+        let config = parse_config(
             "remote".into(),
             &json!({
                 "model": {
@@ -864,7 +883,7 @@ mod tests {
         assert_eq!(binding.identity().1, "remote-model");
         assert_eq!(binding.identity().2, "a2a:https://peer.example/v1/a2a");
 
-        let projected = managed_from_agent_config(&config, false);
+        let projected = project_config(&config, false);
         assert_eq!(projected["model"]["id"], "remote-model");
         assert_eq!(projected["model"]["model_ref"], "remote-model");
         assert_eq!(projected["model"]["provider_identity_ref"], "peer-a");
@@ -876,12 +895,12 @@ mod tests {
 
     #[test]
     fn malformed_context_policy_fails_closed() {
-        assert!(agent_config_from_managed("a".into(), &json!({ "context_policy": 123 })).is_err());
+        assert!(parse_config("a".into(), &json!({ "context_policy": 123 })).is_err());
     }
 
     #[test]
     fn malformed_tool_overrides_fail_closed() {
-        assert!(agent_config_from_managed("a".into(), &json!({ "tool_overrides": 123 })).is_err());
+        assert!(parse_config("a".into(), &json!({ "tool_overrides": 123 })).is_err());
     }
 
     #[test]
@@ -900,7 +919,7 @@ mod tests {
             "max_results": 5,
             "prompt": { "mode": "disabled" }
         });
-        let config = agent_config_from_managed(
+        let config = parse_config(
             "typed-tools".into(),
             &json!({
                 "tool_exposure": exposure.clone(),
@@ -908,11 +927,11 @@ mod tests {
             }),
         )
         .expect("typed policies parse");
-        let projected = managed_from_agent_config(&config, false);
+        let projected = project_config(&config, false);
         assert_eq!(projected["tool_exposure"], exposure);
         assert_eq!(projected["tool_discovery"], discovery);
         assert!(
-            agent_config_from_managed(
+            parse_config(
                 "invalid".into(),
                 &json!({ "tool_discovery": { "max_results": 0 } }),
             )
@@ -931,7 +950,7 @@ mod tests {
                 "permission_policy": { "type": "always_allow" }
             }
         }]);
-        let config = agent_config_from_managed(
+        let config = parse_config(
             "calculator".into(),
             &json!({
                 "model": "test",
@@ -945,7 +964,7 @@ mod tests {
         )
         .expect("typed toolset parses");
         assert_eq!(config.toolsets.len(), 1);
-        assert_eq!(managed_from_agent_config(&config, false)["tools"], tools);
+        assert_eq!(project_config(&config, false)["tools"], tools);
     }
 
     #[test]
@@ -955,7 +974,7 @@ mod tests {
         // E1 C1 reaches the shared mutable AgentConfig authority unchanged; E2 C2
         // returns migration_required before a writable AgentConfig is produced.
         // Decision rows: M1=typed/no legacy -> accepted; M2=legacy -> rejected.
-        let typed = agent_config_from_managed(
+        let typed = parse_config(
             "controlled".into(),
             &json!({
                 "tools": [{
@@ -975,7 +994,7 @@ mod tests {
         .expect("M1/E1");
         assert_eq!(typed.toolsets.len(), 1, "M1/E1");
 
-        let error = agent_config_from_managed(
+        let error = parse_config(
             "legacy".into(),
             &json!({
                 "plugin_config": {
@@ -1003,16 +1022,16 @@ mod tests {
             "type": "url", "name": "docs", "url": "https://docs.example.test/mcp"
         });
         let toolset = json!({ "type": "mcp_toolset", "mcp_server_name": "docs" });
-        assert!(agent_config_from_managed("empty".into(), &json!({})).is_ok());
+        assert!(parse_config("empty".into(), &json!({})).is_ok());
         assert!(
-            agent_config_from_managed(
+            parse_config(
                 "paired".into(),
                 &json!({ "mcp_servers": [server.clone()], "tools": [toolset.clone()] }),
             )
             .is_ok()
         );
         assert!(
-            agent_config_from_managed(
+            parse_config(
                 "missing".into(),
                 &json!({ "mcp_servers": [server.clone()] }),
             )
@@ -1020,12 +1039,12 @@ mod tests {
             .contains("every MCP server must have one mcp_toolset")
         );
         assert!(
-            agent_config_from_managed("dangling".into(), &json!({ "tools": [toolset.clone()] }),)
+            parse_config("dangling".into(), &json!({ "tools": [toolset.clone()] }),)
                 .unwrap_err()
                 .contains("undeclared server")
         );
         assert!(
-            agent_config_from_managed(
+            parse_config(
                 "duplicate".into(),
                 &json!({ "mcp_servers": [server], "tools": [toolset.clone(), toolset] }),
             )
@@ -1042,7 +1061,7 @@ mod tests {
         // Decision rows: known=>normalize; unknown=>error/no AgentConfig.
         // Constraint: validation and normalization share the Session-contract
         // member authority; Config Service cannot admit a parallel tool path.
-        let error = agent_config_from_managed(
+        let error = parse_config(
             "invalid-toolset".into(),
             &json!({
                 "model": "test",
@@ -1058,7 +1077,7 @@ mod tests {
 
     #[test]
     fn compaction_round_trips_for_lossless_editing() {
-        let config = agent_config_from_managed(
+        let config = parse_config(
             "a".into(),
             &json!({
                 "system": "compact carefully",
@@ -1066,7 +1085,7 @@ mod tests {
             }),
         )
         .unwrap();
-        let projected = managed_from_agent_config(&config, false);
+        let projected = project_config(&config, false);
         assert_eq!(projected["compaction"]["window"], json!(32000));
         assert_eq!(projected["compaction"]["keep_recent"], json!(12));
     }
@@ -1092,8 +1111,8 @@ mod tests {
                 "backend_ref": "genai"
             }]
         });
-        let config = agent_config_from_managed("reviewer".into(), &body).expect("C1-C3");
-        let projected = managed_from_agent_config(&config, false);
+        let config = parse_config("reviewer".into(), &body).expect("C1-C3");
+        let projected = project_config(&config, false);
         assert_eq!(projected["inference"], body["inference"], "E1");
         assert_eq!(projected["tool_patterns"], body["tool_patterns"], "E2");
         assert_eq!(
@@ -1106,10 +1125,7 @@ mod tests {
             json!({ "tool_patterns": [7] }),
             json!({ "model_candidates": [{ "model_ref": "missing-identities" }] }),
         ] {
-            assert!(
-                agent_config_from_managed("invalid".into(), &malformed).is_err(),
-                "E4"
-            );
+            assert!(parse_config("invalid".into(), &malformed).is_err(), "E4");
         }
     }
 
@@ -1131,13 +1147,13 @@ mod tests {
                 "max_total": 16
             }
         });
-        let config = agent_config_from_managed("coordinator".into(), &body)
-            .expect("typed collaboration config parses");
+        let config =
+            parse_config("coordinator".into(), &body).expect("typed collaboration config parses");
         assert_eq!(config.delegation_limits.max_depth, 3);
         assert_eq!(config.delegation_limits.max_parallel, 4);
         assert_eq!(config.delegation_limits.max_total, 16);
 
-        let projected = managed_from_agent_config(&config, false);
+        let projected = project_config(&config, false);
         assert_eq!(projected["multiagent"], body["multiagent"]);
         assert_eq!(projected["delegation_limits"], body["delegation_limits"]);
     }
@@ -1145,7 +1161,7 @@ mod tests {
     #[test]
     fn malformed_delegation_limits_fail_closed() {
         assert!(
-            agent_config_from_managed(
+            parse_config(
                 "a".into(),
                 &json!({ "delegation_limits": { "max_depth": "many" } }),
             )
@@ -1155,7 +1171,7 @@ mod tests {
 
     #[test]
     fn attached_auxiliaries_and_explicit_opt_out_do_not_gain_a_roster() {
-        let auxiliary = agent_config_from_managed(
+        let auxiliary = parse_config(
             "lead--research".into(),
             &json!({
                 "system": "research",
@@ -1168,9 +1184,8 @@ mod tests {
         .expect("attached auxiliary");
         assert!(auxiliary.multiagent.is_none());
 
-        let explicitly_disabled =
-            agent_config_from_managed("manual".into(), &json!({ "multiagent": null }))
-                .expect("explicit opt-out");
+        let explicitly_disabled = parse_config("manual".into(), &json!({ "multiagent": null }))
+            .expect("explicit opt-out");
         assert!(explicitly_disabled.multiagent.is_none());
     }
 
@@ -1194,14 +1209,14 @@ mod tests {
     /// exactly what an unknown key cannot claim.
     #[test]
     fn an_unmodelled_authoring_key_is_rejected_rather_than_blanking_a_section() {
-        let accepted = agent_config_from_managed(
+        let accepted = parse_config(
             "a".into(),
             &json!({ "system": "be helpful", "max_steps": 7 }),
         )
         .expect("A1");
         assert_eq!(accepted.instructions, "be helpful", "A1");
 
-        let error = agent_config_from_managed(
+        let error = parse_config(
             "a".into(),
             &json!({ "instructions": "be helpful", "max_steps": 7 }),
         )
@@ -1212,7 +1227,7 @@ mod tests {
             "A2 lists the accepted fields so the author can find `system`: {error}"
         );
 
-        let tolerated = agent_config_from_managed(
+        let tolerated = parse_config(
             "a".into(),
             &json!({
                 "system": "be helpful",
@@ -1234,7 +1249,7 @@ mod tests {
 
         for body in [json!("be helpful"), json!([]), json!(null)] {
             assert!(
-                agent_config_from_managed("a".into(), &body).is_err(),
+                parse_config("a".into(), &body).is_err(),
                 "A5: a non-object body must not build an all-default config: {body}"
             );
         }
@@ -1246,12 +1261,12 @@ mod tests {
     /// into a 400 — the allow-list would have to be remembered by hand.
     #[test]
     fn every_projected_key_survives_a_round_trip() {
-        let config = agent_config_from_managed(
+        let config = parse_config(
             "round-trip".into(),
             &json!({ "system": "be helpful", "name": "Helper" }),
         )
         .expect("seed config");
-        let mut projected = managed_from_agent_config(&config, true);
+        let mut projected = project_config(&config, true);
         // `get_config` adds the concurrency fence to exactly this projection.
         projected
             .as_object_mut()
@@ -1259,7 +1274,7 @@ mod tests {
             .insert("generation".to_string(), json!(1));
 
         reject_unmodelled_keys(&projected).expect("a projected body must be re-authorable");
-        let back = agent_config_from_managed("round-trip".into(), &projected)
+        let back = parse_config("round-trip".into(), &projected)
             .expect("a projected body must parse back");
         assert_eq!(back.instructions, config.instructions);
         assert_eq!(back.name, config.name);

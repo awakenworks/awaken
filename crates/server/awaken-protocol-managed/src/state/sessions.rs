@@ -8,6 +8,23 @@ use awaken_time::WallClockExt as _;
 
 use super::session_mcp_projection::typed_mcp_servers;
 
+fn invalid_tool_configuration(message: String) -> StateError {
+    StateError::Run(RunError::bad_request(message))
+}
+fn damaged_tool_projection(message: String) -> StateError {
+    StateError::Run(RunError::internal(message))
+}
+
+fn managed_tools_override(
+    tools: &[crate::tools::AgentTool],
+) -> Result<awaken_session_application::SessionToolsOverride, StateError> {
+    Ok(awaken_session_application::SessionToolsOverride {
+        configuration: project::session_tool_configuration(tools)
+            .map_err(invalid_tool_configuration)?,
+        clears_all: tools.is_empty(),
+    })
+}
+
 fn managed_archive_command(
     id: &str,
     owner: Option<String>,
@@ -225,7 +242,9 @@ impl ManagedState {
     pub(super) fn apply_persisted_session(
         record: &mut SessionRecord,
         persisted: &PersistedSession,
-    ) {
+    ) -> Result<(), StateError> {
+        let tools =
+            crate::project::managed_tools(&persisted.tools).map_err(damaged_tool_projection)?;
         let mcp_servers = typed_mcp_servers(persisted.configured_mcp_servers());
         record.session.status = Self::wire_session_status(persisted);
         record.session.created_at = super::constants::persisted_time(persisted.created_at_unix_ms);
@@ -235,7 +254,7 @@ impl ManagedState {
         record.session.metadata = persisted.metadata.clone();
         record.session.deployment_id = persisted.metadata.get("awaken.deployment_id").cloned();
         record.session.archived_at = persisted.archived_at().map(str::to_owned);
-        record.session.agent.tools = crate::project::managed_tools(&persisted.tools);
+        record.session.agent.tools = tools;
         record.session.agent.mcp_servers = mcp_servers;
         record.session.budget = persisted
             .budget
@@ -243,6 +262,7 @@ impl ManagedState {
             .map(crate::types::BudgetLimit::from_minor);
         record.resource_state = persisted.resources.clone();
         record.checkpoint.source.session_revision = persisted.revision;
+        Ok(())
     }
 
     /// Publish only Session-root fields after its durable CAS. This is a
@@ -256,7 +276,7 @@ impl ManagedState {
     ) -> Result<(), StateError> {
         let result = self.publish_projection_update(persisted.session_id.as_str(), |candidate| {
             if persisted.revision >= candidate.checkpoint.source.session_revision {
-                Self::apply_persisted_session(candidate, persisted);
+                Self::apply_persisted_session(candidate, persisted)?;
             }
             Ok(())
         });
@@ -430,8 +450,7 @@ impl ManagedState {
         deployment_initial_events: Option<Vec<InboundEvent>>,
         context_seed: Option<awaken_session_configuration_contract::SessionContextSeed>,
     ) -> Result<Session, StateError> {
-        req.validate_common()
-            .map_err(|message| StateError::Run(RunError::bad_request(message)))?;
+        req.validate_common().map_err(invalid_tool_configuration)?;
         // Initial-event admission is atomic with Session creation: validate the
         // complete batch before bind checks, identity allocation, persistence, or
         // Runtime preparation. The shared validator is also used by Deployments.
@@ -442,11 +461,11 @@ impl ManagedState {
                 )));
             }
             crate::types::initial_event::validate_deployment_inbound_initial_events(&events)
-                .map_err(|message| StateError::Run(RunError::bad_request(message)))?;
+                .map_err(invalid_tool_configuration)?;
             events
         } else {
             req.validate_initial_events()
-                .map_err(|message| StateError::Run(RunError::bad_request(message)))?;
+                .map_err(invalid_tool_configuration)?;
             req.initial_events.clone()
         };
         let model_override = match req.agent.model_override() {
@@ -469,12 +488,11 @@ impl ManagedState {
                 .agent
                 .system_override()
                 .map(|system| system.map(str::to_owned)),
-            tools_override: req.agent.tools_override().map(|tools| {
-                awaken_session_application::SessionToolsOverride {
-                    configuration: project::session_tool_configuration(tools),
-                    clears_all: tools.is_empty(),
-                }
-            }),
+            tools_override: req
+                .agent
+                .tools_override()
+                .map(managed_tools_override)
+                .transpose()?,
             skills_override: req.agent.skills_override().map(|skills| {
                 skills
                     .iter()
@@ -542,7 +560,7 @@ impl ManagedState {
                         "fresh Session has no accepted Agent configuration",
                     ))
                 })?;
-        let session = session_from_persisted_root(&persisted, baseline, &configuration);
+        let session = session_from_persisted_root(&persisted, baseline, &configuration)?;
         self.owners
             .lock()
             .unwrap()
@@ -640,11 +658,7 @@ impl ManagedState {
         })?;
         let configuration =
             rehydrated_agent_configuration(self, id, owner_scope, &persisted, baseline, purpose)?;
-        Ok(session_from_persisted_root(
-            &persisted,
-            baseline,
-            &configuration,
-        ))
+        session_from_persisted_root(&persisted, baseline, &configuration)
     }
 
     /// Rebuild only the disposable projection needed to control already-frozen
@@ -964,9 +978,8 @@ impl awaken_session_application::SessionCreateProtocol for ManagedCreateProtocol
         for tool in &capabilities.custom_tools {
             project::validate_custom_tool(tool).map_err(RunError::bad_request)?;
         }
-        Ok(project::session_tool_configuration(&project::agent_tools(
-            capabilities,
-        )))
+        let tools = project::agent_tools(capabilities).map_err(RunError::bad_request)?;
+        project::session_tool_configuration(&tools).map_err(RunError::bad_request)
     }
 
     fn project_before_insert(
@@ -984,6 +997,7 @@ impl awaken_session_application::SessionCreateProtocol for ManagedCreateProtocol
             .state
             .resolved_session_multiagent(owner_scope, profile, capabilities, Some(delegates))
             .map_err(run_error)?;
+        session_agent_from_configuration(&configuration).map_err(run_error)?;
         Ok(configuration)
     }
 }
@@ -995,11 +1009,11 @@ fn session_from_persisted_root(
     persisted: &PersistedSession,
     baseline: &awaken_session_configuration_contract::SessionBaseline,
     configuration: &awaken_session_configuration_contract::SessionAgentConfiguration,
-) -> Session {
-    Session {
+) -> Result<Session, StateError> {
+    Ok(Session {
         id: persisted.session_id.to_string(),
         kind: "session",
-        agent: session_agent_from_configuration(configuration),
+        agent: session_agent_from_configuration(configuration)?,
         budget: persisted
             .budget
             .max_list_cost_minor()
@@ -1017,7 +1031,7 @@ fn session_from_persisted_root(
         usage: Usage::default(),
         vault_ids: baseline.mcp_authoring.ordered_vault_ids.clone(),
         deployment_id: persisted.metadata.get("awaken.deployment_id").cloned(),
-    }
+    })
 }
 
 /// The complete Agent input phase of cold projection. The outer Session
@@ -1148,8 +1162,39 @@ pub(crate) fn agent_configuration_from_profile(
 
 pub(crate) fn session_agent_from_configuration(
     configuration: &awaken_session_configuration_contract::SessionAgentConfiguration,
-) -> SessionAgent {
-    SessionAgent {
+) -> Result<SessionAgent, StateError> {
+    let multiagent = configuration
+        .multiagent
+        .as_ref()
+        .map(|roster| -> Result<_, StateError> {
+            let agents = roster
+                .members
+                .iter()
+                .map(|member| match member {
+                    awaken_session_configuration_contract::SessionAgentRosterMember::Agent(
+                        value,
+                    ) => Ok(crate::types::SessionMultiagentRosterEntry::Agent(
+                        crate::types::SessionThreadAgent::from(&session_agent_from_configuration(
+                            value,
+                        )?),
+                    )),
+                    awaken_session_configuration_contract::SessionAgentRosterMember::Advisor(
+                        model,
+                    ) => Ok(crate::types::SessionMultiagentRosterEntry::Advisor(
+                        crate::types::agent::AdvisorRosterEntry {
+                            model: model.clone(),
+                            kind: crate::types::agent::AdvisorRosterEntryKind::Advisor,
+                        },
+                    )),
+                })
+                .collect::<Result<_, StateError>>()?;
+            Ok(crate::types::SessionMultiagentCoordinator {
+                kind: "coordinator",
+                agents,
+            })
+        })
+        .transpose()?;
+    Ok(SessionAgent {
         id: configuration.agent_id.clone(),
         kind: "agent",
         version: configuration.version,
@@ -1160,7 +1205,7 @@ pub(crate) fn session_agent_from_configuration(
         name: configuration.name.clone(),
         description: configuration.description.clone(),
         system: configuration.system.clone(),
-        tools: project::managed_tools(&configuration.tools),
+        tools: project::managed_tools(&configuration.tools).map_err(damaged_tool_projection)?,
         mcp_servers: typed_mcp_servers(configuration.mcp_servers.clone()),
         skills: configuration
             .skills
@@ -1168,33 +1213,8 @@ pub(crate) fn session_agent_from_configuration(
             .cloned()
             .map(crate::types::agent::AgentSkill::from_binding)
             .collect(),
-        multiagent: configuration.multiagent.as_ref().map(|roster| {
-            crate::types::SessionMultiagentCoordinator {
-                kind: "coordinator",
-                agents: roster
-                    .members
-                    .iter()
-                    .map(|member| match member {
-                        awaken_session_configuration_contract::SessionAgentRosterMember::Agent(value) => {
-                            crate::types::SessionMultiagentRosterEntry::Agent(
-                                crate::types::SessionThreadAgent::from(
-                                    &session_agent_from_configuration(value),
-                                ),
-                            )
-                        }
-                        awaken_session_configuration_contract::SessionAgentRosterMember::Advisor(model) => {
-                            crate::types::SessionMultiagentRosterEntry::Advisor(
-                                crate::types::agent::AdvisorRosterEntry {
-                                    model: model.clone(),
-                                    kind: crate::types::agent::AdvisorRosterEntryKind::Advisor,
-                                },
-                            )
-                        }
-                    })
-                    .collect(),
-            }
-        }),
-    }
+        multiagent,
+    })
 }
 
 #[cfg(test)]

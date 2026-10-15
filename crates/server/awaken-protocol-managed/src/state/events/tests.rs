@@ -4989,7 +4989,8 @@ async fn stale_session_root_cannot_roll_back_the_managed_cache() {
         let sessions = state.sessions.lock().unwrap();
         let record = sessions.get(&session.id).unwrap();
         let mut candidate = record.clone();
-        ManagedState::apply_persisted_session(&mut candidate, persisted);
+        ManagedState::apply_persisted_session(&mut candidate, persisted)
+            .expect("valid projection fixture");
         (record.cache_revision, candidate)
     };
     let (base_revision, candidate) = projection_candidate(&current);

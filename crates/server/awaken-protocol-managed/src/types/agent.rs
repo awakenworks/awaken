@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use awaken_session_configuration_contract::AgentTool;
+use crate::tools::AgentTool;
 
 use crate::types::{ModelConfig, ModelConfigParams};
 

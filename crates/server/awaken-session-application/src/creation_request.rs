@@ -206,6 +206,35 @@ fn capture_accepted_delegates(
     Ok(accepted_delegates)
 }
 
+fn compile_creation_tools<P: SessionCreateProtocol + ?Sized>(
+    compiler: &dyn awaken_tool_contract::ToolConfigurationCompiler,
+    profile: Option<&ExecutableAgentSessionProfile>,
+    capabilities: &AgentCapabilities,
+    protocol: &P,
+    tools_override: Option<SessionToolsOverride>,
+) -> Result<(SessionToolConfiguration, bool), RunError> {
+    let capability_tools = protocol.capability_tools(capabilities)?;
+    let inherited_tools = profile.map_or_else(
+        || capability_tools.clone(),
+        |profile| SessionToolConfiguration {
+            toolsets: if profile.toolsets.is_empty() {
+                capability_tools.toolsets.clone()
+            } else {
+                profile.toolsets.clone()
+            },
+            client_tools: profile.client_tools.clone(),
+        },
+    );
+    let clears_all_tools = tools_override
+        .as_ref()
+        .is_some_and(|tools| tools.clears_all);
+    let tools = tools_override
+        .map(|tools| tools.configuration)
+        .unwrap_or(inherited_tools);
+    let tools = crate::tool_compilation::compile_tool_settings(compiler, tools)?;
+    Ok((tools, clears_all_tools))
+}
+
 impl SessionApplication {
     /// Retire the Repository participants a failed request configured; a
     /// compensation that cannot finish is left to terminal reconciliation.
@@ -338,6 +367,14 @@ impl SessionApplication {
             ))
             .into());
         }
+        let capabilities = self.capabilities_for(&session_id);
+        let (tools, clears_all_tools) = compile_creation_tools(
+            self.tool_configuration_compiler.as_ref(),
+            profile.as_ref(),
+            &capabilities,
+            protocol,
+            tools_override,
+        )?;
         let agent_defaults = profile
             .as_ref()
             .map(|profile| profile.resources.as_slice())
@@ -524,8 +561,6 @@ impl SessionApplication {
         };
         // Validate the advertised tool surface before persisting an activation
         // or touching a Host. A definition error cannot strand Prepared inputs.
-        let capabilities = self.capabilities_for(&session_id);
-        let capability_tools = protocol.capability_tools(&capabilities)?;
         if profile.is_none() {
             accepted_delegates.extend(capabilities.delegates.iter().map(|id| {
                 (
@@ -534,23 +569,6 @@ impl SessionApplication {
                 )
             }));
         }
-        let inherited_tools = profile.as_ref().map_or_else(
-            || capability_tools.clone(),
-            |profile| SessionToolConfiguration {
-                toolsets: if profile.toolsets.is_empty() {
-                    capability_tools.toolsets.clone()
-                } else {
-                    profile.toolsets.clone()
-                },
-                client_tools: profile.client_tools.clone(),
-            },
-        );
-        let clears_all_tools = tools_override
-            .as_ref()
-            .is_some_and(|tools| tools.clears_all);
-        let tools = tools_override
-            .map(|tools| tools.configuration)
-            .unwrap_or(inherited_tools);
         let skills_configured = skills
             .as_ref()
             .map_or(!capabilities.skills.is_empty(), |skills| !skills.is_empty());

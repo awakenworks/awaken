@@ -607,6 +607,7 @@ async fn local_managed_state_over(
                 .dispatch_observation_source()
                 .expect("fixture canonical dispatch feed"),
         ),
+        std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
     .configuration(
         awaken_session_application::SessionApplicationConfiguration {

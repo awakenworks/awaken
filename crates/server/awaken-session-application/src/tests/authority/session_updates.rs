@@ -87,6 +87,7 @@ async fn mixed_update_commits_one_receipted_root_before_realization_and_replays_
         realizer.clone(),
         crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
+        Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
     .build()
     .expect("valid fixture Session application");

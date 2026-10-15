@@ -15,6 +15,7 @@ fn timed_application(
         Arc::new(NoopMcpRealizer),
         SessionPersistence::new(repo, Arc::new(ManualClock::new(now))),
         Arc::new(RecordingEnvironmentSource::default()),
+        std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
     .configuration(SessionApplicationConfiguration {
         execution_placement: SessionExecutionPlacement::RegisteredWorker,

@@ -43,6 +43,7 @@ EXPECTED = {
     "cancelled_input_never_enters_the_model",
     "asynchronous_approval_resumes_the_committed_ticket",
     "filesystem_restart_reads_receipt_and_replays_terminal_without_a_model",
+    "web_policy_configuration_remains_usable_through_sdk_reexports",
 }
 
 
@@ -120,7 +121,7 @@ def self_test() -> None:
                     gate.replace(invocation, 'if [ "$mode" = "--full" ]; then\n' + invocation + '\nfi')):
         assert admission_errors(owner, changed)
     passing = "\n".join(f"test {name} ... ok" for name in sorted(EXPECTED))
-    summary = "\ntest result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out"
+    summary = f"\ntest result: ok. {len(EXPECTED)} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out"
     validate_task_evidence(passing + summary)
     for invalid in (
         passing.split("\n", 1)[1] + summary,
@@ -439,7 +440,7 @@ class SdkConsumerTests(unittest.TestCase):
         elif metadata_cause == "shape":
             metadata = {}
         passing = "\n".join(f"test {name} ... ok" for name in sorted(EXPECTED))
-        output = passing + "\ntest result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n"
+        output = passing + f"\ntest result: ok. {len(EXPECTED)} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n"
         if qualification == "semver":
             # Pinned tool output is fixture data for the record validator;
             # it is not an implementation of Cargo or a real SemVer receipt.
@@ -470,7 +471,7 @@ class SdkConsumerTests(unittest.TestCase):
             next(tool for tool in tool_manifest["tools"] if tool["name"] == "cargo-semver-checks").pop("version")
 
         def run(command, **arguments):
-            program = Path(command[0]).name
+            program = Path(command[0]).name.casefold().removesuffix(".exe")
             if program not in ("cargo", "cargo-semver-checks"):
                 return actual_run(command, **arguments)
             if program == "cargo":
@@ -480,7 +481,7 @@ class SdkConsumerTests(unittest.TestCase):
                 self.assertEqual(command[1:], ["semver-checks", "--version"])
             current_phase = ("package" if command[1] == "+1.96.0" else
                              "tool" if program == "cargo-semver-checks" else command[1])
-            calls.append(command)
+            calls.append([program, *command[1:]])
             if mutation and current_phase == phase:
                 if mutation == "working":
                     (root / "tracked.txt").write_text("after\n")
@@ -511,6 +512,8 @@ class SdkConsumerTests(unittest.TestCase):
         with mock.patch.object(sys.modules[__name__], "ROOT", root), \
                 mock.patch.object(sys.modules[__name__], "MANIFEST", manifest), \
                 mock.patch.object(rust_test_plan, "ROOT", root), \
+                mock.patch.dict(os.environ, CARGO_TARGET_DIR=str(root / "target"),
+                                CARGO_BUILD_BUILD_DIR=str(root / "target")), \
                 mock.patch.object(subprocess, "run", side_effect=run), \
                 mock.patch.object(gate_tools, "load", return_value=tool_manifest), \
                 mock.patch.object(gate_tools, "locate", return_value=gate_tools.Found(
@@ -519,7 +522,7 @@ class SdkConsumerTests(unittest.TestCase):
             return run_consumer(qualification=qualification, baseline_rev=baseline_rev or ""), calls
 
     def test_original_argv_and_environment_reach_both_commands(self):
-        # E1 valid independent metadata + all seven tasks -> 0. Retain the exact
+        # E1 valid independent metadata + all declared tasks -> 0. Retain the exact
         # manifest/no-deps/locked/test target/literal -- argv and BUILD=TARGET;
         # no workspace full features or a companion may enter this SDK graph.
         with tempfile.TemporaryDirectory() as temporary:
@@ -754,6 +757,9 @@ class SdkConsumerTests(unittest.TestCase):
             outer = Path(temporary)
             empty = outer / "not-a-repository"
             empty.mkdir()
+            # TMP may live inside the caller's checkout. An unresolved local
+            # marker makes this a real Git128 source instead of finding its parent.
+            (empty / ".git").write_text("gitdir: missing-git-directory\n")
             status, calls = self.execute(empty)
             self.assertEqual((status, calls), (128, []))
             root = self.repository(outer)
@@ -805,7 +811,7 @@ def main() -> int:
     if qualification:
         print(f"SDK {qualification} qualification: all selected SDK crates passed both Linux feature subjects")
     else:
-        print("SDK consumer: all seven task cases passed in an independent minimal-feature workspace")
+        print(f"SDK consumer: all {len(EXPECTED)} task cases passed in an independent minimal-feature workspace")
     return 0
 
 

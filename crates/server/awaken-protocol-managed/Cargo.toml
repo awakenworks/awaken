@@ -30,7 +30,7 @@ test-support = [
 ]
 
 [dependencies]
-awaken-tool-contract.workspace = true
+awaken-web-policy-contract.workspace = true
 awaken-data-subject-application.workspace = true
 # The content-capture decision kernel and its policy sources (ADR-0050 D8): the
 # Session `content_capture` projection reports the decision its Runs make.
@@ -153,6 +153,7 @@ required-features = ["test-support"]
 
 [dev-dependencies]
 awaken-store-conformance.workspace = true
+awaken-tool-contract.workspace = true
 # Draws long committed histories for the timeline's schedule-independence property.
 proptest.workspace = true
 async-trait.workspace = true

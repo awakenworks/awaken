@@ -197,6 +197,7 @@ async fn first_admission_waits_for_real_cas_and_returns_the_durable_winner_after
         Arc::new(NoopMcpRealizer),
         persistence,
         Arc::new(RecordingEnvironmentSource::default()),
+        std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
     .build()
     .expect("valid fixture Session application");
