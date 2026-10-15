@@ -187,7 +187,7 @@ impl awaken_dispatch_contract::DispatchControlReads for SqliteDispatchStore {
 }
 
 #[async_trait]
-impl awaken_dispatch_contract::SessionRunReservations for SqliteDispatchStore {
+impl awaken_dispatch_contract::SessionRunAdmissionReads for SqliteDispatchStore {
     async fn observe_session_run_admission(
         &self,
         run_id: &RunId,
@@ -210,7 +210,10 @@ impl awaken_dispatch_contract::SessionRunReservations for SqliteDispatchStore {
         }
         Ok(SessionRunAdmissionObservation::Missing)
     }
+}
 
+#[async_trait]
+impl awaken_dispatch_contract::SessionRunReservations for SqliteDispatchStore {
     async fn reserve_session_run(
         &self,
         request: RunDispatch,

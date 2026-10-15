@@ -30,6 +30,7 @@ must pretend to implement. Select the smallest role required by a consumer:
 | Local executor | `LocalWorkerDispatch`, including the two exact epoch fences |
 | Terminal discovery | `TerminalRecoveryDispatch` |
 | Attempt evidence reader | `PhysicalAttemptReads` |
+| Original Run input reader | `SessionRunAdmissionReads` |
 | Reservation writer | `SessionRunReservations` |
 | Reservation fence holder | `SessionReservationAuthority` |
 | Local scheduling service | Execution-owned `ControlDispatch` bundle |
@@ -39,6 +40,13 @@ The remaining leaf roles cover claims, execution, claim ownership, commit
 authority, settlement, ordinary reads, maintenance, attempt control, control
 claims and control reads. `InboxRead` is separate from Inbox writes. Role
 bundles live with their consumers; the existing contract crate owns the leaves.
+
+`SessionRunAdmissionReads` extracts the existing original-request/completion
+query from reservation commands. Memory, SQLite, PostgreSQL and the Coordinator
+erasure delegate to the same original implementation. A reader receives no
+reserve, activate, reject, enqueue or lease authority. Missing and legacy facts
+remain unknown; the query cannot mint a replay or recovery admission. Existing
+reservation writers inherit this read role and keep their command semantics.
 
 Physical Install and Replace retain an `AttemptAdmitted` operation in the same
 Dispatch transaction as their slot mutation. The existing operational feed
@@ -66,6 +74,15 @@ unaligned or reordered history, and duplicate coverage, cannot acquire a
 response-only footprint through a weaker second parser. The recovery query also
 retains its independent refusal of any recorded tool batch or tool-use message.
 This consolidation supplies neither historical containment nor a cleanup receipt.
+
+An already-closing Dispatch entry does not imply that the original Worker exit
+has been observed or retained. When complete-attempt evidence is missing,
+unavailable or unknown, the same stop-admission owner can still use
+`independently_close_worker` to observe that exact expired/closed incarnation,
+commit its Registry exit and release its provider evidence. Live Workers remain
+protected. Exact complete-attempt evidence keeps its existing retirement path
+without requiring a whole Worker stop; missing complete evidence still retains
+the original physical slot and every external obligation.
 
 Local composition constructs `AnyCoordinatorDispatch` from an owner implementing
 `DurableDispatch`, then uses `DispatchBinding::local`. Its cached Worker view

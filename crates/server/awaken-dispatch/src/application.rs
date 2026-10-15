@@ -595,6 +595,7 @@ async fn close_original_attempt(
     mut predecessor: crate::PhysicalAttempt,
     now_ms: u64,
 ) -> Result<Option<WorkerProcessStopStatus>, ApplicationError> {
+    let entry_was_closing = predecessor.closing;
     let Some(binding) = predecessor.binding.clone() else {
         return Ok(None);
     };
@@ -639,50 +640,71 @@ async fn close_original_attempt(
     {
         return Ok(Some(observation));
     }
-    let (Some(recovery), Some(thread_id)) = (recovery, predecessor.thread_id.as_ref()) else {
-        return Ok(Some(observation));
-    };
-    let snapshot = recovery.snapshot_for(&predecessor).await?;
-    if snapshot.thread_id != *thread_id || snapshot.claimed_run_id != predecessor.claim.run_id {
-        return Err(ApplicationError::internal(
-            "recovery source returned another physical attempt subject",
-        ));
-    }
-    // Snapshot IO can race an exact closure and a newly admitted successor.
-    // Never issue the old domain stop after its physical identity has changed.
-    if dispatch
-        .load_physical_attempt(&predecessor.claim.run_id)
-        .await
-        .map_err(|error| ApplicationError::unavailable(error.to_string()))?
-        .as_ref()
-        != Some(&predecessor)
-    {
-        return Ok(Some(observation));
-    }
-    let stopped = source
-        .close_attempt_execution(
-            &ClosedAttemptExecution {
-                attempt: predecessor.clone(),
-                process_exit,
-            },
-            &snapshot,
-        )
-        .await?;
-    if let AttemptStopStatus::Stopped(receipt) = &stopped {
-        if receipt.attempt() != &predecessor {
+    let scope_progress: Result<bool, ApplicationError> = async {
+        let (Some(recovery), Some(thread_id)) = (recovery, predecessor.thread_id.as_ref()) else {
+            return Ok(false);
+        };
+        let snapshot = recovery.snapshot_for(&predecessor).await?;
+        if snapshot.thread_id != *thread_id || snapshot.claimed_run_id != predecessor.claim.run_id {
             return Err(ApplicationError::internal(
-                "closure evidence names another physical attempt",
+                "recovery source returned another physical attempt subject",
             ));
         }
-        // The closing phase denies normal return/handoff during provider IO.
-        // Exact Coordinator closure still cannot clear a successor's slot.
-        let retirement = dispatch
-            .finish_attempt_closure(receipt.record())
+        // Snapshot IO can race exact closure and a newly admitted successor.
+        // Never issue the old stop after its physical identity has changed.
+        if dispatch
+            .load_physical_attempt(&predecessor.claim.run_id)
             .await
-            .map_err(|error| ApplicationError::unavailable(error.to_string()))?;
-        tracing::debug!(?retirement, kind = ?receipt.kind(), "independently closed physical attempt");
+            .map_err(|error| ApplicationError::unavailable(error.to_string()))?
+            .as_ref()
+            != Some(&predecessor)
+        {
+            return Ok(false);
+        }
+        let stopped = source
+            .close_attempt_execution(
+                &ClosedAttemptExecution {
+                    attempt: predecessor.clone(),
+                    process_exit,
+                },
+                &snapshot,
+            )
+            .await?;
+        if let AttemptStopStatus::Stopped(receipt) = &stopped {
+            if receipt.attempt() != &predecessor {
+                return Err(ApplicationError::internal(
+                    "closure evidence names another physical attempt",
+                ));
+            }
+            // Closing denies normal return/handoff during provider IO. Exact
+            // closure cannot clear a successor's slot.
+            let retirement = dispatch
+                .finish_attempt_closure(receipt.record())
+                .await
+                .map_err(|error| ApplicationError::unavailable(error.to_string()))?;
+            tracing::debug!(?retirement, kind = ?receipt.kind(), "independently closed physical attempt");
+            return Ok(true);
+        }
+        Ok(false)
     }
-    Ok(Some(observation))
+    .await;
+    if matches!(scope_progress, Ok(true)) {
+        return Ok(Some(observation));
+    }
+    // Entry closure and an independent Worker exit are separate facts. A prior
+    // close/crash must not suppress observing the original process. Reuse the
+    // same guarded helper while the complete scope remains unproven; never
+    // retire the physical slot from this local-only observation. A complete
+    // source above keeps its existing path without a whole Worker stop.
+    let local = if entry_was_closing {
+        independently_close_worker(dispatch, directory, source, &predecessor, &binding, now_ms)
+            .await?
+    } else {
+        None
+    };
+    // Preserve a full-scope failure even if independent local facts progressed.
+    scope_progress?;
+    Ok(local.or(Some(observation)))
 }
 
 async fn ensure_worker_closed(

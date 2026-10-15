@@ -462,9 +462,17 @@ pub trait DispatchMaintenance: Send + Sync {
     async fn purge_dead_letters_before(&self, cutoff_ms: u64) -> Result<usize, DispatchError>;
 }
 
-/// Coordinator reservation and Session-child admission commands.
+/// Read the original Run request or completion from its Coordinator authority.
+/// This role grants neither reservation mutation nor recovery admission.
+///
+/// ```compile_fail,E0599
+/// use awaken_dispatch_contract::{RunDispatch, SessionRunAdmissionReads};
+/// async fn mutate(reader: &dyn SessionRunAdmissionReads, request: RunDispatch) {
+///     reader.reserve_session_run(request, 1).await;
+/// }
+/// ```
 #[async_trait]
-pub trait SessionRunReservations: SessionReservationAuthority {
+pub trait SessionRunAdmissionReads: Send + Sync {
     /// Observe this exact Run's original request or retained completion in one
     /// store snapshot. This never claims, writes, consumes a cursor or authorizes
     /// replay. Missing is not historical nonexecution; legacy absent fields stay
@@ -476,7 +484,11 @@ pub trait SessionRunReservations: SessionReservationAuthority {
         &self,
         run_id: &RunId,
     ) -> Result<SessionRunAdmissionObservation, DispatchError>;
+}
 
+/// Coordinator reservation and Session-child admission commands.
+#[async_trait]
+pub trait SessionRunReservations: SessionReservationAuthority + SessionRunAdmissionReads {
     /// Persist one complete self-affine Session Run intent without making it
     /// claimable. The store applies this TTL using its own clock, granting an
     /// exclusive window to commit the Session activity and activate this row.
