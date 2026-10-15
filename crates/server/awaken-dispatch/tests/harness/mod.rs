@@ -1446,11 +1446,10 @@ impl awaken_dispatch::Outbox for FlakyDispatchStore {
 use sqlx::Executor;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 
-/// The test database URL: `AWAKEN_TEST_DATABASE_URL`, or the local dev container.
+/// The explicitly admitted `AWAKEN_TEST_DATABASE_URL` for an active fixture.
 pub fn database_url() -> String {
-    std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
-    })
+    awaken_reliability_testkit::postgres_fixture_url()
+        .expect("PostgreSQL schema URL requires an admitted fixture")
 }
 
 /// A configured gate must fail; only an optional developer probe may skip.
@@ -1470,9 +1469,13 @@ pub fn postgres_connection_result<T>(
 }
 
 pub async fn pool() -> Option<PgPool> {
+    let url = awaken_reliability_testkit::postgres_fixture_url()?;
     postgres_connection_result(
-        PgPool::connect(&database_url()).await,
-        std::env::var_os("AWAKEN_TEST_DATABASE_URL").is_some(),
+        PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_secs(5))
+            .connect(&url)
+            .await,
+        true,
         |message| println!("{message}"),
     )
 }
@@ -1490,7 +1493,7 @@ pub fn database_url_in_schema(schema: &str) -> String {
 /// collide on the runtime's fixed table names. The production store takes no
 /// table prefix (one runtime is one component); test isolation lives entirely in
 /// the test, via `search_path` — it never leaks into the store's API. Returns
-/// `None` (skip) when no Postgres is reachable.
+/// `None` for an absent optional fixture.
 pub async fn schema_pool(schema: &'static str) -> Option<PgPool> {
     let admin = pool().await?;
     let _ = admin

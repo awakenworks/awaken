@@ -1,6 +1,6 @@
 //! The commit schema bundle is portable, but "portable" only means anything if it
 //! actually APPLIES on a real backend. These tests run the bundle end-to-end:
-//! embedded SQLite (always) and a real Postgres (skip-on-unreachable), asserting
+//! embedded SQLite (always) and an explicitly configured Postgres, asserting
 //! the tables materialize with the token vocabulary expanded to each dialect's
 //! concrete column types, plus a v1→full forward migration through the ledger.
 //!
@@ -443,18 +443,11 @@ async fn sqlite_failed_migration_rolls_back_schema_and_ledger()
 #[tokio::test]
 async fn every_postgres_historical_prefix_migrates_to_full() {
     use sqlx::Executor;
-    use sqlx::postgres::PgPool;
 
-    let url = std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
-    });
-    let admin = match PgPool::connect(&url).await {
-        Ok(pool) => pool,
-        Err(error) => {
-            println!("[skip] no Postgres reachable: {error}");
-            return;
-        }
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
+        return;
     };
+    let admin = awaken_reliability_testkit::postgres_fixture_pool(&url).await;
     let full = commit_bundle().expect("bundle builds");
     for prefix_len in 0..=full.migrations().len() {
         let schema = format!("t_schema_history_{prefix_len}");
@@ -666,18 +659,11 @@ async fn postgres_v10_canonicalizes_historical_kinds_and_rolls_back_as_one_unit(
 #[tokio::test]
 async fn bundle_applies_on_real_postgres() {
     use sqlx::Row;
-    use sqlx::postgres::PgPool;
 
-    let url = std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
-    });
-    let admin = match PgPool::connect(&url).await {
-        Ok(pool) => pool,
-        Err(err) => {
-            println!("[skip] no Postgres reachable: {err}");
-            return;
-        }
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
+        return;
     };
+    let admin = awaken_reliability_testkit::postgres_fixture_pool(&url).await;
     // Isolate in a fresh schema so this never collides with other suites.
     let schema = "t_schema_apply";
     use sqlx::Executor;

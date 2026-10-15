@@ -336,6 +336,7 @@ dependencies = [
  "awaken-credential-vault",
  "awaken-model-catalog",
  "awaken-provisioning-contract",
+ "awaken-reliability-testkit",
  "awaken-runtime-contract",
  "awaken-scoped-migration",
  "awaken-sql-storage",
@@ -518,6 +519,7 @@ dependencies = [
  "awaken-protocol-mcp",
  "awaken-provider-genai",
  "awaken-provisioning-contract",
+ "awaken-reliability-testkit",
  "awaken-resource-application",
  "awaken-resource-contract",
  "awaken-resource-persistence",
@@ -1429,6 +1431,7 @@ dependencies = [
  "awaken-durable-projection",
  "awaken-executable-agent-contract",
  "awaken-outbound-http",
+ "awaken-reliability-testkit",
  "awaken-resource-contract",
  "awaken-resource-store",
  "awaken-runtime-contract",
@@ -1467,6 +1470,7 @@ dependencies = [
  "awaken-executable-environment-contract",
  "awaken-outbound-http",
  "awaken-provisioning-contract",
+ "awaken-reliability-testkit",
  "awaken-scoped-migration",
  "awaken-service-auth-contract",
  "awaken-sql-storage",
@@ -2307,6 +2311,7 @@ dependencies = [
  "awaken-sql-storage",
  "serde_json",
  "sqlx",
+ "tokio",
  "tracing",
 ]
 
@@ -3505,6 +3510,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-reliability-testkit",
  "awaken-scoped-migration",
  "awaken-sql-storage",
  "awaken-store-conformance",
@@ -3521,6 +3527,7 @@ dependencies = [
 name = "awaken-store-schema"
 version = "1.0.0"
 dependencies = [
+ "awaken-reliability-testkit",
  "awaken-scoped-migration",
  "awaken-sql-storage",
  "sqlx",
