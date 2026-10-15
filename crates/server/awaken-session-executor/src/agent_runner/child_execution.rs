@@ -1114,7 +1114,9 @@ mod tests {
             Ok(_) => panic!("R4 malformed child configuration must fail closed"),
         };
         assert!(
-            error.to_string().contains("invalid web_fetch"),
+            error
+                .to_string()
+                .starts_with("unexpected [invalid_web_configuration_shape]:"),
             "R4/E3: {error}"
         );
         assert_eq!(malformed_inferences.load(Ordering::SeqCst), 0, "R4/E3");
