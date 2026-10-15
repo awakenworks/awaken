@@ -4,9 +4,9 @@
 
 use super::credential_capabilities::model_realization_capability;
 use super::{HostError, RunActivation};
-use crate::session_environment::requires_local_environment;
 use awaken_dispatch_contract::PlacementRequirements;
 use awaken_runtime_contract::CredentialMaterialSource;
+use awaken_session_realization_contract::requires_local_environment;
 use std::collections::BTreeSet;
 
 pub(super) fn worker_local_credentials(
@@ -195,9 +195,10 @@ pub fn remote_worker_placement(
             .filter(|mode| *mode != awaken_tool_contract::tool::ToolRecoveryMode::NeverReplay)
             .collect();
     let requires_local_environment = requires_local_environment(models);
-    let requires_opaque_process = crate::provisioning::model_candidates_require_opaque_process(
-        std::iter::once(&models.model_binding).chain(models.model_candidates.iter()),
-    );
+    let requires_opaque_process =
+        awaken_session_realization_contract::model_candidates_require_opaque_process(
+            std::iter::once(&models.model_binding).chain(models.model_candidates.iter()),
+        );
     apply_session_physical_placement(
         &mut placement,
         environment,

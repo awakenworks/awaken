@@ -22,7 +22,12 @@ use std::sync::Arc;
 
 use futures_util::StreamExt as _;
 
+use crate::session_realizations::ResourcePreparation;
 use awaken_dispatch_contract::RunClaim;
+use awaken_session_realization_contract::CanonicalSessionProjection;
+use awaken_session_realization_contract::{
+    FrozenSessionProjection, ObservedSessionRealizationLease,
+};
 
 #[cfg(test)]
 pub(crate) use realization_renewal::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS;
@@ -709,14 +714,13 @@ impl crate::SharedHost {
     async fn install_frozen_session_projection_with_resource_authority(
         &self,
         thread: &str,
-        projection: awaken_session_realization_contract::FrozenSessionProjection,
+        projection: FrozenSessionProjection,
         claim: Option<&RunClaim>,
         resource_mode: FrozenResourceProjectionMode,
-        realization_lease: Option<
-            awaken_session_realization_contract::ObservedSessionRealizationLease,
-        >,
+        realization_lease: Option<ObservedSessionRealizationLease>,
     ) -> Result<(), crate::HostError> {
-        let exec = &self.realizer.environments;
+        let realizer = &self.realizer;
+        let exec = &realizer.environments;
         let sessions = &exec.sessions;
         if projection.baseline.fingerprint.0.trim().is_empty() {
             return Err(crate::HostError::internal(
@@ -733,7 +737,7 @@ impl crate::SharedHost {
         let resource_transition = projection
             .resource_transition(resource_mode.transition_use())
             .map_err(|error| crate::HostError::internal(error.to_string()))?;
-        let baseline = baseline_projection(&projection.baseline);
+        let baseline = projection.baseline.clone();
         let init = projection.session_init();
         let environment_projection = crate::provisioning::project_environment(&init.environment);
         // Complete projection installation owns the Resource suffix lock from
@@ -745,12 +749,13 @@ impl crate::SharedHost {
         let receipt =
             crate::installed_session::FrozenProjectionReceipt::from_projection(&projection)?;
         sessions.update_realization(thread, |r| r.validate_projection_receipt(&receipt))?;
-        let (publication, model_candidate) = self.resolve_canonical_session_projection(
-            &projection.workspace_id,
-            crate::session_environment::CanonicalSessionProjection::Baseline(&projection.baseline),
-            projection.agent_publication.clone(),
-            Some(projection.resources.skills()),
-        )?;
+        let (publication, model_candidate) =
+            realizer.publication.resolve_canonical_session_projection(
+                &projection.workspace_id,
+                CanonicalSessionProjection::Baseline(&projection.baseline),
+                projection.agent_publication.clone(),
+                Some(projection.resources.skills()),
+            )?;
         if let Some(asserted) = &publication
             && sessions
                 .frozen(thread)
@@ -897,9 +902,7 @@ impl crate::SharedHost {
         let preparation = if resource_mode.synchronizes() && projection.resource_revision > 0 {
             realization_lease
                 .as_ref()
-                .map(|lease| {
-                    realization_renewal::ResourcePreparation::begin(self, thread, lease.clone())
-                })
+                .map(|lease| ResourcePreparation::begin(&exec.execution, thread, lease.clone()))
                 .transpose()?
         } else {
             None
@@ -943,7 +946,7 @@ impl crate::SharedHost {
                     pending_resource_reservation,
                 )?;
                 if let Some(preparation) = &preparation {
-                    preparation.finish(slot)?;
+                    preparation.finish(&mut slot.realization)?;
                 } else if let Some(lease) = realization_lease {
                     if !slot.realization.install_lease(lease) {
                         return Err(crate::HostError::internal(
@@ -1058,24 +1061,6 @@ impl crate::SharedHost {
         })
     }
 
-    pub(crate) fn thread_session_mounts(
-        &self,
-        thread: &str,
-    ) -> Vec<awaken_provisioning_contract::MountRequirement> {
-        self.installed_sessions
-            .read(thread, |slot| {
-                crate::provisioning::project_session_mounts(
-                    slot.realization.resources.mounts.clone(),
-                    slot.inputs
-                        .baseline
-                        .as_ref()
-                        .map(|baseline| baseline.mounts.as_slice()),
-                    slot.realization.content_delivery,
-                )
-            })
-            .unwrap_or_default()
-    }
-
     /// Return the exact credential-custody profile frozen in this Session's
     /// Environment. Inference admission uses this projection only when the
     /// immutable Agent publication constrains a plaintext boundary without
@@ -1099,12 +1084,6 @@ impl crate::SharedHost {
             .prompts(thread, None, false, true)
             .expect("test Native prompt projection")
     }
-}
-
-pub(crate) fn baseline_projection(
-    baseline: &awaken_session_configuration_contract::SessionBaseline,
-) -> crate::frozen_inputs::FrozenBaselineInputs {
-    baseline.clone()
 }
 
 #[cfg(test)]

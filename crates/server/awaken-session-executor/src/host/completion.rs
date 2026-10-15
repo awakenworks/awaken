@@ -8,7 +8,6 @@
 #[cfg(test)]
 use super::placement::remote_worker_placement;
 use super::*;
-pub(crate) use crate::session_environment::requires_local_environment;
 #[cfg(test)]
 use awaken_dispatch_contract::{
     HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,

@@ -45,9 +45,11 @@ impl SharedHost {
         candidate: &UnboundSessionEnvironment,
     ) -> Result<BoundSessionEnvironmentIdentity, HostError> {
         let effect = self
+            .realizer
             .authorize_environment_effect_before_io(thread, candidate.ordinary_intent()?)
             .await?;
-        self.persist_authorized_environment_before_publish(thread, candidate, &effect)
+        self.realizer
+            .persist_authorized_environment_before_publish(thread, candidate, &effect)
             .await
             .map_err(|failure| failure.error)
     }

@@ -84,6 +84,7 @@ RUNTIME_REPOSITORY_PUBLICATION = (
 RUNTIME_HOST_TERMINAL = (
     "crates/server/awaken-session-executor/src/host/session/environment_lifecycle.rs"
 )
+RUNTIME_BOUND_ENVIRONMENT = "crates/server/awaken-session-executor/src/bound_environment.rs"
 RUNTIME_HOST_TERMINAL_PREPARATION = (
     "crates/server/awaken-session-executor/src/host/session/"
     "environment_lifecycle/terminal_preparation.rs"
@@ -296,6 +297,10 @@ REQUIRED = {
         "SessionRepositoryPublicationEffect::Rejected(",
     ),
     RUNTIME_HOST_TERMINAL: (),
+    RUNTIME_BOUND_ENVIRONMENT: (
+        "fn install_bound_environment_under_lifecycle(",
+        "fn prepare_bound_environment_for_effect_under_lifecycle(",
+    ),
     RUNTIME_HOST_TERMINAL_PREPARATION: (
         ".sandbox_disposal_authorization_for_current_generation(&current)",
     ),
@@ -707,13 +712,35 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
     )
     errors.extend(
         _require_ordered_function(
-            sources, RUNTIME_HOST_TERMINAL_PREPARATION,
+            sources, RUNTIME_BOUND_ENVIRONMENT,
             "install_bound_environment_under_lifecycle",
-            ("self.realizer.execution.provider_effect_authority(",
+            ("self.execution.provider_effect_authority(",
              ".prepare_terminal_effective_for_effect(", "&authority,"),
             "cold terminal reconstruction authority",
         )
     )
+    # A later sibling adoption/rebind also borrows &authority. It must not
+    # satisfy the terminal port's own argument obligation after a cold await.
+    reconstruction = _rust_function(
+        sources.get(RUNTIME_BOUND_ENVIRONMENT, ""),
+        "install_bound_environment_under_lifecycle",
+    )
+    if reconstruction is not None and not re.search(
+        r"\.prepare_terminal_effective_for_effect\(\s*spec,\s*handle,"
+        r"\s*expected_effect_fence,\s*effect_fence,\s*&authority,?\s*\)",
+        re.sub(r"\s*\n\s*\.", ".", reconstruction),
+    ):
+        errors.append(
+            f"{RUNTIME_BOUND_ENVIRONMENT}: cold terminal reconstruction authority "
+            "must reach the terminal provider call with both exact fences"
+        )
+    errors.extend(_require_ordered_function(
+        sources, RUNTIME_BOUND_ENVIRONMENT,
+        "prepare_bound_environment_for_effect_under_lifecycle",
+        (".observe_effective(", ".await", ".install_bound_environment_under_lifecycle(",
+         ".await?", "Ok(PreparedBoundEnvironment::new("),
+        "bound Environment reconstruction handoff",
+    ))
     errors.extend(
         _require_ordered_function(
             sources, RUNTIME_HOST_TERMINAL_PREPARATION,
@@ -744,14 +771,21 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
             RUNTIME_HOST_TERMINAL_CLEANUP,
             "dispose_terminal_cleanup_effect",
             (
-                "let authorization = self.realizer.cleanup.disposal_authorization(&effect)?",
+                "let realizer = &self.realizer;",
+                "root_realization.lock().await",
+                "realizer.cleanup.disposal_authorization(&effect)?",
+                "sessions.lock_lifecycle(session_id.as_str()).await",
+                "let authorization = realizer.cleanup.disposal_authorization(&effect)?",
                 "self.prepare_terminal_environment_under_lifecycle(",
                 "authorization.effect_fence()",
                 "BoundEnvironmentPreparationMode::TerminalDisposal",
                 "(SessionEnvironmentOwner::Retiring(retirement), None)",
-                "self.realizer.execution.provider_effect_authority(",
+                "let exact_authorization = realizer.cleanup.disposal_authorization(&effect)?",
+                "if exact_authorization != authorization",
+                "realizer.execution.provider_effect_authority(",
                 ".dispose_for_effect(&authorization, &authority)",
-                "self.realizer.cleanup.disposal_authorization(&effect)?",
+                "sessions.end_terminal_disposal(",
+                "realizer.cleanup.disposal_authorization(&effect)?",
                 "SessionCleanupDisposalReceipt::new(",
             ),
             "physical terminal disposal",
@@ -759,7 +793,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
     )
     errors.extend(_require_ordered_function(
         sources, RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
-        ("self.realizer.execution.provider_effect_authority(",
+        ("realizer.execution.provider_effect_authority(",
          ".dispose_restored(&spec, expected, &authorization, &authority)",
          "with_current_sandbox_effect("),
         "restored target current authority",
@@ -1020,6 +1054,57 @@ def check_all(repo_root: Path) -> list[str]:
 
 
 
+
+def _migrated_effect_owner_mutation_selftest(sources: dict[str, str]) -> None:
+    """Removing any new owner's authority, recheck, or receipt must fail its own rule.
+
+    Caller fixtures and current production sources use this same mutation table;
+    sibling calls, comments and legacy Host facades cannot mask a missing edge.
+    """
+    for relative, function, marker, ownership, last, after in (
+        (RUNTIME_BOUND_ENVIRONMENT, "install_bound_environment_under_lifecycle",
+         "self.execution.provider_effect_authority(", "cold terminal reconstruction authority", False, ""),
+        (RUNTIME_BOUND_ENVIRONMENT, "install_bound_environment_under_lifecycle",
+         "&authority,", "cold terminal reconstruction authority", False, ".prepare_terminal_effective_for_effect("),
+        (RUNTIME_BOUND_ENVIRONMENT, "install_bound_environment_under_lifecycle",
+         "expected_effect_fence,", "cold terminal reconstruction authority", False, ".prepare_terminal_effective_for_effect("),
+        (RUNTIME_BOUND_ENVIRONMENT, "prepare_bound_environment_for_effect_under_lifecycle",
+         ".install_bound_environment_under_lifecycle(", "bound Environment reconstruction handoff", False, ""),
+        (RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
+         "let realizer = &self.realizer;", "physical terminal disposal", False, ""),
+        (RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
+         "let authorization = realizer.cleanup.disposal_authorization(&effect)?", "physical terminal disposal", False, ""),
+        (RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
+         "let exact_authorization = realizer.cleanup.disposal_authorization(&effect)?", "physical terminal disposal", False, ""),
+        (RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
+         "realizer.execution.provider_effect_authority(", "physical terminal disposal", True, ""),
+        (RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
+         ".dispose_for_effect(&authorization, &authority)", "physical terminal disposal", False, ""),
+        (RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
+         "realizer.cleanup.disposal_authorization(&effect)?", "physical terminal disposal", True, ""),
+        (RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
+         "SessionCleanupDisposalReceipt::new(", "physical terminal disposal", False, ""),
+        (RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
+         "realizer.execution.provider_effect_authority(", "restored target current authority", False, ""),
+        (RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
+         ".dispose_restored(&spec, expected, &authorization, &authority)", "restored target current authority", False, ""),
+        (RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
+         "with_current_sandbox_effect(", "restored target current authority", False, ""),
+    ):
+        mutant = dict(sources)
+        text = _crate_boundary_workspace.production_rust(mutant[relative])
+        body = _rust_function(text, function)
+        assert body is not None, (relative, function)
+        normalized = re.sub(r"\s*\n\s*\.", ".", body)
+        cursor = normalized.index(after) + len(after) if after else 0
+        prefix, suffix = normalized[:cursor], normalized[cursor:]
+        assert marker in suffix, (relative, function, marker)
+        changed = "".join(suffix.rsplit(marker, 1)) if last else suffix.replace(marker, "", 1)
+        mutant[relative] = text.replace(body, prefix + changed, 1)
+        assert mutant[relative] != text, (relative, function, marker)
+        assert any(ownership in error for error in session_effect_violations(mutant)), (ownership, marker)
+
+
 def selftest() -> None:
     # A method chain rustfmt broke across lines still matches its whole marker.
     wrapped = {"w.rs": "fn f() {\n    let a = self\n        .x\n        .y(1)?;\n    g(&a);\n}\n"}
@@ -1204,14 +1289,22 @@ async fn renew_session_realization() {
     .await
 }
 """
+    canonical[RUNTIME_BOUND_ENVIRONMENT] = """
+fn install_bound_environment_under_lifecycle() {
+    let authority = self.execution.provider_effect_authority(...);
+    provider.prepare_terminal_effective_for_effect(spec, handle, expected_effect_fence, effect_fence, &authority,);
+    provider.rebind_retained(spec, &authority,);
+}
+fn prepare_bound_environment_for_effect_under_lifecycle() {
+    provider.observe_effective(spec, handle).await;
+    self.install_bound_environment_under_lifecycle(installation, resident, mode).await?;
+    Ok(PreparedBoundEnvironment::new(environment, handle, mode))
+}
+"""
     canonical[RUNTIME_HOST_TERMINAL_PREPARATION] = """
 fn disposal_authorization() {
     let current = self.authorize_lease(&effect.command.session_id, &effect.lease)?;
     effect.sandbox_disposal_authorization_for_current_generation(&current)
-}
-fn install_bound_environment_under_lifecycle() {
-    let authority = self.realizer.execution.provider_effect_authority(...);
-    provider.prepare_terminal_effective_for_effect(spec, handle, expected, effect, &authority,);
 }
 fn cleanup_terminal_checkpoint() {
     let fence = self.realizer.cleanup.effect_fence(effect)?;
@@ -1236,20 +1329,26 @@ fn prepare_terminal_cleanup_effect() {
     SessionCleanupPreparation::try_new(&effect, provider_prepared_effect_fence, artifact_receipts);
 }
 fn dispose_terminal_cleanup_effect() {
-    self.realizer.cleanup.disposal_authorization(&effect)?;
-    let authorization = self.realizer.cleanup.disposal_authorization(&effect)?;
+    let realizer = &self.realizer;
+    root_realization.lock().await;
+    realizer.cleanup.disposal_authorization(&effect)?;
+    sessions.lock_lifecycle(session_id.as_str()).await;
+    let authorization = realizer.cleanup.disposal_authorization(&effect)?;
     self.prepare_terminal_environment_under_lifecycle(
         session_id, authorization.effect_fence(), BoundEnvironmentPreparationMode::TerminalDisposal);
-    let authority = self.realizer.execution.provider_effect_authority(...);
+    let authority = realizer.execution.provider_effect_authority(...);
     provider.dispose_restored(&spec, expected, &authorization, &authority);
     with_current_sandbox_effect(authorization.effect_fence(), &authority, || Ok(()));
     match owner {
         (SessionEnvironmentOwner::Retiring(retirement), None) => {
-            let authority = self.realizer.execution.provider_effect_authority(...);
+            let exact_authorization = realizer.cleanup.disposal_authorization(&effect)?;
+            if exact_authorization != authorization { return Err(changed); }
+            let authority = realizer.execution.provider_effect_authority(...);
             environment.dispose_for_effect(&authorization, &authority);
         }
     }
-    self.realizer.cleanup.disposal_authorization(&effect)?;
+    sessions.end_terminal_disposal(session_id);
+    realizer.cleanup.disposal_authorization(&effect)?;
     SessionCleanupDisposalReceipt::new(&effect.command);
 }
 """
@@ -1416,7 +1515,7 @@ fn recover_terminal_receipts() {
     # the typed disposal receipt. Accept C1+C2; either omission must fail even
     # when the old typed-fence and aggregate-receipt markers remain present.
     for marker in (
-        "let authority = self.realizer.execution.provider_effect_authority(...);",
+        "let authority = realizer.execution.provider_effect_authority(...);",
         ".dispose_for_effect(&authorization, &authority)",
     ):
         mutant = dict(canonical)
@@ -1428,13 +1527,17 @@ fn recover_terminal_receipts() {
         assert any("physical terminal disposal" in error
                    for error in session_effect_violations(mutant)), marker
 
-    # Cold reconstruction table: capture plus forwarding is mandatory in the
-    # same owner; either omission rejects even while hot-disposal wiring stays.
-    for marker in ("self.realizer.execution.provider_effect_authority(", "&authority,"):
-        mutant = dict(canonical)
-        mutant[RUNTIME_HOST_TERMINAL_PREPARATION] = mutant[RUNTIME_HOST_TERMINAL_PREPARATION].replace(marker, "", 1)
-        assert any("cold terminal reconstruction authority" in error
-                   for error in session_effect_violations(mutant)), marker
+    # Reused against real current owner sources by focused source validation.
+    _migrated_effect_owner_mutation_selftest(canonical)
+
+    moved_back = dict(canonical)
+    cold_body = _rust_function(moved_back[RUNTIME_BOUND_ENVIRONMENT],
+                               "install_bound_environment_under_lifecycle")
+    assert cold_body is not None
+    moved_back[RUNTIME_BOUND_ENVIRONMENT] = moved_back[RUNTIME_BOUND_ENVIRONMENT].replace(cold_body, "")
+    moved_back[RUNTIME_HOST_TERMINAL_PREPARATION] += "\n" + cold_body
+    assert any("cold terminal reconstruction authority" in error
+               for error in session_effect_violations(moved_back)), "old Host facade cannot satisfy real owner"
 
     # Checkpoint C1 capture, C2 pre-I/O admission, C3 port forwarding, C4
     # post-response admission. Removing either authority edge is rejected in
@@ -1458,7 +1561,7 @@ fn recover_terminal_receipts() {
 
     # Restored target S1 capture, S2 exact forwarding, S3 post-response check.
     # Ordinary physical disposal remains intact and cannot mask this branch.
-    for marker in ("let authority = self.realizer.execution.provider_effect_authority(...);",
+    for marker in ("let authority = realizer.execution.provider_effect_authority(...);",
                    ".dispose_restored(&spec, expected, &authorization, &authority)",
                    "with_current_sandbox_effect("):
         mutant = dict(canonical)

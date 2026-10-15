@@ -11,457 +11,6 @@ use awaken_session_configuration_contract::resource as session_resource;
 mod fence_source_tests;
 
 impl SharedHost {
-    /// Resolve one Session publication and its exact model candidate from
-    /// explicit frozen coordinates. This is the sole selector used by cold
-    /// install and resident execution: a complete Session override wins even
-    /// when no Agent publication exists, the exact Agent publication is next,
-    /// and only a genuinely unpinned legacy Session has no candidate.
-    pub(crate) fn resolve_canonical_session_projection(
-        &self,
-        workspace: &str,
-        coordinates: CanonicalSessionProjection<'_>,
-        delivered: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
-        skill_pins: Option<&[session_resource::ResolvedSkillBinding]>,
-    ) -> Result<
-        (
-            Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
-            Option<awaken_runtime_contract::resolved::ResolvedModelCandidate>,
-        ),
-        HostError,
-    > {
-        let agent = coordinates.agent();
-        let frozen_revision = coordinates.agent_revision();
-        let installed = delivered.or_else(|| {
-            self.agent.agent_publications.as_ref().and_then(|source| {
-                let agent_id = awaken_runtime_contract::snapshot::AgentId(agent.to_string());
-                match frozen_revision {
-                    Some(revision) => source.at_revision(workspace, &agent_id, revision),
-                    None => source.current(workspace, &agent_id),
-                }
-            })
-        });
-        let model_override = coordinates.model_override();
-        if let Some(publication) =
-            model_override.and_then(|override_| override_.publication.as_ref())
-        {
-            publication
-                .validate_for_workspace(workspace)
-                .map_err(|error| {
-                    HostError::internal(format!(
-                        "frozen Session model override publication is invalid: {error}"
-                    ))
-                })?;
-        }
-        match coordinates.publication_decision(installed.as_ref()) {
-            awaken_session_realization_contract::FrozenAgentPublicationDecision::Unpinned
-            | awaken_session_realization_contract::FrozenAgentPublicationDecision::OptionalMissing
-            | awaken_session_realization_contract::FrozenAgentPublicationDecision::Exact => {}
-            awaken_session_realization_contract::FrozenAgentPublicationDecision::MissingRequired => {
-                return Err(HostError::internal(
-                    "frozen Session Agent publication is unavailable",
-                ));
-            }
-            awaken_session_realization_contract::FrozenAgentPublicationDecision::Mismatch => {
-                let actual = installed.as_ref().map(|publication| {
-                    format!(
-                        "agent={}, revision={}, backend={}",
-                        publication.root_agent_id.0,
-                        publication.metadata.source.revision,
-                        publication.resolved_spec.model_binding.identity().2,
-                    )
-                });
-                return Err(HostError::internal(format!(
-                    "Session Agent/model publication does not match its frozen coordinates \
-                     (expected agent={}, revision={:?}; actual={})",
-                    coordinates.agent(),
-                    coordinates.agent_revision(),
-                    actual.as_deref().unwrap_or("missing"),
-                )));
-            }
-        }
-        let installed = installed
-            .map(|snapshot| {
-                let projected = match &coordinates {
-                    CanonicalSessionProjection::Baseline(baseline) => {
-                        awaken_session_realization_contract::project_effective_agent_publication(
-                            baseline.model_override.as_ref(),
-                            &baseline.system_prompt,
-                            skill_pins,
-                            workspace,
-                            snapshot,
-                        )
-                    }
-                    CanonicalSessionProjection::Layout(layout) => {
-                        awaken_session_realization_contract::project_effective_agent_publication(
-                            layout.model_override.as_ref(),
-                            &awaken_session_configuration_contract::SessionSystemPromptSelection::Inherit,
-                            None,
-                            workspace,
-                            snapshot,
-                        )
-                    }
-                    CanonicalSessionProjection::LegacyAgent(_) => Ok(snapshot),
-                };
-                projected.map_err(|error| HostError::internal(error.to_string()))
-            })
-            .transpose()?;
-        let candidate = model_override
-            .and_then(|override_| override_.publication.as_ref())
-            .map(|publication| publication.primary.clone())
-            .or_else(|| {
-                installed
-                    .as_ref()
-                    .map(|snapshot| snapshot.resolved_spec.model_binding.clone())
-            });
-        Ok((installed, candidate))
-    }
-
-    /// Resolve the one immutable publication selected for a Session and enforce
-    /// its projected Agent/backend fences. Context construction and cold
-    /// environment adoption share this boundary so provider selection cannot
-    /// drift from execution selection.
-    pub(crate) fn resolve_session_publication(
-        &self,
-        thread: &str,
-        agent: Option<&str>,
-        published_snapshot: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
-    ) -> Result<
-        (
-            String,
-            String,
-            Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
-            Option<awaken_runtime_contract::resolved::ResolvedModelCandidate>,
-        ),
-        HostError,
-    > {
-        let realizations = self.installed_sessions.realizations();
-        let workspace = self.thread_workspace(thread);
-        let projected_agent = self.thread_agent_projection(thread);
-        if let (Some(asserted), Some(projected)) = (agent, projected_agent.as_deref())
-            && asserted != projected
-        {
-            return Err(HostError::internal(format!(
-                "session Agent projection `{projected}` does not match requested Agent `{asserted}`"
-            )));
-        }
-        // A provider-driven re-entry may carry neither the original request
-        // argument nor a resident Thread projection. The already delivered
-        // immutable publication is authoritative in that case; defaulting to
-        // `assistant` would manufacture a second Agent identity and make the
-        // exact-publication fence reject its own retained snapshot.
-        let delivered_agent = published_snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.root_agent_id.0.clone());
-        let selected_agent = agent
-            .or(projected_agent.as_deref())
-            .or(delivered_agent.as_deref())
-            .unwrap_or("assistant");
-        let baseline = realizations.frozen(thread).baseline.clone();
-        let skill_pins = realizations
-            .read_realization(thread, |r| {
-                r.resource_transition
-                    .as_ref()
-                    .map(|transition| transition.desired().resources.skills().to_vec())
-            })
-            .flatten();
-        let coordinates = baseline.as_ref().map_or(
-            CanonicalSessionProjection::LegacyAgent(selected_agent),
-            CanonicalSessionProjection::Baseline,
-        );
-        let (installed, model_candidate) = self.resolve_canonical_session_projection(
-            &workspace,
-            coordinates,
-            published_snapshot,
-            skill_pins.as_deref(),
-        )?;
-        let published_backend_ref = model_candidate
-            .as_ref()
-            .map(|candidate| candidate.binding().identity().2.to_owned());
-        let projected_backend_ref = realizations.frozen(thread).backend_ref.clone();
-        if let (Some(published), Some(projected)) = (&published_backend_ref, &projected_backend_ref)
-            && published != projected
-        {
-            return Err(HostError::internal(format!(
-                "session backend projection `{projected}` does not match publication `{published}`"
-            )));
-        }
-        if model_candidate.is_none() && projected_backend_ref.is_some() {
-            return Err(HostError::internal(
-                "session backend projection has no immutable model publication",
-            ));
-        }
-        Ok((
-            workspace,
-            selected_agent.to_string(),
-            installed,
-            model_candidate,
-        ))
-    }
-
-    /// Freeze one exact publication into the existing Session runtime slot.
-    /// The slot is already the projection used by claimed-worker replay; direct
-    /// and deferred execution reuse it instead of adding a provider-selection
-    /// store or resolving a later catalog head.
-    pub(crate) fn retain_session_publication(
-        &self,
-        thread: &str,
-        publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
-    ) -> Result<(), HostError> {
-        self.installed_sessions.update(thread, |slot| {
-            slot.inputs.validate_publication(publication)?;
-            if let Some(publication) = publication {
-                slot.replace_frozen_with(|next| {
-                    next.published_snapshot = Some(publication.clone())
-                });
-            }
-            Ok(())
-        })
-    }
-
-    /// Select the environment provider from the immutable publication already
-    /// frozen for this Session. Callers without an Agent parameter (deferred
-    /// tool realization and terminal cleanup) must use this path rather than a
-    /// process-wide default.
-    pub(crate) fn projected_session_environment_provider(
-        &self,
-        thread: &str,
-        agent: Option<&str>,
-    ) -> Result<&crate::session_environment::SessionEnvironmentProvider, HostError> {
-        let provisioning = self.projected_session_model_provisioning(thread, agent)?;
-        self.realizer
-            .session_environment_provider_for_thread(thread, &provisioning)
-    }
-
-    pub(crate) fn projected_session_model_provisioning(
-        &self,
-        thread: &str,
-        agent: Option<&str>,
-    ) -> Result<awaken_runtime_contract::resolved::ModelProvisioning, HostError> {
-        let realizations = self.installed_sessions.realizations();
-        let delivered = realizations.published_snapshot(thread);
-        let (_, _, _, model_candidate) =
-            self.resolve_session_publication(thread, agent, delivered)?;
-        Ok(model_candidate
-            .as_ref()
-            .map(awaken_runtime_contract::resolved::ResolvedModelCandidate::provisioning)
-            .cloned()
-            .unwrap_or(awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor))
-    }
-
-    pub(crate) async fn authorize_environment_effect_before_io(
-        &self,
-        thread: &str,
-        intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
-    ) -> Result<AuthorizedSessionEnvironmentEffect, HostError> {
-        let realizations = self.installed_sessions.realizations();
-        intent
-            .verify()
-            .map_err(|error| HostError::internal(error.to_string()))?;
-        if intent.session_id().as_str() != thread {
-            return Err(HostError::internal(
-                "Environment request names another Session",
-            ));
-        }
-        let (claimed_ordinary_run, managed_projection, closed) = realizations
-            .modify_session(thread, |slot| {
-                let managed = slot.inputs.baseline.is_some() || slot.run.session_dispatch();
-                let ordinary = slot.realization.authority.lease().is_none()
-                    && slot.run.dispatch_claim().is_some()
-                    && !managed;
-                (ordinary, managed, slot.realization.authority.is_closed())
-            })
-            .unwrap_or_default();
-        if closed {
-            return Err(HostError::unavailable_classified(
-                "session_environment_realization_closed",
-                "closed Session realization cannot authorize an Environment effect",
-            ));
-        }
-        let sink = self
-            .environment_binding_sink
-            .read()
-            .expect("environment binding sink lock poisoned")
-            .clone();
-        // A claimed ordinary Run and a Managed Session already have distinct
-        // durable owners. The former fences its local Environment through the
-        // Run claim and `DispatchQueue::bind_sandbox`; only the latter may ask
-        // the Session root to authorize/persist an aggregate Environment effect.
-        // Sending an ordinary Run to a remote Session sink cannot be authorized
-        // (it has no realization lease) and duplicates the queue-owned binding.
-        let authorization = match sink {
-            Some(_) if claimed_ordinary_run => {
-                awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned {
-                    intent: Box::new(intent.clone()),
-                }
-            }
-            Some(sink) => sink
-                .authorize(intent)
-                .await
-                .map_err(crate::host_error::from_run_error)?,
-            None if !managed_projection && intent.realization().is_none() => {
-                awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned {
-                    intent: Box::new(intent.clone()),
-                }
-            }
-            None => {
-                return Err(HostError::unavailable_classified(
-                    "session_environment_binding_authority_missing",
-                    "durable Session Environment effect has no binding authority",
-                ));
-            }
-        };
-        authorization
-            .verify_for(intent)
-            .map_err(|error| HostError::internal(error.to_string()))?;
-        let original = authorization.intent();
-        if matches!(
-            authorization,
-            awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned { .. }
-        ) && (managed_projection || original.realization().is_some())
-        {
-            return Err(HostError::unavailable_classified(
-                "session_environment_owned_root_missing",
-                "a Managed Session cannot fall back to an unowned Environment effect",
-            ));
-        }
-        let provider_fence = if !matches!(
-            authorization,
-            awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned { .. }
-        ) {
-            original
-                .realization()
-                .map(|realization| {
-                    realization
-                        .sandbox_effect_fence(original.effect_id())
-                        .map_err(|error| HostError::internal(error.to_string()))
-                })
-                .transpose()?
-        } else {
-            None
-        };
-        let provider_authority = provider_fence
-            .as_ref()
-            .map(|fence| {
-                self.realizer
-                    .execution
-                    .provider_effect_authority(thread, fence)
-                    .map(|source| {
-                        Arc::new(source)
-                            as Arc<dyn awaken_provisioning_contract::CurrentExecutionAuthority>
-                    })
-            })
-            .transpose()?;
-        Ok(AuthorizedSessionEnvironmentEffect {
-            authorization,
-            provider_fence,
-            provider_authority,
-        })
-    }
-
-    pub(super) async fn persist_authorized_environment_before_publish(
-        &self,
-        thread: &str,
-        candidate: &crate::environment_owner::UnboundSessionEnvironment,
-        effect: &AuthorizedSessionEnvironmentEffect,
-    ) -> Result<
-        crate::environment_owner::BoundSessionEnvironmentIdentity,
-        EnvironmentBindingPersistenceError,
-    > {
-        let captured = candidate.ordinary_intent()?;
-        if captured != effect.authorization.intent() {
-            return Err(HostError::internal(
-                "candidate changed its original Environment effect intent",
-            )
-            .into());
-        }
-        if matches!(
-            effect.authorization,
-            awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned { .. }
-        ) && let Some(identity) = candidate.durable_identity()
-        {
-            return Ok(identity.clone());
-        }
-        self.persist_authorized_environment_binding(thread, candidate.binding.clone(), effect)
-            .await
-    }
-
-    pub(crate) async fn persist_authorized_environment_binding(
-        &self,
-        thread: &str,
-        binding: String,
-        effect: &AuthorizedSessionEnvironmentEffect,
-    ) -> Result<
-        crate::environment_owner::BoundSessionEnvironmentIdentity,
-        EnvironmentBindingPersistenceError,
-    > {
-        let receipt = self
-            .realizer
-            .current_environment_receipt(binding.clone(), effect)?;
-        // A Resource reservation extends the already-published Environment
-        // handle under the Session root. It is not a Run placement and must not
-        // rewrite `RunDispatch.sandbox`: the slot can legitimately retain the
-        // preceding settled attempt's claim while an idle Session accepts a
-        // live Resource generation. Create/Adopt/Rebuild remain the only raw
-        // dispatch-cache writers and retain their exact claim fence below.
-        let binds_deferred_dispatch = !matches!(
-            effect.authorization.intent().kind(),
-            awaken_session_state_contract::SessionEnvironmentEffectKind::ResourceProjectionReservation { .. }
-        );
-        match &effect.authorization {
-            awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned { .. } => {
-                if binds_deferred_dispatch {
-                    self.bind_deferred_dispatch_before_publish(thread, &binding)
-                        .await?;
-                }
-                return Ok(
-                    crate::environment_owner::BoundSessionEnvironmentIdentity::LegacyDirect(
-                        crate::environment_owner::LegacyDirectEnvironmentProvenance::Direct(receipt),
-                    ),
-                );
-            }
-            awaken_session_state_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
-                binding: committed,
-                ..
-            } => {
-                if committed != &binding {
-                    return Err(HostError::internal(
-                            "Session Environment effect already committed another binding",
-                        ).into());
-                }
-            }
-            awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized { .. } => {}
-        }
-        let sink = self
-            .environment_binding_sink
-            .read()
-            .expect("environment binding sink lock poisoned")
-            .clone()
-            .ok_or_else(|| {
-                HostError::internal(
-                    "authorized Session Environment effect has no durable binding sink",
-                )
-            })?;
-        // Publishing needs Store-read generated identity, not merely a positive
-        // authorization readback. If the response is lost, retain the exact
-        // Candidate and retry this idempotent persist instead of inventing a
-        // process-local generation.
-        let committed = sink
-            .persist(receipt.clone())
-            .await
-            .map_err(crate::host_error::from_run_error)?;
-        let committed_identity =
-            super::environment_lifecycle::committed_identity(&receipt, committed)?;
-        if binds_deferred_dispatch {
-            self.bind_deferred_dispatch_before_publish(thread, &binding)
-                .await
-                .map_err(|error| EnvironmentBindingPersistenceError {
-                    error,
-                    committed_identity: Some(committed_identity.clone()),
-                })?;
-        }
-        Ok(committed_identity)
-    }
-
     /// Atomically publish one created/adopted Environment into the existing
     /// durable binding authority and the process-local slot. Every lifecycle
     /// entry point uses this owner so the reconciliation flag cannot drift from
@@ -492,6 +41,7 @@ impl SharedHost {
             }
         };
         let identity = match self
+            .realizer
             .persist_authorized_environment_before_publish(thread, &candidate, effect)
             .await
         {
@@ -541,7 +91,9 @@ impl SharedHost {
             // A Candidate can own physical effects without a returned root
             // receipt. Reuse ordinary authorized adoption, including for an
             // Unmaterialized root; raw local binding is not durable authority.
-            let provider = self.projected_session_environment_provider(thread, None)?;
+            let provider = self
+                .realizer
+                .projected_session_environment_provider(thread, None)?;
             self.adopt_bound_session_environment_under_lifecycle(
                 thread,
                 &binding,
@@ -568,9 +120,11 @@ impl SharedHost {
             return Ok(None);
         };
         let effect = self
+            .realizer
             .authorize_environment_effect_before_io(thread, candidate.ordinary_intent()?)
             .await?;
         let identity = match self
+            .realizer
             .persist_authorized_environment_before_publish(thread, &candidate, &effect)
             .await
         {
@@ -646,6 +200,7 @@ impl SharedHost {
             ),
         };
         let effect = self
+            .realizer
             .authorize_environment_effect_before_io(
                 thread,
                 &self
@@ -784,37 +339,6 @@ impl SharedHost {
         Ok(environment)
     }
 
-    async fn bind_deferred_dispatch_before_publish(
-        &self,
-        thread: &str,
-        binding: &str,
-    ) -> Result<bool, HostError> {
-        let claim = self
-            .installed_sessions
-            .read_run(thread, |run| run.dispatch_claim.clone())
-            .flatten();
-        let Some(claim) = claim else {
-            return Ok(false);
-        };
-        let outcome = self
-            .dispatch_store()?
-            .bind_sandbox(&claim, binding)
-            .await
-            .map_err(|error| {
-                HostError::unavailable_classified(
-                    "dispatch_sandbox_binding_unavailable",
-                    error.to_string(),
-                )
-            })?;
-        if !outcome.applied() {
-            return Err(HostError::unavailable_classified(
-                "dispatch_claim_stale",
-                "deferred sandbox binding was fenced by a replacement claim",
-            ));
-        }
-        Ok(true)
-    }
-
     /// Test-only unfenced entry into the one physical Session-environment
     /// creation path. Production creation always carries the aggregate-owned
     /// effect authorization through `create_session_environment_for_effect`.
@@ -861,7 +385,9 @@ impl SharedHost {
                 .ensure_published_environment_reconciled_under_lifecycle(thread, environment)
                 .await;
         }
-        let provider = self.projected_session_environment_provider(thread, None)?;
+        let provider = self
+            .realizer
+            .projected_session_environment_provider(thread, None)?;
         if let Some(binding) = self.realizer.durable_environment_binding(thread) {
             let disposition = self
                 .adopt_bound_session_environment_under_lifecycle(
@@ -969,7 +495,7 @@ impl crate::environment_holding::EnvironmentHolding {
 
     /// Re-enter current authority after I/O while preserving the Root's exact
     /// original intent. Renewal is a delivery grant, not a new receipt identity.
-    fn current_environment_receipt(
+    pub(crate) fn current_environment_receipt(
         &self,
         binding: String,
         effect: &AuthorizedSessionEnvironmentEffect,
@@ -1219,7 +745,7 @@ impl crate::environment_holding::EnvironmentHolding {
         let opaque_process = self
             .sessions
             .modify_session(&spec.scope, |slot| {
-                crate::provisioning::frozen_session_requires_opaque_process(
+                awaken_session_realization_contract::frozen_session_requires_opaque_process(
                     slot.inputs.published_snapshot.as_ref(),
                     slot.inputs.baseline.as_ref(),
                 )
@@ -1251,5 +777,3 @@ impl crate::environment_holding::EnvironmentHolding {
             .modify_session(thread, |slot| slot.run.drop_context());
     }
 }
-
-use awaken_dispatch_contract::DispatchExecution as _;

@@ -290,7 +290,11 @@ async fn run_prepared_session_messages(
     thread: &str,
     messages: Vec<Message>,
 ) -> Result<awaken_session_application_contract::StepOutcome, awaken_session_types::RunError> {
-    managed.validate_thread_resource_bindings(thread).await?;
+    managed
+        .host
+        .realizer
+        .validate_thread_resource_bindings(thread)
+        .await?;
     let result = managed
         .host
         .run_thread_extension_after_admission(Some(agent), thread, messages)
@@ -1505,6 +1509,8 @@ struct TerminalRecoveryProvider {
 
 #[derive(Default)]
 struct TerminalFenceRefreshProbe {
+    physical_disposal_entries: Mutex<Vec<pc::SandboxDisposalAuthorization>>,
+
     restored_release: tokio::sync::Notify,
     artifact_entered: tokio::sync::Notify,
     artifact_release: tokio::sync::Notify,
@@ -1938,6 +1944,16 @@ impl pc::Sandbox for TerminalRecoveryEnvironment {
         authorization: &pc::SandboxDisposalAuthorization,
         authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
+        // Record entry before the provider's own guard: an empty vector
+        // proves the Host never invoked physical disposal, rather than merely
+        // observing a provider that rejected the operation for us.
+        if let Some(probe) = &self.fence_refresh_probe {
+            probe
+                .physical_disposal_entries
+                .lock()
+                .unwrap()
+                .push(authorization.clone());
+        }
         pc::with_current_sandbox_effect(authorization.effect_fence(), authority, |_| {
             self.events.lock().unwrap().push("dispose-physical");
             Ok(())

@@ -22,7 +22,7 @@ impl InstalledSessions {
     /// awaiting Tokio, the contract kernel retries against the replacement
     /// instead of admitting the stale allocation.
     pub(crate) async fn acquire_realization_with<R>(
-        self: &Arc<Self>,
+        &self,
         session: &str,
         mut on_admit: impl FnMut(&mut InstalledSession) -> R,
     ) -> (SessionRealizationPermit, R) {
@@ -30,9 +30,8 @@ impl InstalledSessions {
         SessionRealizationPermit::acquire(
             &awaken_session_types::SessionId::from(session),
             move || {
-                let identity: Arc<tokio::sync::Mutex<()>> = slots
-                    .realizations()
-                    .update_realization(session, |r| r.realization.clone());
+                let identity: Arc<tokio::sync::Mutex<()>> =
+                    slots.update(session, |slot| slot.realization.realization.clone());
                 async move {
                     let owner = identity.clone().lock_owned().await;
                     (identity, owner)
@@ -79,5 +78,34 @@ mod tests {
             .await
             .expect("R2/E2 the waiter was never admitted");
         assert!(Arc::ptr_eq(&admitted, &recreated), "R2/E2");
+    }
+
+    #[tokio::test]
+    async fn realizer_and_host_permits_share_replacement_validation_and_exclusion() {
+        // V1 Host owns A and the realization view waits for A. V2 the slot is
+        // replaced by B while both B and A are held. V3 releasing only A must
+        // not admit the realization waiter; it must retry and wait for B.
+        // V4 the admitted realizer excludes a Host driver on B until dropped.
+        let slots = Arc::new(InstalledSessions::default());
+        let realizations = slots.realizations();
+        let held_a = slots.acquire_realization_with("session-a", |_| ()).await.0;
+        let mut waiting = std::pin::pin!(realizations.acquire_realization("session-a"));
+        assert!(futures_util::poll!(waiting.as_mut()).is_pending(), "V1");
+        slots.remove("session-a");
+        let held_b = slots.acquire_realization_with("session-a", |_| ()).await.0;
+        drop(held_a);
+        assert!(futures_util::poll!(waiting.as_mut()).is_pending(), "V3");
+        drop(held_b);
+        let realizer = tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
+            .await
+            .expect("V3 retry must acquire the replacement allocation");
+        assert_eq!(realizer.session_id().as_str(), "session-a");
+        let host = slots.acquire_realization_with("session-a", |_| ());
+        let mut host = std::pin::pin!(host);
+        assert!(futures_util::poll!(host.as_mut()).is_pending(), "V4");
+        drop(realizer);
+        tokio::time::timeout(std::time::Duration::from_secs(5), host)
+            .await
+            .expect("V4 the realization permit must release the Host driver");
     }
 }

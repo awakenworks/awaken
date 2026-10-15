@@ -353,16 +353,17 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                     "E1"
                 );
                 assert!(
-                    host.authorize_environment_effect_before_io(
-                        SESSION,
-                        &host.realizer.new_environment_effect_intent(
+                    host.realizer
+                        .authorize_environment_effect_before_io(
                             SESSION,
-                            awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
-                            None
-                        ),
-                    )
-                    .await
-                    .is_err(),
+                            &host.realizer.new_environment_effect_intent(
+                                SESSION,
+                                awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+                                None
+                            ),
+                        )
+                        .await
+                        .is_err(),
                     "E1 closed is not an unowned/direct Environment fallback"
                 );
                 assert_eq!(
