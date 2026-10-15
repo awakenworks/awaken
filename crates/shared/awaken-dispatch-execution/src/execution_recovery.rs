@@ -37,15 +37,8 @@ fn response_only_run(
     snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
     run: &awaken_agent_contract::agent::run::Id,
 ) -> bool {
-    use awaken_agent_contract::agent::state::StateKey;
-    use awaken_runtime_contract::attempt_termination::{
-        ActiveNativeAttemptCoverage, NativeAttemptCoverage,
-    };
-    use awaken_runtime_contract::model_operation::{ActiveModelOperation, ModelEffectScope};
-    use awaken_runtime_contract::tool_batch::{ActiveToolBatch, store_from_run_commands};
-    let store = store_from_run_commands(snapshot.state.clone(), run);
-    ActiveNativeAttemptCoverage::load(&store)
-        .is_ok_and(|coverage| coverage != NativeAttemptCoverage::Unspecified)
+    crate::NativeAttemptFootprint::decode_for_run(snapshot, run)
+        .is_ok_and(|footprint| footprint.response_only())
         && snapshot.messages.iter().all(|message| {
             message.content.iter().all(|block| {
                 !matches!(
@@ -53,14 +46,6 @@ fn response_only_run(
                     awaken_agent_contract::agent::content::ContentBlock::ToolUse { .. }
                 )
             })
-        })
-        && ActiveToolBatch::recorded_batches(&snapshot.state, run)
-            .next()
-            .is_none()
-        && ActiveModelOperation::recorded(&snapshot.state, run).is_ok_and(|models| {
-            models
-                .iter()
-                .all(|model| model.effect_scope == ModelEffectScope::ResponseOnly)
         })
 }
 
@@ -617,10 +602,16 @@ mod tests {
         use awaken_runtime_contract::tool::{ToolCall, ToolRecoveryPolicy};
         use awaken_runtime_contract::tool_batch::{ActiveToolBatch, ToolBatch};
         // Causes C1 original coverage; C2 every model's frozen scope is
-        // ResponseOnly; C3 no ToolBatch history. R1 C1+C2+C3 -> footprint;
+        // ResponseOnly; C3 no ToolBatch history; C4 original aligned, positive
+        // commit coordinates put the marker strictly before every entry.
+        // R1 C1+C2+C3+C4 -> footprint;
         // R2 missing/malformed coverage, opaque/malformed model, any retained
-        // tool batch (even Requested), or removed history -> unknown. Physical
-        // closure is independently required by the sole whole-scope caller.
+        // tool batch (even Requested), removed history, absent/unaligned/zero
+        // coordinates, same-commit enrollment, duplicate coverage or reversed
+        // chronology -> unknown. C5 the snapshot's current claimed Run can differ
+        // from the historical member being read; only that member's journal is
+        // decoded. Physical closure is independently required by the sole
+        // whole-scope caller.
         let run = RunId("run".into());
         let bind = |mut command: Command| {
             command.run_id = Some(run.clone());
@@ -647,20 +638,29 @@ mod tests {
             vec![],
         );
         snapshot.state = vec![marker.clone(), response.clone()];
+        snapshot.state_commit_cursors = vec![1, 2];
         assert!(
             response_only_run(&snapshot, &run),
             "R1 original response-only, including unknown model result"
         );
+        snapshot.claimed_run_id = RunId("a-later-claim".into());
+        assert!(
+            response_only_run(&snapshot, &run),
+            "R1/C5 read the original member, not the snapshot's current claim"
+        );
         snapshot.state = vec![marker.clone()];
+        snapshot.state_commit_cursors = vec![1];
         assert!(
             response_only_run(&snapshot, &run),
             "R1 covered pre-model exit"
         );
-        for fault in 0..6 {
+        for fault in 0..13 {
             snapshot.state = vec![marker.clone(), response.clone()];
+            snapshot.state_commit_cursors = vec![1, 2];
             match fault {
                 0 => {
                     snapshot.state.remove(0);
+                    snapshot.state_commit_cursors.remove(0);
                 }
                 1 => {
                     model.effect_scope = ModelEffectScope::Opaque;
@@ -688,15 +688,27 @@ mod tests {
                     snapshot
                         .state
                         .push(bind(ActiveToolBatch::write(&Some(batch))));
+                    snapshot.state_commit_cursors.push(3);
                 }
                 4 => {
                     snapshot.state.push(bind(ActiveToolBatch::write(&None)));
+                    snapshot.state_commit_cursors.push(3);
                 }
-                _ => {
+                5 => {
                     snapshot.state[1].action = awaken_agent_contract::agent::state::Action::Set(
                         serde_json::json!({"invalid":true}),
                     );
                 }
+                6 => snapshot.state_commit_cursors.clear(),
+                7 => snapshot.state_commit_cursors = vec![1],
+                8 => snapshot.state_commit_cursors = vec![0, 2],
+                9 => snapshot.state_commit_cursors = vec![1, 1],
+                10 => snapshot.state_commit_cursors = vec![2, 1],
+                11 => {
+                    snapshot.state.insert(0, marker.clone());
+                    snapshot.state_commit_cursors = vec![1, 2, 3];
+                }
+                _ => snapshot.state.swap(0, 1),
             }
             assert!(!response_only_run(&snapshot, &run), "R2 fault {fault}");
         }

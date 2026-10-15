@@ -18,8 +18,7 @@
 //! thread's pending input, and run outcome stays in committed facts, read back
 //! through the commit boundary's single `CommittedThreadView` port.
 
-mod attempt_termination;
-pub use attempt_termination::{
+pub use awaken_dispatch_execution::{
     NativeAttemptFootprint, NativeAttemptTermination, NativeAttemptTerminationError,
     classify_native_attempt_termination,
 };
