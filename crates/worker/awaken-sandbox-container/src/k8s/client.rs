@@ -10,7 +10,8 @@ use super::{backend, install_rustls_crypto_provider};
 /// creates no Sandbox resources or NetworkPolicies and retains finite deadlines.
 pub async fn connect_control_client() -> Result<Client, RuntimeError> {
     install_rustls_crypto_provider();
-    Client::try_default().await.map_err(backend)
+    let config = kube::Config::infer().await.map_err(backend)?;
+    Client::try_from(control_config(config)).map_err(backend)
 }
 
 pub(super) struct K8sClients {
@@ -20,12 +21,12 @@ pub(super) struct K8sClients {
 
 impl K8sClients {
     pub(super) async fn infer() -> Result<Self, RuntimeError> {
-        let config = kube::Config::infer().await.map_err(backend)?;
-        Self::from_config(config)
+        Self::from_config(kube::Config::infer().await.map_err(backend)?)
     }
 
     fn from_config(config: kube::Config) -> Result<Self, RuntimeError> {
         install_rustls_crypto_provider();
+        let config = control_config(config);
         let control = Client::try_from(config.clone()).map_err(backend)?;
         let streaming = Client::try_from(streaming_config(config)).map_err(backend)?;
         Ok(Self { control, streaming })
@@ -38,6 +39,14 @@ impl K8sClients {
         ))
         .expect("lazy kube clients build without a cluster")
     }
+}
+
+fn control_config(mut config: kube::Config) -> kube::Config {
+    // Preserve the original finite control-request defaults across SDK updates.
+    for deadline in [&mut config.read_timeout, &mut config.write_timeout] {
+        deadline.get_or_insert(std::time::Duration::from_secs(295));
+    }
+    config
 }
 
 fn streaming_config(mut config: kube::Config) -> kube::Config {
@@ -68,9 +77,27 @@ mod tests {
     // Decision table: control request keeps finite read/write ceilings; attached
     // stream has neither ceiling; connect/TLS/cluster coordinates stay identical.
     fn attached_exec_has_no_response_ceiling_without_weakening_control_timeouts() {
-        let control = kube::Config::new("https://127.0.0.1:6443/".parse().unwrap());
+        // T1 missing SDK defaults -> original 295 s control deadlines; T2
+        // explicit finite overrides -> retained; T3 attached stream -> no
+        // response ceiling. TLS/endpoint/namespace remain identical throughout.
+        let control = control_config(kube::Config::new(
+            "https://127.0.0.1:6443/".parse().unwrap(),
+        ));
         assert!(control.read_timeout.is_some());
         assert!(control.write_timeout.is_some());
+
+        let mut override_config = control.clone();
+        override_config.read_timeout = Some(std::time::Duration::from_secs(19));
+        override_config.write_timeout = Some(std::time::Duration::from_secs(23));
+        let override_config = control_config(override_config);
+        assert_eq!(
+            override_config.read_timeout,
+            Some(std::time::Duration::from_secs(19))
+        );
+        assert_eq!(
+            override_config.write_timeout,
+            Some(std::time::Duration::from_secs(23))
+        );
 
         let stream = streaming_config(control.clone());
         assert_eq!(stream.cluster_url, control.cluster_url);

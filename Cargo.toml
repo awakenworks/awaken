@@ -211,6 +211,9 @@ awaken-authz-enforce = { path = "crates/control/awaken-authz-enforce" }
 awaken-webhook = { path = "crates/server/awaken-webhook" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde-saphyr = { version = "0.0.29", default-features = false, features = ["deserialize"] }
+kube = { version = "4.2.0", default-features = false }
+k8s-openapi = { version = "0.28", features = ["v1_32"] }
 jsonschema = { version = "0.33", default-features = false }
 toml = "0.8"
 thiserror = "2"

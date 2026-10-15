@@ -39,7 +39,7 @@ awaken-execution-composition.workspace = true
 # Deployment-file PVC policy is owned by the existing container substrate.
 awaken-sandbox-container.workspace = true
 awaken-sandbox-memoryd.workspace = true
-kube = { version = "1", default-features = false, features = ["client", "rustls-tls", "http-proxy"], optional = true }
+kube = { workspace = true, features = ["client", "rustls-tls", "http-proxy"], optional = true }
 awaken-protocol-mcp.workspace = true
 awaken-service-lifecycle.workspace = true
 awaken-api-contract = { workspace = true }
@@ -192,7 +192,7 @@ awaken-sqlite-pool.workspace = true
 awaken-container-contract.workspace = true
 sha2 = "0.10"
 awaken-ext-goal.workspace = true
-k8s-openapi = { version = "0.25", features = ["v1_30"] }
+k8s-openapi = { workspace = true }
 awaken-dispatch-http.workspace = true
 awaken-coordinator-client.workspace = true
 awaken-dispatch-testkit.workspace = true

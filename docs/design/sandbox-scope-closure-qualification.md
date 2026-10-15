@@ -29,6 +29,28 @@ object projection is required to express closure.
 
 ## The primitive that qualifies
 
+### Client dependency qualification
+
+The client and generated resource types use the workspace-owned `kube` and
+`k8s-openapi` declarations, so every adapter resolves one compatible version.
+The 2026-10-14 dependency update uses kube 4.2 / k8s-openapi 0.28 and the same
+serde-saphyr 0.0.29 parser as the State Machine DSL and manifest tests. Original
+client inference, TLS, request lifetime, attestation and disposal owners remain
+unchanged; no alternate kubeconfig loader or client path is introduced.
+The newly optional NetworkPolicy selector supplies no exact-label proof when
+absent. An additional egress rule with an absent selector is conservatively
+treated as possibly selecting the sandbox, preserving fail-closed attestation.
+Control configuration restores the original finite 295-second defaults while
+retaining explicit finite overrides; streaming clients retain their original
+unbounded response lifetime. Optional Sandbox reads use the original API/error
+boundary with complete Failure/NotFound evidence, so a partial Status or a
+client parse-failure reconstruction cannot establish object absence.
+
+Generated types target Kubernetes 1.32. The existing 1.31.5 test cluster is
+below upstream's current tested range, so source compilation does not renew
+the historical live qualification below. The changed client cohort requires
+the existing actual cluster tests and full-product receipt before release.
+
 Namespace deletion. Once a namespace carries a `deletionTimestamp`, the in-tree
 `NamespaceLifecycle` admission plugin rejects new content in it. The rejection is
 evaluated by the apiserver inside the admission chain, before persistence, so

@@ -81,10 +81,10 @@ fn expected_binding_spec() -> ValidatingAdmissionPolicyBindingSpec {
 async fn policy_ready(client: &Client) -> Result<bool, RuntimeError> {
     let policies: Api<ValidatingAdmissionPolicy> = Api::all(client.clone());
     let bindings: Api<ValidatingAdmissionPolicyBinding> = Api::all(client.clone());
-    let Some(policy) = policies.get_opt(POLICY).await.map_err(backend)? else {
+    let Some(policy) = crate::k8s::get_optional(&policies, POLICY).await? else {
         return Ok(false);
     };
-    let Some(binding) = bindings.get_opt(POLICY).await.map_err(backend)? else {
+    let Some(binding) = crate::k8s::get_optional(&bindings, POLICY).await? else {
         return Ok(false);
     };
     Ok(policy.metadata.deletion_timestamp.is_none()
@@ -298,7 +298,7 @@ pub(crate) async fn verify_reservation(
         return Ok(false);
     }
     let api: Api<Pod> = Api::namespaced(client.clone(), &ticket.request.namespace);
-    let Some(pod) = api.get_opt(&ticket.request.name).await.map_err(backend)? else {
+    let Some(pod) = crate::k8s::get_optional(&api, &ticket.request.name).await? else {
         return Ok(false);
     };
     if !exact_reservation(ticket, &pod, Some(uid)) {
@@ -323,7 +323,7 @@ pub(super) async fn isolate_pod(
     let observed = match api.create(&PostParams::default(), &desired).await {
         Ok(pod) => pod,
         Err(error) if api_conflict(&error) => {
-            let Some(pod) = api.get_opt(&ticket.request.name).await.map_err(backend)? else {
+            let Some(pod) = crate::k8s::get_optional(&api, &ticket.request.name).await? else {
                 return Ok(None);
             };
             pod
@@ -422,7 +422,6 @@ mod tests {
     use crate::k8s::{CreateTicketRequest, TicketStatus};
     use http::{Method, Request, Response};
     use kube::client::Body;
-    use serde::Deserialize as _;
     use serde_json::Value;
     use std::sync::{Arc, Mutex};
 
@@ -605,10 +604,10 @@ mod tests {
         let manifest = include_str!(
             "../../../../../../deploy/k3d/product-backend/create-control/resources.yaml"
         );
-        let docs = serde_yaml::Deserializer::from_str(manifest)
-            .map(|doc| serde_yaml::Value::deserialize(doc).unwrap())
-            .map(|doc| serde_json::to_value(doc).unwrap())
-            .collect::<Vec<Value>>();
+        // Y6 the complete YAML stream keeps every policy/binding document and
+        // typed JSON value; the original authority comparisons below are the
+        // compatibility oracle, not a second manifest/schema implementation.
+        let docs = serde_saphyr::from_multiple::<serde_json::Value>(manifest).unwrap();
         let policy = docs
             .iter()
             .find(|doc| doc["kind"] == "ValidatingAdmissionPolicy")
@@ -667,10 +666,8 @@ mod tests {
         // manifest; overlay import/render checks live with the deployment gate.
         let runtime_manifest =
             include_str!("../../../../../../deploy/k3d/bases/sandbox-runtime-rbac/resources.yaml");
-        let runtime_docs = serde_yaml::Deserializer::from_str(runtime_manifest)
-            .map(|doc| serde_yaml::Value::deserialize(doc).unwrap())
-            .map(|doc| serde_json::to_value(doc).unwrap())
-            .collect::<Vec<Value>>();
+        let runtime_docs =
+            serde_saphyr::from_multiple::<serde_json::Value>(runtime_manifest).unwrap();
         let runtime_role = runtime_docs
             .iter()
             .find(|doc| {

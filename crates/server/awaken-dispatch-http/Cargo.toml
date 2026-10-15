@@ -45,7 +45,7 @@ awaken-worker-contract.workspace = true
 awaken-runtime-host-testkit.workspace = true
 awaken-worker-registry = { workspace = true, features = ["test-support"] }
 awaken-worker-transport-security = { workspace = true, features = ["kubernetes"] }
-kube = { version = "1", default-features = false, features = ["client"] }
+kube = { workspace = true, features = ["client"] }
 awaken-provisioning-contract.workspace = true
 awaken-resource-application.workspace = true
 awaken-file-store = { workspace = true, features = ["test-support"] }

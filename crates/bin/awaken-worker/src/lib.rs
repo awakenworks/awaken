@@ -37,7 +37,7 @@ async fn request_registered_kubernetes_pod_replacement(worker_id: &str) -> Resul
     use awaken_worker_transport_security::kubernetes::KubernetesPodIdentity;
 
     let pod = KubernetesPodIdentity::from_worker_id(worker_id)?;
-    let client = kube::Client::try_default()
+    let client = awaken_sandbox_container::k8s::connect_control_client()
         .await
         .map_err(|error| error.to_string())?;
     let observer =
