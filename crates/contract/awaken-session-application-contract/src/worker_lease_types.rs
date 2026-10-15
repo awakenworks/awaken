@@ -25,8 +25,10 @@ impl TenureScope for SessionWork {
 /// One-byte distinguishable spellings of a Work lease coordinate. Effect
 /// authority proofs vary the owner through this fixture; receipt minting uses
 /// its exact owned row. All values enter through the production lease adapter.
+/// Receipt and effect-policy harnesses share this sample builder; neither
+/// copy nor fixture data grants authority independently of the original port.
 #[cfg(kani)]
-fn proof_representative_lease(
+pub(super) fn proof_representative_lease(
     session: bool,
     owner: bool,
     work: bool,

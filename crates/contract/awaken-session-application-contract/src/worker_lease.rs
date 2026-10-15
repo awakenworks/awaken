@@ -4,6 +4,8 @@
 // retains topology, terminal-state and claimed-Run revival admission.
 //! Session-owned permission to acquire or release a Worker assignment lease.
 
+#[cfg(kani)]
+use crate::worker_lease_types::proof_representative_lease;
 use crate::{SessionWork, SessionWorkAcquisition, SessionWorkOwnership};
 use awaken_lease_contract::fence::{Epoch, Tenure, ZeroEpoch};
 use awaken_session_types::{RunError, SessionId, SessionWorkLease};
@@ -250,29 +252,6 @@ fn lease_tenure(lease: &SessionWorkLease) -> Tenure<SessionWork> {
         lease.owner().into(),
         Epoch::from_persisted(lease.epoch()).expect("transfer epoch is nonzero"),
     )
-}
-
-/// One-byte distinguishable spellings of a Work lease coordinate. Effect
-/// authority proofs vary the owner through this fixture; receipt minting uses
-/// its exact owned row. All values enter through the production lease adapter.
-#[cfg(kani)]
-fn proof_representative_lease(
-    session: bool,
-    owner: bool,
-    work: bool,
-    environment: bool,
-    epoch: bool,
-    expiry: bool,
-) -> SessionWorkLease {
-    SessionWorkLease::from_persisted(
-        if work { "k" } else { "K" },
-        if environment { "e" } else { "E" },
-        SessionId::from(if session { "s" } else { "S" }),
-        if owner { "w" } else { "W" },
-        if epoch { 1 } else { 2 },
-        if expiry { 10 } else { 20 },
-    )
-    .expect("representative epochs are nonzero")
 }
 
 #[cfg(kani)]
