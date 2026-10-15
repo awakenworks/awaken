@@ -360,258 +360,264 @@ pub async fn deleted_event_admission_decision_table<
     );
 }
 
-pub async fn root_cas_decision_table<R: awaken_session_repository_contract::SessionStore>(
+pub fn root_cas_decision_table<R: awaken_session_repository_contract::SessionStore>(
     repo: &R,
-) {
-    // Cause-effect graph:
-    // C1 valid command -> C2 idempotency absent-or-equal -> C3 live row exists
-    // -> C4 owner exact -> C5 revision exact -> E1 atomic applied/replayed.
-    // Delete additionally yields E2 tombstone read-as-not-found. Any failed
-    // cause yields its typed result and changes neither aggregate nor outbox.
-    //
-    // | Rule | Operation | C2 | C3 | C4 | C5 | Result |
-    // |---|---|---|---|---|---|---|
-    // | R1 | create | absent | - | - | new | revision 1 |
-    // | R2 | create retry | equal | - | - | - | revision 1 |
-    // | R3 | create retry | mismatch | - | - | - | idempotency error |
-    // | R4 | replace | absent | T | T | T | applied revision 2 |
-    // | R5 | replace retry | equal | T | T | T | replayed revision 2 |
-    // | R6 | replace retry | equal | T | F | T | conflict revision 2 |
-    // | R7 | replace retry | mismatch | T | T | T | idempotency mismatch |
-    // | R8 | replace | absent | T | T | F | conflict revision 1 |
-    // | R9 | replace | absent | T | F | T | conflict revision 1 |
-    // | R10 | delete | absent | T | T | T | applied revision 2 + hidden |
-    // | R11 | delete retry | equal | tombstone | T | old | replayed revision 2 |
-    // | R12 | mutation with create receipt | equal | T | T | next differs | mismatch |
-    // | R13 | replace retry | equal | T | T | wrong expected | mismatch |
-    let rules = [
-        CasRule::Create,
-        CasRule::CreateReplay,
-        CasRule::CreateIdempotencyMismatch,
-        CasRule::CreateReceiptAsMutation,
-        CasRule::Replace,
-        CasRule::ReplaceReplay,
-        CasRule::ReplaceReplayWrongExpected,
-        CasRule::ReplaceReplayWrongOwner,
-        CasRule::ReplaceIdempotencyMismatch,
-        CasRule::StaleRevision,
-        CasRule::WrongOwner,
-        CasRule::Delete,
-        CasRule::DeleteReplay,
-    ];
-    for (index, rule) in rules.into_iter().enumerate() {
-        let id = format!("sesn_cas_{index}");
-        let mut initial = session(&id, "initial");
-        if matches!(rule, CasRule::Delete | CasRule::DeleteReplay) {
-            assert!(initial.request_delete("ws_a", 0).unwrap().is_some());
-            complete_terminal_cleanup(&mut initial);
-        }
-        let create_payload = SessionMutationPayload::Replace(initial.clone());
-        let create_record = record("create", &create_payload);
-        let created = repo
-            .create("ws_a", initial, create_record.clone(), Vec::new())
-            .await
-            .expect("initial CAS create");
-        assert_eq!(
-            created,
-            awaken_session_state_contract::SessionCreateResult::Applied({
-                let mut expected = session(&id, "initial");
-                if matches!(rule, CasRule::Delete | CasRule::DeleteReplay) {
-                    assert!(expected.request_delete("ws_a", 0).unwrap().is_some());
-                    complete_terminal_cleanup(&mut expected);
-                }
-                expected.revision = SessionRevision(1);
-                expected
-            })
-        );
-        assert_eq!(
-            repo.idempotency_receipt(&SessionId::from(&id), "create")
-                .await,
-            Ok(Some(
-                awaken_session_state_contract::SessionIdempotencyReceipt {
-                    payload_hash: create_record.payload_hash.clone(),
-                    committed_revision: SessionRevision(1),
-                }
-            )),
-            "the decision table reads the same atomic receipt it writes"
-        );
+) -> impl std::future::Future<Output = ()> + '_ {
+    // Keep this owned conformance phase off the caller's async stack.
+    // Assertions and their order stay in the original suite.
+    Box::pin(async move {
+        // Cause-effect graph:
+        // C1 valid command -> C2 idempotency absent-or-equal -> C3 live row exists
+        // -> C4 owner exact -> C5 revision exact -> E1 atomic applied/replayed.
+        // Delete additionally yields E2 tombstone read-as-not-found. Any failed
+        // cause yields its typed result and changes neither aggregate nor outbox.
+        //
+        // | Rule | Operation | C2 | C3 | C4 | C5 | Result |
+        // |---|---|---|---|---|---|---|
+        // | R1 | create | absent | - | - | new | revision 1 |
+        // | R2 | create retry | equal | - | - | - | revision 1 |
+        // | R3 | create retry | mismatch | - | - | - | idempotency error |
+        // | R4 | replace | absent | T | T | T | applied revision 2 |
+        // | R5 | replace retry | equal | T | T | T | replayed revision 2 |
+        // | R6 | replace retry | equal | T | F | T | conflict revision 2 |
+        // | R7 | replace retry | mismatch | T | T | T | idempotency mismatch |
+        // | R8 | replace | absent | T | T | F | conflict revision 1 |
+        // | R9 | replace | absent | T | F | T | conflict revision 1 |
+        // | R10 | delete | absent | T | T | T | applied revision 2 + hidden |
+        // | R11 | delete retry | equal | tombstone | T | old | replayed revision 2 |
+        // | R12 | mutation with create receipt | equal | T | T | next differs | mismatch |
+        // | R13 | replace retry | equal | T | T | wrong expected | mismatch |
+        let rules = [
+            CasRule::Create,
+            CasRule::CreateReplay,
+            CasRule::CreateIdempotencyMismatch,
+            CasRule::CreateReceiptAsMutation,
+            CasRule::Replace,
+            CasRule::ReplaceReplay,
+            CasRule::ReplaceReplayWrongExpected,
+            CasRule::ReplaceReplayWrongOwner,
+            CasRule::ReplaceIdempotencyMismatch,
+            CasRule::StaleRevision,
+            CasRule::WrongOwner,
+            CasRule::Delete,
+            CasRule::DeleteReplay,
+        ];
+        for (index, rule) in rules.into_iter().enumerate() {
+            let id = format!("sesn_cas_{index}");
+            let mut initial = session(&id, "initial");
+            if matches!(rule, CasRule::Delete | CasRule::DeleteReplay) {
+                assert!(initial.request_delete("ws_a", 0).unwrap().is_some());
+                complete_terminal_cleanup(&mut initial);
+            }
+            let create_payload = SessionMutationPayload::Replace(initial.clone());
+            let create_record = record("create", &create_payload);
+            let created = repo
+                .create("ws_a", initial, create_record.clone(), Vec::new())
+                .await
+                .expect("initial CAS create");
+            assert_eq!(
+                created,
+                awaken_session_state_contract::SessionCreateResult::Applied({
+                    let mut expected = session(&id, "initial");
+                    if matches!(rule, CasRule::Delete | CasRule::DeleteReplay) {
+                        assert!(expected.request_delete("ws_a", 0).unwrap().is_some());
+                        complete_terminal_cleanup(&mut expected);
+                    }
+                    expected.revision = SessionRevision(1);
+                    expected
+                })
+            );
+            assert_eq!(
+                repo.idempotency_receipt(&SessionId::from(&id), "create")
+                    .await,
+                Ok(Some(
+                    awaken_session_state_contract::SessionIdempotencyReceipt {
+                        payload_hash: create_record.payload_hash.clone(),
+                        committed_revision: SessionRevision(1),
+                    }
+                )),
+                "the decision table reads the same atomic receipt it writes"
+            );
 
-        match rule {
-            CasRule::Create => {}
-            CasRule::CreateReplay => {
-                let mut replay = session(&id, "initial");
-                replay.revision = SessionRevision(0);
-                let mut expected = replay.clone();
-                expected.revision = SessionRevision(1);
-                assert_eq!(
-                    repo.create("ws_a", replay, create_record, Vec::new())
+            match rule {
+                CasRule::Create => {}
+                CasRule::CreateReplay => {
+                    let mut replay = session(&id, "initial");
+                    replay.revision = SessionRevision(0);
+                    let mut expected = replay.clone();
+                    expected.revision = SessionRevision(1);
+                    assert_eq!(
+                        repo.create("ws_a", replay, create_record, Vec::new())
+                            .await
+                            .unwrap(),
+                        awaken_session_state_contract::SessionCreateResult::Replayed(expected)
+                    );
+                }
+                CasRule::CreateIdempotencyMismatch => {
+                    let error = repo
+                        .create(
+                            "ws_a",
+                            session(&id, "different"),
+                            IdempotencyRecord {
+                                key: "create".into(),
+                                payload_hash: "different".into(),
+                            },
+                            Vec::new(),
+                        )
+                        .await
+                        .unwrap_err();
+                    assert_eq!(
+                        error,
+                        SessionRepositoryError::Conflict(
+                            awaken_session_state_contract::SessionRepositoryConflict::IdempotencyMismatch
+                        )
+                    );
+                }
+                CasRule::CreateReceiptAsMutation => {
+                    let mut replacement = repo.get(&SessionId::from(id)).await.unwrap();
+                    replacement.revision = SessionRevision(0);
+                    assert_eq!(
+                        repo.commit(
+                            "ws_a",
+                            SessionMutation {
+                                expected_revision: SessionRevision(0),
+                                idempotency: create_record,
+                                payload: SessionMutationPayload::Replace(replacement),
+                                lifecycle_facts: Vec::new(),
+                            },
+                        )
                         .await
                         .unwrap(),
-                    awaken_session_state_contract::SessionCreateResult::Replayed(expected)
-                );
-            }
-            CasRule::CreateIdempotencyMismatch => {
-                let error = repo
-                    .create(
-                        "ws_a",
-                        session(&id, "different"),
-                        IdempotencyRecord {
-                            key: "create".into(),
-                            payload_hash: "different".into(),
-                        },
-                        Vec::new(),
-                    )
-                    .await
-                    .unwrap_err();
-                assert_eq!(
-                    error,
-                    SessionRepositoryError::Conflict(
-                        awaken_session_state_contract::SessionRepositoryConflict::IdempotencyMismatch
-                    )
-                );
-            }
-            CasRule::CreateReceiptAsMutation => {
-                let mut replacement = repo.get(&SessionId::from(id)).await.unwrap();
-                replacement.revision = SessionRevision(0);
-                assert_eq!(
-                    repo.commit(
-                        "ws_a",
-                        SessionMutation {
-                            expected_revision: SessionRevision(0),
-                            idempotency: create_record,
-                            payload: SessionMutationPayload::Replace(replacement),
-                            lifecycle_facts: Vec::new(),
-                        },
-                    )
-                    .await
-                    .unwrap(),
-                    SessionMutationResult::IdempotencyMismatch,
-                    "R12 a revision-one create receipt cannot replay even a forged revision-zero mutation"
-                );
-            }
-            CasRule::Replace
-            | CasRule::ReplaceReplay
-            | CasRule::ReplaceReplayWrongExpected
-            | CasRule::ReplaceReplayWrongOwner
-            | CasRule::ReplaceIdempotencyMismatch
-            | CasRule::StaleRevision
-            | CasRule::WrongOwner => {
-                let before = repo.get(&SessionId::from(id)).await.unwrap();
-                let mut replacement = before.clone();
-                replacement.title = Some("replacement".into());
-                // Legal replace/replay rows carry the original State fact.
-                // Stale/foreign rows keep their invalid candidate untouched so
-                // the existing owner/revision classifier still wins first.
-                if !matches!(rule, CasRule::StaleRevision | CasRule::WrongOwner) {
-                    replacement = record_update(&before, replacement, 0).into_snapshot();
-                }
-                if matches!(rule, CasRule::StaleRevision) {
-                    replacement.revision = SessionRevision(0);
-                }
-                let payload = SessionMutationPayload::Replace(replacement);
-                let key = if matches!(rule, CasRule::ReplaceIdempotencyMismatch) {
-                    "replace-mismatch"
-                } else {
-                    "replace"
-                };
-                let mutation = SessionMutation {
-                    expected_revision: if matches!(rule, CasRule::StaleRevision) {
-                        SessionRevision(0)
-                    } else {
-                        SessionRevision(1)
-                    },
-                    idempotency: record(key, &payload),
-                    payload: payload.clone(),
-                    lifecycle_facts: Vec::new(),
-                };
-                let owner = if matches!(rule, CasRule::WrongOwner) {
-                    "ws_b"
-                } else {
-                    "ws_a"
-                };
-                let first = repo.commit(owner, mutation.clone()).await.unwrap();
-                let expected = if matches!(rule, CasRule::StaleRevision | CasRule::WrongOwner) {
-                    SessionMutationResult::Conflict {
-                        current_revision: SessionRevision(1),
-                    }
-                } else {
-                    SessionMutationResult::Applied {
-                        new_revision: SessionRevision(2),
-                    }
-                };
-                assert_eq!(first, expected);
-                if matches!(rule, CasRule::ReplaceReplay) {
-                    assert_eq!(
-                        repo.commit(owner, mutation.clone()).await.unwrap(),
-                        SessionMutationResult::Replayed {
-                            new_revision: SessionRevision(2)
-                        }
-                    );
-                }
-                if matches!(rule, CasRule::ReplaceReplayWrongExpected) {
-                    let mut wrong_expected = mutation.clone();
-                    wrong_expected.expected_revision = SessionRevision(0);
-                    if let SessionMutationPayload::Replace(session) = &mut wrong_expected.payload {
-                        session.revision = SessionRevision(0);
-                    }
-                    assert_eq!(
-                        repo.commit(owner, wrong_expected).await.unwrap(),
                         SessionMutationResult::IdempotencyMismatch,
-                        "R13 a receipt cannot replay under another expected revision"
+                        "R12 a revision-one create receipt cannot replay even a forged revision-zero mutation"
                     );
                 }
-                if matches!(rule, CasRule::ReplaceReplayWrongOwner) {
-                    assert_eq!(
-                        repo.commit("ws_b", mutation.clone()).await.unwrap(),
-                        SessionMutationResult::Conflict {
-                            current_revision: SessionRevision(2)
-                        },
-                        "a foreign owner cannot adopt an exact mutation receipt"
-                    );
-                }
-                if matches!(rule, CasRule::ReplaceIdempotencyMismatch) {
-                    let mut mismatched = mutation;
-                    mismatched.idempotency.payload_hash = "different".into();
-                    assert_eq!(
-                        repo.commit(owner, mismatched).await.unwrap(),
-                        SessionMutationResult::IdempotencyMismatch
-                    );
-                }
-            }
-            CasRule::Delete | CasRule::DeleteReplay => {
-                let payload = SessionMutationPayload::Delete(SessionTombstone {
-                    session_id: SessionId::from(&id),
-                    deleted_revision: SessionRevision(2),
-                    deleted_at: at(1_784_937_600),
-                });
-                let mutation = SessionMutation {
-                    expected_revision: SessionRevision(1),
-                    idempotency: record("delete", &payload),
-                    payload,
-                    lifecycle_facts: Vec::new(),
-                };
-                assert_eq!(
-                    repo.commit("ws_a", mutation.clone()).await.unwrap(),
-                    SessionMutationResult::Applied {
-                        new_revision: SessionRevision(2)
+                CasRule::Replace
+                | CasRule::ReplaceReplay
+                | CasRule::ReplaceReplayWrongExpected
+                | CasRule::ReplaceReplayWrongOwner
+                | CasRule::ReplaceIdempotencyMismatch
+                | CasRule::StaleRevision
+                | CasRule::WrongOwner => {
+                    let before = repo.get(&SessionId::from(id)).await.unwrap();
+                    let mut replacement = before.clone();
+                    replacement.title = Some("replacement".into());
+                    // Legal replace/replay rows carry the original State fact.
+                    // Stale/foreign rows keep their invalid candidate untouched so
+                    // the existing owner/revision classifier still wins first.
+                    if !matches!(rule, CasRule::StaleRevision | CasRule::WrongOwner) {
+                        replacement = record_update(&before, replacement, 0).into_snapshot();
                     }
-                );
-                assert_eq!(
-                    repo.get(&SessionId::from(id)).await,
-                    Err(SessionRepositoryError::NotFound)
-                );
-                if matches!(rule, CasRule::DeleteReplay) {
+                    if matches!(rule, CasRule::StaleRevision) {
+                        replacement.revision = SessionRevision(0);
+                    }
+                    let payload = SessionMutationPayload::Replace(replacement);
+                    let key = if matches!(rule, CasRule::ReplaceIdempotencyMismatch) {
+                        "replace-mismatch"
+                    } else {
+                        "replace"
+                    };
+                    let mutation = SessionMutation {
+                        expected_revision: if matches!(rule, CasRule::StaleRevision) {
+                            SessionRevision(0)
+                        } else {
+                            SessionRevision(1)
+                        },
+                        idempotency: record(key, &payload),
+                        payload: payload.clone(),
+                        lifecycle_facts: Vec::new(),
+                    };
+                    let owner = if matches!(rule, CasRule::WrongOwner) {
+                        "ws_b"
+                    } else {
+                        "ws_a"
+                    };
+                    let first = repo.commit(owner, mutation.clone()).await.unwrap();
+                    let expected = if matches!(rule, CasRule::StaleRevision | CasRule::WrongOwner) {
+                        SessionMutationResult::Conflict {
+                            current_revision: SessionRevision(1),
+                        }
+                    } else {
+                        SessionMutationResult::Applied {
+                            new_revision: SessionRevision(2),
+                        }
+                    };
+                    assert_eq!(first, expected);
+                    if matches!(rule, CasRule::ReplaceReplay) {
+                        assert_eq!(
+                            repo.commit(owner, mutation.clone()).await.unwrap(),
+                            SessionMutationResult::Replayed {
+                                new_revision: SessionRevision(2)
+                            }
+                        );
+                    }
+                    if matches!(rule, CasRule::ReplaceReplayWrongExpected) {
+                        let mut wrong_expected = mutation.clone();
+                        wrong_expected.expected_revision = SessionRevision(0);
+                        if let SessionMutationPayload::Replace(session) =
+                            &mut wrong_expected.payload
+                        {
+                            session.revision = SessionRevision(0);
+                        }
+                        assert_eq!(
+                            repo.commit(owner, wrong_expected).await.unwrap(),
+                            SessionMutationResult::IdempotencyMismatch,
+                            "R13 a receipt cannot replay under another expected revision"
+                        );
+                    }
+                    if matches!(rule, CasRule::ReplaceReplayWrongOwner) {
+                        assert_eq!(
+                            repo.commit("ws_b", mutation.clone()).await.unwrap(),
+                            SessionMutationResult::Conflict {
+                                current_revision: SessionRevision(2)
+                            },
+                            "a foreign owner cannot adopt an exact mutation receipt"
+                        );
+                    }
+                    if matches!(rule, CasRule::ReplaceIdempotencyMismatch) {
+                        let mut mismatched = mutation;
+                        mismatched.idempotency.payload_hash = "different".into();
+                        assert_eq!(
+                            repo.commit(owner, mismatched).await.unwrap(),
+                            SessionMutationResult::IdempotencyMismatch
+                        );
+                    }
+                }
+                CasRule::Delete | CasRule::DeleteReplay => {
+                    let payload = SessionMutationPayload::Delete(SessionTombstone {
+                        session_id: SessionId::from(&id),
+                        deleted_revision: SessionRevision(2),
+                        deleted_at: at(1_784_937_600),
+                    });
+                    let mutation = SessionMutation {
+                        expected_revision: SessionRevision(1),
+                        idempotency: record("delete", &payload),
+                        payload,
+                        lifecycle_facts: Vec::new(),
+                    };
                     assert_eq!(
-                        repo.commit("ws_a", mutation).await.unwrap(),
-                        SessionMutationResult::Replayed {
+                        repo.commit("ws_a", mutation.clone()).await.unwrap(),
+                        SessionMutationResult::Applied {
                             new_revision: SessionRevision(2)
                         }
                     );
+                    assert_eq!(
+                        repo.get(&SessionId::from(id)).await,
+                        Err(SessionRepositoryError::NotFound)
+                    );
+                    if matches!(rule, CasRule::DeleteReplay) {
+                        assert_eq!(
+                            repo.commit("ws_a", mutation).await.unwrap(),
+                            SessionMutationResult::Replayed {
+                                new_revision: SessionRevision(2)
+                            }
+                        );
+                    }
                 }
             }
         }
-    }
-    materialization_retention_rows(repo).await;
+        materialization_retention_rows(repo).await;
+    })
 }
 
 async fn materialization_retention_rows<R: awaken_session_repository_contract::SessionStore>(

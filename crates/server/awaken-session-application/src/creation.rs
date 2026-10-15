@@ -494,10 +494,11 @@ async fn commit_creation_activation(
 }
 
 fn compile_creation_configuration(
-    compiler: &dyn awaken_tool_contract::ToolConfigurationCompiler,
+    application: &SessionApplication,
     mut intent: SessionCreationIntent,
     tools: SessionToolConfiguration,
 ) -> Result<(CompiledSessionCreation, SessionToolConfiguration), RunError> {
+    let compiler = application.tool_configuration_compiler.as_ref();
     intent.control.toolsets = crate::tool_compilation::compile_tool_settings(
         compiler,
         SessionToolConfiguration {
@@ -563,11 +564,7 @@ impl SessionApplication {
         } = command;
         // Compile the complete intent before insert so invalid input can never
         // strand a durable Session waiting for a second authoring path.
-        let (compiled, tools) = match compile_creation_configuration(
-            self.tool_configuration_compiler.as_ref(),
-            intent,
-            tools,
-        ) {
+        let (compiled, tools) = match compile_creation_configuration(self, intent, tools) {
             Ok(compiled) => compiled,
             Err(error) => {
                 let first = SessionCreationError::Rejected(error);
