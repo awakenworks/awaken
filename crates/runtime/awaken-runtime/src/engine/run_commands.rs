@@ -38,7 +38,8 @@ impl RunAttemptExecutor for Runtime {
         command: ResumeCommand,
         context: RuntimeRunContext,
     ) -> Result<RunState> {
-        let context = activation.narrow_context(context);
+        // The common resume binder checks the live source before applying the
+        // activation. An eager overlay here would erase a conflicting source.
         let reader = context.reader.clone().ok_or_else(|| {
             Error::Execution("RunAttemptExecutor::resume requires committed history".to_string())
         })?;
@@ -404,6 +405,27 @@ fn bind_resume_context(
     Ok(context)
 }
 
+/// Join the same frozen state with the ticket before either resume route can
+/// enter a child or tool. The aggregate remains the sole coherence validator.
+fn load_resumed_tool_batch(
+    thread_id: &ThreadId,
+    ticket: &ResumeTicket,
+    store: &Store,
+) -> Result<Option<ToolBatch>> {
+    if ticket.tool_call().is_none() {
+        return Ok(None);
+    }
+    let batch = ActiveToolBatch::load(store)
+        .map_err(|error| Error::Execution(error.to_string()))?
+        .ok_or_else(|| {
+            Error::Execution("tool resume is missing its committed tool batch".into())
+        })?;
+    batch
+        .validate_awaiting_ticket(thread_id, ticket)
+        .map_err(|error| Error::Execution(format!("incoherent tool resume: {error}")))?;
+    Ok(Some(batch))
+}
+
 pub(crate) async fn resume_with_continuation(
     runtime: &Runtime,
     command: ResumeCommand,
@@ -503,6 +525,7 @@ pub(crate) async fn resume_with_continuation(
         }
     };
 
+    let waiting_batch = load_resumed_tool_batch(&thread_id, &ticket, &store)?;
     emit(&context, &run_id, AgentEvent::Fact(Fact::RunStarted)).await;
 
     // An awaiting delegation resumes through its executor, not the tool registry: the
@@ -522,6 +545,7 @@ pub(crate) async fn resume_with_continuation(
             reader,
             &context,
             resume_checkpoint,
+            waiting_batch.expect("Delegation is an admitted tool wait"),
             store,
         )
         .await;
@@ -543,6 +567,7 @@ pub(crate) async fn resume_with_continuation(
         &context,
         continuation,
         resume_checkpoint,
+        waiting_batch,
         store,
     )
     .await

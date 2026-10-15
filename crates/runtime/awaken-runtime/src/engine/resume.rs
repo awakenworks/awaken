@@ -102,13 +102,9 @@ pub(super) async fn drive_resumed(
     context: &RuntimeRunContext,
     continuation: ResumeContinuation,
     resume_checkpoint: Option<StreamCheckpoint>,
+    mut waiting_batch: Option<ToolBatch>,
     mut store: Store,
 ) -> Result<RunState> {
-    if context.inherited_toolsets != ticket.inherited_toolsets {
-        return Err(Error::Execution(
-            "resume tool configuration differs from the committed ticket".into(),
-        ));
-    }
     let (resume_step_base, mut transcript, projected_context) =
         resumed_model_context(resolved, run_id, thread_id, reader, context, &fresh_context);
     let context = &projected_context;
@@ -116,28 +112,11 @@ pub(super) async fn drive_resumed(
     // history and any child result committed by resume_delegation. Rebuilding
     // from the reader here would discard both the validated ordinal and local
     // projection updates when the reader is a frozen Worker snapshot.
-    // A tool resume has exactly one durable execution authority. Validate every
-    // ticket/batch axis before permission pre-commit or any tool/delegation
-    // effect; non-tool pauses keep the direct resume path.
-    let pending_call = ticket.tool_call().map(|(call_id, pending)| ToolCall {
-        call_id: call_id.to_string(),
-        tool_id: pending.tool_id.clone(),
-        arguments: pending.arguments.clone(),
-    });
+    // Context and batch were admitted by the common entry before any child
+    // effect. Read the original aggregate's call rather than rebuilding another
+    // payload from the ticket after a child has already been resumed.
+    let pending_call = pending_tool_call(waiting_batch.as_ref(), ticket).cloned();
     let waiting_call_id = pending_call.as_ref().map(|call| call.call_id.clone());
-    let mut waiting_batch = if waiting_call_id.is_some() {
-        let batch = ActiveToolBatch::load(&store)
-            .map_err(|error| Error::Execution(error.to_string()))?
-            .ok_or_else(|| {
-                Error::Execution("tool resume is missing its committed tool batch".to_string())
-            })?;
-        batch
-            .validate_awaiting_ticket(thread_id, ticket)
-            .map_err(|error| Error::Execution(format!("incoherent tool resume: {error}")))?;
-        Some(batch)
-    } else {
-        None
-    };
     let approved = matches!(
         &result,
         ResumeResult::Permission(PermissionDecision::Allow { .. })

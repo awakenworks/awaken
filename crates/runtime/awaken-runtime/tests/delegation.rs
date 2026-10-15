@@ -33,8 +33,9 @@ use run_input::MarkPlugin;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::delegation::{
-    CancellableRunDelegationService, DelegationExecutionError, DelegationRequest, DelegationResume,
-    DelegationStep, PendingChildRunResults, RunDelegationService, RunDelegations,
+    CancellableRunDelegationService, ChildRunResult, ChildRunResultInbox, DelegationExecutionError,
+    DelegationRequest, DelegationResume, DelegationStep, PendingChildRunResults,
+    RunDelegationService, RunDelegations,
 };
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
@@ -1595,6 +1596,215 @@ async fn resuming_a_delegation_done_folds_the_reply_and_completes() {
         1,
         "RI7 one actual child continuation"
     );
+}
+
+#[tokio::test]
+async fn delegation_resume_distinguishes_cached_absent_and_malformed_delivery() {
+    use awaken_agent_contract::agent::delegation::DelegationId;
+    use awaken_agent_contract::agent::state::Action;
+    use awaken_runtime_contract::RunDisposition;
+    use awaken_runtime_contract::execution::Error;
+    // CL6 exact cached child value => zero live child-resume calls, full usage
+    // folded once and envelope consumed by the original parent commit. CL7 no
+    // envelope => the original child continuation executes once. CL8 malformed
+    // inbox => original Error::Execution(StateError), zero child-resume or writes,
+    // unchanged ticket/messages/state. Service/origin and current ticket remain
+    // the existing authority; this matrix adds no cache qualification policy.
+    // U1 cached/rejected completion => no durable rollup/consume, unchanged
+    // ticket; retry folds once without child resume. U2 live Done with usage =>
+    // delivery alone contains the envelope, then completion folds once. U3
+    // empty live usage => the original no-op tally. U4 repeating any successful
+    // command => NotWaiting before entry/fold; the committed usage is unchanged.
+    for mode in [
+        "cached",
+        "cached-rejected",
+        "absent",
+        "live-usage",
+        "malformed",
+    ] {
+        let executor = Arc::new(MockRunDelegationService::new(
+            Step::Awaiting(serde_json::json!({"task": "remote-42"})),
+            Step::Done(
+                "live child result".into(),
+                if mode == "live-usage" { 23 } else { 0 },
+            ),
+        ));
+        let (runtime, commit) = await_on_delegation(executor.clone()).await;
+        let id = DelegationId::for_parent_call(&RunId("run-1".into()), CALL_ID);
+        let mut usage = ThreadUsage::default();
+        usage.record(
+            "cached-a",
+            TokenUsage {
+                prompt_tokens: 2,
+                completion_tokens: 3,
+                cache_read_tokens: 5,
+                cache_creation_tokens: 7,
+            },
+        );
+        usage.record(
+            "cached-b",
+            TokenUsage {
+                prompt_tokens: 11,
+                completion_tokens: 13,
+                cache_read_tokens: 17,
+                cache_creation_tokens: 19,
+            },
+        );
+        if matches!(mode, "cached" | "cached-rejected" | "malformed") {
+            let mut inbox = ChildRunResultInbox::default();
+            inbox
+                .record(
+                    id.clone(),
+                    ChildRunResult {
+                        child_run_id: id.child_run_id(),
+                        text: "cached child result".into(),
+                        usage: usage.clone(),
+                    },
+                )
+                .unwrap();
+            let mut command = PendingChildRunResults::write(&inbox);
+            if mode == "malformed" {
+                command.action = Action::Set(serde_json::json!({"pending": false}));
+            }
+            commit
+                .commit(ThreadCommit::assemble(
+                    ThreadId("thread-1".into()),
+                    RunDisposition::awaiting(
+                        commit.resume_ticket_for(&RunId("run-1".into())).unwrap(),
+                    ),
+                    false,
+                    Vec::new(),
+                    vec![command],
+                    Vec::new(),
+                ))
+                .await
+                .unwrap();
+        }
+        let before = commit.committed();
+        let ticket = commit.resume_ticket_for(&RunId("run-1".into()));
+        if mode == "cached-rejected" {
+            let failure = runtime
+                .resume(
+                    resume_command("continue"),
+                    commit.as_ref(),
+                    RuntimeRunContext::new().with_commit(Arc::new(RejectingCommit)),
+                )
+                .await
+                .expect_err("U1 parent completion commit rejects");
+            assert_eq!(failure.code(), "commit_failed", "U1");
+            let rejected = commit.committed();
+            assert_eq!(rejected.state, before.state, "U1 no durable rollup/consume");
+            assert_eq!(
+                rejected.messages, before.messages,
+                "U1 no result publication"
+            );
+            assert_eq!(
+                commit.resume_ticket_for(&RunId("run-1".into())),
+                ticket,
+                "U1"
+            );
+            assert!(executor.resumed_with.lock().unwrap().is_empty(), "U1");
+        }
+        let result = runtime
+            .resume(
+                resume_command("continue"),
+                commit.as_ref(),
+                RuntimeRunContext::new().with_commit(commit.clone()),
+            )
+            .await;
+        if mode == "malformed" {
+            let expected = PendingChildRunResults::load(&Store::rebuild(&before.state))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                matches!(result, Err(Error::Execution(ref message)) if *message == expected),
+                "CL8"
+            );
+            assert!(executor.resumed_with.lock().unwrap().is_empty(), "CL8");
+            let after = commit.committed();
+            assert_eq!(after.state, before.state, "CL8: zero state write");
+            assert_eq!(after.messages, before.messages, "CL8: zero message write");
+            assert_eq!(
+                commit.resume_ticket_for(&RunId("run-1".into())),
+                ticket,
+                "CL8"
+            );
+            continue;
+        }
+        assert_eq!(
+            result.unwrap(),
+            RunState::Ended(EndCause::NaturalEnd),
+            "{mode}"
+        );
+        assert_eq!(
+            executor.started.lock().unwrap().len(),
+            1,
+            "initial child only"
+        );
+        assert_eq!(
+            executor.resumed_with.lock().unwrap().len(),
+            usize::from(matches!(mode, "absent" | "live-usage")),
+            "CL6/CL7"
+        );
+        let after = commit.committed();
+        assert!(
+            after
+                .messages
+                .iter()
+                .any(|message| message.role == Role::Tool
+                    && message
+                        .text_content()
+                        .contains(if mode.starts_with("cached") {
+                            "cached child result"
+                        } else {
+                            "live child result"
+                        })),
+            "CL6/CL7"
+        );
+        assert_eq!(
+            ThreadUsage::from_committed_state(&after.state),
+            if mode.starts_with("cached") {
+                usage
+            } else if mode == "live-usage" {
+                let mut expected = ThreadUsage::default();
+                expected.record(
+                    "delegate-m",
+                    TokenUsage {
+                        prompt_tokens: 23,
+                        completion_tokens: 23,
+                        ..Default::default()
+                    },
+                );
+                expected
+            } else {
+                ThreadUsage::default()
+            },
+            "CL6/CL7 full per-model usage"
+        );
+        assert!(
+            PendingChildRunResults::load(&Store::rebuild(&after.state))
+                .unwrap()
+                .is_empty(),
+            "CL6/CL7"
+        );
+        let replay = runtime
+            .resume(
+                resume_command("continue"),
+                commit.as_ref(),
+                RuntimeRunContext::new().with_commit(commit.clone()),
+            )
+            .await
+            .expect_err("U4 completed ticket cannot be consumed again");
+        assert_eq!(replay.code(), "run_not_awaiting", "U4");
+        let replayed = commit.committed();
+        assert_eq!(replayed.state, after.state, "U4 no second usage fold");
+        assert_eq!(replayed.messages, after.messages, "U4 no second result");
+        assert_eq!(
+            executor.resumed_with.lock().unwrap().len(),
+            usize::from(matches!(mode, "absent" | "live-usage")),
+            "U4 no second child continuation"
+        );
+    }
 }
 
 #[tokio::test]

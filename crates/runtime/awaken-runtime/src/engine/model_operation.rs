@@ -67,10 +67,23 @@ pub(super) async fn recover_checkpoint(
     // context.reader again (resume may have a different authoritative reader).
     // A later completion cannot erase an older Unknown. A late receipt for an
     // older ordinal may resolve that invocation, but cannot rewind allocation.
-    let recorded = ActiveModelOperation::recorded(&committed_state, run_id).map_err(|error| {
-        context.physical_quiescence.mark_uncertain();
-        Error::Commit(format!("model operation evidence unavailable: {error}"))
-    });
+    let recorded = ActiveModelOperation::recorded(&committed_state, run_id)
+        .map_err(|error| {
+            context.physical_quiescence.mark_uncertain();
+            Error::Commit(format!("model operation evidence unavailable: {error}"))
+        })
+        .and_then(|recorded| {
+            // The same pre-effect admission owns native execute, resume and owned
+            // tool continuation. A valid latest batch cannot hide damaged history
+            // and cause staged effects to be assigned a guessed later position.
+            for batch in ActiveToolBatch::recorded_batches(&committed_state, run_id) {
+                batch.map_err(|error| {
+                    context.physical_quiescence.mark_uncertain();
+                    Error::Commit(format!("tool batch history unavailable: {error}"))
+                })?;
+            }
+            Ok(recorded)
+        });
     let mut store = store_from_run_commands(committed_state, run_id);
     let observation = match recorded {
         Ok(recorded) => {

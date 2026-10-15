@@ -299,6 +299,7 @@ impl ActiveToolBatch {
         let mut entries = std::collections::BTreeMap::new();
         for recorded in Self::recorded_batches(state, run_id) {
             let (position, batch) = recorded?;
+            let batch = Self::require_retained_batch(batch)?;
             for call in batch.calls() {
                 let key = (batch.id().as_str().to_owned(), call.call.call_id.clone());
                 let phase = phase_view(&call.phase);
