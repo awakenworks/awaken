@@ -18,8 +18,17 @@ fn project_execution_evidence(
 ) -> crate::awaken_extensions::SessionExecutionEvidence {
     let public_thread_id =
         crate::state::public_thread_id(&observation.session_id, &observation.session_id);
+    let mut recovery = observation.recovery;
+    let operation_footprint = match &mut recovery {
+        awaken_session_execution_contract::SessionExecutionRecoveryObservation::EffectsClosed {
+            operation_footprint,
+            ..
+        } => operation_footprint.take(),
+        _ => None,
+    };
     crate::awaken_extensions::SessionExecutionEvidence {
-        recovery: Some(observation.recovery),
+        operation_footprint,
+        recovery: Some(recovery),
         session_id: observation.session_id,
         session_revision: observation.session_revision,
         agent_id: observation.agent_id,
@@ -48,17 +57,7 @@ fn project_execution_evidence(
                             )
                         })
                         .collect(),
-                    model_requests: run
-                        .model_requests
-                        .into_iter()
-                        .map(
-                            |request| crate::awaken_extensions::SessionModelRequestEvidence {
-                                sequence: request.sequence,
-                                is_error: request.is_error,
-                                retry_count: request.retry_count,
-                            },
-                        )
-                        .collect(),
+                    model_requests: run.model_requests,
                 },
             )
             .collect(),

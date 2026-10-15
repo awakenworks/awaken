@@ -321,7 +321,7 @@
     "awaken-session-executor::host/session/environment_lifecycle.rs::adopt_bound_session_environment_under_lifecycle": 261,
     "awaken-session-executor::host/session/environment_lifecycle/state.rs::install_projection_with_resource_reservation": 208,
     "awaken-session-executor::host/session/environment_lifecycle/terminal_cleanup.rs::dispose_terminal_cleanup_effect": 164,
-    "awaken-session-executor::host/session/environment_lifecycle/terminal_cleanup.rs::prepare_terminal_cleanup_effect": 267,
+    "awaken-session-executor::host/session/environment_lifecycle/terminal_cleanup.rs::prepare_terminal_cleanup_effect": 265,
     "awaken-session-executor::host/session/environment_lifecycle/terminal_preparation.rs::install_bound_environment_under_lifecycle": 315,
     "awaken-session-executor::host/session/environment_lifecycle/terminal_preparation.rs::prepare_bound_environment_for_effect_under_lifecycle": 219,
     "awaken-session-executor::host/session/environment_lifecycle/terminal_preparation.rs::prepare_terminal_environment_under_lifecycle": 233,

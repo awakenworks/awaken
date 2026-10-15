@@ -149,9 +149,8 @@ impl Drop for SharedEnvironmentActivityGuard {
 /// Environment. This replaces inference from Tokio task identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BackgroundWorkClass {
-    // No current detached caller is allowed to touch a Session Environment;
-    // this variant is the mandatory admission token for future callers and is
-    // exercised by the quiescence conformance test.
+    // BackgroundTask launch and resumed polling both register the exact
+    // Session generation; foreground/terminal consumers share this registry.
     #[allow(dead_code)]
     SharedEnvironment {
         session_id: String,

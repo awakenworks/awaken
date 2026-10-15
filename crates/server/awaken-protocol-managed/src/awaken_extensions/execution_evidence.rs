@@ -17,6 +17,9 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct SessionExecutionEvidence {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_footprint:
+        Option<awaken_session_execution_contract::SessionExecutionOperationFootprint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery: Option<awaken_session_execution_contract::SessionExecutionRecoveryObservation>,
     pub session_id: String,
     pub session_revision: u64,
@@ -43,17 +46,7 @@ pub struct SessionRunExecutionEvidence {
     pub idempotency_key: Option<String>,
     pub state: RunState,
     pub tool_use_ids: Vec<String>,
-    pub model_requests: Vec<SessionModelRequestEvidence>,
-}
-
-/// Minimal durable proof of one completed logical model request. Token usage is
-/// intentionally absent because the Managed Events API already owns it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SessionModelRequestEvidence {
-    pub sequence: u64,
-    pub is_error: bool,
-    pub retry_count: u32,
+    pub model_requests: Vec<awaken_session_execution_contract::SessionModelRequestObservation>,
 }
 
 /// Mount the read-only evidence adapter under Awaken's extension namespace.
@@ -78,6 +71,7 @@ mod tests {
         // identity is lost; E2 historical unknown is not invented; E3 schema
         // drift fails closed. Rules R1=W1=>E1, R2=W2=>E2, R3=W3=>E3.
         let evidence = SessionExecutionEvidence {
+            operation_footprint: None,
             recovery: None,
             session_id: "session-1".into(),
             session_revision: 4,
@@ -100,11 +94,13 @@ mod tests {
                 idempotency_key: Some("command-1".into()),
                 state: RunState::Running,
                 tool_use_ids: vec!["tool-submit".into()],
-                model_requests: vec![SessionModelRequestEvidence {
-                    sequence: 9,
-                    is_error: false,
-                    retry_count: 1,
-                }],
+                model_requests: vec![
+                    awaken_session_execution_contract::SessionModelRequestObservation {
+                        sequence: 9,
+                        is_error: false,
+                        retry_count: 1,
+                    },
+                ],
             }],
         };
         let wire = serde_json::to_value(&evidence).expect("R1 serialize");
@@ -142,6 +138,32 @@ mod tests {
             serde_json::from_value::<SessionExecutionEvidence>(drifted).is_err(),
             "R3/E3"
         );
+        // R4 a new optional footprint is an outer projection. Existing strict
+        // recovery readers retain exactly their four closure coordinates; old
+        // evidence omits the new outer field and never invents this observation.
+        let mut with_footprint = evidence;
+        with_footprint.operation_footprint =
+            Some(awaken_session_execution_contract::SessionExecutionOperationFootprint::ResponseOnly);
+        with_footprint.recovery = Some(
+            awaken_session_execution_contract::SessionExecutionRecoveryObservation::EffectsClosed {
+                operation_footprint: with_footprint.operation_footprint.clone(),
+                session_revision: 4,
+                runtime_commit_cursor: 9,
+                thread_ids: vec!["session-1".into()],
+                closure_records: vec![
+                    awaken_session_execution_contract::SessionExecutionClosureReference {
+                        run_id: "run-1".into(),
+                        evidence_ref: "original-closure".into(),
+                    },
+                ],
+            },
+        );
+        let wire = serde_json::to_value(with_footprint).unwrap();
+        assert_eq!(wire["operation_footprint"], "response_only", "R4");
+        assert!(
+            wire["recovery"].get("operation_footprint").is_none(),
+            "R4 legacy recovery shape retained"
+        );
     }
 
     #[tokio::test]
@@ -158,6 +180,7 @@ mod tests {
 
         async fn read(Path(session_id): Path<String>) -> Json<SessionExecutionEvidence> {
             Json(SessionExecutionEvidence {
+                operation_footprint: None,
                 recovery: None,
                 session_id,
                 session_revision: 1,

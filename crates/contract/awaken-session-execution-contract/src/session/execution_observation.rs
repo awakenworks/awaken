@@ -42,7 +42,8 @@ pub struct SessionToolUseObservation {
 
 /// Minimal proof that one logical model request reached a committed completion
 /// boundary. Usage remains on the existing Managed Events projection.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SessionModelRequestObservation {
     pub sequence: u64,
     pub is_error: bool,
