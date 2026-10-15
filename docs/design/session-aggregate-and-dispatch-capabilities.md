@@ -57,6 +57,16 @@ their existing projection. Admission, ordinary return and independent closure
 remain distinct evidence classes; the Session contract contains only original
 record coordinates and does not depend upward on Dispatch.
 
+The execution-owned `NativeAttemptFootprint` is the single decoder of original
+Native coverage, model operations and tool entry domains. Physical retirement
+and Session recovery both use that decoder through `awaken-dispatch-execution`;
+the existing `awaken-dispatch` exports remain compatible. Coverage must have
+its own positive commit coordinate strictly before every entry. Missing,
+unaligned or reordered history, and duplicate coverage, cannot acquire a
+response-only footprint through a weaker second parser. The recovery query also
+retains its independent refusal of any recorded tool batch or tool-use message.
+This consolidation supplies neither historical containment nor a cleanup receipt.
+
 Local composition constructs `AnyCoordinatorDispatch` from an owner implementing
 `DurableDispatch`, then uses `DispatchBinding::local`. Its cached Worker view
 retains the exact queue owner. Remote composition uses

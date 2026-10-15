@@ -7,7 +7,7 @@ use awaken_runtime_contract::attempt_termination::{
     ActiveNativeAttemptCoverage, NativeAttemptCoverage,
 };
 use awaken_runtime_contract::model_operation::ActiveModelOperation;
-use awaken_tool_contract::tool_batch::ActiveToolBatch;
+use awaken_runtime_contract::tool_batch::ActiveToolBatch;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeAttemptTermination {
@@ -94,7 +94,8 @@ pub struct NativeAttemptFootprint {
     profile: NativeAttemptCoverage,
     all_models_stopped: bool,
     all_model_effects_closed: bool,
-    domains: Vec<awaken_tool_contract::tool_batch::ToolExecutionDomain>,
+    response_only: bool,
+    domains: Vec<awaken_runtime_contract::tool_batch::ToolExecutionDomain>,
 }
 
 impl NativeAttemptFootprint {
@@ -105,13 +106,17 @@ impl NativeAttemptFootprint {
         self.profile == NativeAttemptCoverage::ModelOnlyV1
     }
 
-    pub fn process_domains(&self) -> &[awaken_tool_contract::tool_batch::ToolExecutionDomain] {
+    pub fn process_domains(&self) -> &[awaken_runtime_contract::tool_batch::ToolExecutionDomain] {
         &self.domains
+    }
+
+    pub(crate) fn response_only(&self) -> bool {
+        self.response_only
     }
 
     pub fn classify(
         &self,
-        closed: &[awaken_tool_contract::tool_batch::ToolExecutionDomain],
+        closed: &[awaken_runtime_contract::tool_batch::ToolExecutionDomain],
     ) -> NativeAttemptTermination {
         // This classifies execution containment only. An origin label does not
         // prove membership, resource exclusivity, closure or target access.
@@ -141,14 +146,22 @@ impl NativeAttemptFootprint {
     }
 
     pub fn decode(snapshot: &RunRecoverySnapshot) -> Result<Self, NativeAttemptTerminationError> {
+        Self::decode_for_run(snapshot, &snapshot.claimed_run_id)
+    }
+
+    pub(crate) fn decode_for_run(
+        snapshot: &RunRecoverySnapshot,
+        run: &awaken_agent_contract::agent::run::Id,
+    ) -> Result<Self, NativeAttemptTerminationError> {
         let unsupported = || Self {
             profile: NativeAttemptCoverage::Unspecified,
             all_models_stopped: false,
             all_model_effects_closed: false,
+            response_only: false,
             domains: Vec::new(),
         };
         if snapshot
-            .run_record(&snapshot.claimed_run_id)
+            .run_record(run)
             .map_err(|_| NativeAttemptTerminationError::RunMismatch)?
             .is_none()
         {
@@ -172,7 +185,7 @@ impl NativeAttemptFootprint {
         for (command, cursor) in snapshot.state.iter().zip(cursors) {
             if command.scope != ActiveNativeAttemptCoverage::SCOPE
                 || command.key.0 != ActiveNativeAttemptCoverage::KEY
-                || command.run_id.as_ref() != Some(&snapshot.claimed_run_id)
+                || command.run_id.as_ref() != Some(run)
             {
                 continue;
             }
@@ -194,14 +207,14 @@ impl NativeAttemptFootprint {
         let has_tool_history = snapshot.state.iter().any(|command| {
             command.scope == ActiveToolBatch::SCOPE
                 && command.key.0 == ActiveToolBatch::KEY
-                && command.run_id.as_ref() == Some(&snapshot.claimed_run_id)
+                && command.run_id.as_ref() == Some(run)
         });
         let coverage_precedes_every_entry =
             snapshot.state.iter().zip(cursors).all(|(command, cursor)| {
                 if command.scope == ActiveModelOperation::SCOPE
                     && [ActiveModelOperation::KEY, ActiveToolBatch::KEY]
                         .contains(&command.key.0.as_str())
-                    && command.run_id.as_ref() == Some(&snapshot.claimed_run_id)
+                    && command.run_id.as_ref() == Some(run)
                 {
                     coverage_precedes_model(coverage_cursor, *cursor)
                 } else {
@@ -213,15 +226,13 @@ impl NativeAttemptFootprint {
         {
             return Ok(unsupported());
         }
-        let models = ActiveModelOperation::recorded(&snapshot.state, &snapshot.claimed_run_id)
-            .map_err(|error| {
-                NativeAttemptTerminationError::InvalidModelHistory(error.to_string())
-            })?;
+        let models = ActiveModelOperation::recorded(&snapshot.state, run).map_err(|error| {
+            NativeAttemptTerminationError::InvalidModelHistory(error.to_string())
+        })?;
         let domains =
-            ActiveToolBatch::recorded_execution_domains(&snapshot.state, &snapshot.claimed_run_id)
-                .map_err(|error| {
-                    NativeAttemptTerminationError::InvalidToolHistory(error.to_string())
-                })?;
+            ActiveToolBatch::recorded_execution_domains(&snapshot.state, run).map_err(|error| {
+                NativeAttemptTerminationError::InvalidToolHistory(error.to_string())
+            })?;
         Ok(Self {
             profile,
             all_models_stopped: models.iter().all(|model| model.execution.permits_reentry()),
@@ -230,6 +241,11 @@ impl NativeAttemptFootprint {
                     || model.effect_scope
                         == awaken_runtime_contract::model_operation::ModelEffectScope::ResponseOnly
             }),
+            response_only: !has_tool_history
+                && models.iter().all(|model| {
+                    model.effect_scope
+                        == awaken_runtime_contract::model_operation::ModelEffectScope::ResponseOnly
+                }),
             domains,
         })
     }
@@ -274,14 +290,14 @@ mod tests {
         TerminalReceipt,
     };
     use awaken_runtime_contract::resolved::ModelBinding;
-    use awaken_tool_contract::tool::ToolRecoveryPolicy;
-    use awaken_tool_contract::tool_batch::ToolBatch;
+    use awaken_runtime_contract::tool::ToolRecoveryPolicy;
+    use awaken_runtime_contract::tool_batch::ToolBatch;
     use std::num::NonZeroU64;
 
     #[test]
     fn journalled_closure_requires_every_exact_domain_and_preserves_unknown_results() {
         use awaken_runtime_contract::model_operation::ModelEffectScope;
-        use awaken_tool_contract::tool_batch::ToolExecutionDomain;
+        use awaken_runtime_contract::tool_batch::ToolExecutionDomain;
         // C1 pre-effect coverage; C2 model is response-only/opaque; C3 exact
         // process closure delivered/missing/wrong; C4 Requested prefix before
         // executor entry. R1=C1+C4+response-only+exact

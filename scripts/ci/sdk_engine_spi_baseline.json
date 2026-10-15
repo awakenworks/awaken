@@ -47,10 +47,8 @@
       "awaken_agent_contract::thread::commit": 3,
       "awaken_agent_contract::thread::read::RunRecoverySource": 1,
       "awaken_runtime_contract::activation": 1,
-      "awaken_runtime_contract::attempt_termination": 1,
       "awaken_runtime_contract::control": 1,
       "awaken_runtime_contract::execution": 2,
-      "awaken_runtime_contract::model_operation": 2,
       "awaken_runtime_contract::resume": 4
     },
     "awaken-dispatch-contract": {
