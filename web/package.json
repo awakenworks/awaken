@@ -8,6 +8,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "test:e2e:runner": "node --test test-support/owned-data-reporter.test.mjs",
     "record": "node record/harness.mjs",
     "proof:install": "node record/install-all-in-one.mjs",
     "record:all": "node record/record-all.mjs",
