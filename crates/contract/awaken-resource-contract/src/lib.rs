@@ -42,7 +42,8 @@ pub use repository_application::{
 };
 
 pub use artifact_capture::{
-    ArtifactCapture, ReplaceArtifactCapture, ReplaceArtifactCaptureOutcome,
+    ArtifactCapture, ArtifactCaptureRunReference, ReplaceArtifactCapture,
+    ReplaceArtifactCaptureOutcome,
 };
 pub use execution::{
     ArtifactPublication, ArtifactPublicationError, ArtifactPublicationReceipt, ArtifactPublisher,

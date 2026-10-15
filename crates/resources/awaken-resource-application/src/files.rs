@@ -552,6 +552,7 @@ mod tests {
             .enumerate()
         {
             let command = ReplaceArtifactCapture {
+                origin: None,
                 workspace_id: "workspace-a".into(),
                 session_id: "session-a".into(),
                 expected_revision: revision as u64,

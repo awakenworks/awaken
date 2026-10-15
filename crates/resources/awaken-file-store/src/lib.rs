@@ -58,6 +58,7 @@ fn decode_artifact_capture(
     session_id: String,
     revision: i64,
     file_ids_json: &str,
+    origin_json: Option<&str>,
 ) -> Result<ArtifactCapture, FileCatalogError> {
     let revision = awaken_sql_storage::StoredU64::try_from(revision)
         .map(awaken_sql_storage::StoredU64::domain_value)
@@ -65,6 +66,12 @@ fn decode_artifact_capture(
             detail: error.to_string(),
         })?;
     let capture = ArtifactCapture {
+        origin: origin_json
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(|error| FileCatalogError::CorruptData {
+                detail: format!("invalid artifact capture origin: {error}"),
+            })?,
         workspace_id,
         session_id,
         revision,

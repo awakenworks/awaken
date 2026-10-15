@@ -133,8 +133,8 @@ impl SqliteFileStore {
         request: ReplaceArtifactCapture,
     ) -> Result<Result<ReplaceArtifactCaptureOutcome, FileCatalogError>, FileStoreError> {
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await.map_err(e)?;
-        let row = sqlx::query_as::<_, (i64, String)>(&format!(
-            "SELECT revision,file_ids_json FROM {NS}_artifact_capture WHERE workspace_id=?1 AND session_id=?2"
+        let row = sqlx::query_as::<_, (i64, String, Option<String>)>(&format!(
+            "SELECT revision,file_ids_json,origin_json FROM {NS}_artifact_capture WHERE workspace_id=?1 AND session_id=?2"
         ))
         .bind(&request.workspace_id)
         .bind(&request.session_id)
@@ -142,12 +142,13 @@ impl SqliteFileStore {
         .await
         .map_err(e)?;
         let current = match row
-            .map(|(revision, ids)| {
+            .map(|(revision, ids, origin)| {
                 decode_artifact_capture(
                     request.workspace_id.clone(),
                     request.session_id.clone(),
                     revision,
                     &ids,
+                    origin.as_deref(),
                 )
             })
             .transpose()
@@ -170,7 +171,7 @@ impl SqliteFileStore {
                 return Ok(Err(error));
             }
             sqlx::query(&format!(
-                "INSERT INTO {NS}_artifact_capture (workspace_id,session_id,revision,file_ids_json) VALUES (?1,?2,?3,?4) ON CONFLICT(workspace_id,session_id) DO UPDATE SET revision=excluded.revision,file_ids_json=excluded.file_ids_json"
+                "INSERT INTO {NS}_artifact_capture (workspace_id,session_id,revision,file_ids_json,origin_json) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(workspace_id,session_id) DO UPDATE SET revision=excluded.revision,file_ids_json=excluded.file_ids_json,origin_json=excluded.origin_json"
             ))
             .bind(&capture.workspace_id)
             .bind(&capture.session_id)
@@ -180,6 +181,7 @@ impl SqliteFileStore {
                     .database_value(),
             )
             .bind(serde_json::to_string(&capture.file_ids).map_err(e)?)
+            .bind(capture.origin.as_ref().map(serde_json::to_string).transpose().map_err(e)?)
             .execute(&mut *transaction)
             .await
             .map_err(e)?;
@@ -368,20 +370,21 @@ impl FileCatalog for SqliteFileStore {
         workspace_id: &str,
         session_id: &str,
     ) -> Result<Option<ArtifactCapture>, FileCatalogError> {
-        let row = sqlx::query_as::<_, (i64, String)>(&format!(
-            "SELECT revision,file_ids_json FROM {NS}_artifact_capture WHERE workspace_id=?1 AND session_id=?2"
+        let row = sqlx::query_as::<_, (i64, String, Option<String>)>(&format!(
+            "SELECT revision,file_ids_json,origin_json FROM {NS}_artifact_capture WHERE workspace_id=?1 AND session_id=?2"
         ))
         .bind(workspace_id)
         .bind(session_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(cs)?;
-        row.map(|(revision, ids)| {
+        row.map(|(revision, ids, origin)| {
             decode_artifact_capture(
                 workspace_id.to_string(),
                 session_id.to_string(),
                 revision,
                 &ids,
+                origin.as_deref(),
             )
         })
         .transpose()

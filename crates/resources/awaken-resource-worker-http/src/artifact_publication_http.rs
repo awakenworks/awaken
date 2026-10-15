@@ -240,10 +240,11 @@ impl ArtifactPublisher<ResourceOperationFence> for HttpArtifactPublisher {
 
     async fn replace_capture(
         &self,
-        request: awaken_resource_contract::ReplaceArtifactCapture,
+        mut request: awaken_resource_contract::ReplaceArtifactCapture,
         fence: Option<&ResourceOperationFence>,
     ) -> Result<awaken_resource_contract::ReplaceArtifactCaptureOutcome, ArtifactPublicationError>
     {
+        request.bind_run_origin(fence.and_then(ResourceOperationFence::run_claim_identity))?;
         request
             .decide(None)
             .map_err(|error| ArtifactPublicationError::new(error.to_string()))?;
@@ -777,6 +778,7 @@ async fn capture_artifacts(
         Ok(guard) => guard,
         Err(status) => return admission_error_response(status),
     };
+    let request_fence = request.operation_fence.clone();
     match request.operation {
         ArtifactCaptureOperation::Read {
             workspace_id,
@@ -798,7 +800,14 @@ async fn capture_artifacts(
                 Err(error) => application_error_response(&error),
             }
         }
-        ArtifactCaptureOperation::Replace { request } => {
+        ArtifactCaptureOperation::Replace { mut request } => {
+            if let Err(error) = request.bind_run_origin(request_fence.run_claim_identity()) {
+                return admission_error_response(match error {
+                    ArtifactPublicationError::Denied { .. } => StatusCode::FORBIDDEN,
+                    ArtifactPublicationError::InvalidRequest { .. } => StatusCode::BAD_REQUEST,
+                    _ => StatusCode::SERVICE_UNAVAILABLE,
+                });
+            }
             match service
                 .application
                 .replace_artifact_capture(request.clone())

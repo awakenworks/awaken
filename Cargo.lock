@@ -2846,6 +2846,7 @@ dependencies = [
  "awaken-environment-contract",
  "awaken-executable-agent-contract",
  "awaken-executable-environment-contract",
+ "awaken-file-store",
  "awaken-lease-contract",
  "awaken-lease-testkit",
  "awaken-provisioning-contract",

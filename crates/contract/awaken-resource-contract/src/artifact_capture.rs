@@ -10,12 +10,42 @@ use std::collections::BTreeSet;
 
 use crate::{FileCatalogError, FileRecord, harvest_idempotency_key};
 
+/// Original publication coordinates, not execution authority. The driving
+/// boundary derives this reference from its already-authorized Run claim.
+#[derive(Debug, Clone, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactCaptureRunReference {
+    pub run_id: String,
+    pub owner: String,
+    pub epoch: std::num::NonZeroU64,
+}
+
+impl ArtifactCaptureRunReference {
+    pub fn identity(&self) -> (&str, &str, std::num::NonZeroU64) {
+        (&self.run_id, &self.owner, self.epoch)
+    }
+
+    fn is_valid(&self) -> bool {
+        [&self.run_id, &self.owner]
+            .into_iter()
+            .all(|value| !value.trim().is_empty() && value.trim() == value.as_str())
+    }
+}
+
+impl PartialEq for ArtifactCaptureRunReference {
+    fn eq(&self, other: &Self) -> bool {
+        self.identity() == other.identity()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ArtifactCapture {
     pub workspace_id: String,
     pub session_id: String,
     pub revision: u64,
     pub file_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<ArtifactCaptureRunReference>,
 }
 
 /// Read the current revision BEFORE enumerating outputs, then publish all File
@@ -27,6 +57,8 @@ pub struct ReplaceArtifactCapture {
     pub session_id: String,
     pub expected_revision: u64,
     pub file_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<ArtifactCaptureRunReference>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -38,6 +70,51 @@ pub enum ReplaceArtifactCaptureOutcome {
 }
 
 impl ReplaceArtifactCapture {
+    pub fn new(
+        workspace_id: String,
+        session_id: String,
+        expected_revision: u64,
+        file_ids: Vec<String>,
+    ) -> Self {
+        Self {
+            workspace_id,
+            session_id,
+            expected_revision,
+            file_ids,
+            origin: None,
+        }
+    }
+    /// Attach the original execution boundary's coordinates. This metadata
+    /// binding owns no execution authority; driving edges retain their guards.
+    pub fn bind_run_origin(
+        &mut self,
+        claim: Option<(&str, &str, u64)>,
+    ) -> Result<(), crate::ArtifactPublicationError> {
+        let original = match claim {
+            Some((run_id, owner, epoch)) => Some(ArtifactCaptureRunReference {
+                run_id: run_id.into(),
+                owner: owner.into(),
+                epoch: std::num::NonZeroU64::new(epoch).ok_or_else(|| {
+                    crate::ArtifactPublicationError::InvalidRequest {
+                        detail: "artifact capture has no original nonzero Run epoch".into(),
+                    }
+                })?,
+            }),
+            None => None,
+        };
+        if self
+            .origin
+            .as_ref()
+            .is_some_and(|supplied| Some(supplied) != original.as_ref())
+        {
+            return Err(crate::ArtifactPublicationError::Denied {
+                detail: "artifact capture origin differs from its original effect fence".into(),
+            });
+        }
+        self.origin = original;
+        Ok(())
+    }
+
     /// A peer cannot acknowledge another revision, scope, or selected set.
     /// Conflict carries no replacement receipt and remains a rejected write.
     pub fn verify_outcome(
@@ -72,6 +149,10 @@ impl ReplaceArtifactCapture {
             || self.session_id.trim().is_empty()
             || self.file_ids.iter().any(|id| id.trim().is_empty())
             || self.expected_revision >= i64::MAX as u64
+            || self
+                .origin
+                .as_ref()
+                .is_some_and(|origin| !origin.is_valid())
         {
             return Err(FileCatalogError::InvalidCapture {
                 detail: "invalid output capture identity or revision".into(),
@@ -84,21 +165,34 @@ impl ReplaceArtifactCapture {
                 detail: "duplicate output File reference".into(),
             });
         }
+        if let Some(current) = current
+            && (current.workspace_id != self.workspace_id
+                || current.session_id != self.session_id
+                || current
+                    .origin
+                    .as_ref()
+                    .is_some_and(|origin| !origin.is_valid()))
+        {
+            return Err(FileCatalogError::CorruptData {
+                detail: "output capture belongs to another scope or has corrupt provenance".into(),
+            });
+        }
+        let origin = self.origin.clone().or_else(|| {
+            current
+                .filter(|capture| capture.file_ids == file_ids)
+                .and_then(|capture| capture.origin.clone())
+        });
         let next = ArtifactCapture {
             workspace_id: self.workspace_id.clone(),
             session_id: self.session_id.clone(),
             revision: self.expected_revision + 1,
             file_ids,
+            origin,
         };
-        if let Some(current) = current {
-            if current.workspace_id != self.workspace_id || current.session_id != self.session_id {
-                return Err(FileCatalogError::CorruptData {
-                    detail: "output capture belongs to another scope".into(),
-                });
-            }
-            if current == &next {
-                return Ok(ReplaceArtifactCaptureOutcome::Replayed(current.clone()));
-            }
+        if let Some(current) = current
+            && current == &next
+        {
+            return Ok(ReplaceArtifactCaptureOutcome::Replayed(current.clone()));
         }
         if current.map_or(0, |capture| capture.revision) != self.expected_revision {
             return Ok(ReplaceArtifactCaptureOutcome::Conflict);
@@ -127,6 +221,7 @@ impl ArtifactCapture {
                     detail: "uncommitted output capture revision".into(),
                 })?;
         let request = ReplaceArtifactCapture {
+            origin: self.origin.clone(),
             workspace_id: self.workspace_id.clone(),
             session_id: self.session_id.clone(),
             expected_revision,
@@ -186,11 +281,177 @@ mod tests {
     use super::*;
 
     #[test]
+    fn capture_cas_retains_the_original_publishing_run_reference() {
+        // C1 original boundary supplies a publishing Run reference; C2 valid
+        // scope, complete File ids and expected revision. R1 C1+C2 -> same
+        // catalog CAS retains that reference, including serialization/cold
+        // read. This pure reducer does not authorize or mint a Run claim;
+        // live-claim and forged-reference cases belong to the driving edges.
+        let origin = serde_json::json!({"run_id":"run","owner":"worker","epoch":7});
+        let request: ReplaceArtifactCapture = serde_json::from_value(serde_json::json!({
+            "workspace_id":"w","session_id":"s","expected_revision":0,
+            "file_ids":[],"origin":origin,
+        }))
+        .unwrap();
+        let ReplaceArtifactCaptureOutcome::Applied(capture) = request.decide(None).unwrap() else {
+            panic!("R1 new capture");
+        };
+        let stored = serde_json::to_value(capture).unwrap();
+        assert_eq!(
+            stored["origin"], origin,
+            "R1 original reference cannot be erased"
+        );
+        let loaded: ArtifactCapture = serde_json::from_value(stored.clone()).unwrap();
+        assert_eq!(
+            serde_json::to_value(loaded).unwrap(),
+            stored,
+            "R1 cold read"
+        );
+    }
+
+    #[test]
+    fn capture_origin_follows_selection_cas_and_never_backfills_unknown_history() {
+        // C1 stored origin present/legacy unknown; C2 new origin supplied;
+        // C3 selected File set unchanged/changed; C4 expected revision current;
+        // C5 canonical origin. E1 retain an original reference; E2 remain or
+        // become unknown; E3 conflict, no write; E4 reject invalid input or
+        // corrupt observation. Rules: P1 C2+C4+C5 -> E1; P2 !C2+C3+C1 -> E1;
+        // P3 !C2+(!C3|!C1) -> E2; P4 non-replay wrong revision -> E3;
+        // P5 !C5 -> E4. Exact prior request replay retains the existing CAS law. Terminal
+        // preservation refers only to the exact existing complete File set.
+        let origin: ArtifactCaptureRunReference = serde_json::from_value(serde_json::json!({
+            "run_id":"run","owner":"worker","epoch":7,
+        }))
+        .unwrap();
+        let old = ArtifactCapture {
+            workspace_id: "w".into(),
+            session_id: "s".into(),
+            revision: 1,
+            file_ids: vec!["a".into()],
+            origin: Some(origin.clone()),
+        };
+        for has_old in [false, true] {
+            for new_origin in [false, true] {
+                for same_files in [false, true] {
+                    for current in [false, true] {
+                        let mut old = old.clone();
+                        if !has_old {
+                            old.origin = None;
+                        }
+                        let mut request = ReplaceArtifactCapture::new(
+                            "w".into(),
+                            "s".into(),
+                            if current { 1 } else { 3 },
+                            vec![if same_files { "a" } else { "b" }.into()],
+                        );
+                        if new_origin {
+                            let mut new = origin.clone();
+                            new.run_id = "new-run".into();
+                            request.origin = Some(new);
+                        }
+                        let result = request.decide(Some(&old)).unwrap();
+                        if !current {
+                            assert_eq!(result, ReplaceArtifactCaptureOutcome::Conflict, "P4");
+                            continue;
+                        }
+                        let ReplaceArtifactCaptureOutcome::Applied(capture) = result else {
+                            panic!("P1-P3 new revision");
+                        };
+                        let expected = request
+                            .origin
+                            .clone()
+                            .or_else(|| (same_files && has_old).then(|| origin.clone()));
+                        assert_eq!(capture.origin, expected, "P1-P3");
+                        request
+                            .verify_outcome(&ReplaceArtifactCaptureOutcome::Applied(
+                                capture.clone(),
+                            ))
+                            .unwrap();
+                        assert_eq!(
+                            request.decide(Some(&capture)).unwrap(),
+                            ReplaceArtifactCaptureOutcome::Replayed(capture),
+                            "P1-P3 exact replay"
+                        );
+                    }
+                }
+            }
+        }
+        for field in ["run_id", "owner", "epoch"] {
+            let mut malformed = serde_json::to_value(&origin).unwrap();
+            malformed[field] = if field == "epoch" {
+                serde_json::json!(0)
+            } else {
+                serde_json::json!(" ")
+            };
+            match serde_json::from_value::<ArtifactCaptureRunReference>(malformed) {
+                Err(_) => assert_eq!(field, "epoch", "P5 nonzero wire type"),
+                Ok(invalid) => {
+                    let mut request =
+                        ReplaceArtifactCapture::new("w".into(), "s".into(), 1, vec!["a".into()]);
+                    request.origin = Some(invalid.clone());
+                    assert!(
+                        matches!(
+                            request.decide(Some(&old)),
+                            Err(FileCatalogError::InvalidCapture { .. })
+                        ),
+                        "P5 input"
+                    );
+                    let mut corrupt = old.clone();
+                    corrupt.origin = Some(invalid);
+                    assert!(
+                        matches!(
+                            corrupt.verify_scope("w", "s"),
+                            Err(FileCatalogError::CorruptData { .. })
+                        ),
+                        "P5 observation"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn capture_origin_binding_cannot_substitute_original_coordinates() {
+        // B1 supplied original coordinates + absent/same metadata -> exact
+        // binding; B2 any foreign run/owner/epoch -> refuse; B3 no Run cannot
+        // borrow an existing reference; B4 zero epoch -> invalid. Live claim
+        // authorization remains in Coordinator/Worker transport tests.
+        let original = Some(("run", "worker", 7));
+        let mut request = ReplaceArtifactCapture::new("w".into(), "s".into(), 0, vec![]);
+        request.bind_run_origin(original).unwrap();
+        let expected = request.origin.clone().unwrap();
+        assert_eq!(
+            (&*expected.run_id, &*expected.owner, expected.epoch.get()),
+            ("run", "worker", 7),
+            "B1"
+        );
+        request.bind_run_origin(original).unwrap();
+        for replacement in [
+            Some(("foreign", "worker", 7)),
+            Some(("run", "foreign", 7)),
+            Some(("run", "worker", 8)),
+            None,
+        ] {
+            let mut changed = request.clone();
+            assert!(changed.bind_run_origin(replacement).is_err(), "B2/B3");
+            assert_eq!(changed, request, "B2/B3 refusal leaves metadata unchanged");
+        }
+        assert!(
+            request.bind_run_origin(Some(("run", "worker", 0))).is_err(),
+            "B4"
+        );
+        request.origin = None;
+        request.bind_run_origin(None).unwrap();
+        assert!(request.origin.is_none(), "B3 unknown remains unknown");
+    }
+
+    #[test]
     fn request_and_observation_failures_have_different_meanings() {
         // C1 invalid caller revision => Invalid (no execution); C2 stored
         // invalid revision or wrong scope => CorruptData; C3 wrong receipt =>
         // CorruptData. The same words cannot erase the observation boundary.
         let request = ReplaceArtifactCapture {
+            origin: None,
             workspace_id: "w".into(),
             session_id: "s".into(),
             expected_revision: u64::MAX,
@@ -201,6 +462,7 @@ mod tests {
             Err(FileCatalogError::InvalidCapture { .. })
         ));
         let mut observed = ArtifactCapture {
+            origin: None,
             workspace_id: "w".into(),
             session_id: "s".into(),
             revision: 0,

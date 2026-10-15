@@ -28,6 +28,7 @@ fn project_execution_evidence(
         _ => (None, None),
     };
     crate::awaken_extensions::SessionExecutionEvidence {
+        artifact_capture: observation.artifact_capture,
         operation_footprint,
         preparation,
         recovery: Some(recovery),
@@ -97,6 +98,10 @@ mod tests {
         // R1=P1=>E1 and R2=P2=>E2.
         let projected =
             project_execution_evidence(awaken_session_application::SessionExecutionObservation {
+                artifact_capture: Some(serde_json::from_value(serde_json::json!({
+                    "workspace_id":"workspace","session_id":"session-1","revision":2,
+                    "file_ids":["file-original"],"origin":{"run_id":"original-run","owner":"worker","epoch":7}
+                })).unwrap()),
                 recovery: awaken_session_execution_contract::SessionExecutionRecoveryObservation::NotProven {
                     reason: awaken_session_execution_contract::SessionExecutionRecoveryGap::NotTerminal,
                 },
@@ -149,6 +154,19 @@ mod tests {
             projected.application_origin.as_ref().unwrap().evidence(),
             "opaque-origin-proof",
             "P3"
+        );
+        // P3 catalog provenance is copied, never rebound to the current Run.
+        assert_eq!(
+            projected
+                .artifact_capture
+                .as_ref()
+                .unwrap()
+                .origin
+                .as_ref()
+                .unwrap()
+                .run_id,
+            "original-run",
+            "P3 original publication reference"
         );
         assert_eq!(projected.runs[0].run_id.0, "run-observed", "R1/E1");
         assert_eq!(

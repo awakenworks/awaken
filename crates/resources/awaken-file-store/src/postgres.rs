@@ -227,7 +227,7 @@ impl FileCatalog for PgFileStore {
         workspace_id: &str,
         session_id: &str,
     ) -> Result<Option<ArtifactCapture>, FileCatalogError> {
-        let row = sqlx::query("SELECT revision,file_ids_json FROM file_store_artifact_capture WHERE workspace_id=$1 AND session_id=$2")
+        let row = sqlx::query("SELECT revision,file_ids_json,origin_json FROM file_store_artifact_capture WHERE workspace_id=$1 AND session_id=$2")
             .bind(workspace_id).bind(session_id).fetch_optional(&self.pool).await.map_err(ce)?;
         row.map(|row| {
             decode_artifact_capture(
@@ -235,6 +235,7 @@ impl FileCatalog for PgFileStore {
                 session_id.into(),
                 row.get("revision"),
                 row.get("file_ids_json"),
+                row.get::<Option<&str>, _>("origin_json"),
             )
         })
         .transpose()
@@ -250,7 +251,7 @@ impl FileCatalog for PgFileStore {
         let mut transaction = self.pool.begin().await.map_err(ce)?;
         let inserted = sqlx::query("INSERT INTO file_store_artifact_capture (workspace_id,session_id,revision,file_ids_json) VALUES ($1,$2,0,'[]') ON CONFLICT DO NOTHING")
             .bind(&request.workspace_id).bind(&request.session_id).execute(&mut *transaction).await.map_err(ce)?.rows_affected() == 1;
-        let row = sqlx::query("SELECT revision,file_ids_json FROM file_store_artifact_capture WHERE workspace_id=$1 AND session_id=$2 FOR UPDATE")
+        let row = sqlx::query("SELECT revision,file_ids_json,origin_json FROM file_store_artifact_capture WHERE workspace_id=$1 AND session_id=$2 FOR UPDATE")
             .bind(&request.workspace_id).bind(&request.session_id).fetch_one(&mut *transaction).await.map_err(ce)?;
         let revision: i64 = row.get("revision");
         let current = if inserted {
@@ -261,6 +262,7 @@ impl FileCatalog for PgFileStore {
                 request.session_id.clone(),
                 revision,
                 row.get("file_ids_json"),
+                row.get::<Option<&str>, _>("origin_json"),
             )?)
         };
         let outcome = request.decide(current.as_ref())?;
@@ -280,9 +282,10 @@ impl FileCatalog for PgFileStore {
                 }
             }
             capture.verify_files(&records)?;
-            sqlx::query("UPDATE file_store_artifact_capture SET revision=$3,file_ids_json=$4 WHERE workspace_id=$1 AND session_id=$2")
+            sqlx::query("UPDATE file_store_artifact_capture SET revision=$3,file_ids_json=$4,origin_json=$5 WHERE workspace_id=$1 AND session_id=$2")
                 .bind(&capture.workspace_id).bind(&capture.session_id).bind(awaken_sql_storage::StoredU64::try_from(capture.revision).map_err(ce)?.database_value())
                 .bind(serde_json::to_string(&capture.file_ids).map_err(ce)?)
+                .bind(capture.origin.as_ref().map(serde_json::to_string).transpose().map_err(ce)?)
                 .execute(&mut *transaction).await.map_err(ce)?;
         } else if revision == 0 {
             // A conflicting first observation must not persist the private seed.
