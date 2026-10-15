@@ -38,7 +38,7 @@ use awaken_dispatch::{
     PlacementRequirements, PostgresDispatchStore, PostgresStreamCheckpointStore, RunClaim,
     RunDispatch, SubmitOptions,
 };
-use awaken_dispatch_testkit::{AuthoritativeWallClock, ConformanceClock};
+use awaken_dispatch_testkit::ConformanceClock;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_postgres::PostgresCommitCoordinator;
 use sqlx::Executor as _;
@@ -337,16 +337,10 @@ async fn postgres_execution_binding_is_frozen_with_the_physical_slot() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .unwrap();
-    harness::attempt_binding::assert_binding_lifecycle(
-        &store,
-        &awaken_dispatch_testkit::AuthoritativeWallClock,
-    )
-    .await;
-    harness::attempt_binding::assert_closing_lifecycle(
-        &store,
-        &awaken_dispatch_testkit::AuthoritativeWallClock,
-    )
-    .await;
+    harness::attempt_binding::assert_binding_lifecycle(&store, &harness::postgres_clock(&pool))
+        .await;
+    harness::attempt_binding::assert_closing_lifecycle(&store, &harness::postgres_clock(&pool))
+        .await;
     let error = sqlx::query(
         "UPDATE runtime_dispatch SET active_attempt_binding = '{}' WHERE run_id = 'bound-attempt'",
     )
@@ -364,7 +358,7 @@ async fn postgres_execution_binding_is_frozen_with_the_physical_slot() {
     let (claim, binding, _) = harness::attempt_binding::bound_claim(
         &store,
         "pg-ack-rollback",
-        &awaken_dispatch_testkit::AuthoritativeWallClock,
+        &harness::postgres_clock(&pool),
     )
     .await;
     store.begin_attempt(&claim, Some(&binding)).await.unwrap();
@@ -435,12 +429,8 @@ async fn postgres_returned_attempt_epoch_is_not_reused() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .unwrap();
-    harness::attempt_retirement::assert_retirement(
-        &store,
-        0,
-        &awaken_dispatch_testkit::AuthoritativeWallClock,
-    )
-    .await;
+    harness::attempt_retirement::assert_retirement(&store, 0, &harness::postgres_clock(&pool))
+        .await;
     // R7 SQL bypass cannot reinstall an already retired epoch, even if a caller
     // skips the application reducer. The named row belongs only to this test.
     let error = sqlx::query("UPDATE runtime_dispatch SET active_attempt_owner = 'stale', active_attempt_epoch = retired_attempt_epoch WHERE run_id = 'retirement'")
@@ -693,7 +683,7 @@ async fn postgres_epoch_guard_prevents_reclaim_until_commit_returns() {
         return;
     };
     let store = Arc::new(
-        PostgresDispatchStore::with_pool(pool)
+        PostgresDispatchStore::with_pool(pool.clone())
             .await
             .expect("dispatch"),
     );
@@ -716,7 +706,7 @@ async fn postgres_epoch_guard_prevents_reclaim_until_commit_returns() {
     let fenced = ClaimedCommitCoordinator::new(service, RunClaim::from(&lease));
     let committing = tokio::spawn(async move { fenced.commit(running_commit("guarded")).await });
     inner.entered.notified().await;
-    AuthoritativeWallClock
+    harness::postgres_clock(&pool)
         .advance_past(lease.expires_ms())
         .await;
 
@@ -1002,14 +992,10 @@ async fn message_idempotency_conflicts_on_postgres() {
     let Some(pool) = harness::schema_pool("t_pg_message_idempotency").await else {
         return;
     };
-    let store = PostgresDispatchStore::with_pool(pool)
+    let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
-    harness::assert_message_idempotency_conflicts(
-        &store,
-        &awaken_dispatch_testkit::AuthoritativeWallClock,
-    )
-    .await;
+    harness::assert_message_idempotency_conflicts(&store, &harness::postgres_clock(&pool)).await;
 }
 
 #[tokio::test]
@@ -1020,8 +1006,7 @@ async fn scheduled_delivery_due_on_postgres() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
-    harness::assert_scheduled_due(&store, &awaken_dispatch_testkit::AuthoritativeWallClock)
-        .await;
+    harness::assert_scheduled_due(&store, &harness::postgres_clock(&pool)).await;
 }
 
 #[tokio::test]
@@ -1029,11 +1014,10 @@ async fn millis_boundaries_on_postgres() {
     let Some(pool) = harness::schema_pool("t_pg_millis_boundaries").await else {
         return;
     };
-    let store = PostgresDispatchStore::with_pool(pool)
+    let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
-    harness::assert_millis_boundaries(&store, &awaken_dispatch_testkit::AuthoritativeWallClock)
-        .await;
+    harness::assert_millis_boundaries(&store, &harness::postgres_clock(&pool)).await;
 }
 
 #[tokio::test]
@@ -1044,7 +1028,7 @@ async fn dead_letter_budget_on_postgres() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
-    harness::assert_dead_letter(&store, &awaken_dispatch_testkit::AuthoritativeWallClock).await;
+    harness::assert_dead_letter(&store, &harness::postgres_clock(&pool)).await;
 }
 
 #[tokio::test]
@@ -1055,7 +1039,7 @@ async fn cancel_on_postgres() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
-    harness::assert_cancel(&store, &awaken_dispatch_testkit::AuthoritativeWallClock).await;
+    harness::assert_cancel(&store, &harness::postgres_clock(&pool)).await;
 }
 
 #[tokio::test]
@@ -1066,8 +1050,7 @@ async fn priority_dedupe_gc_on_postgres() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
-    harness::assert_priority_dedupe_gc(&store, &awaken_dispatch_testkit::AuthoritativeWallClock)
-        .await;
+    harness::assert_priority_dedupe_gc(&store, &harness::postgres_clock(&pool)).await;
 }
 
 #[tokio::test]
@@ -1078,8 +1061,7 @@ async fn lease_renewal_on_postgres() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
-    harness::assert_lease_renewal(&store, &awaken_dispatch_testkit::AuthoritativeWallClock)
-        .await;
+    harness::assert_lease_renewal(&store, &harness::postgres_clock(&pool)).await;
 }
 
 #[tokio::test]
@@ -1602,8 +1584,7 @@ async fn idle_thread_inbox_on_postgres() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
-    harness::assert_idle_thread_inbox(&store, &awaken_dispatch_testkit::AuthoritativeWallClock)
-        .await;
+    harness::assert_idle_thread_inbox(&store, &harness::postgres_clock(&pool)).await;
 }
 
 #[tokio::test]
@@ -1614,7 +1595,7 @@ async fn supersession_on_postgres() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
-    harness::assert_supersession(&store, &awaken_dispatch_testkit::AuthoritativeWallClock).await;
+    harness::assert_supersession(&store, &harness::postgres_clock(&pool)).await;
 }
 
 #[tokio::test]
@@ -1628,11 +1609,8 @@ async fn concurrent_recovery_yields_one_winner_on_postgres() {
             .await
             .expect("dispatch"),
     );
-    harness::assert_concurrent_recovery_yields_one_winner(
-        store,
-        &awaken_dispatch_testkit::AuthoritativeWallClock,
-    )
-    .await;
+    harness::assert_concurrent_recovery_yields_one_winner(store, &harness::postgres_clock(&pool))
+        .await;
 }
 
 #[tokio::test]
@@ -1644,11 +1622,10 @@ async fn dead_letter_ttl_gc_on_postgres() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
-    harness::assert_dead_letter_ttl_gc(&store, &awaken_dispatch_testkit::AuthoritativeWallClock)
-        .await;
+    harness::assert_dead_letter_ttl_gc(&store, &harness::postgres_clock(&pool)).await;
     harness::attempt_retirement::assert_purge_retains_occupied(
         &store,
-        &awaken_dispatch_testkit::AuthoritativeWallClock,
+        &harness::postgres_clock(&pool),
     )
     .await;
     // P1 the current pair constraint refuses a historical half-slot write;
@@ -1659,7 +1636,7 @@ async fn dead_letter_ttl_gc_on_postgres() {
     let (run, _) = harness::attempt_retirement::dead_letter_empty(
         &store,
         "purge-pg-malformed",
-        &awaken_dispatch_testkit::AuthoritativeWallClock,
+        &harness::postgres_clock(&pool),
     )
     .await;
     let error = sqlx::query("UPDATE runtime_dispatch SET active_attempt_owner = 'retained-original-owner' WHERE run_id = $1")
@@ -1709,8 +1686,7 @@ async fn relinquish_claim_on_postgres() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
-    harness::assert_relinquish_claim(&store, &awaken_dispatch_testkit::AuthoritativeWallClock)
-        .await;
+    harness::assert_relinquish_claim(&store, &harness::postgres_clock(&pool)).await;
 }
 
 #[tokio::test]
@@ -1721,11 +1697,7 @@ async fn defer_claim_is_request_local_on_postgres() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
-    harness::assert_defer_claim_is_request_local(
-        &store,
-        &awaken_dispatch_testkit::AuthoritativeWallClock,
-    )
-    .await;
+    harness::assert_defer_claim_is_request_local(&store, &harness::postgres_clock(&pool)).await;
 }
 
 #[tokio::test]
@@ -1736,11 +1708,7 @@ async fn physical_attempt_admission_on_postgres() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
-    harness::assert_physical_attempt_admission(
-        &store,
-        &awaken_dispatch_testkit::AuthoritativeWallClock,
-    )
-    .await;
+    harness::assert_physical_attempt_admission(&store, &harness::postgres_clock(&pool)).await;
 }
 
 #[tokio::test]
@@ -1756,7 +1724,7 @@ async fn physical_attempt_admission_uses_the_postgres_authority_clock() {
     let Some(pool) = harness::schema_pool("t_pg_physical_attempt_clock").await else {
         return;
     };
-    let store = PostgresDispatchStore::with_pool(pool)
+    let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
     store
@@ -1837,7 +1805,9 @@ async fn retry_exhaustion_claim_rejects_caller_clock_skew() {
     let Some(pool) = harness::schema_pool("t_pg_retry_recovery_clock").await else {
         return;
     };
-    let store = PostgresDispatchStore::with_pool(pool).await.unwrap();
+    let store = PostgresDispatchStore::with_pool(pool.clone())
+        .await
+        .unwrap();
     store
         .enqueue(RunDispatch::new(activation("retry-clock")))
         .await
@@ -1952,8 +1922,7 @@ async fn list_dispatches_on_postgres() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
-    harness::assert_list_dispatches(&store, &awaken_dispatch_testkit::AuthoritativeWallClock)
-        .await;
+    harness::assert_list_dispatches(&store, &harness::postgres_clock(&pool)).await;
 }
 
 /// Postgres parity for recovery after a process-bound non-recoverable tool has
@@ -2068,11 +2037,8 @@ async fn postgres_reclaim_after_process_bound_attempt_quiesces_applies_never_rep
         "C3 production executor return recorded A's exact physical quiescence"
     );
     commit_a.set_failing(false);
-    let renewal_stopped_at_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("host clock is after the Unix epoch")
-        .as_millis() as u64;
-    AuthoritativeWallClock
+    let renewal_stopped_at_ms = harness::postgres_now_ms(&pool).await;
+    harness::postgres_clock(&pool)
         .advance_past(
             lease_a
                 .expires_ms()

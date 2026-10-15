@@ -349,8 +349,10 @@ async fn postgres_bounded_dispatch_queries_conform() {
         return;
     };
     assert_bounded_query_conformance(
-        &PostgresDispatchStore::with_pool(pool).await.unwrap(),
-        &awaken_dispatch_testkit::AuthoritativeWallClock,
+        &PostgresDispatchStore::with_pool(pool.clone())
+            .await
+            .unwrap(),
+        &harness::postgres_clock(&pool),
     )
     .await;
 }
