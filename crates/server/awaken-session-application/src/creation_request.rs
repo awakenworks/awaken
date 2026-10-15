@@ -213,24 +213,16 @@ fn compile_creation_tools<P: SessionCreateProtocol + ?Sized>(
     protocol: &P,
     tools_override: Option<SessionToolsOverride>,
 ) -> Result<(SessionToolConfiguration, bool), RunError> {
-    let capability_tools = protocol.capability_tools(capabilities)?;
-    let inherited_tools = profile.map_or_else(
-        || capability_tools.clone(),
-        |profile| SessionToolConfiguration {
-            toolsets: if profile.toolsets.is_empty() {
-                capability_tools.toolsets.clone()
-            } else {
-                profile.toolsets.clone()
-            },
-            client_tools: profile.client_tools.clone(),
-        },
-    );
-    let clears_all_tools = tools_override
-        .as_ref()
-        .is_some_and(|tools| tools.clears_all);
-    let tools = tools_override
-        .map(|tools| tools.configuration)
-        .unwrap_or(inherited_tools);
+    let mut inherited_tools = protocol.capability_tools(capabilities)?;
+    if let Some(profile) = profile {
+        if !profile.toolsets.is_empty() {
+            inherited_tools.toolsets = profile.toolsets.clone();
+        }
+        inherited_tools.client_tools = profile.client_tools.clone();
+    }
+    let (tools, clears_all_tools) = tools_override.map_or((inherited_tools, false), |tools| {
+        (tools.configuration, tools.clears_all)
+    });
     let tools = crate::tool_compilation::compile_tool_settings(compiler, tools)?;
     Ok((tools, clears_all_tools))
 }

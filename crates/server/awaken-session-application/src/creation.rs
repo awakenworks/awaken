@@ -509,10 +509,7 @@ fn compile_creation_configuration(
     let compiled = intent
         .finalize()
         .map_err(|error| RunError::bad_request(error.to_string()))?;
-    Ok((
-        compiled,
-        crate::tool_compilation::compile_tool_settings(compiler, tools)?,
-    ))
+    crate::tool_compilation::compile_tool_settings(compiler, tools).map(|tools| (compiled, tools))
 }
 
 impl SessionApplication {

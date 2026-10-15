@@ -13,8 +13,7 @@ use awaken_session_configuration_contract::mcp::McpAttachmentState;
 use awaken_session_realization_contract::realization_lease_is_live_at;
 use awaken_session_state_contract::{IdempotencyRecord, PersistedSession, SessionExecutionState};
 use awaken_session_state_contract::{SessionFieldUpdate, SessionUpdateChanges};
-use awaken_session_types::RunError;
-use awaken_session_types::SessionRevision;
+use awaken_session_types::{RunError, SessionRevision};
 
 use super::{
     McpAttachmentCandidate, SessionApplication, SessionMutationError, mutation::repository_failure,
@@ -316,16 +315,15 @@ fn compile_update_tool_settings(
     command: &SessionUpdateCommand,
     current: &SessionToolConfiguration,
 ) -> Result<SessionUpdateCommand, SessionUpdateError> {
-    let mut canonical = command.clone();
     let tools = crate::tool_compilation::compile_tool_settings(
         compiler,
-        command.tools.clone().unwrap_or_else(|| current.clone()),
+        command.tools.as_ref().unwrap_or(current).clone(),
     )
     .map_err(SessionUpdateError::Rejected)?;
-    if canonical.tools.is_some() {
-        canonical.tools = Some(tools);
-    }
-    Ok(canonical)
+    Ok(SessionUpdateCommand {
+        tools: command.tools.as_ref().map(|_| tools),
+        ..command.clone()
+    })
 }
 
 fn admit_update_snapshot(
