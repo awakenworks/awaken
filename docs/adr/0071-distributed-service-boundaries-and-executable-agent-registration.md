@@ -169,9 +169,10 @@ for Session resolution. It does not reopen Control's mutable model or credential
 catalogs merely to populate `/v1/models`.
 
 Environment is a static Control aggregate. `awaken-environment-contract` owns
-`EnvItem`, exact revisions, the selected sandbox-policy reference, and
-`EnvRegistry`. Public definition and policy routes plus the Admin Assistant call
-the same `EnvironmentApplication`. Each committed revision is registered through
+`EnvItem`, exact revisions, the selected sandbox-policy reference, and the
+`EnvironmentDefinitionQueries`, `EnvironmentDefinitionStore`, and
+`EnvironmentRegistrationOutbox` roles over one physical authority backend. Public definition and policy routes plus the Admin Assistant call
+the same `EnvironmentApplication`. `EnvironmentRegistrationDelivery` registers each committed revision through
 `ExecutableEnvironmentRegistrar`; split deployment uses authenticated HTTP and
 AllInOne uses a local adapter. Coordinator stores only the rebuildable exact/current
 projection and WorkQueue, and converges the healthcheck after registration.

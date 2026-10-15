@@ -1,4 +1,4 @@
-//! Trait-generic **conformance suite** for the `EnvRegistry` port — the shared behavioural
+//! Trait-generic **conformance suite** for the Environment definition roles — the shared behavioural
 //! contract every backend must satisfy, run against both the in-memory reference and the
 //! SQLite backend (ADR-0059, the `awaken-store-conformance` pattern).
 //!

@@ -66,7 +66,6 @@ awaken-credential-materializer = { workspace = true, features = ["authority", "b
 awaken-credential-contract.workspace = true
 awaken-env-store.workspace = true
 awaken-environment-application.workspace = true
-awaken-environment-execution-application.workspace = true
 awaken-environment-image-build.workspace = true
 awaken-environment-package-image-builder.workspace = true
 awaken-ext-builtin-tools.workspace = true

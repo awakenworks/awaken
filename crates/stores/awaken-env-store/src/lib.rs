@@ -1,5 +1,5 @@
 // @formal entrypoint environment.registration_intent_is_atomic_recoverable_and_idempotent
-//! Durable Control-owned [`EnvRegistry`] backends. Environment definitions and
+//! Durable Control-owned Environment definition backends. Environment definitions and
 //! exact revision history survive restart; Coordinator and Worker see only the
 //! separately registered executable projection. SQLite and PostgreSQL share one
 //! portable migration bundle.
@@ -9,9 +9,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_environment_contract::{
-    CreateEnvironmentCommand, CreateEnvironmentError, CreateEnvironmentOutcome, EnvItem,
-    EnvRegistry, EnvUpdate, EnvironmentConfig, EnvironmentRegistrationIntent,
-    EnvironmentRegistrationIntentFilter, EnvironmentRegistrationOperation, EnvironmentRevision,
+    CreateEnvironmentCommand, CreateEnvironmentError, CreateEnvironmentOutcome, EnvItem, EnvUpdate,
+    EnvironmentConfig, EnvironmentDefinitionQueries, EnvironmentDefinitionStore,
+    EnvironmentRegistrationIntent, EnvironmentRegistrationIntentFilter,
+    EnvironmentRegistrationOperation, EnvironmentRegistrationOutbox, EnvironmentRevision,
     EnvironmentSandboxPolicyRef, EnvironmentStoreError,
 };
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
@@ -414,7 +415,50 @@ impl SqliteEnvRegistry {
 }
 
 #[async_trait]
-impl EnvRegistry for SqliteEnvRegistry {
+impl EnvironmentDefinitionQueries for SqliteEnvRegistry {
+    async fn list_active(&self) -> Result<Vec<EnvItem>, EnvironmentStoreError> {
+        self.list(&format!(
+            "SELECT {COLS} FROM env_registry_env WHERE archived_at IS NULL ORDER BY seq ASC"
+        ))
+        .await
+    }
+
+    async fn list_all(&self) -> Result<Vec<EnvItem>, EnvironmentStoreError> {
+        self.list(&format!(
+            "SELECT {COLS} FROM env_registry_env ORDER BY seq ASC"
+        ))
+        .await
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<EnvItem>, EnvironmentStoreError> {
+        let mut tx = self.pool.begin().await.map_err(environment_store)?;
+        Self::read(&mut tx, id).await
+    }
+
+    async fn get_revision(
+        &self,
+        id: &str,
+        revision: EnvironmentRevision,
+    ) -> Result<Option<EnvItem>, EnvironmentStoreError> {
+        sqlx::query(&format!(
+            "SELECT {COLS} FROM env_registry_revision WHERE env_id = ?1 AND revision = ?2"
+        ))
+        .bind(id)
+        .bind(sqlite_revision(revision)?)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(environment_store)?
+        .map(|row| sqlite_row(&row).map_err(environment_store)?.try_into_item())
+        .transpose()
+    }
+
+    async fn exists(&self, id: &str) -> Result<bool, EnvironmentStoreError> {
+        Ok(self.get(id).await?.is_some())
+    }
+}
+
+#[async_trait]
+impl EnvironmentDefinitionStore for SqliteEnvRegistry {
     async fn create_once(
         &self,
         command: CreateEnvironmentCommand,
@@ -501,46 +545,6 @@ impl EnvRegistry for SqliteEnvRegistry {
         Ok(CreateEnvironmentOutcome::Created(item))
     }
 
-    async fn list_active(&self) -> Result<Vec<EnvItem>, EnvironmentStoreError> {
-        self.list(&format!(
-            "SELECT {COLS} FROM env_registry_env WHERE archived_at IS NULL ORDER BY seq ASC"
-        ))
-        .await
-    }
-
-    async fn list_all(&self) -> Result<Vec<EnvItem>, EnvironmentStoreError> {
-        self.list(&format!(
-            "SELECT {COLS} FROM env_registry_env ORDER BY seq ASC"
-        ))
-        .await
-    }
-
-    async fn get(&self, id: &str) -> Result<Option<EnvItem>, EnvironmentStoreError> {
-        let mut tx = self.pool.begin().await.map_err(environment_store)?;
-        Self::read(&mut tx, id).await
-    }
-
-    async fn get_revision(
-        &self,
-        id: &str,
-        revision: EnvironmentRevision,
-    ) -> Result<Option<EnvItem>, EnvironmentStoreError> {
-        sqlx::query(&format!(
-            "SELECT {COLS} FROM env_registry_revision WHERE env_id = ?1 AND revision = ?2"
-        ))
-        .bind(id)
-        .bind(sqlite_revision(revision)?)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(environment_store)?
-        .map(|row| sqlite_row(&row).map_err(environment_store)?.try_into_item())
-        .transpose()
-    }
-
-    async fn exists(&self, id: &str) -> Result<bool, EnvironmentStoreError> {
-        Ok(self.get(id).await?.is_some())
-    }
-
     async fn update(
         &self,
         id: &str,
@@ -625,7 +629,10 @@ impl EnvRegistry for SqliteEnvRegistry {
         tx.commit().await.map_err(environment_store)?;
         Ok(Some(item))
     }
+}
 
+#[async_trait]
+impl EnvironmentRegistrationOutbox for SqliteEnvRegistry {
     async fn registration_intent(
         &self,
         id: &str,
@@ -1041,12 +1048,21 @@ mod tests {
         assert_eq!(up.config, config(), "config round-trips");
     }
 
-    async fn registration_outbox_conformance(registry: &dyn EnvRegistry) {
-        let created = registry
+    async fn registration_outbox_conformance<R>(registry: &R)
+    where
+        R: EnvironmentDefinitionQueries
+            + EnvironmentDefinitionStore
+            + EnvironmentRegistrationOutbox,
+    {
+        let definitions: &dyn EnvironmentDefinitionStore = registry;
+        let queries: &dyn EnvironmentDefinitionQueries = registry;
+        let outbox: &dyn EnvironmentRegistrationOutbox = registry;
+
+        let created = definitions
             .create("outbox".into(), String::new(), BTreeMap::new(), config())
             .await
             .expect("O1 create");
-        let v1 = registry
+        let v1 = outbox
             .registration_intent(&created.id, EnvironmentRevision(1))
             .await
             .unwrap()
@@ -1058,7 +1074,7 @@ mod tests {
         );
         assert!(!v1.delivered, "O1");
 
-        let updated = registry
+        let updated = definitions
             .update(
                 &created.id,
                 created.revision,
@@ -1070,26 +1086,26 @@ mod tests {
             .await
             .expect("O2 update store operation")
             .expect("O2 update");
-        let v2 = registry
+        let v2 = outbox
             .registration_intent(&updated.id, updated.revision)
             .await
             .unwrap()
             .expect("O2 exact intent");
         assert!(
-            registry
+            outbox
                 .mark_registration_intent_delivered(&v2)
                 .await
                 .unwrap(),
             "O2"
         );
         assert!(
-            registry
+            outbox
                 .mark_registration_intent_delivered(&v2)
                 .await
                 .unwrap(),
             "O2 acknowledgement replay"
         );
-        let replayed = registry
+        let replayed = definitions
             .update(
                 &created.id,
                 updated.revision,
@@ -1103,7 +1119,7 @@ mod tests {
             .expect("O2b no-op update");
         assert_eq!(replayed.revision, EnvironmentRevision(2), "O2b");
         assert_eq!(
-            registry
+            outbox
                 .registration_intents(EnvironmentRegistrationIntentFilter::All)
                 .await
                 .unwrap()
@@ -1112,18 +1128,18 @@ mod tests {
             "O2b"
         );
 
-        let archived = registry
+        let archived = definitions
             .archive(&created.id)
             .await
             .expect("O3 archive store operation")
             .expect("O3 archive");
-        let archived_replay = registry
+        let archived_replay = definitions
             .archive(&created.id)
             .await
             .expect("O3 replay store operation")
             .expect("O3 replay");
         assert_eq!(archived_replay.revision, archived.revision, "O3 replay");
-        let pending = registry
+        let pending = outbox
             .registration_intents(EnvironmentRegistrationIntentFilter::Pending)
             .await
             .unwrap();
@@ -1136,7 +1152,7 @@ mod tests {
             "O3"
         );
 
-        let all = registry
+        let all = outbox
             .registration_intents(EnvironmentRegistrationIntentFilter::All)
             .await
             .unwrap();
@@ -1148,6 +1164,30 @@ mod tests {
             "O4"
         );
         assert!(all[1].delivered, "O4 acknowledgement is retained");
+
+        // R1 all role views see the same committed generation; R2 acknowledging
+        // delivery changes only the outbox, never immutable authored history.
+        assert_eq!(
+            queries.get(&created.id).await.unwrap().unwrap().revision,
+            archived.revision
+        );
+        let original = queries
+            .get_revision(&created.id, created.revision)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(original.name, "outbox");
+        assert!(original.archived_at.is_none());
+        assert_eq!(
+            queries
+                .get_revision(&updated.id, updated.revision)
+                .await
+                .unwrap()
+                .unwrap()
+                .name,
+            "outbox-v2"
+        );
+        assert!(queries.list_active().await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1216,9 +1256,17 @@ mod tests {
 
         let url = std::env::var("AWAKEN_TEST_DATABASE_URL")
             .unwrap_or_else(|_| "postgres://postgres:pw@127.0.0.1:5455/cov".to_string());
-        let Ok(admin) = PgPool::connect(&url).await else {
-            println!("[skip] no Postgres reachable");
-            return;
+        let admin = match PgPool::connect(&url).await {
+            Ok(admin) => admin,
+            Err(error) => {
+                assert_ne!(
+                    std::env::var("AWAKEN_TEST_REQUIRE_POSTGRES").as_deref(),
+                    Ok("1"),
+                    "PostgreSQL parity was required but the fixture is unavailable: {error}"
+                );
+                println!("[skip] no Postgres reachable: {error}");
+                return;
+            }
         };
         for schema in ["t_env_registry", "t_env_registry_instants"] {
             let _ = admin

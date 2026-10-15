@@ -1,22 +1,28 @@
 // @formal entrypoint environment.registration_intent_is_atomic_recoverable_and_idempotent
-//! Canonical Control application service for static Environment definitions.
+//! Environment use cases: authored definitions, committed registration delivery,
+//! and Coordinator execution projections.
 //!
-//! The service is the only command path that coordinates `EnvRegistry`, exact
+//! The service is the only command path that coordinates authored definitions, exact
 //! sandbox-policy versions, and executable registration. HTTP, Admin Assistant,
 //! standalone Control, and AllInOne all reuse this implementation.
 
 use std::sync::Arc;
 
+/// Coordinator execution and Worker lease use cases over the executable projection.
+pub mod execution;
+
+mod registration_delivery;
+pub use registration_delivery::EnvironmentRegistrationDelivery;
+
 use awaken_environment_contract::{
     BUILTIN_LOCAL_ENVIRONMENT_ID, CreateEnvironmentCommand, CreateEnvironmentError, EnvItem,
-    EnvRegistry, EnvUpdate, EnvironmentAuthor, EnvironmentConfig, EnvironmentFieldUpdate,
-    EnvironmentRegistrationIntent, EnvironmentRegistrationIntentFilter,
-    EnvironmentRegistrationOperation, EnvironmentRevision, EnvironmentSandboxPolicyRef,
-    EnvironmentStoreError,
+    EnvUpdate, EnvironmentAuthor, EnvironmentConfig, EnvironmentDefinitionQueries,
+    EnvironmentDefinitionStore, EnvironmentFieldUpdate, EnvironmentRegistrationOutbox,
+    EnvironmentRevision, EnvironmentSandboxPolicyRef, EnvironmentStoreError,
 };
 use awaken_executable_environment_contract::{
     ExecutableEnvironmentRegistrar, ExecutableEnvironmentRegistration,
-    ExecutableEnvironmentRegistrationError, ExecutableEnvironmentWithdrawal,
+    ExecutableEnvironmentRegistrationError,
 };
 use awaken_provisioning_contract::{
     HostAccessPolicy, SandboxExecutionPolicy, SandboxExecutionPolicyError,
@@ -46,23 +52,53 @@ pub enum EnvironmentApplicationError {
 }
 
 pub struct EnvironmentApplication {
-    envs: Arc<dyn EnvRegistry>,
-    registrar: Arc<dyn ExecutableEnvironmentRegistrar>,
+    queries: Arc<dyn EnvironmentDefinitionQueries>,
+    definitions: Arc<dyn EnvironmentDefinitionStore>,
+    delivery: Arc<EnvironmentRegistrationDelivery>,
     sandbox_policies: Option<Arc<dyn SandboxExecutionPolicyStore>>,
 }
 
 impl EnvironmentApplication {
+    /// Build all role views from the same backend instance.
     #[must_use]
-    pub fn new(
-        envs: Arc<dyn EnvRegistry>,
+    pub fn new<T>(
+        definitions: Arc<T>,
         registrar: Arc<dyn ExecutableEnvironmentRegistrar>,
+        sandbox_policies: Option<Arc<dyn SandboxExecutionPolicyStore>>,
+    ) -> Self
+    where
+        T: EnvironmentDefinitionQueries
+            + EnvironmentDefinitionStore
+            + EnvironmentRegistrationOutbox
+            + 'static,
+    {
+        let delivery = Arc::new(EnvironmentRegistrationDelivery::new(
+            definitions.clone(),
+            registrar,
+            sandbox_policies.clone(),
+        ));
+        Self::from_roles(definitions.clone(), definitions, delivery, sandbox_policies)
+    }
+
+    /// Compose the roles already selected by the process's store construction.
+    #[must_use]
+    fn from_roles(
+        queries: Arc<dyn EnvironmentDefinitionQueries>,
+        definitions: Arc<dyn EnvironmentDefinitionStore>,
+        delivery: Arc<EnvironmentRegistrationDelivery>,
         sandbox_policies: Option<Arc<dyn SandboxExecutionPolicyStore>>,
     ) -> Self {
         Self {
-            envs,
-            registrar,
+            queries,
+            definitions,
+            delivery,
             sandbox_policies,
         }
+    }
+
+    #[must_use]
+    pub fn registration_delivery(&self) -> Arc<EnvironmentRegistrationDelivery> {
+        self.delivery.clone()
     }
 
     #[must_use]
@@ -70,121 +106,15 @@ impl EnvironmentApplication {
         &self,
         sandbox_policies: Arc<dyn SandboxExecutionPolicyStore>,
     ) -> Self {
-        Self::new(
-            self.envs.clone(),
-            self.registrar.clone(),
+        Self::from_roles(
+            self.queries.clone(),
+            self.definitions.clone(),
+            Arc::new(
+                self.delivery
+                    .with_sandbox_policies(sandbox_policies.clone()),
+            ),
             Some(sandbox_policies),
         )
-    }
-
-    async fn registration(
-        &self,
-        item: EnvItem,
-    ) -> Result<ExecutableEnvironmentRegistration, EnvironmentApplicationError> {
-        let sandbox_policy = self
-            .validate_environment_policy(&item.config, item.sandbox_policy.as_ref())
-            .await?;
-        Ok(ExecutableEnvironmentRegistration::new(item, sandbox_policy))
-    }
-
-    async fn validate_environment_policy(
-        &self,
-        config: &EnvironmentConfig,
-        reference: Option<&EnvironmentSandboxPolicyRef>,
-    ) -> Result<Option<SandboxExecutionPolicy>, EnvironmentApplicationError> {
-        let Some(reference) = reference else {
-            return Ok(None);
-        };
-        let store = self
-            .sandbox_policies
-            .as_ref()
-            .ok_or(EnvironmentApplicationError::PolicyStoreUnavailable)?;
-        let policy = store
-            .get_exact(&SandboxExecutionPolicyRef {
-                id: awaken_provisioning_contract::SandboxExecutionPolicyId(
-                    reference.policy_id.clone(),
-                ),
-                version: SandboxExecutionPolicyVersion(reference.version),
-            })
-            .await?;
-        if policy.disabled {
-            return Err(EnvironmentApplicationError::Policy(
-                SandboxExecutionPolicyError::Disabled,
-            ));
-        }
-        policy.validate()?;
-        if policy.config.host_access == HostAccessPolicy::TrustedHost && !config.is_self_hosted() {
-            return Err(EnvironmentApplicationError::Policy(
-                SandboxExecutionPolicyError::Invalid(
-                    "trusted_host access requires a self_hosted Environment".into(),
-                ),
-            ));
-        }
-        Ok(Some(policy))
-    }
-
-    async fn deliver_intent(
-        &self,
-        intent: EnvironmentRegistrationIntent,
-        replay_delivered: bool,
-    ) -> Result<(), EnvironmentApplicationError> {
-        if !intent.requires_delivery(replay_delivered) {
-            return Ok(());
-        }
-        match intent.operation {
-            EnvironmentRegistrationOperation::Register => {
-                let item = self
-                    .envs
-                    .get_revision(&intent.environment_id, intent.revision)
-                    .await?
-                    .ok_or_else(|| {
-                        EnvironmentApplicationError::RegistrationInvariant(format!(
-                            "missing revision {}@{}",
-                            intent.environment_id, intent.revision.0
-                        ))
-                    })?;
-                self.registrar
-                    .register(self.registration(item).await?)
-                    .await?;
-            }
-            EnvironmentRegistrationOperation::Withdraw => {
-                self.registrar
-                    .withdraw(ExecutableEnvironmentWithdrawal {
-                        environment_id: intent.environment_id.clone(),
-                        lifecycle_revision: intent.revision,
-                    })
-                    .await?;
-            }
-        }
-        if !self
-            .envs
-            .mark_registration_intent_delivered(&intent)
-            .await?
-        {
-            return Err(EnvironmentApplicationError::RegistrationInvariant(format!(
-                "missing intent {}@{}",
-                intent.environment_id, intent.revision.0
-            )));
-        }
-        Ok(())
-    }
-
-    async fn deliver_revision(
-        &self,
-        item: &EnvItem,
-        replay_delivered: bool,
-    ) -> Result<(), EnvironmentApplicationError> {
-        let intent = self
-            .envs
-            .registration_intent(&item.id, item.revision)
-            .await?
-            .ok_or_else(|| {
-                EnvironmentApplicationError::RegistrationInvariant(format!(
-                    "missing intent {}@{}",
-                    item.id, item.revision.0
-                ))
-            })?;
-        self.deliver_intent(intent, replay_delivered).await
     }
 
     pub async fn get(
@@ -194,11 +124,11 @@ impl EnvironmentApplication {
         if environment_id == BUILTIN_LOCAL_ENVIRONMENT_ID {
             return Ok(Some(builtin_local_environment()));
         }
-        Ok(self.envs.get(environment_id).await?)
+        Ok(self.queries.get(environment_id).await?)
     }
 
     pub async fn list_active(&self) -> Result<Vec<EnvItem>, EnvironmentApplicationError> {
-        let mut items = self.envs.list_active().await?;
+        let mut items = self.queries.list_active().await?;
         items.push(builtin_local_environment());
         items.sort_by(|left, right| left.id.cmp(&right.id));
         Ok(items)
@@ -208,7 +138,7 @@ impl EnvironmentApplication {
     /// continue to use [`Self::list_active`] so lifecycle policy cannot leak into
     /// the store or HTTP adapter.
     pub async fn list_all(&self) -> Result<Vec<EnvItem>, EnvironmentApplicationError> {
-        let mut items = self.envs.list_all().await?;
+        let mut items = self.queries.list_all().await?;
         items.push(builtin_local_environment());
         items.sort_by(|left, right| left.id.cmp(&right.id));
         Ok(items)
@@ -218,75 +148,15 @@ impl EnvironmentApplication {
         &self,
         command: CreateEnvironmentCommand,
     ) -> Result<EnvItem, EnvironmentApplicationError> {
-        self.validate_environment_policy(&command.config, command.sandbox_policy.as_ref())
-            .await?;
-        let item = self.envs.create_once(command).await?.into_item();
-        self.deliver_revision(&item, false).await?;
+        validate_environment_policy(
+            self.sandbox_policies.as_deref(),
+            &command.config,
+            command.sandbox_policy.as_ref(),
+        )
+        .await?;
+        let item = self.definitions.create_once(command).await?.into_item();
+        self.delivery.deliver_revision(&item, false).await?;
         Ok(item)
-    }
-
-    /// Reconcile one exact Environment into the rebuildable executable projection.
-    ///
-    /// Dispatch readiness is scoped to one frozen Environment activation. It must
-    /// not replay the entire catalog: an unrelated package-image registration may
-    /// be slow or unavailable without invalidating an already-selected Environment.
-    /// The background registration supervisor remains responsible for full-catalog
-    /// recovery.
-    pub async fn reconcile_registration(
-        &self,
-        environment_id: &str,
-    ) -> Result<Option<EnvItem>, EnvironmentApplicationError> {
-        if environment_id == BUILTIN_LOCAL_ENVIRONMENT_ID {
-            self.registrar
-                .register(default_environment_registration())
-                .await?;
-            return Ok(Some(builtin_local_environment()));
-        }
-        let Some(current) = self.envs.get(environment_id).await? else {
-            return Ok(None);
-        };
-        self.deliver_revision(&current, true).await?;
-        Ok(Some(current))
-    }
-
-    async fn deliver_registration_intents(
-        &self,
-        filter: EnvironmentRegistrationIntentFilter,
-        replay_delivered: bool,
-    ) -> Result<u64, EnvironmentApplicationError> {
-        let intents = self.envs.registration_intents(filter).await?;
-        let mut delivered = 0_u64;
-        let mut first_error = None;
-        for intent in intents {
-            match self.deliver_intent(intent, replay_delivered).await {
-                Ok(()) => delivered = delivered.saturating_add(1),
-                Err(error) if first_error.is_none() => first_error = Some(error),
-                Err(_) => {}
-            }
-        }
-        match first_error {
-            Some(error) => Err(error),
-            None => Ok(delivered),
-        }
-    }
-
-    /// Rebuild an empty executable projection from the durable intent log. This
-    /// is a startup recovery mode of the same outbox drainer, not a scan that
-    /// re-derives work from mutable Environment rows.
-    pub async fn recover_registration_intents(&self) -> Result<u64, EnvironmentApplicationError> {
-        self.registrar
-            .register(default_environment_registration())
-            .await?;
-        Ok(1 + self
-            .deliver_registration_intents(EnvironmentRegistrationIntentFilter::All, true)
-            .await?)
-    }
-
-    /// Deliver only authority-committed intents that have not yet been
-    /// acknowledged by the executable projection boundary.
-    pub async fn drain_registration_intents(&self) -> Result<u64, EnvironmentApplicationError> {
-        self.deliver_registration_intents(EnvironmentRegistrationIntentFilter::Pending, false)
-            .await
     }
 
     pub async fn update(
@@ -296,7 +166,7 @@ impl EnvironmentApplication {
     ) -> Result<EnvItem, EnvironmentApplicationError> {
         self.ensure_mutable(environment_id)?;
         let mut candidate = self
-            .envs
+            .queries
             .get(environment_id)
             .await?
             .ok_or(EnvironmentApplicationError::NotFound)?;
@@ -304,12 +174,16 @@ impl EnvironmentApplication {
         candidate
             .apply(patch.clone())
             .map_err(EnvironmentStoreError::from)?;
-        self.validate_environment_policy(&candidate.config, candidate.sandbox_policy.as_ref())
-            .await?;
+        validate_environment_policy(
+            self.sandbox_policies.as_deref(),
+            &candidate.config,
+            candidate.sandbox_policy.as_ref(),
+        )
+        .await?;
         let item = self
             .update_active(environment_id, expected_revision, patch)
             .await?;
-        self.deliver_revision(&item, false).await?;
+        self.delivery.deliver_revision(&item, false).await?;
         Ok(item)
     }
 
@@ -319,11 +193,11 @@ impl EnvironmentApplication {
     ) -> Result<EnvItem, EnvironmentApplicationError> {
         self.ensure_mutable(environment_id)?;
         let item = self
-            .envs
+            .definitions
             .archive(environment_id)
             .await?
             .ok_or(EnvironmentApplicationError::NotFound)?;
-        self.deliver_revision(&item, false).await?;
+        self.delivery.deliver_revision(&item, false).await?;
         Ok(item)
     }
 
@@ -339,11 +213,12 @@ impl EnvironmentApplication {
     ) -> Result<EnvItem, EnvironmentApplicationError> {
         self.ensure_active(environment_id).await?;
         let current = self
-            .envs
+            .queries
             .get(environment_id)
             .await?
             .ok_or(EnvironmentApplicationError::NotFound)?;
-        self.validate_environment_policy(
+        validate_environment_policy(
+            self.sandbox_policies.as_deref(),
             &current.config,
             Some(&EnvironmentSandboxPolicyRef {
                 policy_id: reference.id.0.clone(),
@@ -366,7 +241,7 @@ impl EnvironmentApplication {
                 },
             )
             .await?;
-        self.deliver_revision(&item, false).await?;
+        self.delivery.deliver_revision(&item, false).await?;
         Ok(item)
     }
 
@@ -378,12 +253,12 @@ impl EnvironmentApplication {
     ) -> Result<EnvItem, EnvironmentApplicationError> {
         self.ensure_mutable(environment_id)?;
         match self
-            .envs
+            .definitions
             .update(environment_id, expected_revision, patch)
             .await?
         {
             Some(item) => Ok(item),
-            None => match self.envs.get(environment_id).await? {
+            None => match self.queries.get(environment_id).await? {
                 Some(item) if item.archived_at.is_some() => {
                     Err(EnvironmentApplicationError::Archived)
                 }
@@ -394,7 +269,7 @@ impl EnvironmentApplication {
 
     async fn ensure_active(&self, environment_id: &str) -> Result<(), EnvironmentApplicationError> {
         self.ensure_mutable(environment_id)?;
-        match self.envs.get(environment_id).await? {
+        match self.queries.get(environment_id).await? {
             Some(item) if item.archived_at.is_some() => Err(EnvironmentApplicationError::Archived),
             Some(_) => Ok(()),
             None => Err(EnvironmentApplicationError::NotFound),
@@ -408,6 +283,52 @@ impl EnvironmentApplication {
             Ok(())
         }
     }
+
+    pub async fn reconcile_registration(
+        &self,
+        environment_id: &str,
+    ) -> Result<Option<EnvItem>, EnvironmentApplicationError> {
+        self.delivery.reconcile_registration(environment_id).await
+    }
+
+    pub async fn recover_registration_intents(&self) -> Result<u64, EnvironmentApplicationError> {
+        self.delivery.recover_registration_intents().await
+    }
+
+    pub async fn drain_registration_intents(&self) -> Result<u64, EnvironmentApplicationError> {
+        self.delivery.drain_registration_intents().await
+    }
+}
+
+pub(crate) async fn validate_environment_policy(
+    sandbox_policies: Option<&dyn SandboxExecutionPolicyStore>,
+    config: &EnvironmentConfig,
+    reference: Option<&EnvironmentSandboxPolicyRef>,
+) -> Result<Option<SandboxExecutionPolicy>, EnvironmentApplicationError> {
+    let Some(reference) = reference else {
+        return Ok(None);
+    };
+    let store = sandbox_policies.ok_or(EnvironmentApplicationError::PolicyStoreUnavailable)?;
+    let policy = store
+        .get_exact(&SandboxExecutionPolicyRef {
+            id: awaken_provisioning_contract::SandboxExecutionPolicyId(reference.policy_id.clone()),
+            version: SandboxExecutionPolicyVersion(reference.version),
+        })
+        .await?;
+    if policy.disabled {
+        return Err(EnvironmentApplicationError::Policy(
+            SandboxExecutionPolicyError::Disabled,
+        ));
+    }
+    policy.validate()?;
+    if policy.config.host_access == HostAccessPolicy::TrustedHost && !config.is_self_hosted() {
+        return Err(EnvironmentApplicationError::Policy(
+            SandboxExecutionPolicyError::Invalid(
+                "trusted_host access requires a self_hosted Environment".into(),
+            ),
+        ));
+    }
+    Ok(Some(policy))
 }
 
 #[must_use]
@@ -453,9 +374,13 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use async_trait::async_trait;
-    use awaken_environment_contract::{CreateEnvironmentCommand, EnvironmentConfig};
+    use awaken_environment_contract::{
+        CreateEnvironmentCommand, EnvironmentConfig, EnvironmentRegistrationIntentFilter,
+        EnvironmentRegistrationOperation,
+    };
     use awaken_executable_environment_contract::{
-        ExecutableEnvironmentRegistrationOutcome, ExecutableEnvironmentWithdrawalOutcome,
+        ExecutableEnvironmentRegistrationOutcome, ExecutableEnvironmentWithdrawal,
+        ExecutableEnvironmentWithdrawalOutcome,
     };
 
     use super::*;
@@ -559,6 +484,168 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn authoring_delivery_and_execution_share_committed_revisions_without_sharing_authority()
+    {
+        use crate::execution::{
+            CoordinatorEnvironmentRegistrar, EnvironmentExecutionApplication,
+            EnvironmentExecutionError,
+        };
+        use awaken_executable_environment_catalog::{
+            ExecutableEnvironmentCatalog, LocalExecutableEnvironmentRegistrar,
+        };
+
+        // Decision table: R1 authored create -> exact execution projection and
+        // one healthcheck; R2 update -> execution v2 with immutable authored v1;
+        // R3 archive -> history retained, execution unavailable, queued work removed;
+        // R4 outbox recovery -> same terminal outcome, no new authored revision.
+        let clock = awaken_time::system_clock();
+        let definitions = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(clock.clone()));
+        let work = Arc::new(awaken_work_store::InMemoryWorkQueue::new(clock));
+        let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
+        let registrar = Arc::new(CoordinatorEnvironmentRegistrar::new(
+            Arc::new(LocalExecutableEnvironmentRegistrar::new(catalog.clone())),
+            work.clone(),
+        ));
+        let authoring = EnvironmentApplication::new(definitions.clone(), registrar, None);
+        let execution = EnvironmentExecutionApplication::new(work.clone(), catalog);
+        let created = authoring
+            .create(create_command("one-boundary", "initial"))
+            .await
+            .unwrap();
+        assert_eq!(
+            execution.get(&created.id).await.unwrap(),
+            Some(created.clone()),
+            "R1"
+        );
+        assert_eq!(
+            execution
+                .work_queries()
+                .list(&created.id)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "R1"
+        );
+        let updated = authoring
+            .update(
+                &created.id,
+                EnvUpdate {
+                    name: Some("updated".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            execution.get(&created.id).await.unwrap(),
+            Some(updated.clone()),
+            "R2"
+        );
+        assert_eq!(
+            definitions
+                .get_revision(&created.id, created.revision)
+                .await
+                .unwrap(),
+            Some(created.clone()),
+            "R2"
+        );
+        let archived = authoring.archive(&created.id).await.unwrap();
+        assert_eq!(execution.get(&created.id).await.unwrap(), None, "R3");
+        assert!(
+            matches!(
+                execution.work_queries().list(&created.id).await,
+                Err(EnvironmentExecutionError::EnvironmentNotFound)
+            ),
+            "R3"
+        );
+        assert!(
+            awaken_executable_environment_contract::WorkQueries::list(work.as_ref(), &created.id)
+                .await
+                .unwrap()
+                .is_empty(),
+            "R3"
+        );
+        authoring
+            .registration_delivery()
+            .recover_registration_intents()
+            .await
+            .unwrap();
+        assert_eq!(execution.get(&created.id).await.unwrap(), None, "R4");
+        assert_eq!(
+            definitions.get(&created.id).await.unwrap(),
+            Some(archived),
+            "R4"
+        );
+        assert_eq!(
+            definitions
+                .registration_intents(EnvironmentRegistrationIntentFilter::All)
+                .await
+                .unwrap()
+                .len(),
+            3,
+            "R4"
+        );
+    }
+
+    #[tokio::test]
+    async fn registration_delivery_recovers_without_the_authoring_application() {
+        // Decision table: R1 committed create + projection outage -> one pending
+        // intent; R2 authoring application dropped + recovered delivery -> same
+        // revision acknowledged; R3 repeat delivery -> no new projection or revision.
+        // The drainer has no definition mutation role and does not need an app back-reference.
+        let definitions = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
+            awaken_time::system_clock(),
+        ));
+        let registrar = Arc::new(RecordingRegistrar::default());
+        registrar.fail_registration.store(true, Ordering::SeqCst);
+        let application = EnvironmentApplication::new(definitions.clone(), registrar.clone(), None);
+        assert!(
+            application
+                .create(create_command("independent-delivery", "one"))
+                .await
+                .is_err()
+        );
+        let delivery = application.registration_delivery();
+        drop(application);
+        let pending = definitions
+            .registration_intents(EnvironmentRegistrationIntentFilter::Pending)
+            .await
+            .unwrap();
+        assert_eq!(pending.len(), 1, "R1");
+        let intent = &pending[0];
+        registrar.fail_registration.store(false, Ordering::SeqCst);
+        assert_eq!(
+            delivery.drain_registration_intents().await.unwrap(),
+            1,
+            "R2"
+        );
+        assert_eq!(
+            delivery.drain_registration_intents().await.unwrap(),
+            0,
+            "R3"
+        );
+        assert_eq!(
+            definitions
+                .get(&intent.environment_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .revision,
+            intent.revision
+        );
+        assert_eq!(
+            definitions
+                .registration_intents(EnvironmentRegistrationIntentFilter::All)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(registrar.registrations.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn static_history_and_executable_projection_have_one_command_path() {
         // Cause/effect decision table:
         // R1 valid create -> Control revision 1 + one exact registration;
@@ -567,7 +654,7 @@ mod tests {
         // R4 built-in mutation -> reject without store or projection effect.
         // Constraints/invariants: the Control history is authoritative and the
         // executable projection is driven only by its immutable command intents.
-        let envs: Arc<dyn EnvRegistry> = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
+        let envs = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
             awaken_time::system_clock(),
         ));
         let registrar = Arc::new(RecordingRegistrar::default());
@@ -630,7 +717,7 @@ mod tests {
         // | R4   | T  | F  | T  | T  | E5 |
         // Constraints/invariants: the authority commit precedes projection,
         // and recovery drains the same durable intent without minting revisions.
-        let envs: Arc<dyn EnvRegistry> = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
+        let envs = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
             awaken_time::system_clock(),
         ));
         let registrar = Arc::new(RecordingRegistrar::default());
@@ -718,7 +805,7 @@ mod tests {
         let registry = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
             awaken_time::system_clock(),
         ));
-        let envs: Arc<dyn EnvRegistry> = registry.clone();
+        let envs = registry.clone();
         let registrar = Arc::new(RecordingRegistrar::default());
         let application = EnvironmentApplication::new(envs.clone(), registrar.clone(), None);
 
@@ -835,7 +922,7 @@ mod tests {
             .unwrap()
             .item()
             .clone();
-        let envs: Arc<dyn EnvRegistry> = registry.clone();
+        let envs = registry.clone();
         let registrar = Arc::new(BarrierRegistrar {
             barrier: tokio::sync::Barrier::new(2),
             registrations: Mutex::new(Vec::new()),
@@ -893,7 +980,7 @@ mod tests {
         // Effects: A1-A4 converge on one terminal revision and one withdrawal.
         // Constraints/invariants: archive is idempotent and a frozen Withdraw
         // can never be replayed as an executable registration.
-        let envs: Arc<dyn EnvRegistry> = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
+        let envs = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
             awaken_time::system_clock(),
         ));
         let registrar = Arc::new(RecordingRegistrar::default());
@@ -974,7 +1061,7 @@ mod tests {
         // failure but still registers the later healthy Environment;
         // R2 exact healthy id + same unrelated failure -> healthy registration succeeds;
         // R3 unknown id -> no registration and an explicit missing result.
-        let envs: Arc<dyn EnvRegistry> = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
+        let envs = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
             awaken_time::system_clock(),
         ));
         let registrar = Arc::new(RecordingRegistrar::default());
@@ -1049,7 +1136,7 @@ mod tests {
         // | T4 | true | bind policy | Archived | none |
         // Constraints/invariants: the tombstone is absorbing for every mutation
         // path and neither revision nor executable projection may resurrect.
-        let envs: Arc<dyn EnvRegistry> = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
+        let envs = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
             awaken_time::system_clock(),
         ));
         let registrar = Arc::new(RecordingRegistrar::default());

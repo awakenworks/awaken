@@ -29,12 +29,12 @@ const DIGEST_DOMAIN: &[u8] = b"awaken-work-session-token-v1\0";
 
 /// A freshly minted bearer and its digest. The cleartext leaves the process
 /// only in the `poll` response of the claim that bound the digest.
-pub(crate) struct MintedSessionAccess {
-    pub(crate) cleartext: RedactedString,
-    pub(crate) digest: SessionAccessDigest,
+pub(super) struct MintedSessionAccess {
+    pub(super) cleartext: RedactedString,
+    pub(super) digest: SessionAccessDigest,
 }
 
-pub(crate) fn mint_session_access() -> MintedSessionAccess {
+pub(super) fn mint_session_access() -> MintedSessionAccess {
     let mut bytes = [0_u8; SESSION_TOKEN_BYTES];
     OsEntropy.fill_bytes(&mut bytes);
     let cleartext = RedactedString::new(format!(
@@ -45,7 +45,7 @@ pub(crate) fn mint_session_access() -> MintedSessionAccess {
     MintedSessionAccess { cleartext, digest }
 }
 
-pub(crate) fn session_access_digest(presented: &RedactedString) -> SessionAccessDigest {
+pub(super) fn session_access_digest(presented: &RedactedString) -> SessionAccessDigest {
     let mut digest = Sha256::new();
     digest.update(DIGEST_DOMAIN);
     digest.update(presented.expose_secret().as_bytes());

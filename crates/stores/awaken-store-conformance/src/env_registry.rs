@@ -1,9 +1,9 @@
 // @formal surface exclude=test_support_crate
 // @formal owner crates/stores/awaken-env-store/tests/env_registry_conformance.rs
-// @formal reason: Trait-generic EnvRegistry conformance suite (ADR-0081 §7). It is a tooling-only test
+// @formal reason: Trait-generic Environment definition role conformance suite (ADR-0081 §7). It is a tooling-only test
 // @formal reason: library every backend's test target calls; no product crate links or invokes it, and it
 // @formal reason: admits nothing at runtime.
-//! Trait-generic conformance suite for the `EnvRegistry` port (ADR-0081 §7).
+//! Trait-generic conformance suite for the Environment definition roles (ADR-0081 §7).
 //!
 //! Every backend runs [`run_suite`] with its own `fresh_with` factory. Unique
 //! ids, archive-preserves-history, fail-closed reads, the revision decision
@@ -11,10 +11,11 @@
 //! port's contract, so a divergence is a parity bug in the backend that shows it.
 
 use awaken_environment_contract::{
-    CreateEnvironmentCommand, CreateEnvironmentError, CreateEnvironmentOutcome, EnvRegistry,
-    EnvUpdate, EnvironmentConfig, EnvironmentConfigMutation, EnvironmentFieldUpdate,
-    EnvironmentNetworking, EnvironmentNetworkingMutation, EnvironmentPackages,
-    EnvironmentPackagesMutation, EnvironmentRegistrationIntentFilter, EnvironmentRevision,
+    CreateEnvironmentCommand, CreateEnvironmentError, CreateEnvironmentOutcome, EnvUpdate,
+    EnvironmentConfig, EnvironmentConfigMutation, EnvironmentDefinitionQueries,
+    EnvironmentDefinitionStore, EnvironmentFieldUpdate, EnvironmentNetworking,
+    EnvironmentNetworkingMutation, EnvironmentPackages, EnvironmentPackagesMutation,
+    EnvironmentRegistrationIntentFilter, EnvironmentRegistrationOutbox, EnvironmentRevision,
     EnvironmentSandboxPolicyRef, EnvironmentStoreError, InvalidEnvironmentConfig,
 };
 use awaken_lease_testkit::ManualClock;
@@ -22,7 +23,12 @@ use awaken_time::WallClock;
 use awaken_time::utc::epoch_millis_to_rfc3339;
 use std::sync::Arc;
 
-pub async fn make<R: EnvRegistry>(r: &R, name: &str) -> String {
+pub async fn make<
+    R: EnvironmentDefinitionQueries + EnvironmentDefinitionStore + EnvironmentRegistrationOutbox,
+>(
+    r: &R,
+    name: &str,
+) -> String {
     r.create(
         name.into(),
         String::new(),
@@ -34,10 +40,14 @@ pub async fn make<R: EnvRegistry>(r: &R, name: &str) -> String {
     .id
 }
 
-// ── The port contract, trait-generic over any EnvRegistry backend ────────────────
+// ── The port contract, trait-generic over one backend implementing the definition roles ────────────────
 
 /// Distinct ids across creates, all retrievable (no id reuse regardless of name).
-pub async fn unique_ids<R: EnvRegistry>(r: &R) {
+pub async fn unique_ids<
+    R: EnvironmentDefinitionQueries + EnvironmentDefinitionStore + EnvironmentRegistrationOutbox,
+>(
+    r: &R,
+) {
     let mut ids = Vec::new();
     for _ in 0..5 {
         ids.push(make(r, "same-name").await);
@@ -53,7 +63,11 @@ pub async fn unique_ids<R: EnvRegistry>(r: &R) {
 }
 
 /// Terminal denial is an archive: history and exact lookup remain available.
-pub async fn archive_preserves_authoritative_history<R: EnvRegistry>(r: &R) {
+pub async fn archive_preserves_authoritative_history<
+    R: EnvironmentDefinitionQueries + EnvironmentDefinitionStore + EnvironmentRegistrationOutbox,
+>(
+    r: &R,
+) {
     let a = make(r, "a").await;
     assert!(r.archive(&a).await.expect("archive Environment").is_some());
     assert!(
@@ -81,7 +95,11 @@ pub async fn archive_preserves_authoritative_history<R: EnvRegistry>(r: &R) {
 }
 
 /// Fail-closed: archive/update on a never-created id → None.
-pub async fn missing_id_fails_closed<R: EnvRegistry>(r: &R) {
+pub async fn missing_id_fails_closed<
+    R: EnvironmentDefinitionQueries + EnvironmentDefinitionStore + EnvironmentRegistrationOutbox,
+>(
+    r: &R,
+) {
     assert!(
         r.archive("env_missing")
             .await
@@ -105,7 +123,11 @@ pub async fn missing_id_fails_closed<R: EnvRegistry>(r: &R) {
     );
 }
 
-pub async fn revision_decision_table<R: EnvRegistry>(r: &R) {
+pub async fn revision_decision_table<
+    R: EnvironmentDefinitionQueries + EnvironmentDefinitionStore + EnvironmentRegistrationOutbox,
+>(
+    r: &R,
+) {
     // Cause-effect graph:
     // C1 create -> E1 revision 1; C2 authored update -> E2 increment once;
     // C3 stale expected revision -> E3 conflict and no write; C4 first archive
@@ -238,7 +260,11 @@ pub async fn revision_decision_table<R: EnvRegistry>(r: &R) {
     );
 }
 
-pub async fn sandbox_binding_is_one_environment_revision<R: EnvRegistry>(r: &R) {
+pub async fn sandbox_binding_is_one_environment_revision<
+    R: EnvironmentDefinitionQueries + EnvironmentDefinitionStore + EnvironmentRegistrationOutbox,
+>(
+    r: &R,
+) {
     // Cause/effect decision table:
     // | Rule | Environment | exact policy ref | effect |
     // | B0 | create rev1 | p@1 | current and immutable rev1 both contain p@1 |
@@ -329,7 +355,11 @@ pub async fn sandbox_binding_is_one_environment_revision<R: EnvRegistry>(r: &R) 
     );
 }
 
-pub async fn scope_round_trips_and_updates<R: EnvRegistry>(r: &R) {
+pub async fn scope_round_trips_and_updates<
+    R: EnvironmentDefinitionQueries + EnvironmentDefinitionStore + EnvironmentRegistrationOutbox,
+>(
+    r: &R,
+) {
     let item = r
         .create_scoped(
             "scoped".into(),
@@ -365,7 +395,11 @@ pub async fn scope_round_trips_and_updates<R: EnvRegistry>(r: &R) {
     assert_eq!(updated.revision, EnvironmentRevision(2));
 }
 
-pub async fn nested_config_patch_is_atomic_and_durable<R: EnvRegistry>(r: &R) {
+pub async fn nested_config_patch_is_atomic_and_durable<
+    R: EnvironmentDefinitionQueries + EnvironmentDefinitionStore + EnvironmentRegistrationOutbox,
+>(
+    r: &R,
+) {
     // Cause graph / decision table (run unchanged against memory and SQLite):
     // | Rule | Present mutation | Omitted sibling | Durable reread |
     // | P1 | MCP=false | hosts/package flag | siblings preserved |
@@ -435,7 +469,11 @@ pub async fn nested_config_patch_is_atomic_and_durable<R: EnvRegistry>(r: &R) {
     assert_eq!(packages.pip, vec!["httpx"], "P2");
 }
 
-pub async fn package_network_invariant_is_atomic<R: EnvRegistry>(r: &R) {
+pub async fn package_network_invariant_is_atomic<
+    R: EnvironmentDefinitionQueries + EnvironmentDefinitionStore + EnvironmentRegistrationOutbox,
+>(
+    r: &R,
+) {
     // Cause/effect graph: C1 valid/malformed package operands; C2 limited
     // runtime registry permission off/on; C3 one atomic patch changes both.
     // E1 accepts valid prepared packages independently of runtime permission;
@@ -635,7 +673,11 @@ pub async fn package_network_invariant_is_atomic<R: EnvRegistry>(r: &R) {
     }
 }
 
-pub async fn idempotent_create_decision_table<R: EnvRegistry>(r: &R) {
+pub async fn idempotent_create_decision_table<
+    R: EnvironmentDefinitionQueries + EnvironmentDefinitionStore + EnvironmentRegistrationOutbox,
+>(
+    r: &R,
+) {
     // Cause/effect graph: a new command creates one row; the same id and exact
     // payload replays that row; the same id with another payload conflicts and
     // creates no row. This runs unchanged against memory and SQLite.
@@ -685,7 +727,9 @@ pub async fn idempotent_create_decision_table<R: EnvRegistry>(r: &R) {
 /// any of these commands, keeps its own pair — so a fix applied to one path only
 /// is caught. The immutable revision history is checked too: each authored
 /// revision carries the instants of the commit that authored it.
-pub async fn environment_instants_are_the_injected_clock<R: EnvRegistry>(
+pub async fn environment_instants_are_the_injected_clock<
+    R: EnvironmentDefinitionQueries + EnvironmentDefinitionStore + EnvironmentRegistrationOutbox,
+>(
     r: &R,
     clock: &ManualClock,
 ) {
@@ -815,7 +859,10 @@ pub async fn environment_instants_are_the_injected_clock<R: EnvRegistry>(
 /// rule that does not.
 /// `fresh_with` is asynchronous because opening a durable backend (an sqlx pool
 /// plus its migrations) is.
-pub async fn run_suite<R: EnvRegistry, F: std::future::Future<Output = R>>(
+pub async fn run_suite<
+    R: EnvironmentDefinitionQueries + EnvironmentDefinitionStore + EnvironmentRegistrationOutbox,
+    F: std::future::Future<Output = R>,
+>(
     clock: Arc<dyn WallClock>,
     fresh_with: impl Fn(Arc<dyn WallClock>) -> F,
 ) {

@@ -330,3 +330,53 @@ its concrete `ResolvedSessionEnvironment` root alias. Environment implementers
 declare their output type without making the Environment contract depend on
 the Session configuration contract.
 
+
+## Amendment 2026-10-15: Environment definition roles and registration delivery
+
+`awaken_environment_contract::EnvRegistry` is replaced by three roles in the same
+contract crate: `EnvironmentDefinitionQueries` reads current and immutable exact
+revisions; `EnvironmentDefinitionStore` authors definitions; and
+`EnvironmentRegistrationOutbox` reads and acknowledges committed delivery facts.
+SQLite, PostgreSQL, and the in-memory reference implement all three roles directly
+over the same physical state. Create, update, and archive still commit the current
+definition, immutable revision, and exact registration intent atomically; splitting
+the interfaces does not split that transaction or introduce a second owner.
+
+`EnvironmentApplication::new` now accepts one concrete `Arc<T>` implementing the
+three roles, derives its internal views from that instance, and constructs the
+concrete `EnvironmentRegistrationDelivery`. Delivery receives only queries and the
+outbox, with no definition write role. The Control registration supervisor now
+accepts `Arc<EnvironmentRegistrationDelivery>`; callers obtain it through
+`EnvironmentApplication::registration_delivery()`. Existing application operations
+continue to delegate to the same delivery implementation.
+
+Platform and awaken-cloud Rust consumers import the role their operation uses
+instead of `EnvRegistry`. Composition passes the concrete backend `Arc` to the
+application constructor before erasing it to individual roles. Custom authority
+adapters implement the three roles over their one transaction boundary. Cloud must
+compile any affected adapters and supervisor construction against the matching
+Native candidate before advancing its dependency pin; this repository does not
+certify an external Cloud checkout's build.
+
+The Environment use cases share one application boundary. Move the former
+`awaken-environment-execution-application` implementation into the existing
+`awaken-environment-application::execution` module and remove the former crate.
+The surviving application is the sole application-layer crate of the Environment
+bounded context; its separation reason is now checkable and it leaves
+`UNJUSTIFIED`. The authoring service, exact-intent delivery, executable projection,
+and Work lease use cases remain separate components with their existing authority
+and typed dependencies. Execution-private queue views and token issuance stay
+private to the execution module. This merge removes duplicate crate and dependency
+edges; it does not turn Control and Coordinator into one process or one database.
+
+Rust callers replace `awaken_environment_execution_application::Type` with
+`awaken_environment_application::execution::Type` and depend only on
+`awaken-environment-application`. Existing type names, including
+`EnvironmentExecutionApplication`, `CoordinatorEnvironmentRegistrar`, `WorkQueue`,
+`WorkQueries`, and the session access roles, stay unchanged. This path migration
+also applies to any awaken-cloud consumers; they must compile against the matching
+Native candidate before updating their pin.
+
+The Runtime SDK release surface and Anthropic Managed Agents HTTP paths, DTOs,
+headers, errors, pagination, and Environment archive behavior are unchanged. There
+is no wire-format or database migration.

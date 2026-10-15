@@ -19,7 +19,7 @@ use crate::types::environment::{
     WorkStopParams, WorkUpdateParams,
 };
 use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate};
-use awaken_environment_execution_application::{
+use awaken_environment_application::execution::{
     EnvironmentExecutionError, SessionWorkLeaseControl, WorkConsumer, WorkMetadataPatch,
     WorkQueries,
 };

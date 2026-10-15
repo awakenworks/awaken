@@ -84,7 +84,7 @@ pub fn environment_authoring_router(state: Arc<EnvironmentAuthoringState>) -> Ro
 /// Mount Coordinator-owned work coordination routes.
 /// `clock` is the Coordinator's wall clock.
 pub fn environment_work_router(
-    environments: Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
+    environments: Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
     clock: Arc<dyn awaken_time::WallClock>,
 ) -> Router {
     let state = Arc::new(work_routes::WorkRoutes {

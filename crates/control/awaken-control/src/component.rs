@@ -289,7 +289,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         };
     let registration_supervisor = crate::StaticRegistrationSupervisor::start(
         publication_reconciler.clone(),
-        environment_application,
+        environment_application.registration_delivery(),
         &service_lifecycle,
     );
     let capability_reader = Arc::new(if request_scoped_execution_workspace {

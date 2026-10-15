@@ -300,7 +300,7 @@ impl ManagedSessionRootFixture {
                     )
                     .expect("install canonical local Environment");
                 let environments = Arc::new(
-                    awaken_environment_execution_application::EnvironmentExecutionApplication::new(
+                    awaken_environment_application::execution::EnvironmentExecutionApplication::new(
                         Arc::new(awaken_work_store::InMemoryWorkQueue::new(
                             self.clock.clone(),
                         )),

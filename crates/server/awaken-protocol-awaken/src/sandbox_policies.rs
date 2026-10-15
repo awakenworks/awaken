@@ -517,7 +517,7 @@ mod tests {
             "R3"
         );
         assert_eq!(
-            awaken_environment_contract::EnvRegistry::list_all(envs.as_ref())
+            awaken_environment_contract::EnvironmentDefinitionQueries::list_all(envs.as_ref())
                 .await
                 .unwrap()
                 .len(),

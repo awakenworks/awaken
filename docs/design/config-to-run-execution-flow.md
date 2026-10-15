@@ -129,8 +129,11 @@ one bundle id per aggregate-safe scope.
 Environment Registry and sandbox-policy persistence are Control stores. The
 Environment aggregate owns its exact policy reference; the policy store owns
 only immutable versions. `awaken-environment-application` owns the sole
-`EnvironmentApplication` definition command path and publishes exact revisions
-through `ExecutableEnvironmentRegistrar`.
+`EnvironmentApplication` definition command path. Its `EnvironmentRegistrationDelivery`
+reads committed intents and publishes exact revisions through
+`ExecutableEnvironmentRegistrar`. The same application crate contains the separate
+`execution` module for Coordinator snapshot compilation and Work operations;
+authoring and delivery hold no Work command dependency.
 Coordinator owns only the executable command log, WorkQueue, image-build, and
 Session realization state. AllInOne replaces the registration transport with a
 local adapter while retaining the same two authorities.

@@ -2,7 +2,7 @@
 // @formal surface obligation=work.terminal_lease_clear
 // @formal reason: Narrow application roles preserve registration checks and delegate atomic storage operations.
 //! Work use cases handed to adapters by their calling role.
-use crate::{EnvironmentExecutionError, session_access};
+use super::{EnvironmentExecutionApplication, EnvironmentExecutionError, session_access};
 use awaken_executable_environment_contract::{
     self as storage, ClaimedWork, ExecutableEnvironmentRegistrationSource, HeartbeatResult,
     LeaseHeartbeat, QueueStats, WorkItem, WorkQueueError, WorkSessionAccess,
@@ -36,7 +36,7 @@ impl WorkContext {
 /// A read-only adapter needs no claim, mutation or registration-write methods.
 /// ```
 /// use std::sync::Arc;
-/// use awaken_environment_execution_application::WorkQueries;
+/// use awaken_environment_application::execution::WorkQueries;
 /// use awaken_executable_environment_contract::{WorkQueries as QueryStorage, ExecutableEnvironmentRegistrationSource};
 /// fn read_only(storage: Arc<dyn QueryStorage>, environments: Arc<dyn ExecutableEnvironmentRegistrationSource>) -> WorkQueries {
 ///     WorkQueries::new(storage, environments)
@@ -44,7 +44,7 @@ impl WorkContext {
 /// ```
 ///
 /// ```compile_fail
-/// use awaken_environment_execution_application::WorkQueries;
+/// use awaken_environment_application::execution::WorkQueries;
 /// async fn cannot_stop(queries: WorkQueries) {
 ///     queries.stop("env", "work", "owner").await;
 /// }
@@ -189,7 +189,7 @@ impl WorkConsumer {
 /// Authenticate a Session bearer against the current durable Work lease.
 ///
 /// ```compile_fail
-/// use awaken_environment_execution_application::SessionAccessAuthenticator;
+/// use awaken_environment_application::execution::SessionAccessAuthenticator;
 /// async fn cannot_claim(authentication: SessionAccessAuthenticator) {
 ///     authentication.claim("env", "owner", "poller", 0, None).await;
 /// }
@@ -302,7 +302,7 @@ impl WorkMetadataPatch {
     }
 }
 
-impl crate::EnvironmentExecutionApplication {
+impl EnvironmentExecutionApplication {
     #[must_use]
     pub fn work_queries(&self) -> WorkQueries {
         WorkQueries::new(self.work.queries(), self.execution_source.clone())

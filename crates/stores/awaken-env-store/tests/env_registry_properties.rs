@@ -1,10 +1,12 @@
-//! Formal (property-based) verification of the in-memory `EnvRegistry` — terminal
+//! Formal (property-based) verification of the in-memory Environment definition roles — terminal
 //! archive and fail-closed lookups (ADR-0059 verification pass). The cause-
 //! effect unit test pins one sequence; these properties assert the semantics hold for ALL
 //! create/archive counts and orderings the generator produces.
 
 use awaken_env_store::InMemoryEnvRegistry;
-use awaken_environment_contract::{EnvRegistry, EnvUpdate, EnvironmentConfig};
+use awaken_environment_contract::{
+    EnvUpdate, EnvironmentConfig, EnvironmentDefinitionQueries, EnvironmentDefinitionStore,
+};
 use proptest::prelude::*;
 
 fn block<F: std::future::Future>(f: F) -> F::Output {

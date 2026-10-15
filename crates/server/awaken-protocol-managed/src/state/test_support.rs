@@ -17,7 +17,7 @@ pub(crate) use session_repository::ConflictInjectingRepo;
 /// (integration tests use the testkit's function directly).
 pub(crate) fn environment_components() -> (
     std::sync::Arc<crate::EnvironmentAuthoringState>,
-    std::sync::Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
+    std::sync::Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
 ) {
     let fixture = awaken_protocol_managed_testkit::environment_fixture(awaken_time::system_clock());
     (

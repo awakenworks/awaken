@@ -7,11 +7,22 @@ license.workspace = true
 [package.metadata.awaken]
 context = "control"
 product = "platform"
-bounded_context = "config"
+bounded_context = "environment"
 layer = "application"
 authority = "environment"
+separation = "sole-in-layer"
 
 [dependencies]
+awaken-session-application-contract.workspace = true
+awaken-agent-contract.workspace = true
+# Per-Session Work bearer entropy is provided by the platform CSPRNG seam.
+awaken-iam-core.workspace = true
+awaken-credential-contract.workspace = true
+awaken-session-configuration-contract.workspace = true
+awaken-session-types.workspace = true
+base64 = "0.22"
+sha2 = "0.10"
+serde_json.workspace = true
 awaken-environment-contract.workspace = true
 awaken-executable-environment-contract.workspace = true
 awaken-provisioning-contract.workspace = true
@@ -19,9 +30,11 @@ thiserror.workspace = true
 async-trait.workspace = true
 
 [dev-dependencies]
+awaken-executable-environment-catalog.workspace = true
+awaken-work-store = { workspace = true, features = ["test-support"] }
 awaken-time.workspace = true
 awaken-env-store = { workspace = true, features = ["test-support"] }
-tokio = { workspace = true, features = ["rt", "macros", "sync"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync"] }
 
 [lints]
 workspace = true

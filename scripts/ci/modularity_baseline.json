@@ -134,7 +134,6 @@
     "awaken-env-store",
     "awaken-environment-application",
     "awaken-environment-contract",
-    "awaken-environment-execution-application",
     "awaken-environment-image-build",
     "awaken-environment-package-image-builder",
     "awaken-eval",
@@ -250,7 +249,7 @@
     "awaken-admin-config-api::provider_connection.rs::connect": 285,
     "awaken-agent-config::compile.rs::compile_with_models": 360,
     "awaken-cli::config/resolve.rs::resolve_file": 502,
-    "awaken-cli::control_component.rs::prepare_control_routers": 239,
+    "awaken-cli::control_component.rs::prepare_control_routers": 238,
     "awaken-cli::deployment_process.rs::prepare_runtime_process_with_coordinator_services_and_installations": 219,
     "awaken-cli::process_stores.rs::open_process_stores": 393,
     "awaken-cli::service.rs::serve_prepared_process": 234,
@@ -384,7 +383,7 @@
   },
   "crate-budget": {
     "awaken-protocol-managed": {
-      "deps": 36,
+      "deps": 35,
       "lines": 24420,
       "reason": "W20 (plan 9.11): Session lifecycle and deployment decisions move to their application services; the adapter keeps protocol translation only"
     },
