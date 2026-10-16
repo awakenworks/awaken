@@ -2682,6 +2682,9 @@ async fn legacy_terminal_batches_resolve_under_root_cas_without_runtime_effects(
             } else if cleanup == "legacy" {
                 let mut legacy = serde_json::to_value(&session).unwrap();
                 legacy["terminal_cleanup"]["state"] = serde_json::Value::String("requested".into());
+                // Legacy Requested rows have no cursor but still bind the root
+                // to the frozen target set; a Fenced row has no such field.
+                legacy["terminal_cleanup"]["thread_ids"] = serde_json::json!([session_id]);
                 session = serde_json::from_value(legacy).unwrap();
             }
             create(repository.as_ref(), session).await;
@@ -2892,10 +2895,12 @@ async fn deleting_tombstone_waits_for_terminal_batch_provenance_case() {
         .transition_execution(awaken_session_state_contract::SessionExecutionState::Terminated)
         .expect("legacy delete starts from a valid terminal aggregate");
     session.disposition = awaken_session_state_contract::SessionDisposition::Deleting;
+    assert!(session.terminal_cleanup.request(&session.session_id));
     let mut legacy = serde_json::to_value(&session).unwrap();
+    let effect_id = legacy["terminal_cleanup"]["effect_id"].clone();
     legacy["terminal_cleanup"] = serde_json::json!({
         "state": "completed",
-        "effect_id": "legacy-delete-cleanup",
+        "effect_id": effect_id,
         "thread_ids": ["deleting-batch"],
         "delegation_watermark": 0,
         "runtime_commit_cursor": 31,
