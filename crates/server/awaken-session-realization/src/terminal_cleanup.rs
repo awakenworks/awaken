@@ -8,7 +8,7 @@
 /// Run and cleanup effects share the one selected Artifact publication operation.
 #[derive(Clone)]
 pub struct TerminalCleanup {
-    pub artifacts: crate::provisioning::ArtifactHarvester,
+    pub artifacts: std::sync::Arc<crate::provisioning::ArtifactHarvester>,
     pub sessions: crate::session_realizations::SessionRealizations,
 }
 

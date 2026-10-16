@@ -205,14 +205,12 @@ pub(crate) fn child_attempt_executor(
     } else {
         None
     };
-    Ok(Arc::new(
-        crate::run_exec::SessionAttemptExecutor::from_executors(
-            runtime,
-            acp,
-            remote,
-            &[&snapshot.resolved_spec],
-        ),
-    ))
+    Ok(Arc::new(crate::run_exec::session_attempt_executor(
+        runtime,
+        acp,
+        remote,
+        &[&snapshot.resolved_spec],
+    )))
 }
 
 pub(super) fn bind_direct_child_credentials(
