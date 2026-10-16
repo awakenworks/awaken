@@ -32,7 +32,7 @@ pub(crate) enum CoordinationEndpoint {
     Local(Weak<dyn SessionAgentCoordination>),
     Remote {
         control: Arc<ClaimedCoordination>,
-        slots: Arc<crate::installed_session::InstalledSessions>,
+        slots: Weak<crate::installed_session::InstalledSessions>,
     },
 }
 
@@ -52,7 +52,7 @@ impl crate::SharedHost {
                 .as_ref()
                 .map(|control| CoordinationEndpoint::Remote {
                     control: control.clone(),
-                    slots: self.installed_sessions.clone(),
+                    slots: Arc::downgrade(&self.installed_sessions),
                 })
         })
     }
@@ -69,10 +69,13 @@ impl crate::SharedHost {
 
 impl CoordinationEndpoint {
     fn current_claim(
-        slots: &Arc<crate::installed_session::InstalledSessions>,
+        slots: &Weak<crate::installed_session::InstalledSessions>,
         session_id: &str,
         source_run_id: &str,
-    ) -> Result<RunClaim, ToolError> {
+    ) -> Result<(Arc<crate::installed_session::InstalledSessions>, RunClaim), ToolError> {
+        let slots = slots.upgrade().ok_or_else(|| {
+            ToolError::DefinitiveFailure("Session coordination owner is unavailable".into())
+        })?;
         let claim = slots
             .read_run(session_id, |run| run.dispatch_claim.clone())
             .flatten()
@@ -87,7 +90,7 @@ impl CoordinationEndpoint {
                     .to_string(),
             ));
         }
-        Ok(claim)
+        Ok((slots, claim))
     }
 
     async fn list(
@@ -107,7 +110,9 @@ impl CoordinationEndpoint {
                 .await
                 .map_err(tool_error),
             Self::Remote { control, slots } => {
-                let claim = Self::current_claim(slots, session_id.as_str(), source_run_id)?;
+                // Retain the original owner until this control future finishes.
+                let (_owner, claim) =
+                    Self::current_claim(slots, session_id.as_str(), source_run_id)?;
                 control
                     .list_session_agents(&claim, session_id.as_str())
                     .await
@@ -200,7 +205,9 @@ impl CoordinationEndpoint {
                 .map_err(tool_error)
             }
             Self::Remote { control, slots } => {
-                let claim = Self::current_claim(slots, command.session_id.as_str(), source_run_id)?;
+                // Retain the original owner until this control future finishes.
+                let (_owner, claim) =
+                    Self::current_claim(slots, command.session_id.as_str(), source_run_id)?;
                 control
                     .send_session_agent_message(&claim, command)
                     .await
@@ -965,7 +972,7 @@ mod tests {
         let control = Arc::new(RemoteControl::default());
         let endpoint = CoordinationEndpoint::Remote {
             control: control.clone(),
-            slots: slots.clone(),
+            slots: Arc::downgrade(&slots),
         };
         let factory = claimed_model_request_gate_factory(endpoint.clone(), "session");
         slots.update_run("session", |run| run.dispatch_claim = Some(parent.clone()));
@@ -1152,3 +1159,6 @@ mod tests {
         assert_eq!(boundaries[2].session_activity_epoch, 99, "O5/E4");
     }
 }
+
+#[cfg(test)]
+mod lifetime_tests;

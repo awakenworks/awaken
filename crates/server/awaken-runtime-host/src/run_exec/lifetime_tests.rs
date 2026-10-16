@@ -13,10 +13,19 @@ use tokio::sync::{Notify, Semaphore};
 struct AttemptProbe {
     calls: AtomicUsize,
     cancels: AtomicUsize,
+    destroyed_futures: AtomicUsize,
     entered: Notify,
     release: Semaphore,
     blocked: bool,
     fails: bool,
+}
+
+struct AttemptDropReceipt<'a>(&'a AtomicUsize);
+
+impl Drop for AttemptDropReceipt<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 impl AttemptProbe {
@@ -24,6 +33,7 @@ impl AttemptProbe {
         Self {
             calls: AtomicUsize::new(0),
             cancels: AtomicUsize::new(0),
+            destroyed_futures: AtomicUsize::new(0),
             entered: Notify::new(),
             release: Semaphore::new(0),
             blocked,
@@ -33,6 +43,7 @@ impl AttemptProbe {
 
     async fn attempt(&self) -> ExecutionResult<RunState> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        let _receipt = AttemptDropReceipt(&self.destroyed_futures);
         self.entered.notify_one();
         if self.blocked {
             // awaken-allow(wait): suspend the physical adapter at a controlled
@@ -484,5 +495,68 @@ async fn artifact_decorator_holds_same_owner_until_real_publication_finishes() {
                 "finished harvest releases original state"
             );
         }
+    }
+}
+
+#[tokio::test]
+async fn abandoning_the_original_attempt_drops_both_decorator_owners_and_inner_future() {
+    // Execute/resume enter a real inner future and remain blocked. Dropping the
+    // caller's future must destroy that original future, release both original
+    // owners, and leave no cache that can start another attempt. This is future
+    // cancellation, not a proof that an external process has physically stopped.
+    for is_resume in [false, true] {
+        let host =
+            crate::HostDependencies::ephemeral(Arc::new(crate::NoModelConfiguredExecutor), "stub")
+                .await
+                .build()
+                .unwrap();
+        let weak_slots = Arc::downgrade(&host.installed_sessions);
+        let owner = host.realizer.cleanup.artifacts.clone();
+        let weak_owner = Arc::downgrade(&owner);
+        let probe = Arc::new(AttemptProbe::new(true, false));
+        let inner: Arc<dyn RunAttemptExecutor> = Arc::new(ArtifactHarvestAttemptExecutor::new(
+            probe.clone(),
+            Arc::downgrade(&owner),
+        ));
+        let executor = SessionContextAttemptExecutor::new(
+            inner,
+            Arc::downgrade(&host.installed_sessions),
+            "lifetime-thread",
+            host.clock(),
+        );
+        let mut running = start(&executor, is_resume);
+        entered(&probe, &mut running).await;
+        assert_eq!(probe.destroyed_futures.load(Ordering::SeqCst), 0);
+        drop(owner);
+        drop(host);
+        assert!(
+            weak_owner.upgrade().is_some() && weak_slots.upgrade().is_some(),
+            "the original attempt holds both owners while blocked"
+        );
+        drop(running);
+        assert_eq!(
+            probe.destroyed_futures.load(Ordering::SeqCst),
+            1,
+            "the entered original inner future was destroyed without release"
+        );
+        assert!(
+            weak_owner.upgrade().is_none() && weak_slots.upgrade().is_none(),
+            "no cached decorator retains either owner after abandonment"
+        );
+        assert!(start(&executor, is_resume).await.is_err());
+        assert_eq!(
+            probe.calls.load(Ordering::SeqCst),
+            1,
+            "no second physical attempt"
+        );
+        executor
+            .cancel(activation(), RuntimeRunContext::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            probe.cancels.load(Ordering::SeqCst),
+            1,
+            "explicit cancellation remains a separate original control operation"
+        );
     }
 }
