@@ -5,7 +5,7 @@
 // @formal entrypoint memory.rename_replace_preserves_source_identity
 // @formal entrypoint memory.stale_cas_never_clobbers_live_content
 // @formal entrypoint memory.stale_conditional_delete_never_removes_live_head
-//! Postgres [`MemoryRepository`] over the crate's `memory_store` migration scope — the
+//! Postgres [`MemoryWriter`] over the crate's `memory_store` migration scope — the
 //! multi-node sibling of the SQLite backend over the same portable bundle.
 
 use awaken_sql_storage::StoredU64;
@@ -100,8 +100,11 @@ use crate::repository::{
     under_prefix, validate_path, validate_size,
 };
 use crate::{
-    MemErr, Memory, MemoryActor, MemoryEntry, MemoryGeneration, MemoryPurgeSummary,
-    MemoryRepository, MemoryVersion, MemoryVersionOperation, VersionAppend, sha256_hex,
+    MemErr, Memory, MemoryActor, MemoryContentPurge, MemoryCopyConflictPreservation,
+    MemoryCopyConflictQueries, MemoryCopyWriteback, MemoryEntry, MemoryFilesystem,
+    MemoryGeneration, MemoryPurgeSummary, MemoryQueries, MemorySnapshotSource, MemoryVersion,
+    MemoryVersionOperation, MemoryVersionQueries, MemoryVersionRedaction, MemoryWriter,
+    VersionAppend, sha256_hex,
 };
 
 fn mem_err(err: impl std::fmt::Display) -> MemErr {
@@ -121,7 +124,7 @@ fn next_domain_version(value: i64) -> Result<u64, MemErr> {
         .map_err(mem_err)
 }
 
-/// A Postgres-backed [`MemoryRepository`] (path-addressed, CAS). Compare-and-swap and rename
+/// A Postgres-backed [`MemoryWriter`] (path-addressed, CAS). Compare-and-swap and rename
 /// run in a transaction with `SELECT … FOR UPDATE`, so the optimistic-concurrency
 /// guarantee holds **across nodes** (the reason ADR-0057 chose Postgres).
 pub struct PostgresMemoryRepository {
@@ -304,9 +307,8 @@ async fn append_version(
     Ok(())
 }
 
-#[async_trait::async_trait]
-impl MemoryRepository for PostgresMemoryRepository {
-    async fn preserve_copy_conflict(
+impl PostgresMemoryRepository {
+    async fn preserve_copy_conflict_inner(
         &self,
         store: &str,
         candidate: &awaken_resource_contract::MemoryCopyConflict,
@@ -358,7 +360,7 @@ impl MemoryRepository for PostgresMemoryRepository {
         tx.commit().await.map_err(mem_err)
     }
 
-    async fn list_copy_conflicts(
+    async fn list_copy_conflicts_inner(
         &self,
         store: &str,
     ) -> Result<Vec<awaken_resource_contract::MemoryCopyConflict>, MemErr> {
@@ -379,7 +381,7 @@ impl MemoryRepository for PostgresMemoryRepository {
             })
             .collect()
     }
-    async fn snapshot_heads(&self, store: &str) -> Result<Vec<Memory>, MemErr> {
+    async fn snapshot_heads_inner(&self, store: &str) -> Result<Vec<Memory>, MemErr> {
         let rows = sqlx::query(&format!(
             "SELECT id, path, content, sha, version, created, updated \
              FROM {NS}_memories WHERE store_id = $1 ORDER BY path"
@@ -403,7 +405,7 @@ impl MemoryRepository for PostgresMemoryRepository {
             .collect()
     }
 
-    async fn list(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr> {
+    async fn list_inner(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr> {
         let rows = sqlx::query(&format!(
             "SELECT id, path, sha, length(content) AS n, version, updated \
              FROM {NS}_memories WHERE store_id = $1"
@@ -437,7 +439,7 @@ impl MemoryRepository for PostgresMemoryRepository {
             .collect()
     }
 
-    async fn get_by_path(&self, store: &str, path: &str) -> Result<Option<Memory>, MemErr> {
+    async fn get_by_path_inner(&self, store: &str, path: &str) -> Result<Option<Memory>, MemErr> {
         let row = sqlx::query(&format!(
             "SELECT id, path, content, sha, version, created, updated \
              FROM {NS}_memories WHERE store_id = $1 AND path = $2"
@@ -461,11 +463,11 @@ impl MemoryRepository for PostgresMemoryRepository {
         }
     }
 
-    async fn create(&self, store: &str, path: &str, content: &str) -> Result<Memory, MemErr> {
-        self.create_as(store, path, content, None).await
+    async fn create_inner(&self, store: &str, path: &str, content: &str) -> Result<Memory, MemErr> {
+        self.create_as_inner(store, path, content, None).await
     }
 
-    async fn create_as(
+    async fn create_as_inner(
         &self,
         store: &str,
         path: &str,
@@ -567,18 +569,18 @@ impl MemoryRepository for PostgresMemoryRepository {
         })
     }
 
-    async fn update_head(
+    async fn update_head_inner(
         &self,
         store: &str,
         base: &MemoryGeneration,
         content: &str,
         target_path: Option<&str>,
     ) -> Result<Memory, MemErr> {
-        self.update_head_as(store, base, content, target_path, None)
+        self.update_head_as_inner(store, base, content, target_path, None)
             .await
     }
 
-    async fn update_head_as(
+    async fn update_head_as_inner(
         &self,
         store: &str,
         base: &MemoryGeneration,
@@ -590,7 +592,7 @@ impl MemoryRepository for PostgresMemoryRepository {
             .await
     }
 
-    async fn update_materialized(
+    async fn update_materialized_inner(
         &self,
         store: &str,
         path: &str,
@@ -601,7 +603,7 @@ impl MemoryRepository for PostgresMemoryRepository {
             .await
     }
 
-    async fn rename(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr> {
+    async fn rename_inner(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr> {
         validate_path(to)?;
         let mut tx = self.pool.begin().await.map_err(mem_err)?;
         let row = sqlx::query(&format!(
@@ -695,11 +697,11 @@ impl MemoryRepository for PostgresMemoryRepository {
         })
     }
 
-    async fn delete_by_path(&self, store: &str, path: &str) -> Result<(), MemErr> {
-        self.delete_by_path_as(store, path, None).await
+    async fn delete_by_path_inner(&self, store: &str, path: &str) -> Result<(), MemErr> {
+        self.delete_by_path_as_inner(store, path, None).await
     }
 
-    async fn delete_by_path_as(
+    async fn delete_by_path_as_inner(
         &self,
         store: &str,
         path: &str,
@@ -742,16 +744,16 @@ impl MemoryRepository for PostgresMemoryRepository {
         Ok(())
     }
 
-    async fn delete_if_match(
+    async fn delete_if_match_inner(
         &self,
         store: &str,
         path: &str,
         base: &MemoryGeneration,
     ) -> Result<bool, MemErr> {
-        self.delete_if_match_as(store, path, base, None).await
+        self.delete_if_match_as_inner(store, path, base, None).await
     }
 
-    async fn delete_if_match_as(
+    async fn delete_if_match_as_inner(
         &self,
         store: &str,
         path: &str,
@@ -820,7 +822,7 @@ impl MemoryRepository for PostgresMemoryRepository {
         Ok(true)
     }
 
-    async fn list_versions(&self, store: &str) -> Result<Vec<MemoryVersion>, MemErr> {
+    async fn list_versions_inner(&self, store: &str) -> Result<Vec<MemoryVersion>, MemErr> {
         sqlx::query(&format!(
             "SELECT id, memory_id, operation, path, content, created, redacted, created_by_json, redacted_by_json \
              FROM {NS}_versions WHERE store_id = $1 ORDER BY ordinal"
@@ -834,15 +836,15 @@ impl MemoryRepository for PostgresMemoryRepository {
         .collect()
     }
 
-    async fn redact_version(
+    async fn redact_version_inner(
         &self,
         store: &str,
         version_id: &str,
     ) -> Result<Option<MemoryVersion>, MemErr> {
-        self.redact_version_as(store, version_id, None).await
+        self.redact_version_as_inner(store, version_id, None).await
     }
 
-    async fn redact_version_as(
+    async fn redact_version_as_inner(
         &self,
         store: &str,
         version_id: &str,
@@ -888,7 +890,7 @@ impl MemoryRepository for PostgresMemoryRepository {
         Ok(Some(version))
     }
 
-    async fn purge_store(&self, store: &str) -> Result<MemoryPurgeSummary, MemErr> {
+    async fn purge_store_inner(&self, store: &str) -> Result<MemoryPurgeSummary, MemErr> {
         let mut tx = self.pool.begin().await.map_err(mem_err)?;
         sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
             .bind(store)
@@ -1082,5 +1084,226 @@ impl PostgresMemoryRepository {
             created_unix_nanos: created as u128,
             updated_unix_nanos: now as u128,
         })
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryQueries for PostgresMemoryRepository {
+    async fn list(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr> {
+        PostgresMemoryRepository::list_inner(self, store, prefix).await
+    }
+    async fn get_by_path(&self, store: &str, path: &str) -> Result<Option<Memory>, MemErr> {
+        PostgresMemoryRepository::get_by_path_inner(self, store, path).await
+    }
+}
+
+#[async_trait::async_trait]
+impl MemorySnapshotSource for PostgresMemoryRepository {
+    async fn snapshot_heads(&self, store: &str) -> Result<Vec<Memory>, MemErr> {
+        PostgresMemoryRepository::snapshot_heads_inner(self, store).await
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryWriter for PostgresMemoryRepository {
+    async fn create_as(
+        &self,
+        store: &str,
+        path: &str,
+        content: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr> {
+        PostgresMemoryRepository::create_as_inner(self, store, path, content, actor).await
+    }
+    async fn update_head_as(
+        &self,
+        store: &str,
+        base: &MemoryGeneration,
+        content: &str,
+        target_path: Option<&str>,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr> {
+        PostgresMemoryRepository::update_head_as_inner(
+            self,
+            store,
+            base,
+            content,
+            target_path,
+            actor,
+        )
+        .await
+    }
+    async fn delete_by_path_as(
+        &self,
+        store: &str,
+        path: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<(), MemErr> {
+        PostgresMemoryRepository::delete_by_path_as_inner(self, store, path, actor).await
+    }
+    async fn delete_if_match_as(
+        &self,
+        store: &str,
+        path: &str,
+        base: &MemoryGeneration,
+        actor: Option<&MemoryActor>,
+    ) -> Result<bool, MemErr> {
+        PostgresMemoryRepository::delete_if_match_as_inner(self, store, path, base, actor).await
+    }
+    async fn create(&self, store: &str, path: &str, content: &str) -> Result<Memory, MemErr> {
+        PostgresMemoryRepository::create_inner(self, store, path, content).await
+    }
+    async fn update_head(
+        &self,
+        store: &str,
+        base: &MemoryGeneration,
+        content: &str,
+        target_path: Option<&str>,
+    ) -> Result<Memory, MemErr> {
+        PostgresMemoryRepository::update_head_inner(self, store, base, content, target_path).await
+    }
+    async fn delete_by_path(&self, store: &str, path: &str) -> Result<(), MemErr> {
+        PostgresMemoryRepository::delete_by_path_inner(self, store, path).await
+    }
+    async fn delete_if_match(
+        &self,
+        store: &str,
+        path: &str,
+        base: &MemoryGeneration,
+    ) -> Result<bool, MemErr> {
+        PostgresMemoryRepository::delete_if_match_inner(self, store, path, base).await
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryFilesystem for PostgresMemoryRepository {
+    async fn list(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr> {
+        PostgresMemoryRepository::list_inner(self, store, prefix).await
+    }
+    async fn get_by_path(&self, store: &str, path: &str) -> Result<Option<Memory>, MemErr> {
+        PostgresMemoryRepository::get_by_path_inner(self, store, path).await
+    }
+    async fn create_as(
+        &self,
+        store: &str,
+        path: &str,
+        content: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr> {
+        PostgresMemoryRepository::create_as_inner(self, store, path, content, actor).await
+    }
+    async fn update_head_as(
+        &self,
+        store: &str,
+        base: &MemoryGeneration,
+        content: &str,
+        target_path: Option<&str>,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr> {
+        PostgresMemoryRepository::update_head_as_inner(
+            self,
+            store,
+            base,
+            content,
+            target_path,
+            actor,
+        )
+        .await
+    }
+    async fn rename(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr> {
+        PostgresMemoryRepository::rename_inner(self, store, from, to).await
+    }
+    async fn delete_by_path_as(
+        &self,
+        store: &str,
+        path: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<(), MemErr> {
+        PostgresMemoryRepository::delete_by_path_as_inner(self, store, path, actor).await
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryCopyWriteback for PostgresMemoryRepository {
+    async fn create_as(
+        &self,
+        store: &str,
+        path: &str,
+        content: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr> {
+        PostgresMemoryRepository::create_as_inner(self, store, path, content, actor).await
+    }
+    async fn update_materialized(
+        &self,
+        store: &str,
+        path: &str,
+        base: &MemoryGeneration,
+        content: &str,
+    ) -> Result<Memory, MemErr> {
+        PostgresMemoryRepository::update_materialized_inner(self, store, path, base, content).await
+    }
+    async fn delete_if_match_as(
+        &self,
+        store: &str,
+        path: &str,
+        base: &MemoryGeneration,
+        actor: Option<&MemoryActor>,
+    ) -> Result<bool, MemErr> {
+        PostgresMemoryRepository::delete_if_match_as_inner(self, store, path, base, actor).await
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryCopyConflictPreservation for PostgresMemoryRepository {
+    async fn preserve_copy_conflict(
+        &self,
+        store: &str,
+        candidate: &awaken_resource_contract::MemoryCopyConflict,
+    ) -> Result<(), MemErr> {
+        PostgresMemoryRepository::preserve_copy_conflict_inner(self, store, candidate).await
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryCopyConflictQueries for PostgresMemoryRepository {
+    async fn list_copy_conflicts(
+        &self,
+        store: &str,
+    ) -> Result<Vec<awaken_resource_contract::MemoryCopyConflict>, MemErr> {
+        PostgresMemoryRepository::list_copy_conflicts_inner(self, store).await
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryVersionQueries for PostgresMemoryRepository {
+    async fn list_versions(&self, store: &str) -> Result<Vec<MemoryVersion>, MemErr> {
+        PostgresMemoryRepository::list_versions_inner(self, store).await
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryVersionRedaction for PostgresMemoryRepository {
+    async fn redact_version_as(
+        &self,
+        store: &str,
+        version_id: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Option<MemoryVersion>, MemErr> {
+        PostgresMemoryRepository::redact_version_as_inner(self, store, version_id, actor).await
+    }
+    async fn redact_version(
+        &self,
+        store: &str,
+        version_id: &str,
+    ) -> Result<Option<MemoryVersion>, MemErr> {
+        PostgresMemoryRepository::redact_version_inner(self, store, version_id).await
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryContentPurge for PostgresMemoryRepository {
+    async fn purge_store(&self, store: &str) -> Result<MemoryPurgeSummary, MemErr> {
+        PostgresMemoryRepository::purge_store_inner(self, store).await
     }
 }

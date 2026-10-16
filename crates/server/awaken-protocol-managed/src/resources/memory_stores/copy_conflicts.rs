@@ -30,7 +30,7 @@ pub(super) async fn list(
         Ok(false) => return not_found("memory_store"),
         Err(error) => return application_error(error),
     }
-    let candidates = match state.memories.list_copy_conflicts(&id).await {
+    let candidates = match state.conflicts.list_copy_conflicts(&id).await {
         Ok(candidates) => candidates,
         Err(error) => return err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     };

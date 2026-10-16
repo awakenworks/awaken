@@ -1254,6 +1254,23 @@ async fn build_secretless_worker(
         .build()?)
 }
 
+/// Construct the two registered content clients from the same authenticated
+/// upstream, deriving every Memory execution role once from one HTTP client.
+fn remote_content_adapters(
+    upstream: &WorkerUpstream,
+) -> awaken_session_executor::WorkerContentAdapters {
+    let memory = Arc::new(awaken_resource_worker_http::HttpMemoryRepository::new(
+        upstream.clone(),
+    ));
+    let files = Arc::new(awaken_resource_worker_http::HttpFileContentSource::new(
+        upstream.clone(),
+    ));
+    awaken_session_executor::WorkerContentAdapters {
+        file_content_source: files,
+        memory: awaken_resource_contract::MemoryExecutionContent::new(memory),
+    }
+}
+
 fn configured_container_acp_targets(
     deployment: &awaken_session_executor::DeploymentConfig,
 ) -> Result<Vec<acp_capability::ConfiguredAcpCapabilityTarget>, String> {
@@ -1527,12 +1544,7 @@ impl WorkerNode {
             })?;
 
         let managed_credential_materializer = self.credential_materializer.clone();
-        let remote_memory = Arc::new(awaken_resource_worker_http::HttpMemoryRepository::new(
-            upstream.clone(),
-        ));
-        let remote_files = Arc::new(awaken_resource_worker_http::HttpFileContentSource::new(
-            upstream.clone(),
-        ));
+        let remote_content = remote_content_adapters(&upstream);
         let remote_artifacts = Arc::new(awaken_resource_worker_http::HttpArtifactPublisher::new(
             upstream.clone(),
         ));
@@ -1575,8 +1587,7 @@ impl WorkerNode {
         let mut deps = awaken_session_executor::HostDependencies::for_worker(
             Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
             "worker",
-            remote_files,
-            remote_memory,
+            remote_content,
             deployment
                 .host_process(local_workspace, self.clock.clone())
                 .map_err(std::io::Error::other)?,

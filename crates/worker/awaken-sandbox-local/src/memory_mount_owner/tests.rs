@@ -491,7 +491,7 @@ async fn concurrent_cleanup_reenters_authority_and_retains_cancelled_waits() {
 
 #[tokio::test]
 async fn replay_reuses_fuse_but_keeps_copy_edits_until_existing_reconciliation() {
-    use awaken_resource_contract::MemoryRepository as _;
+    use awaken_resource_contract::MemoryWriter;
     // M18: exact Ready FUSE is reused without a second external mount. M19:
     // reference renewal tears down only the old FUSE; confirmed Copy edits and
     // original heads survive BOTH replay paths. Actual copy-only Memoryd/store
@@ -553,8 +553,7 @@ async fn replay_reuses_fuse_but_keeps_copy_edits_until_existing_reconciliation()
         b"agent edit"
     );
     assert_eq!(
-        store
-            .get_by_path("copy", "/note.md")
+        awaken_resource_contract::MemoryQueries::get_by_path(store.as_ref(), "copy", "/note.md")
             .await
             .unwrap()
             .unwrap()
@@ -565,8 +564,7 @@ async fn replay_reuses_fuse_but_keeps_copy_edits_until_existing_reconciliation()
     acquire(&owner, fuse.clone(), &fuse_req, &fuse_path).await;
     owner.lock().await.release(|| Ok(())).await.unwrap();
     assert_eq!(
-        store
-            .get_by_path("copy", "/note.md")
+        awaken_resource_contract::MemoryQueries::get_by_path(store.as_ref(), "copy", "/note.md")
             .await
             .unwrap()
             .unwrap()

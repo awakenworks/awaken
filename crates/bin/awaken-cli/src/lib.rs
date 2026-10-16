@@ -36,7 +36,6 @@ mod process_admin;
 mod process_startup;
 mod process_stores;
 mod process_surface;
-mod resources;
 mod runtime_process_router;
 mod service;
 mod web_search_publication;
@@ -105,9 +104,6 @@ use process_stores::{
 };
 #[cfg(test)]
 use process_stores::{role_owns_control_component, role_owns_managed_execution};
-#[cfg(any(test, feature = "test-support"))]
-use resources::ephemeral_resources_application;
-use resources::open_resources_application;
 use runtime_process_router::prepare_runtime_routers;
 pub use service::{
     ServiceRole, migrate_service, migrate_service_with_request, run_all_in_one_with_services,

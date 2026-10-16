@@ -2,7 +2,7 @@
 //! The fuser-backed write-through memory filesystem (ADR-0053, D2/D3).
 //!
 //! A faithful port of awaken-next's `memoryd` FUSE, over an in-process
-//! [`MemoryRepository`] instead of an HTTP client, and reporting the store's real
+//! [`MemoryFilesystem`] instead of an HTTP client, and reporting the store's real
 //! create/update timestamps in `getattr` (awaken-next reported `now()`).
 
 use std::collections::{HashMap, VecDeque};
@@ -15,7 +15,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use awaken_time::WallClock;
 
-use awaken_resource_contract::{MemErr, Memory, MemoryGeneration, MemoryRepository};
+use awaken_resource_contract::{MemErr, Memory, MemoryFilesystem, MemoryGeneration};
 use fuser::{
     BackgroundSession, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyCreate,
     ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow,
@@ -53,6 +53,31 @@ pub struct MemoryMountHandle {
     state: Arc<MountState>,
     drain_timeout: Duration,
     listener: Option<InvalidationListener>,
+    #[cfg(test)]
+    cache_witness: MountedCacheWitness,
+}
+
+/// Observe only the cache allocation moved into the real kernel session. Weak
+/// ownership cannot extend the mount/listener lifetime or evict expired entries.
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct MountedCacheWitness(std::sync::Weak<Mutex<ContentLruCache>>);
+
+#[cfg(test)]
+impl MountedCacheWitness {
+    pub(crate) fn contains_raw(&self, path: &str) -> bool {
+        self.0
+            .upgrade()
+            .expect("real kernel cache remains mounted")
+            .lock()
+            .expect("cache mutex is healthy")
+            .entries
+            .contains_key(path)
+    }
+
+    pub(crate) fn is_live(&self) -> bool {
+        self.0.upgrade().is_some()
+    }
 }
 
 /// A background thread draining peer-projection invalidations into a mount's cache
@@ -179,6 +204,11 @@ struct MountState {
 }
 
 impl MemoryMountHandle {
+    #[cfg(test)]
+    pub(crate) fn cache_witness_for_test(&self) -> MountedCacheWitness {
+        self.cache_witness.clone()
+    }
+
     /// Unmount and wait for the background session to exit. Drains open fds up to
     /// the drain timeout so a close-flush in flight is not cut off; warns (never
     /// hangs) if fds remain.
@@ -222,8 +252,10 @@ impl Drop for MemoryMountHandle {
 }
 
 /// Spawn a background mount of `store` at `mountpoint`, returning its handle.
+/// Low-level independent kernel mount. It does not provide Resources API/cache
+/// coherence; process compositions use the controlled `MemoryStoreMounter` source.
 pub fn spawn_mount(
-    fs: Arc<dyn MemoryRepository>,
+    fs: Arc<dyn MemoryFilesystem>,
     store_id: String,
     mountpoint: PathBuf,
     clock: &dyn WallClock,
@@ -235,8 +267,8 @@ pub fn spawn_mount(
 /// paths from its cache so a write through a peer projection is reflected here.
 /// Pass a [`LocalInvalidator`](crate::LocalInvalidator) subscription for same-process
 /// coherence; a distributed adapter can feed the same broadcast receiver.
-pub fn spawn_mount_with_invalidations(
-    fs: Arc<dyn MemoryRepository>,
+pub(crate) fn spawn_mount_with_invalidations(
+    fs: Arc<dyn MemoryFilesystem>,
     store_id: String,
     mountpoint: PathBuf,
     invalidations: broadcast::Receiver<Invalidation>,
@@ -246,7 +278,7 @@ pub fn spawn_mount_with_invalidations(
 }
 
 fn spawn_mount_inner(
-    fs: Arc<dyn MemoryRepository>,
+    fs: Arc<dyn MemoryFilesystem>,
     store_id: String,
     mountpoint: PathBuf,
     invalidations: Option<broadcast::Receiver<Invalidation>>,
@@ -254,6 +286,8 @@ fn spawn_mount_inner(
 ) -> Result<MemoryMountHandle, FuseError> {
     let state = Arc::new(MountState::default());
     let fuse = MemoryFuse::new_with_state(fs, store_id.clone(), state.clone(), clock)?;
+    #[cfg(test)]
+    let cache_witness = MountedCacheWitness(Arc::downgrade(&fuse.cache_handle()));
     // Capture a cache handle before `fuse` is moved into the kernel session.
     let listener = invalidations.map(|rx| {
         let cache = fuse.cache_handle();
@@ -274,6 +308,8 @@ fn spawn_mount_inner(
         state,
         drain_timeout: DEFAULT_UNMOUNT_DRAIN_TIMEOUT,
         listener,
+        #[cfg(test)]
+        cache_witness,
     })
 }
 
@@ -286,9 +322,9 @@ fn mount_options() -> Vec<MountOption> {
     ]
 }
 
-/// The FUSE filesystem projecting one memory `store` over a [`MemoryRepository`].
+/// The FUSE filesystem projecting one memory `store` over a [`MemoryFilesystem`].
 pub struct MemoryFuse {
-    fs: Arc<dyn MemoryRepository>,
+    fs: Arc<dyn MemoryFilesystem>,
     store_id: String,
     runtime: Runtime,
     mount_time: u128,
@@ -405,7 +441,7 @@ impl MemoryFuse {
     /// stamps the mount instant: the synthetic root's times and the fallback
     /// for an entry whose store row records none.
     pub fn new(
-        fs: Arc<dyn MemoryRepository>,
+        fs: Arc<dyn MemoryFilesystem>,
         store_id: String,
         clock: &dyn WallClock,
     ) -> Result<Self, FuseError> {
@@ -413,7 +449,7 @@ impl MemoryFuse {
     }
 
     fn new_with_state(
-        fs: Arc<dyn MemoryRepository>,
+        fs: Arc<dyn MemoryFilesystem>,
         store_id: String,
         mount_state: Arc<MountState>,
         clock: &dyn WallClock,
@@ -661,7 +697,7 @@ impl MemoryFuse {
     fn create_file_for_path(&self, path: &str) -> Result<(u64, u64, Node), FuseError> {
         let memory = self
             .runtime
-            .block_on(self.fs.create(&self.store_id, path, ""))?;
+            .block_on(self.fs.create_as(&self.store_id, path, "", None))?;
         let (ino, node) = self.intern_memory(&memory);
         let fh = self.allocate_fh(OpenFile {
             generation: memory.generation(),
@@ -788,7 +824,7 @@ impl MemoryFuse {
             bytes.resize(size, 0);
             let content = String::from_utf8(bytes).map_err(|e| MemErr::Storage(e.to_string()))?;
             self.fs
-                .update(&self.store_id, &current.generation(), &content)
+                .update_head_as(&self.store_id, &current.generation(), &content, None, None)
                 .await
         })?;
         self.cache_put(memory.clone());
@@ -856,25 +892,27 @@ impl MemoryFuse {
         }
         let content = String::from_utf8(open.buffer.clone())
             .map_err(|e| FuseError::Internal(e.to_string()))?;
-        let updated =
-            match self
-                .runtime
-                .block_on(self.fs.update(&self.store_id, &open.generation, &content))
-            {
-                Ok(updated) => updated,
-                Err(MemErr::Conflict { current }) => {
-                    tracing::warn!(
-                        memory_id = %open.generation.memory_id(),
-                        expected_version = open.generation.version(),
-                        expected_sha256 = %open.generation.content_sha256(),
-                        current_sha256 = %current.content_sha256,
-                        current_content_size = current.content_size,
-                        "memory FUSE fd flush conflict — buffer kept, EAGAIN surfaced"
-                    );
-                    return Err(FuseError::Mem(MemErr::Conflict { current }));
-                }
-                Err(error) => return Err(error.into()),
-            };
+        let updated = match self.runtime.block_on(self.fs.update_head_as(
+            &self.store_id,
+            &open.generation,
+            &content,
+            None,
+            None,
+        )) {
+            Ok(updated) => updated,
+            Err(MemErr::Conflict { current }) => {
+                tracing::warn!(
+                    memory_id = %open.generation.memory_id(),
+                    expected_version = open.generation.version(),
+                    expected_sha256 = %open.generation.content_sha256(),
+                    current_sha256 = %current.content_sha256,
+                    current_content_size = current.content_size,
+                    "memory FUSE fd flush conflict — buffer kept, EAGAIN surfaced"
+                );
+                return Err(FuseError::Mem(MemErr::Conflict { current }));
+            }
+            Err(error) => return Err(error.into()),
+        };
         {
             let mut table = self.inodes.lock().expect("inode table mutex poisoned");
             if let Some(current) = table.open_files.get_mut(&fh) {
@@ -1190,7 +1228,7 @@ impl Filesystem for MemoryFuse {
         };
         match self
             .runtime
-            .block_on(self.fs.delete_by_path(&self.store_id, &path))
+            .block_on(self.fs.delete_by_path_as(&self.store_id, &path, None))
         {
             Ok(()) => {
                 self.cache_remove_path(&path);

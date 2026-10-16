@@ -13,6 +13,7 @@ use awaken_session_executor::{HostDependencies, SharedHost};
 pub(crate) struct ScenarioPlatform {
     dependencies: HostDependencies,
     resources: awaken_resource_application::ResourcesApplication,
+    memory_invalidator: Arc<awaken_sandbox_memoryd::LocalInvalidator>,
     /// The typed Deployment the dependencies were selected from; Session
     /// environment, ACP and Memory mount selection read it explicitly.
     deployment: awaken_session_executor::DeploymentConfig,
@@ -56,6 +57,8 @@ impl ScenarioPlatform {
             awaken_coordinator::with_platform_memory_data_plane(
                 self.dependencies,
                 self.deployment.sandbox_tier,
+                &self.resources.authorities(),
+                self.memory_invalidator,
             ),
             self.resources,
         )
@@ -265,11 +268,16 @@ async fn resource_host_with_selected_runtime(
 ) -> ScenarioPlatform {
     // The Scenario process's Resources clock.
     let clock = awaken_time::system_clock();
+    let memory_invalidator = Arc::new(awaken_sandbox_memoryd::LocalInvalidator::default());
     let resources = match deployment.storage_dir.clone() {
-        Some(storage_dir) => awaken_resource_persistence::open_embedded(&storage_dir, clock)
-            .await
-            .expect("open embedded scenario Resources application"),
-        None => awaken_resource_persistence::ephemeral(clock)
+        Some(storage_dir) => awaken_resource_persistence::open_embedded(
+            &storage_dir,
+            clock,
+            memory_invalidator.clone(),
+        )
+        .await
+        .expect("open embedded scenario Resources application"),
+        None => awaken_resource_persistence::ephemeral(clock, memory_invalidator.clone())
             .await
             .expect("open ephemeral scenario Resources application"),
     };
@@ -314,6 +322,7 @@ async fn resource_host_with_selected_runtime(
     ScenarioPlatform {
         dependencies,
         resources,
+        memory_invalidator,
         deployment,
     }
 }
@@ -508,8 +517,8 @@ mod tests {
         let authorities = resources.authorities();
 
         assert!(Arc::ptr_eq(
-            &host.memory_repository(),
-            &authorities.memory_repository()
+            &awaken_session_executor::test_memory_content(&host).queries(),
+            &authorities.memory_queries()
         ));
         assert!(Arc::ptr_eq(
             &host.skill_store().expect("Host Skill authority"),

@@ -678,9 +678,9 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
         let file: Arc<
             dyn awaken_resource_contract::FileContentSource<crate::ResourceOperationFence>,
         > = Arc::new(awaken_resource_contract::UnavailableFileContentSource);
-        let memory: Arc<dyn awaken_resource_contract::MemoryRepository> = Arc::new(
-            awaken_memory_store::VolatileMemoryRepository::new(system_clock()),
-        );
+        let memory = Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+            system_clock(),
+        ));
         let process = || {
             crate::DeploymentConfig::ephemeral()
                 .host_process(SharedHost::mint_local_workspace(), system_clock())
@@ -689,8 +689,13 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
         let worker = (crate::HostDependencies::for_worker(
             Arc::new(OkModel),
             "stub",
-            file.clone(),
-            memory.clone(),
+            {
+                let memory = memory.clone();
+                crate::WorkerContentAdapters {
+                    file_content_source: file.clone(),
+                    memory: awaken_resource_contract::MemoryExecutionContent::new(memory),
+                }
+            },
             process(),
             crate::host::test_upstream_authority().with_dispatch_binding(
                 awaken_dispatch_erasure::DispatchBinding::local(Arc::new(
@@ -724,8 +729,13 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
             crate::HostDependencies::for_worker(
                 Arc::new(OkModel),
                 "stub",
-                file,
-                memory,
+                {
+                    let memory = memory;
+                    crate::WorkerContentAdapters {
+                        file_content_source: file,
+                        memory: awaken_resource_contract::MemoryExecutionContent::new(memory),
+                    }
+                },
                 coordinator_only,
                 crate::host::test_upstream_authority()
                     .with_dispatch_binding(worker.authority.dispatch_binding().unwrap()),

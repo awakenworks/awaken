@@ -17,6 +17,14 @@ use crate::config;
 use crate::postgres_pools;
 use awaken_session_executor::SharedHost;
 
+mod resource_backend;
+
+#[derive(Clone)]
+pub(super) struct ProcessResources {
+    pub(super) application: awaken_resource_application::ResourcesApplication,
+    pub(super) invalidator: std::sync::Arc<awaken_sandbox_memoryd::LocalInvalidator>,
+}
+
 pub(super) struct ProcessStores {
     /// Durable installation root used to persist the platform Workspace id.
     pub(super) workspace_root: Option<std::path::PathBuf>,
@@ -147,7 +155,7 @@ pub(super) async fn open_admin_store_views(
 pub(super) struct CoordinatorStores {
     /// Resources is a sibling component. Coordinator mounts its ports but never
     /// opens or receives Control's Resource-authoring/admin store.
-    pub(super) resources: awaken_resource_application::ResourcesApplication,
+    pub(super) resources: ProcessResources,
     /// Durable home for the Managed Session aggregate and lifecycle outbox.
     pub(super) sessions: Arc<dyn awaken_session_repository_contract::SessionStore>,
     /// Coordinator-owned short-lived application capabilities. It shares the
@@ -329,7 +337,7 @@ pub(super) async fn open_application_access(
 pub(super) struct ProcessStoreOpenOptions<'a> {
     pub(super) control: awaken_control::ControlStoreConfig,
     pub(super) coordinator: config::CoordinatorStoreConfig,
-    pub(super) resources: Option<awaken_resource_application::ResourcesApplication>,
+    pub(super) resources: Option<ProcessResources>,
     pub(super) postgres_pools: &'a mut postgres_pools::ProcessPostgresPools,
     pub(super) workspace_root: std::path::PathBuf,
     /// Exact deployment coordinate already proven by installation admission.

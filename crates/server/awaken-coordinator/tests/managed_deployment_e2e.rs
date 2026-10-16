@@ -21,7 +21,7 @@ use awaken_runtime_contract::{
     AgentConfigRevisionRef, AgentPublicationVersion, AgentSnapshotFingerprint,
     AgentSnapshotMetadata, ExecutableAgentSnapshot, ModelBinding,
 };
-use awaken_scenario_host::{EchoModel, build_unmounted_dependencies_with_agent_publications};
+use awaken_scenario_host::{EchoModel, build_unmounted_platform_with_agent_publications};
 use awaken_tenancy::WorkspaceScope;
 use axum::Router;
 use axum::body::Body;
@@ -31,14 +31,6 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use support::wait_for_session_events;
-
-async fn resource_registry() -> Arc<dyn awaken_resource_contract::ResourceRegistry> {
-    awaken_resource_persistence::ephemeral(awaken_time::system_clock())
-        .await
-        .expect("open the Deployment test Resource application")
-        .authorities()
-        .resource_registry()
-}
 
 /// Failure injection over the existing immutable catalog. Session authoring
 /// continues to read the catalog directly; only the Host publication transport
@@ -180,7 +172,7 @@ async fn initial_event_failure_preserves_the_committed_deployment_session() {
         catalog: catalog.clone(),
         available: AtomicBool::new(true),
     });
-    let host = build_unmounted_dependencies_with_agent_publications(
+    let (host, resources) = build_unmounted_platform_with_agent_publications(
         Arc::new(EchoModel),
         "claude-sonnet-5",
         runtime_publications.clone(),
@@ -190,7 +182,7 @@ async fn initial_event_failure_preserves_the_committed_deployment_session() {
     publish_assistant(catalog.clone(), &workspace_id, "claude-sonnet-5").await;
     let managed = awaken_coordinator::local_managed_state_with_agent_source(
         host,
-        resource_registry().await,
+        resources.authorities().resource_registry(),
         catalog,
     )
     .await;
@@ -302,7 +294,7 @@ async fn deployment_run_identity_replays_one_session_and_rejects_payload_reuse()
     // Constraints/invariants: DeploymentRun identity and launch fingerprint are
     // the sole replay fence; the receipt-aware observer never drives execution.
     let catalog = Arc::new(ExecutableAgentCatalog::new());
-    let host = build_unmounted_dependencies_with_agent_publications(
+    let (host, resources) = build_unmounted_platform_with_agent_publications(
         Arc::new(EchoModel),
         "claude-sonnet-5",
         catalog.clone(),
@@ -310,10 +302,12 @@ async fn deployment_run_identity_replays_one_session_and_rejects_payload_reuse()
     .await;
     let workspace_id = host.local_workspace().to_string();
     publish_assistant(catalog.clone(), &workspace_id, "claude-sonnet-5").await;
-    let resources = resource_registry().await;
-    let managed =
-        awaken_coordinator::local_managed_state_with_agent_source(host, resources.clone(), catalog)
-            .await;
+    let managed = awaken_coordinator::local_managed_state_with_agent_source(
+        host,
+        resources.authorities().resource_registry(),
+        catalog,
+    )
+    .await;
     let host = managed.host.clone();
     // The public Session scope guard must observe the same trusted Workspace as
     // the internal Deployment launcher. Omitting this edge stamp proves only a
@@ -412,7 +406,7 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
     // D5 C5 -> E5, then unpause advances the future-only cursor;
     // D6 C1+C6 -> E6.
     let catalog = Arc::new(ExecutableAgentCatalog::new());
-    let host = build_unmounted_dependencies_with_agent_publications(
+    let (host, resources) = build_unmounted_platform_with_agent_publications(
         Arc::new(EchoModel),
         "claude-sonnet-5",
         catalog.clone(),
@@ -420,10 +414,9 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
     .await;
     let workspace_id = host.local_workspace().to_string();
     publish_assistant(catalog.clone(), &workspace_id, "claude-sonnet-5").await;
-    let resources = resource_registry().await;
     let managed = awaken_coordinator::local_managed_state_with_agent_source_and_list_prices(
         host,
-        resources.clone(),
+        resources.authorities().resource_registry(),
         catalog,
         Arc::new(DeploymentPriceProvider),
     )

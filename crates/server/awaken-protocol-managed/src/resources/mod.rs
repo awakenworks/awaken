@@ -10,8 +10,7 @@
 use std::sync::Arc;
 
 use awaken_resource_contract::{
-    FileApplicationService, MemoryRepository, MemoryStoreApplicationService,
-    ResourcePurgeScheduler, SkillStore,
+    FileApplicationService, MemoryStoreApplicationService, ResourcePurgeScheduler, SkillStore,
 };
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -59,7 +58,7 @@ pub(super) fn managed_resource_error(
 pub struct ResourcesRouterInput {
     pub repositories: Arc<dyn awaken_resource_contract::RepositoryApplicationService>,
     pub files: Arc<dyn FileApplicationService>,
-    pub memories: Arc<dyn MemoryRepository>,
+    pub memory: awaken_resource_contract::MemoryManagementContent,
     pub memory_stores: Arc<dyn MemoryStoreApplicationService>,
     pub skills: Option<Arc<dyn SkillStore>>,
     pub purge: Arc<dyn ResourcePurgeScheduler>,
@@ -72,7 +71,7 @@ pub struct ResourcesRouterInput {
 pub fn resources_router(input: ResourcesRouterInput) -> Router {
     files_router(input.files.clone(), input.clock.clone())
         .merge(memory_stores_router(
-            input.memories,
+            input.memory,
             input.memory_stores,
             input.clock.clone(),
         ))
@@ -129,9 +128,24 @@ mod tests {
                 registry,
                 files.clone(),
                 files,
-                Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
-                    clock.clone(),
-                )),
+                {
+                    #[derive(Default)]
+                    struct MemoryEvents(std::sync::Mutex<Vec<(String, String)>>);
+                    #[cfg(test)]
+                    impl awaken_resource_contract::MemoryInvalidator for MemoryEvents {
+                        fn publish(&self, store: &str, path: &str) {
+                            self.0.lock().unwrap().push((store.into(), path.into()));
+                        }
+                    }
+                    Arc::new(
+                        awaken_resource_application::memory::InvalidatingMemoryRepository::new(
+                            Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+                                clock.clone(),
+                            )),
+                            Arc::new(MemoryEvents::default()),
+                        ),
+                    )
+                },
                 Arc::new(awaken_skill_store::InMemorySkillStore::new()),
                 storage,
                 clock,
@@ -142,7 +156,7 @@ mod tests {
                 awaken_resource_contract::UnavailableRepositoryCredentialValidator,
             )),
             files: application.files(),
-            memories: authorities.memory_repository(),
+            memory: authorities.memory_management_content(),
             memory_stores: application.memory_stores(),
             skills: Some(authorities.skill_store()),
             purge: application.purge_scheduler(),

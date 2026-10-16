@@ -3,14 +3,15 @@
 //!
 //! This is a Memory-specific Worker boundary. It carries one frozen
 //! Workspace/store/config/access binding and delegates to the canonical
-//! [`awaken_memory_store::MemoryRepository`]. It exposes no store authoring,
+//! [`MemorySnapshotSource`]. It exposes no store authoring,
 //! history redaction, retention, or lifecycle operation.
 
 use std::sync::Arc;
 
 use awaken_resource_contract::{
-    ConfigVersion, LiveResourceBindingVerifier, MemErr, Memory,
-    MemoryMaterializationReferenceEncoder, MemoryMaterializationReferenceError, MemoryRepository,
+    ConfigVersion, LiveResourceBindingVerifier, MemErr, Memory, MemoryCopyConflictPreservation,
+    MemoryCopyConflictQueries, MemoryCopyWriteback, MemoryMaterializationReferenceEncoder,
+    MemoryMaterializationReferenceError, MemoryQueries, MemorySnapshotSource, MemoryWriter,
     ResourceAccess,
 };
 use awaken_dispatch_contract::{DispatchCommitAuthority, RunClaim};
@@ -425,7 +426,11 @@ impl From<MemoryWireError> for MemErr {
 
 /// Exact Memory data-plane dependencies used by the Coordinator/Resource side.
 pub struct WorkerMemoryService {
-    repository: Arc<dyn MemoryRepository>,
+    snapshots: Arc<dyn MemorySnapshotSource>,
+    writer: Arc<dyn MemoryWriter>,
+    copy_writeback: Arc<dyn MemoryCopyWriteback>,
+    conflict_queries: Arc<dyn MemoryCopyConflictQueries>,
+    conflict_preservation: Arc<dyn MemoryCopyConflictPreservation>,
     validator: Arc<dyn LiveResourceBindingVerifier>,
     dispatch: Arc<dyn DispatchCommitAuthority>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
@@ -440,8 +445,42 @@ pub struct WorkerMemoryService {
 
 impl WorkerMemoryService {
     #[must_use]
-    pub fn new(
-        repository: Arc<dyn MemoryRepository>,
+    pub fn new<M>(
+        repository: Arc<M>,
+        validator: Arc<dyn LiveResourceBindingVerifier>,
+        dispatch: Arc<dyn DispatchCommitAuthority>,
+        authenticator: Arc<dyn WorkerRequestAuthenticator>,
+        directory: Arc<dyn WorkerDirectory>,
+        clock: Arc<dyn awaken_time::WallClock>,
+    ) -> Self
+    where
+        M: MemorySnapshotSource
+            + MemoryWriter
+            + MemoryCopyWriteback
+            + MemoryCopyConflictQueries
+            + MemoryCopyConflictPreservation
+            + 'static,
+    {
+        Self {
+            snapshots: repository.clone(),
+            writer: repository.clone(),
+            copy_writeback: repository.clone(),
+            conflict_queries: repository.clone(),
+            conflict_preservation: repository,
+            validator,
+            dispatch,
+            authenticator,
+            directory,
+            materialization_control: None,
+            terminal_memory_control: None,
+            clock,
+        }
+    }
+
+    /// Composition from one canonical Resources authority. The service retains only its five required roles.
+    #[must_use]
+    pub fn from_resources(
+        resources: &awaken_resource_application::ResourceAuthorities,
         validator: Arc<dyn LiveResourceBindingVerifier>,
         dispatch: Arc<dyn DispatchCommitAuthority>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
@@ -449,7 +488,11 @@ impl WorkerMemoryService {
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self {
-            repository,
+            snapshots: resources.memory_snapshot_source(),
+            writer: resources.memory_writer(),
+            copy_writeback: resources.memory_copy_writeback(),
+            conflict_queries: resources.memory_copy_conflict_queries(),
+            conflict_preservation: resources.memory_copy_conflict_preservation(),
             validator,
             dispatch,
             authenticator,
@@ -764,17 +807,17 @@ async fn memory_operation(
     let _run_guard = run_guard;
     let result = match request.operation {
         MemoryOperation::PreserveCopyConflict { candidate } => service
-            .repository
+            .conflict_preservation
             .preserve_copy_conflict(&memory_store_id, &candidate)
             .await
             .map(|()| MemoryOperationResponse::CopyConflictPreserved {}),
         MemoryOperation::ListCopyConflicts {} => service
-            .repository
+            .conflict_queries
             .list_copy_conflicts(&memory_store_id)
             .await
             .map(|candidates| MemoryOperationResponse::CopyConflicts { candidates }),
         MemoryOperation::Snapshot {} => service
-            .repository
+            .snapshots
             .snapshot_heads(&memory_store_id)
             .await
             .map(|heads| MemoryOperationResponse::Snapshot {
@@ -785,7 +828,7 @@ async fn memory_operation(
             content,
             actor,
         } => service
-            .repository
+            .writer
             .create_as(&memory_store_id, &path, &content, actor.as_ref())
             .await
             .map(|memory| MemoryOperationResponse::Memory {
@@ -821,7 +864,7 @@ async fn memory_operation(
                 )),
                 (Some(path), None) => {
                     service
-                        .repository
+                        .copy_writeback
                         .update_materialized(&memory_store_id, path, &base, &content)
                         .await
                 }
@@ -830,7 +873,7 @@ async fn memory_operation(
                 )),
                 (None, target) => {
                     service
-                        .repository
+                        .writer
                         .update_head_as(&memory_store_id, &base, &content, target, actor.as_ref())
                         .await
                 }
@@ -840,7 +883,7 @@ async fn memory_operation(
             })
         }
         MemoryOperation::DeleteIfMatch { path, base, actor } => service
-            .repository
+            .writer
             .delete_if_match_as(&memory_store_id, &path, &base, actor.as_ref())
             .await
             .map(|deleted| MemoryOperationResponse::Deleted { deleted }),
@@ -863,8 +906,24 @@ pub struct HttpMemoryWritebackClient {
     upstream: WorkerUpstream,
 }
 
-/// Existing `MemoryRepository` port projected through the two narrow network
-/// adapters. History/redaction/purge deliberately remain unavailable.
+/// Remote snapshot and copy-writeback client. It has no filesystem rename,
+/// version history, redaction or physical purge capability.
+///
+/// ```compile_fail
+/// use awaken_resource_contract::MemoryFilesystem;
+/// use awaken_resource_worker_http::HttpMemoryRepository;
+/// fn no_remote_fuse<T: MemoryFilesystem>() {}
+/// fn unavailable() { no_remote_fuse::<HttpMemoryRepository>(); }
+/// ```
+///
+/// ```compile_fail
+/// use std::sync::Arc;
+/// use awaken_resource_contract::MemoryMountSource;
+/// use awaken_resource_worker_http::HttpMemoryRepository;
+/// fn cannot_construct_fuse_source(client: Arc<HttpMemoryRepository>) {
+///     let _ = MemoryMountSource::new(client);
+/// }
+/// ```
 pub struct HttpMemoryRepository {
     snapshots: HttpMemorySnapshotSource,
     writeback: HttpMemoryWritebackClient,
@@ -960,9 +1019,8 @@ impl HttpMemoryWritebackClient {
     }
 }
 
-#[async_trait::async_trait]
-impl MemoryRepository for HttpMemoryRepository {
-    async fn preserve_copy_conflict(
+impl HttpMemoryRepository {
+    async fn preserve_copy_conflict_inner(
         &self,
         store: &str,
         candidate: &awaken_resource_contract::MemoryCopyConflict,
@@ -983,7 +1041,7 @@ impl MemoryRepository for HttpMemoryRepository {
             )),
         }
     }
-    async fn list_copy_conflicts(
+    async fn list_copy_conflicts_inner(
         &self,
         store: &str,
     ) -> Result<Vec<awaken_resource_contract::MemoryCopyConflict>, MemErr> {
@@ -998,17 +1056,16 @@ impl MemoryRepository for HttpMemoryRepository {
             )),
         }
     }
-    async fn snapshot_heads(&self, store: &str) -> Result<Vec<Memory>, MemErr> {
+    async fn snapshot_heads_inner(&self, store: &str) -> Result<Vec<Memory>, MemErr> {
         self.snapshots.snapshot(store).await
     }
-
-    async fn list(
+    async fn list_inner(
         &self,
         store: &str,
         prefix: &str,
     ) -> Result<Vec<awaken_resource_contract::MemoryEntry>, MemErr> {
         let mut entries = self
-            .snapshot_heads(store)
+            .snapshot_heads_inner(store)
             .await?
             .into_iter()
             .filter(|memory| prefix.is_empty() || prefix == "/" || memory.path.starts_with(prefix))
@@ -1024,16 +1081,14 @@ impl MemoryRepository for HttpMemoryRepository {
         entries.sort_by(|left, right| left.path.cmp(&right.path));
         Ok(entries)
     }
-
-    async fn get_by_path(&self, store: &str, path: &str) -> Result<Option<Memory>, MemErr> {
+    async fn get_by_path_inner(&self, store: &str, path: &str) -> Result<Option<Memory>, MemErr> {
         Ok(self
-            .snapshot_heads(store)
+            .snapshot_heads_inner(store)
             .await?
             .into_iter()
             .find(|memory| memory.path == path))
     }
-
-    async fn create_as(
+    async fn create_as_inner(
         &self,
         store: &str,
         path: &str,
@@ -1051,30 +1106,7 @@ impl MemoryRepository for HttpMemoryRepository {
             )
             .await
     }
-
-    async fn update_head_as(
-        &self,
-        store: &str,
-        base: &awaken_resource_contract::MemoryGeneration,
-        content: &str,
-        target_path: Option<&str>,
-        actor: Option<&awaken_resource_contract::MemoryActor>,
-    ) -> Result<Memory, MemErr> {
-        self.writeback
-            .send_memory(
-                store,
-                MemoryOperation::UpdateHead {
-                    base: base.clone(),
-                    content: content.into(),
-                    target_path: target_path.map(str::to_owned),
-                    expected_path: None,
-                    actor: actor.cloned(),
-                },
-            )
-            .await
-    }
-
-    async fn update_materialized(
+    async fn update_materialized_inner(
         &self,
         store: &str,
         path: &str,
@@ -1096,35 +1128,7 @@ impl MemoryRepository for HttpMemoryRepository {
             )
             .await
     }
-
-    async fn rename(&self, _store: &str, _from: &str, _to: &str) -> Result<Memory, MemErr> {
-        Err(MemErr::Storage(
-            "remote Memory rename is outside the snapshot/CAS materialization boundary".into(),
-        ))
-    }
-
-    async fn delete_by_path_as(
-        &self,
-        store: &str,
-        path: &str,
-        actor: Option<&awaken_resource_contract::MemoryActor>,
-    ) -> Result<(), MemErr> {
-        let Some(current) = self.get_by_path(store, path).await? else {
-            return Ok(());
-        };
-        if self
-            .delete_if_match_as(store, path, &current.generation(), actor)
-            .await?
-        {
-            Ok(())
-        } else {
-            Err(MemErr::Conflict {
-                current: Box::new(current),
-            })
-        }
-    }
-
-    async fn delete_if_match_as(
+    async fn delete_if_match_as_inner(
         &self,
         store: &str,
         path: &str,
@@ -1149,34 +1153,163 @@ impl MemoryRepository for HttpMemoryRepository {
             )),
         }
     }
+}
 
-    async fn list_versions(
+#[async_trait::async_trait]
+impl MemoryQueries for HttpMemoryRepository {
+    async fn list(
         &self,
-        _store: &str,
-    ) -> Result<Vec<awaken_resource_contract::MemoryVersion>, MemErr> {
-        Err(MemErr::Storage(
-            "Worker Memory boundary does not expose history".into(),
-        ))
+        store: &str,
+        prefix: &str,
+    ) -> Result<Vec<awaken_resource_contract::MemoryEntry>, MemErr> {
+        HttpMemoryRepository::list_inner(self, store, prefix).await
     }
-
-    async fn redact_version_as(
-        &self,
-        _store: &str,
-        _version_id: &str,
-        _actor: Option<&awaken_resource_contract::MemoryActor>,
-    ) -> Result<Option<awaken_resource_contract::MemoryVersion>, MemErr> {
-        Err(MemErr::Storage(
-            "Worker Memory boundary does not expose redaction".into(),
-        ))
+    async fn get_by_path(&self, store: &str, path: &str) -> Result<Option<Memory>, MemErr> {
+        HttpMemoryRepository::get_by_path_inner(self, store, path).await
     }
+}
 
-    async fn purge_store(
+#[async_trait::async_trait]
+impl MemorySnapshotSource for HttpMemoryRepository {
+    async fn snapshot_heads(&self, store: &str) -> Result<Vec<Memory>, MemErr> {
+        HttpMemoryRepository::snapshot_heads_inner(self, store).await
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryCopyWriteback for HttpMemoryRepository {
+    async fn create_as(
         &self,
-        _store: &str,
-    ) -> Result<awaken_resource_contract::MemoryPurgeSummary, MemErr> {
-        Err(MemErr::Storage(
-            "Worker Memory boundary does not expose lifecycle purge".into(),
-        ))
+        store: &str,
+        path: &str,
+        content: &str,
+        actor: Option<&awaken_resource_contract::MemoryActor>,
+    ) -> Result<Memory, MemErr> {
+        HttpMemoryRepository::create_as_inner(self, store, path, content, actor).await
+    }
+    async fn update_materialized(
+        &self,
+        store: &str,
+        path: &str,
+        base: &awaken_resource_contract::MemoryGeneration,
+        content: &str,
+    ) -> Result<Memory, MemErr> {
+        HttpMemoryRepository::update_materialized_inner(self, store, path, base, content).await
+    }
+    async fn delete_if_match_as(
+        &self,
+        store: &str,
+        path: &str,
+        base: &awaken_resource_contract::MemoryGeneration,
+        actor: Option<&awaken_resource_contract::MemoryActor>,
+    ) -> Result<bool, MemErr> {
+        HttpMemoryRepository::delete_if_match_as_inner(self, store, path, base, actor).await
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryCopyConflictPreservation for HttpMemoryRepository {
+    async fn preserve_copy_conflict(
+        &self,
+        store: &str,
+        candidate: &awaken_resource_contract::MemoryCopyConflict,
+    ) -> Result<(), MemErr> {
+        HttpMemoryRepository::preserve_copy_conflict_inner(self, store, candidate).await
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryCopyConflictQueries for HttpMemoryRepository {
+    async fn list_copy_conflicts(
+        &self,
+        store: &str,
+    ) -> Result<Vec<awaken_resource_contract::MemoryCopyConflict>, MemErr> {
+        HttpMemoryRepository::list_copy_conflicts_inner(self, store).await
+    }
+}
+
+impl HttpMemoryRepository {
+    async fn update_head_as_inner(
+        &self,
+        store: &str,
+        base: &awaken_resource_contract::MemoryGeneration,
+        content: &str,
+        target_path: Option<&str>,
+        actor: Option<&awaken_resource_contract::MemoryActor>,
+    ) -> Result<Memory, MemErr> {
+        self.writeback
+            .send_memory(
+                store,
+                MemoryOperation::UpdateHead {
+                    base: base.clone(),
+                    content: content.into(),
+                    target_path: target_path.map(str::to_owned),
+                    expected_path: None,
+                    actor: actor.cloned(),
+                },
+            )
+            .await
+    }
+    async fn delete_by_path_as_inner(
+        &self,
+        store: &str,
+        path: &str,
+        actor: Option<&awaken_resource_contract::MemoryActor>,
+    ) -> Result<(), MemErr> {
+        let Some(current) = self.get_by_path_inner(store, path).await? else {
+            return Ok(());
+        };
+        if self
+            .delete_if_match_as_inner(store, path, &current.generation(), actor)
+            .await?
+        {
+            Ok(())
+        } else {
+            Err(MemErr::Conflict {
+                current: Box::new(current),
+            })
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryWriter for HttpMemoryRepository {
+    async fn create_as(
+        &self,
+        store: &str,
+        path: &str,
+        content: &str,
+        actor: Option<&awaken_resource_contract::MemoryActor>,
+    ) -> Result<Memory, MemErr> {
+        HttpMemoryRepository::create_as_inner(self, store, path, content, actor).await
+    }
+    async fn update_head_as(
+        &self,
+        store: &str,
+        base: &awaken_resource_contract::MemoryGeneration,
+        content: &str,
+        target_path: Option<&str>,
+        actor: Option<&awaken_resource_contract::MemoryActor>,
+    ) -> Result<Memory, MemErr> {
+        HttpMemoryRepository::update_head_as_inner(self, store, base, content, target_path, actor)
+            .await
+    }
+    async fn delete_by_path_as(
+        &self,
+        store: &str,
+        path: &str,
+        actor: Option<&awaken_resource_contract::MemoryActor>,
+    ) -> Result<(), MemErr> {
+        HttpMemoryRepository::delete_by_path_as_inner(self, store, path, actor).await
+    }
+    async fn delete_if_match_as(
+        &self,
+        store: &str,
+        path: &str,
+        base: &awaken_resource_contract::MemoryGeneration,
+        actor: Option<&awaken_resource_contract::MemoryActor>,
+    ) -> Result<bool, MemErr> {
+        HttpMemoryRepository::delete_if_match_as_inner(self, store, path, base, actor).await
     }
 }
 

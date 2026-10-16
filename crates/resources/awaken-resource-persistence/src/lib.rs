@@ -12,6 +12,7 @@ pub use awaken_file_store::object::{
     ObjectFileStoreConfig as ObjectBackingConfig, ObjectStoreProvider as ObjectBackingProvider,
 };
 use awaken_resource_application::{RegistryApplication, ResourceAuthorities, ResourcesApplication};
+use awaken_resource_contract::MemoryInvalidator;
 use awaken_time::WallClock;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -46,6 +47,7 @@ pub enum ResourcePersistenceError {
 pub async fn open_embedded(
     root: &Path,
     clock: Arc<dyn WallClock>,
+    invalidator: Arc<dyn MemoryInvalidator>,
 ) -> Result<ResourcesApplication, ResourcePersistenceError> {
     std::fs::create_dir_all(root).map_err(|error| ResourcePersistenceError::CreateDirectory {
         path: root.to_path_buf(),
@@ -79,7 +81,12 @@ pub async fn open_embedded(
         registry,
         files.clone(),
         files,
-        Arc::new(memory),
+        Arc::new(
+            awaken_resource_application::memory::InvalidatingMemoryRepository::new(
+                Arc::new(memory),
+                invalidator,
+            ),
+        ),
         Arc::new(skills),
         resources,
         clock,
@@ -91,8 +98,9 @@ pub async fn open_postgres(
     url: &str,
     schema: SchemaMode,
     clock: Arc<dyn WallClock>,
+    invalidator: Arc<dyn MemoryInvalidator>,
 ) -> Result<ResourcesApplication, ResourcePersistenceError> {
-    open_postgres_with_file_store(url, schema, None, clock).await
+    open_postgres_with_file_store(url, schema, None, clock, invalidator).await
 }
 
 /// Open PostgreSQL metadata authorities with an optional injected blob-byte
@@ -102,12 +110,13 @@ pub async fn open_postgres_with_file_store(
     schema: SchemaMode,
     blob_store: Option<Arc<dyn awaken_resource_contract::FileStore>>,
     clock: Arc<dyn WallClock>,
+    invalidator: Arc<dyn MemoryInvalidator>,
 ) -> Result<ResourcesApplication, ResourcePersistenceError> {
     let pool = awaken_sql_storage::postgres_pool_options()
         .connect(url)
         .await
         .map_err(|error| ResourcePersistenceError::Registry(error.to_string()))?;
-    open_postgres_with_pool(pool, schema, blob_store, clock).await
+    open_postgres_with_pool(pool, schema, blob_store, clock, invalidator).await
 }
 
 /// Compose every PostgreSQL Resources adapter over one caller-owned pool.
@@ -118,6 +127,7 @@ pub async fn open_postgres_with_pool(
     schema: SchemaMode,
     blob_store: Option<Arc<dyn awaken_resource_contract::FileStore>>,
     clock: Arc<dyn WallClock>,
+    invalidator: Arc<dyn MemoryInvalidator>,
 ) -> Result<ResourcesApplication, ResourcePersistenceError> {
     let resources = Arc::new(match schema {
         SchemaMode::Migrate => {
@@ -187,7 +197,12 @@ pub async fn open_postgres_with_pool(
         registry,
         file_store,
         file_catalog,
-        Arc::new(memory),
+        Arc::new(
+            awaken_resource_application::memory::InvalidatingMemoryRepository::new(
+                Arc::new(memory),
+                invalidator,
+            ),
+        ),
         Arc::new(skills),
         resources,
         clock,
@@ -199,12 +214,13 @@ pub async fn open_postgres_with_object_store(
     schema: SchemaMode,
     object: ObjectBackingConfig,
     clock: Arc<dyn WallClock>,
+    invalidator: Arc<dyn MemoryInvalidator>,
 ) -> Result<ResourcesApplication, ResourcePersistenceError> {
     let pool = awaken_sql_storage::postgres_pool_options()
         .connect(url)
         .await
         .map_err(|error| ResourcePersistenceError::Registry(error.to_string()))?;
-    open_postgres_with_pool_and_object_store(pool, schema, object, clock).await
+    open_postgres_with_pool_and_object_store(pool, schema, object, clock, invalidator).await
 }
 
 /// Inject the process metadata pool while selecting the existing object-byte adapter.
@@ -213,16 +229,18 @@ pub async fn open_postgres_with_pool_and_object_store(
     schema: SchemaMode,
     object: ObjectBackingConfig,
     clock: Arc<dyn WallClock>,
+    invalidator: Arc<dyn MemoryInvalidator>,
 ) -> Result<ResourcesApplication, ResourcePersistenceError> {
     let files = awaken_file_store::object::ObjectFileStore::from_config(object)
         .map_err(|error| ResourcePersistenceError::File(error.to_string()))?;
-    open_postgres_with_pool(pool, schema, Some(Arc::new(files)), clock).await
+    open_postgres_with_pool(pool, schema, Some(Arc::new(files)), clock, invalidator).await
 }
 
 /// Hermetic Resources application for tests and scenario processes.
 #[cfg(feature = "test-support")]
 pub async fn ephemeral(
     clock: Arc<dyn WallClock>,
+    invalidator: Arc<dyn MemoryInvalidator>,
 ) -> Result<ResourcesApplication, ResourcePersistenceError> {
     let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
     let resources = Arc::new(
@@ -235,9 +253,14 @@ pub async fn ephemeral(
         registry,
         files.clone(),
         files,
-        Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
-            clock.clone(),
-        )),
+        Arc::new(
+            awaken_resource_application::memory::InvalidatingMemoryRepository::new(
+                Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+                    clock.clone(),
+                )),
+                invalidator,
+            ),
+        ),
         Arc::new(awaken_skill_store::InMemorySkillStore::new()),
         resources,
         clock,
@@ -246,6 +269,18 @@ pub async fn ephemeral(
 
 #[cfg(test)]
 mod tests {
+    #[derive(Default)]
+    struct MemoryEvents(std::sync::Mutex<Vec<(String, String)>>);
+    #[cfg(test)]
+    impl awaken_resource_contract::MemoryInvalidator for MemoryEvents {
+        fn publish(&self, store: &str, path: &str) {
+            self.0.lock().unwrap().push((store.into(), path.into()));
+        }
+    }
+    fn memory_events() -> Arc<dyn awaken_resource_contract::MemoryInvalidator> {
+        Arc::new(MemoryEvents::default())
+    }
+
     use super::*;
     use awaken_resource_contract::{
         CreateMemoryStoreCommand, ResourceState, SkillBundleFile, SkillDefinition, SkillVersion,
@@ -280,7 +315,7 @@ mod tests {
             .await?;
         application
             .authorities()
-            .memory_repository()
+            .memory_writer()
             .create(
                 &memory_store_id,
                 "/notes/evidence.txt",
@@ -354,7 +389,7 @@ mod tests {
                 .is_some()
         );
         let memory = authorities
-            .memory_repository()
+            .memory_queries()
             .get_by_path(&fixture.memory_store_id, "/notes/evidence.txt")
             .await?
             .ok_or_else(|| std::io::Error::other("Memory content missing after restart"))?;
@@ -402,14 +437,14 @@ mod tests {
         // covered by each adapter's integration suite; this test owns atomic
         // embedded selection and the no-parallel-application invariant.
         let root = tempfile::tempdir().expect("R1 root");
-        let app = open_embedded(root.path(), awaken_time::system_clock())
+        let app = open_embedded(root.path(), awaken_time::system_clock(), memory_events())
             .await
             .expect("R1 complete Resources application");
         let authorities = app.authorities();
         let _ = authorities.resource_registry();
         let _ = authorities.file_store();
         let _ = authorities.file_catalog();
-        let _ = authorities.memory_repository();
+        let _ = authorities.memory_queries();
         let _ = authorities.skill_store();
         let _ = authorities.reclamation();
         assert!(Arc::ptr_eq(&app.memory_stores(), &app.memory_stores()));
@@ -417,7 +452,7 @@ mod tests {
 
         let invalid = tempfile::NamedTempFile::new().expect("R2 file");
         assert!(matches!(
-            open_embedded(invalid.path(), awaken_time::system_clock()).await,
+            open_embedded(invalid.path(), awaken_time::system_clock(), memory_events()).await,
             Err(ResourcePersistenceError::CreateDirectory { .. })
         ));
     }
@@ -433,10 +468,12 @@ mod tests {
             awaken_time::UtcTime::from_unix_nanos(NANOS),
         ));
         let root = tempfile::tempdir().unwrap();
-        let app = open_embedded(root.path(), clock.clone()).await.unwrap();
+        let app = open_embedded(root.path(), clock.clone(), memory_events())
+            .await
+            .unwrap();
         let authorities = app.authorities();
         assert!(Arc::ptr_eq(&authorities.clock(), &clock), "RC handle");
-        let memory = authorities.memory_repository();
+        let memory = authorities.memory_writer();
         let created = memory
             .create("clock-source", "/precise.md", "one")
             .await
@@ -444,7 +481,12 @@ mod tests {
         assert_eq!(created.created_unix_nanos, NANOS, "RC head");
         assert_eq!(created.updated_unix_nanos, NANOS, "RC head");
         assert_eq!(
-            memory.list_versions("clock-source").await.unwrap()[0].created_unix_nanos,
+            authorities
+                .memory_versions()
+                .list_versions("clock-source")
+                .await
+                .unwrap()[0]
+                .created_unix_nanos,
             NANOS,
             "RC history"
         );
@@ -461,10 +503,20 @@ mod tests {
         // from making only part of the Resources aggregate appear recovered.
         let directory = tempfile::tempdir()?;
         let fixture = {
-            let application = open_embedded(directory.path(), awaken_time::system_clock()).await?;
+            let application = open_embedded(
+                directory.path(),
+                awaken_time::system_clock(),
+                memory_events(),
+            )
+            .await?;
             seed_all_resource_authorities(&application, "embedded-restart").await?
         };
-        let reopened = open_embedded(directory.path(), awaken_time::system_clock()).await?;
+        let reopened = open_embedded(
+            directory.path(),
+            awaken_time::system_clock(),
+            memory_events(),
+        )
+        .await?;
         assert_all_resource_authorities(&reopened, &fixture).await
     }
 
@@ -481,11 +533,22 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
         let fixture = {
-            let application =
-                open_postgres(&url, SchemaMode::Migrate, awaken_time::system_clock()).await?;
+            let application = open_postgres(
+                &url,
+                SchemaMode::Migrate,
+                awaken_time::system_clock(),
+                memory_events(),
+            )
+            .await?;
             seed_all_resource_authorities(&application, &format!("postgres-{suffix}")).await?
         };
-        let reopened = open_postgres(&url, SchemaMode::Verify, awaken_time::system_clock()).await?;
+        let reopened = open_postgres(
+            &url,
+            SchemaMode::Verify,
+            awaken_time::system_clock(),
+            memory_events(),
+        )
+        .await?;
         assert_all_resource_authorities(&reopened, &fixture).await
     }
 
@@ -509,6 +572,7 @@ mod tests {
             SchemaMode::Migrate,
             Some(object.clone()),
             awaken_time::system_clock(),
+            memory_events(),
         )
         .await
         .expect("open one hybrid Resources application");

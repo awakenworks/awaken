@@ -1,6 +1,7 @@
 // @formal evidence memory_invalidation.listener_cleanup_is_owned_and_joined
 use super::*;
 use awaken_memory_store::{VolatileMemoryRepository, sha256_hex};
+use awaken_resource_contract::MemoryWriter as _;
 
 fn test_fs() -> MemoryFuse {
     MemoryFuse::new(
@@ -136,6 +137,7 @@ fn listener_owner_cleanup_covers_exit_and_disposal_decision_table() {
                         stop: stop.clone(),
                         handle: Some(worker),
                     }),
+                    cache_witness: MountedCacheWitness(std::sync::Weak::new()),
                 };
                 let bus = if exit == "closed" {
                     drop(bus);
@@ -247,7 +249,7 @@ fn listener_setup_unwind_keeps_the_same_cleanup_owner() {
 #[test]
 fn invalidation_listener_drops_matching_paths_only() {
     use crate::LocalInvalidator;
-    use crate::invalidate::Invalidator;
+    use awaken_resource_contract::MemoryInvalidator;
 
     let cache = Arc::new(Mutex::new(ContentLruCache::new(8)));
     cache.lock().unwrap().put(memory("/a.md", "one"));
@@ -424,7 +426,11 @@ fn a_stale_open_fd_conflicts_and_does_not_clobber_a_newer_write() {
         "the stale flush conflicts"
     );
     let live = rt
-        .block_on(backend.get_by_path(store, "/c.md"))
+        .block_on(MemoryFilesystem::get_by_path(
+            backend.as_ref(),
+            store,
+            "/c.md",
+        ))
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -537,11 +543,15 @@ fn open_create_flush_read_inner_branches() {
     // flush the truncated fd → the store now holds empty content.
     fuse.flush_fh(fh).unwrap();
     assert_eq!(
-        rt.block_on(backend.get_by_path(store, "/f.md"))
-            .unwrap()
-            .unwrap()
-            .content
-            .as_deref(),
+        rt.block_on(MemoryFilesystem::get_by_path(
+            backend.as_ref(),
+            store,
+            "/f.md"
+        ))
+        .unwrap()
+        .unwrap()
+        .content
+        .as_deref(),
         Some(""),
         "O_TRUNC open flushed empty"
     );
@@ -619,11 +629,15 @@ fn apply_setattr_handles_metadata_fd_and_store_truncation() {
     // no fh, no open writer → truncate the store directly.
     assert_eq!(fuse.apply_setattr(ino, Some(2), None).unwrap().size, 2);
     assert_eq!(
-        rt.block_on(backend.get_by_path(store, "/f.md"))
-            .unwrap()
-            .unwrap()
-            .content
-            .as_deref(),
+        rt.block_on(MemoryFilesystem::get_by_path(
+            backend.as_ref(),
+            store,
+            "/f.md"
+        ))
+        .unwrap()
+        .unwrap()
+        .content
+        .as_deref(),
         Some("he")
     );
 
@@ -666,14 +680,22 @@ fn an_open_fd_survives_rename_and_flushes_to_the_renamed_memory() {
     fuse.write_fh_bytes(fh, 0, b"after-rename").unwrap();
     fuse.flush_fh(fh).expect("flush after rename succeeds");
     let moved = rt
-        .block_on(backend.get_by_path(store, "/new.md"))
+        .block_on(MemoryFilesystem::get_by_path(
+            backend.as_ref(),
+            store,
+            "/new.md",
+        ))
         .unwrap()
         .unwrap();
     assert_eq!(moved.content.as_deref(), Some("after-rename"));
     assert!(
-        rt.block_on(backend.get_by_path(store, "/old.md"))
-            .unwrap()
-            .is_none(),
+        rt.block_on(MemoryFilesystem::get_by_path(
+            backend.as_ref(),
+            store,
+            "/old.md"
+        ))
+        .unwrap()
+        .is_none(),
         "the old path is gone"
     );
 }
@@ -772,11 +794,15 @@ fn apply_setattr_grow_zero_fills_through_the_store() {
 
     assert_eq!(fuse.apply_setattr(ino, Some(5), None).unwrap().size, 5);
     assert_eq!(
-        rt.block_on(backend.get_by_path(store, "/g.md"))
-            .unwrap()
-            .unwrap()
-            .content
-            .as_deref(),
+        rt.block_on(MemoryFilesystem::get_by_path(
+            backend.as_ref(),
+            store,
+            "/g.md"
+        ))
+        .unwrap()
+        .unwrap()
+        .content
+        .as_deref(),
         Some("hi\0\0\0"),
         "grow zero-fills to the requested length"
     );
@@ -810,7 +836,7 @@ fn content_lru_handles_zero_capacity_prefix_clear_and_removal() {
 #[test]
 fn a_lagged_listener_clears_the_whole_cache() {
     use crate::LocalInvalidator;
-    use crate::invalidate::Invalidator;
+    use awaken_resource_contract::MemoryInvalidator;
     // A listener that fell behind by more than the bus capacity has missed
     // invalidations, so it cannot know which paths are stale — it clears the
     // whole cache rather than risk serving a stale entry.
@@ -849,7 +875,8 @@ fn a_lagged_listener_clears_the_whole_cache() {
 #[test]
 fn cross_host_write_invalidates_a_peer_mounts_cache_end_to_end() {
     use crate::LocalInvalidator;
-    use crate::invalidate::{InvalidatingMemoryRepository, Invalidator};
+    use awaken_resource_application::memory::InvalidatingMemoryRepository;
+    use awaken_resource_contract::MemoryInvalidator;
     // The D5 coherence model end-to-end, WITHOUT the kernel FUSE path: model two
     // hosts mounting one store over the in-process `VolatileMemoryRepository`. Host A writes through
     // an `InvalidatingMemoryRepository` (the real write side); host B keeps its own
@@ -859,7 +886,7 @@ fn cross_host_write_invalidates_a_peer_mounts_cache_end_to_end() {
     let rt = setup_rt();
     let durable = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
     let bus = Arc::new(LocalInvalidator::new(16));
-    let inval: Arc<dyn Invalidator> = bus.clone();
+    let inval: Arc<dyn MemoryInvalidator> = bus.clone();
     let fs_a = InvalidatingMemoryRepository::new(durable.clone(), inval);
 
     // Seed /note.md and let host B cache it (as if B had just read it).
@@ -893,18 +920,24 @@ fn cross_host_write_invalidates_a_peer_mounts_cache_end_to_end() {
     // B's cache drops the stale path (bounded poll on the real condition — the file's
     // established idiom for the async listener, not a fixed ordering sleep).
     let mut waited = Duration::ZERO;
-    while cache_b.lock().unwrap().get("/note.md").is_some() && waited < Duration::from_secs(2) {
+    while cache_b.lock().unwrap().entries.contains_key("/note.md")
+        && waited < Duration::from_secs(2)
+    {
         std::thread::sleep(Duration::from_millis(10));
         waited += Duration::from_millis(10);
     }
     assert!(
-        cache_b.lock().unwrap().get("/note.md").is_none(),
+        !cache_b.lock().unwrap().entries.contains_key("/note.md"),
         "the peer mount dropped the written path from its cache"
     );
 
     // A refetch on B (now a cache miss) sees host A's new content from the shared store.
     let refetched = rt
-        .block_on(durable.get_by_path("s", "/note.md"))
+        .block_on(MemoryFilesystem::get_by_path(
+            durable.as_ref(),
+            "s",
+            "/note.md",
+        ))
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -930,6 +963,7 @@ fn unmount_drain_timeout_elapses_with_lingering_open_fds() {
         state: state.clone(),
         drain_timeout: Duration::from_millis(30),
         listener: None,
+        cache_witness: MountedCacheWitness(std::sync::Weak::new()),
     };
     let start = std::time::Instant::now();
     handle.unmount();
@@ -973,5 +1007,461 @@ fn a_closed_bus_stops_the_listener_without_the_stop_flag() {
     assert!(
         !stop.load(Ordering::SeqCst),
         "it exited via Closed, not the stop flag"
+    );
+}
+
+/// Public HTTP mutations reach the selected mounter's bus and the real listener
+/// algorithm. This isolated test warms a separate cache; the actual mount wiring
+/// is exercised by `managed_api_writes_invalidate_actual_kernel_mount_without_cache_ttl`.
+/// Raw membership (not TTL-aware `get`) proves deletion in either case.
+#[test]
+fn managed_api_writes_invalidate_the_same_mounter_without_waiting_for_cache_ttl() {
+    use awaken_protocol_managed::types::memory::AuthenticatedMemoryActor;
+    use awaken_resource_application::{
+        RegistryApplication, ResourceAuthorities, ResourcesApplication,
+    };
+    use awaken_resource_contract::{MemoryActor, MemoryVersionOperation};
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use serde_json::{Value, json};
+    use tower::ServiceExt;
+
+    let rt = setup_rt();
+    let clock = awaken_time::system_clock();
+    let bus = Arc::new(crate::LocalInvalidator::new(32));
+    let physical = Arc::new(VolatileMemoryRepository::new(clock.clone()));
+    let resources = rt.block_on(async {
+        let storage = Arc::new(
+            awaken_resource_store::SqliteResourceStore::in_memory()
+                .await
+                .unwrap(),
+        );
+        let registry = Arc::new(RegistryApplication::new(storage.clone(), clock.clone()));
+        let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
+        ResourcesApplication::new(ResourceAuthorities::new(
+            registry,
+            files.clone(),
+            files,
+            Arc::new(
+                awaken_resource_application::memory::InvalidatingMemoryRepository::new(
+                    physical,
+                    bus.clone(),
+                ),
+            ),
+            Arc::new(awaken_skill_store::InMemorySkillStore::new()),
+            storage,
+            clock.clone(),
+        ))
+    });
+    let ports = resources.authorities();
+    let catalog = ports.resource_registry();
+    assert!(Arc::ptr_eq(
+        &catalog,
+        &resources.authorities().resource_registry()
+    ));
+    let physical = Arc::as_ptr(&ports.memory_queries()) as *const ();
+    assert_eq!(physical, Arc::as_ptr(&ports.memory_writer()) as *const ());
+    assert_eq!(
+        physical,
+        Arc::as_ptr(&ports.memory_snapshot_source()) as *const ()
+    );
+    assert_eq!(
+        physical,
+        Arc::as_ptr(&ports.memory_filesystem()) as *const ()
+    );
+    assert_eq!(
+        physical,
+        Arc::as_ptr(&ports.memory_copy_writeback()) as *const ()
+    );
+    assert_eq!(
+        physical,
+        Arc::as_ptr(&ports.memory_copy_conflict_queries()) as *const ()
+    );
+    assert_eq!(
+        physical,
+        Arc::as_ptr(&ports.memory_copy_conflict_preservation()) as *const ()
+    );
+    assert_eq!(physical, Arc::as_ptr(&ports.memory_versions()) as *const ());
+    assert_eq!(
+        physical,
+        Arc::as_ptr(&ports.memory_version_redaction()) as *const ()
+    );
+    assert_eq!(
+        physical,
+        Arc::as_ptr(&ports.memory_content_purge()) as *const ()
+    );
+
+    let router = awaken_protocol_managed::memory_stores_router(
+        ports.memory_management_content(),
+        resources.memory_stores(),
+        clock.clone(),
+    );
+    let mounter =
+        crate::MemoryStoreMounter::fuse_preferred(ports.memory_mount_source(), bus.clone(), clock)
+            .expect("selected Memory source and root bus match");
+    assert!(
+        mounter.shares_invalidator_for_test(&bus),
+        "the selected mounter retains the root bus Arc"
+    );
+    let request = |method: &str, path: &str, body: Value| {
+        let router = router.clone();
+        let mut req = Request::builder()
+            .method(method)
+            .uri(path)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        req.extensions_mut()
+            .insert(awaken_tenancy::WorkspaceScope("cache-workspace".into()));
+        req.extensions_mut()
+            .insert(AuthenticatedMemoryActor(MemoryActor::ApiActor {
+                api_key_id: "cache-api".into(),
+            }));
+        async move {
+            let response = router.oneshot(req).await.unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            (status, serde_json::from_slice::<Value>(&bytes).unwrap())
+        }
+    };
+    let (status, store) = rt.block_on(request(
+        "POST",
+        "/v1/memory_stores",
+        json!({"name":"cache"}),
+    ));
+    assert_eq!(status, StatusCode::OK);
+    let store = store["id"].as_str().unwrap();
+    assert!(
+        rt.block_on(catalog.find_memory_store("cache-workspace", store))
+            .unwrap()
+            .is_some(),
+        "public API authored the same exact root catalog"
+    );
+    let mut observer = bus.subscribe();
+    let (status, created) = rt.block_on(request(
+        "POST",
+        &format!("/v1/memory_stores/{store}/memories"),
+        json!({"path":"/note.md","content":"v1"}),
+    ));
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        observer.try_recv().unwrap(),
+        (store.into(), "/note.md".into())
+    );
+    assert!(
+        matches!(
+            observer.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ),
+        "one successful create emits once"
+    );
+    let seed = rt
+        .block_on(ports.memory_queries().get_by_path(store, "/note.md"))
+        .unwrap()
+        .unwrap();
+    let cache = Arc::new(Mutex::new(ContentLruCache::new(8)));
+    let assert_store_cache_cleared = |operation: &str| {
+        let started = std::time::Instant::now();
+        while !cache.lock().unwrap().entries.is_empty()
+            && started.elapsed() < Duration::from_secs(2)
+        {
+            std::thread::yield_now();
+        }
+        assert!(
+            cache.lock().unwrap().entries.is_empty(),
+            "{operation} clears raw membership for the entire store, independently of TTL"
+        );
+    };
+    cache.lock().unwrap().put(seed.clone());
+    let stop = Arc::new(AtomicBool::new(false));
+    let listener = InvalidationListener {
+        stop: stop.clone(),
+        handle: Some({
+            let (cache, stop, rx, store) = (
+                cache.clone(),
+                stop.clone(),
+                mounter.invalidations_for_test(),
+                store.to_owned(),
+            );
+            std::thread::spawn(move || run_invalidation_listener(cache, store, rx, stop))
+        }),
+    };
+    let uri = format!(
+        "/v1/memory_stores/{store}/memories/{}",
+        created["id"].as_str().unwrap()
+    );
+    let (status, _) = rt.block_on(request("PATCH", &uri, json!({"content":"v2", "precondition":{"type":"content_sha256", "content_sha256":seed.content_sha256}})));
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        observer.try_recv().unwrap(),
+        (store.into(), "/note.md".into())
+    );
+    assert!(matches!(
+        observer.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+    let started = std::time::Instant::now();
+    while cache.lock().unwrap().entries.contains_key("/note.md")
+        && started.elapsed() < Duration::from_secs(2)
+    {
+        std::thread::yield_now();
+    }
+    assert!(
+        !cache.lock().unwrap().entries.contains_key("/note.md"),
+        "listener removed raw membership; TTL cannot pass this assertion"
+    );
+    let current = rt
+        .block_on(ports.memory_queries().get_by_path(store, "/note.md"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.content.as_deref(), Some("v2"));
+    cache.lock().unwrap().put(current.clone());
+    let (status, _) = rt.block_on(request("PATCH", &uri, json!({"content":"loser", "precondition":{"type":"content_sha256", "content_sha256":seed.content_sha256}})));
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(
+        matches!(
+            observer.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ),
+        "failed CAS emits nothing"
+    );
+    assert!(cache.lock().unwrap().entries.contains_key("/note.md"));
+    let (status, _) = rt.block_on(request(
+        "PATCH",
+        &uri,
+        json!({"path":"/moved.md", "content":"v3"}),
+    ));
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(observer.try_recv().unwrap(), (store.into(), "/".into()));
+    assert!(matches!(
+        observer.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+    assert_store_cache_cleared("API path update");
+    let moved = rt
+        .block_on(ports.memory_queries().get_by_path(store, "/moved.md"))
+        .unwrap()
+        .unwrap();
+    cache.lock().unwrap().put(moved);
+    cache
+        .lock()
+        .unwrap()
+        .put(memory("/unrelated.md", "cached peer path"));
+    rt.block_on(
+        ports
+            .memory_filesystem()
+            .rename(store, "/moved.md", "/renamed.md"),
+    )
+    .unwrap();
+    assert_eq!(observer.try_recv().unwrap(), (store.into(), "/".into()));
+    assert!(matches!(
+        observer.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+    assert_store_cache_cleared("filesystem rename");
+    let renamed = rt
+        .block_on(ports.memory_queries().get_by_path(store, "/renamed.md"))
+        .unwrap()
+        .unwrap();
+    cache.lock().unwrap().put(renamed);
+    cache
+        .lock()
+        .unwrap()
+        .put(memory("/unrelated.md", "cached peer path"));
+    let versions = rt
+        .block_on(ports.memory_versions().list_versions(store))
+        .unwrap();
+    let expected_actor = Some(MemoryActor::ApiActor {
+        api_key_id: "cache-api".into(),
+    });
+    for (path, content, operation) in [
+        ("/note.md", "v1", MemoryVersionOperation::Created),
+        ("/note.md", "v2", MemoryVersionOperation::Modified),
+        ("/moved.md", "v3", MemoryVersionOperation::Modified),
+    ] {
+        let version = versions
+            .iter()
+            .find(|version| {
+                version.path == path
+                    && version.content.as_deref() == Some(content)
+                    && version.operation == operation
+            })
+            .expect("every successful HTTP mutation retains its audit version");
+        assert_eq!(
+            version.created_by, expected_actor,
+            "HTTP actor survives the shared decorator"
+        );
+    }
+    rt.block_on(ports.memory_content_purge().purge_store(store))
+        .unwrap();
+    assert_eq!(observer.try_recv().unwrap(), (store.into(), "/".into()));
+    assert!(matches!(
+        observer.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+    assert_store_cache_cleared("physical purge");
+    assert!(
+        rt.block_on(ports.memory_snapshot_source().snapshot_heads(store))
+            .unwrap()
+            .is_empty()
+    );
+    drop(listener);
+}
+
+/// Exercise the actual mounter subscription and kernel cache allocation. Raw
+/// membership is observed after the TTL has already elapsed and without any
+/// intervening VFS/cache get: expiry cannot stand in for the mounted listener.
+#[test]
+fn managed_api_writes_invalidate_actual_kernel_mount_without_cache_ttl() {
+    use awaken_protocol_managed::types::memory::AuthenticatedMemoryActor;
+    use awaken_provisioning_contract::{
+        MemoryMountOutcome, MemoryMounter, MountAccess, Realization,
+    };
+    use awaken_resource_application::{
+        RegistryApplication, ResourceAuthorities, ResourcesApplication,
+    };
+    use awaken_resource_contract::MemoryActor;
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use serde_json::{Value, json};
+    use tower::ServiceExt;
+
+    if !crate::fuse_available() {
+        eprintln!("SKIP actual kernel cache wiring: /dev/fuse or fusermount unavailable");
+        return;
+    }
+    let rt = setup_rt();
+    let clock = awaken_time::system_clock();
+    let bus = Arc::new(crate::LocalInvalidator::new(32));
+    let resources = rt.block_on(async {
+        let storage = Arc::new(
+            awaken_resource_store::SqliteResourceStore::in_memory()
+                .await
+                .unwrap(),
+        );
+        let registry = Arc::new(RegistryApplication::new(storage.clone(), clock.clone()));
+        let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
+        let memory = Arc::new(
+            awaken_resource_application::memory::InvalidatingMemoryRepository::new(
+                Arc::new(VolatileMemoryRepository::new(clock.clone())),
+                bus.clone(),
+            ),
+        );
+        ResourcesApplication::new(ResourceAuthorities::new(
+            registry,
+            files.clone(),
+            files,
+            memory,
+            Arc::new(awaken_skill_store::InMemorySkillStore::new()),
+            storage,
+            clock.clone(),
+        ))
+    });
+    let ports = resources.authorities();
+    let router = awaken_protocol_managed::memory_stores_router(
+        ports.memory_management_content(),
+        resources.memory_stores(),
+        clock.clone(),
+    );
+    let request = |method: &str, path: &str, body: Value| {
+        let router = router.clone();
+        let mut req = Request::builder()
+            .method(method)
+            .uri(path)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        req.extensions_mut().insert(awaken_tenancy::WorkspaceScope(
+            "kernel-cache-workspace".into(),
+        ));
+        req.extensions_mut()
+            .insert(AuthenticatedMemoryActor(MemoryActor::ApiActor {
+                api_key_id: "kernel-cache-api".into(),
+            }));
+        async move {
+            let response = router.oneshot(req).await.unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            (status, serde_json::from_slice::<Value>(&bytes).unwrap())
+        }
+    };
+    let (status, store) = rt.block_on(request(
+        "POST",
+        "/v1/memory_stores",
+        json!({"name":"kernel-cache"}),
+    ));
+    assert_eq!(status, StatusCode::OK);
+    let store = store["id"].as_str().unwrap();
+    let seed = rt
+        .block_on(ports.memory_writer().create(store, "/note.md", "old"))
+        .unwrap();
+    let mounter =
+        crate::MemoryStoreMounter::fuse_preferred(ports.memory_mount_source(), bus.clone(), clock)
+            .unwrap();
+    assert!(
+        mounter.mounted_cache_for_test().is_none(),
+        "construction does not create a phantom cache or mount"
+    );
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("real-kernel-cache");
+    let mount = match rt.block_on(mounter.mount(store, &path, MountAccess::ReadWrite)) {
+        MemoryMountOutcome::Mounted(mount) => mount,
+        MemoryMountOutcome::NoEffect(error) | MemoryMountOutcome::RecoveryRequired(error) => {
+            panic!("actual kernel mount must succeed on a FUSE-capable host: {error}")
+        }
+    };
+    assert_eq!(
+        mount.realization(),
+        Realization::Fuse,
+        "Copy fallback cannot prove mounted listener wiring"
+    );
+    let cache = mounter
+        .mounted_cache_for_test()
+        .expect("actual successful mount records its exact cache allocation");
+    assert_eq!(
+        std::fs::read_to_string(path.join("note.md")).unwrap(),
+        "old"
+    );
+    assert!(
+        cache.contains_raw("/note.md"),
+        "kernel read warms the observed actual cache"
+    );
+    std::thread::sleep(CONTENT_CACHE_TTL + Duration::from_millis(50));
+    assert!(
+        cache.contains_raw("/note.md"),
+        "elapsed TTL alone does not evict raw membership"
+    );
+
+    let (status, _) = rt.block_on(request("PATCH",
+        &format!("/v1/memory_stores/{store}/memories/{}", seed.id),
+        json!({"content":"new","precondition":{"type":"content_sha256","content_sha256":seed.content_sha256}}),
+    ));
+    assert_eq!(status, StatusCode::OK);
+    // Do not issue VFS reads or TTL-aware cache lookups until raw removal is
+    // proven. No writes/renames/purge/capacity pressure occur on this mount.
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while cache.contains_raw("/note.md") && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        !cache.contains_raw("/note.md"),
+        "the listener started by the real mount removes the actual kernel cache entry"
+    );
+    assert_eq!(
+        std::fs::read_to_string(path.join("note.md")).unwrap(),
+        "new"
+    );
+    rt.block_on(mount.teardown()).unwrap();
+    assert!(
+        !cache.is_live(),
+        "Weak observation does not keep the kernel cache or listener alive after teardown"
     );
 }

@@ -53,6 +53,7 @@ awaken-session-executor = { workspace = true, default-features = false }
 awaken-session-mcp.workspace = true
 # The installation platform Workspace marker this startup reads or publishes.
 awaken-installation-workspace.workspace = true
+awaken-resource-contract.workspace = true
 awaken-resource-worker-http.workspace = true
 awaken-sandbox-memoryd.workspace = true
 awaken-coordinator-client.workspace = true

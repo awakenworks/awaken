@@ -22,7 +22,7 @@
     },
     "awaken-session-executor::SharedHost": {
       "files": 40,
-      "methods": 245,
+      "methods": 244,
       "reason": "slice H: each of the eleven session-runtime roles gets one owning component (plan 10.3 item 11)"
     },
     "awaken-runtime::Runtime": {
@@ -250,7 +250,7 @@
     "awaken-agent-config::compile.rs::compile_with_models": 360,
     "awaken-cli::config/resolve.rs::resolve_file": 502,
     "awaken-cli::control_component.rs::prepare_control_routers": 238,
-    "awaken-cli::deployment_process.rs::prepare_runtime_process_with_coordinator_services_and_installations": 219,
+    "awaken-cli::deployment_process.rs::prepare_runtime_process_with_coordinator_services_and_installations": 211,
     "awaken-cli::process_stores.rs::open_process_stores": 393,
     "awaken-cli::service.rs::serve_prepared_process": 234,
     "awaken-config-service::managed_agent.rs::agent_config_from_managed": 179,
@@ -262,7 +262,7 @@
     "awaken-control::credential_refresh.rs::run_exchange": 162,
     "awaken-control::lib.rs::control_router": 181,
     "awaken-control::webhook_authoring.rs::put_subscription": 157,
-    "awaken-coordinator::lib.rs::mount_with_managed_over_and_models": 384,
+    "awaken-coordinator::lib.rs::mount_with_managed_over_and_models": 382,
     "awaken-credential-store::postgres.rs::commit_managed_mutation": 275,
     "awaken-credential-store::sqlite/managed.rs::commit_managed_mutation": 244,
     "awaken-dispatch-execution::worker.rs::drive_claimed_inner": 581,
@@ -375,7 +375,7 @@
     "awaken-session-store::postgres.rs::commit": 151,
     "awaken-session-store::sqlite.rs::commit": 155,
     "awaken-store-postgres::lib.rs::recovery_snapshot": 194,
-    "awaken-worker::lib.rs::run_until": 561,
+    "awaken-worker::lib.rs::run_until": 555,
     "awaken-worker::lifecycle.rs::renew_registry_authority": 176
   },
   "crate-budget": {

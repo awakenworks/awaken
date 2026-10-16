@@ -1,6 +1,6 @@
 // @formal surface requirement=resource.memory.memory_consistency
 // @formal reason: Static owner: Runtime Host adapts the frozen Session Memory binding to the canonical
-// @formal reason: MemoryRepository complete-generation API without owning a second CAS rule. Dynamic path:
+// @formal reason: MemoryWriter complete-generation API without owning a second CAS rule. Dynamic path:
 // @formal reason: create has no predecessor, while write, delete and extraction replay pass the exact
 // @formal reason: immutable-id/version/content token into the repository; path-sensitive operations use
 // @formal reason: update_materialized so a renamed or replaced materialization conflicts. Repository locks
@@ -13,6 +13,7 @@
 //! that exact store; it owns no catalog, lifecycle, or extraction-outbox truth.
 
 use std::collections::BTreeMap;
+#[cfg(test)]
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -22,19 +23,64 @@ use awaken_ext_memory::{
 };
 
 pub(crate) struct PlatformMemoryHandle {
-    fs: Arc<dyn awaken_resource_contract::MemoryRepository>,
+    content: awaken_resource_contract::MemoryExecutionContent,
     store_id: String,
     writable: bool,
 }
 
 impl PlatformMemoryHandle {
-    pub(crate) fn new(
-        fs: Arc<dyn awaken_resource_contract::MemoryRepository>,
+    pub(crate) async fn entries_from_snapshot(
+        source: &dyn awaken_resource_contract::MemorySnapshotSource,
+        store_id: &str,
+    ) -> Result<Vec<awaken_ext_memory::Entry>, String> {
+        let mut entries = Vec::new();
+        for memory in source
+            .snapshot_heads(store_id)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            let Some(content) = memory.content.filter(|content| !content.trim().is_empty()) else {
+                continue;
+            };
+            let nanos = u64::try_from(memory.updated_unix_nanos).unwrap_or(u64::MAX);
+            entries.push(awaken_ext_memory::Entry {
+                path: std::path::PathBuf::from(memory.path),
+                content: content.trim().to_string(),
+                modified: std::time::UNIX_EPOCH + std::time::Duration::from_nanos(nanos),
+            });
+        }
+        entries.sort_by(|left, right| {
+            right
+                .modified
+                .cmp(&left.modified)
+                .then_with(|| left.path.cmp(&right.path))
+        });
+        Ok(entries)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new<M>(backend: Arc<M>, store_id: String, writable: bool) -> Self
+    where
+        M: awaken_resource_contract::MemoryQueries
+            + awaken_resource_contract::MemorySnapshotSource
+            + awaken_resource_contract::MemoryWriter
+            + awaken_resource_contract::MemoryCopyWriteback
+            + 'static,
+    {
+        Self::from_roles(
+            awaken_resource_contract::MemoryExecutionContent::new(backend.clone()),
+            store_id,
+            writable,
+        )
+    }
+
+    pub(crate) fn from_roles(
+        content: awaken_resource_contract::MemoryExecutionContent,
         store_id: String,
         writable: bool,
     ) -> Self {
         Self {
-            fs,
+            content,
             store_id,
             writable,
         }
@@ -44,7 +90,8 @@ impl PlatformMemoryHandle {
         &self,
         prefix: &str,
     ) -> Result<Vec<awaken_resource_contract::MemoryEntry>, String> {
-        self.fs
+        self.content
+            .queries()
             .list(&self.store_id, prefix)
             .await
             .map_err(|error| error.to_string())
@@ -54,7 +101,8 @@ impl PlatformMemoryHandle {
         &self,
         path: &str,
     ) -> Result<Option<awaken_resource_contract::Memory>, String> {
-        self.fs
+        self.content
+            .queries()
             .get_by_path(&self.store_id, path)
             .await
             .map_err(|error| error.to_string())
@@ -71,12 +119,14 @@ impl PlatformMemoryHandle {
         }
         match expected_generation {
             None => self
-                .fs
+                .content
+                .writer()
                 .create(&self.store_id, path, content)
                 .await
                 .map_err(|error| error.to_string()),
             Some(expected) => self
-                .fs
+                .content
+                .copy_writeback()
                 .update_materialized(&self.store_id, path, expected, content)
                 .await
                 .map_err(|error| error.to_string()),
@@ -91,7 +141,8 @@ impl PlatformMemoryHandle {
         if !self.writable {
             return Err("memory store binding is read-only".into());
         }
-        self.fs
+        self.content
+            .writer()
             .delete_if_match(&self.store_id, path, expected_generation)
             .await
             .map_err(|error| error.to_string())
@@ -104,7 +155,8 @@ impl PlatformMemoryHandle {
         let mut mutations = Vec::with_capacity(writes.len());
         for (path, content) in writes {
             let current = self
-                .fs
+                .content
+                .queries()
                 .get_by_path(&self.store_id, &path)
                 .await
                 .map_err(|error| error.to_string())?;
@@ -133,7 +185,8 @@ impl PlatformMemoryHandle {
             return Err("memory store binding is read-only".into());
         }
         let current = self
-            .fs
+            .content
+            .queries()
             .get_by_path(&self.store_id, &mutation.path)
             .await
             .map_err(|error| error.to_string())?;
@@ -161,13 +214,15 @@ impl PlatformMemoryHandle {
             .transpose()?;
         match (current, expected.as_ref()) {
             (None, None) => {
-                self.fs
+                self.content
+                    .writer()
                     .create(&self.store_id, &mutation.path, &mutation.content)
                     .await
                     .map_err(|error| error.to_string())?;
             }
             (Some(current), Some(expected)) if current.generation() == *expected => {
-                self.fs
+                self.content
+                    .copy_writeback()
                     .update_materialized(
                         &self.store_id,
                         &mutation.path,
@@ -200,18 +255,21 @@ impl MemoryStoreHandle for PlatformMemoryHandle {
         }
         let path = format!("/{}.md", sanitize_stem(name));
         match self
-            .fs
+            .content
+            .queries()
             .get_by_path(&self.store_id, &path)
             .await
             .map_err(|error| error.to_string())?
         {
             Some(current) => self
-                .fs
+                .content
+                .writer()
                 .update(&self.store_id, &current.generation(), content)
                 .await
                 .map_err(|error| error.to_string())?,
             None => self
-                .fs
+                .content
+                .writer()
                 .create(&self.store_id, &path, content)
                 .await
                 .map_err(|error| error.to_string())?,
@@ -220,29 +278,6 @@ impl MemoryStoreHandle for PlatformMemoryHandle {
     }
 
     async fn entries(&self) -> Result<Vec<awaken_ext_memory::Entry>, String> {
-        let mut entries = Vec::new();
-        for memory in self
-            .fs
-            .snapshot_heads(&self.store_id)
-            .await
-            .map_err(|error| error.to_string())?
-        {
-            let Some(content) = memory.content.filter(|content| !content.trim().is_empty()) else {
-                continue;
-            };
-            let nanos = u64::try_from(memory.updated_unix_nanos).unwrap_or(u64::MAX);
-            entries.push(awaken_ext_memory::Entry {
-                path: std::path::PathBuf::from(memory.path),
-                content: content.trim().to_string(),
-                modified: std::time::UNIX_EPOCH + std::time::Duration::from_nanos(nanos),
-            });
-        }
-        entries.sort_by(|left, right| {
-            right
-                .modified
-                .cmp(&left.modified)
-                .then_with(|| left.path.cmp(&right.path))
-        });
-        Ok(entries)
+        Self::entries_from_snapshot(self.content.snapshots().as_ref(), &self.store_id).await
     }
 }

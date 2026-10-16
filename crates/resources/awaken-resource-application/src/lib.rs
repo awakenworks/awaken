@@ -12,6 +12,7 @@ use std::sync::Arc;
 mod authorities;
 mod execution_sources;
 mod files;
+pub mod memory;
 mod reclamation;
 mod registry;
 mod repositories;
@@ -70,7 +71,7 @@ impl ResourcesApplication {
             lifecycle_guard: Arc::new(ResourceLifecycleGuard::new(authorities.resource_registry())),
             physical_cleanup: Arc::new(ResourcePhysicalCleanup::new(
                 authorities.file_store(),
-                authorities.memory_repository(),
+                authorities.memory_content_purge(),
                 authorities.skill_store(),
             )),
             purge,
@@ -446,9 +447,22 @@ mod tests {
             registry,
             files.clone(),
             files,
-            Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
-                clock.clone(),
-            )),
+            {
+                #[derive(Default)]
+                struct MemoryEvents(std::sync::Mutex<Vec<(String, String)>>);
+                #[cfg(test)]
+                impl awaken_resource_contract::MemoryInvalidator for MemoryEvents {
+                    fn publish(&self, store: &str, path: &str) {
+                        self.0.lock().unwrap().push((store.into(), path.into()));
+                    }
+                }
+                Arc::new(crate::memory::InvalidatingMemoryRepository::new(
+                    Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+                        clock.clone(),
+                    )),
+                    Arc::new(MemoryEvents::default()),
+                ))
+            },
             Arc::new(awaken_skill_store::InMemorySkillStore::new()),
             resources,
             clock,

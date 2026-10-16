@@ -39,9 +39,6 @@
   },
   "foreign-persistence-port": {
     "FileStore <- awaken-session-executor": 1,
-    "MemoryRepository <- awaken-protocol-managed": 1,
-    "MemoryRepository <- awaken-session-executor": 1,
-    "MemoryRepository <- awaken-sandbox-memoryd": 1,
     "ResourceReclamationRepository <- awaken-session-executor": 1,
     "SandboxCheckpointStore <- awaken-session-executor": 1,
     "SandboxCheckpointStore <- awaken-sandbox-local": 1,
@@ -55,7 +52,6 @@
   "fat-trait": {
     "ContainerEnvironmentProvider": 16,
     "DurableRunOperations": 15,
-    "MemoryRepository": 20,
     "Sandbox": 15
   },
   "duplicate-type": {

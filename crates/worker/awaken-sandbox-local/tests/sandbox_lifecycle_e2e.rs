@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use awaken_memory_store::{MemoryRepository, VolatileMemoryRepository};
+use awaken_memory_store::{MemoryWriter, VolatileMemoryRepository};
 use awaken_provisioning_contract::{self as pc, Sandbox};
 use awaken_sandbox_local::LocalProvider;
 use awaken_sandbox_memoryd::MemoryStoreMounter;
@@ -32,10 +32,22 @@ fn find_file(root: &Path, name: &str) -> Option<PathBuf> {
 async fn full_lifecycle_harvests_memory_collects_outputs_then_shreds_and_reaps() {
     let fs = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
     fs.create("mem", "/notes.md", "seed").await.unwrap();
-    let mounter = Arc::new(MemoryStoreMounter::new(
-        fs.clone(),
-        awaken_time::system_clock(),
-    ));
+    let mounter = Arc::new({
+        let backend = fs.clone();
+        let bus = Arc::new(awaken_sandbox_memoryd::LocalInvalidator::default());
+        let memory = Arc::new(
+            awaken_resource_application::memory::InvalidatingMemoryRepository::new(
+                backend,
+                bus.clone(),
+            ),
+        );
+        MemoryStoreMounter::fuse_preferred(
+            awaken_resource_contract::MemoryMountSource::new(memory),
+            bus,
+            awaken_time::system_clock(),
+        )
+        .expect("selected Memory source and root bus match")
+    });
 
     let tmp = tempfile::tempdir().unwrap();
     let provider = LocalProvider::new(tmp.path())
@@ -117,7 +129,7 @@ async fn full_lifecycle_harvests_memory_collects_outputs_then_shreds_and_reaps()
 
     // The memory edit reached the durable store — harvest ran before the reap.
     assert_eq!(
-        fs.get_by_path("mem", "/notes.md")
+        awaken_resource_contract::MemoryQueries::get_by_path(fs.as_ref(), "mem", "/notes.md")
             .await
             .unwrap()
             .unwrap()

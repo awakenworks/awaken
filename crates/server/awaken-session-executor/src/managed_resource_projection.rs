@@ -746,13 +746,14 @@ impl crate::resource_staging::ResourceStaging {
             // Remote Memory claim decision table: active + exact config =>
             // snapshot preflight succeeds; archived/config-changed/stale claim
             // fails before the mounter reuses a prior projection.
-            self.memory_repository
+            self.memory
+                .snapshots()
                 .snapshot_heads(reference)
                 .await
                 .map_err(|error| RunError::bad_request(error.to_string()))?;
         }
-        let handle = Arc::new(crate::memory_binding::PlatformMemoryHandle::new(
-            self.memory_repository.clone(),
+        let handle = Arc::new(crate::memory_binding::PlatformMemoryHandle::from_roles(
+            self.memory.clone(),
             materialization_reference
                 .clone()
                 .unwrap_or_else(|| memory_store_id.to_string()),

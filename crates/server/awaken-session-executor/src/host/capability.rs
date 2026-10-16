@@ -27,11 +27,12 @@ pub use execution_topology::{
     DispatchPoolSizing, ExecutionTopology, LeaseOwnerId, LocalExecution, QueueDepthSource,
     RunIngress,
 };
+pub(super) use resources::ResourceInputs;
+pub use resources::WorkerContentAdapters;
 #[cfg(test)]
 pub(super) use resources::local_memory_extraction_repository;
 #[cfg(any(test, feature = "test-support"))]
-pub use resources::{LocalResourcePorts, LocalSkillPorts};
-pub(super) use resources::{ResourceInputs, WorkerContentAdapters};
+pub use resources::{LocalResourcePorts, LocalSkillPorts, test_memory_content};
 pub(crate) use resources::{ResourcePorts, ResourceSelection};
 pub(crate) use tools::ToolOffering;
 pub(crate) use worker::WorkerTransports;

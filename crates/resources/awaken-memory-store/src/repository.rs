@@ -7,12 +7,12 @@
 // @formal entrypoint memory.stale_conditional_delete_never_removes_live_head
 //! Path-addressed, CAS memory model (ADR-0053, D1).
 //!
-//! The [`MemoryRepository`] port projects a memory store as a set of **path-addressed
+//! The [`MemoryWriter`] port projects a memory store as a set of **path-addressed
 //! memory files**, each carrying a `content_sha256`, a monotonic per-path
 //! `version`, and real create/update timestamps — the model a write-through FUSE
 //! mount ([ADR-0053] D2) needs to give an LLM native `read`/`write`/`edit`/`grep`
 //! semantics over `/mnt/memory/{store}/*`. A store holds many files with **per-file
-//! optimistic concurrency**: [`MemoryRepository::update`] is a compare-and-swap on the base
+//! optimistic concurrency**: [`MemoryWriter::update`] is a compare-and-swap on the base
 //! sha, so two writers never silently clobber each other.
 //!
 //! Backends: `VolatileMemoryRepository` behind explicit test support and
@@ -35,17 +35,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 ))]
 use awaken_time::WallClock;
 
-#[cfg(any(test, feature = "test-support"))]
-use async_trait::async_trait;
-
-// The path-addressed memory port (`MemoryRepository`), its value types (`Memory`,
+// The path-addressed memory capability ports, its value types (`Memory`,
 // `MemoryEntry`), the error (`MemErr`), and the size caps live in the port-only
 // contract crate. This module implements the port and re-exports them so
 // `awaken_memory_store::repository::Memory` and root re-exports resolve uniformly.
 pub use awaken_resource_contract::{
     MAX_MEMORIES_PER_STORE, MAX_MEMORY_BYTES, MAX_PATH_BYTES, MemErr, Memory, MemoryActor,
-    MemoryEntry, MemoryGeneration, MemoryPurgeSummary, MemoryRepository, MemoryVersion,
-    MemoryVersionOperation,
+    MemoryContentPurge, MemoryCopyConflictPreservation, MemoryCopyConflictQueries,
+    MemoryCopyWriteback, MemoryEntry, MemoryFilesystem, MemoryGeneration, MemoryPurgeSummary,
+    MemoryQueries, MemorySnapshotSource, MemoryVersion, MemoryVersionOperation,
+    MemoryVersionQueries, MemoryVersionRedaction, MemoryWriter,
 };
 
 pub use awaken_resource_contract::memory_sha256_hex as sha256_hex;
@@ -358,7 +357,7 @@ pub(crate) fn under_prefix(path: &str, prefix: &str) -> bool {
 // In-memory backend
 // ---------------------------------------------------------------------------
 
-/// In-memory [`MemoryRepository`] for tests and scenario fixtures. One lock guards
+/// In-memory [`MemoryWriter`] for tests and scenario fixtures. One lock guards
 /// the whole map, so every create/update/rename/delete is atomic and CAS is race-free.
 #[cfg(any(test, feature = "test-support"))]
 pub struct VolatileMemoryRepository {
@@ -426,10 +425,9 @@ impl VolatileMemoryRepository {
     }
 }
 
-#[async_trait]
 #[cfg(any(test, feature = "test-support"))]
-impl MemoryRepository for VolatileMemoryRepository {
-    async fn preserve_copy_conflict(
+impl VolatileMemoryRepository {
+    async fn preserve_copy_conflict_inner(
         &self,
         store: &str,
         candidate: &awaken_resource_contract::MemoryCopyConflict,
@@ -454,7 +452,7 @@ impl MemoryRepository for VolatileMemoryRepository {
         Ok(())
     }
 
-    async fn list_copy_conflicts(
+    async fn list_copy_conflicts_inner(
         &self,
         store: &str,
     ) -> Result<Vec<awaken_resource_contract::MemoryCopyConflict>, MemErr> {
@@ -467,7 +465,7 @@ impl MemoryRepository for VolatileMemoryRepository {
             .map(|values| values.values().cloned().collect())
             .unwrap_or_default())
     }
-    async fn snapshot_heads(&self, store: &str) -> Result<Vec<Memory>, MemErr> {
+    async fn snapshot_heads_inner(&self, store: &str) -> Result<Vec<Memory>, MemErr> {
         let guard = self.inner.lock().unwrap();
         Ok(guard
             .records
@@ -481,7 +479,7 @@ impl MemoryRepository for VolatileMemoryRepository {
             .unwrap_or_default())
     }
 
-    async fn list(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr> {
+    async fn list_inner(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr> {
         let guard = self.inner.lock().unwrap();
         Ok(guard
             .records
@@ -495,7 +493,7 @@ impl MemoryRepository for VolatileMemoryRepository {
             .unwrap_or_default())
     }
 
-    async fn get_by_path(&self, store: &str, path: &str) -> Result<Option<Memory>, MemErr> {
+    async fn get_by_path_inner(&self, store: &str, path: &str) -> Result<Option<Memory>, MemErr> {
         let guard = self.inner.lock().unwrap();
         Ok(guard
             .records
@@ -504,11 +502,11 @@ impl MemoryRepository for VolatileMemoryRepository {
             .map(|r| r.to_memory(true)))
     }
 
-    async fn create(&self, store: &str, path: &str, content: &str) -> Result<Memory, MemErr> {
-        self.create_as(store, path, content, None).await
+    async fn create_inner(&self, store: &str, path: &str, content: &str) -> Result<Memory, MemErr> {
+        self.create_as_inner(store, path, content, None).await
     }
 
-    async fn create_as(
+    async fn create_as_inner(
         &self,
         store: &str,
         path: &str,
@@ -550,18 +548,18 @@ impl MemoryRepository for VolatileMemoryRepository {
         Ok(memory)
     }
 
-    async fn update_head(
+    async fn update_head_inner(
         &self,
         store: &str,
         base: &MemoryGeneration,
         content: &str,
         target_path: Option<&str>,
     ) -> Result<Memory, MemErr> {
-        self.update_head_as(store, base, content, target_path, None)
+        self.update_head_as_inner(store, base, content, target_path, None)
             .await
     }
 
-    async fn update_head_as(
+    async fn update_head_as_inner(
         &self,
         store: &str,
         base: &MemoryGeneration,
@@ -573,7 +571,7 @@ impl MemoryRepository for VolatileMemoryRepository {
             .await
     }
 
-    async fn update_materialized(
+    async fn update_materialized_inner(
         &self,
         store: &str,
         path: &str,
@@ -584,7 +582,7 @@ impl MemoryRepository for VolatileMemoryRepository {
             .await
     }
 
-    async fn rename(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr> {
+    async fn rename_inner(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr> {
         validate_path(to)?;
         let mut guard = self.inner.lock().unwrap();
         let store_map = guard
@@ -633,11 +631,11 @@ impl MemoryRepository for VolatileMemoryRepository {
         Ok(memory)
     }
 
-    async fn delete_by_path(&self, store: &str, path: &str) -> Result<(), MemErr> {
-        self.delete_by_path_as(store, path, None).await
+    async fn delete_by_path_inner(&self, store: &str, path: &str) -> Result<(), MemErr> {
+        self.delete_by_path_as_inner(store, path, None).await
     }
 
-    async fn delete_by_path_as(
+    async fn delete_by_path_as_inner(
         &self,
         store: &str,
         path: &str,
@@ -663,16 +661,16 @@ impl MemoryRepository for VolatileMemoryRepository {
         Ok(())
     }
 
-    async fn delete_if_match(
+    async fn delete_if_match_inner(
         &self,
         store: &str,
         path: &str,
         base: &MemoryGeneration,
     ) -> Result<bool, MemErr> {
-        self.delete_if_match_as(store, path, base, None).await
+        self.delete_if_match_as_inner(store, path, base, None).await
     }
 
-    async fn delete_if_match_as(
+    async fn delete_if_match_as_inner(
         &self,
         store: &str,
         path: &str,
@@ -723,7 +721,7 @@ impl MemoryRepository for VolatileMemoryRepository {
         Ok(true)
     }
 
-    async fn list_versions(&self, store: &str) -> Result<Vec<MemoryVersion>, MemErr> {
+    async fn list_versions_inner(&self, store: &str) -> Result<Vec<MemoryVersion>, MemErr> {
         Ok(self
             .inner
             .lock()
@@ -734,15 +732,15 @@ impl MemoryRepository for VolatileMemoryRepository {
             .unwrap_or_default())
     }
 
-    async fn redact_version(
+    async fn redact_version_inner(
         &self,
         store: &str,
         version_id: &str,
     ) -> Result<Option<MemoryVersion>, MemErr> {
-        self.redact_version_as(store, version_id, None).await
+        self.redact_version_as_inner(store, version_id, None).await
     }
 
-    async fn redact_version_as(
+    async fn redact_version_as_inner(
         &self,
         store: &str,
         version_id: &str,
@@ -764,7 +762,7 @@ impl MemoryRepository for VolatileMemoryRepository {
         Ok(Some(version.clone()))
     }
 
-    async fn purge_store(&self, store: &str) -> Result<MemoryPurgeSummary, MemErr> {
+    async fn purge_store_inner(&self, store: &str) -> Result<MemoryPurgeSummary, MemErr> {
         let mut state = self.inner.lock().unwrap();
         let heads_deleted = state
             .records
@@ -879,6 +877,237 @@ impl VolatileMemoryRepository {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
+#[async_trait::async_trait]
+impl MemoryQueries for VolatileMemoryRepository {
+    async fn list(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr> {
+        VolatileMemoryRepository::list_inner(self, store, prefix).await
+    }
+    async fn get_by_path(&self, store: &str, path: &str) -> Result<Option<Memory>, MemErr> {
+        VolatileMemoryRepository::get_by_path_inner(self, store, path).await
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[async_trait::async_trait]
+impl MemorySnapshotSource for VolatileMemoryRepository {
+    async fn snapshot_heads(&self, store: &str) -> Result<Vec<Memory>, MemErr> {
+        VolatileMemoryRepository::snapshot_heads_inner(self, store).await
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[async_trait::async_trait]
+impl MemoryWriter for VolatileMemoryRepository {
+    async fn create_as(
+        &self,
+        store: &str,
+        path: &str,
+        content: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr> {
+        VolatileMemoryRepository::create_as_inner(self, store, path, content, actor).await
+    }
+    async fn update_head_as(
+        &self,
+        store: &str,
+        base: &MemoryGeneration,
+        content: &str,
+        target_path: Option<&str>,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr> {
+        VolatileMemoryRepository::update_head_as_inner(
+            self,
+            store,
+            base,
+            content,
+            target_path,
+            actor,
+        )
+        .await
+    }
+    async fn delete_by_path_as(
+        &self,
+        store: &str,
+        path: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<(), MemErr> {
+        VolatileMemoryRepository::delete_by_path_as_inner(self, store, path, actor).await
+    }
+    async fn delete_if_match_as(
+        &self,
+        store: &str,
+        path: &str,
+        base: &MemoryGeneration,
+        actor: Option<&MemoryActor>,
+    ) -> Result<bool, MemErr> {
+        VolatileMemoryRepository::delete_if_match_as_inner(self, store, path, base, actor).await
+    }
+    async fn create(&self, store: &str, path: &str, content: &str) -> Result<Memory, MemErr> {
+        VolatileMemoryRepository::create_inner(self, store, path, content).await
+    }
+    async fn update_head(
+        &self,
+        store: &str,
+        base: &MemoryGeneration,
+        content: &str,
+        target_path: Option<&str>,
+    ) -> Result<Memory, MemErr> {
+        VolatileMemoryRepository::update_head_inner(self, store, base, content, target_path).await
+    }
+    async fn delete_by_path(&self, store: &str, path: &str) -> Result<(), MemErr> {
+        VolatileMemoryRepository::delete_by_path_inner(self, store, path).await
+    }
+    async fn delete_if_match(
+        &self,
+        store: &str,
+        path: &str,
+        base: &MemoryGeneration,
+    ) -> Result<bool, MemErr> {
+        VolatileMemoryRepository::delete_if_match_inner(self, store, path, base).await
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[async_trait::async_trait]
+impl MemoryFilesystem for VolatileMemoryRepository {
+    async fn list(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr> {
+        VolatileMemoryRepository::list_inner(self, store, prefix).await
+    }
+    async fn get_by_path(&self, store: &str, path: &str) -> Result<Option<Memory>, MemErr> {
+        VolatileMemoryRepository::get_by_path_inner(self, store, path).await
+    }
+    async fn create_as(
+        &self,
+        store: &str,
+        path: &str,
+        content: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr> {
+        VolatileMemoryRepository::create_as_inner(self, store, path, content, actor).await
+    }
+    async fn update_head_as(
+        &self,
+        store: &str,
+        base: &MemoryGeneration,
+        content: &str,
+        target_path: Option<&str>,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr> {
+        VolatileMemoryRepository::update_head_as_inner(
+            self,
+            store,
+            base,
+            content,
+            target_path,
+            actor,
+        )
+        .await
+    }
+    async fn rename(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr> {
+        VolatileMemoryRepository::rename_inner(self, store, from, to).await
+    }
+    async fn delete_by_path_as(
+        &self,
+        store: &str,
+        path: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<(), MemErr> {
+        VolatileMemoryRepository::delete_by_path_as_inner(self, store, path, actor).await
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[async_trait::async_trait]
+impl MemoryCopyWriteback for VolatileMemoryRepository {
+    async fn create_as(
+        &self,
+        store: &str,
+        path: &str,
+        content: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr> {
+        VolatileMemoryRepository::create_as_inner(self, store, path, content, actor).await
+    }
+    async fn update_materialized(
+        &self,
+        store: &str,
+        path: &str,
+        base: &MemoryGeneration,
+        content: &str,
+    ) -> Result<Memory, MemErr> {
+        VolatileMemoryRepository::update_materialized_inner(self, store, path, base, content).await
+    }
+    async fn delete_if_match_as(
+        &self,
+        store: &str,
+        path: &str,
+        base: &MemoryGeneration,
+        actor: Option<&MemoryActor>,
+    ) -> Result<bool, MemErr> {
+        VolatileMemoryRepository::delete_if_match_as_inner(self, store, path, base, actor).await
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[async_trait::async_trait]
+impl MemoryCopyConflictPreservation for VolatileMemoryRepository {
+    async fn preserve_copy_conflict(
+        &self,
+        store: &str,
+        candidate: &awaken_resource_contract::MemoryCopyConflict,
+    ) -> Result<(), MemErr> {
+        VolatileMemoryRepository::preserve_copy_conflict_inner(self, store, candidate).await
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[async_trait::async_trait]
+impl MemoryCopyConflictQueries for VolatileMemoryRepository {
+    async fn list_copy_conflicts(
+        &self,
+        store: &str,
+    ) -> Result<Vec<awaken_resource_contract::MemoryCopyConflict>, MemErr> {
+        VolatileMemoryRepository::list_copy_conflicts_inner(self, store).await
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[async_trait::async_trait]
+impl MemoryVersionQueries for VolatileMemoryRepository {
+    async fn list_versions(&self, store: &str) -> Result<Vec<MemoryVersion>, MemErr> {
+        VolatileMemoryRepository::list_versions_inner(self, store).await
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[async_trait::async_trait]
+impl MemoryVersionRedaction for VolatileMemoryRepository {
+    async fn redact_version_as(
+        &self,
+        store: &str,
+        version_id: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Option<MemoryVersion>, MemErr> {
+        VolatileMemoryRepository::redact_version_as_inner(self, store, version_id, actor).await
+    }
+    async fn redact_version(
+        &self,
+        store: &str,
+        version_id: &str,
+    ) -> Result<Option<MemoryVersion>, MemErr> {
+        VolatileMemoryRepository::redact_version_inner(self, store, version_id).await
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[async_trait::async_trait]
+impl MemoryContentPurge for VolatileMemoryRepository {
+    async fn purge_store(&self, store: &str) -> Result<MemoryPurgeSummary, MemErr> {
+        VolatileMemoryRepository::purge_store_inner(self, store).await
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -969,64 +1198,105 @@ pub(crate) mod tests {
     /// state-changing mutation => one durable version (rename-replace => displaced
     /// delete + source modify); rejected/idempotent mutation => no version;
     /// redaction => history content removed, live head unchanged.
-    async fn history_conformance(fs: &dyn MemoryRepository) {
+    async fn history_conformance<M>(fs: &M)
+    where
+        M: MemoryQueries
+            + MemorySnapshotSource
+            + MemoryWriter
+            + MemoryFilesystem
+            + MemoryCopyWriteback
+            + MemoryCopyConflictQueries
+            + MemoryCopyConflictPreservation
+            + MemoryVersionQueries
+            + MemoryVersionRedaction
+            + MemoryContentPurge
+            + ?Sized,
+    {
         let store = "history";
-        let created = fs.create(store, "/a.md", "one").await.unwrap();
-        let first = fs.list_versions(store).await.unwrap();
+        let created = MemoryWriter::create(fs, store, "/a.md", "one")
+            .await
+            .unwrap();
+        let first = MemoryVersionQueries::list_versions(fs, store)
+            .await
+            .unwrap();
         assert_eq!(first.len(), 1);
         assert_eq!(first[0].memory_id, created.id);
         assert_eq!(first[0].operation, MemoryVersionOperation::Created);
         assert_eq!(first[0].content.as_deref(), Some("one"));
 
         assert!(matches!(
-            fs.create(store, "/a.md", "duplicate").await,
+            MemoryWriter::create(fs, store, "/a.md", "duplicate").await,
             Err(MemErr::PathConflict(_))
         ));
-        assert_eq!(fs.list_versions(store).await.unwrap().len(), 1);
+        assert_eq!(
+            MemoryVersionQueries::list_versions(fs, store)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
 
-        let updated = fs
-            .update(store, &created.generation(), "two")
-            .await
-            .unwrap();
-        assert_eq!(fs.list_versions(store).await.unwrap().len(), 2);
-        fs.update(store, &updated.generation(), "two")
+        let updated = MemoryWriter::update(fs, store, &created.generation(), "two")
             .await
             .unwrap();
         assert_eq!(
-            fs.list_versions(store).await.unwrap().len(),
+            MemoryVersionQueries::list_versions(fs, store)
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+        MemoryWriter::update(fs, store, &updated.generation(), "two")
+            .await
+            .unwrap();
+        assert_eq!(
+            MemoryVersionQueries::list_versions(fs, store)
+                .await
+                .unwrap()
+                .len(),
             2,
             "idempotent CAS does not invent a version"
         );
 
-        let displaced = fs.create(store, "/b.md", "old").await.unwrap();
-        fs.rename(store, "/a.md", "/b.md").await.unwrap();
-        let after_rename = fs.list_versions(store).await.unwrap();
+        let displaced = MemoryWriter::create(fs, store, "/b.md", "old")
+            .await
+            .unwrap();
+        MemoryFilesystem::rename(fs, store, "/a.md", "/b.md")
+            .await
+            .unwrap();
+        let after_rename = MemoryVersionQueries::list_versions(fs, store)
+            .await
+            .unwrap();
         assert_eq!(after_rename.len(), 5);
         assert_eq!(after_rename[3].memory_id, displaced.id);
         assert_eq!(after_rename[3].operation, MemoryVersionOperation::Deleted);
         assert_eq!(after_rename[4].memory_id, created.id);
         assert_eq!(after_rename[4].operation, MemoryVersionOperation::Modified);
 
-        fs.delete_by_path(store, "/b.md").await.unwrap();
-        fs.delete_by_path(store, "/b.md").await.unwrap();
-        let versions = fs.list_versions(store).await.unwrap();
+        MemoryWriter::delete_by_path(fs, store, "/b.md")
+            .await
+            .unwrap();
+        MemoryWriter::delete_by_path(fs, store, "/b.md")
+            .await
+            .unwrap();
+        let versions = MemoryVersionQueries::list_versions(fs, store)
+            .await
+            .unwrap();
         assert_eq!(versions.len(), 6, "idempotent delete appends once");
 
-        let redacted = fs
-            .redact_version(store, &first[0].id)
+        let redacted = MemoryVersionRedaction::redact_version(fs, store, &first[0].id)
             .await
             .unwrap()
             .unwrap();
         assert!(redacted.content.is_none());
         assert!(redacted.redacted_unix_nanos.is_some());
-        let again = fs
-            .redact_version(store, &first[0].id)
+        let again = MemoryVersionRedaction::redact_version(fs, store, &first[0].id)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(again, redacted, "redaction is idempotent");
         assert!(
-            fs.redact_version("other", &first[0].id)
+            MemoryVersionRedaction::redact_version(fs, "other", &first[0].id)
                 .await
                 .unwrap()
                 .is_none(),
@@ -1035,24 +1305,52 @@ pub(crate) mod tests {
         assert_eq!(updated.content.as_deref(), Some("two"));
     }
 
-    async fn purge_conformance(fs: &dyn MemoryRepository) {
-        fs.create("purge", "/a.md", "one").await.unwrap();
-        let updated = fs.get_by_path("purge", "/a.md").await.unwrap().unwrap();
-        fs.update("purge", &updated.generation(), "two")
+    async fn purge_conformance<M>(fs: &M)
+    where
+        M: MemoryQueries
+            + MemorySnapshotSource
+            + MemoryWriter
+            + MemoryFilesystem
+            + MemoryCopyWriteback
+            + MemoryCopyConflictQueries
+            + MemoryCopyConflictPreservation
+            + MemoryVersionQueries
+            + MemoryVersionRedaction
+            + MemoryContentPurge
+            + ?Sized,
+    {
+        MemoryWriter::create(fs, "purge", "/a.md", "one")
+            .await
+            .unwrap();
+        let updated = MemoryQueries::get_by_path(fs, "purge", "/a.md")
+            .await
+            .unwrap()
+            .unwrap();
+        MemoryWriter::update(fs, "purge", &updated.generation(), "two")
             .await
             .unwrap();
         assert_eq!(
-            fs.purge_store("purge").await.unwrap(),
+            MemoryContentPurge::purge_store(fs, "purge").await.unwrap(),
             MemoryPurgeSummary {
                 heads_deleted: 1,
                 versions_deleted: 2,
                 copy_conflicts_deleted: 0,
             }
         );
-        assert!(fs.list("purge", "/").await.unwrap().is_empty());
-        assert!(fs.list_versions("purge").await.unwrap().is_empty());
+        assert!(
+            MemoryQueries::list(fs, "purge", "/")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            MemoryVersionQueries::list_versions(fs, "purge")
+                .await
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(
-            fs.purge_store("purge").await.unwrap(),
+            MemoryContentPurge::purge_store(fs, "purge").await.unwrap(),
             MemoryPurgeSummary {
                 heads_deleted: 0,
                 versions_deleted: 0,
@@ -1066,10 +1364,29 @@ pub(crate) mod tests {
     /// C2 a later head mutation occurs -> E2 the previously returned value stays
     /// frozen while a new snapshot observes the mutation. These are the two rules
     /// that prevent a consolidation input from becoming a mixed `list`/`get` view.
-    async fn snapshot_heads_conformance(fs: &dyn MemoryRepository) {
-        fs.create("snapshot", "/z.md", "old-z").await.unwrap();
-        let a = fs.create("snapshot", "/a.md", "old-a").await.unwrap();
-        let frozen = fs.snapshot_heads("snapshot").await.unwrap();
+    async fn snapshot_heads_conformance<M>(fs: &M)
+    where
+        M: MemoryQueries
+            + MemorySnapshotSource
+            + MemoryWriter
+            + MemoryFilesystem
+            + MemoryCopyWriteback
+            + MemoryCopyConflictQueries
+            + MemoryCopyConflictPreservation
+            + MemoryVersionQueries
+            + MemoryVersionRedaction
+            + MemoryContentPurge
+            + ?Sized,
+    {
+        MemoryWriter::create(fs, "snapshot", "/z.md", "old-z")
+            .await
+            .unwrap();
+        let a = MemoryWriter::create(fs, "snapshot", "/a.md", "old-a")
+            .await
+            .unwrap();
+        let frozen = MemorySnapshotSource::snapshot_heads(fs, "snapshot")
+            .await
+            .unwrap();
         assert_eq!(
             frozen
                 .iter()
@@ -1078,12 +1395,14 @@ pub(crate) mod tests {
             vec!["/a.md", "/z.md"]
         );
         assert_eq!(frozen[0].content.as_deref(), Some("old-a"));
-        fs.update("snapshot", &a.generation(), "new-a")
+        MemoryWriter::update(fs, "snapshot", &a.generation(), "new-a")
             .await
             .unwrap();
         assert_eq!(frozen[0].content.as_deref(), Some("old-a"));
         assert_eq!(
-            fs.snapshot_heads("snapshot").await.unwrap()[0]
+            MemorySnapshotSource::snapshot_heads(fs, "snapshot")
+                .await
+                .unwrap()[0]
                 .content
                 .as_deref(),
             Some("new-a")
@@ -1180,8 +1499,7 @@ pub(crate) mod tests {
         let (writer, reader) = (fs.clone(), fs.clone());
         let m = writer.create("s", "/shared.md", "hello").await.unwrap();
         assert_eq!(
-            reader
-                .get_by_path("s", "/shared.md")
+            MemoryQueries::get_by_path(reader.as_ref(), "s", "/shared.md")
                 .await
                 .unwrap()
                 .unwrap()
@@ -1195,8 +1513,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(
-            reader
-                .get_by_path("s", "/shared.md")
+            MemoryQueries::get_by_path(reader.as_ref(), "s", "/shared.md")
                 .await
                 .unwrap()
                 .unwrap()
@@ -1207,31 +1524,49 @@ pub(crate) mod tests {
         );
     }
 
-    pub(crate) async fn capacity_conformance(fs: &dyn MemoryRepository) {
+    pub(crate) async fn capacity_conformance<M>(fs: &M)
+    where
+        M: MemoryQueries
+            + MemorySnapshotSource
+            + MemoryWriter
+            + MemoryFilesystem
+            + MemoryCopyWriteback
+            + MemoryCopyConflictQueries
+            + MemoryCopyConflictPreservation
+            + MemoryVersionQueries
+            + MemoryVersionRedaction
+            + MemoryContentPurge
+            + ?Sized,
+    {
         // Causes: live-head count at 1,999/2,000, create vs update, then delete.
         // Constraints: versions do not consume capacity and the check shares the
         // atomic repository mutation used by API and write-through mounts.
         // Effects: 2,000th create succeeds; 2,001st is AtCapacity; existing update
         // succeeds; deleting one head permits exactly one replacement create.
         // Decision rule: Memory capacity MC1-MC4.
-        let first = fs.create("capacity", "/m0.md", "zero").await.unwrap();
+        let first = MemoryWriter::create(fs, "capacity", "/m0.md", "zero")
+            .await
+            .unwrap();
         for index in 1..MAX_MEMORIES_PER_STORE {
-            fs.create("capacity", &format!("/m{index}.md"), "x")
+            MemoryWriter::create(fs, "capacity", &format!("/m{index}.md"), "x")
                 .await
                 .unwrap();
         }
         assert!(matches!(
-            fs.create("capacity", "/overflow.md", "x").await,
+            MemoryWriter::create(fs, "capacity", "/overflow.md", "x").await,
             Err(MemErr::AtCapacity)
         ));
-        let updated = fs
-            .update("capacity", &first.generation(), "updated")
+        let updated = MemoryWriter::update(fs, "capacity", &first.generation(), "updated")
             .await
             .unwrap();
         assert_eq!(updated.content.as_deref(), Some("updated"), "MC3");
-        fs.delete_by_path("capacity", "/m1.md").await.unwrap();
+        MemoryWriter::delete_by_path(fs, "capacity", "/m1.md")
+            .await
+            .unwrap();
         assert!(
-            fs.create("capacity", "/replacement.md", "x").await.is_ok(),
+            MemoryWriter::create(fs, "capacity", "/replacement.md", "x")
+                .await
+                .is_ok(),
             "MC4"
         );
     }

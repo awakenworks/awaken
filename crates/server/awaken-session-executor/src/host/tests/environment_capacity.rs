@@ -245,11 +245,7 @@ fn executor(
                     file_content_source: Arc::new(
                         awaken_resource_contract::UnavailableFileContentSource,
                     ),
-                    memory_repository: crate::memory_stores::MemoryStores::open(
-                        None,
-                        awaken_time::system_clock(),
-                    )
-                    .fs_handle(),
+                    memory: crate::memory_stores::open(None, awaken_time::system_clock()),
                     resource_validator: None,
                     repository_binding_verifier: None,
                     fetches_resources_upstream: false,

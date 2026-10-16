@@ -26,7 +26,7 @@ use awaken_time::WallClock;
 #[must_use]
 pub fn local_resource_ports(authorities: &ResourceAuthorities) -> LocalResourcePorts {
     LocalResourcePorts {
-        memory_repository: authorities.memory_repository(),
+        memory: authorities.memory_execution_content(),
         file_store: authorities.file_store(),
         file_catalog: authorities.file_catalog(),
         skills: Some(local_skill_ports(
@@ -194,12 +194,13 @@ pub async fn with_durable_store_dir(
 async fn volatile_resource_ports() -> LocalResourcePorts {
     let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
     let clock = awaken_time::system_clock();
+    let memory = Arc::new(
+        awaken_memory_store::SqliteMemoryRepository::open_in_memory(clock.clone())
+            .await
+            .expect("open ephemeral memory-fs sqlite store"),
+    );
     LocalResourcePorts {
-        memory_repository: Arc::new(
-            awaken_memory_store::SqliteMemoryRepository::open_in_memory(clock.clone())
-                .await
-                .expect("open ephemeral memory-fs sqlite store"),
-        ),
+        memory: awaken_resource_contract::MemoryExecutionContent::new(memory),
         file_store: files.clone(),
         file_catalog: files,
         skills: None,
@@ -211,6 +212,18 @@ async fn volatile_resource_ports() -> LocalResourcePorts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct RecordingMemoryInvalidator(std::sync::Mutex<Vec<(String, String)>>);
+    #[cfg(test)]
+    impl awaken_resource_contract::MemoryInvalidator for RecordingMemoryInvalidator {
+        fn publish(&self, store: &str, path: &str) {
+            self.0
+                .lock()
+                .expect("test Memory invalidations")
+                .push((store.into(), path.into()));
+        }
+    }
 
     /// Decision table (storage dir → extraction repository):
     ///
@@ -242,16 +255,19 @@ mod tests {
     #[tokio::test]
     async fn resource_ports_carry_every_authority_of_one_selection() {
         let clock = awaken_time::system_clock();
-        let resources = awaken_resource_persistence::ephemeral(clock)
-            .await
-            .expect("ephemeral Resources");
+        let resources = awaken_resource_persistence::ephemeral(
+            clock,
+            Arc::new(RecordingMemoryInvalidator::default()),
+        )
+        .await
+        .expect("ephemeral Resources");
         let authorities = resources.authorities();
         let ports = local_resource_ports(&authorities);
         assert!(ports.skills.is_some(), "P1 Skill catalog present");
         assert!(ports.reclamation.is_some(), "P1 reclamation present");
         assert!(Arc::ptr_eq(&ports.clock, &authorities.clock()), "P2 clock");
         assert!(
-            Arc::ptr_eq(&ports.memory_repository, &authorities.memory_repository()),
+            Arc::ptr_eq(&ports.memory.queries(), &authorities.memory_queries()),
             "P1 the same Memory authority"
         );
     }

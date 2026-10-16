@@ -126,15 +126,19 @@ async fn live_memory_extraction_writes_a_memory_file() {
         "memory extraction should finish"
     );
 
-    let files = host.memory_repository().list(store, "/").await.unwrap();
+    let files = awaken_session_executor::test_memory_content(&host)
+        .queries()
+        .list(store, "/")
+        .await
+        .unwrap();
     assert!(
         !files.is_empty(),
         "the extractor should have written at least one governed memory"
     );
     let mut combined = String::new();
     for file in &files {
-        let memory = host
-            .memory_repository()
+        let memory = awaken_session_executor::test_memory_content(&host)
+            .queries()
             .get_by_path(store, &file.path)
             .await
             .unwrap()
@@ -183,7 +187,11 @@ async fn live_memory_is_generated_then_recalled_and_used_in_a_new_conversation()
         host.drain_runtime(Duration::from_secs(90)).await,
         "memory extraction should finish"
     );
-    let files = host.memory_repository().list(store, "/").await.unwrap();
+    let files = awaken_session_executor::test_memory_content(&host)
+        .queries()
+        .list(store, "/")
+        .await
+        .unwrap();
     assert!(!files.is_empty(), "a memory should have been generated");
 
     // Conversation 2 (a fresh thread, no shared transcript): the saved memory is
@@ -245,12 +253,14 @@ async fn live_relevance_selection_picks_the_right_memory_via_the_selector_agent(
         "the user enjoys cooking pasta",
     ];
     for (i, n) in noise.iter().enumerate() {
-        host.memory_repository()
+        awaken_session_executor::test_memory_content(&host)
+            .writer()
             .create(store, &format!("/noise-{i}.md"), n)
             .await
             .unwrap();
     }
-    host.memory_repository()
+    awaken_session_executor::test_memory_content(&host)
+        .writer()
         .create(store, "/pet.md", "the user's dog is named Rex")
         .await
         .unwrap();

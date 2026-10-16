@@ -106,9 +106,12 @@ async fn builder_enabled_retention_propagates_authority_failure_instead_of_silen
     // B5 catalog-only assembly explicitly has no retention. B6 complete retained
     // resources must consult the supplied authority, including its failure;
     // B7 recovery uses that same authority and settles the retained generation.
-    let resources = awaken_resource_persistence::ephemeral(system_clock())
-        .await
-        .unwrap();
+    let resources = awaken_resource_persistence::ephemeral(
+        system_clock(),
+        Arc::new(creation::RecordingMemoryInvalidator::default()),
+    )
+    .await
+    .unwrap();
     let authorities = resources.authorities();
     let references = Arc::new(RecordingReferenceIndex::default());
     references.fail_replace.store(true, Ordering::SeqCst);

@@ -43,7 +43,7 @@ fn resource_management_router(
     awaken_coordinator::resources_router(awaken_coordinator::ResourcesRouterInput {
         repositories: resources.repositories(credentials),
         files: resources.files(),
-        memories: authorities.memory_repository(),
+        memory: authorities.memory_management_content(),
         memory_stores: resources.memory_stores(),
         skills: Some(authorities.skill_store()),
         purge: resources.purge_scheduler(),
@@ -218,6 +218,7 @@ struct DeploymentAndResources {
         Option<Arc<awaken_session_application_contract::ExecutableProjectionRefresh>>,
     content_eraser: Arc<dyn awaken_data_governance_contract::ContentEraser>,
     resource_application: awaken_resource_application::ResourcesApplication,
+    memory_invalidator: Arc<awaken_sandbox_memoryd::LocalInvalidator>,
     resource_authorities: awaken_resource_application::ResourceAuthorities,
     resource_registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
 }
@@ -253,7 +254,8 @@ async fn assemble_deployment_and_resources(
             .as_ref()
             .and_then(|deployment| deployment.acp_session_blob_root.clone()),
     );
-    let resource_application = coordinator_stores.resources.clone();
+    let resource_application = coordinator_stores.resources.application.clone();
+    let memory_invalidator = coordinator_stores.resources.invalidator.clone();
     let resource_authorities = resource_application.authorities();
     let resource_registry = resource_authorities.resource_registry();
     Ok(DeploymentAndResources {
@@ -261,6 +263,7 @@ async fn assemble_deployment_and_resources(
         projection_refresh,
         content_eraser,
         resource_application,
+        memory_invalidator,
         resource_authorities,
         resource_registry,
     })
@@ -546,8 +549,10 @@ async fn assemble_execution_host(
             let host_builder = HostDependencies::for_coordinator(
                 cloud.model_wiring.executor.clone(),
                 cloud.model_wiring.model_ref.clone(),
-                resources.resource_application.file_content_source(),
-                resources.resource_authorities.memory_repository(),
+                awaken_session_executor::WorkerContentAdapters {
+                    file_content_source: resources.resource_application.file_content_source(),
+                    memory: resources.resource_authorities.memory_execution_content(),
+                },
                 execution.memory_extractions.clone(),
                 deployment.host_process(base.stores.platform_workspace.clone(), clock.clone())?,
                 runtime_authority.clone(),
@@ -628,6 +633,8 @@ async fn assemble_execution_host(
             None => host_builder,
         },
         deployment.sandbox_tier,
+        &resources.resource_authorities,
+        resources.memory_invalidator.clone(),
     );
     let repository_bindings = Arc::new(
         awaken_resource_application::RegistryRepositoryBindingVerifier::new(
@@ -887,6 +894,7 @@ async fn assemble_coordinator(
         managed_state: session.managed_state,
         resource_registry: resources.resource_registry.clone(),
         resource_management_router,
+        resource_authorities: resources.resource_authorities.clone(),
         memory_stores: resources.resource_application.memory_stores(),
         worker_file_application: resources.resource_application.files(),
         worker_skill_bundles: resources.resource_application.skill_bundle_source(),

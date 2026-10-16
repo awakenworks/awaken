@@ -17,6 +17,7 @@ separation = "isolation"
 isolates = ["axum"]
 
 [dependencies]
+awaken-resource-application.workspace = true
 awaken-agent-contract.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-resource-contract.workspace = true
@@ -47,7 +48,6 @@ awaken-environment-contract.workspace = true
 awaken-file-store = { workspace = true, features = ["test-support"] }
 awaken-lease-testkit.workspace = true
 awaken-memory-store = { workspace = true, features = ["test-support"] }
-awaken-resource-application.workspace = true
 awaken-resource-store = { workspace = true, features = ["sqlite", "test-support"] }
 awaken-dispatch = { workspace = true, features = ["test-support"] }
 awaken-dispatch-testkit.workspace = true
