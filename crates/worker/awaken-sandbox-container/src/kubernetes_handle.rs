@@ -37,6 +37,10 @@ pub(crate) enum KubernetesProjectedOrigin {
         predecessor: Box<crate::ContainerEffectFence>,
         original_group: String,
     },
+    FrozenPlanEmpty {
+        adoption: pc::SandboxRealizationFingerprint,
+        realization: pc::SandboxRealizationFingerprint,
+    },
 }
 
 /// Complete original API-object set, including an explicitly complete empty
@@ -51,6 +55,15 @@ pub struct KubernetesProjectedParticipants {
 }
 
 impl KubernetesProjectedParticipants {
+    fn valid_domain(namespace: &str, pod_uid: &str) -> bool {
+        !namespace.is_empty()
+            && namespace.trim() == namespace
+            && !namespace
+                .chars()
+                .any(|c| matches!(c, '\r' | '\n' | '\0' | '/' | '?' | '#' | '%'))
+            && valid_kubernetes_uid(pod_uid)
+    }
+
     pub(crate) fn new(
         namespace: String,
         pod_uid: String,
@@ -64,9 +77,7 @@ impl KubernetesProjectedParticipants {
                 && !value.chars().any(|c| matches!(c, '\r' | '\n' | '\0' | '/'))
         };
         objects.sort_by(|a, b| (a.kind, &a.name).cmp(&(b.kind, &b.name)));
-        if !exact(&namespace)
-            || namespace.chars().any(|c| matches!(c, '?' | '#' | '%'))
-            || !valid_kubernetes_uid(&pod_uid)
+        if !Self::valid_domain(&namespace, &pod_uid)
             || attempt.as_ref().is_some_and(|attempt| !exact(attempt))
             || (attempt.is_some() == restoration.is_some())
             || objects.iter().any(|object| {
@@ -125,12 +136,35 @@ impl KubernetesProjectedParticipants {
         };
         Ok(set)
     }
+
+    pub(crate) fn frozen_plan_empty(
+        namespace: String,
+        pod_uid: String,
+        adoption: pc::SandboxRealizationFingerprint,
+        realization: pc::SandboxRealizationFingerprint,
+    ) -> Result<Self, pc::SandboxError> {
+        if !Self::valid_domain(&namespace, &pod_uid) {
+            return Err(pc::SandboxError::invalid(
+                "Kubernetes frozen-plan empty projection has an invalid domain",
+            ));
+        }
+        Ok(Self {
+            namespace,
+            pod_uid,
+            objects: Vec::new(),
+            origin: KubernetesProjectedOrigin::FrozenPlanEmpty {
+                adoption,
+                realization,
+            },
+        })
+    }
     #[cfg(feature = "k8s")]
     pub(crate) fn attempt(&self) -> Option<&str> {
         match &self.origin {
             KubernetesProjectedOrigin::Created { attempt }
             | KubernetesProjectedOrigin::JoinedEmpty { attempt, .. } => Some(attempt),
-            KubernetesProjectedOrigin::Restoration { .. } => None,
+            KubernetesProjectedOrigin::Restoration { .. }
+            | KubernetesProjectedOrigin::FrozenPlanEmpty { .. } => None,
         }
     }
     pub(crate) fn restoration(&self) -> Option<(&pc::SandboxRestorationEvidence, &str)> {
@@ -143,7 +177,11 @@ impl KubernetesProjectedParticipants {
         }
     }
     pub(crate) fn terminal_only(&self) -> bool {
-        matches!(self.origin, KubernetesProjectedOrigin::JoinedEmpty { .. })
+        matches!(
+            self.origin,
+            KubernetesProjectedOrigin::JoinedEmpty { .. }
+                | KubernetesProjectedOrigin::FrozenPlanEmpty { .. }
+        )
     }
 }
 
@@ -197,6 +235,17 @@ impl<'de> Deserialize<'de> for KubernetesProjectedParticipants {
                     original_group,
                 )
             }
+            KubernetesProjectedOrigin::FrozenPlanEmpty {
+                adoption,
+                realization,
+            } => {
+                if !wire.objects.is_empty() {
+                    return Err(serde::de::Error::custom(
+                        "frozen-plan empty witness has projected objects",
+                    ));
+                }
+                Self::frozen_plan_empty(wire.namespace, wire.pod_uid, adoption, realization)
+            }
         }
         .map_err(serde::de::Error::custom)
     }
@@ -208,3 +257,6 @@ pub(crate) fn valid_kubernetes_uid(value: &str) -> bool {
             .chars()
             .any(|character| matches!(character, '\r' | '\n' | '\0'))
 }
+
+#[cfg(test)]
+mod tests;

@@ -1622,6 +1622,18 @@ pub trait ContainerRuntime: Send + Sync {
         Ok(MissingHandleTerminalEvidence::Unknown)
     }
 
+    /// Supplement a published handle's terminal participant evidence only from
+    /// its exact effective plan. The default supplies no evidence; ordinary
+    /// observation and destructive disposal keep their existing requirements.
+    fn terminal_continuation(
+        &self,
+        _plan: &ContainerPlan,
+        _adoption: &pc::SandboxRealizationFingerprint,
+        _handle: &crate::DecodedContainerHandle,
+    ) -> Result<Option<crate::ContainerContinuationHandle>, RuntimeError> {
+        Ok(None)
+    }
+
     /// Legacy unfenced runtime seam retained for source compatibility. Managed
     /// Session providers use `create_for_effect`; downstream adapters continue
     /// to compile and may serve explicitly ephemeral callers through this port.

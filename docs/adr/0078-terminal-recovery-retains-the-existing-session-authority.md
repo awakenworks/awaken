@@ -1084,3 +1084,64 @@ held Worker through compensation, reset rollback evidence, publish a different
 business identity, or bypass an Unknown observation. Tests must cover the source
 and Actor partitions together with the current physical, WorkQueue and Session
 domain checks before this target can be called implemented.
+
+
+## Amendment 2026-10-16: derive only an empty API projection from a published legacy handle
+
+The complete objective is to resume the same terminal Session through source
+preparation, authorized physical disposal and its original receipt. This bounded
+change addresses the published Kubernetes V2-handle partition; it does not qualify
+Actor retirement or a deleting Pod with a live continuation claim.
+
+Unchanged owners are the Session cleanup operation and its two-phase authority,
+Worker Registry, original Create ledger, and the Kubernetes UID/finalizer deletion
+protocol. Modified owners are the existing Container provider's terminal adoption
+and its Kubernetes projected-participant verifier. The one existing projected
+object builder remains authoritative for membership. The only new vocabulary is
+a terminal-only empty-set provenance in the existing handle codec, plus a default
+no-op runtime normalization seam; no store, queue, receipt or cleanup owner is added.
+
+A published V2 handle already fixes the original Pod/PVC UIDs, effective adoption
+and realization fingerprints, Control incarnation, Memory and owned paths. When
+the exact frozen effective plan matches that handle, its inputs are self-contained
+read-only Inline/InlineBytes with no Memory mounts, and the same projected-object
+builder yields zero API participants, terminal adoption may derive that empty set.
+The pre-materialization plan leaves content unset for File, Resource and Secret
+references; an empty enumeration at that stage is not complete membership. Those
+references, Memory and unresolved cache binds remain Unknown. The existing
+handle-free inline recovery and this bound-handle proof share one input-closure
+predicate; package-image and Control admission keep their existing separate rules.
+This is positive plan evidence, independent of a current LIST or missing RESULTS.
+The provider preserves the complete original handle and changes only the runtime
+participant carrier. It cannot do this for an unbound/handle-free attempt, a V1
+continuity-only handle, a nonempty plan or an incompatible configuration.
+
+The derived origin carries both original fingerprints, is terminal-only, and is
+validated by the existing bound-participant owner. A live Pod must still match
+its exact UID and fingerprints; any retained declaration or results contradicting
+the empty plan is an error. A later absent Pod does not erase the proof: the same
+frozen plan and published original handle deterministically reproduce it after
+response loss. No historical object UID is supplied by a current GET.
+
+The dynamic order is current authority -> effective-plan compatibility -> pure
+normalization -> existing exact Pod/PVC observation -> original terminal adoption
+and source preparation -> separately authorized UID disposal -> original receipt.
+Normalization neither removes objects nor opens a Control listener. Existing
+nonempty/unknown participant and deleting-Pod denials remain intact. Tests must
+exercise complete metadata preservation, configuration/member contradictions,
+execution refusal and exact-UID disposal/replay before this change is qualified.
+The distinct joined-empty witness retains physical-only preparation on both
+first recovery and returned-handle replay; it does not inherit the published
+handle's source-preparation role.
+
+
+The existing Container codec and Kubernetes participant adapter remain the
+reviewed owners of this bounded compatibility behavior until the separate W34
+Kubernetes extraction. The modularity review records only their required new
+provenance, validation and default-no-evidence port. Effective-plan construction,
+member classification, envelope validation and UID disposal each keep one owner.
+Terminal normalization is separated from orchestration, and terminal membership
+observation joins the existing participant owner. This adds no dependency,
+store, lifecycle, or second projection builder; it does not qualify W34 or Actor
+retirement. The reviewed growth uses the existing modularity baseline protocol;
+all structural, clock, test and physical evidence checks remain mandatory.

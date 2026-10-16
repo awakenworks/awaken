@@ -738,18 +738,11 @@ impl ContainerRuntime for K8sRuntime {
                 !plan.memory_mounts.is_empty(),
                 false,
             );
-        let reconstructible_shape = narrow_shape
-            || (plan.packages.is_empty()
-                && plan.memory_mounts.is_empty()
-                && plan
-                    .control_services
-                    .is_subset(&sandbox_control::services(self))
-                && plan.binds.iter().all(|bind| {
-                    bind.read_only
-                        && !bind.secret_writeback
-                        && bind.secret_content.is_none()
-                        && (bind.content.is_some() != bind.content_bytes.is_some())
-                }));
+        let reconstructible_shape = plan.packages.is_empty()
+            && plan
+                .control_services
+                .is_subset(&sandbox_control::services(self))
+            && participants::self_contained_inline_projection(plan);
         let claim_required = continuation::claim_required(plan, self.continuation_volume.is_some());
         let absence_shape_closed = narrow_shape && !claim_required;
         let Some(expected_effect_fence) = expected_effect_fence else {
@@ -870,6 +863,15 @@ impl ContainerRuntime for K8sRuntime {
             pod.is_some(),
         )
         .await
+    }
+
+    fn terminal_continuation(
+        &self,
+        plan: &ContainerPlan,
+        expected_adoption: &pc::SandboxRealizationFingerprint,
+        handle: &crate::DecodedContainerHandle,
+    ) -> Result<Option<crate::ContainerContinuationHandle>, RuntimeError> {
+        participants::terminal_continuation(self, plan, expected_adoption, handle)
     }
 
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError> {
@@ -1217,26 +1219,14 @@ impl ContainerRuntime for K8sRuntime {
                 });
             }
         }
-        if expectation.purpose == ContainerObservationPurpose::TerminalCleanup {
-            let participants = expectation
-                .runtime_handle
-                .and_then(crate::ContainerContinuationHandle::projected_participants)
-                .ok_or_else(|| {
-                    backend("terminal Kubernetes projected-object membership is unknown")
-                })?;
-            let admit = || Ok(());
-            let absent = participants::projected_absent(self, participants, &admit).await?;
-            if !absent
-                && let pc::SandboxObservation::DefinitivelyUnavailable {
-                    physical_incarnation: Some(physical_incarnation),
-                } = observation
-            {
-                return Ok(pc::SandboxObservation::Disposing {
-                    physical_incarnation,
-                });
-            }
-        }
-        Ok(observation)
+        participants::terminal_observation(
+            self,
+            expectation,
+            expected_pod_uid,
+            pod.as_ref(),
+            observation,
+        )
+        .await
     }
 
     async fn spawn(

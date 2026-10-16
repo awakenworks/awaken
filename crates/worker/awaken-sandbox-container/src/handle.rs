@@ -15,7 +15,8 @@
 //! realization evidence (`realization_fingerprint`, `owned_paths`) at the top
 //! level of the payload beside the container locator and adoption fingerprint.
 //! `container_v3` atomically carries original Kubernetes projected-object facts;
-//! its origin is ordinary Create, exact restore, or terminal-only joined-empty.
+//! its origin is ordinary Create, exact restore, terminal-only joined-empty,
+//! or an empty API projection derived from the published frozen plan.
 //! Missing historical membership is never an empty current projection.
 
 use crate::kubernetes_handle::{KubernetesProjectedParticipants, valid_kubernetes_uid};
@@ -389,6 +390,12 @@ fn current_payload(
             })
         || original.is_some_and(|original| {
             original.restoration().is_some() != payload.adoption_fingerprint.is_none()
+        })
+        || original.is_some_and(|original| {
+            matches!(&original.origin,
+                crate::kubernetes_handle::KubernetesProjectedOrigin::FrozenPlanEmpty {adoption, realization}
+                if payload.adoption_fingerprint.as_ref() != Some(adoption)
+                    || payload.realization_fingerprint.as_ref() != Some(realization))
         })
     {
         return Err(pc::SandboxError::invalid(
