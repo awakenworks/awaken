@@ -119,7 +119,9 @@ fn skill_zip(name: &str, files: &[(&str, &[u8], u32)]) -> Vec<u8> {
         writer
             .start_file(
                 format!("{name}/{path}"),
-                zip::write::SimpleFileOptions::default().unix_permissions(*mode),
+                zip::write::SimpleFileOptions::default()
+                    .system(zip::System::Unix)
+                    .unix_permissions(*mode),
             )
             .unwrap();
         writer.write_all(content).unwrap();
