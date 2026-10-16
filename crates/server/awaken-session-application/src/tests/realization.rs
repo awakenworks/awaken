@@ -478,7 +478,7 @@ awaken_session_execution_contract::neutral_role!(BudgetRuntime for RecordingReso
 
 awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for RecordingResourceRuntime);
 
-awaken_session_execution_contract::neutral_role!(ThreadReadRuntime for RecordingResourceRuntime);
+no_committed_threads!(RecordingResourceRuntime);
 
 awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for RecordingResourceRuntime);
 
@@ -2088,8 +2088,8 @@ async fn resource_reference_projection_fails_closed_and_repairs_cas_losers() {
     let _fixture = application
         .commit_session_snapshot_with_outcome(
             "workspace",
-            awaken_session_state_contract::SessionAggregate::try_from(winner)
-                .expect("valid test snapshot"),
+            // R2 needs a legal authoring winner before the stale Resource CAS.
+            awaken_store_conformance::session_store::record_update(&stale, winner, 0),
             "concurrent",
             Vec::new(),
         )

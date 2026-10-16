@@ -237,15 +237,6 @@ fn projection_publish_decision_is_total_exact_and_fail_closed() {
     assert!(!cache_matches || actual != ProjectionPublishDecision::RetryStaleCache);
 }
 
-#[derive(Clone, Default)]
-pub(super) struct ManagedLiveOverlay {
-    /// Process-local Session update events waiting for the durable command that
-    /// preceded their root CAS to acquire its immutable projection anchor.
-    pub(super) pending_events: Vec<(Event, String)>,
-    /// Disposable predecessor hints for visible `evt_N` overlays.
-    pub(super) anchors: HashMap<String, String>,
-}
-
 /// The only state a warm record lends to a committed-prefix rebuild. The
 /// consumer is the one candidate builder: its CAS coordinate and local
 /// `evt_N` overlays survive, while every durable Event, child, checkpoint and
@@ -253,7 +244,6 @@ pub(super) struct ManagedLiveOverlay {
 #[derive(Default)]
 pub(super) struct ProjectionDeliveryMemo {
     pub(super) cache_revision: u64,
-    pub(super) overlay: ManagedLiveOverlay,
     pub(super) transient_events: Vec<Event>,
     pub(super) transient_owners: HashMap<String, String>,
 }
@@ -305,8 +295,8 @@ pub(super) struct SessionRecord {
     /// Durable source of truth for the runtime's currently applied input projection.
     pub(super) resource_state: awaken_session_state_contract::SessionResourceState,
     /// Rendered projection result. Durable entries advance only through the one
-    /// committed-prefix reducer; only `evt_N` entries originate from
-    /// [`Self::overlay`].
+    /// committed-prefix reducer; bare `evt_N` entries are transient previews.
+    /// Session updates never enter this process-local path.
     pub(super) events: Vec<Event>,
     /// Derived lookup data for this published vector and its visibility owners.
     /// Candidate clones share it cheaply; the sole publisher replaces it after
@@ -316,8 +306,6 @@ pub(super) struct SessionRecord {
     /// Source coordinates paired with `events`; no separate child/session state
     /// machine or independently synchronized cursor exists.
     pub(super) checkpoint: ManagedProjectionCheckpoint,
-    /// The only process-local state allowed to survive a committed rebuild.
-    pub(super) overlay: ManagedLiveOverlay,
     /// What the permission gate decided, per tool call, harvested from the
     /// committed audit trail.
     ///
@@ -361,7 +349,6 @@ impl SessionRecord {
             events,
             event_page_index: _,
             checkpoint: _,
-            overlay,
             permission_decisions: _,
             event_thread_owners,
             child_threads: _,
@@ -369,7 +356,10 @@ impl SessionRecord {
         } = self;
         let transient_events = events
             .into_iter()
-            .filter(|event| super::helpers::is_transient_event_id(&event.id))
+            .filter(|event| {
+                super::helpers::is_transient_event_id(&event.id)
+                    && !matches!(&event.kind, OutboundKind::SessionUpdated { .. })
+            })
             .collect::<Vec<_>>();
         let transient_ids = transient_events
             .iter()
@@ -381,7 +371,6 @@ impl SessionRecord {
             .collect();
         ProjectionDeliveryMemo {
             cache_revision,
-            overlay,
             transient_events,
             transient_owners,
         }
@@ -399,7 +388,6 @@ impl SessionRecord {
         let self_wire = serde_json::to_value((
             &self.session,
             &self.events,
-            &self.overlay.pending_events,
             &self.child_threads,
             &self.primary_thread_usage,
         ))
@@ -407,7 +395,6 @@ impl SessionRecord {
         let other_wire = serde_json::to_value((
             &other.session,
             &other.events,
-            &other.overlay.pending_events,
             &other.child_threads,
             &other.primary_thread_usage,
         ))
@@ -416,7 +403,6 @@ impl SessionRecord {
             && self.committed_projection_ready == other.committed_projection_ready
             && self.resource_state == other.resource_state
             && self.checkpoint == other.checkpoint
-            && self.overlay.anchors == other.overlay.anchors
             && self.event_thread_owners == other.event_thread_owners
             && self.root_time == other.root_time
             && self.event_times == other.event_times
@@ -665,7 +651,6 @@ impl SessionRecord {
             events,
             event_page_index,
             checkpoint,
-            overlay: Default::default(),
             permission_decisions: HashMap::new(),
             event_thread_owners: Default::default(),
             child_threads: Vec::new(),

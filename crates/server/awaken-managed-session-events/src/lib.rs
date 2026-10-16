@@ -9,6 +9,8 @@
 //! `awaken-session-execution-contract`). Consumer: the Managed protocol adapter
 //! (identity, ordering and projection).
 
+mod updates;
+pub use updates::derive_session_update_events;
 mod acceptance;
 mod accepted_prefix;
 mod activation;

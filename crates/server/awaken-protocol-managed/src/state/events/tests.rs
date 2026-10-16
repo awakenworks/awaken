@@ -5465,8 +5465,8 @@ async fn recovered_terminal_brackets_output_in_warm_and_cold_projections() {
     // operation identity plus assistant output; C2 Running is observed warm
     // before the same Run commits terminal; C3 the aggregate has already
     // returned to Idle before a cold peer's first protocol read; C4 the two
-    // disposable projectors have deliberately skewed process-local event
-    // counters; C5 either projector is refreshed again; C6 a page cursor from
+    // disposable projectors have different cache histories (warm issued prefix
+    // versus fresh cold state); C5 either projector is refreshed again; C6 a page cursor from
     // the warm replica is resumed on the cold replica. Effects: E1 the
     // root-owned input precedes the reconstructed
     // Running edge; E2 Running precedes output; E3 terminal
@@ -5477,7 +5477,7 @@ async fn recovered_terminal_brackets_output_in_warm_and_cold_projections() {
     // replicas despite C4. A transcript MessageId alone is deliberately not
     // User Event provenance.
     //
-    // | Rule | Root prefix | Warm Running | Cold after terminal | Counter skew | Cursor crosses replica | Effects |
+    // | Rule | Root prefix | Warm Running | Cold after terminal | Different cache | Cursor crosses replica | Effects |
     // | W1 | T | T | F | T | F | E1+E2+E5 |
     // | W2 | T | T | F | T | F | E3+E4 |
     // | C1 | T | F | T | T | F | E1-E5 |
@@ -5530,9 +5530,6 @@ async fn recovered_terminal_brackets_output_in_warm_and_cold_projections() {
         RunLifecycleEventKind::Running,
         RunState::Running,
     ));
-    for _ in 0..3 {
-        warm.next_event_id();
-    }
     warm.refresh_committed_events(&session.id).await.unwrap();
 
     runtime.messages.lock().unwrap().push(Message::text(
@@ -5578,9 +5575,6 @@ async fn recovered_terminal_brackets_output_in_warm_and_cold_projections() {
     let cold = ManagedState::new(runtime.clone())
         .await
         .with_session_repo(repository.clone());
-    for _ in 0..7 {
-        cold.next_event_id();
-    }
     cold.refresh_committed_events(&session.id).await.unwrap();
     let mut observations = Vec::new();
     for (rule, state) in [("W1-W2", &warm), ("C1-C2", &cold)] {
@@ -6538,18 +6532,24 @@ async fn running_user_input_exposes_committed_output_before_completion_on_warm_a
 #[tokio::test]
 async fn local_session_update_waits_for_its_accepted_input_predecessor() {
     // Cause/effect graph: C1 `/events` has returned an accepted User receipt but
-    // its effect observation is not committed; C2 PATCH commits session.updated on
-    // this process; C3 the User effect and anchor later commit. E1 the transient
-    // update is withheld while C1's effect is pending; E2 after C3 local order is
-    // User -> session.updated -> later Runtime facts. Decision rules:
-    // S1=C1+C2=>E1; S2=C1+C2+C3=>E2. Cross-replica reconstruction of
-    // session.updated remains explicitly out of scope; this test preserves the
-    // pre-existing same-process behavior without minting another durable log.
+    // its effect observation is not committed; C2 PATCH commits one retained
+    // Root update fact; C3 the User effect and anchor later commit. E1 the update
+    // is withheld while its retained predecessor is pending; E2 after C3 the
+    // existing order stays User -> session.updated -> later Runtime facts.
+    // S1=C1+C2=>E1; S2=C1+C2+C3=>E2. Explicit update predecessor ownership
+    // moved from obsolete local hints to this SAME Root/receipt/real effect path.
+    // Root batch count/revision/prefix is actual, never manufactured history.
+    // WU2/WU9 extension design (normal execution pending): authored b/a MCP,
+    // same-name Agent/Session precedence, normalized URL, no credential and
+    // opaque secret refs must enter the original compiler, then the SAME first
+    // persisted Root, warm and cold wire; helper-only comparisons prove nothing.
+    // Recorded initial MCP must equal original configured_mcp_servers order;
+    // the transient seed has none and cannot be serialized as historical proof.
     let runtime = LifecycleRuntime::default();
     let repository = Arc::new(ephemeral_session_repo().await);
     let state = ManagedState::new(runtime.clone())
         .await
-        .with_session_repo(repository);
+        .with_session_repo(repository.clone());
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -6576,7 +6576,7 @@ async fn local_session_update_waits_for_its_accepted_input_predecessor() {
         .update_session(
             &session.id,
             awaken_session_application::SessionUpdateCommand {
-                title: Some(awaken_session_application::SessionFieldUpdate::Replace(
+                title: Some(awaken_session_state_contract::SessionFieldUpdate::Replace(
                     "renamed".into(),
                 )),
                 metadata: None,
@@ -6601,6 +6601,40 @@ async fn local_session_update_waits_for_its_accepted_input_predecessor() {
             .iter()
             .all(|event| event.type_str() != "session.updated"),
         "S1/E1"
+    );
+
+    let updated_root = state
+        .application
+        .session(&SessionId::from(&session.id))
+        .await
+        .unwrap();
+    let history =
+        awaken_session_state_contract::SessionUpdateHistory::for_session(&updated_root).unwrap();
+    assert_eq!(history.facts().len(), 1, "S1 one actual retained update");
+    let update = &history.facts()[0];
+    assert_eq!(
+        update.admitted_batch_count(),
+        1,
+        "S1 actual preceding batch"
+    );
+    assert_eq!(
+        update.predecessor_operation_id(),
+        Some(batch.events[0].event.operation_id()),
+        "S1 exact retained predecessor"
+    );
+    assert_eq!(
+        update.committed_revision(),
+        updated_root.revision,
+        "S1 same Root CAS"
+    );
+    // S1/S2 source rule: pending predecessor yields no marker; once anchored,
+    // the marker borrows the exact fact from this same persisted Root. The
+    // adapter must not reselect a current payload or clone a second authority.
+    assert!(
+        awaken_managed_session_events::derive_session_update_events(&updated_root)
+            .unwrap()
+            .is_empty(),
+        "S1 pending update is not encoded prematurely"
     );
 
     let run_id = RunId("local-update-run".into());
@@ -6655,6 +6689,49 @@ async fn local_session_update_waits_for_its_accepted_input_predecessor() {
         .position(|event_type| *event_type == "session.status_running")
         .unwrap();
     assert_eq!((user + 1, updated + 1), (updated, running), "S2/E2");
+    let anchored_root = state
+        .application
+        .session(&SessionId::from(&session.id))
+        .await
+        .unwrap();
+    let derived =
+        awaken_managed_session_events::derive_session_update_events(&anchored_root).unwrap();
+    assert_eq!(derived.len(), 1, "S2 one marker and source");
+    let retained =
+        awaken_session_state_contract::SessionUpdateHistory::for_session(&anchored_root).unwrap();
+    assert!(
+        std::ptr::eq(derived[0].1, &retained.facts()[0]),
+        "S2 original immutable payload reference"
+    );
+    assert_eq!(
+        derived[0].0.key.provenance,
+        awaken_managed_session_events::FactProvenance::SessionUpdate {
+            revision: retained.facts()[0].committed_revision().0,
+        },
+        "S2 exact original revision"
+    );
+    // WU2: another Managed instance uses the same original repository and
+    // Runtime inputs. Its cold projection must equal the full warm event DTOs.
+    let cold = ManagedState::new(runtime)
+        .await
+        .with_session_repo(repository);
+    cold.refresh_committed_events(&session.id).await.unwrap();
+    assert_eq!(
+        serde_json::to_value(
+            cold.list_events(&session.id, None, None, false)
+                .unwrap()
+                .data
+        )
+        .unwrap(),
+        serde_json::to_value(
+            state
+                .list_events(&session.id, None, None, false)
+                .unwrap()
+                .data
+        )
+        .unwrap(),
+        "WU2 exact cold/warm content and identity"
+    );
 }
 
 #[tokio::test]
@@ -6832,7 +6909,7 @@ async fn ordinary_root_failure_keeps_its_event_id_and_cursor_across_restart() {
     // selects only its stated effect and preserves the authority constraint.
     // Cause/effect graph: C1 a Session has no coordinated child link; C2 the
     // root commits a failed lifecycle boundary; C3 the disposable Managed
-    // cache is rebuilt with a different local event counter; C4 a client reuses the warm
+    // cache is rebuilt with empty process-local state; C4 a client reuses the warm
     // error-event cursor. Effects: E1 the root error is keyed by C2's durable
     // lifecycle cursor; E2 warm/cold error ids are identical; E3 C4 selects
     // the same following page rather than becoming an unknown cursor.
@@ -6877,9 +6954,8 @@ async fn ordinary_root_failure_keeps_its_event_id_and_cursor_across_restart() {
         ),
     ]);
 
-    for _ in 0..2 {
-        state.next_event_id();
-    }
+    // W25 removes the local event allocator entirely. C3 is the actual fresh
+    // cache below; no unused test-only allocator stands in for a production cause.
     state.refresh_committed_events(&session.id).await.unwrap();
     let warm_events = state
         .list_events(&session.id, None, None, false)
@@ -6900,9 +6976,6 @@ async fn ordinary_root_failure_keeps_its_event_id_and_cursor_across_restart() {
         .expect("R1 warm error cursor");
 
     let restarted = ManagedState::new(runtime).await.with_session_repo(repo);
-    for _ in 0..5 {
-        restarted.next_event_id();
-    }
     restarted.ensure_session(&session.id).await.unwrap();
     let cold_events = restarted
         .list_events(&session.id, None, None, false)

@@ -177,8 +177,13 @@ async fn mutation_time_receipt_table(
         matches!(
             app.commit_session_snapshot_with_record(
                 &owner,
-                awaken_session_state_contract::SessionAggregate::try_from(desired.clone())
-                    .expect("valid test snapshot"),
+                // T7 must reach the real CAS/response-loss fault with one
+                // State authoring fact. Later replay/mismatch rows stay raw.
+                awaken_store_conformance::session_store::record_update(
+                    &original,
+                    desired.clone(),
+                    0
+                ),
                 key.clone(),
                 vec![]
             )
@@ -272,16 +277,13 @@ async fn concurrent_root_cas_time_belongs_only_to_the_winner() {
         let owner = owner.clone();
         desired.title = Some(at.to_string());
         let key = receipt(&format!("race-{at}"), &desired);
+        // Each racing clock candidate is a legal State author; App stamps the
+        // same next-revision fact at its actual clock after the barrier.
+        let prepared = awaken_store_conformance::session_store::record_update(&initial, desired, 0);
         async move {
             gate.wait().await;
-            app.commit_session_snapshot_with_record(
-                &owner,
-                awaken_session_state_contract::SessionAggregate::try_from(desired)
-                    .expect("valid test snapshot"),
-                key,
-                vec![],
-            )
-            .await
+            app.commit_session_snapshot_with_record(&owner, prepared, key, vec![])
+                .await
         }
     };
     let (left, right) = tokio::join!(write(200), write(300));

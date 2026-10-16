@@ -23,7 +23,8 @@ use awaken_agent_contract::AgentSkillBinding;
 use awaken_executable_agent_contract::ExecutableAgentSessionProfile;
 use awaken_runtime_contract::agent_bindings::InferenceOptions;
 use awaken_session_configuration_contract::{
-    AgentCapabilities, SessionSystemPromptSelection, SessionToolConfiguration,
+    AgentCapabilities, SessionModelChoice, SessionModelSource, SessionSystemPromptSelection,
+    SessionToolConfiguration, validate_mcp_toolset_pairing,
 };
 use awaken_session_state_contract::PersistedSession;
 use awaken_session_types::RunError;
@@ -39,23 +40,6 @@ use super::{
 pub struct SessionModelRequest {
     pub model_id: String,
     pub inference: InferenceOptions,
-}
-
-/// Where the frozen model choice came from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SessionModelSource {
-    /// The request's own override.
-    Override,
-    /// The Agent publication's model and inference controls.
-    Publication,
-}
-
-/// The model a new Session freezes, when one was selected.
-#[derive(Clone, Debug)]
-pub struct SessionModelChoice {
-    pub model_id: String,
-    pub inference: InferenceOptions,
-    pub source: SessionModelSource,
 }
 
 /// A request-local replacement of the inherited tool configuration.
@@ -110,10 +94,6 @@ pub enum SessionBudgetRequest {
 /// each at its one fixed point in the creation order.
 #[async_trait]
 pub trait SessionCreateProtocol: Send + Sync {
-    /// The protocol's projection of the new Session, finished before the
-    /// durable root insert so a projection failure strands nothing.
-    type Projection: Send;
-
     /// One fresh candidate in the protocol's public Session id spelling. The
     /// application probes each candidate against durable truth.
     fn session_id_candidate(&self) -> String;
@@ -145,27 +125,9 @@ pub trait SessionCreateProtocol: Send + Sync {
         owner_scope: &str,
         profile: Option<&ExecutableAgentSessionProfile>,
         capabilities: &AgentCapabilities,
-        tools: &SessionToolConfiguration,
-    ) -> Result<Self::Projection, RunError>;
-}
-
-/// A durably created Session and what its protocol echoes.
-pub struct CreatedSession<P> {
-    pub session: PersistedSession,
-    pub session_id: String,
-    /// The Agent publication frozen into the Session, if one exists.
-    pub profile: Option<ExecutableAgentSessionProfile>,
-    /// The Agent version the Session answers to (at least 1).
-    pub agent_version: u64,
-    pub model: Option<SessionModelChoice>,
-    /// The Runtime's default model, frozen when nothing selected one.
-    pub default_model: String,
-    pub environment_id: String,
-    /// The effective skill bindings, when the request or publication names any.
-    pub skills: Option<Vec<AgentSkillBinding>>,
-    pub capabilities: AgentCapabilities,
-    pub tools: SessionToolConfiguration,
-    pub projection: P,
+        configuration: awaken_session_configuration_contract::SessionAgentConfiguration,
+        delegates: &[(String, ExecutableAgentSessionProfile)],
+    ) -> Result<awaken_session_configuration_contract::SessionAgentConfiguration, RunError>;
 }
 
 /// Why a Session create request was not created.
@@ -211,14 +173,47 @@ fn initial_mcp_candidates(
     }
 }
 
+/// Capture each original direct publication and enforce the selected geography
+/// once, before any later creation effects. The caller supplies its existing
+/// exact/current catalog read law; no profile is reselected by wire projection.
+fn capture_accepted_delegates(
+    profile: Option<&ExecutableAgentSessionProfile>,
+    selected_geo: Option<awaken_runtime_contract::agent_bindings::InferenceGeography>,
+    mut resolve: impl FnMut(
+        &awaken_executable_agent_contract::ExecutableAgentDelegate,
+    ) -> Option<ExecutableAgentSessionProfile>,
+) -> Result<Vec<(String, ExecutableAgentSessionProfile)>, RunError> {
+    let mut accepted_delegates = Vec::new();
+    for delegate_ref in profile
+        .as_ref()
+        .into_iter()
+        .flat_map(|profile| profile.delegates.iter())
+    {
+        let delegate_id = &delegate_ref.agent_id;
+        let delegate = resolve(delegate_ref).ok_or_else(|| {
+            RunError::bad_request(format!(
+                "multiagent_unavailable: Agent `{delegate_id}` has no exact executable profile"
+            ))
+        })?;
+        if delegate.inference.inference_geo != selected_geo {
+            return Err(RunError::bad_request(format!(
+                "multiagent_inference_geo_mismatch: coordinator is {:?}, Agent `{delegate_id}` is {:?}",
+                selected_geo, delegate.inference.inference_geo
+            )));
+        }
+        accepted_delegates.push((delegate_id.clone(), delegate));
+    }
+    Ok(accepted_delegates)
+}
+
 impl SessionApplication {
     /// Retire the Repository participants a failed request configured; a
     /// compensation that cannot finish is left to terminal reconciliation.
-    async fn compensate_request_repositories(
+    pub(super) async fn compensate_request_repositories(
         &self,
         session_id: &str,
         configurations: &[super::ConfiguredSessionRepository],
-        stage: &str,
+        failure_message: &str,
     ) {
         if !self
             .abort_unadopted_session_repositories(configurations)
@@ -226,7 +221,7 @@ impl SessionApplication {
         {
             tracing::warn!(
                 session = %session_id,
-                "Managed Session Repository compensation remains pending after {stage}"
+                "{failure_message}"
             );
         }
     }
@@ -244,7 +239,7 @@ impl SessionApplication {
         &self,
         request: SessionCreateRequest,
         protocol: &P,
-    ) -> Result<CreatedSession<P::Projection>, SessionCreateRequestError> {
+    ) -> Result<PersistedSession, SessionCreateRequestError> {
         let SessionCreateRequest {
             owner_scope,
             explicit_id,
@@ -314,30 +309,25 @@ impl SessionApplication {
             })
             .await?;
         let initial_events = protocol.initial_event_plan(&session_id)?;
-        let profile = requested_agent_version
-            .and_then(|version| self.session_profile_at_revision(&owner_scope, &agent_id, version))
-            .or_else(|| {
-                requested_agent_version
-                    .is_none()
-                    .then(|| self.session_profile(&owner_scope, &agent_id))
-                    .flatten()
-            });
-        if let Some(version) = requested_agent_version
-            && profile.is_none()
-            && self.has_agent_profile_source()
-        {
-            return Err(RunError::bad_request(format!(
-                "agent_version_unavailable: Agent `{agent_id}` version {version} is unavailable"
-            ))
-            .into());
-        }
+        let profile = super::runtime_commands::selected_session_profile(
+            self,
+            &owner_scope,
+            &agent_id,
+            requested_agent_version,
+        );
         if let Some(version) = requested_agent_version
             && profile.is_none()
         {
-            return Err(RunError::bad_request(format!(
-                "agent_version_unavailable: agent `{agent_id}` has no executable publication at version {version}"
-            ))
-            .into());
+            let message = if self.has_agent_profile_source() {
+                format!(
+                    "agent_version_unavailable: Agent `{agent_id}` version {version} is unavailable"
+                )
+            } else {
+                format!(
+                    "agent_version_unavailable: agent `{agent_id}` has no executable publication at version {version}"
+                )
+            };
+            return Err(RunError::bad_request(message).into());
         }
         if profile.is_none()
             && requested_agent_version.is_none()
@@ -401,44 +391,24 @@ impl SessionApplication {
             .or_else(|| profile.as_ref().map(|profile| profile.source_revision))
             .unwrap_or(1)
             .max(1);
-        let delegate_ids = profile
-            .as_ref()
-            .map(|profile| {
-                profile
-                    .delegates
-                    .iter()
-                    .map(|delegate| delegate.agent_id.clone())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
         let selected_geo = model
             .as_ref()
             .and_then(|model| model.inference.inference_geo);
-        for delegate_ref in profile
-            .as_ref()
-            .into_iter()
-            .flat_map(|profile| profile.delegates.iter())
-        {
-            let delegate_id = &delegate_ref.agent_id;
-            let delegate = delegate_ref
-                .source_revision
-                .and_then(|revision| {
-                    self.session_profile_at_revision(&owner_scope, delegate_id, revision)
-                })
-                .or_else(|| self.session_profile(&owner_scope, delegate_id))
-                .ok_or_else(|| {
-                    RunError::bad_request(format!(
-                        "multiagent_unavailable: Agent `{delegate_id}` has no executable profile"
-                    ))
-                })?;
-            if delegate.inference.inference_geo != selected_geo {
-                return Err(RunError::bad_request(format!(
-                    "multiagent_inference_geo_mismatch: coordinator is {:?}, Agent `{delegate_id}` is {:?}",
-                    selected_geo, delegate.inference.inference_geo
-                ))
-                .into());
-            }
-        }
+        let mut accepted_delegates =
+            capture_accepted_delegates(profile.as_ref(), selected_geo, |reference| {
+                super::runtime_commands::selected_session_profile(
+                    self,
+                    &owner_scope,
+                    &reference.agent_id,
+                    reference.source_revision,
+                )
+            })?;
+        // The accepted capture is exactly the original direct declaration order;
+        // reuse its ids before any bare Runtime-capability presentation is added.
+        let delegate_ids = accepted_delegates
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect();
         // Freeze the root execution route before any Resource or Session write.
         // For budgeted Sessions, the single roster compiler also validates that
         // the root, exact ordinary roster revisions, and the Advisor route all
@@ -499,7 +469,6 @@ impl SessionApplication {
             )
             .await?
             .snapshot;
-        let environment_id = environment.environment_id.clone();
         let coordinator_realized = awaken_session_state_contract::SessionPlacementClass::new(
             self.runtime_placement(),
             environment.self_hosted,
@@ -541,11 +510,13 @@ impl SessionApplication {
             .await?;
         let skills =
             skills_override.or_else(|| profile.as_ref().map(|profile| profile.skills.clone()));
-        self.validate_session_skill_total(
+        super::runtime_commands::validate_session_skill_total(
+            self,
             &owner_scope,
             &agent_id,
             profile.as_ref(),
             skills.as_deref().unwrap_or_default(),
+            &accepted_delegates,
         )?;
         let resolved_skills = match &skills {
             Some(skills) => Some(self.resolve_session_skills(&owner_scope, skills).await?),
@@ -555,6 +526,14 @@ impl SessionApplication {
         // or touching a Host. A definition error cannot strand Prepared inputs.
         let capabilities = self.capabilities_for(&session_id);
         let capability_tools = protocol.capability_tools(&capabilities)?;
+        if profile.is_none() {
+            accepted_delegates.extend(capabilities.delegates.iter().map(|id| {
+                (
+                    id.clone(),
+                    self.session_profile(&owner_scope, id).unwrap_or_default(),
+                )
+            }));
+        }
         let inherited_tools = profile.as_ref().map_or_else(
             || capability_tools.clone(),
             |profile| SessionToolConfiguration {
@@ -597,11 +576,8 @@ impl SessionApplication {
                 awaken_runtime_contract::agent_bindings::ToolsetSource::Agent => None,
             })
             .collect::<Vec<_>>();
-        awaken_session_configuration_contract::validate_mcp_toolset_pairing(
-            &effective_server_names,
-            &effective_toolset_names,
-        )
-        .map_err(RunError::bad_request)?;
+        validate_mcp_toolset_pairing(&effective_server_names, &effective_toolset_names)
+            .map_err(RunError::bad_request)?;
         let budget = match budget_request {
             Some(budget_request) => {
                 let max_list_cost_minor = match budget_request {
@@ -654,7 +630,7 @@ impl SessionApplication {
                 self.compensate_request_repositories(
                     &session_id,
                     &repository_configurations,
-                    "input resolution",
+                    "Managed Session Repository compensation remains pending after input resolution",
                 )
                 .await;
                 return Err(first.into());
@@ -668,7 +644,7 @@ impl SessionApplication {
                     self.compensate_request_repositories(
                         &session_id,
                         &repository_configurations,
-                        "Skill binding",
+                        "Managed Session Repository compensation remains pending after Skill binding",
                     )
                     .await;
                     return Err(first.into());
@@ -686,7 +662,7 @@ impl SessionApplication {
             self.compensate_request_repositories(
                 &session_id,
                 &repository_configurations,
-                "credential pinning",
+                "Managed Session Repository compensation remains pending after credential pinning",
             )
             .await;
             return Err(error.into());
@@ -726,13 +702,30 @@ impl SessionApplication {
         };
         // Finish every fallible protocol projection before the durable root
         // insert: after the root exists the protocol only caches it.
-        let projection = protocol.project_before_insert(
+        let initial_agent_configuration =
+            awaken_session_configuration_contract::SessionAgentConfiguration::creation_presentation_seed(
+                &intent.control,
+                agent_version,
+                model,
+                (
+                    profile.as_ref().and_then(|value| value.name.as_deref()),
+                    profile.as_ref().and_then(|value| value.description.as_deref()),
+                ),
+                profile.as_ref().and_then(|value| value.system.clone()),
+                &tools,
+                skills.unwrap_or_else(|| {
+                    capabilities.skills.iter().map(AgentSkillBinding::custom).collect()
+                }),
+            );
+        let initial_agent_configuration = protocol.project_before_insert(
             &owner_scope,
             profile.as_ref(),
             &capabilities,
-            &tools,
+            initial_agent_configuration,
+            &accepted_delegates,
         )?;
         let command = CreateSessionCommand {
+            initial_agent_configuration: Some(Box::new(initial_agent_configuration)),
             owner_scope,
             session_id: session_id.clone(),
             intent,
@@ -749,18 +742,6 @@ impl SessionApplication {
         } else {
             Box::pin(self.create_session(command)).await
         }?;
-        Ok(CreatedSession {
-            session,
-            session_id,
-            profile,
-            agent_version,
-            model,
-            default_model,
-            environment_id,
-            skills,
-            capabilities,
-            tools,
-            projection,
-        })
+        Ok(session)
     }
 }

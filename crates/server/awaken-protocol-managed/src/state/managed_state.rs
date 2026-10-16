@@ -25,7 +25,7 @@ use super::SessionRecord;
 /// port. Product composition hands over the one canonical application and the
 /// adapter keeps only these narrowed views of it.
 pub(crate) struct SessionApplicationRoles {
-    pub(crate) creation: Arc<dyn SessionCreation<super::sessions::ManagedCreateProjection>>,
+    pub(crate) creation: Arc<dyn SessionCreation>,
     pub(crate) roots: Arc<dyn SessionRootReads>,
     pub(crate) projection: Arc<dyn SessionProjectionReads>,
     pub(crate) events: Arc<dyn SessionEventBatches>,
@@ -75,9 +75,6 @@ pub struct ManagedState {
     /// Edge-owned Session-to-Workspace wire projection.
     pub(super) owners: Mutex<HashMap<String, String>>,
     pub(super) session_seq: AtomicU64,
-    /// Disposable ids for committed wire events that have no deterministic
-    /// durable coordinate.
-    pub(super) event_seq: Arc<AtomicU64>,
     /// Per-Session committed wire-event channels. Runtime live observations use
     /// the ThreadEventHub subscription and never enter this map.
     pub(super) live: Mutex<HashMap<String, broadcast::Sender<Event>>>,

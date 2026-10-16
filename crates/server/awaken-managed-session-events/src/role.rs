@@ -58,6 +58,7 @@ pub enum ManagedEventType {
     RootRescheduledLifecycleStatusRunning,
     RootTerminalStatusRunning,
     RunContextCompacted,
+    SessionUpdated,
     /// A fact folded from one committed transcript Message. Its public role is
     /// the wire type of the event it becomes.
     Transcript(TranscriptRole),
@@ -111,7 +112,7 @@ pub mod phase {
 
 impl ManagedEventType {
     /// Every fixed (non-transcript) role, in wire-role order.
-    pub const FIXED: [Self; 38] = [
+    pub const FIXED: [Self; 39] = [
         Self::ActivationFailedError,
         Self::AdvisorLifecycleStatusTerminated,
         Self::AdvisorMessageReceived,
@@ -150,6 +151,7 @@ impl ManagedEventType {
         Self::RootRescheduledLifecycleStatusRunning,
         Self::RootTerminalStatusRunning,
         Self::RunContextCompacted,
+        Self::SessionUpdated,
     ];
 
     /// The role hashed into public event ids. These strings are wire-frozen:
@@ -203,6 +205,7 @@ impl ManagedEventType {
             }
             Self::RootTerminalStatusRunning => "root-terminal-status-running",
             Self::RunContextCompacted => "run-context-compacted",
+            Self::SessionUpdated => "session-updated",
             Self::Transcript(role) => role.as_wire_type(),
         }
     }
@@ -226,6 +229,7 @@ impl ManagedEventType {
             Self::ModelRequestStart => phase::MODEL_REQUEST_START,
             Self::ModelRequestEnd => phase::MODEL_REQUEST_END,
             Self::RunContextCompacted => phase::CONTEXT_COMPACTED,
+            Self::SessionUpdated => phase::INBOUND_ADMISSION,
             Self::Transcript(_) => phase::TRANSCRIPT,
             Self::LinkThreadCreated => phase::LINK_CREATED,
             Self::LinkStatusRunning => phase::LINK_OPENING,
@@ -309,7 +313,9 @@ mod tests {
 
     #[test]
     fn fixed_roles_are_distinct_sorted_and_phase_matches_the_former_table() {
-        // Causes: each of the 38 fixed roles. Effects: E1 wire roles are unique
+        // Causes: each of the 39 fixed roles, including the new Root update.
+        // R1 existing roles retain their literal phase; R2 SessionUpdated uses
+        // the retained admission fence (120). Effects: E1 wire roles are unique
         // and in the published order; E2 every phase equals the value the
         // retired order table assigned; E3 transcript folds share the
         // transcript phase and round-trip their wire type.
@@ -357,6 +363,7 @@ mod tests {
             ("root-rescheduled-lifecycle-status-running", 22),
             ("root-terminal-status-running", 20),
             ("run-context-compacted", 42),
+            ("session-updated", 120),
         ];
         assert_eq!(
             ManagedEventType::FIXED
