@@ -548,6 +548,7 @@ pub(super) fn creation_command(session_id: &str) -> CreateSessionCommand {
         .environment
         .clone();
     CreateSessionCommand {
+        initial_agent_configuration: None,
         owner_scope: "workspace".into(),
         session_id: session_id.into(),
         intent: awaken_session_configuration_contract::SessionCreationIntent {
@@ -735,6 +736,19 @@ fn owned_repository_input(session_id: &str) -> SessionRepositoryResourceInput {
 
 #[tokio::test]
 async fn root_rejection_compensates_only_applied_repository_participants() {
+    // Creation compensation consolidation causes/effects: original create
+    // compile/layout/root-compile rejection, absent exact create replay, or a
+    // deterministic replay rejection invokes the one existing participant-abort
+    // driver BEFORE returning the original first error. Request input/Skill/pin,
+    // Profiled configuration/input/Skill/pin/drift, and input lowering are the
+    // same Session-subject compensation (14 callers, original warning literals).
+    // Constraint: replay-query Unavailable/Internal is uncertain adoption and
+    // NEVER enters compensation; Applied/Replayed ownership is still decided
+    // by the existing driver, and cleanup failure cannot replace the first error.
+    // Decision rules CC1 known rejection+Applied => retain first/retire;
+    // CC2 known rejection+Replayed or adopted Root => retain first/preserve;
+    // CC3 uncertain adoption => retain first/no compensation (original receipt
+    // and realization recovery tests own that failure partition).
     // Cause/effect graph: C1 Repository participant is Applied/Replayed; C2 a
     // foreign durable root occupies the Session id without referencing that
     // Repository; C3 exact create replay proves idempotency mismatch. Effects:
@@ -2494,6 +2508,13 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
     // preparation, and E5 reject final Repository overlap before effects.
     // Graph: C1&&C2&&C3&&C5&&C6 -> E1+E3; C4||!C2||C7 -> E2;
     // C8(projected disjoint) -> E4; C9 -> E5.
+    // Private imports preserve the create-request canonical pairing function,
+    // arguments, errors and validation order; this table's MCP rows retain
+    // candidate precedence. Toolpair coverage stays with the existing Managed cases
+    // `session_mcp_overrides_validate_the_effective_pair_not_field_presence`
+    // (four refusals/no staging) and the inherited-pair positive case
+    // `session_inherits_published_agent_integrations_and_echoes_the_effective_set`.
+    // Unchanged inputs/behavior reuse those cases and normal compile/lint.
     //
     // | Rule | Profile | Available | Requested model | Product MCP | Effect |
     // |---|---|---|---|---|---|
@@ -2534,8 +2555,10 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
     // T2 identical command + later clock -> exact root, no repeated effects;
     // T3 genuine mutation -> update only; T4 response loss + same receipt ->
     // first mutation time; T5 clock rollback -> updated time never regresses.
-    // T6 captures the real atomic insertion, removes only the new server-owned
-    // fact to form old raw JSON, installs its original default receipt through
+    // T6 captures the real atomic insertion and omits server-owned fields that
+    // did not exist in the old format (materialization and W25 presentation/
+    // history). No fresh empty history may impersonate old bytes. Install its
+    // original default receipt through
     // the real Store, then requires new-binary replay without history/effects.
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
@@ -2579,14 +2602,21 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
     assert_eq!(runtime.preparations.load(Ordering::SeqCst), 1, "T2");
     let inserted = captured.applied_create_roots().into_iter().next().unwrap();
     let mut old_wire = serde_json::to_value(&inserted).unwrap();
-    old_wire
-        .as_object_mut()
-        .unwrap()
-        .remove("environment_materialization");
+    for field in [
+        "environment_materialization",
+        "initial_agent_configuration",
+        "update_history",
+    ] {
+        old_wire.as_object_mut().unwrap().remove(field);
+    }
     let mut old: PersistedSession = serde_json::from_value(old_wire).unwrap();
     assert!(
         old.environment_materialization().is_none(),
         "T6 old JSON stays unknown"
+    );
+    assert!(awaken_session_state_contract::SessionUpdateHistory::for_session(&old).is_none());
+    assert!(
+        awaken_session_state_contract::SessionUpdateHistory::agent_configuration(&old).is_none()
     );
     old.revision = awaken_session_types::SessionRevision(0);
     let mut old_request = old.clone();
@@ -2649,8 +2679,9 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
     let commit = application
         .commit_session_snapshot_with_record(
             &owner,
-            awaken_session_state_contract::SessionAggregate::try_from(changed.clone())
-                .expect("valid test snapshot"),
+            // T3 is the real authoring CAS; T4 retains the original raw
+            // candidate so receipt replay still precedes current-root checks.
+            awaken_store_conformance::session_store::record_update(&created, changed.clone(), 0),
             receipt.clone(),
             vec![],
         )

@@ -19,6 +19,8 @@ pub struct DerivedSessionEvent {
 /// by its key; the Session id names the primary Thread.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionEventKind {
+    /// One immutable Session-root authoring update.
+    SessionUpdated,
     /// A coordinated child Thread was created by its link.
     ThreadCreated,
     ThreadRunning,

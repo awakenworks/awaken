@@ -1,3 +1,8 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: Managed wire encoding consumes the existing derived timeline and a borrowed
+// @formal reason: retained update fact, checking its Session/revision identity before rendering it.
+// @formal reason: No event or payload is reconstructed from current catalog state; protocol tests
+// @formal reason: own wire compatibility and cold/warm evidence, not external effect qualification.
 //! Managed wire encoding of timeline facts.
 //!
 //! The timeline domain decides which facts exist and what each says; this
@@ -70,10 +75,12 @@ pub(super) fn encode_fact(
     record: &SessionRecord,
     fact: &DerivedSessionEvent,
     price_snapshot: Option<&awaken_session_budget_contract::ManagedListPriceSnapshot>,
+    update: Option<(&str, &awaken_session_state_contract::SessionUpdateFact)>,
 ) -> Result<OutboundKind, StateError> {
     let thread_id = fact.key.thread.as_str();
     let primary = thread_id == record.session.id;
     Ok(match &fact.kind {
+        SessionEventKind::SessionUpdated => encode_session_update(record, fact, update)?,
         SessionEventKind::ThreadCreated => OutboundKind::SessionThreadCreated {
             session_thread_id: thread_id.to_string(),
             agent_name: child_name(record, thread_id)?,
@@ -287,7 +294,7 @@ impl SessionRecord {
         fact: &DerivedSessionEvent,
         price_snapshot: Option<&awaken_session_budget_contract::ManagedListPriceSnapshot>,
     ) -> Result<(), StateError> {
-        let kind = encode_fact(self, fact, price_snapshot)?;
+        let kind = encode_fact(self, fact, price_snapshot, None)?;
         if child_stream_only(fact.key.role)
             && let Some(owner) = owner(self, &fact.key.thread)
         {
@@ -311,6 +318,61 @@ impl SessionRecord {
         self.publish_fact(fact, price_snapshot)?;
         Ok(true)
     }
+}
+
+/// Encode the complete immutable update fact; it does not decide changes or order.
+fn encode_session_update(
+    record: &SessionRecord,
+    fact: &DerivedSessionEvent,
+    source: Option<(&str, &awaken_session_state_contract::SessionUpdateFact)>,
+) -> Result<OutboundKind, StateError> {
+    let (root_id, update) = source.ok_or_else(|| {
+        StateError::Run(RunError::internal(
+            "Session update has no immutable Root fact",
+        ))
+    })?;
+    if fact.key.thread != record.session.id
+        || root_id != fact.key.thread
+        || fact.key.role != ManagedEventType::SessionUpdated
+        || fact.key.provenance
+            != (awaken_managed_session_events::FactProvenance::SessionUpdate {
+                revision: update.committed_revision().0,
+            })
+    {
+        return Err(StateError::Run(RunError::internal(
+            "Session update fact identity does not match its Root source",
+        )));
+    }
+    Ok(OutboundKind::SessionUpdated {
+        title: update.title().map(|value| match value {
+            awaken_session_state_contract::SessionFieldUpdate::Clear => None,
+            awaken_session_state_contract::SessionFieldUpdate::Replace(value) => {
+                Some(value.clone())
+            }
+        }),
+        metadata: update.metadata().cloned().unwrap_or_default(),
+        agent: update
+            .agent()
+            .map(|value| match value {
+                awaken_session_state_contract::SessionUpdateAgentConfiguration::Recorded(value) => {
+                    Ok(crate::state::sessions::session_agent_from_configuration(
+                        value,
+                    ))
+                }
+                awaken_session_state_contract::SessionUpdateAgentConfiguration::Unrecorded => {
+                    Err(StateError::Run(RunError::unavailable(
+                        "Session update Agent configuration was not recorded",
+                    )))
+                }
+            })
+            .transpose()?,
+        budget: update.budget().map(|value| match value {
+            awaken_session_state_contract::SessionFieldUpdate::Clear => None,
+            awaken_session_state_contract::SessionFieldUpdate::Replace(value) => {
+                Some(crate::types::BudgetLimit::from_minor(*value))
+            }
+        }),
+    })
 }
 
 #[cfg(test)]

@@ -43,7 +43,7 @@ use awaken_session_types::SessionId;
 
 use crate::{
     CommittedSessionFacts, ConfiguredSessionRepository, CreateProfiledSessionCommand,
-    CreatedSession, CredentialMaterialInput, ProjectionThreadSnapshots, RecoveredSessionProjection,
+    CredentialMaterialInput, ProjectionThreadSnapshots, RecoveredSessionProjection,
     ReplaceSessionResourceManifest, SessionApplication,
     SessionArchiveWithRepositoryPublicationCommand, SessionArchiveWithRepositoryPublicationError,
     SessionArchiveWithRepositoryPublicationOutcome, SessionCreateProtocol, SessionCreateRequest,
@@ -56,19 +56,18 @@ use crate::{
 
 /// Create a Session from a protocol-lowered request, and replay a create.
 ///
-/// `Projection` is what the calling protocol finishes before the durable
-/// insert (see [`SessionCreateProtocol::Projection`]).
+/// The original complete Session root is the sole successful result.
 ///
 /// Consumer: a protocol's Session create command, its create-retry replay and
 /// its bind-time Vault check.
 #[async_trait]
-pub trait SessionCreation<Projection: Send + 'static>: Send + Sync {
+pub trait SessionCreation: Send + Sync {
     /// See [`SessionApplication::create_requested_session`].
     async fn create_requested_session(
         &self,
         request: SessionCreateRequest,
-        protocol: &dyn SessionCreateProtocol<Projection = Projection>,
-    ) -> Result<CreatedSession<Projection>, SessionCreateRequestError>;
+        protocol: &dyn SessionCreateProtocol,
+    ) -> Result<PersistedSession, SessionCreateRequestError>;
 
     /// See [`SessionApplication::replay_session_create`].
     async fn replay_session_create(
@@ -468,12 +467,12 @@ pub trait DeploymentSessionEnvironment: Send + Sync {
 }
 
 #[async_trait]
-impl<Projection: Send + 'static> SessionCreation<Projection> for SessionApplication {
+impl SessionCreation for SessionApplication {
     async fn create_requested_session(
         &self,
         request: SessionCreateRequest,
-        protocol: &dyn SessionCreateProtocol<Projection = Projection>,
-    ) -> Result<CreatedSession<Projection>, SessionCreateRequestError> {
+        protocol: &dyn SessionCreateProtocol,
+    ) -> Result<PersistedSession, SessionCreateRequestError> {
         SessionApplication::create_requested_session(self, request, protocol).await
     }
 

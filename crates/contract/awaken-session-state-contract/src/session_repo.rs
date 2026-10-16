@@ -48,7 +48,7 @@ pub use mutation::{
     session_tombstone_is_admitted,
 };
 pub use persisted_session::{
-    PersistedSession, SessionEventDispatchSettlementEffect, VisibleMcpServer, session_is_terminal,
+    PersistedSession, SessionEventDispatchSettlementEffect, session_is_terminal,
     session_is_unattempted_profiled_preparation,
 };
 pub use placement::{SessionPlacementClass, SessionPublicStatus};
@@ -139,6 +139,8 @@ mod mutation_tests {
             title: None,
             metadata: Default::default(),
             tools: Default::default(),
+            initial_agent_configuration: None,
+            update_history: None,
             event_batches: Vec::new(),
             activity_epoch: 0,
             active_activity_epochs: Default::default(),

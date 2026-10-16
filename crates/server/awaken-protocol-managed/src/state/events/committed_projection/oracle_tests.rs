@@ -275,10 +275,8 @@ async fn candidate_uses_committed_prefix_even_when_warm_progress_is_poisoned() {
         processed_at: None,
     };
     poisoned.events.push(overlay.clone());
-    poisoned.overlay.anchors.insert(
-        overlay.id.clone(),
-        clean.events.first().expect("R1 committed event").id.clone(),
-    );
+    // R3 transient Thinking stays a preview. Explicit update hints were retired
+    // with their sole producer; durable update predecessor evidence lives in Root.
     let publication::ProjectionRefreshBuild::Complete(actual) = build(poisoned).await.unwrap()
     else {
         panic!("R2 fixed committed prefix must project");

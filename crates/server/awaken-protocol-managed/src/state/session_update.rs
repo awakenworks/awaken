@@ -65,74 +65,14 @@ impl ManagedState {
         }
     }
 
-    fn project_update_outcome(
+    async fn project_update_outcome(
         &self,
         outcome: &awaken_session_application::SessionUpdateOutcome,
     ) -> Result<(), StateError> {
-        self.publish_persisted_session(&outcome.session)?;
-        if !outcome.command_applied || !outcome.changes.any() {
-            return Ok(());
-        }
-        let event_id = self.next_event_id();
-        let predecessor = outcome
-            .session
-            .event_batches
-            .iter()
-            .rev()
-            .flat_map(|batch| batch.events.iter().rev())
-            .next()
-            .map(|entry| {
-                durable_inbound_event_id(
-                    outcome.session.session_id.as_str(),
-                    entry.event.operation_id(),
-                )
-            });
-        self.publish_projection_update(outcome.session.session_id.as_str(), |record| {
-            let event = Event {
-                id: event_id.clone(),
-                kind: OutboundKind::SessionUpdated {
-                    title: outcome.changes.title.then(|| record.session.title.clone()),
-                    metadata: if outcome.changes.metadata {
-                        record.session.metadata.clone()
-                    } else {
-                        Default::default()
-                    },
-                    agent: outcome
-                        .changes
-                        .agent()
-                        .then(|| record.session.agent.clone()),
-                    budget: outcome
-                        .changes
-                        .budget
-                        .then(|| record.session.budget.clone()),
-                },
-                processed_at: outcome
-                    .session
-                    .updated_at_unix_ms
-                    .map(awaken_session_application_contract::epoch_millis_to_rfc3339),
-            };
-            if let Some(predecessor) = predecessor.as_ref() {
-                record
-                    .overlay
-                    .anchors
-                    .insert(event.id.clone(), predecessor.clone());
-                if record
-                    .events
-                    .iter()
-                    .any(|candidate| candidate.id == *predecessor)
-                {
-                    record.events.push(event);
-                } else {
-                    record
-                        .overlay
-                        .pending_events
-                        .push((event, predecessor.clone()));
-                }
-            } else {
-                record.events.push(event);
-            }
-            Ok(())
-        })
+        // Committed update facts share the sole warm/cold reducer. Replay also
+        // repairs a commit whose disposable publication was lost.
+        self.refresh_committed_events(outcome.session.session_id.as_str())
+            .await
     }
 
     /// Drive the protocol-neutral update and project its committed result into
@@ -153,12 +93,12 @@ impl ManagedState {
                 outcome,
                 source,
             }) => {
-                self.project_update_outcome(&outcome)?;
+                self.project_update_outcome(&outcome).await?;
                 return Err(StateError::Run(source));
             }
             Err(error) => return Err(Self::map_update_error(error)),
         };
-        self.project_update_outcome(&outcome)?;
+        self.project_update_outcome(&outcome).await?;
         self.get_session_with_revision(id)
     }
 }

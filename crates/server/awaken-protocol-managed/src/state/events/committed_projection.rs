@@ -47,6 +47,27 @@ struct CommittedPrefixBase {
     memo: ProjectionDeliveryMemo,
 }
 
+/// One update wire phase on the already-fenced, same immutable Root candidate.
+/// It lends exact payloads to the original encoder and never publishes the cache.
+fn project_root_fields_and_updates(
+    record: &mut SessionRecord,
+    persisted: &PersistedSession,
+) -> Result<(), StateError> {
+    ManagedState::apply_persisted_session(record, persisted);
+    for (fact, update) in awaken_managed_session_events::derive_session_update_events(persisted)
+        .map_err(projection_error)?
+    {
+        let kind = super::timeline_encoding::encode_fact(
+            record,
+            &fact,
+            None,
+            Some((persisted.session_id.as_str(), update)),
+        )?;
+        record.append_fact_once(fact.key, kind);
+    }
+    Ok(())
+}
+
 impl ManagedState {
     fn committed_prefix_base(
         &self,
@@ -174,6 +195,7 @@ impl ManagedState {
             &evidence.historical_pending,
         );
         let order_index = OrderIndex::new(OrderEvidence {
+            updates: awaken_session_state_contract::SessionUpdateHistory::for_session(&persisted),
             session_id,
             batches: &persisted.event_batches,
             closed_intervals: &persisted.closed_runtime_intervals,
@@ -197,8 +219,8 @@ impl ManagedState {
         // earlier mutations (message-consumption marks, cursors, or Events) in
         // this process. Durable Session/Runtime facts remain the sole recovery
         // authority; only a fully valid projection replaces the warm cache.
-        Self::apply_persisted_session(&mut staged_record, &persisted);
         let record = &mut staged_record;
+        project_root_fields_and_updates(record, &persisted)?;
         let root =
             self.project_root_prefix(record, session_id, &persisted, &evidence, &order_index)?;
         let delegation = evidence.delegation(&order_index);
@@ -234,7 +256,6 @@ impl ManagedState {
         // selected. The canonicalizer reattaches them by their stable fact id,
         // never by a warm event position or as a projection input.
         record.events.extend(memo.transient_events);
-        record.overlay = memo.overlay;
         record.event_thread_owners.extend(memo.transient_owners);
         Self::canonicalize_committed_events(
             record,

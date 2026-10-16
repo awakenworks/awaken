@@ -100,7 +100,13 @@ impl ManagedState {
         workspace_id: &str,
         profile: Option<&awaken_executable_agent_contract::ExecutableAgentSessionProfile>,
         caps: &AgentCapabilities,
-    ) -> Result<Option<crate::types::SessionMultiagentCoordinator>, StateError> {
+        captured: Option<
+            &[(
+                String,
+                awaken_executable_agent_contract::ExecutableAgentSessionProfile,
+            )],
+        >,
+    ) -> Result<Option<awaken_session_configuration_contract::SessionAgentRoster>, StateError> {
         let delegates = profile.map_or_else(
             || {
                 caps.delegates
@@ -122,24 +128,33 @@ impl ManagedState {
         }
         let mut agents = Vec::with_capacity(delegates.len() + usize::from(advisor_model.is_some()));
         for delegate in delegates {
-            let resolved = delegate
-                .source_revision
-                .and_then(|revision| {
-                    self.roles.projection.session_profile_at_revision(
+            let resolved = if let Some(captured) = captured {
+                captured
+                    .iter()
+                    .find(|(id, value)| {
+                        id == &delegate.agent_id
+                            && delegate
+                                .source_revision
+                                .is_none_or(|revision| value.source_revision == revision)
+                    })
+                    .map(|(_, value)| value.clone())
+            } else {
+                match (profile.is_some(), delegate.source_revision) {
+                    (true, Some(revision)) => self.roles.projection.session_profile_at_revision(
                         workspace_id,
                         &delegate.agent_id,
                         revision,
-                    )
-                })
-                .or_else(|| {
-                    self.roles
+                    ),
+                    _ => self
+                        .roles
                         .projection
-                        .session_profile(workspace_id, &delegate.agent_id)
-                });
+                        .session_profile(workspace_id, &delegate.agent_id),
+                }
+            };
             let child = match resolved {
-                Some(profile) => Self::thread_agent_from_profile(&delegate.agent_id, profile),
+                Some(profile) => agent_configuration_from_profile(&delegate.agent_id, profile),
                 None if profile.is_none() => {
-                    Self::thread_agent_from_profile(&delegate.agent_id, Default::default())
+                    agent_configuration_from_profile(&delegate.agent_id, Default::default())
                 }
                 None => {
                     return Err(StateError::Run(RunError::bad_request(format!(
@@ -148,20 +163,20 @@ impl ManagedState {
                     ))));
                 }
             };
-            agents.push(crate::types::SessionMultiagentRosterEntry::Agent(child));
+            agents.push(
+                awaken_session_configuration_contract::SessionAgentRosterMember::Agent(Box::new(
+                    child,
+                )),
+            );
         }
         if let Some(model) = advisor_model {
-            agents.push(crate::types::SessionMultiagentRosterEntry::Advisor(
-                crate::types::agent::AdvisorRosterEntry {
-                    model,
-                    kind: crate::types::agent::AdvisorRosterEntryKind::Advisor,
-                },
-            ));
+            agents.push(
+                awaken_session_configuration_contract::SessionAgentRosterMember::Advisor(model),
+            );
         }
-        Ok(Some(crate::types::SessionMultiagentCoordinator {
-            kind: "coordinator",
-            agents,
-        }))
+        Ok(Some(
+            awaken_session_configuration_contract::SessionAgentRoster { members: agents },
+        ))
     }
 
     /// Map the one neutral public status law onto the Managed wire vocabulary.
@@ -486,97 +501,22 @@ impl ManagedState {
         )
         .await
         .map_err(Self::map_create_request_error)?;
-        let awaken_session_application::CreatedSession {
-            session: persisted,
-            session_id: id,
-            profile,
-            agent_version,
-            model,
-            default_model,
-            environment_id,
-            skills,
-            capabilities,
-            tools: _,
-            projection,
-        } = created;
-        let resolved_model = match model {
-            Some(choice)
-                if choice.source == awaken_session_application::SessionModelSource::Override =>
-            {
-                model_override
-                    .clone()
-                    .expect("an override choice echoes the requested model")
-            }
-            Some(choice) => ModelConfig::from_inference(choice.model_id, choice.inference),
-            None => ModelConfig::new(default_model),
-        };
-        let session_skills = skills.map_or_else(
-            || project::agent_skills(&capabilities),
-            |skills| {
-                skills
-                    .into_iter()
-                    .map(crate::types::agent::AgentSkill::from_binding)
-                    .collect()
-            },
-        );
-        let agent_id = req.agent.id().to_string();
-        let deployment_id = req.metadata.get("awaken.deployment_id").cloned();
-        let mut session = Session {
-            id: id.clone(),
-            kind: "session",
-            agent: SessionAgent {
-                id: agent_id.clone(),
-                kind: "agent",
-                version: agent_version,
-                // Echo the accepted official override or the published Agent model.
-                model: resolved_model,
-                name: profile
-                    .as_ref()
-                    .and_then(|profile| profile.name.clone())
-                    .unwrap_or_else(|| agent_id.clone()),
-                description: profile
-                    .as_ref()
-                    .and_then(|profile| profile.description.clone()),
-                system: profile.as_ref().and_then(|profile| profile.system.clone()),
-                tools: projection.tools,
-                // Echo accepted Agent configuration in the SDK shape. Runtime
-                // visibility is a separate state and can remain Requested while
-                // this immutable Session snapshot is already readable.
-                mcp_servers: typed_mcp_servers(persisted.configured_mcp_servers()),
-                skills: session_skills,
-                multiagent: projection.multiagent,
-            },
-            budget: persisted
-                .budget
-                .max_list_cost_minor()
-                .map(crate::types::BudgetLimit::from_minor),
-            environment_id,
-            created_at: super::constants::persisted_time(persisted.created_at_unix_ms),
-            updated_at: super::constants::persisted_time(persisted.updated_at_unix_ms),
-            archived_at: None,
-            title: req.title,
-            metadata: req.metadata,
-            // Resource wire values are projected from `resource_state` on response.
-            resources: Vec::new(),
-            outcome_evaluations: Vec::new(),
-            // The durable application aggregate is the sole lifecycle truth.
-            // A registered-Worker placement remains preparing until its claimed
-            // realization acknowledges the exact frozen projection; hardcoding
-            // non-Application creation to idle created a second, unsafe status.
-            status: Self::wire_session_status(&persisted),
-            stats: SessionStats::default(),
-            usage: Usage::default(),
-            vault_ids: req.vault_ids.clone(),
-            deployment_id,
-        };
-        // Anthropic's create-time overrides are session-local replacements. Null
-        // clears only `system`; an empty array clears a list field.
-        if let Some(system) = req.agent.system_override() {
-            session.agent.system = system.map(str::to_owned);
-        }
-        if let Some(tools) = req.agent.tools_override() {
-            session.agent.tools = project::resolved_tools(tools);
-        }
+        let persisted = created;
+        let id = persisted.session_id.to_string();
+        let baseline = persisted.frozen_baseline().ok_or_else(|| {
+            StateError::Run(RunError::internal(
+                "created Session root has no frozen baseline",
+            ))
+        })?;
+        let agent_id = baseline.agent_id.clone();
+        let configuration =
+            awaken_session_state_contract::SessionUpdateHistory::agent_configuration(&persisted)
+                .ok_or_else(|| {
+                    StateError::Run(RunError::internal(
+                        "fresh Session has no accepted Agent configuration",
+                    ))
+                })?;
+        let session = session_from_persisted_root(&persisted, baseline, &configuration);
         self.owners
             .lock()
             .unwrap()
@@ -667,156 +607,18 @@ impl ManagedState {
         persisted: PersistedSession,
         purpose: RehydrationPurpose,
     ) -> Result<Session, StateError> {
-        let created_at = super::constants::persisted_time(persisted.created_at_unix_ms);
-        let updated_at = super::constants::persisted_time(persisted.updated_at_unix_ms);
-        let caps = self.roles.projection.capabilities_for(id);
-        let projected_budget = persisted
-            .budget
-            .max_list_cost_minor()
-            .map(crate::types::BudgetLimit::from_minor);
-        let (
-            agent_id,
-            agent_revision,
-            model,
-            environment_id,
-            title,
-            metadata,
-            agent_tools,
-            mcp_servers,
-            model_inference,
-            system_prompt,
-            agent_skills,
-            vault_ids,
-            status,
-            archived_at,
-        ) = {
-            let p = persisted;
-            let status = Self::wire_session_status(&p);
-            let baseline = p.frozen_baseline().ok_or_else(|| {
-                StateError::Run(RunError::unavailable(
-                    "Session root is not finalized and cannot be rehydrated",
-                ))
-            })?;
-            let (agent_id, agent_revision, model, environment_id) = (
-                baseline.agent_id.clone(),
-                baseline.agent_revision,
-                baseline.model.clone(),
-                baseline.environment.environment_id.clone(),
-            );
-            let model_inference = baseline
-                .model_override
-                .as_ref()
-                .map(|model_override| model_override.inference.clone());
-            let system_prompt = baseline.system_prompt.as_ref().clone();
-            let agent_skills = p
-                .resources
-                .desired()
-                .skills()
-                .iter()
-                .map(crate::types::agent::AgentSkill::from_resolved_binding)
-                .collect();
-            let vault_ids = baseline.mcp_authoring.ordered_vault_ids.clone();
-            let mcp_servers = typed_mcp_servers(p.configured_mcp_servers());
-            let archived_at = p.archived_at().map(str::to_owned);
-            (
-                agent_id,
-                agent_revision,
-                model,
-                environment_id,
-                p.title,
-                p.metadata,
-                project::managed_tools(&p.tools),
-                mcp_servers,
-                model_inference,
-                system_prompt,
-                agent_skills,
-                vault_ids,
-                status,
-                archived_at,
-            )
-        };
-        let deployment_id = metadata.get("awaken.deployment_id").cloned();
-        let profile = agent_revision
-            .and_then(|revision| {
-                self.roles
-                    .projection
-                    .session_profile_at_revision(owner_scope, &agent_id, revision)
-            })
-            .or_else(|| {
-                agent_revision
-                    .is_none()
-                    .then(|| {
-                        self.roles
-                            .projection
-                            .session_profile(owner_scope, &agent_id)
-                    })
-                    .flatten()
-            });
-        let publication_decision =
-            rehydration_publication_decision(purpose, agent_revision.is_some(), profile.is_some());
-        if publication_decision == RehydrationPublicationDecision::RejectMissingExact {
-            let revision = agent_revision.expect("missing exact decision requires a revision");
-            return Err(StateError::Run(RunError::unavailable(format!(
-                "Agent `{agent_id}` publication revision {revision} is unavailable during Session recovery"
-            ))));
-        }
-        let multiagent = match publication_decision {
-            RehydrationPublicationDecision::NonInteractiveFrozenProjection => None,
-            RehydrationPublicationDecision::Available
-            | RehydrationPublicationDecision::Unpinned => {
-                self.resolved_session_multiagent(owner_scope, profile.as_ref(), &caps)?
-            }
-            RehydrationPublicationDecision::RejectMissingExact => {
-                unreachable!("missing exact publication was rejected before projection")
-            }
-        };
-        Ok(Session {
-            id: id.to_string(),
-            kind: "session",
-            agent: SessionAgent {
-                id: agent_id.clone(),
-                kind: "agent",
-                version: profile
-                    .as_ref()
-                    .map(|profile| profile.source_revision)
-                    .or(agent_revision)
-                    .unwrap_or(1)
-                    .max(1),
-                model: ModelConfig::from_inference(
-                    model,
-                    model_inference
-                        .or_else(|| profile.as_ref().map(|profile| profile.inference.clone()))
-                        .unwrap_or_default(),
-                ),
-                name: profile
-                    .as_ref()
-                    .and_then(|profile| profile.name.clone())
-                    .unwrap_or_else(|| agent_id.clone()),
-                description: profile
-                    .as_ref()
-                    .and_then(|profile| profile.description.clone()),
-                system: system_prompt
-                    .resolve(profile.as_ref().and_then(|profile| profile.system.clone())),
-                tools: agent_tools,
-                mcp_servers,
-                skills: agent_skills,
-                multiagent,
-            },
-            budget: projected_budget,
-            environment_id,
-            created_at,
-            updated_at,
-            archived_at,
-            title,
-            metadata,
-            resources: Vec::new(),
-            outcome_evaluations: Vec::new(),
-            status,
-            stats: SessionStats::default(),
-            usage: Usage::default(),
-            vault_ids,
-            deployment_id,
-        })
+        let baseline = persisted.frozen_baseline().ok_or_else(|| {
+            StateError::Run(RunError::unavailable(
+                "Session root is not finalized and cannot be rehydrated",
+            ))
+        })?;
+        let configuration =
+            rehydrated_agent_configuration(self, id, owner_scope, &persisted, baseline, purpose)?;
+        Ok(session_from_persisted_root(
+            &persisted,
+            baseline,
+            &configuration,
+        ))
     }
 
     /// Rebuild only the disposable projection needed to control already-frozen
@@ -1067,12 +869,6 @@ struct ManagedCreateProtocol<'a> {
     initial_events: &'a [InboundEvent],
 }
 
-/// The Managed projection the adapter finishes before the durable insert.
-pub(crate) struct ManagedCreateProjection {
-    tools: Vec<awaken_session_configuration_contract::AgentTool>,
-    multiagent: Option<crate::types::SessionMultiagentCoordinator>,
-}
-
 fn run_error(error: StateError) -> RunError {
     match error {
         StateError::Run(error) => error,
@@ -1082,8 +878,6 @@ fn run_error(error: StateError) -> RunError {
 
 #[async_trait::async_trait]
 impl awaken_session_application::SessionCreateProtocol for ManagedCreateProtocol<'_> {
-    type Projection = ManagedCreateProjection;
-
     // Mint from the process-incarnation namespace so active-active peers and
     // restarted processes cannot choose the same Session id.
     fn session_id_candidate(&self) -> String {
@@ -1112,11 +906,12 @@ impl awaken_session_application::SessionCreateProtocol for ManagedCreateProtocol
     async fn admit_model(
         &self,
         owner_scope: &str,
-        model: Option<&awaken_session_application::SessionModelChoice>,
+        model: Option<&awaken_session_configuration_contract::SessionModelChoice>,
     ) -> Result<(), RunError> {
         let inference_geo = match model {
             Some(choice)
-                if choice.source == awaken_session_application::SessionModelSource::Override =>
+                if choice.source
+                    == awaken_session_configuration_contract::SessionModelSource::Override =>
             {
                 self.model_override.and_then(|model| model.inference_geo)
             }
@@ -1153,15 +948,226 @@ impl awaken_session_application::SessionCreateProtocol for ManagedCreateProtocol
         owner_scope: &str,
         profile: Option<&awaken_executable_agent_contract::ExecutableAgentSessionProfile>,
         capabilities: &AgentCapabilities,
-        tools: &awaken_session_configuration_contract::SessionToolConfiguration,
-    ) -> Result<ManagedCreateProjection, RunError> {
-        Ok(ManagedCreateProjection {
-            tools: project::managed_tools(tools),
-            multiagent: self
-                .state
-                .resolved_session_multiagent(owner_scope, profile, capabilities)
-                .map_err(run_error)?,
+        mut configuration: awaken_session_configuration_contract::SessionAgentConfiguration,
+        delegates: &[(
+            String,
+            awaken_executable_agent_contract::ExecutableAgentSessionProfile,
+        )],
+    ) -> Result<awaken_session_configuration_contract::SessionAgentConfiguration, RunError> {
+        configuration.multiagent = self
+            .state
+            .resolved_session_multiagent(owner_scope, profile, capabilities, Some(delegates))
+            .map_err(run_error)?;
+        Ok(configuration)
+    }
+}
+
+/// The sole Session DTO constructor borrows its original authoritative Root.
+/// Creation and recovery choose configuration at their original boundaries;
+/// this pure projector never reselects catalog data or publishes a cache.
+fn session_from_persisted_root(
+    persisted: &PersistedSession,
+    baseline: &awaken_session_configuration_contract::SessionBaseline,
+    configuration: &awaken_session_configuration_contract::SessionAgentConfiguration,
+) -> Session {
+    Session {
+        id: persisted.session_id.to_string(),
+        kind: "session",
+        agent: session_agent_from_configuration(configuration),
+        budget: persisted
+            .budget
+            .max_list_cost_minor()
+            .map(crate::types::BudgetLimit::from_minor),
+        environment_id: baseline.environment.environment_id.clone(),
+        created_at: super::constants::persisted_time(persisted.created_at_unix_ms),
+        updated_at: super::constants::persisted_time(persisted.updated_at_unix_ms),
+        archived_at: persisted.archived_at().map(str::to_owned),
+        title: persisted.title.clone(),
+        metadata: persisted.metadata.clone(),
+        resources: Vec::new(),
+        outcome_evaluations: Vec::new(),
+        status: ManagedState::wire_session_status(persisted),
+        stats: SessionStats::default(),
+        usage: Usage::default(),
+        vault_ids: baseline.mcp_authoring.ordered_vault_ids.clone(),
+        deployment_id: persisted.metadata.get("awaken.deployment_id").cloned(),
+    }
+}
+
+/// The complete Agent input phase of cold projection. The outer Session
+/// constructor is shared; only legacy input recovery consults the old catalog.
+fn rehydrated_agent_configuration(
+    state: &ManagedState,
+    id: &str,
+    owner_scope: &str,
+    persisted: &PersistedSession,
+    baseline: &awaken_session_configuration_contract::SessionBaseline,
+    purpose: RehydrationPurpose,
+) -> Result<awaken_session_configuration_contract::SessionAgentConfiguration, StateError> {
+    if let Some(configuration) =
+        awaken_session_state_contract::SessionUpdateHistory::agent_configuration(persisted)
+    {
+        return Ok(configuration);
+    }
+    let caps = state.roles.projection.capabilities_for(id);
+    let profile = match baseline.agent_revision {
+        Some(revision) => state.roles.projection.session_profile_at_revision(
+            owner_scope,
+            &baseline.agent_id,
+            revision,
+        ),
+        None => state
+            .roles
+            .projection
+            .session_profile(owner_scope, &baseline.agent_id),
+    };
+    let decision = rehydration_publication_decision(
+        purpose,
+        baseline.agent_revision.is_some(),
+        profile.is_some(),
+    );
+    if decision == RehydrationPublicationDecision::RejectMissingExact {
+        let revision = baseline
+            .agent_revision
+            .expect("missing exact decision requires a revision");
+        return Err(StateError::Run(RunError::unavailable(format!(
+            "Agent `{}` publication revision {revision} is unavailable during Session recovery",
+            baseline.agent_id
+        ))));
+    }
+    let multiagent = match decision {
+        RehydrationPublicationDecision::NonInteractiveFrozenProjection => None,
+        RehydrationPublicationDecision::Available | RehydrationPublicationDecision::Unpinned => {
+            state.resolved_session_multiagent(owner_scope, profile.as_ref(), &caps, None)?
+        }
+        RehydrationPublicationDecision::RejectMissingExact => {
+            unreachable!("missing exact publication was rejected before projection")
+        }
+    };
+    let mut configuration =
+        agent_configuration_from_profile(&baseline.agent_id, profile.clone().unwrap_or_default());
+    configuration.version = profile
+        .as_ref()
+        .map(|value| value.source_revision)
+        .or(baseline.agent_revision)
+        .unwrap_or(1)
+        .max(1);
+    configuration.model = awaken_session_configuration_contract::SessionModelChoice {
+        model_id: baseline.model.clone(),
+        inference: baseline
+            .model_override
+            .as_ref()
+            .map(|value| value.inference.clone())
+            .or_else(|| profile.as_ref().map(|value| value.inference.clone()))
+            .unwrap_or_default(),
+        source: awaken_session_configuration_contract::SessionModelSource::Publication,
+    };
+    configuration.system = baseline
+        .system_prompt
+        .resolve(profile.as_ref().and_then(|value| value.system.clone()));
+    configuration.tools = persisted.tools.clone();
+    configuration.mcp_servers = persisted.configured_mcp_servers();
+    configuration.skills = persisted
+        .resources
+        .desired()
+        .skills()
+        .iter()
+        .map(|value| awaken_agent_contract::AgentSkillBinding {
+            kind: value.kind,
+            skill_id: value.skill_id.clone(),
+            version: value.version.to_string(),
         })
+        .collect();
+    configuration.multiagent = multiagent;
+    Ok(configuration)
+}
+
+pub(crate) fn agent_configuration_from_profile(
+    agent_id: &str,
+    profile: awaken_executable_agent_contract::ExecutableAgentSessionProfile,
+) -> awaken_session_configuration_contract::SessionAgentConfiguration {
+    awaken_session_configuration_contract::SessionAgentConfiguration {
+        agent_id: agent_id.to_owned(),
+        version: profile.source_revision.max(1),
+        model: awaken_session_configuration_contract::SessionModelChoice {
+            model_id: profile
+                .model
+                .or(profile.execution_model_ref)
+                .unwrap_or_default(),
+            inference: profile.inference,
+            source: awaken_session_configuration_contract::SessionModelSource::Publication,
+        },
+        name: profile.name.unwrap_or_else(|| agent_id.to_owned()),
+        description: profile.description,
+        system: profile.system,
+        tools: awaken_session_configuration_contract::SessionToolConfiguration {
+            toolsets: profile.toolsets,
+            client_tools: profile.client_tools,
+        },
+        mcp_servers: profile
+            .mcp_servers
+            .into_iter()
+            .map(
+                |server| awaken_session_configuration_contract::VisibleMcpServer {
+                    name: server.name,
+                    target: server.target,
+                    prompts_as_skills: server.prompts_as_skills,
+                },
+            )
+            .collect(),
+        skills: profile.skills,
+        multiagent: None,
+    }
+}
+
+pub(crate) fn session_agent_from_configuration(
+    configuration: &awaken_session_configuration_contract::SessionAgentConfiguration,
+) -> SessionAgent {
+    SessionAgent {
+        id: configuration.agent_id.clone(),
+        kind: "agent",
+        version: configuration.version,
+        model: ModelConfig::from_inference(
+            configuration.model.model_id.clone(),
+            configuration.model.inference.clone(),
+        ),
+        name: configuration.name.clone(),
+        description: configuration.description.clone(),
+        system: configuration.system.clone(),
+        tools: project::managed_tools(&configuration.tools),
+        mcp_servers: typed_mcp_servers(configuration.mcp_servers.clone()),
+        skills: configuration
+            .skills
+            .iter()
+            .cloned()
+            .map(crate::types::agent::AgentSkill::from_binding)
+            .collect(),
+        multiagent: configuration.multiagent.as_ref().map(|roster| {
+            crate::types::SessionMultiagentCoordinator {
+                kind: "coordinator",
+                agents: roster
+                    .members
+                    .iter()
+                    .map(|member| match member {
+                        awaken_session_configuration_contract::SessionAgentRosterMember::Agent(value) => {
+                            crate::types::SessionMultiagentRosterEntry::Agent(
+                                crate::types::SessionThreadAgent::from(
+                                    &session_agent_from_configuration(value),
+                                ),
+                            )
+                        }
+                        awaken_session_configuration_contract::SessionAgentRosterMember::Advisor(model) => {
+                            crate::types::SessionMultiagentRosterEntry::Advisor(
+                                crate::types::agent::AdvisorRosterEntry {
+                                    model: model.clone(),
+                                    kind: crate::types::agent::AdvisorRosterEntryKind::Advisor,
+                                },
+                            )
+                        }
+                    })
+                    .collect(),
+            }
+        }),
     }
 }
 

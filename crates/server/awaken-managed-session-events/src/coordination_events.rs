@@ -372,6 +372,7 @@ mod tests {
                 root.message_commit_cursors.push(30);
             }
             let index = OrderIndex::new(crate::OrderEvidence {
+                updates: None,
                 session_id: "session",
                 batches: &[],
                 closed_intervals: &[],
@@ -483,6 +484,7 @@ mod tests {
         }];
         let children = HashMap::new();
         let index = OrderIndex::new(crate::OrderEvidence {
+            updates: None,
             session_id: "session",
             batches: &[],
             closed_intervals: &[],

@@ -5,6 +5,8 @@ use awaken_protocol_managed_testkit::{RecordingProjectionRefresh, paired_project
 use awaken_session_types::SessionId;
 use awaken_tool_contract::tool_batch::ToolBatch;
 
+mod accepted_snapshots;
+
 struct RevisionedProfiles(std::sync::atomic::AtomicU64);
 
 impl RevisionedProfiles {
@@ -80,6 +82,13 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for Revision
 
 #[tokio::test]
 async fn cold_projection_uses_the_session_pinned_agent_revision() {
+    // Fixture-construction equivalence: from_fixture_parts still builds the
+    // same application once from Runtime/MCP/Repository/Clock/Environment,
+    // then wraps that exact instance for Managed projection. Extracting this
+    // whole local construction before Arc::new changes no branch or effect,
+    // so branch decision tables add no coverage. The existing real create,
+    // warm/cold full-view and refresh-count assertions are the smallest
+    // equivalence regression; preserve their original causes/effects below.
     // Cause/effect graph: C1 Session freezes coordinator revision 7; C2 the
     // current catalog advances to revision 8; C3 the disposable Managed cache is
     // lost; C4 durable recovery reads the baseline pin. Effects: E1 root identity

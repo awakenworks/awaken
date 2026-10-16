@@ -8,7 +8,7 @@
 // @formal evidence session_run.execution_requires_dispatch_work_and_realization_owner
 // @formal evidence session_time.root_observations_are_revision_bound_and_replay_stable
 // @formal evidence session_work.only_a_claimed_nonterminal_run_may_revive_stopped_work
-// awaken-allow(file-limit-ceiling): 8022 (legacy oversized test file: split, never grow)
+// awaken-allow(file-limit-ceiling): 7798 (legacy oversized test file: split, never grow)
 use super::*;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -19,6 +19,7 @@ mod coordinated_resources;
 mod first_materialization;
 mod interval_admission;
 mod lost_root_cas_replay;
+mod session_updates;
 mod unattempted_archive_witness;
 pub(super) mod unattempted_profiled_release;
 
@@ -1460,8 +1461,9 @@ async fn root_mutation_cause_effect_decision_table() {
     let commit = app
         .commit_session_snapshot_with_record(
             "workspace",
-            awaken_session_state_contract::SessionAggregate::try_from(candidate.clone())
-                .expect("valid test snapshot"),
+            // M1 is a genuine authoring CAS; prepare its one State fact.
+            // M2-M6 below retain direct replay/conflict candidates unchanged.
+            awaken_store_conformance::session_store::record_update(&original, candidate.clone(), 0),
             record.clone(),
             Vec::new(),
         )
@@ -1491,8 +1493,8 @@ async fn root_mutation_cause_effect_decision_table() {
     let later = app
         .commit_session_snapshot_with_outcome(
             "workspace",
-            awaken_session_state_contract::SessionAggregate::try_from(later)
-                .expect("valid test snapshot"),
+            // M5 advances legal current truth before testing receipt priority.
+            awaken_store_conformance::session_store::record_update(&applied, later, 0),
             "later",
             Vec::new(),
         )
@@ -1654,12 +1656,13 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
         awaken_session_types::SessionRevision(1),
         "C1"
     );
+    let before_authoring = durable.clone();
     durable.title = Some("durable-after-create".into());
     let durable = app
         .commit_session_snapshot_with_outcome(
             "workspace",
-            awaken_session_state_contract::SessionAggregate::try_from(durable)
-                .expect("valid test snapshot"),
+            // C2 requires a legal durable successor, not a new lowering replay.
+            awaken_store_conformance::session_store::record_update(&before_authoring, durable, 0),
             "test-create-replay",
             Vec::new(),
         )
@@ -3033,8 +3036,12 @@ async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombsto
                     let _fixture = app
                         .commit_session_snapshot_with_outcome(
                             "workspace",
-                            awaken_session_state_contract::SessionAggregate::try_from(predecessor)
-                                .expect("valid test snapshot"),
+                            // R1/R2 race against a genuinely committed author.
+                            awaken_store_conformance::session_store::record_update(
+                                &origin,
+                                predecessor,
+                                0,
+                            ),
                             "delete-race-predecessor",
                             Vec::new(),
                         )
@@ -5988,241 +5995,6 @@ async fn concurrent_child_cap_crossing_has_one_root_cas_winner_and_no_second_led
     assert_eq!(reached, 1, "C1/E3");
 }
 
-#[derive(Default)]
-struct FailOnceMcpRealizer {
-    stage_calls: AtomicUsize,
-}
-
-#[async_trait::async_trait]
-impl McpAttachmentRealizer for FailOnceMcpRealizer {
-    async fn stage_mcp_attachment(
-        &self,
-        request: crate::session_mcp::StageMcpAttachment,
-    ) -> Result<crate::session_mcp::McpRealizationReceipt, RunError> {
-        if self.stage_calls.fetch_add(1, Ordering::SeqCst) == 0 {
-            return Err(RunError::unavailable("injected MCP stage outage"));
-        }
-        McpAttachmentRealizer::stage_mcp_attachment(&NoopMcpRealizer, request).await
-    }
-
-    async fn publish_mcp_generation(
-        &self,
-        generation: crate::session_mcp::McpGenerationRef,
-    ) -> Result<(), RunError> {
-        McpAttachmentRealizer::publish_mcp_generation(&NoopMcpRealizer, generation).await
-    }
-
-    async fn drain_mcp_generation(
-        &self,
-        generation: crate::session_mcp::McpGenerationRef,
-    ) -> Result<(), RunError> {
-        McpAttachmentRealizer::drain_mcp_generation(&NoopMcpRealizer, generation).await
-    }
-}
-
-#[tokio::test]
-async fn mixed_update_commits_one_receipted_root_before_realization_and_replays_the_effect() {
-    // Cause/effect graph: C1 one command mixes title, metadata, budget, and MCP
-    // Agent desired state; C2 its root CAS and durable command receipt commit;
-    // C3 MCP realization succeeds or fails retryably; C4 the caller replays the
-    // exact command after C3 failure. Effects: E1 every desired field and MCP
-    // generation share the single next root revision named by the receipt; E2 a
-    // C3 failure is ProjectionAfterCommit carrying that complete committed
-    // outcome; E3 C4 keeps the original command revision and allocates exactly
-    // the aggregate-owned N+1 recovery generation, then realizes durable truth
-    // without re-authoring any public field.
-    // Constraint: normalization is pure before C2; no title/metadata/budget or
-    // MCP intent may commit through an independent command mutation.
-    //
-    // | Rule | C1 | C2 | C3 | C4 | Effect |
-    // |---|---|---|---|---|---|
-    // | M1 | yes | commits | retryable failure | no | E1 + E2 |
-    // | M2 | same command | already committed | succeeds | exact | E3 |
-    let session_id = "mixed-update-one-root";
-    let repo = authority_repository("mixed update repository").await;
-    let mut session = persisted(session_id, false, "idle");
-    session.budget = awaken_session_budget_contract::SessionBudgetState::Active {
-        max_list_cost_minor: 10,
-        consumed_numerator: 0,
-        usage_cursor: Default::default(),
-        snapshot: awaken_session_budget_contract::ManagedListPriceSnapshot {
-            snapshot_id: "mixed-prices-v1".into(),
-            version: 1,
-            effective_at_unix_ms: 1,
-            arithmetic_version: 1,
-            model_rates: Default::default(),
-            runtime_rates: Default::default(),
-            fingerprint: "mixed-prices-v1-fingerprint".into(),
-        },
-        reach_transitions: Vec::new(),
-    };
-    create(repo.as_ref(), session).await;
-    let before = repo
-        .get(&SessionId::from(session_id))
-        .await
-        .expect("initial mixed Session");
-    let command_revision = awaken_session_types::SessionRevision(
-        before
-            .revision
-            .0
-            .checked_add(1)
-            .expect("test command revision"),
-    );
-    let realizer = Arc::new(FailOnceMcpRealizer::default());
-    let app = SessionApplicationBuilder::fixture(
-        Arc::new(NoopRuntime),
-        realizer.clone(),
-        crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
-        Arc::new(RecordingEnvironmentSource::default()),
-    )
-    .build()
-    .expect("valid fixture Session application");
-    let idempotency_key = "mixed-update-key";
-    let command = SessionUpdateCommand {
-        title: Some(SessionFieldUpdate::Replace("one root".into())),
-        metadata: Some(SessionMetadataUpdate::Patch(
-            std::collections::BTreeMap::from([("owner".into(), Some("session".into()))]),
-        )),
-        budget: Some(SessionFieldUpdate::Replace(20)),
-        tools: None,
-        mcp_update: Some(SessionMcpUpdate::PublicReplacement(vec![
-            McpAttachmentCandidate {
-                name: "docs".into(),
-                target: McpAttachmentCandidateTarget::HttpUrl(
-                    "https://docs.example.test/mcp".into(),
-                ),
-                prompts_as_skills: false,
-                published_credential: None,
-                origin: crate::session_mcp::McpAttachmentOrigin::Session,
-            },
-        ])),
-        idempotency_key: Some(idempotency_key.into()),
-        request_fingerprint: awaken_agent_contract::stable_fingerprint(&(
-            "mixed-update-one-root-v1",
-            session_id,
-        )),
-        if_match: None,
-    };
-
-    let (committed, failure) = match app
-        .update_session(&SessionId::from(session_id), command.clone())
-        .await
-    {
-        Err(SessionUpdateError::ProjectionAfterCommit { outcome, source }) => (*outcome, source),
-        other => panic!("M1/E2 expected committed realization failure, got {other:?}"),
-    };
-    assert_eq!(
-        failure.kind,
-        awaken_session_types::RunErrorKind::Unavailable,
-        "M1/E2"
-    );
-    assert_eq!(committed.command_revision, command_revision, "M1/E1");
-    assert!(committed.command_applied, "M1/E1");
-    assert_eq!(
-        committed.changes,
-        SessionUpdateChanges {
-            title: true,
-            metadata: true,
-            tools: false,
-            mcp: true,
-            budget: true,
-        },
-        "M1/E1 complete mixed command"
-    );
-    assert_eq!(
-        committed.session.revision, command_revision,
-        "M1/E1 one command CAS"
-    );
-    assert_eq!(
-        committed.session.title.as_deref(),
-        Some("one root"),
-        "M1/E1"
-    );
-    assert_eq!(
-        committed.session.metadata.get("owner").map(String::as_str),
-        Some("session"),
-        "M1/E1"
-    );
-    assert_eq!(
-        committed.session.budget.max_list_cost_minor(),
-        Some(20),
-        "M1/E1"
-    );
-    assert_eq!(
-        committed.session.mcp.desired_attachments().len(),
-        1,
-        "M1/E1"
-    );
-
-    let receipt_key = format!(
-        "managed:update-command:{session_id}:{}",
-        SessionApplication::update_operation_id(session_id, idempotency_key)
-    );
-    let receipt = repo
-        .idempotency_receipt(&SessionId::from(session_id), &receipt_key)
-        .await
-        .expect("M1 receipt read")
-        .expect("M1 durable command receipt");
-    assert_eq!(receipt.committed_revision, command_revision, "M1/E1");
-    let durable_after_failure = repo
-        .get(&SessionId::from(session_id))
-        .await
-        .expect("M1 durable mixed truth");
-    assert_eq!(
-        durable_after_failure.title.as_deref(),
-        Some("one root"),
-        "M1/E2"
-    );
-    assert_eq!(
-        durable_after_failure.budget.max_list_cost_minor(),
-        Some(20),
-        "M1/E2"
-    );
-    assert_eq!(realizer.stage_calls.load(Ordering::SeqCst), 1, "M1/E2");
-
-    let replayed = app
-        .update_session(&SessionId::from(session_id), command)
-        .await
-        .expect("M2 exact replay repairs realization");
-    assert!(!replayed.command_applied, "M2/E3");
-    assert_eq!(replayed.command_revision, command_revision, "M2/E3");
-    assert_eq!(replayed.changes, SessionUpdateChanges::default(), "M2/E3");
-    assert_eq!(replayed.session.title.as_deref(), Some("one root"), "M2/E3");
-    assert_eq!(
-        replayed.session.budget.max_list_cost_minor(),
-        Some(20),
-        "M2/E3"
-    );
-    let desired = replayed.session.mcp.desired_attachments();
-    assert_eq!(desired.len(), 1, "M2/E3");
-    assert_eq!(
-        replayed.session.mcp.attachments.len(),
-        2,
-        "M2/E3 one failed generation plus one exact recovery generation"
-    );
-    assert_eq!(
-        desired[0].generation.version(),
-        2,
-        "M2/E3 Failed -> N+1 uses the canonical MCP retry rule"
-    );
-    assert_eq!(
-        desired[0].state,
-        crate::session_mcp::McpAttachmentState::Active,
-        "M2/E3"
-    );
-    assert!(desired[0].publication_acknowledged, "M2/E3");
-    assert_eq!(realizer.stage_calls.load(Ordering::SeqCst), 2, "M2/E3");
-    assert_eq!(
-        repo.idempotency_receipt(&SessionId::from(session_id), &receipt_key)
-            .await
-            .expect("M2 receipt read")
-            .expect("M2 durable command receipt")
-            .committed_revision,
-        command_revision,
-        "M2/E3 receipt remains the original command CAS"
-    );
-}
-
 /// Update-admission authority graph. C1 durable status is idle; C2 durable
 /// status is running/terminal; C3 an interface cache is absent or stale.
 /// Only C1 permits mutation (E1); C2 always rejects without a root revision
@@ -6295,6 +6067,8 @@ async fn profiled_update_authority_separates_public_agent_and_credential_lifecyc
     // compatible and does not become an agent hidden-axis mutation.
     // Rules U1=Managed+C2=>E1, U2/U3=profiled+C2=>E2,
     // U4=profiled+C3=>E3, U5=C4=>E4, U6=profiled+C5=>E5.
+    // U7 the resource recorder has no committed Thread: its existing explicit
+    // empty-read role supplies cursor0; production unsupported reads still refuse.
     let repo = authority_repository("profiled update repository").await;
     for (id, policy) in [
         (

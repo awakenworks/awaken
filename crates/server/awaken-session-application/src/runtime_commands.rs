@@ -13,6 +13,7 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::stream::sink::Sink;
+use awaken_executable_agent_contract::ExecutableAgentSessionProfile;
 use awaken_session_application_contract::{DelegatedRun, Pending, StepOutcome};
 use awaken_session_budget_contract::SessionUsage;
 use awaken_session_configuration_contract::AgentCapabilities;
@@ -29,6 +30,71 @@ use crate::{
 };
 
 use awaken_resource_contract::{SESSION_REPOSITORY_OWNER_KIND, SESSION_REPOSITORY_OWNER_SESSION};
+
+/// Exact pins never fall through to mutable current catalog state.
+pub(super) fn selected_session_profile(
+    application: &SessionApplication,
+    workspace_id: &str,
+    agent_id: &str,
+    source_revision: Option<u64>,
+) -> Option<ExecutableAgentSessionProfile> {
+    match source_revision {
+        Some(revision) => application.session_profile_at_revision(workspace_id, agent_id, revision),
+        None => application.session_profile(workspace_id, agent_id),
+    }
+}
+
+/// One transitive count law; callers lend their already selected direct values.
+/// The resolver owns exact/current selection, never an implicit pin fallback.
+pub(super) fn validate_session_skill_total(
+    application: &SessionApplication,
+    workspace_id: &str,
+    root_agent_id: &str,
+    root_view: Option<&ExecutableAgentSessionProfile>,
+    root_skills: &[awaken_agent_contract::AgentSkillBinding],
+    captured: &[(String, ExecutableAgentSessionProfile)],
+) -> Result<(), RunError> {
+    const MAX_SESSION_SKILLS: usize = 500;
+    let mut total: usize = 0;
+    let mut add = |count| {
+        total = total
+            .checked_add(count)
+            .filter(|sum| *sum <= MAX_SESSION_SKILLS)
+            .ok_or_else(|| {
+                RunError::bad_request("a session supports at most 500 skills across all agents")
+            })?;
+        Ok::<_, RunError>(())
+    };
+    add(root_skills.len())?;
+    let mut seen = std::collections::BTreeSet::from([root_agent_id.to_string()]);
+    let mut pending = root_view
+        .into_iter()
+        .flat_map(|view| view.delegates.iter().cloned())
+        .collect::<std::collections::VecDeque<_>>();
+    while let Some(delegate) = pending.pop_front() {
+        if !seen.insert(delegate.agent_id.clone()) {
+            continue;
+        }
+        let Some(view) = captured
+            .iter()
+            .find(|(id, _)| id == &delegate.agent_id)
+            .map(|(_, selected)| selected.clone())
+            .or_else(|| {
+                selected_session_profile(
+                    application,
+                    workspace_id,
+                    &delegate.agent_id,
+                    delegate.source_revision,
+                )
+            })
+        else {
+            continue;
+        };
+        add(view.skills.len())?;
+        pending.extend(view.delegates);
+    }
+    Ok(())
+}
 
 fn session_input_error(error: crate::session_resource::SessionInputError) -> RunError {
     use awaken_resource_contract::ResourceRegistryError;
@@ -419,7 +485,7 @@ impl SessionApplication {
         &self,
         workspace_id: &str,
         agent_id: &str,
-    ) -> Option<awaken_executable_agent_contract::ExecutableAgentSessionProfile> {
+    ) -> Option<ExecutableAgentSessionProfile> {
         self.config_source
             .as_ref()
             .and_then(|source| source.session_profile_in(workspace_id, agent_id))
@@ -436,7 +502,7 @@ impl SessionApplication {
         workspace_id: &str,
         agent_id: &str,
         source_revision: u64,
-    ) -> Option<awaken_executable_agent_contract::ExecutableAgentSessionProfile> {
+    ) -> Option<ExecutableAgentSessionProfile> {
         self.config_source.as_ref().and_then(|source| {
             source.session_profile_at_revision_in(workspace_id, agent_id, source_revision)
         })
@@ -453,46 +519,17 @@ impl SessionApplication {
         &self,
         workspace_id: &str,
         root_agent_id: &str,
-        root_view: Option<&awaken_executable_agent_contract::ExecutableAgentSessionProfile>,
+        root_view: Option<&ExecutableAgentSessionProfile>,
         root_skills: &[awaken_agent_contract::AgentSkillBinding],
     ) -> Result<(), RunError> {
-        const MAX_SESSION_SKILLS: usize = 500;
-        let mut total = root_skills.len();
-        if total > MAX_SESSION_SKILLS {
-            return Err(RunError::bad_request(
-                "a session supports at most 500 skills across all agents",
-            ));
-        }
-        let mut seen = std::collections::BTreeSet::from([root_agent_id.to_string()]);
-        let mut pending = root_view
-            .into_iter()
-            .flat_map(|view| view.delegates.iter().cloned())
-            .collect::<std::collections::VecDeque<_>>();
-        while let Some(delegate) = pending.pop_front() {
-            let agent_id = delegate.agent_id;
-            if !seen.insert(agent_id.clone()) {
-                continue;
-            }
-            let view = delegate
-                .source_revision
-                .and_then(|revision| {
-                    self.session_profile_at_revision(workspace_id, &agent_id, revision)
-                })
-                .or_else(|| self.session_profile(workspace_id, &agent_id));
-            let Some(view) = view else {
-                continue;
-            };
-            total = total.checked_add(view.skills.len()).ok_or_else(|| {
-                RunError::bad_request("a session supports at most 500 skills across all agents")
-            })?;
-            if total > MAX_SESSION_SKILLS {
-                return Err(RunError::bad_request(
-                    "a session supports at most 500 skills across all agents",
-                ));
-            }
-            pending.extend(view.delegates);
-        }
-        Ok(())
+        validate_session_skill_total(
+            self,
+            workspace_id,
+            root_agent_id,
+            root_view,
+            root_skills,
+            &[],
+        )
     }
 
     pub async fn missing_vault(

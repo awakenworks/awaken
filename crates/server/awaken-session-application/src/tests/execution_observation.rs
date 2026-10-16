@@ -686,6 +686,101 @@ fn recovery_snapshot(
 }
 
 #[tokio::test]
+async fn update_history_uses_validated_root_prefix_after_replay_and_noop_checks() {
+    // Cause/effect table: C1 a changed authoring field; C2 the Runtime prefix
+    // belongs to this Session Thread; C3 an exact durable command receipt;
+    // C4 an unchanged unkeyed command. U1=C1+!C2 => the canonical projection
+    // fault, no root/receipt write. U2=C1+C2 => one retained fact with the
+    // original source cursor. U3=C3+!C2 and U4=C4+!C2 => no new prefix read,
+    // fact or revision: replay/no-op classification precedes source validation.
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
+    let id = SessionId::from("update-prefix-owner");
+    let thread = ThreadId(id.as_str().into());
+    create(repo.as_ref(), observed_session(id.as_str())).await;
+    let runtime = Arc::new(RecordingAgentAdmissionRuntime::new([]));
+    let app = application_with_runtime(
+        runtime.clone(),
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let command = |key: Option<&str>| crate::SessionUpdateCommand {
+        title: Some(crate::SessionFieldUpdate::Replace("accepted title".into())),
+        metadata: None,
+        budget: None,
+        tools: None,
+        mcp_update: None,
+        idempotency_key: key.map(str::to_owned),
+        request_fingerprint: "update-prefix-payload".into(),
+        if_match: None,
+    };
+    let foreign = recovery_snapshot("foreign-thread", Vec::new(), Vec::new(), Vec::new());
+    // Inject the same malformed read boundary as the projection-selector test;
+    // the normal fixture setter intentionally permits exact Thread ids only.
+    runtime
+        .boundaries
+        .0
+        .lock()
+        .unwrap()
+        .insert((id.to_string(), thread.0.clone()), foreign.clone());
+    let before = repo.get(&id).await.unwrap();
+    let error = app
+        .update_session(&id, command(Some("prefix-update")))
+        .await
+        .unwrap_err();
+    let crate::SessionUpdateError::Rejected(error) = error else {
+        panic!("U1 expected canonical Runtime prefix rejection");
+    };
+    assert_eq!(
+        error.kind,
+        awaken_session_types::RunErrorKind::Internal,
+        "U1"
+    );
+    assert_eq!(
+        error.message, "Runtime returned a recovery snapshot for a different Session Thread",
+        "U1"
+    );
+    assert_eq!(repo.get(&id).await.unwrap(), before, "U1 atomic refusal");
+    let valid = recovery_snapshot(id.as_str(), Vec::new(), Vec::new(), Vec::new());
+    runtime.set_recovery_snapshot(id.as_str(), &thread, valid.clone());
+    let applied = app
+        .update_session(&id, command(Some("prefix-update")))
+        .await
+        .unwrap();
+    assert!(applied.command_applied, "U2");
+    let committed = repo.get(&id).await.unwrap();
+    let history =
+        awaken_session_state_contract::SessionUpdateHistory::for_session(&committed).unwrap();
+    assert_eq!(history.facts().len(), 1, "U2");
+    assert_eq!(
+        history.facts()[0].observed_runtime().source_commit_cursor,
+        valid.store_cursor,
+        "U2 exact source"
+    );
+    runtime
+        .boundaries
+        .0
+        .lock()
+        .unwrap()
+        .insert((id.to_string(), thread.0.clone()), foreign);
+    for (rule, key) in [("U3", Some("prefix-update")), ("U4", None)] {
+        let outcome = app.update_session(&id, command(key)).await.unwrap();
+        if key.is_some() {
+            assert!(!outcome.command_applied, "{rule} exact receipt replay");
+        }
+        assert!(!outcome.changes.any(), "{rule}");
+        assert_eq!(
+            repo.get(&id).await.unwrap(),
+            committed,
+            "{rule} no new fact"
+        );
+    }
+}
+
+#[tokio::test]
 async fn projection_selector_keeps_exact_parent_partition_and_session_unchanged() {
     // Causes: C1 explicit physical parent differs from logical child; C2 the
     // prefix retains older A/newer B; C3 selector None/exact A/absent; C4 the

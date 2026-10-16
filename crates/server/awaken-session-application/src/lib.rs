@@ -194,9 +194,8 @@ mod session_input;
 pub use continuation::SessionContinuationError;
 pub use creation::{CreateSessionCommand, SessionCreationError};
 pub use creation_request::{
-    CreatedSession, SessionBudgetRequest, SessionCreateProtocol, SessionCreateRequest,
-    SessionCreateRequestError, SessionModelChoice, SessionModelRequest, SessionModelSource,
-    SessionToolsOverride,
+    SessionBudgetRequest, SessionCreateProtocol, SessionCreateRequest, SessionCreateRequestError,
+    SessionModelRequest, SessionToolsOverride,
 };
 pub use session_input::{
     InputProjectionClass, MAX_MEMORY_INSTRUCTIONS_CHARS, MAX_SESSION_FILE_RESOURCES,
@@ -248,8 +247,8 @@ pub use runtime_commands::{
 };
 mod update;
 pub use update::{
-    SessionFieldUpdate, SessionMcpUpdate, SessionMetadataUpdate, SessionUpdateChanges,
-    SessionUpdateCommand, SessionUpdateError, SessionUpdateOutcome,
+    SessionMcpUpdate, SessionMetadataUpdate, SessionUpdateCommand, SessionUpdateError,
+    SessionUpdateOutcome,
 };
 mod archive_intent;
 mod terminal;
@@ -310,3 +309,6 @@ where
 pub(crate) use awaken_session_configuration_contract::mcp as session_mcp;
 
 pub(crate) use awaken_session_configuration_contract::resource as session_resource;
+
+#[cfg(test)]
+use awaken_session_state_contract::{SessionFieldUpdate, SessionUpdateChanges};

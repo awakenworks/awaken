@@ -11,6 +11,8 @@ use awaken_session_configuration_contract::mcp::{
 };
 use std::ops::Deref;
 
+mod updates;
+
 /// A validated working candidate for the existing repository CAS. No new
 /// durable state or commit authority lives here. Fields are read-only, and
 /// commands expose neither a mutable DTO nor an arbitrary mutation callback.
@@ -54,6 +56,7 @@ impl TryFrom<PersistedSession> for SessionAggregate {
             return Err(SessionMutationValidationError::EmptySessionId);
         }
         crate::session_repo::validate_aggregate_state(&state)?;
+        SessionUpdateHistory::validate_for(&state)?;
         Ok(Self { state })
     }
 }
@@ -100,6 +103,17 @@ impl SessionAggregate {
         }
         self.state.updated_at_unix_ms =
             session_root_update_observation(self.state.updated_at_unix_ms, now);
+        if let Some(next) = self.state.revision.0.checked_add(1).map(SessionRevision)
+            && let Some(history) = self.state.update_history.as_deref_mut()
+        {
+            for fact in history
+                .facts
+                .iter_mut()
+                .filter(|fact| fact.committed_revision == next)
+            {
+                fact.recorded_at_unix_ms = self.state.updated_at_unix_ms;
+            }
+        }
         SessionMutation {
             expected_revision: self.state.revision,
             idempotency,
@@ -299,6 +313,12 @@ pub enum SessionAggregateCommandError {
     BudgetNotAboveConsumed,
     #[error("Session is not ready for run-free preparation")]
     PreparationNotReady,
+    #[error(
+        "Session initial presentation requires an exact fresh root and one pre-insert recording"
+    )]
+    InvalidInitialAgentConfiguration,
+    #[error("Session update history is inconsistent")]
+    InvalidUpdateHistory,
 }
 
 /// Pure observation kernel shared by mutation compilation and formal checks.

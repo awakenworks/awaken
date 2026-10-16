@@ -203,6 +203,7 @@ mod tests {
     ) -> Result<Vec<ToolResultSource>, ProjectionError> {
         let children = HashMap::new();
         let index = OrderIndex::new(OrderEvidence {
+            updates: None,
             session_id: "thread",
             batches: &[],
             closed_intervals: &[],

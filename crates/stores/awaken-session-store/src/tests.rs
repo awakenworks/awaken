@@ -25,6 +25,7 @@ use std::time::Duration;
 
 mod environment_count_stream;
 mod keyset_query_plans;
+pub(crate) mod root_update_history;
 
 /// A raw fixture connection with SQLite's plain defaults, outside the embedded
 /// store policy: the file is created when missing, foreign keys stay off, the
@@ -2266,39 +2267,6 @@ pub(crate) async fn create_fixture<R: awaken_session_repository_contract::Sessio
     }
 }
 
-async fn replace_fixture<R: awaken_session_repository_contract::SessionStore>(
-    repo: &R,
-    owner: &str,
-    mut session: PersistedSession,
-    key: &str,
-    facts: Vec<ManagedLifecycleFact>,
-) -> PersistedSession {
-    session.revision = repo.get(&session.session_id).await.unwrap().revision;
-    let payload = SessionMutationPayload::Replace(session.clone());
-    let payload_hash = payload.stable_hash();
-    let result = repo
-        .commit(
-            owner,
-            SessionMutation {
-                expected_revision: session.revision,
-                idempotency: IdempotencyRecord {
-                    key: key.into(),
-                    payload_hash,
-                },
-                payload,
-                lifecycle_facts: facts,
-            },
-        )
-        .await
-        .expect("replace Session fixture");
-    session.revision = match result {
-        SessionMutationResult::Applied { new_revision }
-        | SessionMutationResult::Replayed { new_revision } => new_revision,
-        other => panic!("replace Session fixture failed: {other:?}"),
-    };
-    session
-}
-
 async fn delete_fixture<R: awaken_session_repository_contract::SessionStore>(
     repo: &R,
     owner: &str,
@@ -2560,7 +2528,8 @@ async fn root_observation_replacement_table<R: awaken_session_repository_contrac
         let before = create_fixture(repo, "ws_a", seed, Vec::new()).await;
         let before_facts = repo.pending_lifecycle().await.unwrap();
         let mut candidate = before.clone();
-        candidate.title = Some("observed candidate".into());
+        // This table changes time observations only; authoring deltas have
+        // their separate retained-fact table, so no title update is invented.
         candidate.created_at_unix_ms = desired_created;
         candidate.updated_at_unix_ms = desired_updated;
         let payload = SessionMutationPayload::Replace(candidate.clone());
@@ -2681,10 +2650,14 @@ async fn root_mutation_decision_table<R: awaken_session_repository_contract::Ses
     id: &str,
 ) {
     root_observation_replacement_table(repo, id).await;
+    root_update_history::replacement_table(repo, id).await;
     let created = create_fixture(repo, "ws_a", sample(id), Vec::new()).await;
     let mut replacement = created.clone();
     replacement.title = Some("winner".into());
     make_deletable(&mut replacement);
+    let replacement =
+        awaken_store_conformance::session_store::record_update(&created, replacement, 0)
+            .into_snapshot();
     let replace_payload = SessionMutationPayload::Replace(replacement);
     let replace_hash = replace_payload.stable_hash();
     let replace = || SessionMutation {
@@ -3136,7 +3109,14 @@ async fn environment_state_survives_sqlite_reopen() {
         create_fixture(&repo, "ws_a", sample("sesn_bound"), Vec::new()).await;
         let mut bound = repo.get(&SessionId::from("sesn_bound")).await.unwrap();
         bound.environment.set_resident("opaque-binding");
-        replace_fixture(&repo, "ws_a", bound, "test:bind", Vec::new()).await;
+        awaken_store_conformance::session_store::replace_session(
+            &repo,
+            "ws_a",
+            bound,
+            "test:bind",
+            Vec::new(),
+        )
+        .await;
     }
     let reopened = SqliteManagedSessionRepository::open(&path).await.unwrap();
     assert_eq!(
@@ -3186,7 +3166,14 @@ async fn terminal_cleanup_intent_and_receipt_survive_sqlite_reopen() {
             )
             .unwrap();
         requested.environment.set_resident("opaque-binding");
-        replace_fixture(&repo, "ws_a", requested, "test:cleanup:request", Vec::new()).await;
+        awaken_store_conformance::session_store::replace_session(
+            &repo,
+            "ws_a",
+            requested,
+            "test:cleanup:request",
+            Vec::new(),
+        )
+        .await;
     }
     {
         let repo = SqliteManagedSessionRepository::open(&path).await.unwrap();
@@ -3211,7 +3198,7 @@ async fn terminal_cleanup_intent_and_receipt_survive_sqlite_reopen() {
         recovered
             .normalize_legacy_terminal_cleanup("test fixture released")
             .unwrap();
-        replace_fixture(
+        awaken_store_conformance::session_store::replace_session(
             &repo,
             "ws_a",
             recovered,
@@ -3278,7 +3265,7 @@ async fn removed_cleanup_v2_converges_through_sqlite_reopen_and_cas() {
         .await
         .expect("S2/E2 rehydrate");
     recovered.title = Some("compatibility rewrite".into());
-    let mut recovered = replace_fixture(
+    let mut recovered = awaken_store_conformance::session_store::replace_session(
         &repo,
         "ws_a",
         recovered,
@@ -3301,7 +3288,7 @@ async fn removed_cleanup_v2_converges_through_sqlite_reopen_and_cas() {
             .expect("S3/E4 complete"),
         "S3/E4",
     );
-    replace_fixture(
+    awaken_store_conformance::session_store::replace_session(
         &repo,
         "ws_a",
         recovered,
@@ -3337,7 +3324,7 @@ async fn terminal_state_and_its_fact_share_one_repository_commit() {
 
     let mut terminal = repo.get(&SessionId::from("sesn_terminal")).await.unwrap();
     terminal.archive("2026-01-01T00:00:00Z", 0).unwrap();
-    replace_fixture(
+    awaken_store_conformance::session_store::replace_session(
         &repo,
         "ws_a",
         terminal,
@@ -3357,7 +3344,7 @@ async fn terminal_state_and_its_fact_share_one_repository_commit() {
     repo.complete_lifecycle("terminated").await.unwrap();
     let mut deleting = repo.get(&SessionId::from("sesn_terminal")).await.unwrap();
     make_deletable(&mut deleting);
-    replace_fixture(
+    awaken_store_conformance::session_store::replace_session(
         &repo,
         "ws_a",
         deleting,
@@ -3433,7 +3420,14 @@ async fn save_is_an_idempotent_upsert() {
     create_fixture(&repo, "default", sample("sesn_1"), Vec::new()).await;
     let mut updated = sample("sesn_1");
     updated.title = Some("Renamed".to_string());
-    updated = replace_fixture(&repo, "default", updated, "test:rename", Vec::new()).await;
+    updated = awaken_store_conformance::session_store::replace_session(
+        &repo,
+        "default",
+        updated,
+        "test:rename",
+        Vec::new(),
+    )
+    .await;
     assert_eq!(
         repo.get(&SessionId::from("sesn_1")).await,
         Ok(updated),
@@ -3579,7 +3573,14 @@ async fn postgres_round_trips_and_upserts() {
 
     let mut updated = sample("sesn_1");
     updated.title = None; // exercises the nullable title column
-    updated = replace_fixture(&repo, "default", updated, "test:pg-update", Vec::new()).await;
+    updated = awaken_store_conformance::session_store::replace_session(
+        &repo,
+        "default",
+        updated,
+        "test:pg-update",
+        Vec::new(),
+    )
+    .await;
     assert_eq!(repo.get(&SessionId::from("sesn_1")).await, Ok(updated));
 
     create_fixture(
@@ -3606,7 +3607,7 @@ async fn postgres_round_trips_and_upserts() {
         .unwrap();
     let mut terminal = repo.get(&SessionId::from("sesn_pg_tx")).await.unwrap();
     terminal.archive("2026-07-19T00:00:00Z", 0).unwrap();
-    replace_fixture(
+    awaken_store_conformance::session_store::replace_session(
         &repo,
         "ws_a",
         terminal,
@@ -3676,7 +3677,7 @@ async fn postgres_round_trips_and_upserts() {
         .await
         .expect("S2/E2 PostgreSQL");
     recovered.title = Some("compatibility rewrite".into());
-    let mut recovered = replace_fixture(
+    let mut recovered = awaken_store_conformance::session_store::replace_session(
         &restarted,
         "ws_a",
         recovered,
@@ -3705,7 +3706,7 @@ async fn postgres_round_trips_and_upserts() {
             .expect("S3/E4 PostgreSQL complete"),
         "S3/E4 PostgreSQL",
     );
-    replace_fixture(
+    awaken_store_conformance::session_store::replace_session(
         &restarted,
         "ws_a",
         recovered,

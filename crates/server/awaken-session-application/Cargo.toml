@@ -57,6 +57,7 @@ awaken-reliability-testkit.workspace = true
 awaken-service-lifecycle = { workspace = true, features = ["test-support"] }
 awaken-resource-persistence = { workspace = true, features = ["test-support"] }
 awaken-session-store = { workspace = true, features = ["test-support"] }
+awaken-store-conformance.workspace = true
 tokio = { workspace = true, features = ["macros", "test-util"] }
 tempfile = "3"
 

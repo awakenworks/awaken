@@ -46,6 +46,8 @@ fn invalid(message: impl Into<String>) -> serde_json::Error {
 }
 
 fn verify_aggregate(session: &PersistedSession) -> Result<(), serde_json::Error> {
+    awaken_session_state_contract::SessionUpdateHistory::validate_for(session)
+        .map_err(|error| invalid(error.to_string()))?;
     awaken_session_state_contract::SessionEnvironmentMaterialization::validate_for(session)
         .map_err(|error| invalid(error.to_string()))?;
     for batch in &session.event_batches {
@@ -782,6 +784,96 @@ mod tests {
                 .is_err(),
             "C2"
         );
+        // I1-I4 cross valid/foreign Agent/foreign model/version0 with history
+        // Some/omitted on ACTUAL indexed SQLite rows. Same State identity law
+        // must run before history=None can return early. Valid rows roundtrip;
+        // malformed rows report Corrupt with aggregate/index/owner byte-stutter.
+        // I5 historical initial=None stays absent for both history shapes.
+        // Normal tools/MCP authors already run the shared SQL history table;
+        // that table retains their valid initial identity through real CAS.
+        for history_present in [false, true] {
+            for fault in ["valid", "agent", "model", "version", "legacy"] {
+                let id = format!("initial-identity-{history_present}-{fault}");
+                let root = create_fixture(
+                    &repo,
+                    "owner",
+                    crate::tests::root_update_history::fresh(&id),
+                    Vec::new(),
+                )
+                .await;
+                let canonical = super::encode(&root).unwrap();
+                let mut wire: serde_json::Value = serde_json::from_str(&canonical).unwrap();
+                if !history_present {
+                    wire["aggregate"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("update_history");
+                }
+                match fault {
+                    "agent" => {
+                        wire["aggregate"]["initial_agent_configuration"]["agent_id"] =
+                            serde_json::json!("foreign")
+                    }
+                    "model" => {
+                        wire["aggregate"]["initial_agent_configuration"]["model"]["model_id"] =
+                            serde_json::json!("foreign")
+                    }
+                    "version" => {
+                        wire["aggregate"]["initial_agent_configuration"]["version"] =
+                            serde_json::json!(0)
+                    }
+                    "legacy" => {
+                        wire["aggregate"]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("initial_agent_configuration");
+                    }
+                    _ => {}
+                }
+                let raw = wire.to_string();
+                sqlx::query("UPDATE managed_session SET aggregate_json = ?1 WHERE session_id = ?2")
+                    .bind(&raw)
+                    .bind(&id)
+                    .execute(&repo.pool)
+                    .await
+                    .unwrap();
+                let before: (String, i64, String) = sqlx::query_as(
+                    "SELECT aggregate_json, revision, scope_id FROM managed_session WHERE session_id = ?1",
+                ).bind(&id).fetch_one(&repo.pool).await.unwrap();
+                let decoded = repo.get(&root.session_id).await;
+                if fault == "valid" || fault == "legacy" {
+                    let decoded = decoded.unwrap();
+                    assert_eq!(serde_json::to_value(&decoded).unwrap(), wire["aggregate"]);
+                    assert_eq!(
+                        awaken_session_state_contract::SessionUpdateHistory::for_session(&decoded)
+                            .is_some(),
+                        history_present
+                    );
+                    assert_eq!(
+                        awaken_session_state_contract::SessionUpdateHistory::agent_configuration(
+                            &decoded
+                        )
+                        .is_some(),
+                        fault == "valid"
+                    );
+                } else {
+                    assert!(
+                        matches!(
+                            &decoded,
+                            Err(awaken_session_state_contract::SessionRepositoryError::Corrupt(_))
+                        ),
+                        "I2-I4 history={history_present} fault={fault}: {decoded:?}"
+                    );
+                }
+                let after: (String, i64, String) = sqlx::query_as(
+                    "SELECT aggregate_json, revision, scope_id FROM managed_session WHERE session_id = ?1",
+                ).bind(&id).fetch_one(&repo.pool).await.unwrap();
+                assert_eq!(
+                    after, before,
+                    "I1-I5 decode writes nothing or backfills no history"
+                );
+            }
+        }
     }
 
     /// Persisted normalization cause/effect table: C1 a valid historical row

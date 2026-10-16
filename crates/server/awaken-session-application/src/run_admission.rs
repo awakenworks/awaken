@@ -852,15 +852,12 @@ impl SessionApplication {
             {
                 Ok(configured) => configured,
                 Err(first) => {
-                    if !self
-                        .abort_unadopted_session_repositories(&repository_configurations)
-                        .await
-                    {
-                        tracing::warn!(
-                            session = %session_id,
-                            "Profiled Session Repository compensation remains pending after configuration failure"
-                        );
-                    }
+                    self.compensate_request_repositories(
+    &session_id,
+    &repository_configurations,
+    "Profiled Session Repository compensation remains pending after configuration failure",
+)
+.await;
                     return Err(first.into());
                 }
             };
@@ -879,15 +876,12 @@ impl SessionApplication {
         {
             Ok(resources) => resources,
             Err(first) => {
-                if !self
-                    .abort_unadopted_session_repositories(&repository_configurations)
-                    .await
-                {
-                    tracing::warn!(
-                        session = %session_id,
-                        "Profiled Session Repository compensation remains pending after input resolution"
-                    );
-                }
+                self.compensate_request_repositories(
+    &session_id,
+    &repository_configurations,
+    "Profiled Session Repository compensation remains pending after input resolution",
+)
+.await;
                 return Err(first.into());
             }
         };
@@ -896,15 +890,12 @@ impl SessionApplication {
                 Ok(resources) => resources,
                 Err(error) => {
                     let first = RunError::bad_request(error.to_string());
-                    if !self
-                        .abort_unadopted_session_repositories(&repository_configurations)
-                        .await
-                    {
-                        tracing::warn!(
-                            session = %session_id,
-                            "Profiled Session Repository compensation remains pending after Skill binding"
-                        );
-                    }
+                    self.compensate_request_repositories(
+    &session_id,
+    &repository_configurations,
+    "Profiled Session Repository compensation remains pending after Skill binding",
+)
+.await;
                     return Err(first.into());
                 }
             };
@@ -918,15 +909,12 @@ impl SessionApplication {
             .await
         {
             let first = preparation_error(error);
-            if !self
-                .abort_unadopted_session_repositories(&repository_configurations)
-                .await
-            {
-                tracing::warn!(
-                    session = %session_id,
-                    "Profiled Session Repository compensation remains pending after credential pinning"
-                );
-            }
+            self.compensate_request_repositories(
+                &session_id,
+                &repository_configurations,
+                "Profiled Session Repository compensation remains pending after credential pinning",
+            )
+            .await;
             return Err(first.into());
         }
         for input in resources.inputs() {
@@ -945,15 +933,12 @@ impl SessionApplication {
                 let first = RunError::bad_request(format!(
                     "repository `{repository_id}` credential revision changed before Session admission"
                 ));
-                if !self
-                    .abort_unadopted_session_repositories(&repository_configurations)
-                    .await
-                {
-                    tracing::warn!(
-                        session = %session_id,
-                        "Profiled Session Repository compensation remains pending after credential drift"
-                    );
-                }
+                self.compensate_request_repositories(
+    &session_id,
+    &repository_configurations,
+    "Profiled Session Repository compensation remains pending after credential drift",
+)
+.await;
                 return Err(first.into());
             }
         }
@@ -992,6 +977,7 @@ impl SessionApplication {
         };
         self.create_session_with_completion(
             CreateSessionCommand {
+                initial_agent_configuration: None,
                 owner_scope,
                 session_id,
                 intent,

@@ -1,5 +1,10 @@
 //! Durable Session aggregate state and pure transition laws.
 
+mod update_history;
+pub use update_history::{
+    SessionFieldUpdate, SessionUpdateAgentConfiguration, SessionUpdateChanges, SessionUpdateFact,
+    SessionUpdateHistory,
+};
 mod aggregate;
 pub use aggregate::{
     SessionActivityAdmissionPlan, SessionActivityOperations, SessionAggregate,
@@ -21,6 +26,9 @@ pub(crate) use awaken_agent_contract::stable_fingerprint;
 #[cfg(test)]
 pub(crate) use awaken_session_budget_contract::ManagedModelUsageCursor;
 pub(crate) use awaken_session_budget_contract::{ManagedBudgetUsageCursor, SessionBudgetState};
+pub(crate) use awaken_session_configuration_contract::mcp::{
+    McpGenerationRef, SessionMcpAttachmentSet,
+};
 pub(crate) use awaken_session_configuration_contract::resource::{
     ResolvedInput, ResolvedInputSource, ResolvedSessionResources, ResolvedSkillBinding,
     SessionRealizationLease, SessionResourceManifest, SessionResourceTransition,
@@ -44,10 +52,6 @@ pub(crate) use awaken_session_event_contract::{
     session_inputs_allow_idle,
 };
 pub(crate) use awaken_session_types::{SessionId, SessionRevision};
-pub(crate) use {
-    awaken_agent_contract::McpTarget,
-    awaken_session_configuration_contract::mcp::{McpGenerationRef, SessionMcpAttachmentSet},
-};
 #[cfg(test)]
 pub(crate) use {
     awaken_session_configuration_contract::{
@@ -94,7 +98,7 @@ pub use session_repo::{
     SessionPlacementClass, SessionPublicStatus, SessionRepositoryConflict, SessionRepositoryError,
     SessionRepositoryRecoveryAction, SessionRunActivityAdmissionRecord, SessionScan,
     SessionScanCursor, SessionScanQuery, SessionTombstone, SessionWorkerObligation,
-    VisibleMcpServer, session_activity_settlement_plan, session_is_terminal,
+    session_activity_settlement_plan, session_is_terminal,
     session_is_unattempted_profiled_preparation, validate_complete_run_activity,
 };
 pub use terminal_cleanup::{

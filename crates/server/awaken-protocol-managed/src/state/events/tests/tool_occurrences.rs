@@ -84,6 +84,7 @@ async fn wire_tool_identity_and_permission_use_the_exact_selected_message_or_pen
     let historical = Default::default();
     let index = awaken_managed_session_events::OrderIndex::new(
         awaken_managed_session_events::OrderEvidence {
+            updates: None,
             session_id: &session.id,
             batches: &[],
             closed_intervals: &[],
@@ -128,6 +129,7 @@ async fn wire_tool_identity_and_permission_use_the_exact_selected_message_or_pen
     let empty_children = Default::default();
     let ambiguous_index = awaken_managed_session_events::OrderIndex::new(
         awaken_managed_session_events::OrderEvidence {
+            updates: None,
             session_id: &session.id,
             batches: &[],
             closed_intervals: &[],

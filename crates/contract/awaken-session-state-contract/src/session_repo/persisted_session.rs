@@ -9,6 +9,8 @@
 //! The durable Managed Session aggregate and its root-owned projections.
 
 use super::*;
+use awaken_session_configuration_contract::VisibleMcpServer;
+
 use crate::{
     SessionEventBatchError, SessionEventDispatchSettlementPlan,
     SessionEventDispatchSettlementReceipt, SessionEventProjectionAnchor,
@@ -55,15 +57,6 @@ pub fn session_is_unattempted_profiled_preparation(session: &PersistedSession) -
                 && attachment.realization.is_none()
                 && !attachment.publication_acknowledged
         })
-}
-
-/// Secret-free active MCP projection consumed by protocol adapters. It is
-/// derived from this aggregate's typed attachment state without a JSON hop.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct VisibleMcpServer {
-    pub name: String,
-    pub target: crate::McpTarget,
-    pub prompts_as_skills: bool,
 }
 
 /// The aggregate's one terminality law: execution and retention are distinct
@@ -211,6 +204,13 @@ fn initial_event_installation_decision_table_is_closed() {
 #[serde(deny_unknown_fields)]
 pub struct PersistedSession {
     pub session_id: crate::SessionId,
+    /// Lifetime-retained immutable history; old roots remain unrecorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) update_history: Option<Box<crate::SessionUpdateHistory>>,
+    /// Initial accepted presentation fact. Execution uses the original root fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) initial_agent_configuration:
+        Option<Box<awaken_session_configuration_contract::SessionAgentConfiguration>>,
     /// Durable creation and last root-mutation times. Absent means historical
     /// unknown, never the current read/recovery time. Omission preserves legacy
     /// aggregate fingerprints until the owning application commits a new fact.
@@ -336,6 +336,10 @@ impl PersistedSession {
     ) -> Self {
         Self {
             session_id: session_id.into(),
+            update_history: Some(Box::new(
+                crate::update_history::SessionUpdateHistory::fresh(),
+            )),
+            initial_agent_configuration: None,
             created_at_unix_ms: None,
             updated_at_unix_ms: None,
             revision: SessionRevision::default(),

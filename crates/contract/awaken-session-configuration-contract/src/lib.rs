@@ -1,5 +1,10 @@
 //! Immutable Session configuration and its resolution ports.
 
+mod accepted_agent;
+pub use accepted_agent::{
+    SessionAgentConfiguration, SessionAgentRoster, SessionAgentRosterMember, SessionModelChoice,
+    SessionModelSource, VisibleMcpServer,
+};
 mod agent_config;
 mod application_origin;
 mod baseline;

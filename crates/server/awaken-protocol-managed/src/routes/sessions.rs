@@ -688,16 +688,16 @@ async fn update_session(
     let idempotency_key = parse_idempotency_key(&headers)?;
     let if_match = parse_if_match(&headers, "Session")?.map(awaken_session_types::SessionRevision);
     let title = title.map(|value| match value {
-        Some(value) => awaken_session_application::SessionFieldUpdate::Replace(value),
-        None => awaken_session_application::SessionFieldUpdate::Clear,
+        Some(value) => awaken_session_state_contract::SessionFieldUpdate::Replace(value),
+        None => awaken_session_state_contract::SessionFieldUpdate::Clear,
     });
     let metadata = metadata.map(|value| match value {
         Some(value) => awaken_session_application::SessionMetadataUpdate::Patch(value),
         None => awaken_session_application::SessionMetadataUpdate::Clear,
     });
     let budget = budget.map(|value| match value {
-        Some(value) => awaken_session_application::SessionFieldUpdate::Replace(value),
-        None => awaken_session_application::SessionFieldUpdate::Clear,
+        Some(value) => awaken_session_state_contract::SessionFieldUpdate::Replace(value),
+        None => awaken_session_state_contract::SessionFieldUpdate::Clear,
     });
     let (session, response_revision) = state
         .update_session(

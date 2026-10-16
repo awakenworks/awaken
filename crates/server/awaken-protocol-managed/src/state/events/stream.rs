@@ -10,10 +10,6 @@ const LIVE_CHANNEL_CAPACITY: usize = 1024;
 
 impl ManagedState {
     pub(crate) const STREAM_DELIVERY_PAGE_SIZE: usize = 128;
-    pub(in crate::state) fn next_event_id(&self) -> String {
-        format!("evt_{}", self.event_seq.fetch_add(1, Ordering::SeqCst))
-    }
-
     /// The Session's committed SSE broadcast sender, created on first use.
     /// Capacity is generous so a fast Run's commit burst does not lag a slow
     /// subscriber into `Lagged`; an overflow wakes the same durable projection

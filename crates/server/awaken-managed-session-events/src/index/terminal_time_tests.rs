@@ -27,6 +27,7 @@ fn parent_terminal_time_has_one_durable_owner_for_every_status_role() {
         for failure_time in [Some(100), None] {
             for archive_time in [None, Some(900), Some(1)] {
                 let index = OrderIndex::new(OrderEvidence {
+                    updates: None,
                     session_id: "session",
                     batches: &[],
                     closed_intervals: &[],

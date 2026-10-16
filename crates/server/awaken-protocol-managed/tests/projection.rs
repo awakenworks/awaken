@@ -2030,9 +2030,18 @@ async fn a_delegation_projects_the_child_thread_lifecycle() {
 // Decision table: omitted=preserve; null=clear where allowed; value=replace; invalid/terminal=reject.
 #[tokio::test]
 async fn updating_a_session_commits_a_session_updated_event() {
-    let app = router(Arc::new(
-        support::state(ScriptFake::new(|| ended(vec![assistant_text("a", "hi")]))).await,
-    ));
+    // WU1/WU7: the original five clear/replace rules run through HTTP and the
+    // real SQLite root. A second Managed instance receives that same repository
+    // with no warm overlay; full wire facts (including stable ids/order) must
+    // be identical, not merely have the same count or latest title.
+    let repository = support::session_repository("update history repository").await;
+    let app = router(
+        support::shared_state_over(
+            ScriptFake::new(|| ended(vec![assistant_text("a", "hi")])),
+            repository.clone(),
+        )
+        .await,
+    );
     let id = create(&app).await;
     json_call(
         &app,
@@ -2101,6 +2110,23 @@ async fn updating_a_session_commits_a_session_updated_event() {
     assert!(updated[3].get("metadata").is_none(), "U2/E4");
     assert!(updated[4].get("title").is_none(), "U4/E4");
     assert!(updated[4].get("metadata").is_none(), "U4/E4");
+    let cold = router(
+        support::shared_state_over(
+            ScriptFake::new(|| ended(vec![assistant_text("a", "hi")])),
+            repository,
+        )
+        .await,
+    );
+    assert_eq!(
+        list_events(&cold, &id).await["data"],
+        list["data"],
+        "WU1/WU7 cold wire facts"
+    );
+    assert_eq!(
+        list_events(&app, &id).await["data"],
+        list["data"],
+        "WU1/WU7 repeated warm read"
+    );
 }
 
 // --- CE: archive commits the terminal event + makes the session read-only ----

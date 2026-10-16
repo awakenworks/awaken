@@ -244,6 +244,7 @@ mod tests {
             .collect();
         let historical_pending = HashMap::new();
         recorded_tool_permissions(&OrderIndex::new(crate::OrderEvidence {
+            updates: None,
             session_id: "root",
             batches: &[],
             closed_intervals: &[],

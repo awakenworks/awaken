@@ -208,18 +208,22 @@ pub async fn create_session<R: awaken_session_repository_contract::SessionStore>
     }
 }
 
-pub async fn replace_session<R: awaken_session_repository_contract::SessionStore>(
+pub async fn replace_session<R: awaken_session_repository_contract::SessionStore + ?Sized>(
     repo: &R,
     owner: &str,
     mut value: PersistedSession,
     key: &str,
     facts: Vec<ManagedLifecycleFact>,
 ) -> PersistedSession {
-    value.revision = repo
+    let before = repo
         .get(&value.session_id)
         .await
-        .expect("replace Session fixture exists")
-        .revision;
+        .expect("replace Session fixture exists");
+    value.revision = before.revision;
+    // A normal authoring replacement must reach the original CAS/outbox rule
+    // with its State-owned fact. Deliberate invalid/replay candidates bypass
+    // this helper; it never promotes missing old history or repairs a prefix.
+    value = record_update(&before, value, 0).into_snapshot();
     let payload = SessionMutationPayload::Replace(value.clone());
     let result = repo
         .commit(
@@ -240,6 +244,45 @@ pub async fn replace_session<R: awaken_session_repository_contract::SessionStore
     };
     value.revision = revision;
     value
+}
+
+/// Record normal fixture authoring through the single Session aggregate law.
+/// Actual deltas append once and retain the original runtime anchor; no-op
+/// replacements preserve known/unknown history without a sampled new timestamp.
+/// Both SQL backend cases and the trait-generic conformance callers use this
+/// owner. Invalid, conflict and newly lowered replay candidates bypass it.
+/// Keep the original prepared aggregate: its pending fact has revision N+1
+/// while the root remains N. App may re-stamp it once at its real commit clock;
+/// raw backend fixtures take its snapshot and let their CAS advance the root.
+pub fn record_update(
+    before: &PersistedSession,
+    candidate: PersistedSession,
+    source_commit_cursor: u64,
+) -> awaken_session_state_contract::SessionAggregate {
+    let mcp_changed = before.mcp != candidate.mcp;
+    let mut root = awaken_session_state_contract::SessionAggregate::try_from(candidate).unwrap();
+    if !root.configuration_update_changes(before, mcp_changed).any() {
+        return root;
+    }
+    root.record_configuration_update(
+        before,
+        mcp_changed,
+        SessionEventProjectionAnchor {
+            source_commit_cursor,
+        },
+    )
+    .unwrap();
+    let now = root.updated_at_unix_ms.unwrap_or(0);
+    root.compile_mutation(
+        "ws_a",
+        IdempotencyRecord {
+            key: "fixture-record-update".into(),
+            payload_hash: "fixture-record-update".into(),
+        },
+        Vec::new(),
+        now,
+    );
+    root
 }
 
 pub fn complete_terminal_cleanup(value: &mut PersistedSession) {
@@ -560,6 +603,9 @@ where
     let mutation = |title: &str, key: &str| {
         let mut replacement = current.clone();
         replacement.title = Some(title.into());
+        // M1 requires two legal authoring candidates before racing their CAS;
+        // missing history must not replace the original revision-conflict cause.
+        let replacement = record_update(&current, replacement, 0).into_snapshot();
         let payload = SessionMutationPayload::Replace(replacement);
         SessionMutation {
             expected_revision: current.revision,
@@ -1442,6 +1488,9 @@ pub async fn lifecycle_outbox_insert_failure_rolls_back_root_paths<R, Arm, Armed
 
     let mut replacement = replace_predecessor.clone();
     replacement.title = Some("rejected replacement".into());
+    // A2 reaches the actual outbox INSERT fault only with a legal authoring
+    // candidate; rejection still leaves root/receipt/outbox exactly unchanged.
+    let replacement = record_update(&replace_predecessor, replacement, 0).into_snapshot();
     let replace_payload = SessionMutationPayload::Replace(replacement);
     let replace_key = "test:atomic:replace";
     assert!(
@@ -1650,7 +1699,9 @@ where
     tombstone_requires_hidden_completed_cleanup(&fresh().await).await;
     deleted_event_admission_decision_table(&fresh().await).await;
     let cas_repo = fresh().await;
-    root_cas_decision_table(&cas_repo).await;
+    // Keep the original root-CAS phase owned on the heap: its nested
+    // materialization/legacy decode exhausted the default SQLite test stack.
+    Box::pin(root_cas_decision_table(&cas_repo)).await;
     create_receipt_decision_table(&fresh().await).await;
     concurrent_root_cas_has_one_authoritative_winner(std::sync::Arc::new(fresh().await)).await;
 }

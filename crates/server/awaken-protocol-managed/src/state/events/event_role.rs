@@ -72,6 +72,7 @@ pub(crate) const ROOT_RESCHEDULED_LIFECYCLE_STATUS_RUNNING: &str =
 pub(crate) const ROOT_TERMINAL_STATUS_RUNNING: &str =
     ManagedEventType::RootTerminalStatusRunning.as_wire_role();
 pub(crate) const RUN_CONTEXT_COMPACTED: &str = ManagedEventType::RunContextCompacted.as_wire_role();
+pub(crate) const SESSION_UPDATED: &str = ManagedEventType::SessionUpdated.as_wire_role();
 
 /// Every fixed role, for the wire-stability pin.
 pub(crate) const ALL: &[&str] = &[
@@ -113,6 +114,7 @@ pub(crate) const ALL: &[&str] = &[
     ROOT_RESCHEDULED_LIFECYCLE_STATUS_RUNNING,
     ROOT_TERMINAL_STATUS_RUNNING,
     RUN_CONTEXT_COMPACTED,
+    SESSION_UPDATED,
 ];
 
 #[cfg(test)]
@@ -247,6 +249,7 @@ mod tests {
             "run-context-compacted",
             "magent_v1_fnv1a64:7f71a099a106e092",
         ),
+        ("session-updated", "magent_v1_fnv1a64:31db6be586bded8a"),
     ];
 
     #[test]
@@ -276,8 +279,19 @@ mod tests {
 
     #[test]
     fn every_fixed_fact_role_is_pinned() {
-        // A fixed role added to the domain without a pinned id row would mint
-        // public ids no test freezes. The pin list is exactly the domain list.
+        // ID1 every fixed role has a literal pin; adding SessionUpdated must
+        // preserve all existing rows. ID2 its real Root/revision provenance
+        // yields this exact id; changing the retained revision yields another.
+        let update_id = |revision| {
+            managed_multiagent_event_id(
+                "sesn_pin",
+                "sesn_pin",
+                super::SESSION_UPDATED,
+                ManagedMultiagentEventProvenance::SessionUpdate { revision },
+            )
+        };
+        assert_eq!(update_id(7), "magent_v1_fnv1a64:7fdbf02a99fd91a5");
+        assert_ne!(update_id(7), update_id(8));
         assert_eq!(
             super::ALL.to_vec(),
             super::ManagedEventType::FIXED

@@ -330,7 +330,7 @@ fn append_committed_outcomes(
     let session_id = record.session.id.clone();
     for outcome in outcomes {
         for fact in outcome.facts(&session_id) {
-            let kind = timeline_encoding::encode_fact(record, &fact, None)?;
+            let kind = timeline_encoding::encode_fact(record, &fact, None, None)?;
             record.append_fact_once(fact.key, kind);
         }
         let CommittedOutcomeProjection::Completed(report) = &outcome.terminal else {

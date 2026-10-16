@@ -135,12 +135,15 @@ impl SessionMutationPayload {
         }
     }
 
-    /// Default Create identity excludes only the server-owned materialization
-    /// fact. All mutation/admission fingerprints still include the full root.
+    /// Default Create identity excludes server-owned materialization and W25
+    /// presentation/history facts absent from historical requests. All ordinary
+    /// mutation/admission fingerprints still include the full root.
     #[must_use]
     pub fn default_create_idempotency(session: &PersistedSession) -> IdempotencyRecord {
         let mut request = session.clone();
         request.environment_materialization = None;
+        request.initial_agent_configuration = None;
+        request.update_history = None;
         let payload_hash = Self::Replace(request).stable_hash();
         IdempotencyRecord {
             key: format!("session:create:{}:{payload_hash}", session.session_id),
@@ -205,6 +208,8 @@ pub enum SessionMutationValidationError {
     EnvironmentMaterializationChanged,
     #[error("lifecycle runtime interval payload is inconsistent")]
     RuntimeIntervalFactMismatch,
+    #[error("Session update history or initial configuration is inconsistent or was rewritten")]
+    UpdateHistoryMismatch,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -384,6 +389,7 @@ impl PersistedSession {
             replacement.updated_at_unix_ms,
         )?;
         crate::SessionEnvironmentMaterialization::validate_replacement(self, replacement)?;
+        crate::SessionUpdateHistory::validate_replacement(self, replacement)?;
         let mismatch = || SessionMutationValidationError::ActivityHistoryMismatch;
         match (
             self.run_activities.as_deref(),

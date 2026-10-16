@@ -110,7 +110,6 @@
     "SessionTerminalCleanupDisposalEffect": 2,
     "SessionTerminalCleanupEffect": 2,
     "SessionTombstone": 3,
-    "SourceDisposedReceipt": 4,
-    "VisibleMcpServer": 3
+    "SourceDisposedReceipt": 4
   }
 }

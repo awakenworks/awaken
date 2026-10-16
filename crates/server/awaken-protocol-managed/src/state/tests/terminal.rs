@@ -6,7 +6,9 @@ use awaken_session_types::SessionId;
 use awaken_tool_contract::tool_batch::ToolBatch;
 
 fn test_thread_agent(id: &str) -> SessionThreadAgent {
-    ManagedState::thread_agent_from_profile(id, Default::default())
+    SessionThreadAgent::from(&super::super::sessions::session_agent_from_configuration(
+        &super::super::sessions::agent_configuration_from_profile(id, Default::default()),
+    ))
 }
 
 async fn await_session_tombstone(

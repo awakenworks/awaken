@@ -49,6 +49,7 @@ use crate::{
 pub struct OrderEvidence<'a> {
     pub session_id: &'a str,
     /// Retained inbound batches, in root-revision order.
+    pub updates: Option<&'a awaken_session_state_contract::SessionUpdateHistory>,
     pub batches: &'a [SessionEventBatch],
     /// Closed Session runtime intervals, in root-revision order.
     pub closed_intervals: &'a [SessionRuntimeInterval],
@@ -359,6 +360,14 @@ impl<'a> OrderIndex<'a> {
             .enumerate()
             .filter_map(move |(batch_index, batch)| {
                 let anchor = batch.admission_projection_anchor?;
+                let root_rank =
+                    batch_index.checked_add(self.evidence.updates.map_or(0, |history| {
+                        history
+                            .facts()
+                            .iter()
+                            .filter(|fact| fact.admitted_batch_count() <= batch_index as u64)
+                            .count()
+                    }))?;
                 Some(
                     batch
                         .events
@@ -371,7 +380,7 @@ impl<'a> OrderIndex<'a> {
                                     processed_at_unix_ms: entry.processed_at_unix_ms,
                                     source_commit_cursor: anchor.source_commit_cursor,
                                     phase: phase::INBOUND_ADMISSION,
-                                    ordinal: Ordinal::within(batch_index, ordinal),
+                                    ordinal: Ordinal::within(root_rank, ordinal),
                                 },
                             )
                         }),
@@ -570,6 +579,71 @@ impl<'a> OrderIndex<'a> {
         }
     }
 
+    /// Complete position of Root-owned update, interval and budget facts.
+    /// Thread/lifecycle fact selection never resamples their Root coordinates.
+    fn root_fact_order(&self, key: &EventIdentity) -> Option<EventPosition> {
+        let session_id = self.evidence.session_id;
+        if key.thread != session_id {
+            return None;
+        }
+        match (&key.provenance, key.role) {
+            (FactProvenance::SessionUpdate { revision }, ManagedEventType::SessionUpdated) => {
+                let history = self.evidence.updates?;
+                let (index, fact) = history
+                    .facts()
+                    .iter()
+                    .enumerate()
+                    .find(|(_, fact)| fact.committed_revision().0 == *revision)?;
+                let source = usize::try_from(fact.admitted_batch_count())
+                    .ok()?
+                    .checked_add(index)?;
+                Some(EventPosition {
+                    source_commit_cursor: fact.observed_runtime().source_commit_cursor,
+                    phase: phase::INBOUND_ADMISSION,
+                    ordinal: Ordinal::at(source),
+                    processed_at_unix_ms: fact.recorded_at_unix_ms(),
+                })
+            }
+            (
+                FactProvenance::RuntimeInterval { interval_id },
+                ManagedEventType::AggregateUsage | ManagedEventType::AggregateStatusIdle,
+            ) => self
+                .evidence
+                .closed_intervals
+                .iter()
+                .filter(|interval| &interval.interval_id == interval_id)
+                .filter_map(|interval| {
+                    Some(EventPosition {
+                        processed_at_unix_ms: Some(interval.ended_at_unix_ms),
+                        source_commit_cursor: interval_close_cursor(interval)?,
+                        phase: key.role.phase(),
+                        ordinal: Ordinal::FIRST,
+                    })
+                })
+                .min(),
+            (
+                FactProvenance::BudgetReach { generation },
+                ManagedEventType::BudgetReachUsage | ManagedEventType::BudgetReachStatusIdle,
+            ) => self
+                .evidence
+                .budget_reach
+                .iter()
+                .enumerate()
+                .filter(|(_, anchor)| anchor.generation == *generation)
+                .filter_map(|(index, anchor)| {
+                    let source_commit_cursor = anchor.close_cursor?;
+                    Some(EventPosition {
+                        processed_at_unix_ms: self.time_for(session_id, source_commit_cursor),
+                        source_commit_cursor,
+                        phase: key.role.phase(),
+                        ordinal: Ordinal::at(index),
+                    })
+                })
+                .min(),
+            _ => None,
+        }
+    }
+
     /// The order of one keyed fact, excluding coordination facts (which the
     /// caller orders from its accepted coordination receipts) and parent
     /// terminal facts (see [`Self::parent_terminal_order`]). `None` means the
@@ -578,6 +652,13 @@ impl<'a> OrderIndex<'a> {
     pub fn fact_order(&self, key: &EventIdentity) -> Option<EventPosition> {
         let session_id = self.evidence.session_id;
         match (&key.provenance, key.role) {
+            (
+                FactProvenance::SessionUpdate { .. }
+                | FactProvenance::RuntimeInterval { .. }
+                | FactProvenance::BudgetReach { .. },
+                _,
+            ) => self.root_fact_order(key),
+
             (FactProvenance::Lifecycle { cursor }, ManagedEventType::AggregateStatusRunning) => {
                 let event = self.lifecycle_by_cursor.get(&RunLifecycleCursor(*cursor))?;
                 (key.thread == session_id && is_opening(event.kind))
@@ -605,27 +686,6 @@ impl<'a> OrderIndex<'a> {
             ) => {
                 let event = self.lifecycle_by_cursor.get(&RunLifecycleCursor(*cursor))?;
                 (key.thread == session_id).then(|| self.lifecycle_order(event, key.role))
-            }
-            (
-                FactProvenance::RuntimeInterval { interval_id },
-                ManagedEventType::AggregateUsage | ManagedEventType::AggregateStatusIdle,
-            ) => {
-                if key.thread != session_id {
-                    return None;
-                }
-                self.evidence
-                    .closed_intervals
-                    .iter()
-                    .filter(|interval| &interval.interval_id == interval_id)
-                    .filter_map(|interval| {
-                        Some(EventPosition {
-                            processed_at_unix_ms: Some(interval.ended_at_unix_ms),
-                            source_commit_cursor: interval_close_cursor(interval)?,
-                            phase: key.role.phase(),
-                            ordinal: Ordinal::FIRST,
-                        })
-                    })
-                    .min()
             }
             (
                 FactProvenance::Audit { run_id, sequence },
@@ -754,29 +814,6 @@ impl<'a> OrderIndex<'a> {
                         source_commit_cursor: outcome.terminal_commit_cursor,
                         phase: key.role.phase(),
                         ordinal: Ordinal::at(batch_index),
-                    })
-                    .min()
-            }
-            (
-                FactProvenance::BudgetReach { generation },
-                ManagedEventType::BudgetReachUsage | ManagedEventType::BudgetReachStatusIdle,
-            ) => {
-                if key.thread != session_id {
-                    return None;
-                }
-                self.evidence
-                    .budget_reach
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, anchor)| anchor.generation == *generation)
-                    .filter_map(|(index, anchor)| {
-                        let source_commit_cursor = anchor.close_cursor?;
-                        Some(EventPosition {
-                            processed_at_unix_ms: self.time_for(session_id, source_commit_cursor),
-                            source_commit_cursor,
-                            phase: key.role.phase(),
-                            ordinal: Ordinal::at(index),
-                        })
                     })
                     .min()
             }
@@ -1090,6 +1127,7 @@ mod tests {
             evaluation_commit_cursors: &evaluations,
         }];
         let evidence = |outcomes| OrderEvidence {
+            updates: None,
             session_id: SESSION,
             batches: &[],
             closed_intervals: &[],
@@ -1257,6 +1295,7 @@ mod tests {
             latest_run_id: None,
         }];
         let index = OrderIndex::new(OrderEvidence {
+            updates: None,
             session_id: SESSION,
             batches: std::slice::from_ref(&batch),
             closed_intervals: std::slice::from_ref(&interval),
@@ -1603,6 +1642,7 @@ mod tests {
             );
             let aligned = rule == "transcript" || rule == "recorded";
             let index = OrderIndex::new(OrderEvidence {
+                updates: None,
                 session_id: SESSION,
                 batches: &[],
                 closed_intervals: &[],
@@ -1707,6 +1747,7 @@ mod tests {
         macro_rules! index_over {
             ($batches:expr) => {
                 OrderIndex::new(OrderEvidence {
+                    updates: None,
                     session_id: SESSION,
                     batches: $batches,
                     closed_intervals: &[],
