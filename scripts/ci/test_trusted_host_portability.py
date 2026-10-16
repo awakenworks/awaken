@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
+import tomllib
 import unittest
 
 from _native_shell import bash_executable
@@ -56,8 +58,38 @@ run_required_rust_tests() {
 
 
 class PortabilitySelectionTests(unittest.TestCase):
+    def assert_realization_owner_plan(self, calls: list[list[str]]) -> None:
+        # The source owner supplies the package and prompt identities. A crate
+        # extraction must fail this cheap matrix before a long native build can
+        # discover an empty selection. The required runner checks live outcomes.
+        realization = ROOT / "crates/server/awaken-session-realization"
+        source = realization / "src/managed_input_layout/resource_prompt_tests.rs"
+        package = tomllib.loads((realization / "Cargo.toml").read_text(encoding="utf-8"))["package"]["name"]
+        prompt = [call for call in calls if call[3] == source.stem]
+        self.assertEqual(len(prompt), 1)
+        self.assertEqual(prompt[0][:3], ["-p", package, "--lib"])
+        names = re.findall(r"^fn (resource_prompt_\w+)\(", source.read_text(encoding="utf-8"), re.MULTILINE)
+        self.assertTrue(names, "the prompt decision tables must exist")
+        owner = source.with_name("resource_prompt.rs")
+        self.assertIn('#[path = "resource_prompt_tests.rs"]\nmod resource_prompt_tests;',
+                      owner.read_text(encoding="utf-8"))
+        module = "::".join(owner.relative_to(realization / "src").with_suffix("").parts) + "::" + source.stem
+        self.assertCountEqual(prompt[0][4:], ["--require-case=" + module + "::" + name for name in names])
+
+        host = ROOT / "crates/server/awaken-session-executor"
+        composed = host / "src/realization_composed_tests/session_environment.rs"
+        self.assertIn('mod tests;', composed.read_text(encoding="utf-8"))
+        fixture = host / "src/session_environment/tests/shared_environment.rs"
+        name = "native_process_and_agent_channel_share_one_live_environment"
+        self.assertIn("async fn " + name + "(", fixture.read_text(encoding="utf-8"))
+        module = "::".join(composed.relative_to(host / "src").with_suffix("").parts)
+        identity = module + "::tests::shared_environment::" + name
+        environment = [call for call in calls if call[3].endswith("::" + name)]
+        self.assertEqual(environment, [["-p", "awaken-session-executor", "--lib", identity,
+                                       "--require-case=" + identity, "--", "--exact"]])
+
     def assert_terminal_plan(self, calls: list[list[str]], supervision: bool) -> None:
-        host_calls = [call for call in calls if call[:3] == ["-p", "awaken-runtime-host", "--lib"]]
+        host_calls = [call for call in calls if call[:3] == ["-p", "awaken-session-executor", "--lib"]]
         portable = [call for call in host_calls if call[3] == "terminal_"]
         self.assertEqual(len(portable), 1, "portable terminal cases must execute once")
         self.assertEqual(portable[0][4:], ["--", "--skip", PUBLICATION[0], "--skip", PUBLICATION[1]])
@@ -73,12 +105,14 @@ class PortabilitySelectionTests(unittest.TestCase):
                 code, calls = select(system, ())
                 self.assertEqual(code, 0)
                 self.assert_terminal_plan(calls, False)
+                self.assert_realization_owner_plan(calls)
 
     def test_linux_supervision_requires_both_real_publication_cases(self) -> None:
         # P4 Linux plus explicit substrate gate: both names and ignored mode.
         code, calls = select("Linux", ("--linux-supervision",))
         self.assertEqual(code, 0)
         self.assert_terminal_plan(calls, True)
+        self.assert_realization_owner_plan(calls)
 
     def test_non_linux_supervision_fails_before_any_test_selection(self) -> None:
         # P5/P6 unsupported OS: fail before even the portable run starts.
