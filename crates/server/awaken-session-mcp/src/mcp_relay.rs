@@ -34,6 +34,8 @@ use futures_util::StreamExt;
 
 use crate::mcp_material::McpTransportMaterial;
 
+mod server;
+
 #[cfg(any(test, feature = "test-support"))]
 mod test_support;
 use awaken_lease_contract::fence::FenceSuccession;
@@ -103,6 +105,7 @@ const RELAY_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1
 #[derive(Clone)]
 struct RelayState {
     routes: Routes,
+    stopping: awaken_runtime_contract::CancellationToken,
     authority: GenerationAuthority,
     /// The clock route admission reads: the owning Host's process clock.
     clock: Arc<dyn awaken_time::WallClock>,
@@ -114,7 +117,8 @@ struct RelayState {
 
 impl RelayState {
     fn admits(&self, route: &Route, capability: &str) -> bool {
-        route.capability == capability
+        !self.stopping.is_cancelled()
+            && route.capability == capability
             && (self.authority)(
                 &route.generation,
                 awaken_time::WallClockExt::now_ms(self.clock.as_ref()),
@@ -155,25 +159,19 @@ impl RelayState {
     }
 }
 
-/// A running loopback MCP relay: its routing table plus the address it serves on. Cloneable
-/// (shares the table); the served task lives for the process.
+/// One running loopback MCP relay. Explicit clones share the same physical
+/// server and route table. Last-owner Drop requests closure; close_and_wait
+/// acknowledges joined local completion, separately from remote tool effects.
 #[derive(Clone)]
 pub struct McpRelay {
     routes: Routes,
+    server: Arc<server::RelayServer>,
     advertised_origin: String,
     alive: Arc<AtomicBool>,
     #[cfg(test)]
     state: RelayState,
     #[cfg(any(test, feature = "test-support"))]
     server_abort: tokio::task::AbortHandle,
-}
-
-struct RelayLiveGuard(Arc<AtomicBool>);
-
-impl Drop for RelayLiveGuard {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
-    }
 }
 
 impl McpRelay {
@@ -219,6 +217,18 @@ impl McpRelay {
         self.alive.load(Ordering::Acquire)
     }
 
+    /// Whether this original server still accepts new routes and calls.
+    pub fn is_accepting(&self) -> bool {
+        self.is_live() && !self.server.is_closing()
+    }
+
+    /// Close admission, drain original local route activity, and join the
+    /// original server. A cancelled waiter cannot lose that task or its result.
+    /// Completion proves local relay shutdown, not remote tool termination.
+    pub async fn close_and_wait(&self) -> std::io::Result<()> {
+        self.server.close_and_wait().await
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn abort_for_test(&self) {
         self.server_abort.abort();
@@ -247,8 +257,10 @@ impl McpRelay {
                     .to_owned()
             },
         );
+        let stopping = awaken_runtime_contract::CancellationToken::new();
         let state = RelayState {
             routes: routes.clone(),
+            stopping: stopping.clone(),
             authority,
             clock,
             client: awaken_outbound_http::rustls_client_builder(
@@ -269,21 +281,19 @@ impl McpRelay {
             )
             .with_state(state.clone());
         let alive = Arc::new(AtomicBool::new(true));
-        let live_guard = RelayLiveGuard(alive.clone());
-        let server = tokio::spawn(async move {
-            let _live_guard = live_guard;
-            let _ = axum::serve(listener, app).await;
-        });
-        #[cfg(not(any(test, feature = "test-support")))]
-        drop(server);
+        let server =
+            server::RelayServer::start(listener, app, routes.clone(), alive.clone(), stopping);
+        #[cfg(any(test, feature = "test-support"))]
+        let server_abort = server.abort_handle();
         Ok(Self {
             routes,
+            server,
             advertised_origin,
             alive,
             #[cfg(test)]
             state,
             #[cfg(any(test, feature = "test-support"))]
-            server_abort: server.abort_handle(),
+            server_abort,
         })
     }
 
@@ -318,6 +328,9 @@ impl McpRelay {
     ) -> Option<CapturedRelayRoute> {
         let url = server.http_url()?;
         let mut routes = self.routes.lock().unwrap();
+        if self.server.is_closing() {
+            return None;
+        }
         let key = route_key(generation);
         if routes.contains_key(&key) {
             return None;
@@ -381,6 +394,9 @@ impl McpRelay {
         server: &McpTransportMaterial,
     ) -> bool {
         let mut routes = self.routes.lock().unwrap();
+        if self.server.is_closing() {
+            return false;
+        }
         // Only a renewal of the staging tenure may advance the route: a
         // predecessor or successor tenure of the same key, or a shortened
         // expiry, fails closed.
@@ -713,6 +729,7 @@ mod tests {
         });
         let state = RelayState {
             routes: Arc::new(Mutex::new(HashMap::new())),
+            stopping: awaken_runtime_contract::CancellationToken::new(),
             authority: Arc::new(|_, _| true),
             clock: awaken_time::system_clock(),
             client: reqwest::Client::builder().no_proxy().build().unwrap(),
@@ -1726,3 +1743,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod relay_lifetime_tests;
