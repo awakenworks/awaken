@@ -37,7 +37,7 @@ PG_RECOVERY_TIMEOUT_SECONDS="${AWAKEN_PG_RECOVERY_TIMEOUT_SECONDS:-900}"
 # once held CI for eight. The budget below is the whole gate's wall clock, and
 # it is checked before every execution stage rather than by a second timer, so the failure
 # names the stage that ran out instead of killing an unrelated child.
-# Owned cleanup retains the existing operation deadline after that budget expires.
+# Owned diagnostics and cleanup retain their operation deadlines after execution expires.
 PG_GATE_BUDGET_SECONDS="${AWAKEN_PG_GATE_BUDGET_SECONDS:-5400}"
 PG_GATE_STARTED=$SECONDS
 
@@ -53,10 +53,16 @@ pg_run_with_deadline() {
     return 2
   }
   local elapsed=$((SECONDS - PG_GATE_STARTED))
-  if [[ "$stage" != cleanup-* ]] && [ "$elapsed" -ge "$PG_GATE_BUDGET_SECONDS" ]; then
+  if [[ "$stage" != cleanup-* && "$stage" != diagnostic-* ]] && [ "$elapsed" -ge "$PG_GATE_BUDGET_SECONDS" ]; then
     echo "PostgreSQL gate exhausted its ${PG_GATE_BUDGET_SECONDS}s budget before $stage" >&2
     echo "    (${elapsed}s elapsed; raise AWAKEN_PG_GATE_BUDGET_SECONDS only with a reason)" >&2
     return 124
+  fi
+  # A stage admitted just before the gate deadline may consume only the
+  # remaining gate budget. Owned cleanup keeps its independent operation bound.
+  if [[ "$stage" != cleanup-* && "$stage" != diagnostic-* ]]; then
+    local remaining=$((PG_GATE_BUDGET_SECONDS - elapsed))
+    [ "$seconds" -le "$remaining" ] || seconds=$remaining
   fi
   local started=$SECONDS
   printf 'postgres stage=%s event=start budget_seconds=%s gate_elapsed_seconds=%s\n' \
@@ -339,6 +345,37 @@ self_test() {
     echo "Postgres gate refused a stage that was inside its whole-gate budget" >&2
     return 1
   }
+  # P17 a stage that fits its own timeout can still overrun the remaining
+  # whole-gate budget. Observe the actual argument passed to the deadline
+  # owner, and retain the command failure. Cleanup remains independently
+  # bounded even when the execution budget is almost spent.
+  (
+    PG_GATE_BUDGET_SECONDS=60
+    PG_GATE_STARTED=$((SECONDS - 50))
+    local observed=0 result=0
+    run_with_deadline() { observed="$1"; shift; "$@"; }
+    pg_run_with_deadline remaining-budget 30 bash -c 'exit 23' || result=$?
+    [ "$result" -eq 23 ] && [ "$observed" -gt 0 ] && [ "$observed" -le 10 ] || exit 1
+    result=0
+    pg_run_with_deadline cleanup-budget 30 bash -c 'exit 31' || result=$?
+    [ "$result" -eq 31 ] && [ "$observed" -eq 30 ]
+  ) || {
+    echo "PostgreSQL stage deadline must fit the remaining gate budget and preserve cleanup" >&2
+    return 1
+  }
+  # P18 exhaustion refuses new tests, but cannot suppress bounded failure
+  # diagnostics before teardown. Preserve their exact command status too.
+  (
+    PG_GATE_BUDGET_SECONDS=60
+    PG_GATE_STARTED=$((SECONDS - 61))
+    local observed=0 result=0
+    run_with_deadline() { observed="$1"; shift; "$@"; }
+    pg_run_with_deadline diagnostic-fixture 30 bash -c 'exit 23' || result=$?
+    [ "$result" -eq 23 ] && [ "$observed" -eq 30 ]
+  ) || {
+    echo "PostgreSQL gate must retain bounded diagnostics after its execution budget" >&2
+    return 1
+  }
   grep -Fq 'pg_run_with_deadline recovery-drill "$PG_RECOVERY_TIMEOUT_SECONDS"' "$0" || {
     echo "Postgres recovery drill has no stage deadline" >&2
     return 1
@@ -417,7 +454,7 @@ self_test() {
     echo "Postgres gate omits explicit shared checkout correctness" >&2
     return 1
   }
-  grep -Fqx 'pg_test cargo test -p awaken-coordinator application_access_store::tests::provisioned_postgres_application_access_durability_release_gate -- --ignored --exact || record_failure "$?"' "$0" || {
+  grep -Fqx 'pg_required_test -p awaken-coordinator --locked --lib application_access_store::tests::provisioned_postgres_application_access_durability_release_gate --require-case=application_access_store::tests::provisioned_postgres_application_access_durability_release_gate -- --ignored --exact --test-threads=1 || record_failure "$?"' "$0" || {
     echo "Postgres gate omits fail-closed ApplicationAccess durability conformance" >&2
     return 1
   }
@@ -544,10 +581,10 @@ startup_diagnostics() {
   local name="$1"
   # Read only this invocation's attempted container, including lost create
   # responses. Never inspect Config.Env or broaden to other Docker resources.
-  pg_run_with_deadline container-state "$PG_OPERATION_TIMEOUT_SECONDS" \
+  pg_run_with_deadline diagnostic-container-state "$PG_OPERATION_TIMEOUT_SECONDS" \
     docker inspect --format 'status={{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} error={{json .State.Error}}' \
     "$name" >&3 2>&3 || true
-  pg_run_with_deadline container-logs "$PG_OPERATION_TIMEOUT_SECONDS" \
+  pg_run_with_deadline diagnostic-container-logs "$PG_OPERATION_TIMEOUT_SECONDS" \
     docker logs --tail 40 "$name" >&3 2>&3 || true
 }
 
@@ -743,7 +780,7 @@ pg_test cargo test -p awaken-cli --lib installation_binding::tests::postgres_pre
 # cap and closed-pool rejection, never a no-database/default-suite passing skip.
 # The Rust case owns adapter assertions; this runner owns fixture and deadlines.
 pg_test cargo test -p awaken-cli --lib postgres_pools::tests::live_coordinator_adapters_share_the_process_connection_ceiling -- --ignored --test-threads=1 --exact || record_failure "$?"
-pg_test cargo test -p awaken-coordinator application_access_store::tests::provisioned_postgres_application_access_durability_release_gate -- --ignored --exact || record_failure "$?"
+pg_required_test -p awaken-coordinator --locked --lib application_access_store::tests::provisioned_postgres_application_access_durability_release_gate --require-case=application_access_store::tests::provisioned_postgres_application_access_durability_release_gate -- --ignored --exact --test-threads=1 || record_failure "$?"
 pg_test cargo test -p awaken-config-store --features test-support --test postgres || record_failure "$?"
 AWAKEN_CRASH_BACKEND=postgres pg_required_test -p awaken-config-store --locked --test process_crash_audit || record_failure "$?"
 AWAKEN_CRASH_BACKEND=postgres pg_required_test -p awaken-session-store --locked --test process_crash_outbox || record_failure "$?"

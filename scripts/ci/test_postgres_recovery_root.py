@@ -454,5 +454,77 @@ class RecoveryRootTests(unittest.TestCase):
                 retained.rename(path)
 
 
+
+class CoordinatorDurabilitySelectionTests(unittest.TestCase):
+    def test_exact_library_case_and_execution_evidence_are_required(self):
+        # S1 one library-only, locked, ignored exact case with a required
+        # execution receipt passes the producer guard. S2 independently remove
+        # the library target, lock, required case, ignored selector or exact
+        # selector: the actual --self-test must reject the changed runtime
+        # command. Only the runtime line is mutated; the guard is left intact.
+        producer = DRILL.with_name("pg_tests.sh")
+        original = producer.read_text(encoding="utf-8")
+        commands = [line for line in original.splitlines()
+                    if line.startswith("pg_required_test -p awaken-coordinator ")]
+        self.assertEqual(len(commands), 1)
+        command = commands[0]
+        case = "application_access_store::tests::provisioned_postgres_application_access_durability_release_gate"
+        required = "--require-case=" + case
+        arguments = shlex.split(command)
+        for token in ("--lib", "--locked", case, required, "--ignored", "--exact"):
+            self.assertIn(token, arguments)
+        with tempfile.TemporaryDirectory(prefix="awaken-pg-selector-") as directory:
+            root = Path(directory)
+            scripts = root / "scripts/ci"
+            shutil.copytree(DRILL.parent, scripts, ignore=shutil.ignore_patterns("__pycache__"))
+            target = scripts / "pg_tests.sh"
+            # This decision table owns the producer's selector only. The
+            # recovery drill has separate real admission and cleanup tests;
+            # avoid nesting those suites in every selector mutation.
+            drill = scripts / "postgres_recovery_drill.sh"
+            drill.write_text('#!/usr/bin/env bash\n[ "$#" -eq 1 ] && [ "$1" = --self-test ]\n',
+                             encoding="utf-8", newline="\n")
+            drill.chmod(0o755)
+            environment = {name: value for name, value in os.environ.items()
+                           if not name.startswith("AWAKEN_PG_")}
+            environment["TMPDIR"] = root.as_posix()
+            # Prove the unmodified command reaches and passes the guard
+            # before interpreting any rejected mutation as evidence.
+            result = invoke_fixture([bash_executable(), str(target), "--self-test"],
+                                    cwd=root, env=environment, capture_output=True,
+                                    text=True, stdin=subprocess.DEVNULL)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            for omitted in ("--lib", "--locked", required, "--ignored", "--exact"):
+                with self.subTest(omitted=omitted):
+                    replacement = command.replace(omitted + " ", "", 1)
+                    self.assertEqual(original.count("\n" + command + "\n"), 1)
+                    target.write_text(original.replace("\n" + command + "\n", "\n" + replacement + "\n", 1),
+                                      encoding="utf-8", newline="\n")
+                    result = invoke_fixture([bash_executable(), str(target), "--self-test"],
+                                            cwd=root, env=environment, capture_output=True,
+                                            text=True, stdin=subprocess.DEVNULL)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("ApplicationAccess durability conformance", result.stderr)
+            # Keep the selector guard while removing only the runtime budget
+            # clamp. The producer's real boundary table must detect the overrun.
+            clamp = '    [ "$seconds" -le "$remaining" ] || seconds=$remaining\n'
+            self.assertEqual(original.count(clamp), 1)
+            target.write_text(original.replace(clamp, "", 1), encoding="utf-8", newline="\n")
+            result = invoke_fixture([bash_executable(), str(target), "--self-test"],
+                                    cwd=root, env=environment, capture_output=True,
+                                    text=True, stdin=subprocess.DEVNULL)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("stage deadline must fit the remaining gate budget", result.stderr)
+            # Expired execution must retain the independent diagnostic budget.
+            diagnostic = ' && "$stage" != diagnostic-*'
+            self.assertEqual(original.count(diagnostic), 2)
+            target.write_text(original.replace(diagnostic, ""), encoding="utf-8", newline="\n")
+            result = invoke_fixture([bash_executable(), str(target), "--self-test"],
+                                    cwd=root, env=environment, capture_output=True,
+                                    text=True, stdin=subprocess.DEVNULL)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("retain bounded diagnostics after its execution budget", result.stderr)
+
+
 if __name__ == "__main__":
     strict_unittest.main()
