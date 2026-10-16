@@ -847,14 +847,18 @@ async fn complete_projection_preserves_the_canonical_repository_path_without_rel
 /// ManagedHost uses that sole implementation and retains the Environment until
 /// first execution, replay, and the ordered terminal reconciliation have
 /// produced evidence.
+#[cfg(target_os = "linux")]
 #[tokio::test]
+#[ignore = "requires the mandatory Linux Namespace substrate gate"]
 async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays() {
     for retained_terminal in [false, true] {
         terminal_repository_publication_fixture(retained_terminal, false).await;
     }
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
+#[ignore = "requires the mandatory Linux Namespace substrate gate"]
 async fn terminal_repository_publication_closed_source_converges_without_git() {
     // S1 the exact aggregate binding and current lease remain valid, but the
     // provider observes the test-owned filesystem has disappeared before Git.
@@ -865,17 +869,14 @@ async fn terminal_repository_publication_closed_source_converges_without_git() {
     terminal_repository_publication_fixture(false, true).await;
 }
 
+#[cfg(target_os = "linux")]
 async fn terminal_repository_publication_fixture(retained_terminal: bool, source_closed: bool) {
     let temp = tempfile::tempdir().expect("publication fixture");
     let sandbox_root = temp.path().join("sandboxes");
     let namespace_probe = awaken_sandbox_local::NamespaceProvider::new(&sandbox_root);
-    if awaken_provisioning_contract::SandboxProvider::probe_ready(&namespace_probe)
+    awaken_provisioning_contract::SandboxProvider::probe_ready(&namespace_probe)
         .await
-        .is_err()
-    {
-        eprintln!("skipping Namespace execution assertion: OS sandbox/user namespaces unavailable");
-        return;
-    }
+        .expect("the required Linux publication gate needs a working Namespace substrate");
     let remote = temp.path().join("remote.git");
     let seed = temp.path().join("seed");
     let git = |cwd: &std::path::Path, args: &[&str]| {
