@@ -628,6 +628,26 @@ pub struct ResourceStagingState {
 }
 
 impl ResourceStagingState {
+    /// Exact installed handles to consider for recovery, once per Arc identity.
+    /// Distinct handles may share storage coordinates and retain separate commit attachments.
+    pub fn memory_recovery_bindings(&self) -> Vec<Arc<MemoryBinding>> {
+        let mut bindings = Vec::new();
+        for memory in self
+            .memory_bindings
+            .values()
+            .cloned()
+            .chain(self.memory.iter().cloned())
+        {
+            if !bindings
+                .iter()
+                .any(|existing| Arc::ptr_eq(existing, &memory))
+            {
+                bindings.push(memory);
+            }
+        }
+        bindings
+    }
+
     /// Select the one Resource manifest carried by a newly authored durable
     /// Run dispatch. A prepared Session carries the aggregate's desired
     /// generation so a cold Worker can realize that exact transition; legacy

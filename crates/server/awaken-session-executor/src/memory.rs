@@ -558,24 +558,7 @@ impl crate::RunAssembly {
                 return Ok(0);
             }
             let bindings = realizations
-                .read_realization(session_thread, |r| {
-                    let mut bindings: Vec<Arc<MemoryBinding>> = Vec::new();
-                    for memory in r
-                        .staging()
-                        .memory_bindings
-                        .values()
-                        .cloned()
-                        .chain(r.staging().memory.iter().cloned())
-                    {
-                        if !bindings
-                            .iter()
-                            .any(|existing| Arc::ptr_eq(existing, &memory))
-                        {
-                            bindings.push(memory);
-                        }
-                    }
-                    bindings
-                })?
+                .read_realization(session_thread, |r| r.staging().memory_recovery_bindings())?
                 .unwrap_or_default();
             let mut scheduled = 0;
             for binding in bindings {

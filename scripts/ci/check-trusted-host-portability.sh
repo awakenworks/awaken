@@ -44,7 +44,9 @@ cargo test --locked -p awaken-session-store --test process_crash_outbox \
 # process/ACP/prompt view; platform-native relative prompt paths; mismatched
 # fallback candidates reject before launch. The Local provider suite adds the
 # native Sandbox lifecycle and filesystem boundary on the executing OS.
-run_required_rust_tests -p awaken-session-executor --lib resource_prompt_tests
+run_required_rust_tests -p awaken-session-realization --lib resource_prompt_tests \
+  --require-case=managed_input_layout::resource_prompt::resource_prompt_tests::resource_prompt_variable_decision_table_is_closed_and_provider_relative \
+  --require-case=managed_input_layout::resource_prompt::resource_prompt_tests::resource_prompt_templates_preserve_literals_and_never_expand_resource_data
 run_required_rust_tests -p awaken-session-executor --lib trusted_host_repository_projection_preserves_the_exact_tier
 run_required_rust_tests -p awaken-session-environment --lib trusted_host_live_resource_admission_keeps_readonly_advisory
 # Memory replay decision tables cover absent/exact/different installed pins,
@@ -90,8 +92,9 @@ run_required_rust_tests -p awaken-execution-composition --lib \
   "$launch_selection" --require-case="$launch_selection" -- --exact
 run_required_rust_tests -p awaken-session-executor --lib \
   model_pool_working_directory_is_one_attempt_invariant
+shared_environment=realization_composed_tests::session_environment::tests::shared_environment::native_process_and_agent_channel_share_one_live_environment
 run_required_rust_tests -p awaken-session-executor --lib \
-  session_environment::tests::shared_environment::native_process_and_agent_channel_share_one_live_environment -- --exact
+  "$shared_environment" --require-case="$shared_environment" -- --exact
 run_required_rust_tests -p awaken-agent-config --lib \
   backend_owned_selection_cannot_encode_an_inexact_backend_or_model
 cargo test -p awaken-run-executor-acp --lib
