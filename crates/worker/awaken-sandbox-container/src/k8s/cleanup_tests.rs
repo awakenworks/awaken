@@ -13,6 +13,7 @@ use tokio::sync::{Notify, Semaphore};
 
 use super::participants::tests::ClosedProjectedRequests;
 
+mod original_guard_succession;
 mod retained_plan;
 mod retained_source;
 
@@ -229,6 +230,9 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
     // then the same authorized UID disposal. CC2 missing original handoff or
     // altered pinned forwarder projection -> Unknown; no JoinedEmpty borrow.
     // CC3 Ready/Provisioning -> NotReady before owner transfer/live binding.
+    // CC4 a published full V3 + Control + original member UID set and a
+    // deleting Failed source with an exact live PVC uses the same preparation
+    // and selected-original-guard disposal, without a handle-free fallback.
     // This adds no Memory/Secret source permission or old-execution closure.
     use crate::ContainerHandleCodec as _;
     use awaken_container_contract::ContainerEnvironmentProvider as _;
@@ -240,6 +244,7 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
         "missing-ticket",
         "missing-results",
         "control-terminal",
+        "control-deleting-bound",
         "control-empty",
         "control-missing-results",
         "control-empty-no-results",
@@ -251,14 +256,22 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
     ] {
         let (mut source, state, reached, release, server) = fixture(0, false).await;
         let control = row.starts_with("control-");
-        source.continuation_volume = None;
+        let retained_bound = row == "control-deleting-bound";
+        source.continuation_volume = retained_bound.then(|| crate::K8sContinuationVolume {
+            storage_class_name: None,
+            size: "1Gi".into(),
+        });
         let scope = format!("rich-provider-{row}");
         let mut spec = crate::tests::spec(&scope);
         spec.mounts.clear();
         spec.env.clear();
         spec.control_services.clear();
         spec.limits.pids = None;
-        spec.filesystem_continuity = pc::FilesystemContinuity::Ephemeral;
+        spec.filesystem_continuity = if retained_bound {
+            pc::FilesystemContinuity::Retained
+        } else {
+            pc::FilesystemContinuity::Ephemeral
+        };
         for (name, mount_source) in [
             (
                 "text",
@@ -312,6 +325,7 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
         let original_tickets = Arc::new(Mutex::new(Vec::new()));
         let mut recovery = K8sRuntime::for_test(state.lock().unwrap().server_addr);
         recovery.clients.control = source.clients.control.clone();
+        recovery.continuation_volume = source.continuation_volume.clone();
         if control {
             recovery = recovery.with_sandbox_control_forwarder(
                 K8sSandboxControlForwarder::new(
@@ -364,6 +378,9 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
             &plan.image,
         );
         source.stamp_effect_evidence(&mut pod, &context, &realization);
+        if retained_bound {
+            continuation::bind_claim_uid(&mut pod, "claim-uid");
+        }
         participants::declare(&mut pod, &id, &plan).unwrap();
         stamp_pod_realization(&mut pod).unwrap();
         pod.metadata.uid = Some("pod-uid".into());
@@ -401,7 +418,17 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
         {
             let mut state = state.lock().unwrap();
             state.pod = Some(pod.clone());
-            state.claim = None;
+            state.claim = if retained_bound {
+                let mut claim =
+                    continuation::build_claim(&id, source.continuation_volume.as_ref().unwrap())
+                        .unwrap();
+                claim.metadata.uid = Some("claim-uid".into());
+                claim.metadata.resource_version = Some("1".into());
+                claim.metadata.namespace = Some("default".into());
+                Some(claim)
+            } else {
+                None
+            };
             state.projected.clear();
             state.accept_projected_creates = true;
         }
@@ -427,6 +454,26 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
             state.writes.len()
         };
         assert_eq!(original_set.objects.len(), spec.mounts.len());
+        let bound_handle = if retained_bound {
+            retain_terminal_original(&state, true);
+            Some(
+                crate::recovery::terminal_handle(
+                    &spec,
+                    pod_name.clone(),
+                    crate::ContainerContinuationHandle::KubernetesContinuationV3 {
+                        pod_uid: "pod-uid".into(),
+                        claim_uid: Some("claim-uid".into()),
+                        participants: Box::new(original_set.clone()),
+                    },
+                    adoption.clone(),
+                    realization.clone(),
+                    recovery.supports_live_input_projection(),
+                )
+                .unwrap(),
+            )
+        } else {
+            None
+        };
         let first = original_set.objects.first();
         match row {
             "foreign-member" => {
@@ -494,7 +541,7 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
         let result = provider
             .prepare_terminal_environment_for_effect(
                 &spec,
-                None,
+                bound_handle.as_ref(),
                 Some(&create),
                 &terminal,
                 &terminal_authority,
@@ -1036,6 +1083,7 @@ struct ApiState {
     accept_projected_creates: bool,
     created_tickets: Vec<CreateTicket>,
     cut_after_call: Option<String>,
+    cut_after_write: Option<(String, usize)>,
     projected_lists: usize,
     projected_deleted: Arc<Semaphore>,
     release_conflict: bool,
@@ -1097,6 +1145,26 @@ impl ApiState {
                         json!({"kind":"Status", "apiVersion":"v1", "status":"Failure", "reason":"Conflict", "message":"stale UID or resourceVersion", "code":409}),
                     );
                 }
+                if old.metadata.deletion_timestamp.is_some()
+                    && replacement
+                        .metadata
+                        .finalizers
+                        .as_ref()
+                        .is_some_and(|requested| {
+                            requested.iter().any(|value| {
+                                !old.metadata
+                                    .finalizers
+                                    .as_ref()
+                                    .is_some_and(|retained| retained.contains(value))
+                            })
+                        })
+                {
+                    return (
+                        422,
+                        json!({"kind":"Status", "apiVersion":"v1", "status":"Failure",
+                        "reason":"Invalid", "message":"no new finalizers can be added if the object is being deleted", "code":422}),
+                    );
+                }
                 let releasing = continuation::pod_cleanup_gate_held(old)
                     && !continuation::pod_cleanup_gate_held(&replacement);
                 let guarded = |pod: &Pod| {
@@ -1133,7 +1201,12 @@ impl ApiState {
                 } else {
                     Some(replacement.clone())
                 };
-                if releasing {
+                if (releasing || releasing_original)
+                    && self
+                        .claim
+                        .as_ref()
+                        .is_some_and(|claim| claim.metadata.deletion_timestamp.is_some())
+                {
                     self.claim = None;
                 }
                 (200, json!(replacement))
@@ -1594,6 +1667,15 @@ fn fixture_original_participants<'a>(
     annotations.insert(SANDBOX_REALIZATION_ANNOTATION.into(), "frozen-spec".into());
 }
 
+fn retain_terminal_original(state: &Mutex<ApiState>, deleting: bool) {
+    let mut state = state.lock().unwrap();
+    let pod = state.pod.as_mut().unwrap();
+    pod.metadata.finalizers = Some(vec![create_ledger::ORIGINAL_GUARD_FINALIZER.into()]);
+    pod.status = Some(serde_json::from_value(json!({"phase":"Failed"})).unwrap());
+    pod.metadata.deletion_timestamp =
+        deleting.then(|| serde_json::from_value(json!("2026-10-14T06:37:35Z")).unwrap());
+}
+
 async fn fixture(
     cut: usize,
     conflict: bool,
@@ -1656,6 +1738,7 @@ async fn fixture_with_cut(
         accept_projected_creates: false,
         created_tickets: Vec::new(),
         cut_after_call: None,
+        cut_after_write: None,
         projected_lists: 0,
         projected_deleted: Arc::new(Semaphore::new(0)),
         release_conflict: conflict,
@@ -1677,8 +1760,25 @@ async fn fixture_with_cut(
             let (status, response, count, selected_cut) = {
                 let mut state = serving.lock().unwrap();
                 let (status, response) = state.response(&method, &path, body);
-                let selected_cut =
-                    state.cut_after_call.as_deref() == Some(&format!("{method} {path}"));
+                let write = format!("{method} {}", path.split('/').nth(5).unwrap());
+                let selected_write = (200..300).contains(&status)
+                    && state
+                        .cut_after_write
+                        .as_ref()
+                        .is_some_and(|(selected, nth)| {
+                            selected == &write
+                                && state
+                                    .writes
+                                    .iter()
+                                    .filter(|entry| *entry == selected)
+                                    .count()
+                                    == *nth
+                        });
+                if selected_write {
+                    state.cut_after_write = None;
+                }
+                let selected_cut = selected_write
+                    || state.cut_after_call.as_deref() == Some(&format!("{method} {path}"));
                 if selected_cut {
                     state.cut_after_call = None;
                 }
@@ -2066,49 +2166,51 @@ async fn broker_original_guard_releases_after_exact_terminal_cleanup() {
     // observes original UID absence. Rules BG1=C1+C2(unreceipted)->E1,
     // BG2=C1+C2(current)+C3->E2. A disappearing/foreign UID remains covered
     // by the existing KCE/KCA failure rows.
-    let (runtime, state, _, _, server) = fixture(0, false).await;
-    state
-        .lock()
-        .unwrap()
-        .pod
-        .as_mut()
-        .unwrap()
-        .metadata
-        .finalizers = Some(vec![create_ledger::ORIGINAL_GUARD_FINALIZER.into()]);
-    let authorization = crate::tests::disposal_authorization(
-        &pc::SandboxEffectFence::new("cleanup", "owner", "boot", 1, u64::MAX - 1).unwrap(),
-    );
-    let authority = EffectAuthority::new(authorization.effect_fence());
-    let handle = continuation::handle_extra(state.lock().unwrap().pod.as_ref().unwrap()).unwrap();
-    assert!(runtime.remove("awaken-cleanup").await.is_err(), "BG1");
-    assert!(state.lock().unwrap().writes.is_empty(), "BG1 no mutation");
-    runtime
-        .remove_exact_incarnation(
-            "awaken-cleanup",
-            handle.as_ref(),
-            &authorization,
-            &authority,
-        )
-        .await
-        .unwrap();
-    {
-        let state = state.lock().unwrap();
-        assert!(
-            state.pod.is_none() && state.claim.is_none() && state.projected.is_empty(),
-            "BG2"
+    // BG3 additionally crosses the terminal source with a pre-existing DELETE.
+    // The source's guard must be adopted by CAS without adding a new finalizer;
+    // UID deletion and every original projected object remain required.
+    for deleting in [false, true] {
+        let (runtime, state, _, _, server) = fixture(0, false).await;
+        retain_terminal_original(&state, deleting);
+        let authorization = crate::tests::disposal_authorization(
+            &pc::SandboxEffectFence::new("cleanup", "owner", "boot", 1, u64::MAX - 1).unwrap(),
         );
-        assert!(
-            state
-                .writes
-                .iter()
-                .filter(|write| write.as_str() == "PUT pods")
-                .count()
-                >= 3,
-            "BG2 both finalizers were CASed"
-        );
+        let authority = EffectAuthority::new(authorization.effect_fence());
+        let handle =
+            continuation::handle_extra(state.lock().unwrap().pod.as_ref().unwrap()).unwrap();
+        assert!(runtime.remove("awaken-cleanup").await.is_err(), "BG1");
+        assert!(state.lock().unwrap().writes.is_empty(), "BG1 no mutation");
+        // This fixture owns only exact physical removal under an existing
+        // disposal authorization. Full source observation/preparation uses the
+        // canonical producer/spec fixture in retained_plan below.
+        runtime
+            .remove_exact_incarnation(
+                "awaken-cleanup",
+                handle.as_ref(),
+                &authorization,
+                &authority,
+            )
+            .await
+            .unwrap();
+        {
+            let state = state.lock().unwrap();
+            assert!(
+                state.pod.is_none() && state.claim.is_none() && state.projected.is_empty(),
+                "BG2"
+            );
+            assert!(
+                state
+                    .writes
+                    .iter()
+                    .filter(|w| w.as_str() == "PUT pods")
+                    .count()
+                    >= if deleting { 2 } else { 3 },
+                "BG2/BG3 original protection is released only by the authorized gate"
+            );
+        }
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
     }
-    server.abort();
-    assert!(server.await.unwrap_err().is_cancelled());
 }
 
 #[tokio::test]
