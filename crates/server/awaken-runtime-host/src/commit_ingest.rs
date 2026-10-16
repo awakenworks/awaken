@@ -265,11 +265,11 @@ mod tests {
             host.installed_sessions
                 .read(thread, |slot| {
                     slot.run.context.is_none()
-                        && !slot.realization.environment_owner.has_local_environment()
+                        && !slot.realization.environment.owner.has_local_environment()
                         && slot.inputs.workspace.is_none()
-                        && slot.realization.manifest.is_none()
-                        && slot.realization.memory_bindings.is_empty()
-                        && slot.realization.memory.is_none()
+                        && slot.realization.staging.manifest.is_none()
+                        && slot.realization.staging.memory_bindings.is_empty()
+                        && slot.realization.staging.memory.is_none()
                 })
                 .unwrap_or(true),
             "{rule}: claimed commit must not realize a Session projection"

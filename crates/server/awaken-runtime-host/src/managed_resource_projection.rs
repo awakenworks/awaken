@@ -105,7 +105,7 @@ impl crate::realization_executor::RealizationExecutor {
         let awaiting_adoption = live_environment.is_none()
             && (prospective_environment_binding
                 || realizations
-                    .read_realization(thread, |r| r.environment_owner.durable_binding().is_some())
+                    .read_realization(thread, |r| r.environment.owner.durable_binding().is_some())
                     .unwrap_or(false));
         if awaiting_adoption {
             // The bound provider substrate is the only physical prior
@@ -128,7 +128,7 @@ impl crate::realization_executor::RealizationExecutor {
                 .map_err(skill_store_run_error)?;
             realizations.update_realization(thread, |r| {
                 r.validate_preparation_publication(realization_lease)?;
-                r.skills = Some(versions);
+                r.staging.skills = Some(versions);
                 Ok(())
             })?;
             return Ok(());
@@ -157,7 +157,7 @@ impl crate::realization_executor::RealizationExecutor {
         // Worker enters the frozen Session realization path.
         realizations.enter_session_dispatch(thread);
         let checks = realizations
-            .read_realization(thread, |r| r.resources.binding_checks.clone())
+            .read_realization(thread, |r| r.staging.resources.binding_checks.clone())
             .unwrap_or_default();
         if checks.is_empty() {
             return Ok(());
@@ -257,12 +257,12 @@ impl crate::realization_executor::RealizationExecutor {
         // effect below.
         self.validate_effective_resource_layout(thread, inputs)?;
         sessions.update_realization(thread, |r| {
-            r.resource_transition = Some(transition.clone());
+            r.staging.transition = Some(transition.clone());
         });
         let live_environment = self.session_environment(thread).await;
         let awaiting_adoption = live_environment.is_none()
             && sessions
-                .read_realization(thread, |r| r.environment_owner.durable_binding().is_some())
+                .read_realization(thread, |r| r.environment.owner.durable_binding().is_some())
                 .unwrap_or(false);
         let (baseline_is_staged, session_dispatch, reconciliation, environment_projection) =
             sessions
@@ -270,7 +270,7 @@ impl crate::realization_executor::RealizationExecutor {
                     (
                         slot.inputs.baseline.is_some(),
                         slot.run.session_dispatch(),
-                        slot.realization.environment_resource_reconciliation,
+                        slot.realization.staging.reconciliation,
                         slot.inputs.environment_projection.clone(),
                     )
                 })
@@ -579,7 +579,7 @@ impl crate::realization_executor::RealizationExecutor {
                 // must not reinstall a second projection after publication.
                 if reconcile_skills {
                     let versions = sessions
-                        .read_realization(thread, |r| r.skills.clone())
+                        .read_realization(thread, |r| r.staging.skills.clone())
                         .flatten()
                         .ok_or_else(|| {
                             RunError::internal("compiled pinned Skill bytes are missing")
@@ -670,7 +670,7 @@ impl crate::realization_executor::RealizationExecutor {
             update.commit();
         }
         sessions.update_realization(thread, |r| {
-            r.environment_resource_reconciliation = EnvironmentResourceReconciliation::None;
+            r.staging.reconciliation = EnvironmentResourceReconciliation::None;
         });
         self.evict_session_for_rebuild(thread).await;
         Ok(())
@@ -689,7 +689,7 @@ impl crate::resource_staging::ResourceStaging {
         let sessions = &self.sessions;
         let cache_matches = sessions
             .read_realization(thread, |r| {
-                r.staged_resource_effect_key.as_deref() == Some(effect_key)
+                r.staging.effect_key.as_deref() == Some(effect_key)
             })
             .unwrap_or(false);
         if !cache_matches {
@@ -708,10 +708,10 @@ impl crate::resource_staging::ResourceStaging {
         }
         sessions
             .read_realization(thread, |r| {
-                (r.staged_resource_effect_key.as_deref() == Some(effect_key)).then(|| {
+                (r.staging.effect_key.as_deref() == Some(effect_key)).then(|| {
                     CompiledEffectiveInputs {
-                        staged: r.resources.clone(),
-                        memory_bindings: r.memory_bindings.clone(),
+                        staged: r.staging.resources.clone(),
+                        memory_bindings: r.staging.memory_bindings.clone(),
                     }
                 })
             })
@@ -801,7 +801,7 @@ impl crate::resource_staging::ResourceStaging {
         if claim.is_none()
             && realizations
                 .read_realization(thread, |r| {
-                    r.staged_resource_effect_key.as_deref() == Some(effect_key.as_str())
+                    r.staging.effect_key.as_deref() == Some(effect_key.as_str())
                 })
                 .unwrap_or(false)
         {
@@ -1282,9 +1282,9 @@ impl crate::resource_staging::ResourceStaging {
             .modify_session(thread, |slot| {
                 (
                     slot.inputs.baseline.clone(),
-                    slot.realization.content_delivery,
+                    slot.realization.staging.content_delivery,
                     slot.inputs.environment_projection.clone(),
-                    slot.realization.environment_owner.resident(),
+                    slot.realization.environment.owner.resident(),
                 )
             })
             .unwrap_or_default();

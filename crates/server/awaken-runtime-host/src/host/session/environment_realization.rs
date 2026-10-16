@@ -62,7 +62,7 @@ impl SharedHost {
         let environment =
             exec.publish_prepared_session_environment(thread, &candidate, identity)?;
         realizations.update_realization(thread, |r| {
-            r.environment_resource_reconciliation = reconciliation;
+            r.staging.reconciliation = reconciliation;
         });
         Ok(environment)
     }
@@ -78,7 +78,7 @@ impl SharedHost {
     ) -> Result<Option<Arc<crate::session_environment::SessionEnvironment>>, HostError> {
         let realizations = self.installed_sessions.realizations();
         let exec = &self.realizer;
-        let revoked_binding = realizations.read_realization(thread, |r| match &r.environment_owner {
+        let revoked_binding = realizations.read_realization(thread, |r| match &r.environment.owner {
             crate::environment_owner::SessionEnvironmentOwner::Retiring(retiring)
                 if retiring.cause == crate::environment_owner::SessionEnvironmentRetirementCause::RealizationRevocation =>
                 match &retiring.owned {
@@ -113,7 +113,7 @@ impl SharedHost {
         }
         let candidate = realizations
             .read_realization(thread, |r| {
-                r.environment_owner.unpublished_candidate().cloned()
+                r.environment.owner.unpublished_candidate().cloned()
             })
             .flatten();
         let Some(candidate) = candidate else {
@@ -152,7 +152,7 @@ impl SharedHost {
         let environment =
             exec.publish_prepared_session_environment(thread, &candidate, identity)?;
         realizations.update_realization(thread, |r| {
-            r.environment_resource_reconciliation = reconciliation;
+            r.staging.reconciliation = reconciliation;
         });
         Ok(Some(environment))
     }
@@ -169,7 +169,7 @@ impl SharedHost {
         let realizations = self.installed_sessions.realizations();
         let staging = &self.realizer.staging;
         let transition = realizations
-            .read_realization(thread, |r| r.resource_transition.clone())
+            .read_realization(thread, |r| r.staging.transition.clone())
             .flatten()
             .ok_or_else(|| {
                 HostError::internal(
@@ -180,12 +180,12 @@ impl SharedHost {
             .modify_session(thread, |slot| {
                 (
                     slot.run.dispatch_claim().cloned(),
-                    slot.realization.authority.lease().cloned(),
+                    slot.realization.execution.authority.lease().cloned(),
                 )
             })
             .unwrap_or_default();
         let rebuild_source = realizations
-            .read_realization(thread, |r| r.environment_rebuild_source.clone())
+            .read_realization(thread, |r| r.environment.rebuild_source.clone())
             .flatten();
         let (kind, source_binding) = match &rebuild_source {
             Some((source_binding, source_generation_id)) => (
@@ -253,7 +253,7 @@ impl SharedHost {
             )
             .await?;
         realizations.update_realization(thread, |r| {
-            r.environment_rebuild_source = None;
+            r.environment.rebuild_source = None;
         });
         self.ensure_published_environment_reconciled_under_lifecycle(thread, environment)
             .await
@@ -306,10 +306,10 @@ impl SharedHost {
     ) -> Result<Arc<crate::session_environment::SessionEnvironment>, HostError> {
         let realizations = self.installed_sessions.realizations();
         let reconciliation = realizations
-            .read_realization(thread, |r| r.environment_resource_reconciliation)
+            .read_realization(thread, |r| r.staging.reconciliation)
             .unwrap_or_default();
         let transition = realizations
-            .read_realization(thread, |r| r.resource_transition.clone())
+            .read_realization(thread, |r| r.staging.transition.clone())
             .flatten()
             .ok_or_else(|| {
                 HostError::internal("published Session Environment lacks its Resource transition")
@@ -324,7 +324,7 @@ impl SharedHost {
             .modify_session(thread, |slot| {
                 (
                     slot.run.dispatch_claim().cloned(),
-                    slot.realization.authority.lease().cloned(),
+                    slot.realization.execution.authority.lease().cloned(),
                 )
             })
             .unwrap_or_default();
@@ -378,7 +378,7 @@ impl SharedHost {
                 .await;
         }
         if let Some(environment) = realizations
-            .read_realization(thread, |r| r.environment_owner.resident())
+            .read_realization(thread, |r| r.environment.owner.resident())
             .flatten()
         {
             return self
@@ -665,7 +665,8 @@ impl crate::environment_holding::EnvironmentHolding {
         let repository_paths = self
             .sessions
             .read_realization(&spec.scope, |r| {
-                r.resource_transition
+                r.staging
+                    .transition
                     .as_ref()
                     .map(|transition| {
                         transition
@@ -683,7 +684,8 @@ impl crate::environment_holding::EnvironmentHolding {
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_else(|| {
-                        r.resources
+                        r.staging
+                            .resources
                             .repositories
                             .iter()
                             .map(|repository| repository.plan.mount_path.clone())

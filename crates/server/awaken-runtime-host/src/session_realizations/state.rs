@@ -4,17 +4,6 @@
 //! the Control-issued realization lease, and what is staged for it.
 
 use awaken_session_configuration_contract::resource as session_resource;
-use std::collections::HashMap;
-use std::sync::Arc;
-
-use awaken_session_mcp::SessionMcpState;
-use awaken_session_realization_contract::SessionTerminalCleanupAssignment;
-
-use super::FrozenProjectionReceipt;
-use crate::environment_owner::SessionEnvironmentOwner;
-use crate::frozen_inputs::ManagedContentDelivery;
-use crate::memory_binding::MemoryBinding;
-use crate::staged_resources::{EnvironmentResourceReconciliation, StagedResources};
 
 /// One process-local projection of aggregate authority, not another lease.
 /// Closing retains the exact lease for cleanup CAS, but never for admission.
@@ -93,86 +82,10 @@ impl SessionRealizationAuthority {
 /// only what a retry of a retained Environment owner still needs.
 #[derive(Default)]
 pub(crate) struct SessionRealization {
-    /// Serializes the canonical realization phase driver for this Session.
-    /// Lease renewal may advance authority while this lock is held, but it must
-    /// not start a second Stage/Publish driver. This is deliberately separate
-    /// from `lifecycle`, which is re-entered by Environment materialization.
-    pub realization: Arc<tokio::sync::Mutex<()>>,
-    /// Serializes first materialization/rebuild for this Session without a
-    /// process-wide registry lock being held across I/O.
-    pub lifecycle: Arc<tokio::sync::Mutex<()>>,
-    /// Serializes one complete Resource-generation compare/realize/publish
-    /// transition. The global lock order is `realization -> lifecycle ->
-    /// resource_projection`; callers may acquire any suffix but never reverse
-    /// it. Keeping this separate lets projection installation remain atomic to
-    /// Runtime observers without re-entering `lifecycle` during Resource sync.
-    pub resource_projection: Arc<tokio::sync::Mutex<()>>,
-    /// Last accepted aggregate version and equality digest; rebuildable, never authority.
-    pub(crate) frozen_projection_receipt: Option<FrozenProjectionReceipt>,
-    /// Sole live Environment owner. Every state transition is driven through
-    /// `host/session/environment_lifecycle.rs`; other modules may only inspect
-    /// Resident/occupancy projections through its read helpers.
-    pub(crate) environment_owner: SessionEnvironmentOwner,
-    /// Derived once while the Session context is built. Prompt projection,
-    /// mount realization, Native tools, and ACP export all consume this value;
-    /// none may independently choose another delivery path.
-    pub content_delivery: Option<ManagedContentDelivery>,
-    /// One complete Control-issued terminal assignment. Its Environment state
-    /// and no-Create witness are observed together; authority remains in `authority`.
-    pub terminal_cleanup_assignment: Option<SessionTerminalCleanupAssignment>,
-    /// Process-local parent of a terminal cleanup target. This is routing
-    /// metadata only: the aggregate's frozen command set remains the sole work
-    /// and receipt authority. It lets an accepted root receipt (or a later
-    /// aggregate Completed read after response loss) retire child projections
-    /// without maintaining a second cleanup registry.
-    pub terminal_cleanup_root: Option<String>,
-    /// Exact unavailable aggregate binding/generation authorized for one
-    /// RebuildFromCommittedTruth replacement. This is a process-local command
-    /// projection; the Session aggregate receipt remains the only transition
-    /// authority and clears it after durable publication.
-    pub environment_rebuild_source: Option<(String, Option<String>)>,
-    /// Every standard MemoryStore resource frozen for this Session, keyed by
-    /// binding id. These exist independently of the optional Awaken automatic
-    /// memory extension selected into `memory` below.
-    pub memory_bindings: HashMap<String, Arc<MemoryBinding>>,
-    /// The one explicitly selected automatic recall/extraction binding. This is
-    /// never the authority for which standard resources are mounted.
-    pub memory: Option<Arc<MemoryBinding>>,
-    /// The Session's MCP generation owners, quiescence fence, and frozen
-    /// attachment marker. Other Host modules use only its methods.
-    pub mcp: SessionMcpState,
-    /// Current Control-issued projection authority. It is a live cache used to
-    /// request renewal; durable ownership remains in the Session aggregate.
-    pub authority: SessionRealizationAuthority,
-    /// Cancellation of the current Resource preparation only. This carries no
-    /// ownership: `authority` and Control remain the sole authorities.
-    pub resource_preparation: Option<Arc<awaken_runtime_contract::CancellationToken>>,
-    /// Wakes a claim resolver waiting for the Session application's initial
-    /// restart reassignment. The lease above remains the only projected fact;
-    /// this notification carries no authority or parallel state.
-    pub changed: Arc<tokio::sync::Notify>,
-    /// `Some([])` means the frozen manifest delivers no Skills; `None` means this
-    /// embedded Session has no frozen Skill manifest.
-    pub skills: Option<Vec<awaken_resource_contract::SkillVersion>>,
-    /// Managed-filesystem Skill discovery metadata. Full instructions remain
-    /// in the exact frozen bundle (and its later filesystem projection) and
-    /// are read on demand by the ordinary `read` tool.
-    pub skill_prompt: Option<crate::skill_delivery::FilesystemSkillPrompt>,
-    pub resources: StagedResources,
-    pub manifest: Option<session_resource::SessionResourceManifest>,
-    /// Exact aggregate-owned physical replacement currently being replayed.
-    /// This is a rebuildable command projection, not completion state: the
-    /// durable Resource aggregate remains the only active/pending authority.
-    pub resource_transition: Option<session_resource::SessionResourceTransition>,
-    /// Fingerprint of the exact transition + optional Run claim whose immutable
-    /// inputs were compiled into `resources`, `memory_bindings`, and `skills`.
-    /// This avoids duplicate File/Vault/catalog reads between deferred staging
-    /// and the same process's later physical Environment convergence.
-    pub staged_resource_effect_key: Option<String>,
-    /// How the resident Environment entered this process. Fresh substrates and
-    /// adopted providers require different idempotent mount completion, but the
-    /// aggregate transition remains their single desired-state authority.
-    pub environment_resource_reconciliation: EnvironmentResourceReconciliation,
+    pub(crate) environment: crate::environment_holding::EnvironmentHoldingState,
+    pub(crate) staging: crate::resource_staging::ResourceStagingState,
+    pub(crate) cleanup: crate::terminal_cleanup::TerminalCleanupState,
+    pub(crate) execution: crate::session_realizations::ExecutionAuthorityState,
 }
 
 impl SessionRealization {
@@ -180,7 +93,7 @@ impl SessionRealization {
         &self,
         asserted: Option<&session_resource::SessionRealizationLease>,
     ) -> Result<(), awaken_session_types::RunError> {
-        if self.resource_preparation.is_some()
+        if self.staging.preparation.is_some()
             && !asserted.is_some_and(|lease| self.resource_preparation_authorized(lease))
         {
             return Err(awaken_session_types::RunError::unavailable_classified(
@@ -193,7 +106,7 @@ impl SessionRealization {
 
     /// Resources the Environment held before an in-flight resource transition.
     pub(crate) fn previous_resources(&self) -> Option<session_resource::ResolvedSessionResources> {
-        let transition = self.resource_transition.as_ref()?;
+        let transition = self.staging.transition.as_ref()?;
         Some(transition.previous().resources.clone())
     }
 
@@ -202,20 +115,26 @@ impl SessionRealization {
     /// the content it was staged with. Everything else is rebuilt.
     pub(crate) fn take_retained_on_revocation(&mut self) -> Self {
         Self {
-            realization: self.realization.clone(),
-            lifecycle: self.lifecycle.clone(),
-            resource_projection: self.resource_projection.clone(),
-            changed: self.changed.clone(),
-            authority: self.authority.clone(),
-            environment_owner: std::mem::take(&mut self.environment_owner),
-            content_delivery: self.content_delivery,
-            resources: std::mem::take(&mut self.resources),
-            // Revocation clears process-local realization material but is
-            // not an Environment restoration/source-disposal authority.
-            // Preserve an already-closed quiescence fence so only the
-            // canonical durable projection proof may reopen MCP effects.
-            mcp: self.mcp.take_retained_on_revocation(),
-            ..Self::default()
+            execution: crate::session_realizations::ExecutionAuthorityState {
+                phase: self.execution.phase.clone(),
+                changed: self.execution.changed.clone(),
+                authority: self.execution.authority.clone(),
+                ..Default::default()
+            },
+            environment: crate::environment_holding::EnvironmentHoldingState {
+                lifecycle: self.environment.lifecycle.clone(),
+                owner: std::mem::take(&mut self.environment.owner),
+                ..Default::default()
+            },
+            staging: crate::resource_staging::ResourceStagingState {
+                projection: self.staging.projection.clone(),
+                content_delivery: self.staging.content_delivery,
+                resources: std::mem::take(&mut self.staging.resources),
+                // Only the canonical durable projection may reopen MCP effects.
+                mcp: self.staging.mcp.take_retained_on_revocation(),
+                ..Default::default()
+            },
+            cleanup: Default::default(),
         }
     }
 
@@ -223,13 +142,13 @@ impl SessionRealization {
         &mut self,
         expected: Option<&session_resource::SessionRealizationLease>,
     ) -> bool {
-        if !self.authority.close(expected) {
+        if !self.execution.authority.close(expected) {
             return false;
         }
-        if let Some(preparation) = &self.resource_preparation {
+        if let Some(preparation) = &self.staging.preparation {
             preparation.cancel();
         }
-        self.changed.notify_waiters();
+        self.execution.changed.notify_waiters();
         true
     }
 
@@ -244,7 +163,7 @@ impl SessionRealization {
             return false;
         }
         let lease = &proof.lease;
-        if let SessionRealizationAuthority::Closed(Some(closed)) = &self.authority
+        if let SessionRealizationAuthority::Closed(Some(closed)) = &self.execution.authority
             && (awaken_session_realization_contract::realization_lease_generation_authorizes(
                 closed, lease,
             ) || awaken_session_realization_contract::realization_lease_generation_authorizes(
@@ -254,17 +173,17 @@ impl SessionRealization {
             // An assertion or delayed renewal cannot reopen a closed generation.
             return false;
         }
-        if let Some(current) = self.authority.lease()
+        if let Some(current) = self.execution.authority.lease()
             && (awaken_session_realization_contract::realization_lease_generation_authorizes(
                 current, lease,
             ) || awaken_session_realization_contract::realization_lease_generation_authorizes(
                 lease, current,
             ))
-            && self.authority.remaining().is_none()
+            && self.execution.authority.remaining().is_none()
         {
             return false;
         }
-        if self.authority.lease().is_some_and(|current| {
+        if self.execution.authority.lease().is_some_and(|current| {
             awaken_session_realization_contract::realization_lease_generation_authorizes(
                 current, lease,
             )
@@ -272,15 +191,15 @@ impl SessionRealization {
             // A slow preparation must not overwrite an intervening renewal.
             return true;
         }
-        if self.authority.lease().is_some_and(|current| {
+        if self.execution.authority.lease().is_some_and(|current| {
             !awaken_session_realization_contract::realization_lease_generation_authorizes(
                 lease, current,
             )
-        }) && let Some(preparation) = &self.resource_preparation
+        }) && let Some(preparation) = &self.staging.preparation
         {
             preparation.cancel();
         }
-        self.authority = SessionRealizationAuthority::Live(proof);
+        self.execution.authority = SessionRealizationAuthority::Live(proof);
         true
     }
 
@@ -292,7 +211,7 @@ impl SessionRealization {
         asserted: &session_resource::SessionRealizationLease,
         renewed: awaken_session_realization_contract::ObservedSessionRealizationLease,
     ) -> bool {
-        if self.authority.lease() != Some(asserted)
+        if self.execution.authority.lease() != Some(asserted)
             || !awaken_session_realization_contract::realization_lease_generation_authorizes(
                 &renewed.lease,
                 asserted,
@@ -303,11 +222,11 @@ impl SessionRealization {
         let Some(now) = awaken_authority_clock::authority_proof_started().ok() else {
             return false;
         };
-        if self.authority.remaining().is_none() || renewed.remaining_at(now).is_none() {
+        if self.execution.authority.remaining().is_none() || renewed.remaining_at(now).is_none() {
             return false;
         }
-        self.authority = SessionRealizationAuthority::Live(renewed);
-        self.changed.notify_waiters();
+        self.execution.authority = SessionRealizationAuthority::Live(renewed);
+        self.execution.changed.notify_waiters();
         true
     }
 
@@ -315,12 +234,10 @@ impl SessionRealization {
         &self,
         asserted: &session_resource::SessionRealizationLease,
     ) -> bool {
-        !self.authority.is_closed()
-            && self
-                .resource_preparation
-                .as_ref()
-                .is_none_or(|preparation| {
-                    !preparation.is_cancelled() && self.authority.remaining_for(asserted).is_some()
-                })
+        !self.execution.authority.is_closed()
+            && self.staging.preparation.as_ref().is_none_or(|preparation| {
+                !preparation.is_cancelled()
+                    && self.execution.authority.remaining_for(asserted).is_some()
+            })
     }
 }

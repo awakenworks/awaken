@@ -46,7 +46,7 @@ fn install(host: &SharedHost, lease: SessionRealizationLease) {
     host.installed_sessions
         .realizations()
         .update_realization("session", |r| {
-            r.authority = SessionRealizationAuthority::Live(proof);
+            r.execution.authority = SessionRealizationAuthority::Live(proof);
         });
 }
 
@@ -126,7 +126,7 @@ async fn provider_fence_source_decision_table_preserves_exact_live_authority() {
                     host.installed_sessions
                         .realizations()
                         .update_realization("session", |r| {
-                            r.authority = old.realization.authority;
+                            r.execution.authority = old.realization.execution.authority;
                         });
                 }
                 "closed" => {
@@ -136,14 +136,14 @@ async fn provider_fence_source_decision_table_preserves_exact_live_authority() {
                     host.installed_sessions
                         .realizations()
                         .update_realization("session", |r| {
-                            r.authority = SessionRealizationAuthority::Uninstalled;
+                            r.execution.authority = SessionRealizationAuthority::Uninstalled;
                         })
                 }
                 "expired" => {
                     host.installed_sessions
                         .realizations()
                         .update_realization("session", |r| {
-                            r.authority = SessionRealizationAuthority::Live(
+                            r.execution.authority = SessionRealizationAuthority::Live(
                                 crate::installed_session::test_expired_observed_lease(
                                     current.clone(),
                                 ),
@@ -155,9 +155,9 @@ async fn provider_fence_source_decision_table_preserves_exact_live_authority() {
                     .realizations()
                     .update_realization("session", |r| {
                         if rule == "realization" {
-                            r.realization = Arc::new(tokio::sync::Mutex::new(()));
+                            r.execution.phase = Arc::new(tokio::sync::Mutex::new(()));
                         } else {
-                            r.lifecycle = Arc::new(tokio::sync::Mutex::new(()));
+                            r.environment.lifecycle = Arc::new(tokio::sync::Mutex::new(()));
                         }
                     }),
                 "asserted_future" => asserted.renew(),
@@ -297,7 +297,7 @@ async fn provider_fence_source_capture_rejects_absent_slot_and_invalid_identity(
                 host.installed_sessions
                     .realizations()
                     .update_realization("session", |r| {
-                        r.authority = SessionRealizationAuthority::Uninstalled;
+                        r.execution.authority = SessionRealizationAuthority::Uninstalled;
                     })
             }
             "closed" => {
@@ -394,7 +394,7 @@ async fn provider_fence_source_waiting_for_worker_rechecks_slot_after_revocation
                     host.installed_sessions
                         .realizations()
                         .update_realization("session", |r| {
-                            r.authority = old.realization.authority;
+                            r.execution.authority = old.realization.execution.authority;
                         });
                 }
                 "renewed" => {
@@ -653,7 +653,7 @@ async fn adoption_forwards_original_authority_across_observation_and_provider_wa
                             host.installed_sessions.realizations().update_realization(
                                 "session",
                                 |r| {
-                                    r.authority = old.realization.authority;
+                                    r.execution.authority = old.realization.execution.authority;
                                 },
                             );
                         }
@@ -782,7 +782,7 @@ async fn provider_fence_source_is_wired_across_preparation_and_provider_awaits()
                 host.installed_sessions
                     .realizations()
                     .update_realization("session", |r| {
-                        r.authority = old.realization.authority;
+                        r.execution.authority = old.realization.execution.authority;
                     });
             } else if rule != "provider_unfenced" {
                 let mut current = lease();
@@ -923,7 +923,7 @@ async fn environment_receipt_refreshes_only_the_captured_live_generation() {
                     host.installed_sessions
                         .realizations()
                         .update_realization("session", |r| {
-                            r.authority = old.realization.authority;
+                            r.execution.authority = old.realization.execution.authority;
                         });
                 }
                 "worker_zero" => {

@@ -350,7 +350,7 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
     let bindings = host
         .installed_sessions
         .realizations()
-        .read_realization("semantic-memory", |r| r.memory_bindings.clone())
+        .read_realization("semantic-memory", |r| r.staging.memory_bindings.clone())
         .unwrap();
     let tools = crate::session_memory_tools::SessionMemoryTools::new(bindings).unwrap();
     let invoke = |tool_id: &str, arguments: serde_json::Value| {
@@ -451,7 +451,7 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
     assert_eq!(
         host.installed_sessions
             .realizations()
-            .read_realization("semantic-memory", |r| r.content_delivery)
+            .read_realization("semantic-memory", |r| r.staging.content_delivery)
             .flatten(),
         Some(crate::frozen_inputs::ManagedContentDelivery::SemanticTools),
         "M6 keeps one delivery path"
@@ -1092,7 +1092,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         .installed_sessions
         .realizations()
         .read_realization(session_id, |r| {
-            r.environment_owner.terminal_bound_environment()
+            r.environment.owner.terminal_bound_environment()
         })
         .flatten()
         .expect("P1 retained exact Environment identity");
@@ -1183,10 +1183,11 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         host.installed_sessions.update(session_id, |slot| {
             let owned = slot
                 .realization
-                .environment_owner
+                .environment
+                .owner
                 .terminal_bound_environment()
                 .unwrap();
-            slot.realization.environment_owner =
+            slot.realization.environment.owner =
                 crate::installed_session::SessionEnvironmentOwner::Retiring(
                     crate::installed_session::RetiringSessionEnvironment {
                         cause:
@@ -1231,7 +1232,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         );
         host.installed_sessions.realizations().update_realization(session_id, |r| {
             if let crate::installed_session::SessionEnvironmentOwner::Retiring(retiring) =
-                &mut r.environment_owner
+                &mut r.environment.owner
             {
                 retiring.cause =
                     crate::installed_session::SessionEnvironmentRetirementCause::RealizationRevocation;
@@ -1243,7 +1244,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             .installed_sessions
             .realizations()
             .read_realization(session_id, |r| {
-                r.environment_owner.terminal_bound_environment().unwrap()
+                r.environment.owner.terminal_bound_environment().unwrap()
             })
             .unwrap();
         managed
@@ -1256,12 +1257,12 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             .read_realization(session_id, |r| {
                 assert!(
                     matches!(
-                        r.environment_owner,
+                        r.environment.owner,
                         crate::installed_session::SessionEnvironmentOwner::Retiring(_)
                     ),
                     "P7 not Resident"
                 );
-                r.environment_owner.terminal_bound_environment().unwrap()
+                r.environment.owner.terminal_bound_environment().unwrap()
             })
             .unwrap();
         assert!(
@@ -1349,7 +1350,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         host.installed_sessions
             .realizations()
             .read_realization(session_id, |r| {
-                r.environment_owner.terminal_bound_environment().is_some()
+                r.environment.owner.terminal_bound_environment().is_some()
             })
             .unwrap_or(false),
         "P1-P2/P5 exact physical source survives until root cleanup"

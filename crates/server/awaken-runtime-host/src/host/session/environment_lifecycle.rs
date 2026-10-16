@@ -191,7 +191,7 @@ impl SharedHost {
         state: &awaken_session_state_contract::SessionEnvironmentState,
     ) -> Result<(), HostError> {
         self.installed_sessions.update(thread, |slot| {
-            let owner = slot.realization.environment_owner.after_projection(
+            let owner = slot.realization.environment.owner.after_projection(
                 thread,
                 workspace_id,
                 state,
@@ -221,14 +221,14 @@ impl SharedHost {
         realizations.update_realization(thread, |r| {
             // A same-handle ABA test replaces only the process-local Arc. Keep
             // its existing Root-generated identity instead of downgrading it.
-            if let SessionEnvironmentOwner::Resident(owned) = &mut r.environment_owner
+            if let SessionEnvironmentOwner::Resident(owned) = &mut r.environment.owner
                 && owned.binding == binding
                 && owned.environment.lifecycle().handle() == environment.lifecycle().handle()
             {
                 owned.environment = environment;
                 return;
             }
-            r.environment_owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
+            r.environment.owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
                 identity: BoundSessionEnvironmentIdentity::LegacyDirect(
                     LegacyDirectEnvironmentProvenance::Direct(receipt),
                 ),
@@ -452,7 +452,7 @@ impl SharedHost {
                             // Atomically retain the fresh Candidate before its
                             // canonical binding/publication edge can suspend.
                             exec.sessions.update_realization(thread, |r| {
-                                r.environment_owner
+                                r.environment.owner
                                     .prepare_retiring_realization_adoption(retiring, environment.clone(), Some(effect.authorization.intent()))
                             })?;
                         }
@@ -473,7 +473,7 @@ impl SharedHost {
                 self.ensure_published_environment_reconciled_under_lifecycle(thread, environment)
                     .await?;
                 exec.sessions.update_realization(thread, |r| {
-                    r.environment_rebuild_source = None;
+                    r.environment.rebuild_source = None;
                 });
                 Ok(SessionEnvironmentAdoptionDisposition::Ready)
             }
@@ -551,7 +551,7 @@ impl SharedHost {
                 return Err(HostError::internal("replacement Session authority time proof is exhausted"));
             }
             let selected = realizations.read_realization(thread, |r| {
-                let environment = match &r.environment_owner {
+                let environment = match &r.environment.owner {
                     SessionEnvironmentOwner::Resident(owned) => &owned.environment,
                     SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(candidate))
                         => &candidate.environment,
@@ -560,7 +560,7 @@ impl SharedHost {
                         return Some(retiring.owned.environment()),
                     _ => return None,
                 };
-                let same_generation = r.authority.lease().is_some_and(|old| {
+                let same_generation = r.execution.authority.lease().is_some_and(|old| {
                     awaken_session_realization_contract::realization_lease_generation_authorizes(old, &incoming.lease)
                     || awaken_session_realization_contract::realization_lease_generation_authorizes(&incoming.lease, old)
                 });
@@ -597,7 +597,8 @@ impl SharedHost {
     ) -> Result<bool, E> {
         let realizations = self.installed_sessions.realizations();
         match realizations.modify_realization(thread, |r| {
-            r.environment_owner
+            r.environment
+                .owner
                 .observe_retirement_status(retirement, status)
         }) {
             Some(observed) => observed,
@@ -667,11 +668,11 @@ impl SharedHost {
                 // repeated revocation must not reinterpret that same Managed
                 // Candidate as an Unowned disposable legacy creation.
                 let retained = matches!(
-                    &r.authority,
+                    &r.execution.authority,
                     crate::session_realizations::SessionRealizationAuthority::Live(_)
                         | crate::session_realizations::SessionRealizationAuthority::Closed(Some(_))
                 );
-                if r.authority.lease().is_some() {
+                if r.execution.authority.lease().is_some() {
                     r.close_authority(None);
                 }
                 retained
@@ -896,7 +897,7 @@ impl crate::environment_holding::EnvironmentHolding {
         self.sessions
             .read_realization(thread, |r| {
                 matches!(
-                    &r.environment_owner,
+                    &r.environment.owner,
                     SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
                         cause, owned: RetiringEnvironmentOwner::Unbound(_),
                     }) if *cause != SessionEnvironmentRetirementCause::RealizationRevocation
@@ -911,7 +912,7 @@ impl crate::environment_holding::EnvironmentHolding {
         request: &awaken_session_state_contract::SandboxRestoreRequest,
     ) -> Result<(), HostError> {
         self.sessions
-            .update_realization(thread, |r| r.environment_owner.begin_restore(request))
+            .update_realization(thread, |r| r.environment.owner.begin_restore(request))
     }
 
     fn closed_environment_recovery_plan<'a>(
@@ -929,7 +930,7 @@ impl crate::environment_holding::EnvironmentHolding {
                 if let Some(expected) = revoked
                     && expected.cause == SessionEnvironmentRetirementCause::RealizationRevocation
                     && matches!(
-                        &r.environment_owner,
+                        &r.environment.owner,
                         SessionEnvironmentOwner::Retiring(current)
                             if current.exact_matches(expected)
                     )
@@ -941,7 +942,7 @@ impl crate::environment_holding::EnvironmentHolding {
                         ))),
                     )
                 } else if let Some(expected) = resident
-                    && let SessionEnvironmentOwner::Retiring(current) = &r.environment_owner
+                    && let SessionEnvironmentOwner::Retiring(current) = &r.environment.owner
                     && current.cause == SessionEnvironmentRetirementCause::RecoveryDiscard
                     && Arc::ptr_eq(&current.owned.environment(), expected)
                     && current.owned.environment().lifecycle().handle() == expected.lifecycle().handle()
@@ -954,7 +955,7 @@ impl crate::environment_holding::EnvironmentHolding {
                     )
                 } else if let Some(expected) = resident
                     && matches!(
-                        &r.environment_owner,
+                        &r.environment.owner,
                         SessionEnvironmentOwner::Resident(current)
                             if Arc::ptr_eq(&current.environment, expected)
                                 && current.environment.lifecycle().handle() == expected.lifecycle().handle()
@@ -966,7 +967,7 @@ impl crate::environment_holding::EnvironmentHolding {
                     )
                 } else if let Some((identity, binding)) = pending
                     && matches!(
-                        &r.environment_owner,
+                        &r.environment.owner,
                         SessionEnvironmentOwner::Preparing(
                             SessionEnvironmentPreparation::AwaitingAdoption {
                                 identity: current_identity,
@@ -985,7 +986,7 @@ impl crate::environment_holding::EnvironmentHolding {
                 } else if revoked.is_none()
                     && resident.is_none()
                     && pending.is_none()
-                    && matches!(r.environment_owner, SessionEnvironmentOwner::Vacant)
+                    && matches!(r.environment.owner, SessionEnvironmentOwner::Vacant)
                 {
                     (
                         ClosedEnvironmentRecoveryOwnerClass::Vacant,
@@ -1023,7 +1024,7 @@ impl crate::environment_holding::EnvironmentHolding {
     ) -> bool {
         self.sessions
             .modify_realization(thread, |r| {
-                r.environment_owner.confirm_terminated(retirement)
+                r.environment.owner.confirm_terminated(retirement)
             })
             .unwrap_or(false)
     }
@@ -1068,7 +1069,7 @@ impl crate::environment_holding::EnvironmentHolding {
     pub(crate) fn durable_environment_binding(&self, thread: &str) -> Option<String> {
         self.sessions
             .read_realization(thread, |r| {
-                r.environment_owner.durable_binding().map(str::to_owned)
+                r.environment.owner.durable_binding().map(str::to_owned)
             })
             .flatten()
     }
@@ -1078,7 +1079,7 @@ impl crate::environment_holding::EnvironmentHolding {
         thread: &str,
     ) -> Option<(BoundSessionEnvironmentIdentity, String)> {
         self.sessions
-            .read_realization(thread, |r| match &r.environment_owner {
+            .read_realization(thread, |r| match &r.environment.owner {
                 SessionEnvironmentOwner::Preparing(
                     SessionEnvironmentPreparation::AwaitingAdoption { identity, binding },
                 ) => Some((identity.clone(), binding.clone())),
@@ -1099,7 +1100,7 @@ impl crate::environment_holding::EnvironmentHolding {
     ) -> Result<(), HostError> {
         let retiring = self
             .sessions
-            .read_realization(thread, |r| match &r.environment_owner {
+            .read_realization(thread, |r| match &r.environment.owner {
                 SessionEnvironmentOwner::Retiring(retiring)
                     if matches!(
                         (&retiring.cause, &retiring.owned),
@@ -1264,7 +1265,8 @@ impl crate::environment_holding::EnvironmentHolding {
                     ClosedEnvironmentRecoveryOwner::Pending(pending) => self
                         .sessions
                         .modify_realization(thread, |r| {
-                            r.environment_owner
+                            r.environment
+                                .owner
                                 .discard_closed_pending_adoption(&pending.0, &pending.1)
                         })
                         .unwrap_or(false),
@@ -1276,7 +1278,7 @@ impl crate::environment_holding::EnvironmentHolding {
                     )));
                 }
                 self.sessions.update_realization(thread, |r| {
-                    r.environment_rebuild_source = Some((
+                    r.environment.rebuild_source = Some((
                         binding.to_string(),
                         source_generation_id.map(str::to_string),
                     ));
@@ -1298,7 +1300,7 @@ impl crate::environment_holding::EnvironmentHolding {
         let expected_identity =
             checkpoint_source_identity(source_effect_id, source_binding, generation);
         self.sessions
-            .read_realization(thread, |r| match &r.environment_owner {
+            .read_realization(thread, |r| match &r.environment.owner {
                 SessionEnvironmentOwner::Resident(owned)
                     if owned.identity == expected_identity
                         && owned.binding == source_binding
@@ -1327,7 +1329,7 @@ impl crate::environment_holding::EnvironmentHolding {
     ) -> Result<(String, Option<ResourceOriginRef>), HostError> {
         self.sessions
             .read_realization(thread, |r| {
-                r.environment_owner.resident_activity_identity(environment)
+                r.environment.owner.resident_activity_identity(environment)
             })
             .flatten()
             .ok_or_else(|| {
@@ -1398,7 +1400,8 @@ impl crate::environment_holding::EnvironmentHolding {
             .modify_session(thread, |slot| {
                 let retirement = slot
                     .realization
-                    .environment_owner
+                    .environment
+                    .owner
                     .begin_retirement(cause, selection)?;
                 Ok(retirement.map(|owner| {
                     slot.run.drop_context();
@@ -1422,7 +1425,7 @@ impl crate::environment_holding::EnvironmentHolding {
         source_generation_id: Option<&str>,
     ) -> Option<RetiringSessionEnvironment> {
         self.sessions
-            .read_realization(thread, |r| match &r.environment_owner {
+            .read_realization(thread, |r| match &r.environment.owner {
                 SessionEnvironmentOwner::Retiring(retiring)
                     if retiring.cause
                         == SessionEnvironmentRetirementCause::RealizationRevocation =>
@@ -1461,7 +1464,7 @@ impl crate::environment_holding::EnvironmentHolding {
         thread: &str,
     ) -> Option<Arc<crate::session_environment::SessionEnvironment>> {
         self.sessions
-            .read_realization(thread, |r| r.environment_owner.resident())
+            .read_realization(thread, |r| r.environment.owner.resident())
             .flatten()
     }
 
@@ -1482,7 +1485,7 @@ impl crate::environment_holding::EnvironmentHolding {
                 .sandbox_spec_for_resolved_resources_and_provider(thread, resources, provider),
             None => self
                 .sessions
-                .read_realization(thread, |r| r.resource_transition.clone())
+                .read_realization(thread, |r| r.staging.transition.clone())
                 .flatten()
                 .map_or_else(
                     || self.staging.sandbox_spec_for_provider(thread, provider),
@@ -1501,7 +1504,7 @@ impl crate::environment_holding::EnvironmentHolding {
     pub(crate) fn session_environment_owner_is_vacant(&self, thread: &str) -> bool {
         self.sessions
             .read_realization(thread, |r| {
-                matches!(r.environment_owner, SessionEnvironmentOwner::Vacant)
+                matches!(r.environment.owner, SessionEnvironmentOwner::Vacant)
             })
             .unwrap_or(true)
     }
@@ -1519,9 +1522,9 @@ impl crate::environment_holding::EnvironmentHolding {
         let authorized = self
             .sessions
             .read_realization(thread, |r| match operation.realization.as_ref() {
-                Some(asserted) => r.authority.remaining_for(asserted).is_some(),
+                Some(asserted) => r.execution.authority.remaining_for(asserted).is_some(),
                 None => matches!(
-                    r.authority,
+                    r.execution.authority,
                     crate::session_realizations::SessionRealizationAuthority::Uninstalled
                 ),
             })
@@ -1556,7 +1559,7 @@ impl crate::environment_holding::EnvironmentHolding {
         let spec = self.validate_session_environment_adoption(provider, &spec, &handle)?;
         let (retained, candidate) = self
             .sessions
-            .read_realization(thread, |r| match &r.environment_owner {
+            .read_realization(thread, |r| match &r.environment.owner {
                 SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(
                     candidate,
                 )) => (None, Some(candidate.clone())),
@@ -1641,7 +1644,7 @@ impl crate::environment_holding::EnvironmentHolding {
         };
         let retirement = self
             .sessions
-            .read_realization(thread, |r| match &r.environment_owner {
+            .read_realization(thread, |r| match &r.environment.owner {
                 SessionEnvironmentOwner::Retiring(retirement) => Some(retirement.clone()),
                 _ => None,
             })

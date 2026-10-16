@@ -39,8 +39,8 @@ fn claimed_realization_continuation(
         .dispatch_claim
         .as_ref()
         .filter(|previous| previous.run_id == claim.run_id && previous.owner == claim.owner)
-        .and_then(|_| slot.realization.authority.remaining())
-        .and_then(|_| slot.realization.authority.lease())
+        .and_then(|_| slot.realization.execution.authority.remaining())
+        .and_then(|_| slot.realization.execution.authority.lease())
         .filter(|lease| lease.runtime_incarnation == claim.owner)
         .cloned()
 }
@@ -286,7 +286,10 @@ mod tests {
                 let expected = exact_claim && live_exact_proof;
                 let slot = InstalledSession {
                     realization: crate::installed_session::SessionRealization {
-                        authority,
+                        execution: crate::session_realizations::ExecutionAuthorityState {
+                            authority,
+                            ..Default::default()
+                        },
                         ..Default::default()
                     },
                     run: crate::installed_session::SessionRunBinding {

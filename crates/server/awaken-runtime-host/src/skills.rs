@@ -46,7 +46,7 @@ pub(crate) fn read_pinned_skill(
     use awaken_provisioning_contract::WorkspaceLayout;
     use std::path::Component;
 
-    if !slot.run.session_dispatch || slot.realization.environment_owner.resident().is_some() {
+    if !slot.run.session_dispatch || slot.realization.environment.owner.resident().is_some() {
         return None;
     }
     let relative = WorkspaceLayout::relative(&args.path).unwrap_or(&args.path);
@@ -74,6 +74,7 @@ pub(crate) fn read_pinned_skill(
         let directory = format!("{DELIVERED_SKILLS_SUBDIR}/{stem}");
         if !slot
             .realization
+            .staging
             .skill_prompt
             .as_ref()
             .is_some_and(|prompt| prompt.exposes_directory(&directory))
@@ -95,6 +96,7 @@ pub(crate) fn read_pinned_skill(
         }
         let version = slot
             .realization
+            .staging
             .skills
             .as_ref()
             .and_then(|versions| {
@@ -846,9 +848,9 @@ mod tests {
         .unwrap();
         let projection = filesystem_skill_prompt(registry.as_ref()).unwrap().unwrap();
         let slots = Arc::new(crate::installed_session::InstalledSessions::default());
-        slots
-            .realizations()
-            .update_realization("skill-path", |r| r.skill_prompt = Some(projection.clone()));
+        slots.realizations().update_realization("skill-path", |r| {
+            r.staging.skill_prompt = Some(projection.clone())
+        });
         assert!(
             slots
                 .realizations()
@@ -862,7 +864,7 @@ mod tests {
         // Actual Managed owner transitions retain their existing integration tests.
         slots.realizations().update_realization("skill-path", |r| {
             use crate::installed_session::*;
-            r.environment_owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
+            r.environment.owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
                 binding: "fixture".into(),
                 environment: env.clone(),
                 identity: BoundSessionEnvironmentIdentity::LegacyDirect(
@@ -922,7 +924,7 @@ mod tests {
         assert_eq!(
             slots
                 .realizations()
-                .read_realization("skill-path", |r| r.skill_prompt.clone())
+                .read_realization("skill-path", |r| r.staging.skill_prompt.clone())
                 .flatten(),
             Some(projection),
             "P2 metadata remains frozen"
@@ -930,7 +932,7 @@ mod tests {
         // P6 malformed directory metadata cannot yield a model request once
         // realized; propagate the shared path validator's failure unchanged.
         slots.realizations().update_realization("skill-path", |r| {
-            r.skill_prompt = Some(FilesystemSkillPrompt::from_entries(vec![(
+            r.staging.skill_prompt = Some(FilesystemSkillPrompt::from_entries(vec![(
                 "Unsafe".into(),
                 "invalid".into(),
                 "../escape".into(),

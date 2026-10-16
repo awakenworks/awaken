@@ -43,7 +43,7 @@ impl SharedHost {
         }
         let root_realization = sessions
             .read_realization(effect.command.session_id.as_str(), |r| {
-                r.realization.clone()
+                r.execution.phase.clone()
             })
             .ok_or_else(|| {
                 HostError::unavailable_classified(
@@ -89,7 +89,7 @@ impl SharedHost {
             .transpose()?;
 
         sessions.update_realization(&effect.command.thread_id, |r| {
-            r.terminal_cleanup_root = Some(effect.command.session_id.to_string());
+            r.cleanup.root = Some(effect.command.session_id.to_string());
         });
 
         if crate::session_realizations::primary_or_delegated_run_active(
@@ -110,7 +110,7 @@ impl SharedHost {
         }
         if let Some(owned) = sessions
             .read_realization(&effect.command.thread_id, |r| {
-                r.environment_owner.terminal_bound_environment()
+                r.environment.owner.terminal_bound_environment()
             })
             .flatten()
         {
@@ -133,9 +133,8 @@ impl SharedHost {
             }
             let retained = sessions
                 .read_realization(&effect.command.thread_id, |r| {
-                    r.environment_owner
-                        .terminal_bound_environment()
-                        .is_some_and(|current| current.exact_matches(&owned))
+                    let current = r.environment.owner.terminal_bound_environment();
+                    current.is_some_and(|current| current.exact_matches(&owned))
                 })
                 .unwrap_or(false);
             if !retained {
@@ -291,7 +290,7 @@ impl SharedHost {
         let sessions = &realizer.cleanup.sessions;
         let session_id = &effect.command.session_id;
         let root_realization = sessions
-            .read_realization(session_id.as_str(), |r| r.realization.clone())
+            .read_realization(session_id.as_str(), |r| r.execution.phase.clone())
             .ok_or_else(|| {
                 HostError::unavailable_classified(
                     "session_terminal_cleanup_projection_missing",
@@ -327,7 +326,7 @@ impl SharedHost {
             .as_ref()
             .is_some_and(|prepared| prepared.environment.environment.is_none());
         let owner = sessions
-            .read_realization(session_id.as_str(), |r| r.environment_owner.clone())
+            .read_realization(session_id.as_str(), |r| r.environment.owner.clone())
             .ok_or_else(|| {
                 HostError::unavailable_classified(
                     "session_terminal_cleanup_projection_missing",
@@ -344,11 +343,7 @@ impl SharedHost {
                 let provider =
                     realizer.projected_session_environment_provider(session_id.as_str(), None)?;
                 let previous_resources = sessions
-                    .read_realization(session_id.as_str(), |r| {
-                        r.resource_transition
-                            .as_ref()
-                            .map(|transition| transition.previous().resources.clone())
-                    })
+                    .read_realization(session_id.as_str(), |r| r.previous_resources())
                     .flatten();
                 let spec = realizer.session_environment_adoption_spec(
                     session_id.as_str(),
@@ -479,17 +474,6 @@ impl SharedHost {
         .await;
     }
 
-    /// Close aggregate-completion response loss through the existing projection
-    /// retirement owner; this is an acknowledgement, never another cleanup path.
-    pub(crate) async fn acknowledge_completed_terminal_cleanup(
-        &self,
-        session_id: &str,
-        lease: &session_resource::SessionRealizationLease,
-    ) {
-        self.retire_completed_terminal_cleanup_projection(session_id, lease)
-            .await;
-    }
-
     /// Retire a retained terminal projection after Control reports that the
     /// durable cleanup operation is already complete. This is the response-loss
     /// readback of the same process-local acknowledgement above, not a second
@@ -501,7 +485,7 @@ impl SharedHost {
     ) -> bool {
         let realizations = self.installed_sessions.realizations();
         let projected_terminal = realizations
-            .read_realization(session_id, |r| r.terminal_cleanup_assignment.is_some())
+            .read_realization(session_id, |r| r.cleanup.assignment.is_some())
             .unwrap_or(false);
         if !projected_terminal {
             return false;
@@ -518,14 +502,14 @@ impl SharedHost {
     ) -> bool {
         let realizations = self.installed_sessions.realizations();
         let Some(root_realization) =
-            realizations.read_realization(session_id, |r| r.realization.clone())
+            realizations.read_realization(session_id, |r| r.execution.phase.clone())
         else {
             return false;
         };
         let _root_realization = root_realization.lock().await;
         let authorized = realizations
             .read_realization(session_id, |r| {
-                r.authority.lease().is_some_and(|current| {
+                r.execution.authority.lease().is_some_and(|current| {
                     awaken_session_realization_contract::realization_lease_generation_authorizes(
                         current, lease,
                     )
@@ -544,7 +528,7 @@ impl SharedHost {
                     thread_id == session_id
                         || realizations
                             .read_realization(thread_id, |r| {
-                                r.terminal_cleanup_root.as_deref() == Some(session_id)
+                                r.cleanup.root.as_deref() == Some(session_id)
                             })
                             .unwrap_or(false)
                 })
@@ -558,37 +542,14 @@ impl SharedHost {
         let mut removed = false;
         for thread_id in targets {
             let target_lifecycle =
-                realizations.read_realization(&thread_id, |r| r.lifecycle.clone());
-            if let Some(lifecycle) = target_lifecycle {
-                let _target_lifecycle = lifecycle.lock().await;
-                let authorized = realizations
-                    .read_realization(session_id, |r| {
-                        r.authority.lease().is_some_and(|current| {
-                            awaken_session_realization_contract::realization_lease_generation_authorizes(
-                                current, lease,
-                            )
-                        })
-                    })
-                    .unwrap_or(false);
-                if !authorized {
-                    return removed;
-                }
-                let belongs_to_operation = thread_id == session_id
-                    || realizations
-                        .read_realization(&thread_id, |r| {
-                            r.terminal_cleanup_root.as_deref() == Some(session_id)
-                        })
-                        .unwrap_or(false);
-                if !belongs_to_operation {
-                    continue;
-                }
-                self.mcp.remove_relay_routes(&thread_id);
-                removed |= self.installed_sessions.remove(&thread_id).is_some();
-                continue;
-            }
+                realizations.read_realization(&thread_id, |r| r.environment.lifecycle.clone());
+            let _target_lifecycle = match target_lifecycle {
+                Some(lifecycle) => Some(lifecycle.lock_owned().await),
+                None => None,
+            };
             let authorized = realizations
                 .read_realization(session_id, |r| {
-                    r.authority.lease().is_some_and(|current| {
+                    r.execution.authority.lease().is_some_and(|current| {
                         awaken_session_realization_contract::realization_lease_generation_authorizes(
                             current, lease,
                         )
@@ -601,7 +562,7 @@ impl SharedHost {
             let belongs_to_operation = thread_id == session_id
                 || realizations
                     .read_realization(&thread_id, |r| {
-                        r.terminal_cleanup_root.as_deref() == Some(session_id)
+                        r.cleanup.root.as_deref() == Some(session_id)
                     })
                     .unwrap_or(false);
             if !belongs_to_operation {

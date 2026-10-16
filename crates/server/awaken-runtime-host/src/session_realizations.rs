@@ -21,7 +21,7 @@ mod projection_receipt;
 mod resource_preparation;
 pub(crate) use resource_preparation::ResourcePreparation;
 mod state;
-pub(crate) use execution_authority::ExecutionAuthority;
+pub(crate) use execution_authority::{ExecutionAuthority, ExecutionAuthorityState};
 pub(crate) use projection_receipt::FrozenProjectionReceipt;
 pub(crate) use state::{SessionRealization, SessionRealizationAuthority};
 
@@ -196,13 +196,17 @@ impl SessionRealizations {
         session: &str,
         fence: awaken_session_mcp::McpQuiescenceAdmissionFence,
     ) -> Result<bool, crate::host_error::HostError> {
-        Ok(self.update_session(session, |slot| slot.realization.mcp.close_admission(fence))?)
+        Ok(self.update_session(session, |slot| {
+            slot.realization.staging.mcp.close_admission(fence)
+        })?)
     }
 
     #[cfg(test)]
     pub(crate) fn mcp_realization_admitted(&self, session: &str) -> bool {
-        self.modify_session(session, |slot| slot.realization.mcp.admits_realization())
-            .unwrap_or(true)
+        self.modify_session(session, |slot| {
+            slot.realization.staging.mcp.admits_realization()
+        })
+        .unwrap_or(true)
     }
 
     /// Read the one current process-local projection of all frozen prompt
@@ -217,9 +221,9 @@ impl SessionRealizations {
         has_native: bool,
     ) -> Result<Vec<String>, String> {
         self.modify_session(session, |slot| {
-            let mut prompts = slot.realization.resources.prompts.clone();
-            let delivery = slot.realization.content_delivery.unwrap_or_default();
-            let environment = slot.realization.environment_owner.resident();
+            let mut prompts = slot.realization.staging.resources.prompts.clone();
+            let delivery = slot.realization.staging.content_delivery.unwrap_or_default();
+            let environment = slot.realization.environment.owner.resident();
             let path_view = match environment.as_deref() {
                 Some(environment) => environment
                     .agent_tools()
@@ -228,7 +232,7 @@ impl SessionRealizations {
                 None => Default::default(),
             };
             prompts.extend(
-                slot.realization.resources
+                slot.realization.staging.resources
                     .resource_prompts
                     .iter()
                     .map(|prompt| prompt.render(delivery, path_view.clone())),
@@ -238,7 +242,7 @@ impl SessionRealizations {
                     .filter(|prompt| !awaken_session_configuration_contract::SessionContextSeed::is_seed_prompt(prompt))
                     .cloned());
             }
-            if let Some(skill_prompt) = &slot.realization.skill_prompt {
+            if let Some(skill_prompt) = &slot.realization.staging.skill_prompt {
                 prompts.push(skill_prompt.render(&path_view, environment.as_deref())?);
             }
             Ok(prompts)
@@ -248,7 +252,9 @@ impl SessionRealizations {
 
     /// Hold one Session's Environment `lifecycle` lock, creating its slot.
     pub(crate) async fn lock_lifecycle(&self, session: &str) -> tokio::sync::OwnedMutexGuard<()> {
-        let lifecycle = self.update_session(session, |slot| slot.realization.lifecycle.clone());
+        let lifecycle = self.update_session(session, |slot| {
+            slot.realization.environment.lifecycle.clone()
+        });
         lifecycle.lock_owned().await
     }
 
@@ -257,13 +263,13 @@ impl SessionRealizations {
         &self,
         session: &str,
     ) -> tokio::sync::OwnedMutexGuard<()> {
-        let projection = self.update_realization(session, |r| r.resource_projection.clone());
+        let projection = self.update_realization(session, |r| r.staging.projection.clone());
         projection.lock_owned().await
     }
 
     #[cfg(test)]
     pub fn realization_lock(&self, session: &str) -> Arc<tokio::sync::Mutex<()>> {
-        self.update_session(session, |slot| slot.realization.realization.clone())
+        self.update_session(session, |slot| slot.realization.execution.phase.clone())
     }
 
     /// The immutable Agent publication retained for one Session.
@@ -327,7 +333,7 @@ impl SessionRealizations {
     pub(crate) fn end_terminal_disposal(&self, session: &str) {
         self.update_session(session, |slot| {
             slot.run.drop_context();
-            slot.realization.environment_resource_reconciliation =
+            slot.realization.staging.reconciliation =
                 crate::staged_resources::EnvironmentResourceReconciliation::None;
         });
     }

@@ -481,8 +481,8 @@ async fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope
             .expect("selected manifest");
         host.installed_sessions.update(&thread, |slot| {
             slot.run.session_dispatch = prepared_session;
-            slot.realization.manifest = active.clone();
-            slot.realization.resource_transition = transition;
+            slot.realization.staging.manifest = active.clone();
+            slot.realization.staging.transition = transition;
             slot.replace_frozen_with(|next| {
                 next.environment_snapshot = runtime_projection.then(|| {
                     session_environment(

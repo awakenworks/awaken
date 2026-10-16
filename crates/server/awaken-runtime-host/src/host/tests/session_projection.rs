@@ -442,7 +442,7 @@ async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool()
                 },
             )
         });
-        slot.realization.resources.repositories.extend([
+        slot.realization.staging.resources.repositories.extend([
             repository("repo-a", "/workspace/repo-a"),
             repository("legacy-repo", "legacy-repo"),
         ]);
@@ -666,7 +666,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
         .update("managed-memory-path", |slot| {
             slot.run.session_dispatch = true;
             slot.replace_frozen_with(|next| next.tools = Some(deny_filesystem()));
-            slot.realization.resources.resource_prompts.push(
+            slot.realization.staging.resources.resource_prompts.push(
                 crate::managed_input_layout::ResourcePromptProjection::try_from_input(
                     &memory_with_path,
                 )
@@ -823,7 +823,7 @@ async fn session_content_delivery_is_frozen_across_auxiliary_agent_snapshots() {
     host.installed_sessions
         .realizations()
         .update_realization("filesystem-session", |r| {
-            r.content_delivery = Some(ManagedContentDelivery::ManagedFilesystem)
+            r.staging.content_delivery = Some(ManagedContentDelivery::ManagedFilesystem)
         });
     assert_eq!(
         host.select_content_delivery(
@@ -837,7 +837,7 @@ async fn session_content_delivery_is_frozen_across_auxiliary_agent_snapshots() {
     );
 
     host.installed_sessions.update("semantic-session", |slot| {
-        slot.realization.content_delivery = Some(ManagedContentDelivery::SemanticTools);
+        slot.realization.staging.content_delivery = Some(ManagedContentDelivery::SemanticTools);
         slot.replace_frozen_with(|next| {
             next.tools = Some(
                 awaken_session_configuration_contract::SessionToolConfiguration {

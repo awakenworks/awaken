@@ -130,8 +130,8 @@ impl SessionExecutionAuthority {
         effect: &mut dyn FnMut(&SessionRealizationLease, Duration) -> io::Result<()>,
         worker_remaining: Option<Duration>,
     ) -> io::Result<()> {
-        if !Arc::ptr_eq(&self.realization, &realization.realization)
-            || !Arc::ptr_eq(&self.lifecycle, &realization.lifecycle)
+        if !Arc::ptr_eq(&self.realization, &realization.execution.phase)
+            || !Arc::ptr_eq(&self.lifecycle, &realization.environment.lifecycle)
         {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -143,7 +143,8 @@ impl SessionExecutionAuthority {
             SessionEffectTarget::Execution(expected) => {
                 let environment = expected.upgrade().ok_or_else(denied)?;
                 let owned = realization
-                    .environment_owner
+                    .environment
+                    .owner
                     .execution_environment()
                     .ok_or_else(denied)?;
                 if !Arc::ptr_eq(&environment, owned) {
@@ -152,7 +153,11 @@ impl SessionExecutionAuthority {
             }
             SessionEffectTarget::Provider(_) => {}
         }
-        let Some(session_remaining) = realization.authority.remaining_for(&self.asserted) else {
+        let Some(session_remaining) = realization
+            .execution
+            .authority
+            .remaining_for(&self.asserted)
+        else {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "Session realization proof is no longer live",
@@ -163,7 +168,10 @@ impl SessionExecutionAuthority {
         // Both original guards remain held through the synchronous effect.
         // Provider conversion anchors BOOTTIME before this callback, so a
         // wait for either mutex cannot mint additional physical lifetime.
-        effect(realization.authority.lease().ok_or_else(denied)?, remaining)
+        effect(
+            realization.execution.authority.lease().ok_or_else(denied)?,
+            remaining,
+        )
     }
 }
 
@@ -207,8 +215,8 @@ impl ExecutionAuthority {
             worker: self.worker.clone(),
             sessions: Arc::downgrade(&self.sessions.0),
             session: session.into(),
-            realization: realization.realization.clone(),
-            lifecycle: realization.lifecycle.clone(),
+            realization: realization.execution.phase.clone(),
+            lifecycle: realization.environment.lifecycle.clone(),
             asserted: asserted.clone(),
             target,
         }
@@ -223,7 +231,7 @@ impl ExecutionAuthority {
         initial: &SandboxEffectFence,
     ) -> Result<impl CurrentExecutionAuthority + use<>, HostError> {
         let mut capture = Some(|realization: &SessionRealization| {
-            let lease = realization.authority.lease().ok_or_else(|| {
+            let lease = realization.execution.authority.lease().ok_or_else(|| {
                 HostError::internal("Session realization proof is no longer live")
             })?;
             let current = lease
@@ -269,7 +277,7 @@ impl ExecutionAuthority {
         if !scoped.needs_execution_authority() {
             return Ok(());
         }
-        let Some(asserted) = realization.authority.lease() else {
+        let Some(asserted) = realization.execution.authority.lease() else {
             return Ok(());
         };
         scoped
@@ -331,16 +339,16 @@ mod tests {
                     + 60_000,
             };
             let authority = slots.realizations().update_realization("session", |r| {
-                r.authority = SessionRealizationAuthority::Live(
+                r.execution.authority = SessionRealizationAuthority::Live(
                     crate::installed_session::test_observed_lease(asserted.clone()),
                 );
-                r.environment_owner = Self::candidate(environment.clone());
+                r.environment.owner = Self::candidate(environment.clone());
                 Arc::new(SessionExecutionAuthority {
                     worker: Some(worker.clone()),
                     sessions: Arc::downgrade(&slots.realizations().0),
                     session: "session".into(),
-                    realization: r.realization.clone(),
-                    lifecycle: r.lifecycle.clone(),
+                    realization: r.execution.phase.clone(),
+                    lifecycle: r.environment.lifecycle.clone(),
                     asserted,
                     target: SessionEffectTarget::Execution(Arc::downgrade(&environment)),
                 })
@@ -431,15 +439,15 @@ mod tests {
                 "slot_aba" => {
                     let old = f.slots.remove("session").unwrap();
                     f.slots.realizations().update_realization("session", |r| {
-                        r.authority = old.realization.authority;
-                        r.environment_owner = old.realization.environment_owner;
+                        r.execution.authority = old.realization.execution.authority;
+                        r.environment.owner = old.realization.environment.owner;
                     });
                 }
                 _ => f.slots.realizations().update_realization("session", |r| {
                     let mut lease = f.authority.asserted.clone();
                     match rule {
                         "uninstalled" => {
-                            r.authority = SessionRealizationAuthority::Uninstalled;
+                            r.execution.authority = SessionRealizationAuthority::Uninstalled;
                             return;
                         }
                         "closed" => {
@@ -454,8 +462,8 @@ mod tests {
                         "renew_session" => lease.expires_at_unix_ms += 10_000,
                         "resident" => {
                             let candidate =
-                                r.environment_owner.unpublished_candidate().unwrap().clone();
-                            r.environment_owner =
+                                r.environment.owner.unpublished_candidate().unwrap().clone();
+                            r.environment.owner =
                                 SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
                                     identity: BoundSessionEnvironmentIdentity::LegacyDirect(
                                         LegacyDirectEnvironmentProvenance::DurableBinding {
@@ -469,8 +477,8 @@ mod tests {
                         }
                         "retiring" => {
                             let candidate =
-                                r.environment_owner.unpublished_candidate().unwrap().clone();
-                            r.environment_owner =
+                                r.environment.owner.unpublished_candidate().unwrap().clone();
+                            r.environment.owner =
                                 SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
                                     cause: SessionEnvironmentRetirementCause::UnpublishedCandidate,
                                     owned: RetiringEnvironmentOwner::Unbound(candidate),
@@ -482,7 +490,7 @@ mod tests {
                             else {
                                 unreachable!()
                             };
-                            r.environment_owner = Fixture::candidate(Arc::new(
+                            r.environment.owner = Fixture::candidate(Arc::new(
                                 SandboxEnvironment::Workdir {
                                     sandbox: sandbox.clone(),
                                     hand: None,
@@ -490,9 +498,9 @@ mod tests {
                                 .into_session_environment(),
                             ));
                         }
-                        "vacant" => r.environment_owner = SessionEnvironmentOwner::Vacant,
+                        "vacant" => r.environment.owner = SessionEnvironmentOwner::Vacant,
                         "pending" => {
-                            r.environment_owner = SessionEnvironmentOwner::Preparing(
+                            r.environment.owner = SessionEnvironmentOwner::Preparing(
                                 SessionEnvironmentPreparation::AwaitingAdoption {
                                     identity: BoundSessionEnvironmentIdentity::LegacyDirect(
                                         LegacyDirectEnvironmentProvenance::DurableBinding {
@@ -507,11 +515,12 @@ mod tests {
                         "ok" | "short_session" => {}
                         _ => unreachable!(),
                     }
-                    r.authority = SessionRealizationAuthority::Live(if rule == "expired" {
-                        crate::installed_session::test_expired_observed_lease(lease)
-                    } else {
-                        crate::installed_session::test_observed_lease(lease)
-                    });
+                    r.execution.authority =
+                        SessionRealizationAuthority::Live(if rule == "expired" {
+                            crate::installed_session::test_expired_observed_lease(lease)
+                        } else {
+                            crate::installed_session::test_observed_lease(lease)
+                        });
                 }),
             }
             let mut calls = 0;
@@ -634,7 +643,7 @@ mod tests {
         assert_eq!(failure.unwrap_err().to_string(), "provider effect failed");
         assert_eq!(calls, 1);
         f.slots.realizations().update_realization("session", |r| {
-            r.environment_owner = SessionEnvironmentOwner::Vacant
+            r.environment.owner = SessionEnvironmentOwner::Vacant
         });
         assert!(f.current().is_err());
         assert_eq!(provider.current_effect_fence(&initial).unwrap(), initial);
@@ -740,4 +749,23 @@ mod tests {
                 .is_err()
         );
     }
+}
+
+/// Per-Session state held under the canonical installed-slot mutex.
+#[derive(Default)]
+pub(crate) struct ExecutionAuthorityState {
+    /// Serializes the canonical realization phase driver for this Session.
+    /// Lease renewal may advance authority while this lock is held, but it must
+    /// not start a second Stage/Publish driver. This is deliberately separate
+    /// from `lifecycle`, which is re-entered by Environment materialization.
+    pub phase: Arc<tokio::sync::Mutex<()>>,
+    /// Last accepted aggregate version and equality digest; rebuildable, never authority.
+    pub(crate) frozen_receipt: Option<super::FrozenProjectionReceipt>,
+    /// Current Control-issued projection authority. It is a live cache used to
+    /// request renewal; durable ownership remains in the Session aggregate.
+    pub authority: super::SessionRealizationAuthority,
+    /// Wakes a claim resolver waiting for the Session application's initial
+    /// restart reassignment. The lease above remains the only projected fact;
+    /// this notification carries no authority or parallel state.
+    pub changed: Arc<tokio::sync::Notify>,
 }

@@ -141,7 +141,8 @@ impl SharedHost {
 
         let mut roots = realizations
             .read_realization(thread, |r| {
-                r.resources
+                r.staging
+                    .resources
                     .repositories
                     .iter()
                     .map(|repository| {
@@ -230,7 +231,7 @@ impl SharedHost {
         // a restricted Outcome grader or delegate must reuse that immutable
         // choice instead of trying to re-author the Session's mounts/tools.
         if let Some(existing) = realizations
-            .read_realization(thread, |r| r.content_delivery)
+            .read_realization(thread, |r| r.staging.content_delivery)
             .flatten()
         {
             if managed_has_skill
@@ -256,7 +257,7 @@ impl SharedHost {
         if delivery == crate::frozen_inputs::ManagedContentDelivery::SemanticTools
             && realizations
                 .read_realization(thread, |r| {
-                    r.resources
+                    r.staging.resources
                         .resource_prompts
                         .iter()
                         .any(crate::managed_input_layout::ResourcePromptProjection::requires_filesystem_delivery)
@@ -289,7 +290,7 @@ impl SharedHost {
                 ));
             }
         }
-        realizations.update_realization(thread, |r| r.content_delivery = Some(delivery));
+        realizations.update_realization(thread, |r| r.staging.content_delivery = Some(delivery));
         Ok(delivery)
     }
 
@@ -309,22 +310,31 @@ impl SharedHost {
                         .is_none_or(|selected| selected.contains(id))
                 };
                 let frozen_has_selected =
-                    slot.realization.skills.as_ref().is_some_and(|versions| {
-                        versions
-                            .iter()
-                            .any(|version| is_selected(version.skill_id.as_str()))
-                    });
+                    slot.realization
+                        .staging
+                        .skills
+                        .as_ref()
+                        .is_some_and(|versions| {
+                            versions
+                                .iter()
+                                .any(|version| is_selected(version.skill_id.as_str()))
+                        });
                 // Managed attached bundles are immutable Resource bytes. The
                 // deferred `read` executor can disclose them before Hand exists;
                 // executing scripts still follows ordinary Sandbox demand.
                 // Direct semantic/fork compatibility retains its eager rule.
                 let frozen_requires = !slot.run.session_dispatch
-                    && slot.realization.skills.as_ref().is_some_and(|versions| {
-                        versions.iter().any(|version| {
-                            is_selected(version.skill_id.as_str())
-                                && crate::skills::version_requires_environment(version)
-                        })
-                    });
+                    && slot
+                        .realization
+                        .staging
+                        .skills
+                        .as_ref()
+                        .is_some_and(|versions| {
+                            versions.iter().any(|version| {
+                                is_selected(version.skill_id.as_str())
+                                    && crate::skills::version_requires_environment(version)
+                            })
+                        });
                 let mount_requires_environment =
                     |mount: &awaken_provisioning_contract::MountRequirement| {
                         filesystem_delivery
@@ -340,11 +350,12 @@ impl SharedHost {
                 let slot_requires = !slot.inputs.delegates.is_empty()
                     || slot
                         .realization
+                        .staging
                         .resources
                         .mounts
                         .iter()
                         .any(mount_requires_environment)
-                    || !slot.realization.resources.repositories.is_empty()
+                    || !slot.realization.staging.resources.repositories.is_empty()
                     || baseline_requires
                     || frozen_requires;
                 (

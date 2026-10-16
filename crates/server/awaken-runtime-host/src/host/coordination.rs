@@ -1235,8 +1235,8 @@ mod tests {
                     // not evidence of an unrestricted parent.
                     next.tools = Some(Default::default());
                 });
-                slot.realization.manifest = active.clone();
-                slot.realization.resource_transition = transition;
+                slot.realization.staging.manifest = active.clone();
+                slot.realization.staging.transition = transition;
             });
             let mut snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent-a")
                 .model(awaken_runtime_contract::resolved::ModelBinding::new(

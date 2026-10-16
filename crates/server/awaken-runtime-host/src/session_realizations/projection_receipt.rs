@@ -53,17 +53,17 @@ impl SessionRealization {
         receipt: &FrozenProjectionReceipt,
     ) -> Result<bool, HostError> {
         projection_revision_admission(
-            self.frozen_projection_receipt
-                .as_ref()
-                .map(|r| r.revision.0),
+            self.execution.frozen_receipt.as_ref().map(|r| r.revision.0),
             receipt.revision.0,
-            self.frozen_projection_receipt
+            self.execution
+                .frozen_receipt
                 .as_ref()
                 .is_none_or(|r| r.fingerprint == receipt.fingerprint),
         )
         .ok_or_else(|| {
             if self
-                .frozen_projection_receipt
+                .execution
+                .frozen_receipt
                 .as_ref()
                 .is_some_and(|current| receipt.revision.0 < current.revision.0)
             {

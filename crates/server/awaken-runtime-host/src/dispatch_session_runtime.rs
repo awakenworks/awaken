@@ -85,7 +85,7 @@ impl DispatchSessionRuntime {
         // also holds `realization`; this dedicated suffix lock avoids re-entry
         // and keeps compare/realize/publish atomic for every caller.
         let resource_projection =
-            realization_view.update_realization(thread, |r| r.resource_projection.clone());
+            realization_view.update_realization(thread, |r| r.staging.projection.clone());
         let _resource_projection = resource_projection.lock().await;
         let staging = &managed.host.realizer.staging;
         let active = staging.thread_resource_manifest(thread);
@@ -93,8 +93,8 @@ impl DispatchSessionRuntime {
         let (expected_binding, projected_transition) = realization_view
             .read_realization(thread, |r| {
                 (
-                    r.environment_owner.durable_binding().is_some(),
-                    r.resource_transition.clone(),
+                    r.environment.owner.durable_binding().is_some(),
+                    r.staging.transition.clone(),
                 )
             })
             .unwrap_or_default();
@@ -176,8 +176,8 @@ impl DispatchSessionRuntime {
         // rather than inferred from a cache. Persist only the command projection;
         // the active manifest remains absent until physical realization succeeds.
         realization_view.update_realization(thread, |r| {
-            if r.resource_transition.is_none() {
-                r.resource_transition = Some(proven_transition);
+            if r.staging.transition.is_none() {
+                r.staging.transition = Some(proven_transition);
             }
         });
         Ok(())

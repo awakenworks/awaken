@@ -107,7 +107,7 @@ impl RealizationExecutor {
         // receipt merely to finish this terminal command.
         if mode == BoundEnvironmentPreparationMode::TerminalRepositoryPublication
             && let Some(retiring) = sessions
-                .read_realization(thread, |r| match &r.environment_owner {
+                .read_realization(thread, |r| match &r.environment.owner {
                     SessionEnvironmentOwner::Retiring(retiring)
                         if retiring.cause
                             == SessionEnvironmentRetirementCause::RealizationRevocation
@@ -160,27 +160,23 @@ impl RealizationExecutor {
             );
             admit()?;
             sessions.update_realization(thread, |r| {
-                r.environment_owner.prepare_retiring_realization_adoption(
-                    &retiring,
-                    fresh.clone(),
-                    None,
-                )?;
+                let owner = &mut r.environment.owner;
+                owner.prepare_retiring_realization_adoption(&retiring, fresh.clone(), None)?;
                 let SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(
                     candidate,
-                )) = &r.environment_owner
+                )) = &*owner
                 else {
                     return Err(HostError::internal(
                         "terminal source rebind lost its Candidate",
                     ));
                 };
                 let candidate = candidate.clone();
-                r.environment_owner
-                    .begin_retirement_with_committed_candidate(
-                        &candidate,
-                        SessionEnvironmentRetirementCause::Terminal {
-                            effect_id: effect_fence.operation_id().to_owned(),
-                        },
-                    )?;
+                owner.begin_retirement_with_committed_candidate(
+                    &candidate,
+                    SessionEnvironmentRetirementCause::Terminal {
+                        effect_id: effect_fence.operation_id().to_owned(),
+                    },
+                )?;
                 Ok::<_, HostError>(())
             })?;
             environment = fresh;
@@ -189,7 +185,7 @@ impl RealizationExecutor {
         if adopted
             && !mode.requires_live_source()
             && let Some(retiring) = sessions
-                .read_realization(thread, |r| match &r.environment_owner {
+                .read_realization(thread, |r| match &r.environment.owner {
                     SessionEnvironmentOwner::Retiring(retiring) => Some(retiring.clone()),
                     _ => None,
                 })
@@ -236,7 +232,7 @@ impl RealizationExecutor {
                 } else {
                     let still_resident = sessions
                         .read_realization(thread, |r| {
-                            r.environment_owner.resident().is_some_and(|current| {
+                            r.environment.owner.resident().is_some_and(|current| {
                                 Arc::ptr_eq(&current, &environment)
                                     && current.lifecycle().handle()
                                         == environment.lifecycle().handle()
@@ -273,8 +269,8 @@ impl RealizationExecutor {
                         ));
                     }
                     sessions.update_realization(thread, |r| {
-                        r.environment_owner
-                            .begin_retirement_with_committed_candidate(candidate, cause)
+                        let owner = &mut r.environment.owner;
+                        owner.begin_retirement_with_committed_candidate(candidate, cause)
                     })?;
                 } else if adopted {
                     if let Some(binding) = binding {
@@ -290,7 +286,7 @@ impl RealizationExecutor {
                             ));
                         }
                         sessions.update_realization(thread, |r| {
-                            r.environment_owner.begin_retirement_with_adopted(
+                            r.environment.owner.begin_retirement_with_adopted(
                                 &identity,
                                 binding,
                                 environment.clone(),
@@ -331,7 +327,7 @@ impl RealizationExecutor {
                     }
                 }
                 sessions.update_realization(thread, |r| {
-                    r.environment_resource_reconciliation =
+                    r.staging.reconciliation =
                         crate::staged_resources::EnvironmentResourceReconciliation::None;
                 });
             }
@@ -357,7 +353,7 @@ impl RealizationExecutor {
             && realizations
                 .read_realization(thread, |r| {
                     matches!(
-                        &r.environment_owner,
+                        &r.environment.owner,
                         SessionEnvironmentOwner::Preparing(
                             SessionEnvironmentPreparation::Candidate(_)
                         ) | SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
@@ -481,7 +477,7 @@ impl RealizationExecutor {
                     };
                     if let Some(candidate) = committed_candidate.as_ref() {
                         realizations.update_realization(thread, |r| {
-                            r.environment_owner
+                            r.environment.owner
                                 .begin_retirement_with_committed_candidate(candidate, cause)
                         })?;
                     } else {

@@ -252,7 +252,7 @@ impl crate::SharedHost {
                         "test lease installation rejected",
                     ));
                 }
-                Ok(r.changed.clone())
+                Ok(r.execution.changed.clone())
             })
         })?;
         changed.notify_waiters();
@@ -271,7 +271,8 @@ impl crate::SharedHost {
     ) {
         let realizations = self.installed_sessions.realizations();
         realizations.modify_realization(session_id, |r| {
-            if r.authority
+            if r.execution
+                .authority
                 .lease()
                 .is_some_and(|current| failed_realization_invalidates_projection(current, failed))
             {
@@ -310,17 +311,17 @@ impl crate::SharedHost {
         let realizations = self.installed_sessions.realizations();
         realizations
             .read_realization(generation.session_id().as_str(), |r| {
-                if r.authority.is_closed() {
+                if r.execution.authority.is_closed() {
                     return Some(false);
                 }
-                r.authority.lease().map(|current| {
+                r.execution.authority.lease().map(|current| {
                     let asserted = crate::session_resource::SessionRealizationLease {
                         owner: current.owner.clone(),
                         runtime_incarnation: generation.runtime_incarnation().to_owned(),
                         epoch: generation.lease_epoch().get(),
                         expires_at_unix_ms: generation.lease_expires_at_unix_ms(),
                     };
-                    r.authority.remaining_for(&asserted).is_some()
+                    r.execution.authority.remaining_for(&asserted).is_some()
                 })
             })
             .flatten()
@@ -822,7 +823,7 @@ impl crate::SharedHost {
                         .context
                         .as_ref()
                         .is_some_and(|context| !context.is_coordination_envelope())
-                        || slot.realization.environment_owner.has_local_environment()
+                        || slot.realization.environment.owner.has_local_environment()
                 })
                 .unwrap_or(false);
             if is_realized {
@@ -847,7 +848,7 @@ impl crate::SharedHost {
         let transition_install = sessions
             .read_realization(thread, |r| {
                 frozen_resource_transition_install_decision(
-                    r.resource_transition.as_ref(),
+                    r.staging.transition.as_ref(),
                     &resource_transition,
                     resource_mode.allows_unattempted_amendment(),
                 )
@@ -855,7 +856,7 @@ impl crate::SharedHost {
             .unwrap_or(FrozenResourceTransitionInstallDecision::Stage);
         if transition_install == FrozenResourceTransitionInstallDecision::Reject {
             let existing = sessions
-                .read_realization(thread, |r| r.resource_transition.clone())
+                .read_realization(thread, |r| r.staging.transition.clone())
                 .flatten();
             let existing_revision = existing
                 .as_ref()
@@ -888,7 +889,7 @@ impl crate::SharedHost {
             // object. Publication still revalidates this same canonical kernel.
             self.installed_sessions.update(thread, |slot| {
                 let newer = slot.realization.validate_projection_receipt(&receipt)?;
-                slot.realization.environment_owner.after_projection(
+                slot.realization.environment.owner.after_projection(
                     thread,
                     &projection.workspace_id,
                     &projection.environment,
@@ -938,7 +939,7 @@ impl crate::SharedHost {
                 slot.inputs.validate_publication(publication.as_ref())?;
                 slot.validate_environment_projection(thread, &environment_projection)?;
                 let newer = slot.realization.validate_projection_receipt(&receipt)?;
-                let owner = slot.realization.environment_owner.after_projection(
+                let owner = slot.realization.environment.owner.after_projection(
                     thread,
                     &projection.workspace_id,
                     &projection.environment,
@@ -953,7 +954,7 @@ impl crate::SharedHost {
                             "Session realization time proof is not current",
                         ));
                     }
-                    slot.realization.changed.notify_waiters();
+                    slot.realization.execution.changed.notify_waiters();
                 }
                 // This suffix is infallible and holds both Worker authority and
                 // the slot lock: revoke/replacement cannot interleave a partial
@@ -962,7 +963,7 @@ impl crate::SharedHost {
                     slot.run.dispatch_claim = Some(claim.clone());
                 }
                 slot.install_projected_environment_owner(owner, &projection.environment);
-                slot.realization.frozen_projection_receipt = Some(receipt);
+                slot.realization.execution.frozen_receipt = Some(receipt);
                 // A cold Coordinator may have opened a metadata-only
                 // reservation envelope before this complete projection.
                 // Rebuild it against the newly frozen baseline on its next
@@ -989,10 +990,9 @@ impl crate::SharedHost {
                 // remains authorized to clear it with the rest of live execution
                 // state.
                 slot.run.session_dispatch = true;
-                slot.realization
-                    .mcp
-                    .set_has_frozen_attachment(has_mcp_projection);
-                slot.realization.resource_transition = Some(resource_transition);
+                let staging = &mut slot.realization.staging;
+                staging.mcp.set_has_frozen_attachment(has_mcp_projection);
+                staging.transition = Some(resource_transition);
                 Ok::<_, crate::HostError>(())
             })?;
             Ok(())
@@ -1043,7 +1043,7 @@ impl crate::SharedHost {
         )
         .await?;
         realizations.update_realization(assignment.session_id.as_str(), |r| {
-            r.terminal_cleanup_assignment = Some(assignment.clone());
+            r.cleanup.assignment = Some(assignment.clone());
         });
         Ok(())
     }
