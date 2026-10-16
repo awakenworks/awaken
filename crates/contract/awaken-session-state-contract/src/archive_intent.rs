@@ -200,6 +200,9 @@ pub fn session_terminal_cleanup_affinity_for(
     target_runtime_incarnation: &str,
     now_unix_ms: u64,
 ) -> SessionTerminalCleanupAffinity {
+    let Ok(cleanup) = session.verified_terminal_cleanup() else {
+        return SessionTerminalCleanupAffinity::Retained;
+    };
     let Some(current) = &session.realization else {
         return SessionTerminalCleanupAffinity::Unchanged;
     };
@@ -213,9 +216,7 @@ pub fn session_terminal_cleanup_affinity_for(
     if expired
         && session.is_terminal()
         && session.environment.binding().is_some()
-        && session
-            .verified_terminal_cleanup()
-            .is_ok_and(|cleanup| cleanup.thread_ids().is_some())
+        && cleanup.thread_ids().is_some()
     {
         return SessionTerminalCleanupAffinity::RequiresPredecessorExit;
     }
@@ -224,9 +225,7 @@ pub fn session_terminal_cleanup_affinity_for(
             session.environment,
             crate::SessionEnvironmentState::Unmaterialized
         )
-        && session
-            .terminal_cleanup
-            .has_unprepared_root_only_request(&session.session_id)
+        && cleanup.has_unprepared_root_only_request(&session.session_id)
     {
         SessionTerminalCleanupAffinity::RequiresUnattemptedArchiveReceipt
     } else {

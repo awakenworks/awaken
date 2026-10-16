@@ -884,132 +884,144 @@ fn materialization_intrinsic_and_replacement_laws_preserve_unknown_and_first_val
 #[test]
 fn terminal_cleanup_affinity_distinguishes_owner_and_runtime_incarnation() {
     // Cause graph: C1 logical owner exact; C2 Runtime incarnation exact;
-    // C3 prior lease live; C4 physical Environment; C5 child/non-pristine
-    // cleanup set; C6 terminal execution; C7 a frozen cleanup target projection.
-    // The original same-process continuation is C1&&C2; a
+    // C3 prior lease live; C4 physical Environment; C5 cleanup absent,
+    // unfrozen, frozen root-only, frozen with child, or from another root;
+    // C6 terminal execution. The original same-process continuation is C1&&C2; a
     // Worker restart is not that continuation merely because C1 still holds.
     //
-    // | Rule | incumbent | C1+C2 | C3 | C4/C5 | effect |
-    // | A1 | absent | - | - | - | original first-placement Unchanged |
-    // | A2 | present | both exact | either | either | Unchanged |
-    // | A3 | present | either changed | expired | neither | require original archive receipt |
-    // | A4 | present | either changed | expired | physical + C6+C7 | requires independent predecessor exit |
-    // | A5 | present | either changed | all remaining rows | Retained |
-    // All 32 present combinations keep C6/C7 true. A6 below independently
-    // falsifies terminal state and the unfrozen cleanup phases: each retains.
-    // RequiresPredecessorExit is a request for independent proof, never a lease
-    // replacement or physical-source access grant (ADR-0078). The pure query reads no
-    // receipt, changes no root and grants no physical takeover authority.
+    // | Rule | incumbent | C1+C2 | other causes | effect |
+    // | A1 | absent | - | - | original first-placement Unchanged |
+    // | A2 | present | both exact | valid cleanup scope | Unchanged |
+    // | A3 | present | either changed | expired, terminal, physical, exact frozen scope | require predecessor exit |
+    // | A4 | present | either changed | expired, Unmaterialized, exact frozen root-only | require archive receipt |
+    // | A5 | present | either | invalid scope or remaining combinations | Retained |
+    // All 320 present combinations include before/at/after expiry and u64::MAX.
+    // This read-only query requests evidence; the application still owns
+    // terminal admission, exact Registry/archive reads and the claim CAS.
     use crate::{
         SessionTerminalCleanupAffinity as Affinity, session_terminal_cleanup_affinity_for,
     };
-    let mut initial = root(SessionExecutionState::Terminated, 4).into_snapshot();
+    let initial = root(SessionExecutionState::Terminated, 4).into_snapshot();
     assert_eq!(
         session_terminal_cleanup_affinity_for(&initial, "worker-a", "worker-a:2:boot-new", 10),
         Affinity::Unchanged,
         "A1 no historical affinity; physical placement still has its application gate",
     );
-    assert!(initial.terminal_cleanup.request(&initial.session_id));
+    let mut checked = 0;
     for same_owner in [false, true] {
         for same_runtime in [false, true] {
-            for live in [false, true] {
-                for physical in [false, true] {
-                    for child in [false, true] {
-                        let mut session = initial.clone();
-                        session
-                            .terminal_cleanup
-                            .freeze_targets(
-                                &session.session_id,
-                                if child {
-                                    vec!["child".into()]
-                                } else {
-                                    Vec::new()
-                                },
-                                0,
-                                0,
-                            )
-                            .unwrap();
-                        session.realization = Some(crate::SessionRealizationLease {
-                            owner: "worker-a".into(),
-                            runtime_incarnation: "worker-a:1:boot-old".into(),
-                            epoch: 4,
-                            expires_at_unix_ms: if live { u64::MAX } else { 1 },
-                        });
-                        if physical {
-                            session.environment = crate::SessionEnvironmentState::Resident {
-                                binding: "original-binding".into(),
-                                effect_id: None,
-                                generation: None,
-                                idle_since_unix_ms: None,
+            for (expires_at, live) in [(1, false), (10, false), (11, true), (u64::MAX, true)] {
+                for (execution, terminal) in [
+                    (SessionExecutionState::Idle, false),
+                    (SessionExecutionState::Terminated, true),
+                ] {
+                    for physical in [false, true] {
+                        for (scope, requested, frozen, child, exact_root) in [
+                            ("absent", false, false, false, true),
+                            ("unfrozen", true, false, false, true),
+                            ("root", true, true, false, true),
+                            ("child", true, true, true, true),
+                            ("foreign", true, true, false, false),
+                        ] {
+                            let mut session = initial.clone();
+                            session.execution = execution;
+                            let cleanup_session = if exact_root {
+                                session.session_id.clone()
+                            } else {
+                                crate::SessionId::from("foreign")
                             };
+                            if requested {
+                                assert!(session.terminal_cleanup.request(&cleanup_session));
+                            }
+                            if frozen {
+                                session
+                                    .terminal_cleanup
+                                    .freeze_targets(
+                                        &cleanup_session,
+                                        if child {
+                                            vec!["child".into()]
+                                        } else {
+                                            Vec::new()
+                                        },
+                                        0,
+                                        0,
+                                    )
+                                    .unwrap();
+                            }
+                            session.realization = Some(crate::SessionRealizationLease {
+                                owner: "worker-a".into(),
+                                runtime_incarnation: "worker-a:1:boot-old".into(),
+                                epoch: 4,
+                                expires_at_unix_ms: expires_at,
+                            });
+                            if physical {
+                                session.environment = crate::SessionEnvironmentState::Resident {
+                                    binding: "original-binding".into(),
+                                    effect_id: None,
+                                    generation: None,
+                                    idle_since_unix_ms: None,
+                                };
+                            }
+                            let before = session.clone();
+                            if !exact_root {
+                                assert!(
+                                    session.verified_terminal_cleanup().is_err(),
+                                    "foreign cleanup has no root authority"
+                                );
+                                let wire = serde_json::to_value(&session).unwrap();
+                                let decoded: PersistedSession =
+                                    serde_json::from_value(wire.clone()).unwrap();
+                                assert_eq!(
+                                    serde_json::to_value(&decoded).unwrap(),
+                                    wire,
+                                    "compatible DTO retains historical bytes"
+                                );
+                                assert!(
+                                    matches!(
+                                        SessionAggregate::try_from(decoded),
+                                        Err(SessionMutationValidationError::TerminalCleanup(
+                                            crate::SessionCleanupError::OperationMismatch
+                                        ))
+                                    ),
+                                    "foreign cleanup cannot enter controlled root"
+                                );
+                            }
+                            let expected =
+                                match (same_owner && same_runtime, live, terminal, physical, scope)
+                                {
+                                    (_, _, _, _, "foreign") => Affinity::Retained,
+                                    (true, _, _, _, _) => Affinity::Unchanged,
+                                    (false, false, true, true, "root" | "child") => {
+                                        Affinity::RequiresPredecessorExit
+                                    }
+                                    (false, false, _, false, "root") => {
+                                        Affinity::RequiresUnattemptedArchiveReceipt
+                                    }
+                                    _ => Affinity::Retained,
+                                };
+                            checked += 1;
+                            assert_eq!(
+                                session_terminal_cleanup_affinity_for(
+                                    &session,
+                                    if same_owner { "worker-a" } else { "worker-b" },
+                                    if same_runtime {
+                                        "worker-a:1:boot-old"
+                                    } else {
+                                        "worker-a:2:boot-new"
+                                    },
+                                    10,
+                                ),
+                                expected,
+                                "A2-A5 owner={same_owner} runtime={same_runtime} expires={expires_at} terminal={terminal} physical={physical} cleanup={scope}",
+                            );
+                            assert_eq!(session, before, "A1-A5 query never mutates root");
                         }
-                        let before = session.clone();
-                        let expected = if same_owner && same_runtime {
-                            Affinity::Unchanged
-                        } else if !live && physical {
-                            Affinity::RequiresPredecessorExit
-                        } else if !live && !child {
-                            Affinity::RequiresUnattemptedArchiveReceipt
-                        } else {
-                            Affinity::Retained
-                        };
-                        assert_eq!(
-                            session_terminal_cleanup_affinity_for(
-                                &session,
-                                if same_owner { "worker-a" } else { "worker-b" },
-                                if same_runtime {
-                                    "worker-a:1:boot-old"
-                                } else {
-                                    "worker-a:2:boot-new"
-                                },
-                                10,
-                            ),
-                            expected,
-                            "A2-A5 owner={same_owner} runtime={same_runtime} live={live} physical={physical} child={child}",
-                        );
-                        assert_eq!(session, before, "A1-A5 query never mutates root");
                     }
                 }
             }
         }
     }
-    // A6 controls: expired foreign physical affinity remains retained if the
-    // terminal precondition or frozen target projection is absent. NotRequested
-    // and Fenced are distinct legal pre-freeze phases; neither supplies targets.
-    // Root identity comes from the aggregate; this query creates no assignment.
-    for control in ["nonterminal", "unfrozen", "not_requested"] {
-        let mut session = initial.clone();
-        session.realization = Some(crate::SessionRealizationLease {
-            owner: "worker-a".into(),
-            runtime_incarnation: "worker-a:1:boot-old".into(),
-            epoch: 4,
-            expires_at_unix_ms: 1,
-        });
-        session.environment = crate::SessionEnvironmentState::Resident {
-            binding: "original-binding".into(),
-            effect_id: None,
-            generation: None,
-            idle_since_unix_ms: None,
-        };
-        if control == "not_requested" {
-            session.terminal_cleanup = crate::SessionCleanupOperation::default();
-        } else if control != "unfrozen" {
-            session
-                .terminal_cleanup
-                .freeze_targets(&session.session_id, [], 0, 0)
-                .unwrap();
-        }
-        if control == "nonterminal" {
-            session.execution = SessionExecutionState::Idle;
-        }
-        let before = session.clone();
-        assert_eq!(
-            session_terminal_cleanup_affinity_for(&session, "worker-b", "worker-b:2:boot-new", 10),
-            Affinity::Retained,
-            "A6 {control}",
-        );
-        assert_eq!(session, before, "A6 {control} query never mutates root");
-    }
+    assert_eq!(checked, 320, "the complete affinity decision table ran");
 }
 
 #[test]
