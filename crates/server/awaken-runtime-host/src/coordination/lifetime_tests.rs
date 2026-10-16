@@ -1,109 +1,9 @@
 //! Cached coordination capabilities borrow the original Session owner per call.
 
+use super::test_support::RemoteControl;
 use super::*;
 use awaken_agent_contract::agent::{run::Id as RunId, thread::Id as ThreadId};
-use awaken_session_realization_contract::ClaimedSessionControlError;
-use std::sync::Mutex;
 use std::time::Duration;
-
-#[derive(Default)]
-struct RemoteCallGate {
-    entered: tokio::sync::Notify,
-    release: tokio::sync::Notify,
-    dropped: tokio::sync::Notify,
-}
-
-struct CallLifetime(Arc<RemoteCallGate>);
-
-impl Drop for CallLifetime {
-    fn drop(&mut self) {
-        self.0.dropped.notify_one();
-    }
-}
-
-#[derive(Default)]
-struct RemoteControl {
-    calls: Mutex<Vec<(&'static str, RunClaim)>>,
-    gate: Option<Arc<RemoteCallGate>>,
-    fail: bool,
-}
-
-impl RemoteControl {
-    async fn query(
-        &self,
-        name: &'static str,
-        claim: &RunClaim,
-    ) -> Result<(), ClaimedSessionControlError> {
-        self.calls.lock().unwrap().push((name, claim.clone()));
-        if let Some(gate) = &self.gate {
-            let _lifetime = CallLifetime(gate.clone());
-            gate.entered.notify_one();
-            gate.release.notified().await;
-        }
-        if self.fail {
-            Err(ClaimedSessionControlError::new(
-                "original remote query failure",
-            ))
-        } else {
-            Ok(())
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl ClaimedSessionCoordinationControl<RunClaim> for RemoteControl {
-    async fn list_session_agents(
-        &self,
-        claim: &RunClaim,
-        _session: &str,
-    ) -> Result<Vec<SessionAgentRosterEntry>, ClaimedSessionControlError> {
-        self.query("list", claim).await?;
-        Ok(Vec::new())
-    }
-
-    async fn send_session_agent_message(
-        &self,
-        claim: &RunClaim,
-        command: SessionAgentMessageCommand,
-    ) -> Result<SessionAgentMessageReceipt, ClaimedSessionControlError> {
-        self.query("send", claim).await?;
-        Ok(SessionAgentMessageReceipt {
-            thread_id: command.source_thread_id,
-        })
-    }
-
-    async fn admit_session_model_request(
-        &self,
-        claim: &RunClaim,
-        _session: &str,
-        _thread: &ThreadId,
-        _run: &RunId,
-    ) -> Result<bool, ClaimedSessionControlError> {
-        self.calls.lock().unwrap().push(("model", claim.clone()));
-        Ok(true)
-    }
-
-    async fn admit_session_run_activity(
-        &self,
-        claim: &RunClaim,
-        _session: &str,
-        _agent: &str,
-        _run: &RunId,
-        _mode: SessionRunActivityAdmissionMode,
-    ) -> Result<SessionRunActivityAdmission, ClaimedSessionControlError> {
-        self.calls.lock().unwrap().push(("activity", claim.clone()));
-        Ok(SessionRunActivityAdmission::Rejected)
-    }
-
-    async fn settle_session_agent_boundary(
-        &self,
-        claim: &RunClaim,
-        _command: SessionAgentBoundaryCommand,
-    ) -> Result<(), ClaimedSessionControlError> {
-        self.calls.lock().unwrap().push(("settle", claim.clone()));
-        Ok(())
-    }
-}
 
 async fn remote_host(control: Arc<RemoteControl>) -> Arc<crate::SharedHost> {
     let mut deps =
@@ -163,9 +63,11 @@ impl Query {
 
 #[tokio::test]
 async fn remote_cached_consumers_release_original_slots() {
-    // Four real consumer allocations may remain reachable after the final Host
-    // owner drops. A resident, idle coordination Context must not own its slots
-    // through its cached model gate. Capture the failure before fixture cleanup.
+    // Causes: C1 a real resident coordination Context caches a remote model gate;
+    // C2 coordinator, gate, claimed-gate factory and observer remain reachable;
+    // C3 the final Host and caller Context owners drop, with no active request.
+    // Rule R1=C1+C2+C3 -> both original slots and Context are released. Capture
+    // that effect before fixture cleanup; no eviction may create the evidence.
     let host = remote_host(Arc::new(RemoteControl::default())).await;
     host.installed_sessions
         .update_run("session", |run| run.session_dispatch = true);
@@ -219,8 +121,9 @@ async fn remote_cached_consumers_release_original_slots() {
 
 #[tokio::test]
 async fn current_claim_queries_fail_closed_after_original_owner_drops() {
-    // R1 list / R2 send, with a valid claim before owner loss: neither can
-    // resurrect slots or enter the remote transport once its owner is gone.
+    // Causes: C1 operation=list/send; C2 the original owner is gone; C3 its
+    // current claim was valid. Rules R1/R2=C1+C2+C3 -> DefinitiveFailure before
+    // transport entry, no resurrected slots. Claim validity cannot replace C2.
     for query in [Query::List, Query::Send] {
         let control = Arc::new(RemoteControl::default());
         let host = remote_host(control.clone()).await;
@@ -242,8 +145,10 @@ async fn current_claim_queries_fail_closed_after_original_owner_drops() {
 
 #[tokio::test]
 async fn current_claim_queries_reject_missing_or_foreign_claim_before_control_io() {
-    // Both current-claim selecting operations retain their original guards:
-    // missing claim / another Run fail definitively before any transport call.
+    // Causes: C1 operation=list/send; C2 original owner is live; C3 current
+    // claim=missing/foreign Run. Rules R3-R6=C1+C2+C3 -> original definitive
+    // missing/foreign-claim error, zero transport calls. A matching claim's
+    // success/error/cancellation effects are covered by the active-query table.
     for query in [Query::List, Query::Send] {
         for foreign in [false, true] {
             let control = Arc::new(RemoteControl::default());
@@ -274,11 +179,15 @@ async fn current_claim_queries_reject_missing_or_foreign_claim_before_control_io
 
 #[tokio::test]
 async fn active_remote_queries_retain_original_slots_until_completion_or_cancellation() {
-    // 2 operations x {success, original error, cancellation}. The entry/drop
-    // receipts prove actual future ownership; timeouts only bound broken tests.
+    // Causes: C1 operation=list/send; C2 live owner plus matching current claim;
+    // C3 transport is entered and blocks; C4 final external owner drops;
+    // C5 outcome=success/original error/caller cancellation. R7-R12=C1+C2+C3+C4
+    // -> retain the same slots until C5, pass through success/original error or
+    // destroy the original future, then release slots and reject later I/O.
+    // Entry/drop receipts prove the boundary; timeouts only bound broken tests.
     for query in [Query::List, Query::Send] {
         for finish in 0..3 {
-            let gate = Arc::new(RemoteCallGate::default());
+            let gate = Arc::new(AdmissionGate::default());
             let control = Arc::new(RemoteControl {
                 gate: Some(gate.clone()),
                 fail: finish == 1,
@@ -343,9 +252,12 @@ async fn active_remote_queries_retain_original_slots_until_completion_or_cancell
 
 #[tokio::test]
 async fn explicit_claim_controls_continue_after_original_slots_drop() {
-    // Model admission / activity admission / settlement consume their explicit
-    // claim, independent of a removed or different current Session slot. Remote
-    // finalization remains inert because the Coordinator owns that effect.
+    // Causes: C1 explicit claim-bound model/activity/settlement call; C2 the
+    // Session previously held another Run and its original owner is now gone;
+    // C3 model request Run matches/mismatches the explicit claim. Rules R13-R15:
+    // C1+C2+matching -> exactly one call with the original claim, unchanged
+    // admitted/rejected/settled result; R16=mismatch -> error before remote I/O.
+    // Constraint R17: remote finalization is inert; only Coordinator finalizes.
     let control = Arc::new(RemoteControl::default());
     let host = remote_host(control.clone()).await;
     let mut other = claim();

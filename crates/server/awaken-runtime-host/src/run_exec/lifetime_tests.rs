@@ -500,10 +500,12 @@ async fn artifact_decorator_holds_same_owner_until_real_publication_finishes() {
 
 #[tokio::test]
 async fn abandoning_the_original_attempt_drops_both_decorator_owners_and_inner_future() {
-    // Execute/resume enter a real inner future and remain blocked. Dropping the
-    // caller's future must destroy that original future, release both original
-    // owners, and leave no cache that can start another attempt. This is future
-    // cancellation, not a proof that an external process has physically stopped.
+    // Causes: C1 execute/resume; C2 both decorators upgrade their original owners;
+    // C3 the real inner future enters and blocks; C4 all external owners drop;
+    // C5 the caller drops its future before release. Rules R1/R2=C1+C2+C3+C4+C5
+    // -> destroy the entered inner future exactly once, release both owners,
+    // reject a later attempt before I/O, and still forward explicit cancel once.
+    // Future destruction does not establish external-process physical closure.
     for is_resume in [false, true] {
         let host =
             crate::HostDependencies::ephemeral(Arc::new(crate::NoModelConfiguredExecutor), "stub")

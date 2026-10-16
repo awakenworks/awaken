@@ -654,6 +654,7 @@ impl SessionAgentCoordination for RecordingSessionAgentCoordination {
 
 #[cfg(test)]
 mod tests {
+    use super::test_support::RemoteControl;
     use super::*;
     use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
     use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -671,160 +672,6 @@ mod tests {
         ) -> awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>
         {
             unreachable!("endpoint selection does not execute inference")
-        }
-    }
-
-    #[derive(Default)]
-    struct RemoteControl {
-        model_calls: std::sync::Mutex<Vec<RunClaim>>,
-    }
-
-    #[async_trait::async_trait]
-    impl awaken_session_realization_contract::SessionRealizationControl for RemoteControl {
-        async fn begin_session_realization(
-            &self,
-            _command: awaken_session_realization_contract::BeginSessionRealization,
-        ) -> Result<
-            awaken_session_realization_contract::SessionRealizationDirective,
-            awaken_session_realization_contract::SessionRealizationControlFailure,
-        > {
-            Err(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)
-        }
-
-        async fn activate_session_realization(
-            &self,
-            _command: awaken_session_realization_contract::ActivateSessionRealization,
-        ) -> Result<
-            awaken_session_realization_contract::SessionRealizationDirective,
-            awaken_session_realization_contract::SessionRealizationControlFailure,
-        > {
-            Err(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)
-        }
-
-        async fn acknowledge_session_realization(
-            &self,
-            _command: awaken_session_realization_contract::AcknowledgeSessionRealization,
-        ) -> Result<
-            awaken_session_realization_contract::SessionRealizationDirective,
-            awaken_session_realization_contract::SessionRealizationControlFailure,
-        > {
-            Err(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)
-        }
-
-        async fn fail_session_realization(
-            &self,
-            _command: awaken_session_realization_contract::FailSessionRealization,
-        ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure>
-        {
-            Err(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)
-        }
-
-        async fn renew_session_realization(
-            &self,
-            _command: awaken_session_realization_contract::RenewSessionRealization,
-        ) -> Result<
-            awaken_session_realization_contract::SessionRealizationLeaseReceipt,
-            awaken_session_realization_contract::SessionRealizationControlFailure,
-        > {
-            Err(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl awaken_session_realization_contract::ClaimedSessionRealizationControl for RemoteControl {
-        async fn resume_frozen(
-            &self,
-            _claim: &RunClaim,
-            _session_id: &str,
-            _session_work_authority: Option<
-                &awaken_session_application_contract::SessionWorkAuthorityReceipt,
-            >,
-            _continuation: Option<
-                &awaken_session_configuration_contract::resource::SessionRealizationLease,
-            >,
-        ) -> Result<
-            Option<awaken_session_realization_contract::SessionRealizationDirective>,
-            awaken_session_realization_contract::ClaimedSessionControlError,
-        > {
-            Ok(None)
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl
-        awaken_session_runtime_contract::ClaimedSessionCoordinationControl<
-            awaken_run_ingress_contract::RunClaim,
-        > for RemoteControl
-    {
-        async fn list_session_agents(
-            &self,
-            _claim: &RunClaim,
-            _session_id: &str,
-        ) -> Result<
-            Vec<awaken_session_runtime_contract::SessionAgentRosterEntry>,
-            awaken_session_realization_contract::ClaimedSessionControlError,
-        > {
-            Err(
-                awaken_session_realization_contract::ClaimedSessionControlError::new(
-                    "remote coordination fixture does not list Agents",
-                ),
-            )
-        }
-
-        async fn admit_session_model_request(
-            &self,
-            claim: &RunClaim,
-            _session_id: &str,
-            _thread_id: &awaken_agent_contract::agent::thread::Id,
-            _run_id: &awaken_agent_contract::agent::run::Id,
-        ) -> Result<bool, awaken_session_realization_contract::ClaimedSessionControlError> {
-            self.model_calls.lock().unwrap().push(claim.clone());
-            Ok(true)
-        }
-
-        async fn admit_session_run_activity(
-            &self,
-            _claim: &RunClaim,
-            _session_id: &str,
-            _agent_id: &str,
-            _run_id: &awaken_agent_contract::agent::run::Id,
-            _mode: awaken_session_runtime_contract::SessionRunActivityAdmissionMode,
-        ) -> Result<
-            awaken_session_runtime_contract::SessionRunActivityAdmission,
-            awaken_session_realization_contract::ClaimedSessionControlError,
-        > {
-            Err(
-                awaken_session_realization_contract::ClaimedSessionControlError::new(
-                    "remote coordination fixture does not admit Session activity",
-                ),
-            )
-        }
-
-        async fn send_session_agent_message(
-            &self,
-            _claim: &RunClaim,
-            _command: awaken_session_runtime_contract::SessionAgentMessageCommand,
-        ) -> Result<
-            awaken_session_runtime_contract::SessionAgentMessageReceipt,
-            awaken_session_realization_contract::ClaimedSessionControlError,
-        > {
-            Err(
-                awaken_session_realization_contract::ClaimedSessionControlError::new(
-                    "remote coordination fixture does not send Agent messages",
-                ),
-            )
-        }
-
-        async fn settle_session_agent_boundary(
-            &self,
-            _claim: &RunClaim,
-            _command: awaken_session_runtime_contract::SessionAgentBoundaryCommand,
-        ) -> Result<(), awaken_session_realization_contract::ClaimedSessionControlError> {
-            Err(
-                awaken_session_realization_contract::ClaimedSessionControlError::new(
-                    "remote coordination fixture does not settle Agent boundaries",
-                ),
-            )
         }
     }
 
@@ -1020,8 +867,8 @@ mod tests {
             "R3 remote execution cannot borrow a slot claim"
         );
         assert_eq!(
-            *control.model_calls.lock().unwrap(),
-            vec![child, parent],
+            *control.calls.lock().unwrap(),
+            vec![("model", child), ("model", parent)],
             "R1-R3 exact remote calls"
         );
     }
@@ -1159,6 +1006,9 @@ mod tests {
         assert_eq!(boundaries[2].session_activity_epoch, 99, "O5/E4");
     }
 }
+
+#[cfg(test)]
+mod test_support;
 
 #[cfg(test)]
 mod lifetime_tests;
