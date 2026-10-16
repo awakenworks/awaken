@@ -1,228 +1,7 @@
-// @formal surface obligation=session_execution.terminal_state_never_reopens
-// @formal surface obligation=checkpoint.terminal_completion_clears_resume
-// @formal reason: Dispatch-side terminal reconciliation from committed Run truth: the coordinator's
-// @formal reason: maintenance loop, the Environment-free boundary worker and Worker evidence retention.
-//! Environment-free terminal dispatch control and reconciliation. Cancellation
-//! and committed-terminal repair share one boundary worker (dispatch fence and
-//! Thread commit authority, never Session environment provisioning).
-
-use super::{HostWorkerResolver, SharedHost};
-use awaken_agent_contract::agent::run::{Id as RunId, RunState};
-use awaken_dispatch_erasure::AnyDispatchStore;
-use awaken_dispatch_execution::DEFAULT_LEASE_MS;
-use std::sync::Arc;
-
-/// The coordinator-only maintenance loop and the terminal scan it drives.
-/// Consumer: this module and the dispatch capability, which owns the value.
-#[derive(Default)]
-pub(crate) struct TerminalReconciliationState {
-    /// The run-ingress-owned maintenance loop used by a coordinator-only Host.
-    /// Local pools already own the same canonical maintenance mechanism.
-    pub(super) dispatch_reconciler:
-        std::sync::OnceLock<awaken_dispatch_execution::DispatchReconciler>,
-    pub(super) terminal_scan: awaken_dispatch_execution::TerminalReconciliationScan,
-    pub(super) worker_evidence: std::sync::OnceLock<(
-        Arc<dyn awaken_dispatch_contract::WorkerDirectory>,
-        Arc<dyn awaken_dispatch_execution::WorkerTerminalReconciliation>,
-    )>,
-    pub(super) worker_evidence_after: tokio::sync::Mutex<Option<String>>,
-}
-
-impl HostWorkerResolver {
-    pub(super) async fn cancellation_worker(
-        &self,
-        host: &SharedHost,
-        claimed: &awaken_dispatch_contract::Claimed,
-    ) -> Result<
-        Arc<awaken_dispatch_execution::DispatchWorker<AnyDispatchStore>>,
-        awaken_dispatch_execution::Error,
-    > {
-        let thread_id = claimed.request.session_thread_id();
-        let commit = Self::open_commit(host, thread_id).await?;
-        Ok(Arc::new(
-            self.boundary_worker(host, claimed, commit, None, true)
-                .await?,
-        ))
-    }
-
-    pub(crate) async fn boundary_worker(
-        &self,
-        host: &SharedHost,
-        claimed: &awaken_dispatch_contract::Claimed,
-        commit: Arc<crate::store::HostCommit>,
-        mut context: Option<awaken_runtime_contract::RuntimeRunContext>,
-        install_cancellation_executor: bool,
-    ) -> Result<
-        awaken_dispatch_execution::DispatchWorker<AnyDispatchStore>,
-        awaken_dispatch_execution::Error,
-    > {
-        let recovery_projection = commit.recovery_projection();
-        let binding = host
-            .authority
-            .dispatch_binding()
-            .ok_or_else(|| Self::execution_error("claimed recovery requires a dispatch binding"))?;
-        let mut worker = awaken_dispatch_execution::DispatchWorker::new_bound(
-            Arc::new(awaken_runtime::Runtime::new().with_clock(host.clock.clone())),
-            binding,
-            commit.clone(),
-            claimed.lease.owner().to_owned(),
-        );
-        if let Some(observer) = host.dispatch_settlement_observer() {
-            worker = worker
-                .with_settlement_observer(observer.clone())
-                .with_session_run_admission_observer(observer);
-        }
-        if host.authority.observes_terminal_memory_locally()
-            && let Some(observer) = host
-                .dispatched_memory_terminal_observer(&claimed.request, commit.clone())
-                .await
-                .map_err(|error| Self::execution_error(error.to_string()))?
-        {
-            // Child execution supplies its attempt context here. Adding the
-            // exact logical Run observer before the single `with_context`
-            // prevents a later child install from erasing terminal Memory work.
-            context = Some(context.unwrap_or_default().with_terminal_observer(observer));
-        }
-        if let Some(context) = context {
-            worker = worker.with_context(context);
-        }
-        if install_cancellation_executor
-            && matches!(
-                awaken_runtime_contract::resolved::Backend::from_ref(
-                    claimed
-                        .request
-                        .activation
-                        .snapshot
-                        .resolved_spec
-                        .model_binding
-                        .identity()
-                        .2
-                ),
-                awaken_runtime_contract::resolved::Backend::Remote(_)
-            )
-        {
-            let executor = host.agent.remote_attempt_executor.clone().ok_or_else(|| {
-                Self::execution_error(
-                    "remote cancellation requires a configured remote attempt executor",
-                )
-            })?;
-            worker.install_attempt_executor(executor);
-        }
-
-        if let Some(projection) = recovery_projection {
-            worker = worker.with_recovery_projection(projection)?;
-        }
-        Ok(worker)
-    }
-}
-
-pub(super) async fn reconcile_committed_terminals(
-    resolver: &HostWorkerResolver,
-    limit: usize,
-) -> Result<Vec<(RunId, RunState)>, awaken_dispatch_execution::Error> {
-    let host = resolver.host()?;
-    // A database-less Worker delegates committed truth upstream and has no
-    // process-local registry from which to discover every Thread reader.
-    if !host.authority.scans_committed_terminals() || limit == 0 {
-        return Ok(Vec::new());
-    }
-
-    let store = host.optional_dispatch_store().ok_or_else(|| {
-        HostWorkerResolver::execution_error("terminal scan requires a Coordinator dispatch owner")
-    })?;
-    host.dispatch
-        .terminal_reconciliation
-        .terminal_scan
-        .reconcile(store.as_ref(), limit, |row| {
-            let host = &host;
-            let store = &store;
-            async move {
-                // The dispatch summary already carries the canonical Session affinity.
-                // Read committed truth from that physical partition before taking the
-                // maintenance claim: claiming every Awaiting/expired row and restoring
-                // non-terminal ones to Awaiting would steal a recoverable lease from a
-                // registered replacement Worker and advance its fencing epoch forever.
-                // `settle_claimed_terminal` repeats this check after the claim, closing
-                // the read/claim race without introducing another recovery registry.
-                let commit_thread = row.session_thread_id.as_ref().unwrap_or(&row.thread_id);
-                let commit = Arc::new(
-                    host.authority
-                        .open_commit(&commit_thread.0)
-                        .await
-                        .map_err(|error| HostWorkerResolver::execution_error(error.to_string()))?,
-                );
-                // Temporary recovery holds this Host only during one candidate;
-                // the selected neutral adapter stores no Host/recovery back-edge.
-                let recovery = host.worker_recovery_source();
-                let attempt_recovery =
-                    awaken_dispatch_execution::PhysicalAttemptRecoveryRead::new(recovery.as_ref());
-                let ready = match host.dispatch.terminal_reconciliation.worker_evidence.get() {
-                    Some((directory, terminal)) => tokio::time::timeout(
-                        std::time::Duration::from_secs(5),
-                        terminal.reconcile_terminal_attempt(
-                            store.as_ref(),
-                            directory.as_ref(),
-                            commit.as_ref(),
-                            &row,
-                            Some(&attempt_recovery),
-                            awaken_time::WallClockExt::now_ms(host.clock.as_ref()),
-                        ),
-                    )
-                    .await
-                    .map_err(|_| {
-                        HostWorkerResolver::execution_error("terminal physical closure timed out")
-                    })?
-                    .map_err(|error| HostWorkerResolver::execution_error(error.to_string()))?,
-                    // A missing trusted role never observes/stops an occupied
-                    // domain. Preserve only original canonical empty recovery;
-                    // the atomic Store claim still excludes a concurrent slot.
-                    None => awaken_dispatch_execution::committed_terminal_ready(
-                        commit.as_ref(),
-                        &row,
-                    )
-                    .map_err(|error| HostWorkerResolver::execution_error(error.to_string()))?
-                        && !row.physical_attempt_active,
-                };
-                if !ready {
-                    return Ok(None);
-                }
-
-                let Some(claimed) = store
-                    .claim_for_terminal_recovery(
-                        &row.run_id,
-                        host.dispatch_owner(),
-                        DEFAULT_LEASE_MS,
-                    )
-                    .await?
-                else {
-                    return Ok(None);
-                };
-
-                let worker = match resolver
-                    .boundary_worker(host, &claimed, commit, None, false)
-                    .await
-                {
-                    Ok(worker) => worker,
-                    Err(error) => {
-                        let _ = store
-                            .settle(
-                                claimed.lease.run_id(),
-                                claimed.lease.epoch(),
-                                awaken_dispatch_contract::DispatchOutcome::Awaiting,
-                                &[],
-                            )
-                            .await;
-                        return Err(error);
-                    }
-                };
-                worker.settle_claimed_terminal(claimed).await
-            }
-        })
-        .await
-}
-
+//! Integration tests for the canonical dispatch terminal reconciler.
+use super::*;
+use awaken_dispatch_execution::session_reconciliation::reconcile_committed_terminals;
 use awaken_dispatch_contract::{DispatchControlClaims as _, DispatchSettlement as _};
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,7 +162,9 @@ mod tests {
             )),
         )
         .unwrap();
-        host.reconcile_worker_evidence().await.unwrap();
+        awaken_dispatch_execution::session_reconciliation::reconcile_worker_evidence(host.as_ref())
+            .await
+            .unwrap();
         assert!(
             directory
                 .incarnation(&identities[0])
@@ -394,8 +175,12 @@ mod tests {
                 .is_some(),
             "M1 exit was committed before failed release"
         );
-        host.reconcile_worker_evidence().await.unwrap();
-        host.reconcile_worker_evidence().await.unwrap();
+        awaken_dispatch_execution::session_reconciliation::reconcile_worker_evidence(host.as_ref())
+            .await
+            .unwrap();
+        awaken_dispatch_execution::session_reconciliation::reconcile_worker_evidence(host.as_ref())
+            .await
+            .unwrap();
         assert_eq!(
             *source.released.lock().unwrap(),
             [identities[1].clone(), identities[0].clone()]
@@ -633,7 +418,9 @@ mod tests {
             )),
         )
         .unwrap();
-        host.reconcile_worker_evidence().await.unwrap();
+        awaken_dispatch_execution::session_reconciliation::reconcile_worker_evidence(host.as_ref())
+            .await
+            .unwrap();
         let record = directory.incarnation(&identity).await.unwrap().unwrap();
         assert_eq!(
             record.snapshot.state,
@@ -747,7 +534,11 @@ mod tests {
         )
         .unwrap();
         for _ in 0..2 {
-            host.reconcile_worker_evidence().await.unwrap();
+            awaken_dispatch_execution::session_reconciliation::reconcile_worker_evidence(
+                host.as_ref(),
+            )
+            .await
+            .unwrap();
         }
         let expired = directory
             .incarnation(&identities[0])
@@ -1025,7 +816,7 @@ mod tests {
                     )
                     .unwrap();
                 }
-                let resolver = HostWorkerResolver {
+                let resolver = SessionWorkerResolver {
                     host: Arc::downgrade(&host),
                 };
                 let completed = reconcile_committed_terminals(&resolver, 8).await.unwrap();
@@ -1343,7 +1134,7 @@ mod tests {
         coordinator.execution.local = crate::LocalExecution::RemoteWorkersOnly;
         let coordinator = (coordinator).build().expect("validated Host dependencies");
         let host = coordinator;
-        let resolver = HostWorkerResolver {
+        let resolver = SessionWorkerResolver {
             host: Arc::downgrade(&host),
         };
 
@@ -1495,7 +1286,7 @@ mod tests {
             .await
             .expect("special claim")
             .expect("exhausted row claims");
-        let resolver = HostWorkerResolver {
+        let resolver = SessionWorkerResolver {
             host: Arc::downgrade(&host),
         };
         assert_eq!(
@@ -1605,7 +1396,7 @@ mod tests {
         .await
         .expect("commit logical child in parent partition");
 
-        let resolver = HostWorkerResolver {
+        let resolver = SessionWorkerResolver {
             host: Arc::downgrade(&host),
         };
         let reconciled = reconcile_committed_terminals(&resolver, 8)

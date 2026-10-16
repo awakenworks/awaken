@@ -75,6 +75,10 @@ impl crate::session_realizations::SessionRunQuery for SessionRunBinding {
         self.context = None;
     }
 
+    fn install_dispatch_claim(&mut self, claim: awaken_dispatch_contract::RunClaim) {
+        self.dispatch_claim = Some(claim);
+    }
+
     fn enter_session_dispatch(&mut self) {
         self.session_dispatch = true;
     }
@@ -102,11 +106,24 @@ impl crate::session_realizations::SessionRealizationSource for InstalledSessions
     fn acquire_realization<'a>(
         &'a self,
         session: &'a str,
+        admit: &'a mut (
+                    dyn FnMut(crate::session_realizations::SessionRealizationAccess<'_>) + Send
+                ),
     ) -> futures_util::future::BoxFuture<
         'a,
         awaken_session_realization_contract::SessionRealizationPermit,
     > {
-        Box::pin(async move { self.acquire_realization_with(session, |_| ()).await.0 })
+        Box::pin(async move {
+            self.acquire_realization_with(session, |slot| {
+                admit(crate::session_realizations::SessionRealizationAccess {
+                    inputs: &slot.inputs,
+                    realization: &mut slot.realization,
+                    run: &mut slot.run,
+                })
+            })
+            .await
+            .0
+        })
     }
 
     fn visit(
@@ -124,6 +141,10 @@ impl crate::session_realizations::SessionRealizationSource for InstalledSessions
         })
         .map_err(|_| InstalledSessionsPoisoned)?;
         Ok(())
+    }
+
+    fn replace_frozen(&self, session: &str, update: &mut dyn FnMut(&mut FrozenSessionInputs)) {
+        self.replace_frozen_with(session, |inputs| update(inputs));
     }
 
     fn retain_publication(

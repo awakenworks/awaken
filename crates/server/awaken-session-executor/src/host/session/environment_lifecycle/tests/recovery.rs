@@ -140,7 +140,7 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
     // selection is an input to this canonical API, so the removed historical
     // frozen-provider present/absent rows are no longer separate decisions.
     // Fixture constraint: executable context construction uses the production
-    // DispatchSessionRuntime composition; no test-only context path is restored.
+    // SessionEffects composition; no test-only context path is restored.
     let ready_thread = "ordinary-ready-recovery";
     let ready_storage = tempfile::tempdir().unwrap();
     let ready_host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")

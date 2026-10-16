@@ -5,9 +5,9 @@
 //! and the [`CompletionRegistry`] that owns temporary completion observers plus
 //! best-effort live routes for each foreground Run.
 
-#[cfg(test)]
-use super::placement::remote_worker_placement;
 use super::*;
+#[cfg(test)]
+use awaken_dispatch_execution::placement::remote_worker_placement;
 #[cfg(test)]
 use awaken_dispatch_contract::{
     HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,
@@ -183,9 +183,9 @@ impl SharedHost {
         // settles — held to the end of this method.
         let (settled, _waiter_guard) = self.completion.register(&run_id, stream_sink);
         let request = if associate_prepared_session {
-            self.resolved_dispatch(activation)?
+            self.prepare_dispatch(activation).fresh()?
         } else {
-            self.resolved_thread_extension_dispatch(activation)?
+            self.prepare_dispatch(activation).extension()?
         };
         tracing::debug!(run_id = %run_id.0, scope = ?request.execution_scope,
             required_capabilities = ?request.placement.required_capabilities,

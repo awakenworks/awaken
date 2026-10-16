@@ -200,7 +200,8 @@ mod tests {
             awaken_tenancy::ScopeId::from(projection.workspace_id.as_str()),
         ))
         .with_session_resources(
-            crate::dispatch_session_runtime::resource_envelope(transition.desired()).unwrap(),
+            awaken_dispatch_execution::session_envelope::resource_envelope(transition.desired())
+                .unwrap(),
         );
         store.enqueue(request).await.expect("enqueue S1");
         let claimed = store
@@ -208,7 +209,7 @@ mod tests {
             .await
             .expect("claim S1")
             .expect("S1 available");
-        HostWorkerResolver {
+        SessionWorkerResolver {
             host: Arc::downgrade(&host),
         }
         .worker_for_claimed(&claimed)

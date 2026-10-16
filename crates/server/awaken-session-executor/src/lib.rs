@@ -44,8 +44,8 @@ mod config;
 mod coordination;
 mod delegate;
 mod deployment_config;
-mod dispatch_session_runtime;
 mod durable_operations;
+mod session_effects;
 
 #[cfg(test)]
 mod environment_effects;
@@ -89,7 +89,7 @@ mod worker_services;
 
 use crate::skill_delivery::skill_store_run_error;
 pub(crate) use awaken_session_realization_contract::ResourceOperationFence;
-pub(crate) use dispatch_session_runtime::DispatchSessionRuntime;
+pub(crate) use session_effects::SessionEffects;
 
 use std::sync::Arc;
 
@@ -136,8 +136,7 @@ pub use crate::host::{
     AttemptExecutorDecorator, DispatchPoolSizing, ExecutionTopology, HostDependencies, HostProcess,
     HostResume, LeaseOwnerId, LocalExecution, QueueDepthSource, RemoteAttemptInstallation,
     RunIngress, SessionApplicationBindingError, SessionApplicationBindings,
-    SessionExecutionDependencies, SharedHost, TrustedHostPolicy, WarmPool, remote_worker_placement,
-    self_hosted_inference_holder,
+    SessionExecutionDependencies, SharedHost, TrustedHostPolicy, WarmPool,
 };
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::no_model::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};
@@ -420,7 +419,8 @@ impl awaken_session_execution_contract::CoordinationRuntime for ManagedHost {
                 .map(awaken_runtime_contract::DataSubjectId);
             let mut request = self
                 .host
-                .resolved_dispatch_with_traceparent(activation, command.traceparent)
+                .prepare_dispatch(activation)
+                .with_traceparent(command.traceparent)
                 .map_err(to_run_error)?
                 .with_session_command_fingerprint(command_fingerprint)
                 .with_session_run_replacement(command.replacement);

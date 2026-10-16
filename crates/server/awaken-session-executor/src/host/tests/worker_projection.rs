@@ -1821,9 +1821,12 @@ async fn claimed_inference_only_context_keeps_scope_without_a_resource_transitio
     let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("judge")
         .model(test_model_binding())
         .build();
-    let publication =
-        crate::agent_catalog::exact_run_publication_source(&snapshot, &[], "workspace-inference")
-            .unwrap();
+    let publication = awaken_dispatch_execution::run_publications::exact_run_publication_source(
+        &snapshot,
+        &[],
+        "workspace-inference",
+    )
+    .unwrap();
     let attempt = crate::host::session_ctx::ClaimedRuntimeInput {
         identity: crate::host::session_ctx::RuntimePublicationIdentity::from_publications(
             &snapshot,
@@ -1845,12 +1848,13 @@ async fn claimed_inference_only_context_keeps_scope_without_a_resource_transitio
     assert!(ctx.env.is_none(), "R1 no physical environment");
     assert!(host.realizer.session_environment(thread).await.is_none());
     let dispatch = host
-        .resolved_dispatch(awaken_runtime_contract::RunActivation::new(
+        .prepare_dispatch(awaken_runtime_contract::RunActivation::new(
             RunId("inference-only-run".into()),
             ThreadId(thread.into()),
             snapshot,
             Vec::new(),
         ))
+        .fresh()
         .unwrap();
     assert!(
         dispatch.session_resources.is_none(),

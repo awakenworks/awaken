@@ -34,7 +34,9 @@ use awaken_dispatch_execution::{CompletionSink, DEFAULT_LEASE_MS, DispatchPool, 
 use awaken_ext_skills::{SkillRegistry, SkillSpec};
 #[cfg(any(test, feature = "test-support"))]
 use awaken_resource_contract::{FileCatalog, FileStore};
-use awaken_dispatch_contract::{Inbox, PendingInput, RunDispatch, SubmitOptions};
+#[cfg(test)]
+use awaken_dispatch_contract::RunDispatch;
+use awaken_dispatch_contract::{Inbox, PendingInput, SubmitOptions};
 use awaken_runtime::{DirectAttemptDriver, Runtime};
 use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::RunDelegations;
@@ -102,14 +104,16 @@ pub use capability::{
     DispatchPoolSizing, ExecutionTopology, LeaseOwnerId, LocalExecution, QueueDepthSource,
     RunIngress, TrustedHostPolicy, WarmPool,
 };
+pub(crate) mod boundary_run;
+mod claimed_run;
 mod completion;
 mod coordination;
-mod dispatch_reconciliation;
-mod dispatch_resolution;
-mod durable_control;
-pub use placement::{remote_worker_placement, self_hosted_inference_holder};
 mod credential_capabilities;
-mod placement;
+mod dispatch_execution;
+#[cfg(test)]
+mod dispatch_reconciliation;
+mod run_admission;
+mod run_control;
 pub(crate) use credential_capabilities::acp_mcp_client_injection_capabilities;
 mod run;
 mod session;
@@ -123,8 +127,10 @@ pub(crate) use tests::fixtures::{
     test_upstream_authority, with_test_memory_mounter, with_test_resource_validation,
 };
 mod types;
+#[cfg(test)]
 mod worker_resolver;
 
+pub(crate) use awaken_dispatch_execution::session_worker_resolver::SessionWorkerResolver;
 pub(crate) use completion::CompletionRegistry;
 pub(crate) use session_ctx::{
     ChildExecutionSubstrate, ClaimedRuntimeInput, RuntimePublicationIdentity, SessionCtx,
@@ -133,7 +139,6 @@ pub use types::{
     CommittedStepReceipt, HostError, HostErrorKind, HostOutcomeDrive, HostOutcomeIteration,
     HostOutcomeReport, HostResume,
 };
-pub(crate) use worker_resolver::HostWorkerResolver;
 #[cfg(test)]
 pub(crate) use worker_resolver::test_support::{
     eager_environment, empty_frozen_projection_for_snapshot, managed_test_host, test_activation,

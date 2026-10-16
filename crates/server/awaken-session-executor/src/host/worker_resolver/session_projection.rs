@@ -1,19 +1,8 @@
-// @formal entrypoint agent_profile.worker_projection_requires_exact_frozen_publication
-// @formal entrypoint session_realization.concurrent_phase_drivers_are_serialized_per_session
-// @formal entrypoint session_realization.control_failure_disposition_and_current_owner_loss_are_total_exact_and_terminal_absorbing
-// @formal entrypoint session_resources.install_replacement_requires_newer_or_unattempted_authority_amendment
-// @formal evidence session_environment.closed_revoked_recovery_consumes_only_exact_unprotected_owner
-//! Worker-side projection and effect adapters for the canonical Session
-//! realization driver.
-
+//! Host-composed tests of the canonical Worker projection synchronizer.
 use super::*;
-mod driver;
+use awaken_session_realization::worker_projection::WorkerProjectionSynchronizer;
 mod projection_synchronizer;
-pub(super) use projection_synchronizer::WorkerMcpEffects;
-use projection_synchronizer::WorkerProjectionSynchronizer;
-#[cfg(test)]
-use projection_synchronizer::merge_legacy_claimed_environment_binding;
-
+use awaken_session_realization::worker_projection::projection_synchronizer::merge_legacy_claimed_environment_binding;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,7 +147,7 @@ mod tests {
             .with_ephemeral_dispatch(store.clone()))
         .build()
         .expect("validated Host dependencies");
-        let resolver = HostWorkerResolver {
+        let resolver = SessionWorkerResolver {
             host: Arc::downgrade(&host),
         };
 
@@ -730,7 +719,7 @@ mod tests {
             .0;
         let synchronizer =
             WorkerProjectionSynchronizer::for_directive(host, &directive, None, None, false, None);
-        HostWorkerResolver::drive_session_realization_with_synchronizer(
+        crate::application::worker_projection::drive_session_realization_with_synchronizer(
             control,
             directive,
             synchronizer,
@@ -1251,7 +1240,7 @@ mod tests {
         let initial_host = host.clone();
         let initial_control = control.clone();
         let initial = tokio::spawn(async move {
-            HostWorkerResolver::realize_session(
+            crate::application::worker_projection::realize_session(
                 &initial_host,
                 initial_control.as_ref(),
                 &awaken_session_types::SessionId::from(thread),
@@ -1260,7 +1249,7 @@ mod tests {
                 None,
                 false,
             )
-            .await
+            .await.map_err(awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error)
         });
         tokio::time::timeout(std::time::Duration::from_secs(1), stage_entered.notified())
             .await
@@ -1693,7 +1682,7 @@ mod tests {
             super::test_support::complete_managed_test_host(crate::ManagedHost::new(host.clone()));
         let binding_sink = Arc::new(RecoveryEnvironmentBindingSink::new(&control));
         managed.install_test_environment_binding_sink(binding_sink);
-        HostWorkerResolver::realize_session(
+        crate::application::worker_projection::realize_session(
             &host,
             &control,
             &awaken_session_types::SessionId::from(thread),
@@ -1703,6 +1692,9 @@ mod tests {
             false,
         )
         .await
+        .map_err(
+            awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error,
+        )
         .expect("R1 frozen Environment recovery");
         assert_eq!(
             host.session_environment_handle(thread).await,
@@ -1734,7 +1726,7 @@ mod tests {
         );
         let mut resident_directive = directive.clone();
         resident_directive.projection = control.current_projection();
-        HostWorkerResolver::realize_session(
+        crate::application::worker_projection::realize_session(
             &host,
             &control,
             &awaken_session_types::SessionId::from(thread),
@@ -1744,6 +1736,9 @@ mod tests {
             false,
         )
         .await
+        .map_err(
+            awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error,
+        )
         .expect("R2 resident Environment is the already-installed publication authority");
         assert_eq!(
             realizer.calls.lock().unwrap().as_slice(),
@@ -1796,7 +1791,7 @@ mod tests {
                     authority: recovery_authority.clone(),
                     action: awaken_session_realization_contract::SessionRealizationAction::Complete,
                 };
-            let error = HostWorkerResolver::realize_session(
+            let error = crate::application::worker_projection::realize_session(
                 &host,
                 &control,
                 &awaken_session_types::SessionId::from(thread),
@@ -1805,7 +1800,7 @@ mod tests {
                 Some(&activation.snapshot),
                 false,
             )
-            .await
+            .await.map_err(awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error)
             .expect_err("R9 resident Arc cannot hide physical unavailability");
             assert!(
                 error.to_string().contains("unavailable or terminal"),
@@ -1831,7 +1826,7 @@ mod tests {
                 ),
                 "R9 closes the failed generation"
             );
-            let rejected_replay = HostWorkerResolver::realize_session(
+            let rejected_replay = crate::application::worker_projection::realize_session(
                 &host,
                 &control,
                 &awaken_session_types::SessionId::from(thread),
@@ -1840,7 +1835,7 @@ mod tests {
                 Some(&activation.snapshot),
                 true,
             )
-            .await
+            .await.map_err(awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error)
             .expect_err("R9a policy alone cannot revive a closed grant");
             assert!(
                 rejected_replay
@@ -1864,7 +1859,7 @@ mod tests {
                     authority: recovery_authority.clone(),
                     ..missing_directive
                 };
-            HostWorkerResolver::realize_session(
+            crate::application::worker_projection::realize_session(
                 &host,
                 &control,
                 &awaken_session_types::SessionId::from(thread),
@@ -1873,7 +1868,7 @@ mod tests {
                 Some(&activation.snapshot),
                 true,
             )
-            .await
+            .await.map_err(awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error)
             .expect("R10 rebuild through the production synchronizer");
             let replacement = host
                 .realizer
@@ -1890,7 +1885,7 @@ mod tests {
                 authority: recovery_authority.clone(),
                 action: awaken_session_realization_contract::SessionRealizationAction::Complete,
             };
-            HostWorkerResolver::realize_session(
+            crate::application::worker_projection::realize_session(
                 &host,
                 &control,
                 &awaken_session_types::SessionId::from(thread),
@@ -1899,7 +1894,7 @@ mod tests {
                 Some(&activation.snapshot),
                 true,
             )
-            .await
+            .await.map_err(awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error)
             .expect("R10 Ready replay");
             assert!(
                 Arc::ptr_eq(
@@ -1959,7 +1954,7 @@ mod tests {
         let first_use_managed = crate::ManagedHost::new(first_use_host.clone());
         first_use_managed.install_test_environment_binding_sink(first_use_sink.clone());
         let _managed = first_use_managed;
-        HostWorkerResolver::realize_session(
+        crate::application::worker_projection::realize_session(
             &first_use_host,
             &first_use_control,
             &awaken_session_types::SessionId::from(first_use_thread),
@@ -1969,6 +1964,9 @@ mod tests {
             false,
         )
         .await
+        .map_err(
+            awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error,
+        )
         .expect("R7 first-use Environment installs publication before MCP staging");
         assert_eq!(first_use_sink.calls(), 1, "R7 one aggregate binding CAS");
         assert_eq!(
@@ -2003,7 +2001,7 @@ mod tests {
             calls: std::sync::atomic::AtomicUsize::new(0),
             binding: Mutex::new(None),
         }));
-        let error = HostWorkerResolver::realize_session(
+        let error = crate::application::worker_projection::realize_session(
             &unpinned_host,
             &RecoveryControl::fixed(frozen_projection()),
             &awaken_session_types::SessionId::from(first_use_thread),
@@ -2013,6 +2011,9 @@ mod tests {
             false,
         )
         .await
+        .map_err(
+            awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error,
+        )
         .expect_err("R8 first-use stdio MCP without a publication must fail closed");
         assert!(
             error.to_string().contains("exact claimed Agent snapshot"),
@@ -2037,7 +2038,7 @@ mod tests {
             .await)
             .build()
             .expect("validated Host dependencies");
-        let error = HostWorkerResolver::realize_session(
+        let error = crate::application::worker_projection::realize_session(
             &cold,
             &control,
             &awaken_session_types::SessionId::from(thread),
@@ -2047,6 +2048,9 @@ mod tests {
             false,
         )
         .await
+        .map_err(
+            awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error,
+        )
         .expect_err("R3 cold lease-only recovery must fail closed");
         assert!(
             error.to_string().contains("exact claimed Agent snapshot"),
@@ -2086,7 +2090,7 @@ mod tests {
             Some(serde_json::to_string(&missing_handle).unwrap().as_str()),
             "R5 original source binding remains the typed lost incarnation"
         );
-        let error = HostWorkerResolver::realize_session(
+        let error = crate::application::worker_projection::realize_session(
             &rebuild_host,
             &rebuild_control,
             &awaken_session_types::SessionId::from(rebuild_thread),
@@ -2096,6 +2100,9 @@ mod tests {
             true,
         )
         .await
+        .map_err(
+            awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error,
+        )
         .expect_err("R5 canonical Managed Rebuild needs accepted Source closure/access");
         match error {
             awaken_dispatch_execution::Error::Execution(
@@ -2152,7 +2159,7 @@ mod tests {
                 &continuity_activation.snapshot,
             ))
             .await;
-        let error = HostWorkerResolver::realize_session(
+        let error = crate::application::worker_projection::realize_session(
             &continuity_host,
             &continuity_control,
             &awaken_session_types::SessionId::from(continuity_thread),
@@ -2162,6 +2169,9 @@ mod tests {
             false,
         )
         .await
+        .map_err(
+            awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error,
+        )
         .expect_err("R6 continuity policy rejects a missing Environment");
         assert!(
             error.to_string().contains("unavailable or terminal"),

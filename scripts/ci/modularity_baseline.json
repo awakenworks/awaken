@@ -22,7 +22,7 @@
     },
     "awaken-session-executor::SharedHost": {
       "files": 35,
-      "methods": 221,
+      "methods": 210,
       "reason": "slice H: each of the eleven session-runtime roles gets one owning component (plan 10.3 item 11)"
     },
     "awaken-runtime::Runtime": {
@@ -64,7 +64,7 @@
     "awaken-dispatch-contract": 1,
     "awaken-dispatch-http": 2,
     "awaken-runtime": 10,
-    "awaken-session-executor": 31,
+    "awaken-session-executor": 27,
     "awaken-sandbox-container": 15,
     "awaken-sandbox-fs": 6,
     "awaken-sandbox-local": 13,
@@ -315,8 +315,6 @@
     "awaken-session-executor::host/session/context/extensions.rs::skills": 172,
     "awaken-session-executor::host/session/context/plan.rs::prepare": 188,
     "awaken-session-executor::host/session/context/resources.rs::acquire": 270,
-    "awaken-session-executor::host/worker_resolver/claimed_dispatch.rs::worker_for_claimed": 238,
-    "awaken-session-executor::host/worker_resolver/session_projection/projection_synchronizer.rs::synchronize_session_projection": 227,
     "awaken-session-executor::skills.rs::build_skill_registry": 154,
     "awaken-runtime::engine/dispatch.rs::recover_tool_batch": 303,
     "awaken-runtime::engine/dispatch.rs::run_concurrent_tool_calls": 326,
@@ -373,6 +371,7 @@
     "awaken-session-realization::managed_resource_projection.rs::apply_session_inputs_body": 436,
     "awaken-session-realization::managed_resource_projection.rs::stage_resolved_input_with_resource_authority": 297,
     "awaken-session-realization::provisioning.rs::repository_operation_credential": 197,
+    "awaken-session-realization::worker_projection/projection_synchronizer.rs::synchronize_session_projection": 227,
     "awaken-session-store::postgres.rs::commit": 151,
     "awaken-session-store::sqlite.rs::commit": 155,
     "awaken-store-postgres::lib.rs::recovery_snapshot": 194,
@@ -387,9 +386,9 @@
     },
     "awaken-session-executor": {
       "deps": 41,
-      "lines": 24937,
+      "lines": 23072,
       "reason": "runtime-host split (plan 10.4 slices R, E, H): lines hold host plus the realizer being extracted in place (+142 approved 2026-10-10 for the SessionRealizations view, leaves with the realization crate; +24 approved 2026-10-10 for k8s_unschedulable_wait_secs settings, leaves with the deployment configuration to the composition root); host_lines may only fall; target < 20000 lines, about 26-28 dependencies",
-      "host_lines": 24937
+      "host_lines": 23072
     },
     "awaken-sandbox-container": {
       "deps": 11,

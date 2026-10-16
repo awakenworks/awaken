@@ -423,8 +423,9 @@ Following accepted ADR-0089, `awaken-session-realization` contains the existing
 Execution effects and process-local realization state; it neither owns the Session
 aggregate nor depends on Runtime Host. Environment holding, Resource staging,
 terminal cleanup and execution authority operate on the original installed-slot
-source and lock identities. Host retains Run assembly and claimed-dispatch routing
-until the separate E/H slices. The independent Session driver remains unchanged.
+source and lock identities. Host retains Run assembly; the E slice below moves
+claimed-dispatch routing to its existing execution owner. The independent Session
+driver remains unchanged.
 
 `awaken-credential-materializer` belongs to Execution: it translates frozen
 credential pins into exact runtime/provider effects over the installed neutral
@@ -441,3 +442,46 @@ The Host budget is measured after the move, including Run/dispatch glue that was
 historically misclassified as extracting realization. This correction does not
 satisfy the final Host size, dependency or foreign-persistence-port targets.
 There is no wire-format, SDK release surface or database migration.
+
+## Implementation note 2026-10-16: Session dispatch hand-off
+
+The existing `awaken-dispatch-execution` owns `SessionWorkerResolver`, dispatch
+envelope compilation, placement, durable control and terminal scan scheduling.
+It has no Runtime Host dependency. Its consumer-owned interfaces select the
+existing Run factories and Session projection effects; they create no queue,
+Session registry, claim authority, or alternate execution path.
+
+| Owner | Structure and retained authority | Execution boundary |
+|---|---|---|
+| Dispatch | Existing pool, transition kernel, leases, reservation and settlement | Reservation repair and cancellation select the Environment-free Worker before publication or Resource preparation |
+| Session | Original aggregate/CAS and independent realization driver | The current Work/Run claim obtains frozen projection authority; the same Session permit serializes Control and installation |
+| Realization | Existing ResourceStaging and Worker projection synchronizer over the original slot source | Desired-only resources keep the exact transition/replay checks; atomic permit admission observes the original slot identity before returning |
+| Run execution | Host Run factory, committed Thread boundary and configured Session effects | Builds root/child executors only after dispatch preparation; terminal recovery retains the exact opened commit object |
+
+The approved Host-to-neutral-driver dependency is retained at the existing Run
+composition seam (`application/worker_projection.rs`). R supplies the projection
+and effect adapters. Neither E nor R gains another cross-context implementation
+dependency. All-in-one and remote Worker topologies use the same phase driver.
+MCP compatibility stages remain suppressed once the complete canonical Session
+projection is installed. Durable cancellation records the original intent before
+notifying the pool and local Runtime; absence of a live subscriber cannot undo
+accepted intent. Pause/wake remain live-only, and text resume still requires the
+committed ManualPause ticket.
+
+The old Host production modules `worker_resolver`, `dispatch_resolution`,
+`dispatch_reconciliation`, `durable_control`, `placement`, and
+`dispatch_session_runtime` no longer own these algorithms. Host-composed tests
+remain test-only. H still owns the remaining Host role decomposition.
+
+Moved public Rust helpers have one owner and no Host re-export:
+
+| Previous path | Authoritative path |
+|---|---|
+| `awaken_session_executor::remote_worker_placement` | `awaken_dispatch_execution::placement::remote_worker_placement` |
+| `awaken_session_executor::self_hosted_inference_holder` | `awaken_dispatch_execution::placement::self_hosted_inference_holder` |
+
+At the checked Cloud source, only `awaken-hosting-durable` tests
+`deployed_cluster_causal.rs` and `phase1_cross_process.rs` use the first helper.
+They must use its owner directly when upgrading the common Awaken dependency pin;
+an old remote pin is not evidence of compatibility with this local source. This
+note records the consumer change, not a Cloud release or physical qualification.

@@ -2,14 +2,15 @@
 //! Canonical projection from immutable execution candidates to holder and
 //! Worker-placement requirements.
 
-use super::credential_capabilities::model_realization_capability;
-use super::{HostError, RunActivation};
+use crate::model_capability::model_realization_capability;
 use awaken_dispatch_contract::PlacementRequirements;
 use awaken_runtime_contract::CredentialMaterialSource;
+use awaken_runtime_contract::RunActivation;
+use awaken_session_realization::host_error::HostError;
 use awaken_session_realization_contract::requires_local_environment;
 use std::collections::BTreeSet;
 
-pub(super) fn worker_local_credentials(
+pub fn worker_local_credentials(
     models: &awaken_runtime_contract::resolved::ResolvedSpec,
 ) -> BTreeSet<awaken_dispatch_contract::WorkerCredentialRevision> {
     std::iter::once(&models.model_binding)
@@ -67,13 +68,13 @@ fn worker_acp_capabilities(
 /// Resolve the canonical cold-start inference holder from immutable candidate
 /// backends. Embedded applications that author their own `RunDispatch` use this
 /// same decision instead of duplicating the self-hosted boundary mapping.
-pub(super) enum InferencePlaintextHolderDecision {
+pub enum InferencePlaintextHolderDecision {
     NotRequired,
     Exact(awaken_runtime_contract::PlaintextHolder),
     Boundary(awaken_runtime_contract::PlaintextBoundary),
 }
 
-pub(super) fn inference_plaintext_holder_decision(
+pub fn inference_plaintext_holder_decision(
     activation: &RunActivation,
 ) -> Result<InferencePlaintextHolderDecision, HostError> {
     let mut boundary = None;
@@ -142,7 +143,7 @@ pub(super) fn inference_plaintext_holder_decision(
     ))
 }
 
-pub(super) fn self_hosted_holder_for_boundary(
+pub fn self_hosted_holder_for_boundary(
     boundary: awaken_runtime_contract::PlaintextBoundary,
 ) -> awaken_runtime_contract::PlaintextHolder {
     match boundary {
@@ -178,7 +179,7 @@ pub fn self_hosted_inference_holder(
 pub fn remote_worker_placement(
     models: &awaken_runtime_contract::resolved::ResolvedSpec,
     environment: Option<&awaken_session_configuration_contract::EnvironmentSnapshot>,
-    resources: Option<&crate::session_resource::SessionResourceManifest>,
+    resources: Option<&awaken_session_configuration_contract::resource::SessionResourceManifest>,
     remote_required: bool,
 ) -> PlacementRequirements {
     let required_credentials = worker_local_credentials(models);
@@ -227,7 +228,7 @@ pub fn remote_worker_placement(
 fn apply_session_physical_placement(
     placement: &mut PlacementRequirements,
     environment: Option<&awaken_session_configuration_contract::EnvironmentSnapshot>,
-    resources: Option<&crate::session_resource::ResolvedSessionResources>,
+    resources: Option<&awaken_session_configuration_contract::resource::ResolvedSessionResources>,
     requires_local_environment: bool,
     requires_opaque_process: bool,
 ) {
@@ -250,15 +251,17 @@ fn apply_session_physical_placement(
         } else {
             environment.map_or_else(
                 || {
-                    crate::provisioning::session_sandbox_projection(
-                        &crate::provisioning::default_session_sandbox_spec("worker-placement"),
+                    awaken_session_realization::provisioning::session_sandbox_projection(
+                        &awaken_session_realization::provisioning::default_session_sandbox_spec(
+                            "worker-placement",
+                        ),
                         has_repository,
                         requires_opaque_process,
                     )
                     .1
                 },
                 |environment| {
-                    crate::provisioning::sandbox_requirements(
+                    awaken_session_realization::provisioning::sandbox_requirements(
                         environment,
                         has_repository,
                         requires_opaque_process,
@@ -271,7 +274,8 @@ fn apply_session_physical_placement(
                 Some(awaken_dispatch_contract::TRUSTED_HOST_SANDBOX_BACKEND.to_string());
         }
         if let Some(environment) = environment {
-            placement.resources = crate::provisioning::sandbox_resource_requests(environment);
+            placement.resources =
+                awaken_session_realization::provisioning::sandbox_resource_requests(environment);
         }
     }
     if resources.is_some() {
@@ -296,7 +300,7 @@ fn apply_session_physical_placement(
 #[must_use]
 pub fn session_preparation_placement(
     environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
-    resources: &crate::session_resource::ResolvedSessionResources,
+    resources: &awaken_session_configuration_contract::resource::ResolvedSessionResources,
     requires_opaque_process: bool,
 ) -> PlacementRequirements {
     let mut placement = PlacementRequirements::remote_required();
@@ -310,33 +314,9 @@ pub fn session_preparation_placement(
     placement
 }
 
-impl awaken_session_realization_contract::SessionPreparationPlacement for super::SharedHost {
-    fn requirements(
-        &self,
-        session: &awaken_session_state_contract::PersistedSession,
-    ) -> Result<
-        PlacementRequirements,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
-    > {
-        let baseline = session.frozen_baseline().ok_or(
-            awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
-        )?;
-        let requires_opaque_process = session
-            .mcp
-            .attachments
-            .iter()
-            .any(|attachment| attachment.target.sandbox_stdio_target().is_some());
-        Ok(session_preparation_placement(
-            &baseline.environment,
-            session.resources.active_generation().1,
-            requires_opaque_process,
-        ))
-    }
-}
-
 /// Bind the immutable inherited-input format before a root can author children.
 /// Old unregistered executors reject its closed activation marker.
-pub(super) fn bind_root_tool_configuration_format(
+pub fn bind_root_tool_configuration_format(
     activation: awaken_runtime_contract::RunActivation,
     is_session_dispatch: bool,
 ) -> awaken_runtime_contract::RunActivation {
@@ -360,6 +340,28 @@ pub(super) fn bind_root_tool_configuration_format(
     } else {
         activation
     }
+}
+
+/// Run-free preparation requirements from the existing frozen aggregate.
+pub fn session_preparation_requirements(
+    session: &awaken_session_state_contract::PersistedSession,
+) -> Result<
+    PlacementRequirements,
+    awaken_session_realization_contract::SessionRealizationControlFailure,
+> {
+    let baseline = session
+        .frozen_baseline()
+        .ok_or(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)?;
+    let requires_opaque_process = session
+        .mcp
+        .attachments
+        .iter()
+        .any(|attachment| attachment.target.sandbox_stdio_target().is_some());
+    Ok(session_preparation_placement(
+        &baseline.environment,
+        session.resources.active_generation().1,
+        requires_opaque_process,
+    ))
 }
 
 #[cfg(test)]
@@ -398,7 +400,11 @@ mod preparation_tests {
             let required = session_preparation_placement(&environment, &resources, opaque);
             assert_eq!(
                 required.sandbox,
-                crate::provisioning::sandbox_requirements(&environment, false, opaque),
+                awaken_session_realization::provisioning::sandbox_requirements(
+                    &environment,
+                    false,
+                    opaque
+                ),
                 "P1/E1"
             );
             assert!(required.required_credentials.is_empty(), "P1/E3");

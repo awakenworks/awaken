@@ -369,13 +369,16 @@ async fn session_event_dispatch_uses_the_explicit_persisted_trace_source() {
     };
 
     let ordinary = host
-        .resolved_dispatch_with_traceparent(activation(), Some(AMBIENT.into()))
+        .prepare_dispatch(activation())
+        .with_traceparent(Some(AMBIENT.into()))
         .expect("T1 ordinary ambient source");
     let recovered_present = host
-        .resolved_dispatch_with_traceparent(activation(), Some(PERSISTED.into()))
+        .prepare_dispatch(activation())
+        .with_traceparent(Some(PERSISTED.into()))
         .expect("T2 persisted source");
     let recovered_absent = host
-        .resolved_dispatch_with_traceparent(activation(), None)
+        .prepare_dispatch(activation())
+        .with_traceparent(None)
         .expect("T3 persisted absence");
 
     assert_eq!(ordinary.traceparent.as_deref(), Some(AMBIENT), "T1/E1");
@@ -503,9 +506,9 @@ async fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope
         );
 
         let dispatch = if root_decorator {
-            host.resolved_dispatch(activation)
+            host.prepare_dispatch(activation).fresh()
         } else {
-            host.resolved_thread_extension_dispatch(activation)
+            host.prepare_dispatch(activation).extension()
         }
         .unwrap_or_else(|error| panic!("{rule} decorate durable dispatch: {error}"));
         let carried = dispatch
@@ -596,7 +599,10 @@ async fn durable_dispatch_freezes_the_delegation_publication_closure() {
         Vec::new(),
     );
 
-    let dispatch = host.resolved_dispatch(activation).expect("A1 admission");
+    let dispatch = host
+        .prepare_dispatch(activation)
+        .fresh()
+        .expect("A1 admission");
     assert_eq!(dispatch.agent_publications, vec![child], "A1/E1+E2");
 }
 
@@ -633,7 +639,8 @@ async fn durable_dispatch_marks_only_a_prepared_root_session_for_worker_realizat
     );
 
     let dispatch = host
-        .resolved_dispatch(activation)
+        .prepare_dispatch(activation)
+        .fresh()
         .expect("decorate prepared Session dispatch");
 
     assert_eq!(
@@ -668,7 +675,8 @@ async fn thread_extension_dispatch_reuses_frozen_inputs_without_session_admissio
     );
 
     let dispatch = host
-        .resolved_thread_extension_dispatch(activation)
+        .prepare_dispatch(activation)
+        .extension()
         .expect("decorate Outcome-owned ordinary Run");
 
     assert_eq!(dispatch.session_thread_id, None, "C2/E2");
@@ -786,7 +794,7 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
     );
     let native_activation = activation(candidate("native", "native"), Vec::new());
     assert_eq!(
-        crate::host::self_hosted_inference_holder(&native_activation)
+        awaken_dispatch_execution::placement::self_hosted_inference_holder(&native_activation)
             .unwrap()
             .unwrap()
             .boundary,
@@ -795,7 +803,8 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
     );
     assert_eq!(
         host.inference_plaintext_holder(&native_activation).unwrap(),
-        crate::host::self_hosted_inference_holder(&native_activation).unwrap(),
+        awaken_dispatch_execution::placement::self_hosted_inference_holder(&native_activation)
+            .unwrap(),
         "the public cold-start decision and Host fallback must remain identical"
     );
     assert_eq!(
@@ -829,10 +838,13 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
     )
     .expect("coherent remote candidate");
     assert_eq!(
-        crate::host::self_hosted_inference_holder(&activation(remote, Vec::new()))
-            .unwrap()
-            .unwrap()
-            .boundary,
+        awaken_dispatch_execution::placement::self_hosted_inference_holder(&activation(
+            remote,
+            Vec::new()
+        ))
+        .unwrap()
+        .unwrap()
+        .boundary,
         awaken_runtime_contract::PlaintextBoundary::Worker,
         "R8"
     );
@@ -858,7 +870,8 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
     );
     let platform_activation = activation(platform_candidate, Vec::new());
     assert_eq!(
-        crate::host::self_hosted_inference_holder(&platform_activation).unwrap(),
+        awaken_dispatch_execution::placement::self_hosted_inference_holder(&platform_activation)
+            .unwrap(),
         Some(platform_holder.clone()),
         "R5"
     );
@@ -914,7 +927,7 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
             awaken_runtime_contract::ModelExposurePolicy::Forbidden,
         ),
     );
-    let error = crate::host::self_hosted_inference_holder(&activation(
+    let error = awaken_dispatch_execution::placement::self_hosted_inference_holder(&activation(
         worker_candidate,
         vec![workload_candidate],
     ))
@@ -1009,7 +1022,7 @@ async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
             )
             .await
             .expect("adopt durable handle"),
-        crate::host::session::SessionEnvironmentAdoptionDisposition::Ready,
+        awaken_session_realization::session_environment::SessionEnvironmentAdoptionDisposition::Ready,
     );
     let replacement_ctx = replacement
         .ctx_for(thread, None)
@@ -1070,7 +1083,7 @@ async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
             )
             .await
             .expect("adopt resident sandbox"),
-        crate::host::session::SessionEnvironmentAdoptionDisposition::Ready,
+        awaken_session_realization::session_environment::SessionEnvironmentAdoptionDisposition::Ready,
     );
     let reused = host
         .ctx_for("t-resident-adoption", None)
@@ -1199,7 +1212,7 @@ async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
             )
             .await
             .expect("adopt retained sandbox"),
-        crate::host::session::SessionEnvironmentAdoptionDisposition::Ready,
+        awaken_session_realization::session_environment::SessionEnvironmentAdoptionDisposition::Ready,
     );
     let rebuilt = host
         .ctx_for("t-retained-adoption", None)
