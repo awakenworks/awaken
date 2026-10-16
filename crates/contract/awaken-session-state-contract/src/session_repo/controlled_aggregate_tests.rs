@@ -1275,11 +1275,384 @@ fn budget_snapshot() -> awaken_session_budget_contract::ManagedListPriceSnapshot
 }
 
 #[test]
+fn initial_configuration_identity_is_shared_by_recording_and_recovery_without_backfill() {
+    // Identity table I1-I4: history Some/None x valid/foreign Agent/foreign
+    // model/version0. Valid initial values import unchanged; all three corrupt
+    // identities return typed UpdateHistoryMismatch even when history is None.
+    // One-shot recording uses the SAME identity law but keeps fresh/once-only
+    // admission: invalid recording stutters and a second recording rejects.
+    // I5 legacy initial=None remains legal for either history shape; no import
+    // fills historical absence. I6 legitimate tools/MCP changes retain the old
+    // initial configuration, require one fact and survive the next CAS/re-stamp.
+    let source = mutation_tests::session("controlled", SessionRevision(0));
+    let crate::SessionBaselineState::Preparing(intent) = source.baseline else {
+        unreachable!()
+    };
+    let configuration = awaken_session_configuration_contract::SessionAgentConfiguration::creation_presentation_seed(
+        &intent.control, 1, None, (None, None), None, &Default::default(), Vec::new(),
+    );
+    for fault in ["valid", "agent", "model", "version"] {
+        let mut value = configuration.clone();
+        match fault {
+            "agent" => value.agent_id = "foreign".into(),
+            "model" => value.model.model_id = "foreign".into(),
+            "version" => value.version = 0,
+            _ => {}
+        }
+        let mut recording = fresh_root(SessionExecutionState::Idle, 0);
+        let before = recording.clone();
+        let recorded = recording.record_initial_agent_configuration(Box::new(value.clone()));
+        if fault == "valid" {
+            assert_eq!(recorded, Ok(()), "I1 normal first recording");
+            let once = recording.clone();
+            assert_eq!(
+                recording.record_initial_agent_configuration(Box::new(value.clone())),
+                Err(SessionAggregateCommandError::InvalidInitialAgentConfiguration)
+            );
+            assert_eq!(recording, once, "I1 once-only stutter");
+        } else {
+            assert_eq!(
+                recorded,
+                Err(SessionAggregateCommandError::InvalidInitialAgentConfiguration)
+            );
+            assert_eq!(recording, before, "I2-I4 recording refusal stutter");
+        }
+        for history_present in [false, true] {
+            let mut wire = serde_json::to_value(before.snapshot()).unwrap();
+            wire["initial_agent_configuration"] = serde_json::to_value(&value).unwrap();
+            if !history_present {
+                wire.as_object_mut().unwrap().remove("update_history");
+            }
+            let snapshot: PersistedSession = serde_json::from_value(wire).unwrap();
+            let imported = SessionAggregate::try_from(snapshot.clone());
+            if fault == "valid" {
+                assert_eq!(
+                    imported.unwrap().snapshot(),
+                    &snapshot,
+                    "I1 history={history_present}"
+                );
+            } else {
+                assert_eq!(
+                    imported.unwrap_err(),
+                    SessionMutationValidationError::UpdateHistoryMismatch,
+                    "I2-I4 fault={fault} history={history_present}"
+                );
+            }
+        }
+    }
+    for history_present in [false, true] {
+        let mut snapshot = fresh_root(SessionExecutionState::Idle, 0).into_snapshot();
+        if !history_present {
+            snapshot.update_history = None;
+        }
+        assert!(snapshot.initial_agent_configuration.is_none());
+        assert_eq!(
+            SessionAggregate::try_from(snapshot.clone())
+                .unwrap()
+                .snapshot(),
+            &snapshot,
+            "I5 no backfill"
+        );
+    }
+    // I7/I8: a retained frozen publication pin is a required identity axis:
+    // matching version passes, another positive version refuses both initial
+    // recording and persisted import with the whole candidate unchanged.
+    // Without that pin, positive presentation versions remain legal; no
+    // historical publication revision is invented. Cross both history shapes.
+    for pin in [None, Some(1)] {
+        for version in [1, 2] {
+            let mut snapshot = fresh_root(SessionExecutionState::Idle, 0).into_snapshot();
+            let crate::SessionBaselineState::Frozen(baseline) = &mut snapshot.baseline else {
+                unreachable!("fresh fixture is frozen")
+            };
+            baseline.agent_revision = pin;
+            let mut recording = SessionAggregate::try_from(snapshot.clone()).unwrap();
+            let mut value = configuration.clone();
+            value.version = version;
+            let allowed = pin.is_none_or(|pin| pin == version);
+            let recorded = recording.record_initial_agent_configuration(Box::new(value.clone()));
+            if allowed {
+                assert_eq!(recorded, Ok(()), "I7/I8 pin={pin:?} version={version}");
+            } else {
+                assert_eq!(
+                    recorded,
+                    Err(SessionAggregateCommandError::InvalidInitialAgentConfiguration)
+                );
+                assert_eq!(recording.snapshot(), &snapshot, "I7 refusal stutter");
+            }
+            for history_present in [false, true] {
+                let mut wire = serde_json::to_value(&snapshot).unwrap();
+                wire["initial_agent_configuration"] = serde_json::to_value(&value).unwrap();
+                if !history_present {
+                    wire.as_object_mut().unwrap().remove("update_history");
+                }
+                let imported = SessionAggregate::try_from(
+                    serde_json::from_value::<PersistedSession>(wire).unwrap(),
+                );
+                if allowed {
+                    assert!(imported.is_ok(), "I7/I8 history={history_present}");
+                } else {
+                    assert_eq!(
+                        imported.unwrap_err(),
+                        SessionMutationValidationError::UpdateHistoryMismatch
+                    );
+                }
+            }
+        }
+    }
+    for field in ["tools", "mcp"] {
+        let mut fresh = fresh_root(SessionExecutionState::Idle, 0);
+        fresh
+            .record_initial_agent_configuration(Box::new(configuration.clone()))
+            .unwrap();
+        let mut before = fresh.into_snapshot();
+        before.revision = SessionRevision(7);
+        let initial = before.initial_agent_configuration.clone();
+        let mut next = SessionAggregate::try_from(before.clone()).unwrap();
+        if field == "tools" {
+            next.configuration()
+                .unwrap()
+                .set_tools(crate::SessionToolConfiguration {
+                    toolsets: Vec::new(),
+                    client_tools: vec![awaken_agent_contract::ClientToolDescriptor {
+                        name: "accepted-tool".into(),
+                        description: "New authoring".into(),
+                        input_schema: serde_json::json!({"type":"object"}),
+                    }],
+                })
+                .unwrap();
+        } else {
+            next.mcp().request_full_replacement(vec![
+                awaken_session_configuration_contract::mcp::McpAttachmentDraft {
+                    name: "accepted-mcp".into(), target: awaken_agent_contract::McpTarget::parse_http("https://identity.example.test/mcp").unwrap(),
+                    prompts_as_skills: false, credential: None,
+                    origin: awaken_session_configuration_contract::mcp::McpAttachmentOrigin::Session,
+                }
+            ], None).unwrap();
+        }
+        next.record_configuration_update(
+            &before,
+            field == "mcp",
+            crate::SessionEventProjectionAnchor {
+                source_commit_cursor: 0,
+            },
+        )
+        .unwrap();
+        for now in [100, 200] {
+            next.compile_mutation(
+                "owner",
+                crate::IdempotencyRecord {
+                    key: "identity-update".into(),
+                    payload_hash: "command".into(),
+                },
+                Vec::new(),
+                now,
+            );
+            assert_eq!(next.update_history.as_deref().unwrap().facts.len(), 1);
+            assert_eq!(
+                next.update_history.as_deref().unwrap().facts[0].recorded_at_unix_ms,
+                Some(now),
+                "I6 original re-stamp"
+            );
+        }
+        assert_eq!(
+            before.validate_observation_replacement(next.snapshot()),
+            Ok(())
+        );
+        let committed = next.into_applied_snapshot(SessionRevision(8)).unwrap();
+        assert_eq!(
+            committed.initial_agent_configuration, initial,
+            "I6 immutable initial values"
+        );
+        assert_eq!(
+            crate::SessionUpdateHistory::validate_for(&committed),
+            Ok(())
+        );
+    }
+}
+
+#[test]
+fn configuration_changes_require_one_retained_update_fact() {
+    // Cause/effect table HC1-HC2: C1 history is fresh-known or legacy-absent;
+    // C2 exactly one title/metadata/tools/MCP-desired/budget-limit field changes;
+    // C3 the original aggregate records that update or it is omitted. HC1
+    // C1+C2+omitted -> UpdateHistoryMismatch before a fresh CAS; HC2 recorded
+    // -> one exact next-revision fact. These 2x5x2 rows independently require
+    // history for accepted configuration, without manufacturing legacy facts.
+    // Runtime phase/accounting changes are the separate HC3-HC4 partitions.
+    use awaken_agent_contract::ClientToolDescriptor;
+    use awaken_session_configuration_contract::mcp::{McpAttachmentDraft, McpAttachmentOrigin};
+    for legacy in [false, true] {
+        for field in ["title", "metadata", "tools", "mcp", "budget"] {
+            let mut before = fresh_root(SessionExecutionState::Idle, 7).into_snapshot();
+            before.budget = SessionBudgetState::active(10, budget_snapshot());
+            if legacy {
+                before.update_history = None;
+            }
+            for recorded in [false, true] {
+                let mut next = SessionAggregate::try_from(before.clone()).unwrap();
+                match field {
+                    "title" => next
+                        .configuration()
+                        .unwrap()
+                        .set_title(Some("new title".into())),
+                    "metadata" => next.configuration().unwrap().patch_metadata(
+                        &std::collections::BTreeMap::from([("key".into(), Some("value".into()))]),
+                    ),
+                    "tools" => next
+                        .configuration()
+                        .unwrap()
+                        .set_tools(crate::SessionToolConfiguration {
+                            toolsets: Vec::new(),
+                            client_tools: vec![ClientToolDescriptor {
+                                name: "client-tool".into(),
+                                description: "accepted tool".into(),
+                                input_schema: serde_json::json!({"type":"object"}),
+                            }],
+                        })
+                        .unwrap(),
+                    "mcp" => {
+                        next.mcp()
+                            .request_full_replacement(
+                                vec![McpAttachmentDraft {
+                                    name: "docs".into(),
+                                    target: awaken_agent_contract::McpTarget::parse_http(
+                                        "https://history.example.test/mcp",
+                                    )
+                                    .unwrap(),
+                                    prompts_as_skills: false,
+                                    origin: McpAttachmentOrigin::Session,
+                                    credential: None,
+                                }],
+                                None,
+                            )
+                            .unwrap();
+                    }
+                    _ => next.budget().update_limit(Some(20)).unwrap(),
+                }
+                if recorded {
+                    next.record_configuration_update(
+                        &before,
+                        field == "mcp",
+                        awaken_session_event_contract::SessionEventProjectionAnchor {
+                            source_commit_cursor: 0,
+                        },
+                    )
+                    .unwrap();
+                }
+                next.compile_mutation(
+                    "owner",
+                    crate::IdempotencyRecord {
+                        key: "configuration-update".into(),
+                        payload_hash: "configuration-command".into(),
+                    },
+                    Vec::new(),
+                    100,
+                );
+                let actual = before.validate_observation_replacement(next.snapshot());
+                assert_eq!(
+                    actual,
+                    if recorded {
+                        Ok(())
+                    } else {
+                        Err(crate::SessionMutationValidationError::UpdateHistoryMismatch)
+                    },
+                    "HC1/HC2 legacy={legacy} field={field} recorded={recorded}"
+                );
+                if recorded {
+                    let history =
+                        crate::SessionUpdateHistory::for_session(next.snapshot()).unwrap();
+                    assert_eq!(history.facts.len(), 1, "HC2 exactly one fact");
+                    assert_eq!(history.facts[0].committed_revision, SessionRevision(8));
+                    assert_eq!(
+                        history.known_after_revision,
+                        SessionRevision(if legacy { 7 } else { 0 })
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn mcp_runtime_progress_and_retry_do_not_require_an_authoring_fact() {
+    // HC3: same desired fingerprint, original Requested -> Realizing -> Failed
+    // and retry generation progression changes physical recovery state only.
+    // No history append is required, including a legacy-absent history. HC4
+    // changed desired configuration is covered by HC1 and cannot use this rule.
+    // Use the actual MCP aggregate methods; no fake runtime receipt or sorter.
+    use awaken_session_configuration_contract::mcp::{
+        McpAttachmentDraft, McpAttachmentOrigin, McpRealizationClaim,
+    };
+    let draft = McpAttachmentDraft {
+        name: "docs".into(),
+        target: awaken_agent_contract::McpTarget::parse_http("https://history.example.test/mcp")
+            .unwrap(),
+        prompts_as_skills: false,
+        origin: McpAttachmentOrigin::Session,
+        credential: None,
+    };
+    for legacy in [false, true] {
+        let mut before = fresh_root(SessionExecutionState::Idle, 7).into_snapshot();
+        before.mcp =
+            crate::SessionMcpAttachmentSet::from_initial(vec![draft.clone()], None).unwrap();
+        if legacy {
+            before.update_history = None;
+        }
+        let generation = before.mcp.attachments[0].generation.clone();
+        let mut next = SessionAggregate::try_from(before.clone()).unwrap();
+        next.mcp()
+            .claim_realization(
+                &generation,
+                McpRealizationClaim {
+                    realization_id: "original-realization".into(),
+                    runtime_incarnation: "worker/boot".into(),
+                    lease_epoch: 1,
+                    lease_expires_at_unix_ms: 30_000,
+                    stage_idempotency_key: "original-stage".into(),
+                },
+            )
+            .unwrap();
+        next.mcp()
+            .fail_realization(&generation, "original-realization", "transport unavailable")
+            .unwrap();
+        next.mcp()
+            .request_full_replacement(vec![draft.clone()], None)
+            .unwrap();
+        next.compile_mutation(
+            "owner",
+            crate::IdempotencyRecord {
+                key: "mcp-recovery".into(),
+                payload_hash: "original-retry".into(),
+            },
+            Vec::new(),
+            100,
+        );
+        assert_eq!(
+            before.validate_observation_replacement(next.snapshot()),
+            Ok(()),
+            "HC3 legacy={legacy}"
+        );
+        assert_eq!(next.mcp.desired_fingerprint, before.mcp.desired_fingerprint);
+        assert_eq!(
+            next.update_history, before.update_history,
+            "HC3 no invented authoring fact"
+        );
+        assert_eq!(
+            next.mcp.attachments.last().unwrap().generation.version(),
+            2,
+            "HC3 actual retry generation"
+        );
+    }
+}
+
+#[test]
 fn budget_reconciliation_rejects_rewinds_and_missing_prices_atomically() {
     use awaken_session_budget_contract::{ManagedBudgetUsageCursor, ManagedModelUsageCursor};
     let mut dto = root(SessionExecutionState::Idle, 4).into_snapshot();
     dto.budget = SessionBudgetState::active(10, budget_snapshot());
     let mut aggregate = SessionAggregate::try_from(dto).unwrap();
+    let before_usage = aggregate.snapshot().clone();
     let usage = ManagedBudgetUsageCursor {
         active_seconds: 5,
         ..Default::default()
@@ -1290,6 +1663,23 @@ fn budget_reconciliation_rejects_rewinds_and_missing_prices_atomically() {
         .unwrap();
     assert_eq!(aggregate.usage_cursor, usage);
     assert_eq!(aggregate.budget.usage_cursor(), Some(&usage));
+    // HC4: cumulative accounting changes the existing budget state but not its
+    // accepted limit. It must remain a legal original Runtime mutation with no
+    // authoring history; HC1 separately requires facts for limit changes.
+    aggregate.compile_mutation(
+        "owner",
+        crate::IdempotencyRecord {
+            key: "budget-usage".into(),
+            payload_hash: "cumulative-usage".into(),
+        },
+        Vec::new(),
+        100,
+    );
+    assert_eq!(
+        before_usage.validate_observation_replacement(aggregate.snapshot()),
+        Ok(())
+    );
+    assert_eq!(aggregate.update_history, before_usage.update_history);
     let before = aggregate.clone();
     assert!(
         aggregate

@@ -456,15 +456,12 @@ impl SessionApplication {
                 {
                     Ok(configured) => configured,
                     Err(first) => {
-                        if !self
-                            .abort_unadopted_session_repositories(&repository_configurations)
-                            .await
-                        {
-                            tracing::warn!(
-                                session = %session_id,
-                                "Managed Session Repository compensation remains pending after lowering failure"
-                            );
-                        }
+                        self.compensate_request_repositories(
+                            session_id,
+                            &repository_configurations,
+                            "Managed Session Repository compensation remains pending after lowering failure",
+                        )
+                        .await;
                         return Err(first);
                     }
                 };

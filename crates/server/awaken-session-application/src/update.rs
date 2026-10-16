@@ -12,6 +12,7 @@ use awaken_session_configuration_contract::SessionToolConfiguration;
 use awaken_session_configuration_contract::mcp::McpAttachmentState;
 use awaken_session_realization_contract::realization_lease_is_live_at;
 use awaken_session_state_contract::{IdempotencyRecord, PersistedSession, SessionExecutionState};
+use awaken_session_state_contract::{SessionFieldUpdate, SessionUpdateChanges};
 use awaken_session_types::RunError;
 use awaken_session_types::SessionRevision;
 
@@ -61,41 +62,11 @@ pub struct SessionUpdateCommand {
     pub if_match: Option<SessionRevision>,
 }
 
-/// Explicit mutation of an optional Session field. `None` on the command means
-/// unchanged; the enum distinguishes clear from replace without nested Options.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SessionFieldUpdate<T> {
-    Clear,
-    Replace(T),
-}
-
 /// Session metadata is patched by key rather than replaced wholesale.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionMetadataUpdate {
     Clear,
     Patch(BTreeMap<String, Option<String>>),
-}
-
-/// Which durable projections changed while applying an update.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SessionUpdateChanges {
-    pub title: bool,
-    pub metadata: bool,
-    pub tools: bool,
-    pub mcp: bool,
-    pub budget: bool,
-}
-
-impl SessionUpdateChanges {
-    #[must_use]
-    pub fn any(self) -> bool {
-        self.title || self.metadata || self.tools || self.mcp || self.budget
-    }
-
-    #[must_use]
-    pub fn agent(self) -> bool {
-        self.tools || self.mcp
-    }
 }
 
 /// Committed outcome. `command_revision` remains the original receipt revision
@@ -305,6 +276,39 @@ fn apply_configuration_update(
             .map_err(configuration_failure)?;
     }
     Ok(())
+}
+
+/// Freeze the original committed-prefix read and record one aggregate decision.
+/// Exact receipt replay and no-op classification precede this phase; it adds no
+/// executor, persistence authority, timer, or publication path.
+async fn record_update_fact(
+    projection: &dyn awaken_session_execution_contract::SessionProjectionSource,
+    session: &mut awaken_session_state_contract::SessionAggregate,
+    before: &PersistedSession,
+    mcp_changed: bool,
+) -> Result<SessionUpdateChanges, SessionUpdateError> {
+    let changes = session.configuration_update_changes(before, mcp_changed);
+    let observed_runtime = if changes.any() {
+        projection
+            .projection_thread_snapshot(&session.session_id, session.session_id.as_str(), None)
+            .await
+            .map_err(SessionUpdateError::Rejected)?
+            .map_or(
+                awaken_session_event_contract::SessionEventProjectionAnchor {
+                    source_commit_cursor: 0,
+                },
+                |snapshot| awaken_session_event_contract::SessionEventProjectionAnchor {
+                    source_commit_cursor: snapshot.store_cursor,
+                },
+            )
+    } else {
+        awaken_session_event_contract::SessionEventProjectionAnchor {
+            source_commit_cursor: 0,
+        }
+    };
+    session
+        .record_configuration_update(before, mcp_changed, observed_runtime)
+        .map_err(|error| SessionUpdateError::Rejected(RunError::bad_request(error.to_string())))
 }
 
 impl SessionApplication {
@@ -552,7 +556,7 @@ impl SessionApplication {
             }
         }
         if tools_in_request
-            && (outcome.changes.tools || !outcome.command_applied)
+            && (outcome.changes.tools() || !outcome.command_applied)
             && let Err(source) = environment_runtime
                 .replace_session_tools(
                     outcome.session.session_id.as_str(),
@@ -732,10 +736,7 @@ impl SessionApplication {
             return Err(SessionUpdateError::Conflict);
         }
 
-        let initial_title = session.title.clone();
-        let initial_metadata = session.metadata.clone();
-        let initial_tools = session.tools.clone();
-        let initial_budget = session.budget.clone();
+        let before = session.snapshot().clone();
         let mut mcp_changed = false;
         if let Some(mcp_update) = command.mcp_update.clone() {
             let baseline = session
@@ -793,20 +794,20 @@ impl SessionApplication {
             })?;
         }
 
-        let changes = SessionUpdateChanges {
-            title: session.title != initial_title,
-            metadata: session.metadata != initial_metadata,
-            tools: session.tools != initial_tools,
-            mcp: mcp_changed,
-            budget: session.budget != initial_budget,
-        };
+        let changes = record_update_fact(
+            self.runtime().projection(),
+            &mut session,
+            &before,
+            mcp_changed,
+        )
+        .await?;
         let mut command_applied = true;
         let mut command_revision = session.revision;
-        if changes.title
-            || changes.metadata
-            || changes.tools
-            || changes.mcp
-            || changes.budget
+        if changes.title()
+            || changes.metadata()
+            || changes.tools()
+            || changes.mcp()
+            || changes.budget()
             || command_record.is_some()
         {
             let commit = match command_record {

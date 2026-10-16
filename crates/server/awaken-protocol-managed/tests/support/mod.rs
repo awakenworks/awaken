@@ -55,7 +55,7 @@ use std::sync::{Arc, Mutex};
 use awaken_session_repository_contract::SessionRepository;
 use awaken_session_state_contract::{
     IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionIdempotencyReceipt,
-    SessionMutation, SessionMutationPayload, SessionMutationResult, SessionRepositoryError,
+    SessionMutation, SessionMutationResult, SessionRepositoryError,
 };
 use awaken_session_store::SqliteManagedSessionRepository;
 use axum::http::StatusCode;
@@ -395,33 +395,13 @@ pub async fn session_repository(expect: &str) -> Arc<SqliteManagedSessionReposit
 pub async fn replace_session_fixture(
     repo: &dyn awaken_session_repository_contract::SessionStore,
     owner: &str,
-    mut session: PersistedSession,
+    session: PersistedSession,
     key: &str,
 ) -> PersistedSession {
-    session.revision = repo.get(&session.session_id).await.unwrap().revision;
-    let payload = SessionMutationPayload::Replace(session.clone());
-    let payload_hash = payload.stable_hash();
-    let result = repo
-        .commit(
-            owner,
-            SessionMutation {
-                expected_revision: session.revision,
-                idempotency: IdempotencyRecord {
-                    key: key.into(),
-                    payload_hash,
-                },
-                payload,
-                lifecycle_facts: Vec::new(),
-            },
-        )
+    // This four-argument adapter only supplies the original empty outbox; the
+    // shared conformance owner records any real author and executes the one CAS.
+    awaken_store_conformance::session_store::replace_session(repo, owner, session, key, Vec::new())
         .await
-        .unwrap();
-    session.revision = match result {
-        SessionMutationResult::Applied { new_revision }
-        | SessionMutationResult::Replayed { new_revision } => new_revision,
-        other => panic!("replace Session fixture failed: {other:?}"),
-    };
-    session
 }
 
 #[async_trait::async_trait]

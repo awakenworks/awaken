@@ -50,13 +50,12 @@ fn event_anchor<'a>(
     }
 }
 
-/// Attach each live overlay to its explicit retained predecessor, or the
-/// nearest earlier retained durable event. Consume the issued order once;
+/// Attach each remaining transient preview to the nearest earlier retained
+/// durable event. Session updates are durable Root facts, never previews. Consume the issued order once;
 /// leading/unanchored overlays must not repeatedly rescan their whole prefix.
 fn group_live_overlays<'a>(
     events: impl IntoIterator<Item = &'a Event>,
     durable_ids: &std::collections::HashSet<&str>,
-    hints: &std::collections::HashMap<String, String>,
 ) -> std::collections::HashMap<Option<String>, Vec<Event>> {
     let mut result = std::collections::HashMap::<Option<String>, Vec<Event>>::new();
     let mut predecessor = None;
@@ -67,12 +66,7 @@ fn group_live_overlays<'a>(
             }
             continue;
         }
-        let anchor = hints
-            .get(&event.id)
-            .filter(|candidate| durable_ids.contains(candidate.as_str()))
-            .map(String::as_str)
-            .or(predecessor)
-            .map(str::to_owned);
+        let anchor = predecessor.map(str::to_owned);
         result.entry(anchor).or_default().push(event.clone());
     }
     result
@@ -146,22 +140,6 @@ impl ManagedState {
             .filter_map(|(id, order)| order.processed_at_unix_ms.map(|at| (id.clone(), at)))
             .collect();
 
-        let visible_durable_ids = record
-            .events
-            .iter()
-            .filter(|event| !is_transient_event_id(&event.id))
-            .map(|event| event.id.clone())
-            .collect::<std::collections::HashSet<_>>();
-        let mut still_pending = Vec::new();
-        for (event, predecessor) in std::mem::take(&mut record.overlay.pending_events) {
-            if visible_durable_ids.contains(&predecessor) {
-                record.events.push(event);
-            } else {
-                still_pending.push((event, predecessor));
-            }
-        }
-        record.overlay.pending_events = still_pending;
-
         // Canonicalization is a disposable projection transaction: validate
         // every immutable anchor against a snapshot of the issued prefix, then
         // replace the cache once. A late/malformed fact must fail closed without
@@ -202,11 +180,7 @@ impl ManagedState {
             .progress
             .fact_keys
             .retain(|id, _| durable_ids.contains(id.as_str()));
-        let mut overlays = group_live_overlays(
-            original_events.iter(),
-            &durable_ids,
-            &record.overlay.anchors,
-        );
+        let mut overlays = group_live_overlays(original_events.iter(), &durable_ids);
         let mut canonical = overlays.remove(&None).unwrap_or_default();
         for (_, event) in durable {
             let id = event.id.clone();
@@ -305,7 +279,7 @@ impl ManagedState {
 #[cfg(test)]
 mod overlay_anchor_tests {
     use super::*;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashSet;
 
     fn event(id: impl Into<String>) -> Event {
         Event {
@@ -316,10 +290,12 @@ mod overlay_anchor_tests {
     }
     #[test]
     fn one_pass_overlay_assignment_preserves_explicit_and_fallback_predecessors() {
-        // C1 explicit hint names a retained durable event; C2 hint is missing
-        // or no longer retained; C3 a prior retained durable event exists.
-        // R1 C1 => explicit hint wins, including a later retained event.
-        // R2 !C1+C2+C3 => nearest prior durable; R3 !C1+!C3 => head group.
+        // Explicit Session-update predecessor ownership moved to the original
+        // local_session_update_waits_for_its_accepted_input_predecessor test:
+        // the retained Root fact, not process-local hints, withholds/reveals it.
+        // Here C1 is a remaining transient Thinking preview; C2 a prior retained
+        // durable event exists. R1=C1+C2 => nearest prior durable;
+        // R2=C1+!C2 => head group, preserving every preview's issued order.
         // Empty history and a run of 1000 leading overlays consume exactly one
         // input traversal; order within each anchor group remains issued order.
         let events = [
@@ -331,12 +307,7 @@ mod overlay_anchor_tests {
             event("evt_3"),
         ];
         let durable = HashSet::from(["durable-a", "durable-b"]);
-        let hints = HashMap::from([
-            ("evt_1".into(), "durable-b".into()),
-            ("evt_2".into(), "gone".into()),
-            ("evt_3".into(), "durable-a".into()),
-        ]);
-        let result = group_live_overlays(events.iter(), &durable, &hints);
+        let result = group_live_overlays(events.iter(), &durable);
         let ids = |key: Option<&str>| {
             result
                 .get(&key.map(str::to_owned))
@@ -346,8 +317,8 @@ mod overlay_anchor_tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(ids(None), ["evt_0"]);
-        assert_eq!(ids(Some("durable-a")), ["evt_2", "evt_3"]);
-        assert_eq!(ids(Some("durable-b")), ["evt_1"]);
+        assert_eq!(ids(Some("durable-a")), ["evt_1", "evt_2"]);
+        assert_eq!(ids(Some("durable-b")), ["evt_3"]);
         for count in [0, 1, 1000] {
             let events = (0..count)
                 .map(|i| event(format!("evt_{i}")))
@@ -358,7 +329,6 @@ mod overlay_anchor_tests {
                     .iter()
                     .inspect(|_| inspected.set(inspected.get() + 1)),
                 &HashSet::new(),
-                &HashMap::new(),
             );
             assert_eq!(inspected.get(), count);
             assert_eq!(result.get(&None).map(Vec::len).unwrap_or_default(), count);

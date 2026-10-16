@@ -152,6 +152,7 @@ name = "tenancy_required"
 required-features = ["test-support"]
 
 [dev-dependencies]
+awaken-store-conformance.workspace = true
 # Draws long committed histories for the timeline's schedule-independence property.
 proptest.workspace = true
 async-trait.workspace = true

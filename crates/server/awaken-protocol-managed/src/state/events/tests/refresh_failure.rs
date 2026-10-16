@@ -2,7 +2,6 @@
 //! Failure-frame checks for the actual asynchronous committed-prefix refresh.
 
 use super::*;
-use crate::state::session_record::ManagedLiveOverlay;
 use crate::state::test_support::ConflictInjectingRepo;
 
 /// The frame includes the CAS token and every visible/continuation field.
@@ -23,7 +22,6 @@ pub(super) fn assert_record_frame_eq(actual: &SessionRecord, expected: &SessionR
         events,
         event_page_index,
         checkpoint,
-        overlay,
         event_thread_owners,
         child_threads,
         primary_thread_usage,
@@ -66,11 +64,6 @@ pub(super) fn assert_record_frame_eq(actual: &SessionRecord, expected: &SessionR
         event_thread_owners, &expected.event_thread_owners,
         "frame: event owners"
     );
-    let ManagedLiveOverlay {
-        pending_events,
-        anchors,
-    } = overlay;
-    assert_eq!(anchors, &expected.overlay.anchors, "frame: overlay anchors");
     for (label, actual, expected) in [
         (
             "session",
@@ -81,11 +74,6 @@ pub(super) fn assert_record_frame_eq(actual: &SessionRecord, expected: &SessionR
             "events",
             serde_json::to_value(events),
             serde_json::to_value(&expected.events),
-        ),
-        (
-            "pending overlays",
-            serde_json::to_value(pending_events),
-            serde_json::to_value(&expected.overlay.pending_events),
         ),
         (
             "child threads",
@@ -283,6 +271,11 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
     // failed query cannot pair an older terminal with a newer root. R0 below
     // fixes every actual I/O cut in that order; R1 still injects each cut and
     // preserves the entry frame, competitor publication and zero broadcast.
+    // R3 the retained Outcome has processed=true but no observed predecessor
+    // anchor: its update fact persists while its marker is withheld. The child
+    // topology has no pending predecessor and retains the original positive
+    // broadcast assertion. The real predecessor completion case is owned by
+    // local_session_update_waits_for_its_accepted_input_predecessor.
     // Final validation selects its fresh root before the
     // relation query: root-only projection reuses that exact fence, while a
     // child prefix retains the later root read after its child snapshot. Every
@@ -350,7 +343,7 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
                             &id,
                             awaken_session_application::SessionUpdateCommand {
                                 title: Some(
-                                    awaken_session_application::SessionFieldUpdate::Replace(
+                                    awaken_session_state_contract::SessionFieldUpdate::Replace(
                                         "competing publisher".into(),
                                     ),
                                 ),
@@ -374,13 +367,62 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
                         current.session.title.as_deref(),
                         Some("competing publisher")
                     );
+                    let durable = state
+                        .application
+                        .session(&SessionId::from(&id))
+                        .await
+                        .unwrap();
+                    let fact =
+                        awaken_session_state_contract::SessionUpdateHistory::for_session(&durable)
+                            .unwrap()
+                            .facts()
+                            .last()
+                            .unwrap();
                     assert!(
-                        matches!(
-                            live.try_recv().unwrap().kind,
-                            OutboundKind::SessionUpdated { .. }
-                        ),
-                        "R1 successful competing publication is visible before the failure"
+                        fact.changes().title(),
+                        "R1 actual competing Root fact is retained"
                     );
+                    if with_child {
+                        assert_eq!(
+                            fact.predecessor_operation_id(),
+                            None,
+                            "R1 no pending predecessor"
+                        );
+                        assert!(
+                            matches!(
+                                live.try_recv().unwrap().kind,
+                                OutboundKind::SessionUpdated { .. }
+                            ),
+                            "R1 successful competing publication is visible before the failure"
+                        );
+                    } else {
+                        let predecessor = fact
+                            .predecessor_operation_id()
+                            .expect("R3 retained Outcome command");
+                        let entry = durable
+                            .event_batches
+                            .iter()
+                            .flat_map(|batch| &batch.events)
+                            .find(|entry| entry.event.operation_id() == predecessor)
+                            .unwrap();
+                        assert!(
+                            entry.projection_anchor.is_none(),
+                            "R3 historical effect remains unobserved"
+                        );
+                        assert!(
+                            awaken_managed_session_events::derive_session_update_events(&durable)
+                                .unwrap()
+                                .is_empty(),
+                            "R3 exact Root fact waits for its original predecessor"
+                        );
+                        assert!(
+                            matches!(
+                                live.try_recv(),
+                                Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+                            ),
+                            "R3 pending predecessor withholds the competing marker"
+                        );
+                    }
                 }
                 let before_failure = state.sessions.lock().unwrap().get(&id).unwrap().clone();
                 let reads_before_release = runtime.reads.trace();

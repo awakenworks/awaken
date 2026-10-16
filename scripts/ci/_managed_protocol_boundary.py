@@ -229,11 +229,11 @@ def projection_input_boundary_violations(
     record = _crate_boundary_workspace.production_rust(record)
     memo_fields = _rust_struct_fields(record, "ProjectionDeliveryMemo")
     allowed_memo = {
-        "cache_revision", "overlay", "transient_events", "transient_owners"
+        "cache_revision", "transient_events", "transient_owners"
     }
     if memo_fields != allowed_memo:
         errors.append(
-            "Managed projection warm memo must carry only cache CAS and transient overlay fields"
+            "Managed projection warm memo must carry only cache CAS and transient preview fields"
         )
     if _rust_struct_fields(entrypoint, "CommittedPrefixBase") != {"owner_scope", "record", "memo"}:
         errors.append("Managed committed-prefix base must own root scope, fresh record and delivery memo")
@@ -437,7 +437,8 @@ def selftest() -> None:
 
     # Projection-input cause/effect table. C1 the reducer takes only a fresh
     # committed-prefix base and the warm memo has delivery fields; C2 a new
-    # warm durable field enters that memo; C3 a reducer reads the warm cache;
+    # warm durable field or retired Session-update overlay enters that memo;
+    # C3 a reducer reads the warm cache;
     # C4 a new split module is added below the owner directory; C5 an alias in
     # the publisher file reads the cache outside its CAS function; C6 the
     # candidate reads owner scope from a warm map. Effects: E1 C1 passes;
@@ -465,7 +466,6 @@ fn plan() { awaken_managed_session_events::derive_coordination_events(); }
     record = """
 struct ProjectionDeliveryMemo {
     cache_revision: u64,
-    overlay: ManagedLiveOverlay,
     transient_events: Vec<Event>,
     transient_owners: HashMap<String, String>,
 }
@@ -474,8 +474,12 @@ fn into_delivery_memo(self) {
 }
 """
     assert projection_input_boundary_violations(entry, record, {}) == [], "P1/E1"
-    widened = record.replace("    overlay: ManagedLiveOverlay,", "    overlay: ManagedLiveOverlay,\n    durable_events: Vec<Event>,")
-    assert projection_input_boundary_violations(entry, widened, {}), "P2/E2"
+    for forbidden in ("durable_events: Vec<Event>", "overlay: ManagedLiveOverlay"):
+        widened = record.replace(
+            "    cache_revision: u64,",
+            "    cache_revision: u64,\n    " + forbidden + ",",
+        )
+        assert projection_input_boundary_violations(entry, widened, {}), "P2/E2 " + forbidden
     raw = entry.replace("base: CommittedPrefixBase", "base: SessionRecord")
     assert projection_input_boundary_violations(raw, record, {}), "P3/E2 raw reducer"
     leak = {"future.rs": "fn reduce(&self) { self.sessions.lock().unwrap(); }"}

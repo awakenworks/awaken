@@ -44,7 +44,10 @@ impl CompleteSessionRoot {
         tools: SessionToolConfiguration,
         budget: SessionBudgetState,
         compiled: CompiledSessionCreation,
-        initial_events: Option<awaken_session_event_contract::SessionInitialEventPlan>,
+        (initial_events, initial_agent_configuration): (
+            Option<awaken_session_event_contract::SessionInitialEventPlan>,
+            Option<Box<awaken_session_configuration_contract::SessionAgentConfiguration>>,
+        ),
     ) -> Result<Self, SessionCreationError> {
         let holder = compiled
             .baseline
@@ -72,6 +75,13 @@ impl CompleteSessionRoot {
             budget,
         );
         let mut root = Self::from_fresh(session)?;
+        if let Some(configuration) = initial_agent_configuration {
+            root.0
+                .record_initial_agent_configuration(configuration)
+                .map_err(|error| {
+                    SessionCreationError::Rejected(RunError::bad_request(error.to_string()))
+                })?;
+        }
         if let Some(initial_events) = initial_events {
             root.0
                 .activity()
@@ -402,6 +412,11 @@ pub struct CreateSessionCommand {
     /// Optional complete create-time Event plan. It is compiled by the protocol
     /// boundary before this command and installed in the original Session root.
     pub initial_events: Option<awaken_session_event_contract::SessionInitialEventPlan>,
+    /// Pre-insert presentation seed; it grants no execution/configuration authority.
+    /// CompleteSessionRoot supplies canonical compiled tools/MCP before recording
+    /// the immutable first value. This transient seed is never itself history.
+    pub initial_agent_configuration:
+        Option<Box<awaken_session_configuration_contract::SessionAgentConfiguration>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -525,6 +540,7 @@ impl SessionApplication {
             repository_configurations,
             idempotency,
             initial_events,
+            initial_agent_configuration,
         } = command;
         // Compile the complete intent before insert so invalid input can never
         // strand a durable Session waiting for a second authoring path.
@@ -533,15 +549,12 @@ impl SessionApplication {
             Err(error) => {
                 let first =
                     SessionCreationError::Rejected(RunError::bad_request(error.to_string()));
-                if !self
-                    .abort_unadopted_session_repositories(&repository_configurations)
-                    .await
-                {
-                    tracing::warn!(
-                        session = %session_id,
-                        "Session Repository compensation remains pending after compile rejection"
-                    );
-                }
+                self.compensate_request_repositories(
+                    &session_id,
+                    &repository_configurations,
+                    "Session Repository compensation remains pending after compile rejection",
+                )
+                .await;
                 return Err(first);
             }
         };
@@ -559,15 +572,12 @@ impl SessionApplication {
         };
         if let Err(error) = self.validate_session_sandbox_layout(&session_id, &layout) {
             let first = SessionCreationError::Rejected(error);
-            if !self
-                .abort_unadopted_session_repositories(&repository_configurations)
-                .await
-            {
-                tracing::warn!(
-                    session = %session_id,
-                    "Session Repository compensation remains pending after Sandbox-layout rejection"
-                );
-            }
+            self.compensate_request_repositories(
+                &session_id,
+                &repository_configurations,
+                "Session Repository compensation remains pending after Sandbox-layout rejection",
+            )
+            .await;
             return Err(first);
         }
         let compiled_root = match CompleteSessionRoot::compile(
@@ -577,19 +587,16 @@ impl SessionApplication {
             tools,
             budget,
             compiled,
-            initial_events,
+            (initial_events, initial_agent_configuration),
         ) {
             Ok(root) => root,
             Err(first) => {
-                if !self
-                    .abort_unadopted_session_repositories(&repository_configurations)
-                    .await
-                {
-                    tracing::warn!(
-                        session = %session_id,
-                        "Session Repository compensation remains pending after root compilation"
-                    );
-                }
+                self.compensate_request_repositories(
+                    &session_id,
+                    &repository_configurations,
+                    "Session Repository compensation remains pending after root compilation",
+                )
+                .await;
                 return Err(first);
             }
         };
@@ -615,15 +622,12 @@ impl SessionApplication {
                 {
                     Ok(Some(session)) => return validated_create_replay(session, completion),
                     Ok(None) => {
-                        if !self
-                            .abort_unadopted_session_repositories(&repository_configurations)
-                            .await
-                        {
-                            tracing::warn!(
-                                session = %session_id,
-                                "Session Repository compensation remains pending after create failure"
-                            );
-                        }
+                        self.compensate_request_repositories(
+                            &session_id,
+                            &repository_configurations,
+                            "Session Repository compensation remains pending after create failure",
+                        )
+                        .await;
                     }
                     Err(
                         SessionCreationError::Unavailable(_) | SessionCreationError::Internal(_),
@@ -637,15 +641,12 @@ impl SessionApplication {
                         // exact create receipt was not adopted. The compensation
                         // helper still rereads the root and preserves any
                         // participant referenced by a concurrent winner.
-                        if !self
-                            .abort_unadopted_session_repositories(&repository_configurations)
-                            .await
-                        {
-                            tracing::warn!(
-                                session = %session_id,
-                                "Session Repository compensation remains pending after deterministic create rejection"
-                            );
-                        }
+                        self.compensate_request_repositories(
+                            &session_id,
+                            &repository_configurations,
+                            "Session Repository compensation remains pending after deterministic create rejection",
+                        )
+                        .await;
                     }
                 }
                 return Err(first);

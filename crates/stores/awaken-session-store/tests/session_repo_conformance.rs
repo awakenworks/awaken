@@ -126,6 +126,12 @@ fn postgres_fixture_absence_and_configured_failure_are_distinct() {
 
 #[test]
 fn sqlite_backend_conforms() {
+    // Stack rule S1: the complete original SQLite suite must run on the default
+    // libtest stack. The real red overflowed while the inline root-CAS phase
+    // polled materialization then legacy root decoding; GDB measured an 868KB
+    // run_suite frame. Its owned phase is now pinned on the heap. Every row and
+    // following race/reopen assertion remains in this same original entry.
+    // S2 PostgreSQL exercises the same run_suite above; no stack override applies.
     block(async {
         run_suite(|| async {
             SqliteManagedSessionRepository::open_in_memory()

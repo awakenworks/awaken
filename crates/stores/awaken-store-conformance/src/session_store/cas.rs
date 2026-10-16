@@ -496,8 +496,15 @@ pub async fn root_cas_decision_table<R: awaken_session_repository_contract::Sess
             | CasRule::ReplaceIdempotencyMismatch
             | CasRule::StaleRevision
             | CasRule::WrongOwner => {
-                let mut replacement = repo.get(&SessionId::from(id)).await.unwrap();
+                let before = repo.get(&SessionId::from(id)).await.unwrap();
+                let mut replacement = before.clone();
                 replacement.title = Some("replacement".into());
+                // Legal replace/replay rows carry the original State fact.
+                // Stale/foreign rows keep their invalid candidate untouched so
+                // the existing owner/revision classifier still wins first.
+                if !matches!(rule, CasRule::StaleRevision | CasRule::WrongOwner) {
+                    replacement = record_update(&before, replacement, 0).into_snapshot();
+                }
                 if matches!(rule, CasRule::StaleRevision) {
                     replacement.revision = SessionRevision(0);
                 }

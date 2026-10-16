@@ -18,6 +18,8 @@ use crate::ManagedEventType;
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 #[serde(tag = "source", rename_all = "snake_case")]
 pub enum FactProvenance {
+    /// One atomic Session configuration update.
+    SessionUpdate { revision: u64 },
     /// The operation that created a coordinated Thread link.
     LinkOperation { operation_id: String },
     /// A parent coordination call, by its public tool-use event id.
@@ -86,7 +88,13 @@ mod tests {
     fn provenance_serialization_is_the_frozen_id_input() {
         // Each variant's serialized form is hashed into public ids. Pin every
         // tag, field name and field order against its former borrowed shape.
+        // R1 the new SessionUpdate tag and revision are literal ID input;
+        // R2 every pre-existing provenance retains its bytes and field order.
         let cases = [
+            (
+                FactProvenance::SessionUpdate { revision: 7 },
+                r#"{"source":"session_update","revision":7}"#,
+            ),
             (
                 FactProvenance::LinkOperation {
                     operation_id: "op".into(),

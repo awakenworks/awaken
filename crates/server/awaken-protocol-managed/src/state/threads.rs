@@ -220,40 +220,6 @@ impl ManagedState {
         }
     }
 
-    pub(crate) fn thread_agent_from_profile(
-        agent_id: &str,
-        profile: awaken_executable_agent_contract::ExecutableAgentSessionProfile,
-    ) -> SessionThreadAgent {
-        let tools = crate::project::managed_tools(
-            &awaken_session_configuration_contract::SessionToolConfiguration {
-                toolsets: profile.toolsets,
-                client_tools: profile.client_tools,
-            },
-        );
-        SessionThreadAgent {
-            id: agent_id.to_owned(),
-            kind: "agent",
-            version: profile.source_revision.max(1),
-            model: ModelConfig::from_inference(
-                profile
-                    .model
-                    .or(profile.execution_model_ref)
-                    .unwrap_or_default(),
-                profile.inference,
-            ),
-            name: profile.name.unwrap_or_else(|| agent_id.to_owned()),
-            description: profile.description,
-            system: profile.system,
-            tools,
-            mcp_servers: super::session_mcp_projection::profile_mcp_servers(&profile.mcp_servers),
-            skills: profile
-                .skills
-                .into_iter()
-                .map(crate::types::agent::AgentSkill::from_binding)
-                .collect(),
-        }
-    }
-
     /// A subagent child thread freezes the exact Agent definition already held
     /// by the parent Session; thread creation never looks up current authoring
     /// state or fabricates a second minimal Agent representation.

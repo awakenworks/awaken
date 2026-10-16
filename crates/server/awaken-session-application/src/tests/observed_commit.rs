@@ -315,12 +315,18 @@ async fn update_replay_keeps_the_original_atomic_receipt_after_a_later_root_writ
             );
             if schedule == "later_root" {
                 let mut later = durable.get(&id).await.unwrap();
+                let before_authoring = later.clone();
                 later.metadata.insert("later".into(), "preserved".into());
                 let advanced = app
                     .commit_session_snapshot_with_outcome(
                         "workspace",
-                        awaken_session_state_contract::SessionAggregate::try_from(later)
-                            .expect("valid test snapshot"),
+                        // U2 owns a real legal metadata CAS; pure fake-port
+                        // observation rows above intentionally keep raw values.
+                        awaken_store_conformance::session_store::record_update(
+                            &before_authoring,
+                            later,
+                            0,
+                        ),
                         "independent-after-update",
                         Vec::new(),
                     )

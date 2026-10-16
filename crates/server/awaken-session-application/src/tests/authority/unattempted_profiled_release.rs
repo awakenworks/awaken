@@ -379,6 +379,10 @@ fn failed_profiled_release_joins_current_run_activity_without_claiming_cleanup()
         // R3 response loss/restart of R1 => absorbing archive, no reopen and
         // no fabricated cleanup success. Successful verified cleanup itself is
         // covered by the existing preparation/terminal release matrix above.
+        // Same-owner private imports retain the canonical operation-id function,
+        // Session/Run arguments, receipt/Root-revision predicates, errors and IO
+        // order. Inputs/behavior are unchanged: reuse R1-R4 and the existing
+        // native precommit receipt table, with normal compile/lint for names.
         for cause in [
             "cancelled",
             "failed",

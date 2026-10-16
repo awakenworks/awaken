@@ -3,14 +3,13 @@
 // @formal reason: facts; replies delegate to the one Session coordination admission.
 //! Exact Run reads over the existing Session, dispatch and Thread authorities.
 
-use awaken_agent_contract::RunLifecycleCursor;
-use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_agent_contract::agent::run::RunState;
+use awaken_agent_contract::agent::run::{Id as RunId, RunState};
+use awaken_agent_contract::{RunLifecycleCursor, ThreadId};
 use awaken_dispatch_contract::{DispatchCursor, DispatchPage, SessionRunEventPage};
-use awaken_session_types::RunError;
-use awaken_session_types::SessionId;
+use awaken_session_types::{RunError, SessionId};
 
 use crate::{SessionApplication, SessionPreparationError, SessionProjectionRecoveryError};
+use awaken_session_execution_contract::session_run_activity_operation_id;
 
 fn rejected_projection(error: impl std::fmt::Display) -> SessionProjectionRecoveryError {
     SessionProjectionRecoveryError::Rejected(RunError::internal(error.to_string()))
@@ -118,16 +117,11 @@ impl SessionApplication {
             // Admission precedes the first Thread commit. Reuse its durable
             // Session activity receipt to prove membership without creating a
             // Run record or relying on process-local "latest Run" state.
-            let operation = awaken_session_execution_contract::session_run_activity_operation_id(
-                session_id, run_id,
-            );
+            let operation = session_run_activity_operation_id(session_id, run_id);
             self.recover_activity_for_operation(
                 session_id,
                 &operation,
-                Some((
-                    &awaken_agent_contract::ThreadId(session_id.to_string()),
-                    run_id,
-                )),
+                Some((&ThreadId(session_id.to_string()), run_id)),
             )
             .await
             .map_err(|error| SessionProjectionRecoveryError::Unavailable(error.to_string()))?
@@ -218,10 +212,7 @@ pub(crate) async fn validate_failed_profiled_execution(
         .ok_or_else(refused)?;
     let run = awaken_session_state_contract::failed_profiled_run_for_archive(session, &snapshot)
         .ok_or_else(refused)?;
-    let operation = awaken_session_execution_contract::session_run_activity_operation_id(
-        &session.session_id,
-        &run.id,
-    );
+    let operation = session_run_activity_operation_id(&session.session_id, &run.id);
     let (observed, epoch) = application
         .recover_activity_for_operation(
             &session.session_id,
