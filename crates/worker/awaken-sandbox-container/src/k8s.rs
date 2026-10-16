@@ -384,6 +384,7 @@ fn projected_content_delete_preconditions(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ContinuationObservationDisposition {
     Live,
+    RetainedOriginal,
     Disposing,
     Incompatible,
 }
@@ -394,6 +395,7 @@ struct ContinuationObservationEvidence<'a> {
     pod_present: bool,
     pod_deleting: bool,
     cleanup_gate_held: bool,
+    original_terminal_guard: bool,
     expected_uid: Option<&'a str>,
     observed_uid: Option<&'a str>,
     observed_terminating: bool,
@@ -416,6 +418,7 @@ fn continuation_observation_disposition(
         pod_present,
         pod_deleting,
         cleanup_gate_held,
+        original_terminal_guard,
         expected_uid,
         observed_uid,
         observed_terminating,
@@ -462,6 +465,15 @@ fn continuation_observation_disposition(
     }
 
     if pod_present && pod_deleting {
+        if purpose == ContainerObservationPurpose::TerminalCleanup
+            && original_terminal_guard
+            && !observed_terminating
+            && effect_fenced
+            && expected_uid.is_some()
+        {
+            // Retained source, not an acquired cleanup interlock or absence.
+            return Ok(ContinuationObservationDisposition::RetainedOriginal);
+        }
         return if observed_terminating && effect_fenced && expected_uid.is_some() {
             Ok(ContinuationObservationDisposition::Disposing)
         } else {
@@ -506,6 +518,7 @@ fn absent_pod_observation_never_confuses_recovery_with_completed_cleanup() {
         pod_present: false,
         pod_deleting: false,
         cleanup_gate_held: false,
+        original_terminal_guard: false,
         expected_uid: Some("p"),
         observed_uid,
         observed_terminating: terminating,
@@ -1173,6 +1186,8 @@ impl K8sRuntime {
             pod_present: pod.is_some(),
             pod_deleting: pod.is_some_and(|pod| pod.metadata.deletion_timestamp.is_some()),
             cleanup_gate_held,
+            original_terminal_guard: pod
+                .is_some_and(continuation::terminal_original_guard_retained),
             expected_uid: expected_claim_uid,
             observed_uid: observed_claim
                 .as_ref()
@@ -1410,7 +1425,7 @@ impl K8sRuntime {
 
         if continuation == ContinuationObservationDisposition::Disposing
             && observed_pod.metadata.deletion_timestamp.is_some()
-            && !continuation::pod_cleanup_gate_held(&observed_pod)
+            && continuation::observed_pod_cleanup_authorization(&observed_pod)?.is_none()
         {
             // Cause/effect row KCO1/K3: PVC termination plus exact deleting Pod
             // without our finalizer can only be reached after this cleanup
@@ -1419,16 +1434,13 @@ impl K8sRuntime {
             // re-read and await exact P. A foreign replacement UID ends only
             // the A wait and still cannot redirect the claim fence.
             let pod_uid = persisted_pod_uid.expect("disposing Pod has persisted UID");
-            if guarded_original {
-                create_ledger::release_original_guard(&pods, container_id, pod_uid, &admit).await?;
-            }
-            self.await_exact_pod_deleted(container_id, pod_uid, &admit)
-                .await?;
-            return participants::finish_after_absent_pod(
+            return continuation::finish_released_bound_disposal(
                 self,
                 container_id,
+                pod_uid,
                 expected_claim_uid,
                 projected,
+                guarded_original,
                 &admit,
             )
             .await;
@@ -1478,18 +1490,15 @@ impl K8sRuntime {
             &admit,
         )
         .await?;
-        if let Some(pending) = pending_pod_cleanup.as_ref() {
-            continuation::release_pod_cleanup_gate(&pods, pending, &admit).await?;
-        }
-        if guarded_original {
-            create_ledger::release_original_guard(
-                &pods,
-                container_id,
-                &incarnation.identity,
-                &admit,
-            )
-            .await?;
-        }
+        continuation::release_bound_guards(
+            &pods,
+            container_id,
+            &incarnation.identity,
+            pending_pod_cleanup.as_ref(),
+            guarded_original,
+            &admit,
+        )
+        .await?;
         self.await_exact_pod_deleted(container_id, &incarnation.identity, &admit)
             .await?;
         if let Some(pending) = pending_claim_deletion.as_ref() {

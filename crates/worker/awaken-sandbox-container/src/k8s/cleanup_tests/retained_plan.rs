@@ -18,8 +18,9 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
     // R2 nonempty plan/declaration, malformed results, UID/configuration drift,
     // V1, revoked authority => no writes/receipt and retain every original.
     // R3 both original objects absent => deterministic cold replay returns
-    // absence without re-creating or deleting anything. R4 deleting Pod + live
-    // claim, or absent Pod + live claim, retain their existing denial. Neither
+    // absence without re-creating or deleting anything. R4 the exact deleting
+    // original keeps source preparation through its retained Create guard;
+    // an absent Pod + live claim remains denied. Neither
     // empty membership nor source preparation is a physical cleanup receipt.
     for row in [
         "empty",
@@ -217,7 +218,7 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
         );
         if row == "already-absent" {
             assert!(prepared.unwrap().is_none(), "R3");
-        } else if matches!(row, "empty" | "control") {
+        } else if matches!(row, "empty" | "control" | "deleting-pod") {
             let environment = prepared
                 .unwrap_or_else(|e| panic!("R1 {row}: {e}"))
                 .unwrap();

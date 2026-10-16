@@ -1145,3 +1145,37 @@ observation joins the existing participant owner. This adds no dependency,
 store, lifecycle, or second projection builder; it does not qualify W34 or Actor
 retirement. The reviewed growth uses the existing modularity baseline protocol;
 all structural, clock, test and physical evidence checks remain mandatory.
+
+
+## Amendment 2026-10-16: planned succession of an already-held original guard
+
+**Status: implemented; bounded unit, kernel and isolated live-API qualification passed. Deployment and original-mission acceptance remain pending.** The original failed
+Kubernetes Pod can already be deleting while its exact continuation claim is
+live. A local API server dry-run confirmed that an annotation-only update of
+that exact Pod is admitted and that adding a finalizer is refused. The existing
+original Create-result guard still retains its UID/name; the Worker process
+observer may consume that retention but cannot release it.
+
+Unchanged owners are the Session's source preparation and disposal authorization,
+original projected UID set, Create-result guard, current-effect callback, exact
+Pod/PVC deletion and finalizer CAS. Modified owners are the existing K8s combined
+observation and continuation cleanup interlock. New code is limited to one closed
+original-guard provenance in the existing cleanup authorization annotation and
+its tests/proof. There is no new cleanup state, queue, journal or deletion path.
+
+An exact failed/deleting original with its existing guard and exact live claim
+may remain a Terminal source observation. That read performs no write and does
+not mean Disposing, absence or completed preparation. Only the later aggregate
+disposal authorization may acquire the existing guard by UID/resourceVersion CAS,
+writing its canonical preparation/current-successor identity without adding a
+finalizer. Restoration cannot borrow this aggregate-only handoff.
+
+The original ordering remains source preparation -> authorized guard CAS -> exact
+claim deletion intent -> original projected-member closure -> exact Pod deletion
+and owned-guard release -> physical absence -> canonical Session receipt. Lost
+CAS/DELETE responses retain the same annotation and exact UIDs. A stale, missing,
+foreign, malformed or conflicting guard remains Unknown before any claim write.
+The existing gate owner releases the selected guard; it must not duplicate the
+independent original-guard release. Ordinary live-Pod cleanup keeps its current
+continuation-finalizer path. This change alone does not qualify Actor retirement
+or the original automatic-development mission.

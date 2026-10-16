@@ -1142,7 +1142,11 @@ impl ContainerRuntime for K8sRuntime {
             .transpose()?
             .into_iter()
             .collect::<Vec<_>>();
-        if continuation == ContinuationObservationDisposition::Disposing && !observations.is_empty()
+        if matches!(
+            continuation,
+            ContinuationObservationDisposition::Disposing
+                | ContinuationObservationDisposition::RetainedOriginal
+        ) && !observations.is_empty()
         {
             observations[0].phase = ExistingRealizationPhase::Terminal;
         }

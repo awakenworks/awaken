@@ -146,6 +146,24 @@ fn generated_namespace(prefix: &str) -> k8s_openapi::api::core::v1::Namespace {
     serde_json::from_value(serde_json::json!({"metadata": {"generateName": prefix}})).unwrap()
 }
 
+fn install_canonical_sandbox_network_policy(
+    namespace: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let network_graph = format!(
+        "{}/../../../deploy/k3d/bases/sandbox-network-policy",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let installed = kubectl(&["-n", namespace, "apply", "-k", &network_graph]);
+    if !installed.status.success() {
+        return Err(std::io::Error::other(format!(
+            "canonical Sandbox NetworkPolicy installation failed: {}",
+            String::from_utf8_lossy(&installed.stderr)
+        ))
+        .into());
+    }
+    Ok(())
+}
+
 async fn delete_namespace_by_uid(
     api: &kube::Api<k8s_openapi::api::core::v1::Namespace>,
     object: &k8s_openapi::api::core::v1::Namespace,
@@ -571,18 +589,7 @@ async fn brokered_create_isolation_joins_six_real_api_uids_after_reservation() {
         );
         let sandbox_name = sandbox.as_ref().unwrap().name_any();
         let control_name = control.as_ref().unwrap().name_any();
-        let network_graph = format!(
-            "{}/../../../deploy/k3d/bases/sandbox-network-policy",
-            env!("CARGO_MANIFEST_DIR")
-        );
-        let installed = kubectl(&["-n", &sandbox_name, "apply", "-k", &network_graph]);
-        if !installed.status.success() {
-            return Err(io::Error::other(format!(
-                "canonical Sandbox NetworkPolicy installation failed: {}",
-                String::from_utf8_lossy(&installed.stderr)
-            ))
-            .into());
-        }
+        install_canonical_sandbox_network_policy(&sandbox_name)?;
         let ledger = K8sWorkerCreateLedger::new(
             client.clone(), &control_name, &sandbox_name, "provider-isolation",
         )?;
@@ -1333,4 +1340,144 @@ async fn original_create_guard_keeps_a_deleted_pod_visible_until_exact_release()
         "original guard cleanup: {cleanup_errors:?}"
     );
     assert!(proof.is_ok(), "original guard physical proof: {proof:?}");
+}
+
+#[tokio::test]
+async fn guarded_deleting_original_runs_authorized_pvc_disposal() {
+    // Causes: C1 real API-created original Pod/PVC UIDs and empty original
+    // projection; C2 terminal Pod is UID-deleted but retained by its original
+    // guard; C3 separately prepared current aggregate disposal authority.
+    // LGS1=C1+C2 -> exact source and live claim remain readable; same-name
+    // replacement is excluded. LGS2=LGS1+C3 -> the production Runtime claims
+    // the existing guard, deletes only the original claim/Pod and observes
+    // absence. No new finalizer, manual status or production-data receipt is
+    // used. Failure retains the task-owned Namespace for diagnosis. An explicit
+    // replay namespace resumes that SAME published UID set through this same
+    // disposal path; it never makes a second fixture after an ambiguous result.
+    if !require_live_cluster() {
+        return;
+    }
+    use k8s_openapi::api::core::v1::{Namespace, PersistentVolumeClaim, Pod};
+    use kube::api::{DeleteParams, PostParams, Preconditions};
+    use kube::{Api, ResourceExt};
+    let client = awaken_sandbox_container::k8s::connect_control_client()
+        .await
+        .unwrap();
+    require_namespace_finalization_discovery(&client).await;
+    let namespaces: Api<Namespace> = Api::all(client.clone());
+    let replay_namespace = std::env::var("AWAKEN_K8S_GUARD_REPLAY_NAMESPACE").ok();
+    let namespace = if let Some(name) = replay_namespace.as_deref() {
+        assert!(
+            name.starts_with("guard-succession-"),
+            "replay is limited to this test's retained namespace"
+        );
+        namespaces.get(name).await.unwrap()
+    } else {
+        namespaces
+            .create(
+                &PostParams::default(),
+                &generated_namespace("guard-succession-"),
+            )
+            .await
+            .unwrap()
+    };
+    let ns = namespace.name_any();
+    let pods: Api<Pod> = Api::namespaced(client.clone(), &ns);
+    let claims: Api<PersistentVolumeClaim> = Api::namespaced(client, &ns);
+    // Fixed fixture coordinates exercise the backend's canonical managed-name
+    // inverse; no production caller constructs a competing name algorithm.
+    let pod_name = "awaken-original-source";
+    let claim_name = "awc-original-source";
+    let result:Result<(),Box<dyn std::error::Error>>=async {
+        install_canonical_sandbox_network_policy(&ns)?;
+        if replay_namespace.is_none() {
+        let claim:PersistentVolumeClaim=serde_json::from_value(serde_json::json!({
+            "metadata":{"name":claim_name,"namespace":ns},
+            "spec":{"accessModes":["ReadWriteOnce"],"resources":{"requests":{"storage":"1Gi"}}}
+        }))?;
+        let claim=claims.create(&PostParams::default(),&claim).await?;
+        let claim_uid=claim.metadata.uid.clone().ok_or_else(||std::io::Error::other("created claim has no UID"))?;
+        let pod:Pod=serde_json::from_value(serde_json::json!({
+            "metadata":{"name":pod_name,"namespace":ns,
+                "finalizers":[awaken_sandbox_container::k8s::ORIGINAL_GUARD_FINALIZER],
+                "annotations":{"awaken.dev/continuation-claim-uid":claim_uid,
+                    "awaken.dev/sandbox-attempt":"live-original-attempt"}},
+            "spec":{"automountServiceAccountToken":false,"restartPolicy":"Never",
+                "securityContext":{"runAsNonRoot":true,"runAsUser":1000,"runAsGroup":1000,"fsGroup":1000,
+                    "seccompProfile":{"type":"RuntimeDefault"}},
+                "containers":[{"name":"agent","image":session_image(),"imagePullPolicy":"IfNotPresent",
+                    "command":["/bin/sh","-c","printf retained-source > /mnt/session/marker"],
+                    "resources":{"requests":{"cpu":"10m","memory":"16Mi"},"limits":{"cpu":"100m","memory":"64Mi"}},
+                    "securityContext":{"allowPrivilegeEscalation":false,"readOnlyRootFilesystem":true,"capabilities":{"drop":["ALL"]}},
+                    "volumeMounts":[{"name":"continuation-state","mountPath":"/mnt/session"}]}],
+                "volumes":[{"name":"continuation-state","persistentVolumeClaim":{"claimName":claim_name}}]}
+        }))?;
+        let created=pods.create(&PostParams::default(),&pod).await?;
+        let pod_uid=created.metadata.uid.clone().ok_or_else(||std::io::Error::other("created Pod has no UID"))?;
+        let waited=kubectl(&["-n",&ns,"wait","--for=jsonpath={.status.phase}=Succeeded",&format!("pod/{pod_name}"),"--timeout=90s"]);
+        if !waited.status.success() {return Err(std::io::Error::other(format!("real fixture did not complete: {}",String::from_utf8_lossy(&waited.stderr))).into());}
+        let mut published=pods.get(pod_name).await?;
+        if published.metadata.uid.as_deref()!=Some(pod_uid.as_str()) {return Err(std::io::Error::other("original Pod changed before publication").into());}
+        let original_set=serde_json::json!({"namespace":ns,"pod_uid":pod_uid,"objects":[],
+            "origin":{"kind":"created","attempt":"live-original-attempt"}});
+        let annotations=published.metadata.annotations.get_or_insert_with(Default::default);
+        annotations.insert("awaken.dev/projected-object-declaration".into(),"[]".into());
+        annotations.insert("awaken.dev/projected-object-results".into(),original_set.to_string());
+        pods.replace(pod_name,&PostParams::default(),&published).await?;
+        }
+        // Resume only identities already published by the original fixture.
+        // A current GET never supplies a replacement original UID.
+        let published=pods.get(pod_name).await?;
+        let annotations=published.metadata.annotations.as_ref().ok_or_else(||std::io::Error::other("original publication missing"))?;
+        let original_set:serde_json::Value=serde_json::from_str(annotations.get("awaken.dev/projected-object-results").ok_or_else(||std::io::Error::other("original results missing"))?)?;
+        let pod_uid=original_set.get("pod_uid").and_then(|value|value.as_str()).ok_or_else(||std::io::Error::other("original result UID missing"))?.to_owned();
+        let claim_uid=annotations.get("awaken.dev/continuation-claim-uid").ok_or_else(||std::io::Error::other("original claim UID missing"))?.clone();
+        if published.metadata.uid.as_deref()!=Some(pod_uid.as_str()) {return Err(std::io::Error::other("published original UID changed").into());}
+        // The fixture producer completes its declared handoff BEFORE any
+        // handle/cleanup consumer runs. These fixed fixture identity values
+        // are not discovered from GET; original Pod/PVC UIDs stay those of
+        // the accepted Creates recorded above. A conflicting declaration fails.
+        let mut complete=published.clone();
+        let fields=complete.metadata.annotations.get_or_insert_with(Default::default);
+        for (key,value) in [("awaken.dev/sandbox-adoption","live-fixture-adoption"),("awaken.dev/sandbox-realization","live-fixture-realization")] {
+            if fields.get(key).is_some_and(|existing|existing!=value) {return Err(std::io::Error::other("fixture creation identity conflicts").into());}
+            fields.insert(key.into(),value.into());
+        }
+        pods.replace(pod_name,&PostParams::default(),&complete).await?;
+        let runtime=k8s_common::connect_with_clock(&ns,"127.0.0.1:1".parse().unwrap()).await?;
+        let handle=runtime.handle_extra(pod_name).await?.ok_or_else(||std::io::Error::other("original handle missing"))?;
+        if published.metadata.deletion_timestamp.is_none() {
+            pods.delete(pod_name,&DeleteParams::default().preconditions(Preconditions {uid:Some(pod_uid.clone()),resource_version:None})).await?;
+        }
+        let retained=pods.get(pod_name).await?;let retained_claim=claims.get(claim_name).await?;
+        if retained.metadata.uid.as_deref()!=Some(pod_uid.as_str())||retained.metadata.deletion_timestamp.is_none()
+            ||retained_claim.metadata.uid.as_deref()!=Some(claim_uid.as_str())||retained_claim.metadata.deletion_timestamp.is_some() {
+            return Err(std::io::Error::other("LGS1 original retained source/claim not exact and live").into());
+        }
+        let terminal=effect_fence(&ns,"terminal","live-retirement-actor",2);
+        let authorization=disposal_authorization(&terminal);
+        runtime.remove_exact_incarnation(pod_name,Some(&handle),&authorization,&EffectAuthority::new(authorization.effect_fence())).await?;
+        if pods.get_opt(pod_name).await?.is_some()||claims.get_opt(claim_name).await?.is_some() {
+            return Err(std::io::Error::other("LGS2 original physical objects remain").into());
+        }
+        Ok(())
+    }.await;
+    assert!(
+        result.is_ok(),
+        "live guard succession failed; retained test Namespace {ns}: {result:?}"
+    );
+    delete_namespace_by_uid(&namespaces, &namespace)
+        .await
+        .unwrap();
+    let deleted = kubectl(&[
+        "wait",
+        "--for=delete",
+        &format!("namespace/{ns}"),
+        "--timeout=30s",
+    ]);
+    assert!(
+        deleted.status.success(),
+        "exact test Namespace deletion: {}",
+        String::from_utf8_lossy(&deleted.stderr)
+    );
 }
