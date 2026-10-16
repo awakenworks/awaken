@@ -8,6 +8,218 @@ use awaken_sandbox_container::k8s::{PodProcessObserver, PodProcessStopper};
 use awaken_worker_contract::WorkerProcessExit;
 
 #[tokio::test]
+async fn closed_worker_create_fence_survives_missing_process_history() {
+    // M1 closed exact Worker + original ledger + absent process binding -> seal
+    // Create admission, keep exit Unknown. M2 the retained binding exists but
+    // original Pod/process observation is unavailable -> the same seal survives
+    // that error. Neither row releases retention, stops a Pod, records an exit
+    // or settles physical work. Both production StopSource operations use the
+    // original provider ledger; the Ingress suite owns their independent join.
+    for binding_exists in [false, true] {
+        let f = fixture::broker_fixture(|_| {}).await;
+        if binding_exists {
+            let record = f.directory.incarnation(&f.identity).await.unwrap().unwrap();
+            let pod = KubernetesPodIdentity::from_worker_id(&f.identity.worker_id).unwrap();
+            let anchor = record.create_ledger.as_ref().unwrap();
+            let exact = binding(&f.broker.ledger, anchor, &pod, "provider-a").unwrap();
+            let process = serde_json::from_str(&original_process()).unwrap();
+            f.broker
+                .ledger
+                .retain_process_binding(exact, &process)
+                .await
+                .unwrap();
+        }
+        fixture::quiesce_worker(f.directory.as_ref(), &f.identity).await;
+        let record = f.directory.incarnation(&f.identity).await.unwrap().unwrap();
+        let source = source(&f);
+        awaken_dispatch::WorkerExecutionStopSource::seal_closed_worker_admission(
+            &source,
+            &f.identity,
+            record.create_ledger.as_ref(),
+        )
+        .await
+        .unwrap();
+        let result = awaken_dispatch::WorkerExecutionStopSource::observe_closed_idle_worker(
+            &source,
+            &f.identity,
+            false,
+            record.create_ledger.as_ref(),
+        )
+        .await;
+        if binding_exists {
+            assert!(
+                result.is_err(),
+                "M2 original Pod observation remains unavailable"
+            );
+        } else {
+            assert_eq!(result.unwrap(), None, "M1 missing process remains Unknown");
+        }
+        let state = fixture::ledger_state(&f.stored);
+        assert_eq!(
+            state["worker_sealed"], true,
+            "M1/M2 independent Create fence"
+        );
+        assert_eq!(state["groups"][group_for(&f.identity)], "sealed");
+        assert!(
+            f.directory
+                .incarnation(&f.identity)
+                .await
+                .unwrap()
+                .unwrap()
+                .process_exit
+                .is_none()
+        );
+        assert_eq!(
+            f.pod_posts.load(Ordering::SeqCst),
+            0,
+            "M1/M2 no Pod Create or stop"
+        );
+    }
+}
+
+#[tokio::test]
+async fn create_seal_uses_closed_registry_and_original_ledger_without_process_exit() {
+    // Cause/effect graph: C1 exact Registry incarnation is Ready/expired-Ready/
+    // Quiesced/Dead; C2 original ledger UID and configuration match; C3 process
+    // exit is unavailable. E1 only closed C1+C2 seals the existing Create owner
+    // and joins its empty request group; E2 late Create is denied by that same
+    // ledger; E3 no Registry exit, Pod stop, evidence release or cleanup receipt
+    // is fabricated. E4 live/merely expired C1 returns Unknown without a CAS;
+    // E5 foreign C2 returns an error without changing the observed ledger.
+    // Rules S1 Quiesced/Dead+C2+C3 -> E1,E2,E3; S2 Ready/expired-Ready -> E3,E4;
+    // S3 closed+foreign UID/configuration -> E3,E5. Ticket/isolation fault and
+    // response-loss tests independently cover already-admitted requests.
+    for cause in [
+        "ready",
+        "expired-ready",
+        "quiesced",
+        "dead",
+        "foreign-ledger",
+        "foreign-configuration",
+    ] {
+        let f = fixture::broker_fixture(|_| {}).await;
+        let closed = !matches!(cause, "ready" | "expired-ready");
+        if cause == "dead" {
+            assert_eq!(
+                f.directory
+                    .expire_incarnation(&f.identity, 70_000)
+                    .await
+                    .unwrap(),
+                awaken_dispatch::RegistryMutation::Applied,
+                "real Dead precondition"
+            );
+        } else if closed {
+            fixture::quiesce_worker(f.directory.as_ref(), &f.identity).await;
+        }
+        if cause == "expired-ready" {
+            f.clock.set(70_000);
+        }
+        if cause == "foreign-ledger" {
+            f.stored.lock().unwrap().as_mut().unwrap()["metadata"]["uid"] = "foreign-ledger".into();
+        } else if cause == "foreign-configuration" {
+            f.stored.lock().unwrap().as_mut().unwrap()["metadata"]["annotations"]["awaken.dev/create-ledger-configuration"] =
+                "foreign-configuration".into();
+        }
+        let before = f.stored.lock().unwrap().clone();
+        let predecessor = ContainerEffectFence::new(
+            "old-effect",
+            &f.identity.worker_id,
+            f.identity.lease_owner(),
+            1,
+            u64::MAX,
+        )
+        .unwrap();
+        let result = f
+            .broker
+            .seal_predecessor(f.directory.clone(), "scope", &predecessor, "awaken-scope")
+            .await;
+        if cause.starts_with("foreign-") {
+            assert!(result.is_err(), "S3/{cause}");
+        } else if closed {
+            assert_eq!(
+                result.unwrap(),
+                RequestJoin::Complete(Vec::new()),
+                "S1/{cause}"
+            );
+            let record = f.directory.incarnation(&f.identity).await.unwrap().unwrap();
+            let pod = KubernetesPodIdentity::from_worker_id(&f.identity.worker_id).unwrap();
+            let anchor = record.create_ledger.as_ref().unwrap();
+            let exact = binding(&f.broker.ledger, anchor, &pod, "provider-a").unwrap();
+            let late = CreateTicketRequest::new(
+                group_for(&f.identity),
+                "pods",
+                "sandbox-ns",
+                "late-pod",
+                "c".repeat(64),
+            )
+            .unwrap();
+            assert_eq!(
+                f.broker.ledger.admit_request(exact, &late).await.unwrap().0,
+                TicketAdmission::Sealed,
+                "S1/{cause} same owner denies late Create"
+            );
+        } else {
+            assert_eq!(result.unwrap(), RequestJoin::Unknown, "S2/{cause}");
+        }
+        if !closed || cause.starts_with("foreign-") {
+            assert_eq!(
+                *f.stored.lock().unwrap(),
+                before,
+                "S2/S3 no ledger mutation"
+            );
+        }
+        assert!(
+            f.directory
+                .incarnation(&f.identity)
+                .await
+                .unwrap()
+                .unwrap()
+                .process_exit
+                .is_none(),
+            "S1/S2/S3 Create fence is not physical exit"
+        );
+        assert_eq!(
+            f.pod_posts.load(Ordering::SeqCst),
+            0,
+            "S1/S2/S3 no Pod Create or stop"
+        );
+    }
+}
+
+#[tokio::test]
+async fn closed_predecessor_without_original_ledger_stays_unknown() {
+    // S4 closed exact predecessor + absent original anchor -> Unknown and zero
+    // provider IO; current caller authentication cannot mint historical proof.
+    let (f, caller) = fixture::ready_route_fixture().await;
+    let old = f
+        .directory
+        .register(
+            WorkerRegistration {
+                worker_id: "k8s:sandbox-ns:old-worker:old-uid".into(),
+                incarnation_id: "old-uid".into(),
+                manifest: WorkerManifest::default(),
+                create_ledger: None,
+            },
+            100,
+            60_000,
+        )
+        .await
+        .unwrap();
+    fixture::quiesce_worker(f.directory.as_ref(), &old.snapshot.identity).await;
+    let response = f
+        .router
+        .oneshot(fixture::route_request(
+            SEAL_PATH,
+            fixture::seal_body(&caller),
+            Some(caller.worker_id.as_str()),
+        ))
+        .await
+        .unwrap();
+    fixture::assert_unknown_seal(response, "S4").await;
+    assert_eq!(f.api_calls.load(Ordering::SeqCst), 0, "S4 zero provider IO");
+}
+
+#[tokio::test]
 async fn closed_idle_worker_uses_the_same_original_creator_seal() {
     // CI1 exact Registry exit + no occupied physical slot -> the existing idle
     // owner passes the original anchor into the same provider seal before Pod
@@ -34,10 +246,7 @@ async fn closed_idle_worker_uses_the_same_original_creator_seal() {
         .await
         .unwrap();
     }
-    let state: Value = {
-        let object = f.stored.lock().unwrap();
-        serde_json::from_str(object.as_ref().unwrap()["data"]["ledger"].as_str().unwrap()).unwrap()
-    };
+    let state = fixture::ledger_state(&f.stored);
     assert_eq!(state["worker_sealed"], true);
     assert_eq!(state["groups"][group_for(&f.identity)], "sealed");
     assert_eq!(f.pod_posts.load(Ordering::SeqCst), 0);
@@ -185,11 +394,7 @@ async fn exited_worker_closes_its_original_create_ledger_before_releasing_eviden
         )
         .await
         .unwrap();
-        let state: Value = {
-            let object = f.stored.lock().unwrap();
-            serde_json::from_str(object.as_ref().unwrap()["data"]["ledger"].as_str().unwrap())
-                .unwrap()
-        };
+        let state = fixture::ledger_state(&f.stored);
         assert_eq!(state["worker_sealed"], true, "CW3");
         assert_eq!(state["groups"][group_for(&f.identity)], "sealed", "CW3");
         assert_eq!(f.pod_posts.load(Ordering::SeqCst), 0, "CW3 no Create");
