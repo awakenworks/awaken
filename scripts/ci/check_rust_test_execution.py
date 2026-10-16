@@ -28,7 +28,7 @@ INPUT_GLOBS = ("scripts/ci/**",)
 LISTED = re.compile(r"^(\S+): test$", re.MULTILINE)
 EXECUTED = re.compile(r"^test (\S+)(?: - should panic)? \.\.\. (ok|FAILED|ignored)(?:,.*)?$", re.MULTILINE)
 SUMMARY = re.compile(r"^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;", re.MULTILINE)
-SKIP = re.compile(r"^(?:skip(?:ped|ping)?\b|\[skip\])", re.MULTILINE | re.IGNORECASE)
+SKIP = re.compile(r"^[ \t]*(?:skip(?:ped|ping)?\b|\[skip\])", re.MULTILINE | re.IGNORECASE)
 
 
 def _listed_selection(inventory: str, required: list[str] | tuple[str, ...]) -> tuple[Counter, list[str]]:
@@ -766,6 +766,23 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
                 self.assertEqual(
                     execution_evidence(inventory, output + ordinary + "\n", 0)["errors"], [],
                 )
+
+    def test_indented_fixture_skip_markers_reject_success_status(self) -> None:
+        inventory = "critical: test\n"
+        output = "test critical ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored;\n"
+        for indent in (" ", "  ", "\t"):
+            for marker in ("SKIP fixture absent", "SKIPPED fixture absent",
+                           "SKIPPING fixture absent", "[skip] fixture absent"):
+                with self.subTest(indent=indent, marker=marker):
+                    self.assertIn(
+                        "a selected test skipped its fixture or behavior",
+                        execution_evidence(inventory, output + indent + marker + "\n", 0)["errors"],
+                    )
+        for ordinary in ("  skipper owns a connection", "\tskipped_count=0",
+                         "  skip_count=0", "  [skipper] diagnostic",
+                         "  diagnostic: SKIP is a status label"):
+            with self.subTest(ordinary=ordinary):
+                self.assertEqual(execution_evidence(inventory, output + ordinary + "\n", 0)["errors"], [])
 
     def test_same_name_in_two_binaries_retains_occurrence_count(self) -> None:
         inventory = "same: test\nsame: test\n"
