@@ -7,7 +7,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::RunState;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{ExecutorCapabilities, RunAttemptExecutor};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 /// The single Session-local attempt projection boundary for foreground,
 /// durable, Native, ACP, and A2A attempts.
@@ -21,15 +21,16 @@ use std::sync::Arc;
 /// Resource/MemoryStore/Skill projection.
 pub(crate) struct SessionContextAttemptExecutor {
     inner: Arc<dyn RunAttemptExecutor>,
-    slots: Arc<crate::installed_session::InstalledSessions>,
+    slots: Weak<crate::installed_session::InstalledSessions>,
     session_id: String,
     clock: Arc<dyn awaken_time::WallClock>,
 }
 
 impl SessionContextAttemptExecutor {
+    /// Borrows the canonical owner; a cached executor must not own its slot table.
     pub(crate) fn new(
         inner: Arc<dyn RunAttemptExecutor>,
-        slots: Arc<crate::installed_session::InstalledSessions>,
+        slots: Weak<crate::installed_session::InstalledSessions>,
         session_id: impl Into<String>,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
@@ -43,11 +44,11 @@ impl SessionContextAttemptExecutor {
 
     fn project(
         &self,
+        slots: &Arc<crate::installed_session::InstalledSessions>,
         mut activation: RunActivation,
         context: &mut awaken_runtime_contract::RuntimeRunContext,
     ) -> awaken_runtime_contract::execution::Result<RunActivation> {
-        if let Some(result) = self
-            .slots
+        if let Some(result) = slots
             .read(&self.session_id, |slot| {
                 slot.inputs.tools.as_ref().map(|tools| {
                     crate::config::project_session_tools(&mut activation.snapshot, tools)
@@ -62,8 +63,7 @@ impl SessionContextAttemptExecutor {
             })?;
         }
         let filesystem = consistent_agent_filesystem_context(&activation.snapshot)?;
-        let seed = self
-            .slots
+        let seed = slots
             .read(&self.session_id, |slot| {
                 slot.inputs.baseline.as_ref().map(|baseline| {
                     awaken_session_configuration_contract::SessionContextSeed::from_prompts(
@@ -103,8 +103,7 @@ impl SessionContextAttemptExecutor {
                     .push(Message::text(id, Role::System, prompt));
             }
         }
-        let prompts = self
-            .slots
+        let prompts = slots
             .realizations()
             .prompts(
                 &self.session_id,
@@ -158,8 +157,15 @@ impl awaken_runtime_contract::execution::RunExecutor for SessionContextAttemptEx
         activation: RunActivation,
         mut context: awaken_runtime_contract::RuntimeRunContext,
     ) -> awaken_runtime_contract::execution::Result<RunState> {
-        let activation = self.project(activation, &mut context)?;
-        self.inner.execute(activation, context).await
+        let slots = self.slots.upgrade().ok_or_else(|| {
+            awaken_runtime_contract::execution::Error::Resolution(
+                "Session context owner is unavailable".into(),
+            )
+        })?;
+        let activation = self.project(&slots, activation, &mut context)?;
+        let result = self.inner.execute(activation, context).await;
+        drop(slots);
+        result
     }
 
     fn capabilities(&self) -> ExecutorCapabilities {
@@ -183,8 +189,15 @@ impl RunAttemptExecutor for SessionContextAttemptExecutor {
         command: awaken_runtime_contract::resume::ResumeCommand,
         mut context: awaken_runtime_contract::RuntimeRunContext,
     ) -> awaken_runtime_contract::execution::Result<RunState> {
-        let activation = self.project(activation, &mut context)?;
-        self.inner.resume(activation, command, context).await
+        let slots = self.slots.upgrade().ok_or_else(|| {
+            awaken_runtime_contract::execution::Error::Resolution(
+                "Session context owner is unavailable".into(),
+            )
+        })?;
+        let activation = self.project(&slots, activation, &mut context)?;
+        let result = self.inner.resume(activation, command, context).await;
+        drop(slots);
+        result
     }
 
     async fn cancel(
@@ -396,17 +409,21 @@ mod acp_context_tests {
         let slots = Arc::new(crate::installed_session::InstalledSessions::default());
         let executor = SessionContextAttemptExecutor::new(
             Arc::new(UnusedExecutor),
-            slots.clone(),
+            Arc::downgrade(&slots),
             "session-1",
             clock.clone(),
         );
         // A5 a baseline arrives after construction/legacy projection: replace
         // the owned environment message, never pair its old UTC text with new TZ.
         let mut late = awaken_runtime_contract::RuntimeRunContext::new();
-        executor.project(activation("genai"), &mut late).unwrap();
+        executor
+            .project(&slots, activation("genai"), &mut late)
+            .unwrap();
         assert_eq!(late.request_timezone.as_deref(), Some("UTC"));
         slots.replace_frozen_with("session-1", |next| next.baseline = Some(baseline.clone()));
-        executor.project(activation("genai"), &mut late).unwrap();
+        executor
+            .project(&slots, activation("genai"), &mut late)
+            .unwrap();
         assert_eq!(
             late.request_context
                 .iter()
@@ -425,7 +442,9 @@ mod acp_context_tests {
         for backend in ["genai", "acp:claude"] {
             let input = activation(backend);
             let mut context = awaken_runtime_contract::RuntimeRunContext::new();
-            let projected = executor.project(input.clone(), &mut context).unwrap();
+            let projected = executor
+                .project(&slots, input.clone(), &mut context)
+                .unwrap();
             assert_eq!(projected.input, input.input, "E2 durable input");
             assert_eq!(context.request_timezone.as_deref(), Some("Asia/Singapore"));
             let texts = context
@@ -445,17 +464,21 @@ mod acp_context_tests {
         }
         assert_eq!(observed[0], observed[1], "E1 Native/ACP");
         let mut context = awaken_runtime_contract::RuntimeRunContext::new();
-        executor.project(activation("genai"), &mut context).unwrap();
+        executor
+            .project(&slots, activation("genai"), &mut context)
+            .unwrap();
         let before = context.request_context.clone();
         clock.advance(1_000);
-        executor.project(activation("genai"), &mut context).unwrap();
+        executor
+            .project(&slots, activation("genai"), &mut context)
+            .unwrap();
         assert_eq!(
             context.request_context, before,
             "E3 provider/reprojection retry"
         );
         let mut fresh = awaken_runtime_contract::RuntimeRunContext::new();
         executor
-            .project(activation("acp:claude"), &mut fresh)
+            .project(&slots, activation("acp:claude"), &mut fresh)
             .unwrap();
         assert!(
             fresh.request_context[0]
@@ -476,7 +499,9 @@ mod acp_context_tests {
             slot.replace_frozen_with(|next| next.baseline = Some(baseline))
         });
         assert!(
-            executor.project(activation("genai"), &mut fresh).is_err(),
+            executor
+                .project(&slots, activation("genai"), &mut fresh)
+                .is_err(),
             "E5 before inference"
         );
     }
@@ -491,7 +516,7 @@ mod acp_context_tests {
         let slots = Arc::new(crate::installed_session::InstalledSessions::default());
         let executor = SessionContextAttemptExecutor::new(
             Arc::new(UnusedExecutor),
-            slots.clone(),
+            Arc::downgrade(&slots),
             "session-1",
             awaken_time::system_clock(),
         );
@@ -502,7 +527,9 @@ mod acp_context_tests {
         });
         let durable = activation("genai");
         let mut context = awaken_runtime_contract::RuntimeRunContext::default();
-        let projected = executor.project(durable.clone(), &mut context).unwrap();
+        let projected = executor
+            .project(&slots, durable.clone(), &mut context)
+            .unwrap();
         assert_eq!(projected.input, durable.input, "E2");
         assert_eq!(
             context.request_context.len(),
@@ -515,13 +542,14 @@ mod acp_context_tests {
             "frozen session prompt",
             "E1"
         );
-        let replayed = executor.project(projected, &mut context).unwrap();
+        let replayed = executor.project(&slots, projected, &mut context).unwrap();
         assert_eq!(context.request_context.len(), 2, "C1+C3 -> E3");
         assert_eq!(replayed.input, durable.input, "E2");
 
+        let empty_slots = Arc::new(crate::installed_session::InstalledSessions::default());
         let empty = SessionContextAttemptExecutor::new(
             Arc::new(UnusedExecutor),
-            Arc::new(crate::installed_session::InstalledSessions::default()),
+            Arc::downgrade(&empty_slots),
             "session-1",
             awaken_time::system_clock(),
         );
@@ -529,7 +557,7 @@ mod acp_context_tests {
         let unchanged = activation("genai");
         assert_eq!(
             empty
-                .project(unchanged.clone(), &mut empty_context)
+                .project(&empty_slots, unchanged.clone(), &mut empty_context)
                 .unwrap(),
             unchanged,
             "!C1 -> E2"
@@ -555,7 +583,7 @@ mod acp_context_tests {
         let slots = Arc::new(crate::installed_session::InstalledSessions::default());
         let executor = SessionContextAttemptExecutor::new(
             Arc::new(UnusedExecutor),
-            slots.clone(),
+            Arc::downgrade(&slots),
             "session-1",
             awaken_time::system_clock(),
         );
@@ -564,7 +592,9 @@ mod acp_context_tests {
         });
         let durable = activation("genai");
         let mut first = awaken_runtime_contract::RuntimeRunContext::default();
-        let projected = executor.project(durable.clone(), &mut first).unwrap();
+        let projected = executor
+            .project(&slots, durable.clone(), &mut first)
+            .unwrap();
         assert_eq!(projected.input, durable.input, "C1");
         assert_eq!(
             first.request_context[1].text_content(),
@@ -576,7 +606,9 @@ mod acp_context_tests {
             r.staging.resources.prompts = vec!["resource revision two".into()]
         });
         let mut second = awaken_runtime_contract::RuntimeRunContext::default();
-        let projected = executor.project(durable.clone(), &mut second).unwrap();
+        let projected = executor
+            .project(&slots, durable.clone(), &mut second)
+            .unwrap();
         assert_eq!(projected.input, durable.input, "C2");
         assert_eq!(
             second.request_context.len(),
@@ -608,7 +640,7 @@ mod acp_context_tests {
         });
         let executor = Arc::new(SessionContextAttemptExecutor::new(
             Arc::new(UnusedExecutor),
-            slots.clone(),
+            Arc::downgrade(&slots),
             "session-1",
             awaken_time::system_clock(),
         ));
@@ -629,7 +661,9 @@ mod acp_context_tests {
         let reader = std::thread::spawn(move || {
             reader_started_tx.send(()).unwrap();
             let mut context = awaken_runtime_contract::RuntimeRunContext::default();
-            executor.project(activation("genai"), &mut context).unwrap();
+            executor
+                .project(&slots, activation("genai"), &mut context)
+                .unwrap();
             context
                 .request_context
                 .iter()
@@ -666,7 +700,7 @@ mod acp_context_tests {
         let slots = Arc::new(crate::installed_session::InstalledSessions::default());
         let executor = SessionContextAttemptExecutor::new(
             Arc::new(UnusedExecutor),
-            slots.clone(),
+            Arc::downgrade(&slots),
             "session-1",
             awaken_time::system_clock(),
         );
@@ -697,7 +731,7 @@ mod acp_context_tests {
 
         let mut context = awaken_runtime_contract::RuntimeRunContext::default();
         let projected = executor
-            .project(publication, &mut context)
+            .project(&slots, publication, &mut context)
             .expect("R1 projection");
         assert_eq!(
             projected
@@ -732,13 +766,13 @@ mod acp_context_tests {
         );
 
         let replayed = executor
-            .project(projected.clone(), &mut context)
+            .project(&slots, projected.clone(), &mut context)
             .expect("R3 replay");
         assert_eq!(replayed.snapshot, projected.snapshot, "R3/E4");
 
         slots.replace_frozen_with("session-1", |next| next.tools = Some(flow_policy(false)));
         let disabled = executor
-            .project(activation("genai"), &mut context)
+            .project(&slots, activation("genai"), &mut context)
             .expect("R2 projection");
         assert_eq!(
             disabled
@@ -752,9 +786,10 @@ mod acp_context_tests {
             "R2/E3"
         );
 
+        let absent_slots = Arc::new(crate::installed_session::InstalledSessions::default());
         let absent = SessionContextAttemptExecutor::new(
             Arc::new(UnusedExecutor),
-            Arc::new(crate::installed_session::InstalledSessions::default()),
+            Arc::downgrade(&absent_slots),
             "session-1",
             awaken_time::system_clock(),
         );
@@ -762,7 +797,7 @@ mod acp_context_tests {
         let mut absent_context = awaken_runtime_contract::RuntimeRunContext::default();
         assert_eq!(
             absent
-                .project(unchanged.clone(), &mut absent_context)
+                .project(&absent_slots, unchanged.clone(), &mut absent_context)
                 .expect("R4 projection"),
             unchanged,
             "R4"

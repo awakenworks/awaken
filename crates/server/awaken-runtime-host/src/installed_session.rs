@@ -449,3 +449,6 @@ impl InstalledSessions {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod owner_release_tests;

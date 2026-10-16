@@ -152,11 +152,11 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
                 publication,
             ),
             cleanup: crate::terminal_cleanup::TerminalCleanup {
-                artifacts: crate::provisioning::ArtifactHarvester::new(
+                artifacts: Arc::new(crate::provisioning::ArtifactHarvester::new(
                     installed_sessions.realizations(),
                     local_workspace.clone(),
                     resources.artifact_publisher.clone(),
-                ),
+                )),
                 sessions: installed_sessions.realizations(),
             },
         },
