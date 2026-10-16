@@ -497,8 +497,8 @@ impl K8sWorkerCreateLedger {
         Ok(state.join_group(group))
     }
 
-    /// The existing sealed ledger is the only request authority. Once the
-    /// original Worker process has a Registry exit receipt, race an inert
+    /// The existing sealed ledger is the only request authority. After the
+    /// trusted caller closes the original Worker's Registry admission, race an inert
     /// same-Kind object against each unresolved original POST and retain its
     /// observed UID in that same ticket. Participant disposal remains separate.
     pub async fn isolate_sealed_group_and_join(
@@ -542,7 +542,7 @@ impl K8sWorkerCreateLedger {
     }
 
     /// Retain the original claim's Pod name in this same ledger when an exact
-    /// stopped Worker created its canonical PVC but no original Pod survives.
+    /// closed Worker created its canonical PVC but no original Pod survives.
     /// The reservation is a physical participant, never a cleanup receipt.
     pub async fn reserve_terminal_claim_pod_and_join(
         &self,

@@ -764,7 +764,7 @@ impl ContainerRuntime for K8sRuntime {
             else {
                 return Ok(MissingHandleTerminalEvidence::Unknown);
             };
-            // Whole-Worker closure and this Session's membership differ.
+            // Whole-Worker Create inventory and this Session's membership differ.
             // One exact Pod/PVC and its retained frozen projected set select
             // our members. Other finished requests confer no membership;
             // unresolved requests or missing rich handoff remain Unknown.

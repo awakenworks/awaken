@@ -332,8 +332,10 @@ async fn worker_response_loss_does_not_cancel_the_one_admitted_create() {
     // survives C3, E4 late retry reads back the original ticket UID/nonce/digest; no new POST.
     // Rules R1=C1+C2=>E1, R2=R1+C4(before)=>E2,
     // R3=R1+C3+API success=>E3, R4=R3+C4(after)=>E4. C5 a
-    // Registry-persisted exact Pod exit arrives; E5 only C5 plus settled
-    // tickets can seal and join, never an expired lease alone. C6 the
+    // exact Registry incarnation closes while its process exit is unavailable;
+    // E5 C5 plus the original ledger CAS and settled tickets seals and joins
+    // Create admission without asserting process exit or physical disposal.
+    // A merely expired Ready Worker cannot use that fence. C6 the
     // broker forwards a Pod after first CAS; E6 its two provider-owned
     // annotations equal the admitted ticket, and its original-Pod guard
     // finalizer is installed before Kubernetes can publish the Pod.
@@ -454,28 +456,22 @@ async fn worker_response_loss_does_not_cancel_the_one_admitted_create() {
         "E5 a live Worker is not closed by a completed Create alone"
     );
     directory.deregister(&identity).await.unwrap();
-    let process = json!({
-        "namespace":"sandbox-ns", "name":"worker", "uid":"pod-uid",
-        "node":"node-a", "containers":[], "retained":true
-    });
-    directory
-        .record_process_exit(
-            &identity,
-            awaken_dispatch::WorkerProcessExit::new(
-                "provider-a",
-                process.to_string(),
-                "resource-version-7",
-            )
-            .unwrap(),
-        )
-        .await
-        .unwrap();
     assert!(
         matches!(
-            broker.seal_predecessor(directory, "scope", &predecessor, "awaken-scope").await.unwrap(),
+            broker.seal_predecessor(directory.clone(), "scope", &predecessor, "awaken-scope").await.unwrap(),
             RequestJoin::Complete(tickets) if tickets.len() == 1
         ),
-        "E5 exact persisted exit plus one finished ticket joins"
+        "E5 closed admission plus one finished ticket joins without an exit receipt"
+    );
+    assert!(
+        directory
+            .incarnation(&identity)
+            .await
+            .unwrap()
+            .unwrap()
+            .process_exit
+            .is_none(),
+        "E5 Create join does not mint process-exit evidence"
     );
 }
 
@@ -624,20 +620,7 @@ async fn private_seal_route_uses_existing_non_ready_control_admission() {
                 "P1 real Starting transition"
             );
         } else {
-            assert_eq!(
-                fixture
-                    .directory
-                    .begin_drain(&identity, fixture.clock.now_ms() + 1_000)
-                    .await
-                    .unwrap(),
-                awaken_dispatch::RegistryMutation::Applied,
-                "P2 real Draining transition"
-            );
-            assert_eq!(
-                fixture.directory.mark_quiesced(&identity).await.unwrap(),
-                awaken_dispatch::RegistryMutation::Applied,
-                "P2 real Quiesced transition"
-            );
+            fixture::quiesce_worker(fixture.directory.as_ref(), &identity).await;
         }
         let request = |path: &str, body: Vec<u8>| {
             fixture::route_request(path, body, Some(identity.worker_id.as_str()))

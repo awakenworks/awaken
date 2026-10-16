@@ -11,6 +11,24 @@ pub(super) fn empty_heartbeat(sequence: u64, ready: bool) -> WorkerHeartbeat {
     }
 }
 
+pub(super) fn ledger_state(stored: &Mutex<Option<Value>>) -> Value {
+    let object = stored.lock().unwrap();
+    serde_json::from_str(object.as_ref().unwrap()["data"]["ledger"].as_str().unwrap()).unwrap()
+}
+
+pub(super) async fn quiesce_worker(directory: &dyn WorkerDirectory, identity: &WorkerIdentity) {
+    assert_eq!(
+        directory.begin_drain(identity, 1_100).await.unwrap(),
+        awaken_dispatch::RegistryMutation::Applied,
+        "real Draining precondition"
+    );
+    assert_eq!(
+        directory.mark_quiesced(identity).await.unwrap(),
+        awaken_dispatch::RegistryMutation::Applied,
+        "real Quiesced precondition"
+    );
+}
+
 pub(super) struct NoApiRouteFixture {
     pub(super) router: Router,
     pub(super) directory: Arc<MemoryWorkerDirectory>,
@@ -254,11 +272,7 @@ pub(super) async fn broker_fixture(mutate_response: fn(&mut Value)) -> BrokerFix
                     }
                     ("POST", "/api/v1/namespaces/sandbox-ns/pods") => {
                         {
-                            let stored = stored.lock().unwrap();
-                            let ledger: Value = serde_json::from_str(
-                                stored.as_ref().unwrap()["data"]["ledger"].as_str().unwrap(),
-                            )
-                            .unwrap();
+                            let ledger = ledger_state(&stored);
                             let ticket = ledger["tickets"]
                                 .as_object()
                                 .unwrap()
@@ -299,11 +313,7 @@ pub(super) async fn broker_fixture(mutate_response: fn(&mut Value)) -> BrokerFix
                         (200, created_pod.lock().unwrap().clone().unwrap())
                     }
                     ("GET", "/api/v1/namespaces/sandbox-ns/pods/worker") => {
-                        let object = stored.lock().unwrap();
-                        let state: Value = serde_json::from_str(
-                            object.as_ref().unwrap()["data"]["ledger"].as_str().unwrap(),
-                        )
-                        .unwrap();
+                        let state = ledger_state(&stored);
                         assert_eq!(
                             state["worker_sealed"], true,
                             "original Create admission closes before Worker evidence release"

@@ -44,10 +44,27 @@ struct StopSource {
     idle_release_calls: Mutex<Vec<WorkerIdentity>>,
     idle_observed_exit: Mutex<Option<WorkerProcessExit>>,
     idle_observe_may_stop: Mutex<Vec<bool>>,
+    admission_seal_calls: Mutex<Vec<WorkerIdentity>>,
+    admission_seal_result: Mutex<Result<(), String>>,
 }
 
 #[async_trait::async_trait]
 impl WorkerExecutionStopSource for StopSource {
+    async fn seal_closed_worker_admission(
+        &self,
+        identity: &WorkerIdentity,
+        _create_ledger: Option<&awaken_dispatch::WorkerCreateLedger>,
+    ) -> Result<(), ApplicationError> {
+        self.admission_seal_calls
+            .lock()
+            .unwrap()
+            .push(identity.clone());
+        self.admission_seal_result
+            .lock()
+            .unwrap()
+            .clone()
+            .map_err(ApplicationError::unavailable)
+    }
     async fn observe_closed_idle_worker(
         &self,
         _identity: &WorkerIdentity,
@@ -386,6 +403,8 @@ impl Fixture {
             idle_release_calls: Mutex::new(Vec::new()),
             idle_observed_exit: Mutex::new(None),
             idle_observe_may_stop: Mutex::new(Vec::new()),
+            admission_seal_calls: Mutex::new(Vec::new()),
+            admission_seal_result: Mutex::new(Ok(())),
         });
         let thread_id = request_thread_id(&tag);
         let recovery: Arc<dyn RunRecoverySource> = Arc::new(StaticRecoverySource {
@@ -566,6 +585,88 @@ async fn closed_worker_exit_is_observed_before_occupied_retention_policy() {
             "E3 no occupied stop"
         );
         f.assert_occupied().await;
+    }
+}
+
+#[tokio::test]
+async fn create_admission_and_worker_exit_observation_fail_independently() {
+    // Independent-owner decision table: C1 exact Worker is closed with an
+    // occupied physical slot; C2 original Create seal succeeds/fails; C3 exact
+    // natural exit is observed/missing. F1 any C2+C3(observed) -> persist exit;
+    // F2 failed C2 -> error and no retention release, regardless of C3; F3
+    // successful C2+missing C3 -> keep exit unknown and slot occupied. F4 replay
+    // with a retained exit -> retry C2 without observing or overwriting C3.
+    // All rows retain the original physical slot and permit no active stop.
+    for seal_fails in [false, true] {
+        for observed_exit in [false, true] {
+            let f = Fixture::new(Arc::new(MemoryWorkerDirectory::new()), true, 100, 1_000).await;
+            let identity = f.binding.worker().clone();
+            f.directory.deregister(&identity).await.unwrap();
+            if seal_fails {
+                *f.stop.admission_seal_result.lock().unwrap() = Err("fixture seal outage".into());
+            }
+            if observed_exit {
+                *f.stop.idle_observed_exit.lock().unwrap() = Some(
+                    WorkerProcessExit::new(
+                        f.binding.provider_id(),
+                        f.binding.execution_ref(),
+                        "original-exit",
+                    )
+                    .unwrap(),
+                );
+            }
+            let result = awaken_dispatch::release_closed_idle_worker_evidence(
+                f.store.as_ref(),
+                f.directory.as_ref(),
+                f.stop.as_ref(),
+                &identity,
+                100,
+            )
+            .await;
+            assert_eq!(result.is_err(), seal_fails, "F1/F2/F3");
+            let record = f.directory.incarnation(&identity).await.unwrap().unwrap();
+            assert_eq!(record.process_exit.is_some(), observed_exit, "F1/F3");
+            assert_eq!(
+                f.stop.admission_seal_calls.lock().unwrap().as_slice(),
+                std::slice::from_ref(&identity)
+            );
+            assert_eq!(*f.stop.idle_observe_may_stop.lock().unwrap(), [false]);
+            if observed_exit {
+                *f.stop.admission_seal_result.lock().unwrap() = Ok(());
+                awaken_dispatch::release_closed_idle_worker_evidence(
+                    f.store.as_ref(),
+                    f.directory.as_ref(),
+                    f.stop.as_ref(),
+                    &identity,
+                    100,
+                )
+                .await
+                .unwrap();
+                assert_eq!(
+                    *f.stop.admission_seal_calls.lock().unwrap(),
+                    [identity.clone(), identity.clone()],
+                    "F4 same owner retry"
+                );
+                assert_eq!(
+                    *f.stop.idle_observe_may_stop.lock().unwrap(),
+                    [false],
+                    "F4 retained exit not reread"
+                );
+                assert_eq!(
+                    f.directory
+                        .incarnation(&identity)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .process_exit,
+                    record.process_exit,
+                    "F4 original exit unchanged"
+                );
+            }
+            assert!(f.stop.idle_release_calls.lock().unwrap().is_empty());
+            assert!(f.stop.calls.lock().unwrap().is_empty());
+            f.assert_occupied().await;
+        }
     }
 }
 
