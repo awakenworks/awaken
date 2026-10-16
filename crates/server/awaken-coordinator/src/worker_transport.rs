@@ -188,26 +188,6 @@ impl WorkerTransport {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn unbound_transport_preserves_authentication_without_claiming_process_evidence() {
-        // Decision U1: supplied authenticator + no selected process provider ->
-        // preserve the exact authentication object; both evidence ports absent.
-        // U2 Kubernetes construction owns the paired provider ports in its
-        // adjacent identity/replacement/stop tests; no independent injection.
-        let auth: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator> =
-            Arc::new(awaken_worker_transport_security::HeaderWorkerAuthenticator);
-        let transport = WorkerTransport::unbound(auth.clone());
-        assert!(Arc::ptr_eq(&auth, &transport.authenticator()));
-        assert!(transport.binding_source().is_none());
-        assert!(transport.stop_source().is_none());
-        assert!(transport.relay_target_source().is_none());
-    }
-}
-
 /// Assemble the private Worker Memory boundary with the same selected content,
 /// claim authority, identity checks, and Session-owned materialization fences.
 pub(crate) fn memory_router(
@@ -231,4 +211,24 @@ pub(crate) fn memory_router(
         .with_materialization_control(sessions.clone())
         .with_terminal_memory_control(sessions),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unbound_transport_preserves_authentication_without_claiming_process_evidence() {
+        // Decision U1: supplied authenticator + no selected process provider ->
+        // preserve the exact authentication object; both evidence ports absent.
+        // U2 Kubernetes construction owns the paired provider ports in its
+        // adjacent identity/replacement/stop tests; no independent injection.
+        let auth: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator> =
+            Arc::new(awaken_worker_transport_security::HeaderWorkerAuthenticator);
+        let transport = WorkerTransport::unbound(auth.clone());
+        assert!(Arc::ptr_eq(&auth, &transport.authenticator()));
+        assert!(transport.binding_source().is_none());
+        assert!(transport.stop_source().is_none());
+        assert!(transport.relay_target_source().is_none());
+    }
 }
