@@ -35,8 +35,9 @@ PG_RECOVERY_TIMEOUT_SECONDS="${AWAKEN_PG_RECOVERY_TIMEOUT_SECONDS:-900}"
 # Per-command deadlines bound one command. They do not bound the gate: 47 Cargo
 # suites at 900s each is eleven hours of "still running", which is how a gate
 # once held CI for eight. The budget below is the whole gate's wall clock, and
-# it is checked before every stage rather than by a second timer, so the failure
+# it is checked before every execution stage rather than by a second timer, so the failure
 # names the stage that ran out instead of killing an unrelated child.
+# Owned cleanup retains the existing operation deadline after that budget expires.
 PG_GATE_BUDGET_SECONDS="${AWAKEN_PG_GATE_BUDGET_SECONDS:-5400}"
 PG_GATE_STARTED=$SECONDS
 
@@ -52,7 +53,7 @@ pg_run_with_deadline() {
     return 2
   }
   local elapsed=$((SECONDS - PG_GATE_STARTED))
-  if [ "$elapsed" -ge "$PG_GATE_BUDGET_SECONDS" ]; then
+  if [[ "$stage" != cleanup-* ]] && [ "$elapsed" -ge "$PG_GATE_BUDGET_SECONDS" ]; then
     echo "PostgreSQL gate exhausted its ${PG_GATE_BUDGET_SECONDS}s budget before $stage" >&2
     echo "    (${elapsed}s elapsed; raise AWAKEN_PG_GATE_BUDGET_SECONDS only with a reason)" >&2
     return 124
@@ -137,8 +138,9 @@ published_port() {
 
 # Result-composition decision table: F1 all stages succeed => pass; F2 one
 # stage fails => retain that status; F3 later ordinary failures keep the first
-# status during the evidence sweep; F4 best-effort EXIT cleanup cannot replace
-# that status. F5 resource refusal ends the sweep with 75 and the same cleanup.
+# status during the evidence sweep; F4 EXIT cleanup retains a nonzero command
+# status, but cannot turn failed cleanup into a successful gate. F5 resource
+# refusal ends the sweep with 75 and the same cleanup.
 first_failure=0
 record_failure() {
   local failure="$1"
@@ -149,6 +151,41 @@ record_failure() {
     echo "PostgreSQL resource qualification unavailable; remaining suites were not started" >&2
     exit 75
   fi
+}
+
+pg_cleanup_fixture_containers() {
+  local owner="$1" identifiers identifier
+  [[ "$owner" =~ ^[a-f0-9]{32}$ ]] || return 2
+  identifiers="$(pg_run_with_deadline cleanup-discover "$PG_OPERATION_TIMEOUT_SECONDS" \
+    docker ps --all --quiet --no-trunc --filter "label=io.awaken.ci.postgres-run=$owner")" || return $?
+  [ -n "$identifiers" ] || return 0
+  local containers=()
+  while IFS= read -r identifier; do
+    # Native Windows CLIs can emit CRLF. Remove exactly that line terminator;
+    # embedded/additional CR or any other non-hex byte remains a hard refusal.
+    identifier="${identifier%$'\r'}"
+    [[ "$identifier" =~ ^[a-f0-9]{64}$ ]] || {
+      echo "refusing malformed owned PostgreSQL container identity" >&2
+      return 2
+    }
+    containers+=("$identifier")
+  done <<< "$identifiers"
+  # Pin full IDs, not names that another invocation could later reuse. Docker's
+  # volume flag removes anonymous image volumes; bind mounts remain caller-owned.
+  pg_run_with_deadline cleanup-remove "$PG_OPERATION_TIMEOUT_SECONDS" \
+    docker rm --force --volumes "${containers[@]}" >/dev/null
+}
+
+finish() {
+  local result=$? cleanup_status=0
+  trap - EXIT
+  if [ "$result" -ne 0 ]; then
+    [ "$POSTGRES_CREATE_ATTEMPTED" -eq 0 ] || startup_diagnostics "$NAME"
+    [ "$OBJECT_CREATE_ATTEMPTED" -eq 0 ] || startup_diagnostics "$OBJECT_NAME"
+  fi
+  cleanup || cleanup_status=$?
+  [ "$result" -ne 0 ] || result=$cleanup_status
+  exit "$result"
 }
 
 self_test() {
@@ -202,6 +239,70 @@ self_test() {
     return 1
   fi
   rm -rf -- "$failure_fixture"
+  # C9 exact ownership + zero/two containers; C10 discovery/removal failures;
+  # C11 malformed identity or missing ownership; C12 execution budget spent.
+  # Only discovered full IDs may be deleted, including anonymous image volumes.
+  # Refusal must reach discovery when expected, never pass from an earlier error.
+  local lifecycle_case
+  for lifecycle_case in empty owned owned-crlf discover-fails malformed malformed-crlf embedded-cr remove-fails expired; do
+    (
+      local fixture_log fixture_owner=11111111111111111111111111111111
+      local fixture_first fixture_second fixture_status=0 fixture_expected=0
+      fixture_log=$(mktemp) || exit 1
+      trap 'rm -f -- "$fixture_log"' EXIT
+      printf -v fixture_first '%064d' 1
+      printf -v fixture_second '%064d' 2
+      docker() {
+        printf '%s\n' "$*" >> "$fixture_log"
+        case "$1" in
+          ps)
+            case "$lifecycle_case" in
+              empty) ;;
+              discover-fails) return 23 ;;
+              malformed) printf '%s\n' "$fixture_first" 'not-an-id' ;;
+              owned-crlf) printf '%s\r\n' "$fixture_first" "$fixture_second" ;;
+              malformed-crlf) printf '%s\r\n' "$fixture_first" 'not-an-id' ;;
+              embedded-cr) printf '%s\n' "$fixture_first" "${fixture_second:0:32}"$'\r'"${fixture_second:32}" ;;
+              *) printf '%s\n' "$fixture_first" "$fixture_second" ;;
+            esac ;;
+          rm) [ "$lifecycle_case" != remove-fails ] || return 31 ;;
+          *) return 2 ;;
+        esac
+      }
+      [ "$lifecycle_case" != expired ] || PG_GATE_STARTED=$((SECONDS - PG_GATE_BUDGET_SECONDS - 1))
+      pg_cleanup_fixture_containers "$fixture_owner" || fixture_status=$?
+      case "$lifecycle_case" in discover-fails) fixture_expected=23 ;; malformed|malformed-crlf|embedded-cr) fixture_expected=2 ;; remove-fails) fixture_expected=31 ;; esac
+      [ "$fixture_status" -eq "$fixture_expected" ] || exit 1
+      local fixture_calls=()
+      while IFS= read -r fixture_call; do fixture_calls+=("$fixture_call"); done < "$fixture_log"
+      [[ " ${fixture_calls[0]} " == *" --filter label=io.awaken.ci.postgres-run=$fixture_owner "* ]] || exit 1
+      case "$lifecycle_case" in
+        owned|owned-crlf|remove-fails|expired)
+          [ "${#fixture_calls[@]}" -eq 2 ] || exit 1
+          [ "${fixture_calls[1]}" = "rm --force --volumes $fixture_first $fixture_second" ] || exit 1 ;;
+        *) [ "${#fixture_calls[@]}" -eq 1 ] || exit 1 ;;
+      esac
+      : > "$fixture_log"
+      fixture_status=0
+      pg_cleanup_fixture_containers '' || fixture_status=$?
+      [ "$fixture_status" -eq 2 ] && [ ! -s "$fixture_log" ] || exit 1
+    ) || return 1
+  done
+  # A cleanup failure must reject an otherwise successful gate, while retaining
+  # the original command/resource status when that command had already failed.
+  local fixture_prior fixture_cleanup fixture_expected fixture_actual
+  for lifecycle_case in '0 0 0' '0 31 31' '23 0 23' '23 31 23' '75 31 75'; do
+    read -r fixture_prior fixture_cleanup fixture_expected <<< "$lifecycle_case"
+    fixture_actual=0
+    (
+      POSTGRES_CREATE_ATTEMPTED=0 OBJECT_CREATE_ATTEMPTED=0
+      cleanup() { return "$fixture_cleanup"; }
+      prior_outcome() { return "$fixture_prior"; }
+      prior_outcome
+      finish
+    ) || fixture_actual=$?
+    [ "$fixture_actual" -eq "$fixture_expected" ] || return 1
+  done
   # Gate-completeness rules: P9 every Cargo suite enters pg_test and therefore
   # has a per-command deadline; P10 the recovery drill has its independent
   # stage deadline. A bare command is a false-green/hang path, not compatibility.
@@ -427,8 +528,10 @@ fi
 python3 scripts/ci/gate_tools.py require --gate postgres || exit 1
 python3 scripts/ci/gate_tools.py disk --stage postgres || exit $?
 
-NAME="awaken-ci-pg-$$"
-OBJECT_NAME="awaken-ci-object-$$"
+PG_OWNER=$(python3 -c 'import secrets; print(secrets.token_hex(16))') || exit 2
+[[ "$PG_OWNER" =~ ^[a-f0-9]{32}$ ]] || exit 2
+NAME="awaken-ci-pg-$$-${PG_OWNER:0:12}"
+OBJECT_NAME="awaken-ci-object-$$-${PG_OWNER:0:12}"
 REQUESTED_PORT="${AWAKEN_CI_PG_PORT:-}"
 PASSWORD="ci" # awaken-allow(secret): (throwaway ephemeral container, torn down on exit)
 DB="awaken"
@@ -449,23 +552,19 @@ startup_diagnostics() {
 }
 
 cleanup() {
-  pg_run_with_deadline cleanup "$PG_OPERATION_TIMEOUT_SECONDS" \
-    docker rm -f "$NAME" "$OBJECT_NAME" >/dev/null 2>&1 || true
+  local cleanup_status=0
+  pg_cleanup_fixture_containers "$PG_OWNER" || cleanup_status=$?
+  if [ "$cleanup_status" -ne 0 ]; then
+    echo "PostgreSQL fixture cleanup failed; retaining its owned recovery directory" >&2
+    return "$cleanup_status"
+  fi
   if valid_recovery_root "$RECOVERY_ROOT"; then
-    [ ! -d "$RECOVERY_ROOT" ] || rm -rf -- "$RECOVERY_ROOT"
+    [ ! -d "$RECOVERY_ROOT" ] || pg_run_with_deadline cleanup-files "$PG_OPERATION_TIMEOUT_SECONDS" \
+      rm -rf -- "$RECOVERY_ROOT"
   elif [ -n "$RECOVERY_ROOT" ]; then
     echo "refusing unexpected PostgreSQL recovery cleanup target: $RECOVERY_ROOT" >&2
+    return 1
   fi
-}
-finish() {
-  local result=$?
-  trap - EXIT
-  if [ "$result" -ne 0 ]; then
-    [ "$POSTGRES_CREATE_ATTEMPTED" -eq 0 ] || startup_diagnostics "$NAME"
-    [ "$OBJECT_CREATE_ATTEMPTED" -eq 0 ] || startup_diagnostics "$OBJECT_NAME"
-  fi
-  cleanup
-  exit "$result"
 }
 trap finish EXIT
 
@@ -490,7 +589,7 @@ else
 fi
 POSTGRES_CREATE_ATTEMPTED=1
 if ! pg_run_with_deadline postgres-create "$PG_OPERATION_TIMEOUT_SECONDS" \
-  docker run -d --name "$NAME" \
+  docker run -d --name "$NAME" --label "io.awaken.ci.postgres-run=$PG_OWNER" \
   -e "${POSTGRES_CONTAINER_ENV[0]}" -e "${POSTGRES_CONTAINER_ENV[1]}" \
   -v "$RECOVERY_MOUNT_ROOT/base:/recovery-base" \
   -v "$RECOVERY_MOUNT_ROOT/wal:/wal-archive" \
@@ -551,7 +650,7 @@ export FILE_STORE_SECRET_KEY="$FILE_STORE_INITIAL_SECRET_KEY" # awaken-allow(sec
 # live; it does not claim recovery from loss of the MinIO process or its storage.
 OBJECT_CREATE_ATTEMPTED=1
 if ! pg_run_with_deadline object-create "$PG_OPERATION_TIMEOUT_SECONDS" \
-  docker run -d --name "$OBJECT_NAME" \
+  docker run -d --name "$OBJECT_NAME" --label "io.awaken.ci.postgres-run=$PG_OWNER" \
   --tmpfs /data:rw,nosuid,nodev,noexec,size=4g \
   -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
   -p 127.0.0.1::9000 "$MINIO_IMAGE" server /data --address :9000 >/dev/null; then
