@@ -199,13 +199,18 @@ mod tests {
     }
 
     fn archive(files: &[(&str, &[u8], u32)]) -> Vec<u8> {
+        // These fixtures model POSIX modes, independently of the writer's OS.
+        archive_with_system(files, zip::System::Unix)
+    }
+
+    fn archive_with_system(files: &[(&str, &[u8], u32)], system: zip::System) -> Vec<u8> {
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
         for (path, bytes, mode) in files {
             writer
                 .start_file(
                     *path,
                     zip::write::SimpleFileOptions::default()
-                        .system(zip::System::Unix)
+                        .system(system)
                         .unix_permissions(*mode),
                 )
                 .unwrap();
@@ -288,6 +293,64 @@ mod tests {
         assert_eq!(candidate.bundle_sha256(), skill_bundle_sha256(&files));
         assert_eq!(candidate.source_file_id(), "candidate-file");
         assert!(!format!("{candidate:?}").contains("PRIVATE-BUNDLE-CONTENT"));
+
+        // ZIP 9 uses the host's creator system unless explicitly selected.
+        // Cross creator/mode with script/reference and shebang/ordinary bytes:
+        // Unix 755 supplies execution, DOS mode bits do not; only scripts gain
+        // execution from a shebang. Every row must load its exact complete
+        // bundle and reject a pin differing solely in its executable bit.
+        // These sixteen positive/negative pairs use the real Resources parser,
+        // not filesystem permissions or another ZIP interpretation.
+        for (system, mode, mode_exec) in [
+            (zip::System::Unix, 0o644, false),
+            (zip::System::Unix, 0o755, true),
+            (zip::System::Dos, 0o644, false),
+            (zip::System::Dos, 0o755, false),
+        ] {
+            for (path, bytes, inferred_exec) in [
+                ("scripts/run.sh", &b"exit 0\n"[..], false),
+                ("scripts/run.sh", &b"#!/bin/sh\nexit 0\n"[..], true),
+                ("references/run.sh", &b"exit 0\n"[..], false),
+                ("references/run.sh", &b"#!/bin/sh\nexit 0\n"[..], false),
+            ] {
+                let expected = vec![
+                    SkillBundleFile {
+                        path: "SKILL.md".into(),
+                        content: b"valid".to_vec(),
+                        executable: false,
+                    },
+                    SkillBundleFile {
+                        path: path.into(),
+                        content: bytes.to_vec(),
+                        executable: mode_exec || inferred_exec,
+                    },
+                ];
+                let archive = archive_with_system(
+                    &[("SKILL.md", &b"valid"[..], 0o644), (path, bytes, mode)],
+                    system,
+                );
+                let (reference, content) = frozen(archive, skill_bundle_sha256(&expected));
+                let source = Source(Ok(Some(content)));
+                let candidate = load_skill_candidate(&source, &reference, &7)
+                    .await
+                    .unwrap_or_else(|error| {
+                        panic!("V1 creator={system:?} mode={mode:o} path={path}: {error}")
+                    });
+                assert_eq!(candidate.files(), expected, "V1 complete permission frame");
+
+                let mut wrong_files = expected;
+                wrong_files[1].executable = !wrong_files[1].executable;
+                let mut wrong_pin = reference;
+                wrong_pin.bundle_sha256 = skill_bundle_sha256(&wrong_files);
+                assert_eq!(
+                    load_skill_candidate(&source, &wrong_pin, &7)
+                        .await
+                        .unwrap_err(),
+                    SkillCandidateError::BundleDigestMismatch,
+                    "V6 executable bit is part of the exact pin"
+                );
+            }
+        }
     }
 
     #[test]
