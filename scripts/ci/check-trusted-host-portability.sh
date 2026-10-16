@@ -62,7 +62,19 @@ run_required_rust_tests -p awaken-session-executor --lib memory -- "${memory_sel
 # same-generation renewal and Control/Worker clock disagreement. Select the
 # existing terminal group once; it includes the former single Memory row and
 # the provider-fence regression, without a parallel list of disposal cases.
-run_required_rust_tests -p awaken-session-executor --lib terminal_
+# These two publication rows execute a real Namespace shell for every assertion.
+# Keep them out of portable/default runs, even on Linux without its substrate.
+namespace_publication=host::tests::resource_activation::
+namespace_publication_ready=${namespace_publication}managed_terminal_repository_publication_pushes_exact_commit_and_replays
+namespace_publication_closed=${namespace_publication}terminal_repository_publication_closed_source_converges_without_git
+run_required_rust_tests -p awaken-session-executor --lib terminal_ -- \
+  --skip "$namespace_publication_ready" --skip "$namespace_publication_closed"
+if [[ "$linux_supervision" == true ]]; then
+  # Both case identities are required: an ignored/missing row cannot qualify
+  # publication, and an unavailable Namespace must fail inside the fixture.
+  run_required_rust_tests -p awaken-session-executor --lib terminal_repository_publication \
+    --require-case="$namespace_publication_ready" --require-case="$namespace_publication_closed" -- --ignored
+fi
 # Current-proof projection and Host adoption waits are platform-neutral. Select
 # their existing test module once on every OS; the terminal filter above does
 # not include these source/ABA rows, and provider unit tests cannot prove wiring.
