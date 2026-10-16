@@ -4,6 +4,10 @@ use awaken_session_configuration_contract::resource as session_resource;
 
 #[test]
 fn realization_authority_close_and_renewal_have_one_projection() {
+    // Component split: the authority and phase lock live in ExecutionAuthority,
+    // cancellation lives in ResourceStaging, and the original slot mutex still
+    // linearizes their joint close/renewal. These rows cover that cross-role
+    // boundary without another lease, lock, or cached ownership decision.
     // Decision table: C1 absent/live/closed; C2 expected exact/stale/none;
     // C3 renewal snapshot exact/stale; C4 renewed same-generation expiry
     // shorter/equal/longer. Effects: close hides authority and cancels I/O;
@@ -30,7 +34,7 @@ fn realization_authority_close_and_renewal_have_one_projection() {
     let mut stale = lease.clone();
     stale.expires_at_unix_ms -= 1;
     let cancellation = Arc::new(awaken_runtime_contract::CancellationToken::new());
-    realization.resource_preparation = Some(cancellation.clone());
+    realization.staging.preparation = Some(cancellation.clone());
     assert!(!realization.close_authority(Some(&stale)), "Q3");
     assert!(!cancellation.is_cancelled(), "Q3");
     assert!(realization.close_authority(Some(&lease)), "Q4");
@@ -45,7 +49,7 @@ fn realization_authority_close_and_renewal_have_one_projection() {
         );
         realization.install_lease(test_observed_lease(renewed.clone()));
         assert!(
-            realization.authority.lease().is_none(),
+            realization.execution.authority.lease().is_none(),
             "Q5 closed assertion"
         );
         let mut live = SessionRealization::default();
@@ -56,7 +60,7 @@ fn realization_authority_close_and_renewal_have_one_projection() {
             "Q6-Q8"
         );
         assert_eq!(
-            live.authority.lease(),
+            live.execution.authority.lease(),
             Some(if expiry >= base + 100 {
                 &renewed
             } else {
@@ -72,7 +76,7 @@ fn realization_authority_close_and_renewal_have_one_projection() {
     next.epoch += 1;
     realization.install_lease(test_observed_lease(next.clone()));
     assert_eq!(
-        realization.authority.lease(),
+        realization.execution.authority.lease(),
         Some(&next),
         "fresh Control generation"
     );

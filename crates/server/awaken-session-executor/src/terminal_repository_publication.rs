@@ -61,10 +61,7 @@ impl RealizationExecutor {
         let (assignment, resolved_resources) = staging
             .sessions
             .read_realization(command.session_id.as_str(), |r| {
-                (
-                    r.terminal_cleanup_assignment.clone(),
-                    r.previous_resources(),
-                )
+                (r.cleanup.assignment.clone(), r.previous_resources())
             })
             .ok_or_else(|| {
                 RunError::unavailable_classified(

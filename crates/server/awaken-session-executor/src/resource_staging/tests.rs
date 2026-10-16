@@ -82,8 +82,8 @@ async fn mount_projection_reads_current_resource_and_frozen_inputs_without_retai
     host.installed_sessions
         .replace_frozen_with(thread, |next| next.baseline = Some(baseline));
     staging.sessions.update_realization(thread, |r| {
-        r.resources.mounts = vec![resource.clone(), resource_memory.clone()];
-        r.content_delivery = Some(ManagedContentDelivery::ManagedFilesystem);
+        r.staging.resources.mounts = vec![resource.clone(), resource_memory.clone()];
+        r.staging.content_delivery = Some(ManagedContentDelivery::ManagedFilesystem);
     });
     assert_eq!(
         staging.thread_session_mounts(thread),
@@ -96,7 +96,7 @@ async fn mount_projection_reads_current_resource_and_frozen_inputs_without_retai
         "M2"
     );
     staging.sessions.update_realization(thread, |r| {
-        r.content_delivery = Some(ManagedContentDelivery::SemanticTools);
+        r.staging.content_delivery = Some(ManagedContentDelivery::SemanticTools);
     });
     assert_eq!(
         staging.thread_session_mounts(thread),
@@ -113,9 +113,9 @@ async fn mount_projection_reads_current_resource_and_frozen_inputs_without_retai
         "M4 no resurrection"
     );
     let replacement = mount("replacement", false);
-    staging
-        .sessions
-        .update_realization(thread, |r| r.resources.mounts = vec![replacement.clone()]);
+    staging.sessions.update_realization(thread, |r| {
+        r.staging.resources.mounts = vec![replacement.clone()]
+    });
     assert_eq!(
         staging.thread_session_mounts(thread),
         vec![replacement],

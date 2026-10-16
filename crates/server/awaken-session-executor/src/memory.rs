@@ -498,15 +498,15 @@ impl crate::host::SharedHost {
     ) {
         let realizations = self.installed_sessions.realizations();
         realizations.update_realization(thread, |r| {
-            r.memory_bindings = bindings;
-            r.memory = None;
+            r.staging.memory_bindings = bindings;
+            r.staging.memory = None;
         });
     }
 
     pub(crate) fn memory_for_thread(&self, thread: &str) -> Option<BoundMemory> {
         let realizations = self.installed_sessions.realizations();
         realizations
-            .read_realization(thread, |r| r.memory.clone())
+            .read_realization(thread, |r| r.staging.memory.clone())
             .flatten()
             .map(|binding| self.resources.memory.bound(binding))
     }
@@ -534,10 +534,11 @@ impl crate::host::SharedHost {
             .read_realization(session_thread, |r| {
                 let mut bindings: Vec<Arc<MemoryBinding>> = Vec::new();
                 for memory in r
+                    .staging
                     .memory_bindings
                     .values()
                     .cloned()
-                    .chain(r.memory.iter().cloned())
+                    .chain(r.staging.memory.iter().cloned())
                 {
                     if !bindings
                         .iter()

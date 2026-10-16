@@ -287,7 +287,7 @@ async fn root_terminal_cleanup_effect(
     let environment = host
         .installed_sessions
         .realizations()
-        .read_realization(session_id, |r| r.environment_owner.resident())
+        .read_realization(session_id, |r| r.environment.owner.resident())
         .flatten()
         .expect("terminal test requires a resident Environment");
     let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
@@ -1796,7 +1796,7 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         host.installed_sessions
             .realizations()
             .read_realization("session-artifacts", |r| {
-                r.environment_owner.terminal_bound_environment().is_some()
+                r.environment.owner.terminal_bound_environment().is_some()
             })
             .unwrap_or(false),
         "R3 exact owner remains Retiring until aggregate-authorized Disposal"
@@ -1943,7 +1943,7 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
     host.installed_sessions
         .realizations()
         .update_realization("artifact-response-loss", |r| {
-            r.environment_owner = crate::installed_session::SessionEnvironmentOwner::Vacant;
+            r.environment.owner = crate::installed_session::SessionEnvironmentOwner::Vacant;
         });
     let recovered = host
         .realizer
@@ -2571,7 +2571,7 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
         host.installed_sessions
             .realizations()
             .read_realization("session-harvest-failure", |r| {
-                r.environment_owner.terminal_bound_environment().is_some()
+                r.environment.owner.terminal_bound_environment().is_some()
             })
             .unwrap_or(false),
         "R4 exact terminal owner remains hidden and retryable"

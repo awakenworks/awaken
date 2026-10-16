@@ -144,7 +144,7 @@ async fn revoked_resource_successor_reaches_only_the_canonical_adoption_edge() {
     host.installed_sessions
         .realizations()
         .update_realization(thread, |r| {
-            r.environment_owner = SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
+            r.environment.owner = SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
                 cause: SessionEnvironmentRetirementCause::RealizationRevocation,
                 owned: RetiringEnvironmentOwner::Bound(initial.clone()),
             });
@@ -176,7 +176,7 @@ async fn revoked_resource_successor_reaches_only_the_canonical_adoption_edge() {
         "R2 foreign generation"
     );
     assert!(
-        matches!(host.installed_sessions.realizations().read_realization(thread, |r| r.environment_owner.clone()),
+        matches!(host.installed_sessions.realizations().read_realization(thread, |r| r.environment.owner.clone()),
         Some(SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
             cause: SessionEnvironmentRetirementCause::RealizationRevocation,
             owned: RetiringEnvironmentOwner::Bound(owned),
@@ -719,7 +719,7 @@ async fn discard_keeps_live_owner_and_exact_retry_clears_after_termination() {
         matches!(
             host.installed_sessions
                 .realizations()
-                .read_realization(thread, |r| r.environment_owner.clone()),
+                .read_realization(thread, |r| r.environment.owner.clone()),
             Some(SessionEnvironmentOwner::Retiring(_))
         ),
         "R19/E1"
@@ -949,7 +949,7 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
     let lifecycle = host
         .installed_sessions
         .realizations()
-        .read_realization(thread, |r| r.lifecycle.clone())
+        .read_realization(thread, |r| r.environment.lifecycle.clone())
         .unwrap();
     {
         let _lifecycle = lifecycle.lock().await;
@@ -963,7 +963,7 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
     let retired = host
         .installed_sessions
         .realizations()
-        .read_realization(thread, |r| r.environment_owner.clone())
+        .read_realization(thread, |r| r.environment.owner.clone())
         .unwrap();
     assert!(
         matches!(
@@ -1001,7 +1001,7 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
     assert!(
         matches!(
             host.installed_sessions.realizations()
-                .read_realization(thread, |r| r.environment_owner.clone()),
+                .read_realization(thread, |r| r.environment.owner.clone()),
             Some(SessionEnvironmentOwner::Retiring(current)) if current.exact_matches(
                 match &retired {
                     SessionEnvironmentOwner::Retiring(current) => current,
@@ -1044,7 +1044,7 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
         matches!(
             host.installed_sessions
                 .realizations()
-                .read_realization(thread, |r| r.environment_owner.clone()),
+                .read_realization(thread, |r| r.environment.owner.clone()),
             Some(SessionEnvironmentOwner::Vacant)
         ),
         "CP2/E2 or CP3/E3 exact Retiring fence is consumed"

@@ -261,7 +261,9 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         .host
         .installed_sessions
         .realizations()
-        .read_realization("realization-memory-session", |r| r.resources.clone())
+        .read_realization("realization-memory-session", |r| {
+            r.staging.resources.clone()
+        })
         .expect("R2/E2 staged slot");
     let awaken_provisioning_contract::MountSource::MemoryStore {
         materialization_reference,
@@ -495,7 +497,7 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     let key = stage
         .sessions
         .read_realization("realization-memory-session", |r| {
-            r.staged_resource_effect_key.clone()
+            r.staging.effect_key.clone()
         })
         .flatten()
         .unwrap();
@@ -518,13 +520,13 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         .sessions
         .read_realization("realization-memory-session", |r| {
             assert_eq!(
-                retained.staged.mounts, r.resources.mounts,
+                retained.staged.mounts, r.staging.resources.mounts,
                 "C6 exact retained requirements"
             );
             assert!(
                 Arc::ptr_eq(
                     &retained.memory_bindings["realization-memory"],
-                    &r.memory_bindings["realization-memory"]
+                    &r.staging.memory_bindings["realization-memory"]
                 ),
                 "C6 original binding Arc"
             );
@@ -568,7 +570,7 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     let binding = stage
         .sessions
         .read_realization("realization-memory-session", |r| {
-            r.memory_bindings["realization-memory"].clone()
+            r.staging.memory_bindings["realization-memory"].clone()
         })
         .unwrap();
     let failed = stage
@@ -605,24 +607,27 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         .sessions
         .read_realization("realization-memory-session", |r| {
             assert!(
-                Arc::ptr_eq(&binding, &r.memory_bindings["realization-memory"]),
+                Arc::ptr_eq(&binding, &r.staging.memory_bindings["realization-memory"]),
                 "C7 binding unchanged"
             );
             assert_eq!(
-                r.staged_resource_effect_key.as_deref(),
+                r.staging.effect_key.as_deref(),
                 Some("cache-miss-key"),
                 "C7 no failed key publication"
             );
             assert_eq!(
-                r.resources.mounts.len(),
+                r.staging.resources.mounts.len(),
                 1,
                 "C7 prior complete requirements retained"
             );
             assert!(
-                r.skills.as_ref().is_some_and(Vec::is_empty),
+                r.staging.skills.as_ref().is_some_and(Vec::is_empty),
                 "C7 Skills unchanged"
             );
-            assert!(r.memory.is_none(), "C7 no automatic memory selection");
+            assert!(
+                r.staging.memory.is_none(),
+                "C7 no automatic memory selection"
+            );
         })
         .unwrap();
 
@@ -655,20 +660,26 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
                 "R9 no complete Frozen publication"
             );
             assert_eq!(
-                slot.realization.skills,
+                slot.realization.staging.skills,
                 Some(Vec::new()),
                 "R9 exact empty Skill set"
             );
-            assert!(slot.realization.staged_resource_effect_key.is_none());
-            assert!(slot.realization.resources.mounts.is_empty());
-            assert!(slot.realization.resources.prompts.is_empty());
-            assert!(slot.realization.resources.resource_prompts.is_empty());
-            assert!(slot.realization.resources.binding_checks.is_empty());
-            assert!(slot.realization.resources.repositories.is_empty());
-            assert!(slot.realization.memory_bindings.is_empty());
-            assert!(slot.realization.memory.is_none());
+            assert!(slot.realization.staging.effect_key.is_none());
+            assert!(slot.realization.staging.resources.mounts.is_empty());
+            assert!(slot.realization.staging.resources.prompts.is_empty());
             assert!(
-                slot.realization.manifest.is_none(),
+                slot.realization
+                    .staging
+                    .resources
+                    .resource_prompts
+                    .is_empty()
+            );
+            assert!(slot.realization.staging.resources.binding_checks.is_empty());
+            assert!(slot.realization.staging.resources.repositories.is_empty());
+            assert!(slot.realization.staging.memory_bindings.is_empty());
+            assert!(slot.realization.staging.memory.is_none());
+            assert!(
+                slot.realization.staging.manifest.is_none(),
                 "R9 no physical completion"
             );
         })
@@ -822,7 +833,7 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
     host.installed_sessions
         .realizations()
         .update_realization(thread, |r| {
-            r.authority = crate::installed_session::SessionRealizationAuthority::Live(
+            r.execution.authority = crate::installed_session::SessionRealizationAuthority::Live(
                 crate::installed_session::test_observed_lease(lease.clone()),
             );
         });
@@ -869,7 +880,7 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
         host.installed_sessions
             .realizations()
             .read_realization(thread, |r| {
-                r.environment_owner.durable_binding().map(str::to_owned)
+                r.environment.owner.durable_binding().map(str::to_owned)
             })
             .flatten()
             .as_deref(),
@@ -1071,7 +1082,7 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
     host.installed_sessions
         .realizations()
         .update_realization(session_id, |r| {
-            r.authority = crate::installed_session::SessionRealizationAuthority::Live(
+            r.execution.authority = crate::installed_session::SessionRealizationAuthority::Live(
                 crate::installed_session::test_observed_lease(renewed_lease.clone()),
             );
         });
@@ -1105,7 +1116,8 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
     host.installed_sessions
         .realizations()
         .update_realization(session_id, |r| {
-            r.authority = crate::installed_session::SessionRealizationAuthority::Live(skewed_proof);
+            r.execution.authority =
+                crate::installed_session::SessionRealizationAuthority::Live(skewed_proof);
         });
     assert_eq!(
         host.realizer.cleanup.effect_fence(&effect).unwrap(),
@@ -1125,7 +1137,7 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
     host.installed_sessions
         .realizations()
         .update_realization(session_id, |r| {
-            r.authority = crate::installed_session::SessionRealizationAuthority::Live(
+            r.execution.authority = crate::installed_session::SessionRealizationAuthority::Live(
                 crate::installed_session::test_expired_observed_lease(renewed_lease.clone()),
             );
         });
@@ -1143,7 +1155,7 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
     ] {
         host.installed_sessions
             .realizations()
-            .update_realization(session_id, |r| r.authority = closed);
+            .update_realization(session_id, |r| r.execution.authority = closed);
         assert!(host.realizer.cleanup.effect_fence(&effect).is_err(), "R6");
         assert!(
             host.realizer
@@ -1157,7 +1169,7 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
     host.installed_sessions
         .realizations()
         .update_realization(session_id, |r| {
-            r.authority = crate::installed_session::SessionRealizationAuthority::Live(
+            r.execution.authority = crate::installed_session::SessionRealizationAuthority::Live(
                 crate::installed_session::test_expired_observed_lease(expired_lease.clone()),
             );
         });
@@ -1181,7 +1193,7 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
     host.installed_sessions
         .realizations()
         .update_realization(session_id, |r| {
-            r.authority = crate::installed_session::SessionRealizationAuthority::Live(
+            r.execution.authority = crate::installed_session::SessionRealizationAuthority::Live(
                 crate::installed_session::test_observed_lease(successor),
             );
         });
@@ -1932,7 +1944,7 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
             assert!(
                 host.installed_sessions.realizations()
                     .read_realization(thread, |r| {
-                        match &r.environment_owner {
+                        match &r.environment.owner {
                             crate::installed_session::SessionEnvironmentOwner::Retiring(retiring) => {
                                 let environment = retiring.owned.environment();
                                 if let Some(previous) = &retained {
@@ -2245,7 +2257,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                 host.installed_sessions
                     .realizations()
                     .read_realization(&thread, |r| {
-                        r.environment_owner.terminal_bound_environment().is_some()
+                        r.environment.owner.terminal_bound_environment().is_some()
                     })
                     .unwrap_or(false),
                 "H1/C3 exact same-process owner is retained behind Preparation"
@@ -2280,7 +2292,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                     host.installed_sessions
                         .realizations()
                         .read_realization(&thread, |r| {
-                            r.environment_owner.physical_binding().map(str::to_owned)
+                            r.environment.owner.physical_binding().map(str::to_owned)
                         })
                         .flatten()
                         .as_deref(),
@@ -2345,7 +2357,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                 .realizations()
                 .read_realization(&thread, |r| {
                     matches!(
-                        &r.environment_owner,
+                        &r.environment.owner,
                         crate::installed_session::SessionEnvironmentOwner::Retiring(_)
                     )
                 })
@@ -2354,7 +2366,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
         );
         if rule.candidate_unmaterialized.is_some() {
             assert!(host.installed_sessions.realizations().read_realization(&thread, |r| matches!(
-                &r.environment_owner,
+                &r.environment.owner,
                 crate::installed_session::SessionEnvironmentOwner::Retiring(crate::installed_session::RetiringSessionEnvironment {
                     owned: crate::installed_session::RetiringEnvironmentOwner::Unbound(candidate), ..
                 }) if candidate.durable_identity().is_none()

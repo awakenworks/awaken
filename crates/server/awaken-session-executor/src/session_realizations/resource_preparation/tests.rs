@@ -56,7 +56,7 @@ fn resource_scope_retains_success_and_removes_only_its_unpublished_introduced_le
             assert!(
                 sessions
                     .read_realization("session", |r| Arc::ptr_eq(
-                        r.resource_preparation.as_ref().unwrap(),
+                        r.staging.preparation.as_ref().unwrap(),
                         &token
                     ))
                     .unwrap()
@@ -74,9 +74,9 @@ fn resource_scope_retains_success_and_removes_only_its_unpublished_introduced_le
             drop(guard);
             sessions
                 .read_realization("session", |r| {
-                    assert!(r.resource_preparation.is_none());
+                    assert!(r.staging.preparation.is_none());
                     assert_eq!(
-                        r.authority.lease(),
+                        r.execution.authority.lease(),
                         (existing || finished).then_some(&lease(Epoch::FIRST))
                     );
                 })
@@ -118,8 +118,8 @@ async fn resource_scope_cancellation_and_slot_replacement_cannot_erase_a_success
                     );
                 }),
                 "token" => sessions.update_realization("session", |r| {
-                    r.resource_preparation = Some(successor.clone());
-                    r.changed.notify_waiters();
+                    r.staging.preparation = Some(successor.clone());
+                    r.execution.changed.notify_waiters();
                 }),
                 "remove" => {
                     source.remove("session");
@@ -128,7 +128,7 @@ async fn resource_scope_cancellation_and_slot_replacement_cannot_erase_a_success
                     source.remove("session");
                     sessions.update_realization("session", |r| {
                         assert!(r.install_lease(proof(Epoch::FIRST)));
-                        r.resource_preparation = Some(successor.clone());
+                        r.staging.preparation = Some(successor.clone());
                     });
                 }
                 _ => unreachable!(),
@@ -153,24 +153,26 @@ async fn resource_scope_cancellation_and_slot_replacement_cannot_erase_a_success
             "generation" => sessions
                 .read_realization("session", |r| {
                     assert_eq!(
-                        r.authority.lease(),
+                        r.execution.authority.lease(),
                         Some(&lease(Epoch::FIRST.next().expect("second fixture epoch")))
                     );
-                    assert!(r.resource_preparation.is_none());
+                    assert!(r.staging.preparation.is_none());
                 })
                 .unwrap(),
             "token" | "slot_aba" => sessions
                 .read_realization("session", |r| {
-                    assert_eq!(r.authority.lease(), Some(&lease(Epoch::FIRST)));
+                    assert_eq!(r.execution.authority.lease(), Some(&lease(Epoch::FIRST)));
                     assert!(Arc::ptr_eq(
-                        r.resource_preparation.as_ref().unwrap(),
+                        r.staging.preparation.as_ref().unwrap(),
                         &successor
                     ));
                     assert!(!successor.is_cancelled());
                 })
                 .unwrap(),
             "cancel" | "close" => sessions
-                .read_realization("session", |r| assert!(r.authority.lease().is_none()))
+                .read_realization("session", |r| {
+                    assert!(r.execution.authority.lease().is_none())
+                })
                 .unwrap(),
             _ => unreachable!(),
         }
@@ -202,8 +204,8 @@ fn resource_scope_denied_worker_never_installs_or_reopens_a_session() {
     authority
         .sessions
         .read_realization("session", |r| {
-            assert!(r.authority.is_closed());
-            assert!(r.resource_preparation.is_none());
+            assert!(r.execution.authority.is_closed());
+            assert!(r.staging.preparation.is_none());
         })
         .unwrap();
 }

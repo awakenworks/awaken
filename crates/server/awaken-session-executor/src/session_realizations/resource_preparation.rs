@@ -35,17 +35,17 @@ impl<'a> ResourcePreparation<'a> {
         let sessions = authority.sessions.clone();
         let (introduced_lease, changed) = authority.authorize_worker_effect(|| {
             sessions.update_realization(session, |r| {
-                if r.resource_preparation.is_some() {
+                if r.staging.preparation.is_some() {
                     return Err(HostError::internal(
                         "Resource preparation already holds its projection lock",
                     ));
                 }
-                let introduced = r.authority.lease().is_none();
+                let introduced = r.execution.authority.lease().is_none();
                 if !r.install_lease(proof) {
                     return Err(Self::ended());
                 }
-                r.resource_preparation = Some(cancellation.clone());
-                Ok((introduced, r.changed.clone()))
+                r.staging.preparation = Some(cancellation.clone());
+                Ok((introduced, r.execution.changed.clone()))
             })
         })?;
         changed.notify_waiters();
@@ -62,7 +62,8 @@ impl<'a> ResourcePreparation<'a> {
 
     fn authorized(&self, realization: &SessionRealization) -> bool {
         realization
-            .resource_preparation
+            .staging
+            .preparation
             .as_ref()
             .is_some_and(|current| Arc::ptr_eq(current, &self.cancellation))
             && realization.resource_preparation_authorized(&self.asserted)
@@ -84,14 +85,15 @@ impl<'a> ResourcePreparation<'a> {
         if !self.authorized(realization) {
             return Err(Self::ended());
         }
-        realization.resource_preparation = None;
+        realization.staging.preparation = None;
         Ok(())
     }
 
     pub(crate) async fn authority_ended(&self) -> HostError {
         let realizations = &self.sessions;
         loop {
-            let Some(changed) = realizations.read_realization(self.session, |r| r.changed.clone())
+            let Some(changed) =
+                realizations.read_realization(self.session, |r| r.execution.changed.clone())
             else {
                 return Self::ended();
             };
@@ -102,7 +104,7 @@ impl<'a> ResourcePreparation<'a> {
             let remaining = realizations
                 .read_realization(self.session, |realization| {
                     self.authorized(realization)
-                        .then(|| realization.authority.remaining())
+                        .then(|| realization.execution.authority.remaining())
                         .flatten()
                 })
                 .flatten();
@@ -122,19 +124,20 @@ impl Drop for ResourcePreparation<'_> {
     fn drop(&mut self) {
         let realizations = &self.sessions;
         realizations.modify_realization(self.session, |r| {
-            if r.resource_preparation
+            if r.staging
+                .preparation
                 .as_ref()
                 .is_some_and(|current| Arc::ptr_eq(current, &self.cancellation))
             {
-                r.resource_preparation = None;
-                if self.introduced_lease && r.authority.lease().is_some_and(|current| {
+                r.staging.preparation = None;
+                if self.introduced_lease && r.execution.authority.lease().is_some_and(|current| {
                     awaken_session_realization_contract::realization_lease_generation_authorizes(
                         current,
                         &self.asserted,
                     )
                 }) {
-                    r.authority = SessionRealizationAuthority::Uninstalled;
-                    r.changed.notify_waiters();
+                    r.execution.authority = SessionRealizationAuthority::Uninstalled;
+                    r.execution.changed.notify_waiters();
                 }
             }
         });

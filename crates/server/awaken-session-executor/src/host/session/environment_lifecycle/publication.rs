@@ -26,7 +26,7 @@ impl SharedHost {
     ) -> Option<UnboundSessionEnvironment> {
         let realizations = self.installed_sessions.realizations();
         realizations
-            .read_realization(thread, |r| match &r.environment_owner {
+            .read_realization(thread, |r| match &r.environment.owner {
                 SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(
                     candidate,
                 )) => Some(candidate.clone()),
@@ -68,7 +68,7 @@ impl crate::environment_holding::EnvironmentHolding {
             .sessions
             .modify_session(thread, |slot| {
                 (
-                    slot.realization.authority.lease().cloned(),
+                    slot.realization.execution.authority.lease().cloned(),
                     slot.inputs
                         .baseline
                         .as_ref()
@@ -113,7 +113,8 @@ impl crate::environment_holding::EnvironmentHolding {
         self.sessions.update_session(thread, |slot| {
             let candidate =
                 slot.realization
-                    .environment_owner
+                    .environment
+                    .owner
                     .begin_preparing(environment, kind, intent)?;
             #[cfg(target_os = "linux")]
             self.execution
@@ -146,7 +147,7 @@ impl crate::environment_holding::EnvironmentHolding {
         identity: BoundSessionEnvironmentIdentity,
     ) -> Result<Arc<crate::session_environment::SessionEnvironment>, HostError> {
         self.sessions.update_realization(thread, |r| {
-            r.environment_owner.publish_prepared(candidate, identity)
+            r.environment.owner.publish_prepared(candidate, identity)
         })
     }
 
@@ -157,7 +158,8 @@ impl crate::environment_holding::EnvironmentHolding {
         identity: BoundSessionEnvironmentIdentity,
     ) -> Result<UnboundSessionEnvironment, HostError> {
         self.sessions.update_realization(thread, |r| {
-            r.environment_owner
+            r.environment
+                .owner
                 .retain_committed_candidate(candidate, identity)
         })
     }
@@ -171,7 +173,7 @@ impl crate::environment_holding::EnvironmentHolding {
     ) -> Result<(), HostError> {
         let retirement = self
             .sessions
-            .read_realization(thread, |r| match &r.environment_owner {
+            .read_realization(thread, |r| match &r.environment.owner {
                 SessionEnvironmentOwner::Retiring(retiring)
                     if retiring.cause
                         == SessionEnvironmentRetirementCause::UnpublishedCandidate =>

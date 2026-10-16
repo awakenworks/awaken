@@ -258,7 +258,7 @@ mod tests {
                 host.installed_sessions
                     .read(thread, |slot| slot.inputs.baseline.is_none()
                         && !slot.run.session_dispatch
-                        && slot.realization.authority.lease().is_none()
+                        && slot.realization.execution.authority.lease().is_none()
                         && slot.run.dispatch_claim.as_ref() == Some(&claim)
                         && slot.inputs.published_snapshot.as_ref()
                             == Some(&claimed.request.activation.snapshot))
@@ -305,7 +305,7 @@ mod tests {
                     host.upgrade().is_some_and(|host| {
                         host.installed_sessions
                             .realizations()
-                            .read_realization(thread, |r| r.environment_owner.is_resident())
+                            .read_realization(thread, |r| r.environment.owner.is_resident())
                             .unwrap_or(false)
                     })
                 });
@@ -951,7 +951,7 @@ mod tests {
         assert_eq!(
             host.installed_sessions
                 .realizations()
-                .read_realization(thread, |r| r.authority.lease().cloned())
+                .read_realization(thread, |r| r.execution.authority.lease().cloned())
                 .flatten(),
             Some(lease.clone()),
             "M1 lease still advances"
@@ -1300,6 +1300,7 @@ mod tests {
             host.installed_sessions
                 .realizations()
                 .read_realization(thread, |r| r
+                    .execution
                     .authority
                     .lease()
                     .map(|lease| lease.expires_at_unix_ms))
@@ -1467,7 +1468,7 @@ mod tests {
         let old_lease = source_host
             .installed_sessions
             .realizations()
-            .read_realization(thread, |r| r.authority.lease().cloned())
+            .read_realization(thread, |r| r.execution.authority.lease().cloned())
             .flatten()
             .expect("C1 actual original assignment");
         awaken_session_execution_contract::RealizationRuntime::install_session_projection(
@@ -1515,7 +1516,7 @@ mod tests {
         let lease = host
             .installed_sessions
             .realizations()
-            .read_realization(thread, |r| r.authority.lease().cloned())
+            .read_realization(thread, |r| r.execution.authority.lease().cloned())
             .flatten()
             .expect("C4 Store-installed consumer lease");
         assert_eq!(
@@ -1718,7 +1719,7 @@ mod tests {
         assert!(
             host.installed_sessions
                 .read(thread, |slot| slot.run.context.is_none()
-                    && slot.realization.environment_owner.is_resident())
+                    && slot.realization.environment.owner.is_resident())
                 .unwrap_or(false),
             "R2 fixture is the publish-to-final-resolve gap"
         );
@@ -1815,7 +1816,7 @@ mod tests {
             );
             assert!(
                 matches!(
-                    host.installed_sessions.realizations().read_realization(thread, |r| r.authority.clone()),
+                    host.installed_sessions.realizations().read_realization(thread, |r| r.execution.authority.clone()),
                     Some(crate::installed_session::SessionRealizationAuthority::Closed(Some(ref closed)))
                         if closed == &recovery_authority.lease
                 ),
@@ -1969,7 +1970,7 @@ mod tests {
             first_use_host
                 .installed_sessions
                 .realizations()
-                .read_realization(first_use_thread, |r| r.environment_owner.is_resident())
+                .read_realization(first_use_thread, |r| r.environment.owner.is_resident())
                 .unwrap_or(false),
             "R7 Store-read identity remains Resident"
         );

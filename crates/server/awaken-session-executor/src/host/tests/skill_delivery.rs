@@ -488,7 +488,10 @@ async fn managed_session_ignores_unbound_host_skill_sources() {
     assert_eq!(
         host.installed_sessions
             .realizations()
-            .read_realization("managed-no-frozen-skill", |r| r.skill_prompt.clone())
+            .read_realization("managed-no-frozen-skill", |r| r
+                .staging
+                .skill_prompt
+                .clone())
             .flatten(),
         None,
         "A1/E1 no unbound filesystem Skill prompt"
@@ -622,7 +625,7 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         .installed_sessions
         .realizations()
         .read_realization("deferred-managed-filesystem-skill", |r| {
-            r.skill_prompt.clone()
+            r.staging.skill_prompt.clone()
         })
         .flatten()
         .expect("L9/E1 projected Skill metadata");
@@ -719,7 +722,7 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         host.installed_sessions
             .realizations()
             .read_realization("deferred-managed-filesystem-skill", |r| {
-                r.skill_prompt.clone()
+                r.staging.skill_prompt.clone()
             })
             .flatten(),
         Some(provisional_metadata),

@@ -564,7 +564,10 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
         host.installed_sessions
             .realizations()
             .read_realization(ordinary_id, |r| {
-                r.authority.lease().map(|lease| lease.expires_at_unix_ms)
+                r.execution
+                    .authority
+                    .lease()
+                    .map(|lease| lease.expires_at_unix_ms)
             })
             .flatten(),
         Some(requested_expiry_unix_ms),
@@ -574,7 +577,10 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
         host.installed_sessions
             .realizations()
             .read_realization(terminal_id, |r| {
-                r.authority.lease().map(|lease| lease.expires_at_unix_ms)
+                r.execution
+                    .authority
+                    .lease()
+                    .map(|lease| lease.expires_at_unix_ms)
             })
             .flatten(),
         Some(requested_expiry_unix_ms),
@@ -1044,14 +1050,14 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
     assert!(
         host.installed_sessions
             .realizations()
-            .read_realization(session_id, |r| r.resources.mounts.is_empty())
+            .read_realization(session_id, |r| r.staging.resources.mounts.is_empty())
             .unwrap_or(false),
         "C1/E1 terminal installation must not materialize active Resources"
     );
     assert_eq!(
         host.installed_sessions
             .realizations()
-            .read_realization(session_id, |r| r.authority.lease().cloned())
+            .read_realization(session_id, |r| r.execution.authority.lease().cloned())
             .flatten(),
         Some(lease.clone()),
         "C1/E1"

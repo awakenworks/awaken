@@ -76,7 +76,7 @@ impl InstalledSession {
         owner: SessionEnvironmentOwner,
         state: &awaken_session_state_contract::SessionEnvironmentState,
     ) {
-        self.realization.environment_owner = owner;
+        self.realization.environment.owner = owner;
         self.reopen_mcp_realization_admission_from_projection(state);
     }
 
@@ -93,12 +93,13 @@ impl InstalledSession {
     ) -> Option<crate::session_resource::SessionResourceManifest> {
         if self.run.session_dispatch {
             self.realization
-                .resource_transition
+                .staging
+                .transition
                 .as_ref()
                 .map(|transition| transition.desired().clone())
-                .or_else(|| self.realization.manifest.clone())
+                .or_else(|| self.realization.staging.manifest.clone())
         } else {
-            self.realization.manifest.clone()
+            self.realization.staging.manifest.clone()
         }
     }
 
@@ -110,17 +111,17 @@ impl InstalledSession {
         &mut self,
         environment: &awaken_session_state_contract::SessionEnvironmentState,
     ) -> bool {
-        let Some(fence) = self.realization.mcp.quiescence_fence() else {
+        let Some(fence) = self.realization.staging.mcp.quiescence_fence() else {
             return false;
         };
         let local_effects_cleared =
-            self.run.context.is_none() && self.realization.mcp.local_effects_cleared();
+            self.run.context.is_none() && self.realization.staging.mcp.local_effects_cleared();
         if !local_effects_cleared {
             return false;
         }
         let authoritative_reopen = if fence.restored_by(environment) {
             matches!(
-                (&self.realization.environment_owner, environment),
+                (&self.realization.environment.owner, environment),
                 (
                     SessionEnvironmentOwner::Preparing(
                         SessionEnvironmentPreparation::AwaitingAdoption {
@@ -141,7 +142,7 @@ impl InstalledSession {
                     && owner_generation == generation
                     && owner_binding == binding
             ) || matches!(
-                (&self.realization.environment_owner, environment),
+                (&self.realization.environment.owner, environment),
                 (
                     SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
                         identity: BoundSessionEnvironmentIdentity::Durable {
@@ -166,14 +167,14 @@ impl InstalledSession {
                 environment,
                 awaken_session_state_contract::SessionEnvironmentState::Unmaterialized
             ) && matches!(
-                &self.realization.environment_owner,
+                &self.realization.environment.owner,
                 SessionEnvironmentOwner::Vacant
             )
         };
         if !authoritative_reopen {
             return false;
         }
-        self.realization.mcp.reopen_admission();
+        self.realization.staging.mcp.reopen_admission();
         true
     }
 }
@@ -298,11 +299,11 @@ impl crate::session_realizations::SessionRealizationSource for InstalledSessions
             slot.realization
                 .validate_preparation_publication(asserted)?;
             slot.replace_frozen_with(|next| next.workspace = Some(workspace.to_owned()));
-            slot.realization.resources = compiled.staged;
-            slot.realization.memory_bindings = compiled.memory_bindings;
-            slot.realization.memory = None;
-            slot.realization.skills = Some(versions);
-            slot.realization.staged_resource_effect_key = Some(effect_key);
+            slot.realization.staging.resources = compiled.staged;
+            slot.realization.staging.memory_bindings = compiled.memory_bindings;
+            slot.realization.staging.memory = None;
+            slot.realization.staging.skills = Some(versions);
+            slot.realization.staging.effect_key = Some(effect_key);
             Ok(())
         })
         .map_err(|_| awaken_session_types::RunError::internal("installed sessions mutex poisoned"))?
@@ -361,16 +362,16 @@ impl SessionRealizationRevocationSelection {
         expected: Option<&crate::session_resource::SessionRealizationLease>,
     ) -> Option<Self> {
         slot.realization.close_authority(expected).then(|| Self {
-            realization: slot.realization.realization.clone(),
-            lifecycle: slot.realization.lifecycle.clone(),
-            authority: slot.realization.authority.clone(),
+            realization: slot.realization.execution.phase.clone(),
+            lifecycle: slot.realization.environment.lifecycle.clone(),
+            authority: slot.realization.execution.authority.clone(),
         })
     }
 
     pub(crate) fn matches(&self, slot: &InstalledSession) -> bool {
-        Arc::ptr_eq(&self.realization, &slot.realization.realization)
-            && Arc::ptr_eq(&self.lifecycle, &slot.realization.lifecycle)
-            && self.authority == slot.realization.authority
+        Arc::ptr_eq(&self.realization, &slot.realization.execution.phase)
+            && Arc::ptr_eq(&self.lifecycle, &slot.realization.environment.lifecycle)
+            && self.authority == slot.realization.execution.authority
     }
 }
 
@@ -399,7 +400,7 @@ impl InstalledSessions {
             .lock()
             .expect("session runtime slots mutex poisoned")
             .values()
-            .filter_map(|slot| slot.realization.environment_owner.execution_environment())
+            .filter_map(|slot| slot.realization.environment.owner.execution_environment())
             .filter(|environment| environment.scoped_execution().is_some())
             .cloned()
             .collect()
@@ -428,7 +429,7 @@ impl InstalledSessions {
     ) -> Option<SessionRealizationRevocationSelection> {
         self.modify(session, |slot| {
             if expected.is_some_and(|(_, realization)| {
-                !Arc::ptr_eq(&slot.realization.realization, realization)
+                !Arc::ptr_eq(&slot.realization.execution.phase, realization)
             }) {
                 return None;
             }
@@ -519,10 +520,10 @@ impl InstalledSessions {
             .expect("session runtime slots mutex poisoned")
             .remove(session);
         if let Some(slot) = &removed {
-            if let Some(preparation) = &slot.realization.resource_preparation {
+            if let Some(preparation) = &slot.realization.staging.preparation {
                 preparation.cancel();
             }
-            slot.realization.changed.notify_waiters();
+            slot.realization.execution.changed.notify_waiters();
         }
         removed
     }
@@ -539,6 +540,7 @@ impl InstalledSessions {
             .iter()
             .filter_map(|(session_id, slot)| {
                 slot.realization
+                    .execution
                     .authority
                     .proof()
                     .cloned()

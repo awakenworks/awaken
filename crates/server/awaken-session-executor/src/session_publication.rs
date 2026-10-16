@@ -196,7 +196,8 @@ impl SessionPublicationSelection {
             .unwrap_or("assistant");
         let skill_pins = realizations
             .read_realization(thread, |r| {
-                r.resource_transition
+                r.staging
+                    .transition
                     .as_ref()
                     .map(|transition| transition.desired().resources.skills().to_vec())
             })

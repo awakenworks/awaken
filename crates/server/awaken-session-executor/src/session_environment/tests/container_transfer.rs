@@ -187,7 +187,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
                 let lifecycle = host
                     .installed_sessions
                     .realizations()
-                    .read_realization(thread, |r| r.lifecycle.clone())
+                    .read_realization(thread, |r| r.environment.lifecycle.clone())
                     .unwrap();
                 let _lifecycle = lifecycle.lock().await;
                 host.retire_session_environment_for_revocation(thread)
@@ -232,7 +232,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
             let retained = host
                 .installed_sessions
                 .realizations()
-                .read_realization(thread, |r| r.environment_owner.terminal_bound_environment())
+                .read_realization(thread, |r| r.environment.owner.terminal_bound_environment())
                 .flatten()
                 .unwrap();
             assert!(
@@ -249,7 +249,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
             let rebound = host
                 .installed_sessions
                 .realizations()
-                .read_realization(thread, |r| r.environment_owner.terminal_bound_environment())
+                .read_realization(thread, |r| r.environment.owner.terminal_bound_environment())
                 .flatten()
                 .unwrap()
                 .environment;

@@ -31,7 +31,7 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
     host.installed_sessions
         .realizations()
         .update_realization(thread, |r| {
-            r.environment_owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
+            r.environment.owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
                 identity: BoundSessionEnvironmentIdentity::Durable {
                     effect_id: format!("effect-{thread}"),
                     generation: durable_generation.clone(),
@@ -103,7 +103,7 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
     host.installed_sessions
         .realizations()
         .update_realization(thread, |r| {
-            let SessionEnvironmentOwner::Resident(owned) = &mut r.environment_owner else {
+            let SessionEnvironmentOwner::Resident(owned) = &mut r.environment.owner else {
                 panic!("O1 Resident")
             };
             let BoundSessionEnvironmentIdentity::Durable { effect_id, .. } = &mut owned.identity
@@ -127,7 +127,7 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
     host.installed_sessions
         .realizations()
         .update_realization(thread, |r| {
-            let SessionEnvironmentOwner::Resident(owned) = &mut r.environment_owner else {
+            let SessionEnvironmentOwner::Resident(owned) = &mut r.environment.owner else {
                 panic!("O3 Resident")
             };
             owned.identity = BoundSessionEnvironmentIdentity::LegacyDirect(
@@ -256,7 +256,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
         host.installed_sessions
             .realizations()
             .update_realization(thread, |r| {
-                r.environment_owner = SessionEnvironmentOwner::Resident(owned.clone());
+                r.environment.owner = SessionEnvironmentOwner::Resident(owned.clone());
             });
 
         let output = root
@@ -311,7 +311,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             let lifecycle = host
                 .installed_sessions
                 .realizations()
-                .read_realization(thread, |r| r.lifecycle.clone())
+                .read_realization(thread, |r| r.environment.lifecycle.clone())
                 .unwrap();
             let _lifecycle = lifecycle.lock().await;
             assert!(
@@ -478,7 +478,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
         let retained = host
             .installed_sessions
             .realizations()
-            .read_realization(thread, |r| r.environment_owner.clone())
+            .read_realization(thread, |r| r.environment.owner.clone())
             .unwrap();
         assert!(
             matches!(
@@ -711,7 +711,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     let retained = host
         .installed_sessions
         .realizations()
-        .read_realization(thread, |r| r.environment_owner.clone())
+        .read_realization(thread, |r| r.environment.owner.clone())
         .unwrap();
     let SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
         owned: RetiringEnvironmentOwner::Unbound(ref candidate),
@@ -741,7 +741,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     for wrong in &rejected_owners {
         host.installed_sessions
             .realizations()
-            .update_realization(thread, |r| r.environment_owner = wrong.clone());
+            .update_realization(thread, |r| r.environment.owner = wrong.clone());
         host.prepare_terminal_cleanup_effect(effect.clone(), authorization.clone())
             .await
             .expect_err("U6 wrong ownership cannot prepare");
@@ -752,7 +752,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     }
     host.installed_sessions
         .realizations()
-        .update_realization(thread, |r| r.environment_owner = retained.clone());
+        .update_realization(thread, |r| r.environment.owner = retained.clone());
     let mut stale = effect.clone();
     stale.lease.epoch += 1;
     let stale_authorization =
@@ -774,7 +774,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     let same_owner = || {
         host.installed_sessions
             .realizations()
-            .read_realization(thread, |r| match &r.environment_owner {
+            .read_realization(thread, |r| match &r.environment.owner {
                 SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
                     owned: RetiringEnvironmentOwner::Unbound(current),
                     ..
@@ -819,7 +819,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     for wrong in rejected_owners.drain(..) {
         host.installed_sessions
             .realizations()
-            .update_realization(thread, |r| r.environment_owner = wrong);
+            .update_realization(thread, |r| r.environment.owner = wrong);
         host.dispose_terminal_cleanup_effect(disposal.clone())
             .await
             .expect_err("U6 wrong ownership cannot dispose");
@@ -827,7 +827,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     }
     host.installed_sessions
         .realizations()
-        .update_realization(thread, |r| r.environment_owner = retained.clone());
+        .update_realization(thread, |r| r.environment.owner = retained.clone());
     let mut stale_disposal = disposal.clone();
     stale_disposal.lease.epoch += 1;
     host.dispose_terminal_cleanup_effect(stale_disposal)
