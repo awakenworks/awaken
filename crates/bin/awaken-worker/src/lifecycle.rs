@@ -720,6 +720,26 @@ async fn supervise_session_realization_reconciliation<Renewal, RenewalFuture, Co
     tokio::join!(renewals, cold_recovery);
 }
 
+fn session_realization_claim_target(
+    lifecycle: &WorkerSupervisor,
+    lease_ttl_ms: u64,
+) -> Option<awaken_session_realization_contract::SessionRealizationTarget> {
+    let now_at = lifecycle.host.clock().now();
+    let expiry = awaken_time::Expiry::child_within(
+        awaken_time::Expiry::after(now_at, lifecycle.authority.remaining()),
+        now_at,
+        std::time::Duration::from_millis(lease_ttl_ms),
+    )?;
+    Some(
+        awaken_session_realization_contract::SessionRealizationTarget {
+            owner: lifecycle.identity.worker_id.clone(),
+            runtime_incarnation: lifecycle.identity.lease_owner(),
+            lease_expires_at_unix_ms: expiry.to_epoch_ms(),
+            reassign_existing_lease: false,
+        },
+    )
+}
+
 /// Renew resident Session leases promptly while an independent cold lane
 /// recovers terminal roots. Control authenticates the current Worker registry
 /// lease on every cold claim; the heartbeat task remains the sole
@@ -772,19 +792,10 @@ pub(crate) fn spawn_session_realization_reconciliation(
                     // The cold claim is a child grant of the observed Worker
                     // Registry authority: it never outlives it, and a lapsed
                     // registry proof mints no claim this cycle.
-                    let now_at = lifecycle.host.clock().now();
-                    let Some(claim_expiry) = awaken_time::Expiry::child_within(
-                        awaken_time::Expiry::after(now_at, lifecycle.authority.remaining()),
-                        now_at,
-                        std::time::Duration::from_millis(cold_lease_ttl_ms),
-                    ) else {
+                    let Some(cleanup_target) =
+                        session_realization_claim_target(&lifecycle, cold_lease_ttl_ms)
+                    else {
                         return;
-                    };
-                    let cleanup_target = awaken_session_realization_contract::SessionRealizationTarget {
-                        owner: lifecycle.identity.worker_id.clone(),
-                        runtime_incarnation: lifecycle.identity.lease_owner(),
-                        lease_expires_at_unix_ms: claim_expiry.to_epoch_ms(),
-                        reassign_existing_lease: false,
                     };
                     if let Err(error) = lifecycle
                         .host
@@ -824,19 +835,11 @@ pub(crate) fn spawn_session_preparation_reconciliation(
             if !lifecycle.host.pool_accepting_work().await {
                 continue;
             }
-            let now_at = lifecycle.host.clock().now();
-            let Some(claim_expiry) = awaken_time::Expiry::child_within(
-                awaken_time::Expiry::after(now_at, lifecycle.authority.remaining()),
-                now_at,
-                std::time::Duration::from_millis(cold_cleanup_lease_ttl_ms(registry_timing)),
+            let Some(target) = session_realization_claim_target(
+                &lifecycle,
+                cold_cleanup_lease_ttl_ms(registry_timing),
             ) else {
                 continue;
-            };
-            let target = awaken_session_realization_contract::SessionRealizationTarget {
-                owner: lifecycle.identity.worker_id.clone(),
-                runtime_incarnation: lifecycle.identity.lease_owner(),
-                lease_expires_at_unix_ms: claim_expiry.to_epoch_ms(),
-                reassign_existing_lease: false,
             };
             match lifecycle
                 .control
