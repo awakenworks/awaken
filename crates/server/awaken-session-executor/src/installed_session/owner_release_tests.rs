@@ -5,6 +5,12 @@ use std::sync::{Arc, Mutex, Weak};
 
 #[tokio::test]
 async fn idle_resident_context_releases_slots_when_last_host_owner_drops() {
+    // Cause/effect graph: C1 normal idle Context is cached in the canonical
+    // slot; C2 the last external Host/Context owners are dropped; C3 an active
+    // physical attempt is absent. Effects: E1 the Host is released; E2 the same
+    // slots and cached Context are released together without explicit eviction.
+    // Decision rows O1=C1+!C2 => cached chain reachable; O2=C1+C2+C3 => E1+E2.
+    // O3 post-capture fixture eviction is hygiene only and cannot satisfy O2.
     // Real assembly installs SessionContext -> Capture -> ArtifactHarvest into
     // both the direct driver and the claimed Worker. Observe only a Weak of the
     // inner chain via the existing decorator seam; this test adds no owner.

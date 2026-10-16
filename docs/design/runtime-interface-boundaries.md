@@ -24,8 +24,8 @@ runtime small.
 ## Implemented Session Realization Ownership
 
 Session resource effects and process-local realization state live in
-`awaken-session-realization`. Host retains Run construction and claimed-dispatch
-routing for the separate E/H slices. Following
+`awaken-session-realization`. Host retains Run construction; the existing
+`awaken-dispatch-execution` owns claimed-dispatch routing after slice E. Following
 [ADR-0089](../adr/0089-session-realization-single-owner.md) and
 [ADR-0091](../adr/0091-architecture-rules.md), the implemented components are:
 
@@ -47,6 +47,14 @@ same slots; its permit entry delegates to the existing replacement-aware
 lease scheduler, durable receipt store or Session lifecycle decision point.
 The Session aggregate still supplies durable intent and preparation facts;
 physical disposal binds immutable preparation A to current successor B.
+
+Resident attempt decorators borrow the canonical slot allocation and selected
+Artifact operation through `Weak`. Execute/resume upgrades before inner I/O and
+retains that exact allocation through the attempt and post-attempt publication.
+A missing owner refuses new execution; cancellation still uses the original
+physical port. An idle cached Context cannot retain its own slot table after the
+last external owner drops. Physical stop and Session cleanup continue to require
+their existing receipts.
 
 The Session driver obtains the aggregate command, the existing Host role adapter
 supplies delegated/background/MCP participants, and the owning R component applies
