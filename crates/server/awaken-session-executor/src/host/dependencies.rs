@@ -42,10 +42,23 @@ pub struct SessionExecutionDependencies {
         Option<Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
 }
 
+/// Test-only construction seam, consumed before component binding.
+#[cfg(test)]
+pub(crate) type RealizationSourceFactory = Box<
+    dyn FnOnce(
+            Arc<crate::installed_session::InstalledSessions>,
+        ) -> Arc<dyn crate::session_realizations::SessionRealizationSource>
+        + Send,
+>;
+
 /// Every dependency of one [`SharedHost`]. Consumer: the process
 /// compositions (`awaken-cli`, `awaken-worker`, `awaken-coordinator`, the
 /// Scenario host and test fixtures) and `HostDependencies::build`.
 pub struct HostDependencies {
+    /// Test-only once-consumed projection of the canonical slot allocation.
+    /// Default constructors never select a replacement source.
+    #[cfg(test)]
+    pub(crate) realization_source: Option<RealizationSourceFactory>,
     pub(crate) local_workspace: String,
     pub(crate) clock: Arc<dyn awaken_time::WallClock>,
     pub(crate) store_dir: Option<PathBuf>,
@@ -110,6 +123,8 @@ fn select(
     let resources =
         capability::ResourceSelection::assemble(resources, store_dir.as_deref(), &clock);
     HostDependencies {
+        #[cfg(test)]
+        realization_source: None,
         agent: capability::AgentSelection::new(llm, model_ref),
         exec: capability::AttemptBackends::new(acp_profile),
         worker: capability::WorkerTransports::default(),

@@ -6,8 +6,24 @@
 // @formal reason: classification, not a direct proof claim.
 
 impl ManagedHost {
+    #[cfg(test)]
+    pub(crate) async fn stage_direct_mcp_attachment(
+        &self,
+        request: crate::session_mcp::StageMcpAttachment,
+    ) -> Result<crate::session_mcp::McpRealizationReceipt, RunError> {
+        self.host
+            .mcp
+            .stage_attachment(
+                &self.host.installed_sessions,
+                self,
+                self.mcp_credential_materialization(),
+                request,
+            )
+            .await
+    }
+
     /// The credential materialization this adapter lends one staging call.
-    fn mcp_credential_materialization(
+    pub(crate) fn mcp_credential_materialization(
         &self,
     ) -> awaken_session_mcp::McpCredentialMaterialization<'_> {
         awaken_session_mcp::McpCredentialMaterialization {
@@ -126,7 +142,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for ManagedHost {
     ) -> Result<crate::session_mcp::McpRealizationReceipt, RunError> {
         self.host
             .mcp
-            .stage_attachment(
+            .stage_assigned_attachment(
                 &self.host.installed_sessions,
                 self,
                 self.mcp_credential_materialization(),

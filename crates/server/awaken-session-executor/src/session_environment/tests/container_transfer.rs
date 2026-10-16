@@ -194,6 +194,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
                     .retire_session_environment_for_revocation(
                         thread,
                         (&host.mcp, host.installed_sessions.as_ref()),
+                        None,
                     )
                     .await
                     .unwrap();

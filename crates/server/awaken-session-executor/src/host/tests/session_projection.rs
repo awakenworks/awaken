@@ -1930,8 +1930,6 @@ async fn platform_held_mcp_is_mediated_without_resolving_material_into_the_host(
         CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
     };
 
-    use awaken_session_execution_contract::McpAttachmentRealizer;
-
     struct StubMediator {
         url: String,
     }
@@ -2017,7 +2015,7 @@ async fn platform_held_mcp_is_mediated_without_resolving_material_into_the_host(
 
     let bare = crate::ManagedHost::new(host.clone());
     assert_eq!(
-        bare.stage_mcp_attachment(request.clone())
+        bare.stage_direct_mcp_attachment(request.clone())
             .await
             .unwrap_err()
             .code,
@@ -2040,7 +2038,7 @@ async fn platform_held_mcp_is_mediated_without_resolving_material_into_the_host(
     .unwrap();
     let managed = crate::ManagedHost::new(host.clone());
     let receipt = managed
-        .stage_mcp_attachment(request)
+        .stage_direct_mcp_attachment(request)
         .await
         .expect("G2 mediated staging resolves no material");
     assert_eq!(

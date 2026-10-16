@@ -318,7 +318,8 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
                 host.realizer
                     .retire_session_environment_for_revocation(
                         thread,
-                        (&host.mcp, host.installed_sessions.as_ref())
+                        (&host.mcp, host.installed_sessions.as_ref()),
+                        None,
                     )
                     .await
                     .unwrap(),

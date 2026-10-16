@@ -73,14 +73,10 @@ impl SessionDispatch for SharedHost {
     ) -> &awaken_dispatch_execution::session_reconciliation::TerminalReconciliationState {
         &self.dispatch.terminal_reconciliation
     }
-    fn active_mcp_stages(
+    fn run_mcp_attachments(
         &self,
-        session: &str,
-    ) -> Vec<awaken_session_configuration_contract::mcp::StageMcpAttachment> {
-        self.active_mcp_projections(session)
-            .into_iter()
-            .map(|projection| projection.request)
-            .collect()
+    ) -> &dyn awaken_dispatch_execution::session_execution::RunMcpAttachments {
+        &self.dispatch.run_mcp_effects
     }
     fn dispatch_owner(&self) -> &str {
         SharedHost::dispatch_owner(self)
@@ -180,7 +176,9 @@ impl RunWorkerFactory for SharedHost {
 #[async_trait::async_trait]
 impl SessionProjectionExecution for SharedHost {
     fn sessions(&self) -> crate::session_realizations::SessionRealizations {
-        self.installed_sessions.realizations()
+        // Dispatch consumes the constructor-bound view of the same original
+        // slots as realization, publication, staging, and terminal cleanup.
+        self.realizer.environments.sessions.clone()
     }
     fn realizer(&self) -> &crate::realization_executor::RealizationExecutor {
         &self.realizer

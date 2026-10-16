@@ -14,7 +14,7 @@ use crate::session_realizations::InstalledSessionsPoisoned;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::session_realizations::{SessionRealization, SessionRealizationAuthority};
+use crate::session_realizations::SessionRealization;
 /// The exclusion every realization phase driver must hold is contract-owned
 /// (`SessionRealizationPermit`); this crate only supplies the Session slot
 /// allocation as its identity.
@@ -50,6 +50,17 @@ pub(crate) struct SessionRunBinding {
     /// dispatch must therefore cross the claimed Session realization boundary.
     /// It carries no desired-state data of its own.
     pub session_dispatch: bool,
+}
+
+impl InstalledSession {
+    // Run after releasing the original slot mutex, before destroying a removed
+    // slot. Ordinary removal and exact retirement share these same effects.
+    fn cancel_preparation_and_notify_removal(&self) {
+        if let Some(preparation) = &self.realization.staging.preparation {
+            preparation.cancel();
+        }
+        self.realization.execution.changed.notify_waiters();
+    }
 }
 
 impl crate::session_realizations::SessionRunQuery for SessionRunBinding {
@@ -91,16 +102,6 @@ impl crate::session_realizations::SessionRealizationSource for InstalledSessions
 
     fn remove_session(&self, session: &str) -> bool {
         InstalledSessions::remove(self, session).is_some()
-    }
-
-    fn retain_revoked_projection(&self, session: &str) {
-        self.modify(session, |slot| {
-            // The original revocation projection update stays atomic with the
-            // Run reset. This is a named view operation, never another registry.
-            slot.inputs = std::sync::Arc::new(slot.inputs.retained_on_revocation());
-            slot.realization = slot.realization.take_retained_on_revocation();
-            slot.run = SessionRunBinding::default();
-        });
     }
 
     fn acquire_realization<'a>(
@@ -145,6 +146,45 @@ impl crate::session_realizations::SessionRealizationSource for InstalledSessions
 
     fn replace_frozen(&self, session: &str, update: &mut dyn FnMut(&mut FrozenSessionInputs)) {
         self.replace_frozen_with(session, |inputs| update(inputs));
+    }
+
+    fn finish_realization_revocation(
+        &self,
+        session: &str,
+        selected: &SessionRealizationRevocationSelection,
+        expected_owner: &awaken_session_realization::environment_owner::SessionEnvironmentOwner,
+        disposed: bool,
+    ) -> bool {
+        let (removed, discarded_run) = {
+            let mut slots = self
+                .slots
+                .lock()
+                .expect("session runtime slots mutex poisoned");
+            let Some(slot) = slots.get_mut(session) else {
+                return false;
+            };
+            if !selected.matches_completion(&slot.realization, expected_owner, disposed) {
+                return false;
+            }
+            use awaken_session_realization::environment_owner::SessionEnvironmentOwner;
+            if matches!(
+                slot.realization.environment.owner,
+                SessionEnvironmentOwner::Vacant
+            ) {
+                (slots.remove(session), None)
+            } else {
+                slot.inputs = Arc::new(slot.inputs.retained_on_revocation());
+                slot.realization = slot.realization.take_retained_on_revocation();
+                (None, Some(std::mem::take(&mut slot.run)))
+            }
+        };
+        // Release the canonical slot mutex before dropping retained Runtime or
+        // physical wrappers, as in the original remove() operation.
+        if let Some(slot) = &removed {
+            slot.cancel_preparation_and_notify_removal();
+        }
+        drop((removed, discarded_run));
+        true
     }
 
     fn retain_publication(
@@ -227,33 +267,7 @@ pub(crate) struct InstalledSessions {
     slots: Mutex<HashMap<String, InstalledSession>>,
 }
 
-/// Ephemeral cleanup selection, captured at the close edge. Existing lock Arcs
-/// identify the slot allocation; equal Session ids and leases cannot defeat
-/// this identity after removal/recreation. No second generation counter exists.
-pub(crate) struct SessionRealizationRevocationSelection {
-    pub realization: Arc<tokio::sync::Mutex<()>>,
-    pub lifecycle: Arc<tokio::sync::Mutex<()>>,
-    authority: SessionRealizationAuthority,
-}
-
-impl SessionRealizationRevocationSelection {
-    fn close(
-        slot: &mut InstalledSession,
-        expected: Option<&crate::session_resource::SessionRealizationLease>,
-    ) -> Option<Self> {
-        slot.realization.close_authority(expected).then(|| Self {
-            realization: slot.realization.execution.phase.clone(),
-            lifecycle: slot.realization.environment.lifecycle.clone(),
-            authority: slot.realization.execution.authority.clone(),
-        })
-    }
-
-    pub(crate) fn matches(&self, slot: &InstalledSession) -> bool {
-        Arc::ptr_eq(&self.realization, &slot.realization.execution.phase)
-            && Arc::ptr_eq(&self.lifecycle, &slot.realization.environment.lifecycle)
-            && self.authority == slot.realization.execution.authority
-    }
-}
+pub(crate) use crate::session_realizations::SessionRealizationRevocationSelection;
 
 impl InstalledSessions {
     fn visit_slot<R>(
@@ -313,7 +327,10 @@ impl InstalledSessions {
             }) {
                 return None;
             }
-            SessionRealizationRevocationSelection::close(slot, expected.map(|(lease, _)| lease))
+            SessionRealizationRevocationSelection::close(
+                &mut slot.realization,
+                expected.map(|(lease, _)| lease),
+            )
         })
         .flatten()
     }
@@ -330,7 +347,7 @@ impl InstalledSessions {
             .map(|(id, slot)| {
                 (
                     id.clone(),
-                    SessionRealizationRevocationSelection::close(slot, None)
+                    SessionRealizationRevocationSelection::close(&mut slot.realization, None)
                         .expect("unconditional close always selects the current slot"),
                 )
             })
@@ -400,10 +417,7 @@ impl InstalledSessions {
             .expect("session runtime slots mutex poisoned")
             .remove(session);
         if let Some(slot) = &removed {
-            if let Some(preparation) = &slot.realization.staging.preparation {
-                preparation.cancel();
-            }
-            slot.realization.execution.changed.notify_waiters();
+            slot.cancel_preparation_and_notify_removal();
         }
         removed
     }

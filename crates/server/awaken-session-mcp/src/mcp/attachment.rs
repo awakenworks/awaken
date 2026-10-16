@@ -94,14 +94,247 @@ pub struct McpCredentialMaterialization<'a> {
     pub platform_egress: Option<&'a dyn PlatformMcpEgressProvisioner>,
 }
 
+#[derive(Clone, Copy)]
+enum StagingAdmission {
+    Direct,
+    Assigned,
+}
+
+impl StagingAdmission {
+    fn admits(
+        self,
+        root: Option<bool>,
+        generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
+        now: u64,
+    ) -> bool {
+        match self {
+            Self::Assigned => root == Some(true),
+            Self::Direct => root.unwrap_or_else(|| {
+                awaken_session_realization_contract::realization_lease_is_live_at(
+                    generation.lease_expires_at_unix_ms(),
+                    now,
+                )
+            }),
+        }
+    }
+}
+
+// The same installed activity is visible to drain before credentials/relay I/O.
+// Cancellation before any route exists releases only this exact staging owner.
+struct RelayStaging<S: McpSessionSlots> {
+    slots: Arc<S>,
+    generation: awaken_session_configuration_contract::mcp::McpGenerationRef,
+    request: awaken_session_configuration_contract::mcp::StageMcpAttachment,
+    drain: Arc<tokio::sync::Mutex<()>>,
+    activity: crate::mcp_material::McpStagingActivity,
+    completed: bool,
+}
+
+impl<S: McpSessionSlots> RelayStaging<S> {
+    fn begin(
+        slots: &Arc<S>,
+        request: &awaken_session_configuration_contract::mcp::StageMcpAttachment,
+        request_fingerprint: &str,
+        realization_kind: awaken_credential_contract::CredentialRealizationKind,
+        admission: StagingAdmission,
+        clock: &dyn awaken_time::WallClock,
+    ) -> Result<Self, RunError> {
+        // Direct SDK assertions may precede root installation. Assigned calls
+        // must find the original root under the canonical slot transaction.
+        if matches!(admission, StagingAdmission::Direct) {
+            slots.update_mcp(request.generation.session_id().as_str(), |_| ());
+        }
+        let activity = crate::mcp_material::McpStagingActivity::default();
+        let drain = Arc::new(tokio::sync::Mutex::new(()));
+        slots
+            .modify_mcp_with_root(&request.generation, |mcp, root| {
+                let now = awaken_time::WallClockExt::now_ms(clock);
+                if !admission.admits(root, &request.generation, now) {
+                    return Err(RunError::classified(
+                        "mcp_stale_ownership",
+                        "MCP realization root is no longer current",
+                    ));
+                }
+                if !mcp.admits_realization() {
+                    return Err(RunError::unavailable_classified(
+                        "session_environment_quiescing",
+                        "MCP staging is closed while the Session Environment quiesces",
+                    ));
+                }
+                if mcp
+                    .projections
+                    .iter()
+                    .any(|projection| projection.request.generation == request.generation)
+                {
+                    return Err(RunError::classified(
+                        "mcp_stale_generation",
+                        "MCP generation already has a staging owner",
+                    ));
+                }
+                mcp.projections
+                    .push(crate::mcp_material::McpGenerationProjection {
+                        request: request.clone(),
+                        receipt:
+                            awaken_session_configuration_contract::mcp::McpRealizationReceipt {
+                                generation: request.generation.clone(),
+                                realization_id: request.realization_id.clone(),
+                                selected_plaintext_holder: request
+                                    .selected_plaintext_holder
+                                    .clone(),
+                                actual_realization_kind: Some(realization_kind),
+                                receipt_fingerprint: request_fingerprint.to_owned(),
+                            },
+                        server: None,
+                        native_wiring: None,
+                        mcp_process: None,
+                        staging: Some(activity.clone()),
+                        drain: drain.clone(),
+                        state: crate::mcp_material::McpProjectionState::Staging,
+                    });
+                Ok(())
+            })
+            .ok_or_else(|| {
+                RunError::classified("mcp_stale_ownership", "MCP Session root is unavailable")
+            })??;
+        Ok(Self {
+            slots: slots.clone(),
+            generation: request.generation.clone(),
+            request: request.clone(),
+            drain,
+            activity,
+            completed: false,
+        })
+    }
+
+    fn publish(
+        &mut self,
+        admission: StagingAdmission,
+        clock: &dyn awaken_time::WallClock,
+        relay: &crate::mcp_relay::McpRelay,
+        server: crate::mcp_material::McpTransportMaterial,
+        receipt: &awaken_session_configuration_contract::mcp::McpRealizationReceipt,
+    ) -> Result<(), RunError> {
+        self.slots
+            .modify_mcp_with_root(&self.generation, |mcp, root| {
+                let now = awaken_time::WallClockExt::now_ms(clock);
+                if !admission.admits(root, &self.generation, now) {
+                    return Err(RunError::classified(
+                        "mcp_stale_ownership",
+                        "MCP realization root changed while staging",
+                    ));
+                }
+                if !mcp.admits_realization() {
+                    return Err(RunError::unavailable_classified(
+                        "session_environment_quiescing",
+                        "MCP staging is closed while the Session Environment quiesces",
+                    ));
+                }
+                let projection = mcp
+                    .projections
+                    .iter_mut()
+                    .find(|projection| {
+                        projection.request == self.request
+                            && Arc::ptr_eq(&projection.drain, &self.drain)
+                            && projection.state == crate::mcp_material::McpProjectionState::Staging
+                    })
+                    .ok_or_else(|| {
+                        RunError::unavailable_classified(
+                            "mcp_generation_draining",
+                            "MCP staging owner was revoked or replaced",
+                        )
+                    })?;
+                // Keep the original slot -> route-map order. Every fallible owner
+                // check precedes the paired route and projection publication.
+                let _route = relay
+                    .stage_route_captured(&self.generation, &server)
+                    .ok_or_else(|| {
+                        RunError::classified(
+                            "mcp_stale_generation",
+                            "MCP generation already has a staged relay route",
+                        )
+                    })?;
+                projection.receipt = receipt.clone();
+                projection.server = Some(server);
+                projection.state = crate::mcp_material::McpProjectionState::Staged;
+                Ok(())
+            })
+            .ok_or_else(|| {
+                RunError::classified(
+                    "mcp_stale_ownership",
+                    "MCP Session root disappeared while staging",
+                )
+            })??;
+        self.completed = true;
+        Ok(())
+    }
+}
+
+impl<S: McpSessionSlots> Drop for RelayStaging<S> {
+    fn drop(&mut self) {
+        if !self.completed {
+            let _ = self
+                .slots
+                .modify_mcp(self.generation.session_id().as_str(), |mcp| {
+                    if let Some(projection) = mcp.projections.iter_mut().find(|projection| {
+                        projection.request == self.request
+                            && Arc::ptr_eq(&projection.drain, &self.drain)
+                            && projection.state == crate::mcp_material::McpProjectionState::Staging
+                    }) {
+                        projection.server = None;
+                        projection.staging = None;
+                        projection.state = crate::mcp_material::McpProjectionState::Removed;
+                    }
+                });
+        }
+        self.activity.finish();
+    }
+}
+
 // Runtime realization of one Session-owned MCP attachment generation.
 impl McpSessions {
+    /// Stage through the SDK direct-assertion entrance. An installed root still
+    /// overrides that assertion; service assignments use stage_assigned_attachment.
     pub async fn stage_attachment<S: McpSessionSlots>(
         &self,
         slots: &Arc<S>,
         host: &dyn McpStagingSession,
         credentials: McpCredentialMaterialization<'_>,
         request: awaken_session_configuration_contract::mcp::StageMcpAttachment,
+    ) -> Result<awaken_session_configuration_contract::mcp::McpRealizationReceipt, RunError> {
+        self.stage_with_admission(slots, host, credentials, request, StagingAdmission::Direct)
+            .await
+    }
+
+    /// Reject unknown service-assigned roots and recheck root admission under
+    /// the canonical lock when installing a projection. WorkerRelay also owns
+    /// its original activity/allocation across awaits. Native/stdio and external
+    /// Platform provisioning retain their existing effect lifecycles: this is
+    /// not proof that external provision was revoked or that all branch I/O
+    /// was joined. They do not acquire the SDK direct-assertion fallback.
+    pub async fn stage_assigned_attachment<S: McpSessionSlots>(
+        &self,
+        slots: &Arc<S>,
+        host: &dyn McpStagingSession,
+        credentials: McpCredentialMaterialization<'_>,
+        request: awaken_session_configuration_contract::mcp::StageMcpAttachment,
+    ) -> Result<awaken_session_configuration_contract::mcp::McpRealizationReceipt, RunError> {
+        self.stage_with_admission(
+            slots,
+            host,
+            credentials,
+            request,
+            StagingAdmission::Assigned,
+        )
+        .await
+    }
+
+    async fn stage_with_admission<S: McpSessionSlots>(
+        &self,
+        slots: &Arc<S>,
+        host: &dyn McpStagingSession,
+        credentials: McpCredentialMaterialization<'_>,
+        request: awaken_session_configuration_contract::mcp::StageMcpAttachment,
+        admission: StagingAdmission,
     ) -> Result<awaken_session_configuration_contract::mcp::McpRealizationReceipt, RunError> {
         use awaken_credential_contract::{CredentialRealizationKind, PlaintextBoundary};
 
@@ -128,7 +361,12 @@ impl McpSessions {
             ));
         }
         let now_unix_ms = awaken_time::WallClockExt::now_ms(self.clock.as_ref());
-        if !host.mcp_generation_is_authorized_at(&request.generation, now_unix_ms) {
+        let root = slots
+            .modify_mcp_with_root(&request.generation, |_mcp, root| root)
+            .flatten();
+        if !host.mcp_generation_is_authorized_at(&request.generation, now_unix_ms)
+            || !admission.admits(root, &request.generation, now_unix_ms)
+        {
             return Err(RunError::classified(
                 "mcp_stale_ownership",
                 "MCP realization lease has expired",
@@ -205,6 +443,7 @@ impl McpSessions {
             request.selected_plaintext_holder.is_some(),
         )?;
 
+        let mut relay_staging = None;
         let (bearer, refresh, actual_realization_kind, mediated_route) = match (
             request.credential.as_ref(),
             request.selected_plaintext_holder.as_ref(),
@@ -398,6 +637,16 @@ impl McpSessions {
                     // mediator, never a holder of this credential.
                     (None, None, Some(realization_kind), Some(route))
                 } else {
+                    if is_acp && realization_kind == CredentialRealizationKind::WorkerRelay {
+                        relay_staging = Some(RelayStaging::begin(
+                            slots,
+                            &request,
+                            &request_fingerprint,
+                            realization_kind,
+                            admission,
+                            self.clock.as_ref(),
+                        )?);
+                    }
                     let bearer = injector
                         .resolve_for_workspace(
                             access,
@@ -584,8 +833,7 @@ impl McpSessions {
                 drain: Arc::new(tokio::sync::Mutex::new(())),
                 state: crate::mcp_material::McpProjectionState::Staging,
             };
-            self.insert_projection(slots.as_ref(), projection.clone())
-                .map_err(run_error)?;
+            self.insert_projection_with_admission(slots, admission, projection.clone())?;
             let sessions = self.clone();
             let task_slots = slots.clone();
             let command = awaken_provisioning_contract::Command {
@@ -635,36 +883,27 @@ impl McpSessions {
         // Staging is the sole route-creation boundary.  Runtime construction is
         // a projection reader and must never repair or recreate credential-
         // bearing effects behind the durable realization protocol's back.
-        let staged_relay =
-            if is_acp && actual_realization_kind == Some(CredentialRealizationKind::WorkerRelay) {
-                let relay = self
-                    .relay_or_start(host.relay_authority())
-                    .await
-                    .map_err(|error| {
-                        RunError::classified(
-                            "mcp_relay_unavailable",
-                            format!("could not stage Worker-held MCP route: {error}"),
-                        )
-                    })?;
-                if !relay.is_live() {
-                    return Err(RunError::unavailable_classified(
+        if let Some(staging) = &mut relay_staging {
+            let relay = self
+                .relay_or_start(host.relay_authority())
+                .await
+                .map_err(|error| {
+                    RunError::classified(
                         "mcp_relay_unavailable",
-                        "Worker MCP relay transport is no longer serving",
-                    ));
-                }
-                if !relay.stage_route(&request.generation, &server) {
-                    return Err(RunError::classified(
-                        "mcp_stale_generation",
-                        "MCP generation already has a staged relay route",
-                    ));
-                }
-                Some(relay)
-            } else {
-                None
-            };
-        if !projection_already_inserted
-            && let Err(error) = self.insert_projection(
-                slots.as_ref(),
+                        format!("could not stage Worker-held MCP route: {error}"),
+                    )
+                })?;
+            if !relay.is_live() {
+                return Err(RunError::unavailable_classified(
+                    "mcp_relay_unavailable",
+                    "Worker MCP relay transport is no longer serving",
+                ));
+            }
+            staging.publish(admission, self.clock.as_ref(), relay, server, &receipt)?;
+        } else if !projection_already_inserted {
+            self.insert_projection_with_admission(
+                slots,
+                admission,
                 crate::mcp_material::McpGenerationProjection {
                     request: projection_request,
                     receipt: receipt.clone(),
@@ -675,16 +914,56 @@ impl McpSessions {
                     drain: Arc::new(tokio::sync::Mutex::new(())),
                     state: crate::mcp_material::McpProjectionState::Staged,
                 },
-            )
-        {
-            // A route is private and not yet visible, but retaining its bearer
-            // after the exact projection failed to stage would still be a leak.
-            if let Some(relay) = staged_relay {
-                relay.remove_route(&request.generation);
-            }
-            return Err(run_error(error));
+            )?;
         }
         Ok(receipt)
+    }
+
+    // Non-WorkerRelay branches retain their existing external effect lifecycle.
+    // At least projection installation cannot cross a closed/unknown root.
+    // This root read alone does not prove same-tenure slot allocation identity.
+    fn insert_projection_with_admission<S: McpSessionSlots>(
+        &self,
+        slots: &Arc<S>,
+        admission: StagingAdmission,
+        projection: crate::mcp_material::McpGenerationProjection,
+    ) -> Result<(), RunError> {
+        let generation = projection.request.generation.clone();
+        if matches!(admission, StagingAdmission::Direct) {
+            slots.update_mcp(generation.session_id().as_str(), |_| ());
+        }
+        slots
+            .modify_mcp_with_root(&generation, |mcp, root| {
+                // Preserve the original quiescence/duplicate errors at insertion;
+                // the new root predicate closes only the stale publication edge.
+                if !mcp.admits_realization() {
+                    return Err(RunError::unavailable_classified(
+                        "session_environment_quiescing",
+                        "MCP staging is closed while the Session Environment quiesces",
+                    ));
+                }
+                let now = awaken_time::WallClockExt::now_ms(self.clock.as_ref());
+                if !admission.admits(root, &generation, now) {
+                    return Err(RunError::classified(
+                        "mcp_stale_ownership",
+                        "MCP realization root is no longer current",
+                    ));
+                }
+                if mcp
+                    .projections
+                    .iter()
+                    .any(|existing| existing.request.generation == generation)
+                {
+                    return Err(RunError::internal(
+                        "MCP generation projection already exists with another realization",
+                    ));
+                }
+                mcp.projections.push(projection);
+                Ok(())
+            })
+            .ok_or_else(|| {
+                RunError::classified("mcp_stale_ownership", "MCP Session root is unavailable")
+            })?
     }
 
     async fn stage_sandbox_stdio<S: McpSessionSlots>(

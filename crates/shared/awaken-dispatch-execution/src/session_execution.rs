@@ -46,10 +46,19 @@ pub trait SessionDispatch: Send + Sync + 'static {
     fn session_control(&self) -> Option<&dyn ClaimedSessionRealizationControl>;
     fn terminal_reconciliation(&self) -> &TerminalReconciliationState;
     fn dispatch_owner(&self) -> &str;
-    fn active_mcp_stages(
+    fn run_mcp_attachments(&self) -> &dyn RunMcpAttachments;
+}
+
+/// The ordinary Run compatibility path uses SDK Direct staging. A Managed
+/// Session reaches the distinct assigned-root role through projection execution.
+pub trait RunMcpAttachments: awaken_session_execution_contract::McpAttachmentRealizer {
+    fn active_stages(
         &self,
         session: &str,
-    ) -> Vec<awaken_session_configuration_contract::mcp::StageMcpAttachment>;
+    ) -> Result<
+        Vec<awaken_session_configuration_contract::mcp::StageMcpAttachment>,
+        awaken_session_types::RunError,
+    >;
 }
 
 /// Constructs an executable Run or an Environment-free commit-boundary Worker.

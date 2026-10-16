@@ -92,7 +92,8 @@ async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
             host.realizer
                 .retire_session_environment_for_revocation(
                     thread,
-                    (&host.mcp, host.installed_sessions.as_ref())
+                    (&host.mcp, host.installed_sessions.as_ref()),
+                    None,
                 )
                 .await
                 .unwrap(),

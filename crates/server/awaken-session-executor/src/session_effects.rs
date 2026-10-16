@@ -115,3 +115,82 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for SessionEffects
         }
     }
 }
+
+/// Ordinary Run compatibility effects borrow the same configured MCP owner.
+/// Only this role selects the SDK's Direct admission; it never installs a root.
+pub(crate) struct RunMcpEffects {
+    pub(super) host: Weak<SharedHost>,
+}
+
+#[async_trait::async_trait]
+impl awaken_session_execution_contract::McpAttachmentRealizer for RunMcpEffects {
+    async fn stage_mcp_attachment(
+        &self,
+        request: crate::session_mcp::StageMcpAttachment,
+    ) -> Result<crate::session_mcp::McpRealizationReceipt, RunError> {
+        let managed = SessionEffects {
+            host: self.host.clone(),
+        }
+        .managed()?;
+        match &managed.host.session_execution.mcp_realizer {
+            Some(realizer) => realizer.stage_mcp_attachment(request).await,
+            None => {
+                managed
+                    .host
+                    .mcp
+                    .stage_attachment(
+                        &managed.host.installed_sessions,
+                        &managed,
+                        managed.mcp_credential_materialization(),
+                        request,
+                    )
+                    .await
+            }
+        }
+    }
+    async fn publish_mcp_generation(
+        &self,
+        generation: crate::session_mcp::McpGenerationRef,
+    ) -> Result<(), RunError> {
+        awaken_session_execution_contract::McpAttachmentRealizer::publish_mcp_generation(
+            &SessionEffects {
+                host: self.host.clone(),
+            },
+            generation,
+        )
+        .await
+    }
+    async fn drain_mcp_generation(
+        &self,
+        generation: crate::session_mcp::McpGenerationRef,
+    ) -> Result<(), RunError> {
+        awaken_session_execution_contract::McpAttachmentRealizer::drain_mcp_generation(
+            &SessionEffects {
+                host: self.host.clone(),
+            },
+            generation,
+        )
+        .await
+    }
+}
+
+impl awaken_dispatch_execution::session_execution::RunMcpAttachments for RunMcpEffects {
+    fn active_stages(
+        &self,
+        session: &str,
+    ) -> Result<Vec<crate::session_mcp::StageMcpAttachment>, RunError> {
+        let managed = SessionEffects {
+            host: self.host.clone(),
+        }
+        .managed()?;
+        Ok(managed
+            .host
+            .active_mcp_projections(session)
+            .into_iter()
+            .map(|projection| projection.request)
+            .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests;

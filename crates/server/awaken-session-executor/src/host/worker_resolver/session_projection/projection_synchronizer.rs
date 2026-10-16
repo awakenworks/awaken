@@ -636,7 +636,8 @@ mod tests {
                     host.realizer
                         .retire_session_environment_for_revocation(
                             thread,
-                            (&host.mcp, host.installed_sessions.as_ref())
+                            (&host.mcp, host.installed_sessions.as_ref()),
+                            None,
                         )
                         .await
                         .expect("DH1/C2 revoke exact durable owner"),
@@ -1185,7 +1186,8 @@ mod tests {
                 host.realizer
                     .retire_session_environment_for_revocation(
                         thread,
-                        (&host.mcp, host.installed_sessions.as_ref())
+                        (&host.mcp, host.installed_sessions.as_ref()),
+                        None,
                     )
                     .await
                     .expect("revoke exact LegacyDirect owner"),

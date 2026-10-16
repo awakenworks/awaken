@@ -179,3 +179,5 @@ async fn undecodable_dispatched_runtime_projection_is_an_absorbing_resolution_fa
 }
 
 use awaken_dispatch_contract::{DispatchClaims as _, DispatchEnqueue as _};
+
+mod projection_loss;

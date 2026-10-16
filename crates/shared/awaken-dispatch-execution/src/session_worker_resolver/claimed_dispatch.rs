@@ -8,7 +8,6 @@ use super::{
     WorkerResolver, execution_error, install_claimed_session_projection, map_host_resolution_error,
     terminal_resolution_error,
 };
-use awaken_session_realization::worker_projection::WorkerMcpEffects;
 
 use awaken_session_configuration_contract::SessionRuntimeProjection;
 
@@ -78,9 +77,10 @@ where
         session_id: &str,
         stages: Vec<awaken_session_configuration_contract::mcp::StageMcpAttachment>,
     ) -> Result<(), Error> {
-        use awaken_session_execution_contract::McpAttachmentRealizer as _;
-
-        let existing = host.active_mcp_stages(session_id);
+        let effects = host.run_mcp_attachments();
+        let existing = effects
+            .active_stages(session_id)
+            .map_err(|error| execution_error(format!("dispatched MCP lookup failed: {error}")))?;
         let existing_generations = existing
             .iter()
             .map(|projection| awaken_agent_contract::stable_fingerprint(&projection.generation))
@@ -99,7 +99,6 @@ where
             }
         }
 
-        let effects = WorkerMcpEffects(host);
         let mut newly_staged = Vec::new();
         for stage in stages {
             match effects.stage_mcp_attachment(stage.clone()).await {
@@ -179,15 +178,31 @@ where
         };
         install_claimed_session_projection(host, claimed, thread_id, dispatched_resources.as_ref())
             .await?;
-        let canonical_session_realization = sessions
-            .modify_session(&thread_id.0, |slot| {
-                canonical_session_projection_is_installed(
-                    super::claimed_session::has_session_projection_authority(claimed),
-                    slot.run.session_dispatch(),
-                    slot.inputs.baseline.is_some(),
+        let Some((canonical_session_realization, selected_phase)) =
+            sessions.modify_session(&thread_id.0, |slot| {
+                (
+                    canonical_session_projection_is_installed(
+                        super::claimed_session::has_session_projection_authority(claimed),
+                        slot.run.session_dispatch(),
+                        slot.inputs.baseline.is_some(),
+                    ),
+                    slot.realization.execution.phase.clone(),
                 )
             })
-            .unwrap_or(false);
+        else {
+            return Err(Error::ResolutionNotReady(format!(
+                "run {} lost its installed Session before claim binding",
+                claimed.lease.run_id().0
+            )));
+        };
+        if super::claimed_session::has_session_projection_authority(claimed)
+            && !canonical_session_realization
+        {
+            return Err(Error::ResolutionNotReady(format!(
+                "run {} lost its canonical Session projection before MCP effects",
+                claimed.lease.run_id().0
+            )));
+        }
         let claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
         // A failed/NotReady resolve must not publish an attempt claim into the
         // shared Session projection: lifecycle recovery is independently owned
@@ -213,9 +228,28 @@ where
                 )));
             }
         }
-        sessions.update_session(&thread_id.0, |slot| {
-            slot.run.install_dispatch_claim(claim.clone())
-        });
+        let bound = sessions
+            .modify_session(&thread_id.0, |slot| {
+                if !Arc::ptr_eq(&selected_phase, &slot.realization.execution.phase)
+                    || (super::claimed_session::has_session_projection_authority(claimed)
+                        && !canonical_session_projection_is_installed(
+                            true,
+                            slot.run.session_dispatch(),
+                            slot.inputs.baseline.is_some(),
+                        ))
+                {
+                    return false;
+                }
+                slot.run.install_dispatch_claim(claim.clone());
+                true
+            })
+            .unwrap_or(false);
+        if !bound {
+            return Err(Error::ResolutionNotReady(format!(
+                "run {} lost its original Session projection before claim binding",
+                claimed.lease.run_id().0
+            )));
+        }
         Ok((canonical_session_realization, dispatched_mcp_stages))
     }
 

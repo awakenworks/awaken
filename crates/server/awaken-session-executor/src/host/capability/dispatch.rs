@@ -14,6 +14,8 @@ pub(crate) struct DispatchCapability {
     /// host wiring plus Resource/credential SPIs, so installing it cannot create
     /// an `Arc<SharedHost>` cycle or a second Vault/materialization path.
     pub(crate) session_effects: crate::SessionEffects,
+    /// Ordinary Run MCP uses SDK Direct admission over the same physical owner.
+    pub(crate) run_mcp_effects: crate::session_effects::RunMcpEffects,
     /// The process-level dispatch pool (O2), spawned once by `mount` when durable
     /// ingress is enabled. It is the sole claimer of the one shared queue and drives
     /// every session's runs by routing each claimed run back to the worker that owns
@@ -41,7 +43,8 @@ impl DispatchCapability {
         host: std::sync::Weak<SharedHost>,
     ) -> Self {
         Self {
-            session_effects: crate::SessionEffects { host },
+            session_effects: crate::SessionEffects { host: host.clone() },
+            run_mcp_effects: crate::session_effects::RunMcpEffects { host },
             dispatch_pool: std::sync::OnceLock::new(),
             execution,
             terminal_reconciliation: Default::default(),
