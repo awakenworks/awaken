@@ -176,7 +176,7 @@ awaken-file-store = { workspace = true, features = ["test-support"] }
 awaken-memory-store = { workspace = true, features = ["test-support"] }
 awaken-skill-store = { workspace = true, features = ["test-support"] }
 # Test-only ZIP construction drives the canonical Skill bundle ingestor.
-zip = { version = "8.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
