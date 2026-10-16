@@ -16,6 +16,8 @@ pub fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::new<R, W>(R, W, core::option::Opti
 pub fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::notifier(&self) -> awaken_mcp_wire::jsonrpc::JsonRpcNotifier
 pub async fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::notify(&self, &str, serde_json::value::Value) -> core::result::Result<(), awaken_mcp_wire::McpTransportError>
 pub async fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::request(&self, &str, serde_json::value::Value, core::time::Duration) -> core::result::Result<serde_json::value::Value, awaken_mcp_wire::McpTransportError>
+impl core::ops::drop::Drop for awaken_mcp_wire::jsonrpc::JsonRpcPeer
+pub fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::drop(&mut self)
 pub struct awaken_mcp_wire::jsonrpc::ServerNotification
 pub awaken_mcp_wire::jsonrpc::ServerNotification::method: alloc::string::String
 pub awaken_mcp_wire::jsonrpc::ServerNotification::params: serde_json::value::Value
@@ -159,6 +161,8 @@ pub fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::new<R, W>(R, W, core::option::Opti
 pub fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::notifier(&self) -> awaken_mcp_wire::jsonrpc::JsonRpcNotifier
 pub async fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::notify(&self, &str, serde_json::value::Value) -> core::result::Result<(), awaken_mcp_wire::McpTransportError>
 pub async fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::request(&self, &str, serde_json::value::Value, core::time::Duration) -> core::result::Result<serde_json::value::Value, awaken_mcp_wire::McpTransportError>
+impl core::ops::drop::Drop for awaken_mcp_wire::jsonrpc::JsonRpcPeer
+pub fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::drop(&mut self)
 pub struct awaken_mcp_wire::ListToolsParams
 pub awaken_mcp_wire::ListToolsParams::cursor: core::option::Option<alloc::string::String>
 pub struct awaken_mcp_wire::ListToolsResult
