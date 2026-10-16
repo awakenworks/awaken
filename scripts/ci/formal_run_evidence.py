@@ -30,6 +30,7 @@ import formal_sources
 ROOT = Path(__file__).resolve().parents[2]
 # Schema 2 adds the plan selection and its digest to schema 1.
 RUN_SCHEMA_VERSION = 2
+FAILURE_KINDS = ("execution-failed", "resource-bound", "memory-bound")
 # The only selection a release accepts: every harness, nothing narrowed.
 FULL_SELECTION = {"tier": "full", "affected_base": None}
 
@@ -155,7 +156,7 @@ def finish_record(
     if type(exit_code) is not int or exit_code < 0:
         raise ValueError("formal evidence has an invalid exit code")
     if exit_code != 0:
-        if failure_kind not in {"execution-failed", "resource-bound"}:
+        if failure_kind not in FAILURE_KINDS:
             raise ValueError("failed formal evidence has no valid failure kind")
         if not isinstance(failure_stage, str) or not failure_stage:
             raise ValueError("failed formal evidence has no failure stage")
@@ -168,6 +169,8 @@ def finish_record(
             if not isinstance(failure_subject, str) or not failure_subject:
                 raise ValueError("failed formal evidence has an invalid failure subject")
             outcome["subject"] = failure_subject
+        if failure_kind == "memory-bound" and (failure_subject is None or exit_code == 124):
+            raise ValueError("memory-bound evidence requires an exact exhausted subject and a non-deadline exit")
         if failure_kind == "resource-bound":
             if exit_code != 124 or failure_subject is None:
                 raise ValueError("resource-bound evidence requires an exact timed-out subject")
@@ -295,7 +298,7 @@ def main() -> None:
     parser.add_argument("--parent", type=Path, default=Path("target/test-timings"))
     parser.add_argument("--kind", choices=("formal", "session-observations"), default="formal")
     parser.add_argument("--exit-code", type=int, default=0)
-    parser.add_argument("--failure-kind", choices=("execution-failed", "resource-bound"))
+    parser.add_argument("--failure-kind", choices=FAILURE_KINDS)
     parser.add_argument("--failure-stage")
     parser.add_argument("--failure-subject")
     parser.add_argument("--deadline-seconds", type=int)

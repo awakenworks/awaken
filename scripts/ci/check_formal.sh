@@ -459,7 +459,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     local kani_transcript
     kani_transcript="$(mktemp "$formal_artifact_dir/kani-${package}.XXXXXX.log")"
     if run_with_deadline "$kani_batch_timeout_seconds" \
-        cargo kani -p "$package" --output-format terse -j "$kani_jobs" "$@" \
+        cargo kani -p "$package" --output-format terse --verbose -j "$kani_jobs" "$@" \
         2>&1 | tee "$kani_transcript"; then
       rm -f "$kani_transcript"
       return 0
