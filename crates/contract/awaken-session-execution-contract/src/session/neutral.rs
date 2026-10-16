@@ -275,6 +275,13 @@ macro_rules! neutral_role {
     (SessionCoordinationReads for $ty:ty) => {
         #[$crate::__macro_support::async_trait::async_trait]
 impl $crate::SessionCoordinationReads for $ty {
+            async fn source_dispatch_observation(
+                &self,
+                _session: &awaken_session_state_contract::PersistedSession,
+            ) -> $crate::SessionSourceDispatchObservation {
+                Default::default()
+            }
+
             async fn coordinated_admission_receipt(
                 &self,
                 _command: $crate::CoordinatedAdmissionRef<'_>,

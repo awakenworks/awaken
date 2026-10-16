@@ -578,6 +578,7 @@ impl RecordingReplyRuntime {
 
 #[derive(Default)]
 struct RecordingCleanupRuntime {
+    source_observation: Mutex<awaken_session_execution_contract::SessionSourceDispatchObservation>,
     fail_quiesce_once: AtomicBool,
     fail_before_effect_once: AtomicBool,
     fail_once: AtomicBool,
@@ -1413,6 +1414,13 @@ impl awaken_session_execution_contract::CoordinationRuntime for RecordingReplyRu
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::SessionCoordinationReads for RecordingReplyRuntime {
+    async fn source_dispatch_observation(
+        &self,
+        _session: &awaken_session_state_contract::PersistedSession,
+    ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
+        Default::default()
+    }
+
     async fn coordinated_admission_receipt(
         &self,
         command: awaken_session_execution_contract::CoordinatedAdmissionRef<'_>,
@@ -2038,6 +2046,13 @@ impl awaken_session_execution_contract::CoordinationRuntime for RecordingAgentAd
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::SessionCoordinationReads for RecordingAgentAdmissionRuntime {
+    async fn source_dispatch_observation(
+        &self,
+        _session: &awaken_session_state_contract::PersistedSession,
+    ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
+        Default::default()
+    }
+
     async fn coordinated_admission_receipt(
         &self,
         command: awaken_session_execution_contract::CoordinatedAdmissionRef<'_>,
@@ -2629,6 +2644,13 @@ impl awaken_session_execution_contract::CoordinationRuntime for RecordingBoundar
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::SessionCoordinationReads for RecordingBoundaryBudgetRuntime {
+    async fn source_dispatch_observation(
+        &self,
+        _session: &awaken_session_state_contract::PersistedSession,
+    ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
+        Default::default()
+    }
+
     async fn coordinated_admission_receipt(
         &self,
         command: awaken_session_execution_contract::CoordinatedAdmissionRef<'_>,
@@ -3273,6 +3295,13 @@ impl awaken_session_execution_contract::CoordinationRuntime for RecordingCleanup
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::SessionCoordinationReads for RecordingCleanupRuntime {
+    async fn source_dispatch_observation(
+        &self,
+        _session: &awaken_session_state_contract::PersistedSession,
+    ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
+        self.source_observation.lock().unwrap().clone()
+    }
+
     async fn coordinated_admission_receipt(
         &self,
         command: awaken_session_execution_contract::CoordinatedAdmissionRef<'_>,
@@ -4226,6 +4255,7 @@ struct RecordingWorkerObservations {
     scripted: Mutex<VecDeque<WorkerObservationStep>>,
     list_calls: AtomicUsize,
     fail: AtomicBool,
+    fail_incarnation: AtomicBool,
 }
 
 enum WorkerObservationStep {
@@ -4269,25 +4299,49 @@ impl awaken_worker_contract::WorkerObservationSource for RecordingWorkerObservat
     }
 }
 
+#[async_trait::async_trait]
+impl awaken_worker_contract::WorkerIncarnationSource for RecordingWorkerObservations {
+    async fn incarnation(
+        &self,
+        identity: &awaken_worker_contract::WorkerIdentity,
+    ) -> Result<
+        Option<awaken_worker_contract::RegisteredWorker>,
+        awaken_worker_contract::RegistryError,
+    > {
+        if self.fail.load(Ordering::SeqCst) || self.fail_incarnation.load(Ordering::SeqCst) {
+            return Err(awaken_worker_contract::RegistryError::Persistence(
+                "injected exact-incarnation read failure".into(),
+            ));
+        }
+        // This fixture owns only its supplied records; it never invents a
+        // missing historical identity from a newer incarnation or its manifest.
+        let records = self.workers.lock().unwrap();
+        let mut matching = records
+            .iter()
+            .filter(|record| record.snapshot.identity == *identity);
+        let record = matching.next().cloned();
+        if matching.next().is_some() {
+            return Err(awaken_worker_contract::RegistryError::Persistence(
+                "duplicate exact fixture incarnation".into(),
+            ));
+        }
+        Ok(record)
+    }
+}
+
 fn terminal_cleanup_worker(
     target: &awaken_session_realization_contract::SessionRealizationTarget,
     manifest: awaken_worker_contract::WorkerManifest,
 ) -> awaken_worker_contract::RegisteredWorker {
-    let identity = awaken_worker_contract::WorkerIdentity::new(
-        target.owner.clone(),
-        target
-            .runtime_incarnation
-            .strip_prefix(&format!("{}:", target.owner))
-            .and_then(|suffix| suffix.split_once(':'))
-            .map(|(_, incarnation)| incarnation)
-            .unwrap_or(target.runtime_incarnation.as_str()),
-        target
-            .runtime_incarnation
-            .strip_prefix(&format!("{}:", target.owner))
-            .and_then(|suffix| suffix.split_once(':'))
-            .and_then(|(generation, _)| generation.parse().ok())
-            .unwrap_or(1),
-    );
+    let identity = awaken_worker_contract::WorkerIdentity::from_lease_owner(
+        &target.owner,
+        &target.runtime_incarnation,
+    )
+    .unwrap_or_else(|| {
+        // A malformed target stays mismatched; never normalize it into an
+        // accepted incarnation. Exact targets share the production parser.
+        awaken_worker_contract::WorkerIdentity::new(&target.owner, &target.runtime_incarnation, 1)
+    });
     let capability_fingerprint = manifest
         .fingerprint()
         .expect("test Worker manifest fingerprint");
@@ -4315,6 +4369,9 @@ fn terminal_cleanup_worker(
 
 fn terminal_cleanup_manifest() -> awaken_worker_contract::WorkerManifest {
     awaken_worker_contract::WorkerManifest {
+        capabilities: BTreeSet::from([
+            awaken_worker_contract::SESSION_TERMINAL_SOURCE_ADMISSION_CAPABILITY.to_owned(),
+        ]),
         runtime_protocol: awaken_worker_contract::VersionRange {
             min: 1,
             max: awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,

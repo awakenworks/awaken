@@ -1230,6 +1230,13 @@ impl awaken_session_execution_contract::CoordinationRuntime for EchoFake {
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::SessionCoordinationReads for EchoFake {
+    async fn source_dispatch_observation(
+        &self,
+        _session: &awaken_session_state_contract::PersistedSession,
+    ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
+        Default::default()
+    }
+
     async fn coordinated_admission_receipt(
         &self,
         command: awaken_session_execution_contract::CoordinatedAdmissionRef<'_>,
@@ -3067,6 +3074,13 @@ impl awaken_session_execution_contract::CoordinationRuntime for ToolAwaitingFake
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::SessionCoordinationReads for ToolAwaitingFake {
+    async fn source_dispatch_observation(
+        &self,
+        _session: &awaken_session_state_contract::PersistedSession,
+    ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
+        Default::default()
+    }
+
     async fn coordinated_admission_receipt(
         &self,
         command: awaken_session_execution_contract::CoordinatedAdmissionRef<'_>,
@@ -4888,6 +4902,13 @@ impl awaken_session_execution_contract::CoordinationRuntime for RecordingFake {
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::SessionCoordinationReads for RecordingFake {
+    async fn source_dispatch_observation(
+        &self,
+        _session: &awaken_session_state_contract::PersistedSession,
+    ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
+        Default::default()
+    }
+
     async fn coordinated_admission_receipt(
         &self,
         command: awaken_session_execution_contract::CoordinatedAdmissionRef<'_>,
@@ -5825,6 +5846,13 @@ impl awaken_session_execution_contract::CoordinationRuntime for InterruptRedirec
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::SessionCoordinationReads for InterruptRedirectFake {
+    async fn source_dispatch_observation(
+        &self,
+        _session: &awaken_session_state_contract::PersistedSession,
+    ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
+        Default::default()
+    }
+
     async fn coordinated_admission_receipt(
         &self,
         command: awaken_session_execution_contract::CoordinatedAdmissionRef<'_>,

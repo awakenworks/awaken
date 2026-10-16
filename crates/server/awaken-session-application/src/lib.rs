@@ -271,7 +271,7 @@ pub use awaken_session_application_contract::{
 pub type ResolvedSessionEnvironment =
     awaken_executable_environment_contract::ResolvedSessionEnvironment<EnvironmentSnapshot>;
 use awaken_executable_environment_contract::SessionEnvironmentProjectionSource;
-use awaken_worker_contract::WorkerObservationSource;
+use awaken_worker_contract::WorkerIncarnationSource;
 
 /// Required Environment roles projected from one coherent application source.
 /// Construction is explicit and has no optional capability discovery.

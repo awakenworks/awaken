@@ -190,6 +190,7 @@ pub enum SessionTerminalCleanupAffinity {
     Unchanged,
     Retained,
     RequiresUnattemptedArchiveReceipt,
+    RequiresPredecessorExit,
 }
 
 #[must_use]
@@ -205,15 +206,27 @@ pub fn session_terminal_cleanup_affinity_for(
     if current.owner == target_owner && current.runtime_incarnation == target_runtime_incarnation {
         return SessionTerminalCleanupAffinity::Unchanged;
     }
-    if !awaken_session_configuration_contract::resource::realization_lease_is_live_at(
+    let expired = !awaken_session_configuration_contract::resource::realization_lease_is_live_at(
         current.expires_at_unix_ms,
         now_unix_ms,
-    ) && matches!(
-        session.environment,
-        crate::SessionEnvironmentState::Unmaterialized
-    ) && session
-        .terminal_cleanup
-        .has_unprepared_root_only_request(&session.session_id)
+    );
+    if expired
+        && session.is_terminal()
+        && session.environment.binding().is_some()
+        && session
+            .verified_terminal_cleanup()
+            .is_ok_and(|cleanup| cleanup.thread_ids().is_some())
+    {
+        return SessionTerminalCleanupAffinity::RequiresPredecessorExit;
+    }
+    if expired
+        && matches!(
+            session.environment,
+            crate::SessionEnvironmentState::Unmaterialized
+        )
+        && session
+            .terminal_cleanup
+            .has_unprepared_root_only_request(&session.session_id)
     {
         SessionTerminalCleanupAffinity::RequiresUnattemptedArchiveReceipt
     } else {

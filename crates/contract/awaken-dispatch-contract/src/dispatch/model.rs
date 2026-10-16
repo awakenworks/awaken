@@ -355,6 +355,20 @@ pub enum DispatchState {
 }
 
 impl DispatchState {
+    /// A runnable or reserved row still requires cancellation/settlement before
+    /// source access. Physical occupancy remains an independent observation.
+    #[must_use]
+    pub const fn remains_unsettled(self) -> bool {
+        matches!(
+            self,
+            Self::Reserved
+                | Self::ReservationLeased
+                | Self::Pending
+                | Self::Leased
+                | Self::Awaiting
+        )
+    }
+
     /// Map the stored status text (the SQL backends' `status` column) to the
     /// public status. Unknown durable vocabulary is rejected rather than turned
     /// into claimable `Pending` work.

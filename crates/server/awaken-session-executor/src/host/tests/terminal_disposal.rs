@@ -977,11 +977,7 @@ fn terminal_quiescence_and_thread_archive_share_the_exact_unsettled_states() {
         (S::DeadLetter, false),
         (S::Superseded, false),
     ] {
-        assert_eq!(
-            crate::host::dispatch_remains_unsettled(state),
-            expected,
-            "S1/S2"
-        );
+        assert_eq!(state.remains_unsettled(), expected, "S1/S2");
     }
 }
 

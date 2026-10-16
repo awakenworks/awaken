@@ -176,6 +176,13 @@ pub trait CoordinationRuntime: Send + Sync {
 /// ```
 #[async_trait]
 pub trait SessionCoordinationReads: Send + Sync {
+    /// Observe whether the current frozen Dispatch scope can still write its
+    /// source. This is separate from complete historical/business containment.
+    async fn source_dispatch_observation(
+        &self,
+        session: &awaken_session_state_contract::PersistedSession,
+    ) -> crate::SessionSourceDispatchObservation;
+
     /// Rebuild execution containment from the observed terminal root and the
     /// original execution authority. Unsupported fixtures remain unproven.
     async fn execution_recovery_observation(

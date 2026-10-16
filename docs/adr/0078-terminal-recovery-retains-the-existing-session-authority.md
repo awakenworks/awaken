@@ -965,3 +965,45 @@ through its existing Runtime read role. There is no upward Session-to-Dispatch
 contract dependency or contract bundle. The existing pages retain their separate
 public/internal semantics and original cursors; unsupported readers report
 unproven evidence and cannot silently supply affirmative closure.
+
+### Published filesystem handles require their original marker
+
+A published Local or Namespace handle follows durable realization-marker
+publication. If terminal recovery cannot find that marker, the handle alone
+cannot prove absence: another Worker may be looking in a different provider
+base while the original bytes remain intact. Such recovery remains unavailable
+and must not create a replacement `Removed` tombstone or return successful
+absence. This check belongs to the existing filesystem terminal-takeover owner.
+
+Existing exact `Removing`/`Removed` markers retain their response-loss replay
+behavior. A handle-free, exact in-flight effect retains the separate existing
+admission and absence checks. No Source identity, history or cleanup receipt is
+backfilled. Tests exercise both provider classes, same/foreign bases and original
+byte preservation; source location is independent of the cleanup Actor lease.
+
+### Expired terminal Actor assignment after independently observed exit
+
+For an already-terminal root with a frozen cleanup scope and an existing bound
+source, an expired foreign Actor lease may enter the existing assignment CAS
+only after Registry's exact-incarnation read confirms a closed predecessor and
+its independently recorded, valid process exit. A newer incarnation, roster
+absence, lease expiry alone, missing exit, invalid identity or unavailable read
+cannot supply this evidence. The same cached Registry instance provides both
+its roster and its existing `WorkerIncarnationSource` read role.
+
+This assigns terminal work; it does not transfer or replace the physical source.
+The original binding and cleanup operation remain intact. Current target
+capability checks, epoch increment, CAS/replay and uncertain-claim compensation
+remain the only assignment mechanism. Provider configuration, exact physical
+identity and original marker checks still govern preparation/disposal; a claim
+cannot convert an inaccessible source into absence. No old Dispatch slot or
+business obligation is acknowledged by this transition. Unbound/no-Create
+admission keeps its existing exact archive witness. Broader continuation-source
+placement requires its own existing source evidence and is not inferred here.
+
+Preparation's new source-admission authorization is selected through the
+existing Worker manifest capability mechanism. Shipped Workers advertise
+`session-terminal-source-admission/v1`; Session preparation requires it, while
+pure disposal retains its prior requirements. Ordinary Run protocol v5 is not
+renumbered by this preparation-only wire extension. Old Workers cannot receive
+new preparation assignments merely because their execution version matches.

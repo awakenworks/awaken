@@ -375,7 +375,65 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
                 projection.workspace_id.clone(),
                 inherited_provider_disposal,
             )
-            .expect("C3 closed terminal preparation authorization");
+            .expect("C3 closed terminal preparation authorization")
+            .with_source_dispatch(awaken_session_realization_contract::SessionTerminalSourceDispatch::Settled {});
+        // Source-admission rules S1 Pending/S2 Unavailable + a Ready root or
+        // child live-Artifact path -> refuse before background, Artifact,
+        // Memory or provider data I/O. A child's absent root_environment value
+        // is not a provider-validated receipt-only source.
+        // The existing E1/E2 retries below retain their explicit Settled premise
+        // and still prove the independent shared-background fence.
+        let child = format!("{thread}-unsettled-child");
+        let mut child_aggregate = aggregate.clone();
+        child_aggregate.terminal_cleanup = Default::default();
+        assert!(child_aggregate.ensure_terminal_cleanup_fence());
+        child_aggregate
+            .freeze_terminal_cleanup_targets([child.clone()], 0, 0)
+            .unwrap();
+        let child_effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
+            child_aggregate
+                .terminal_cleanup
+                .command_for(&thread.into(), &child)
+                .unwrap(),
+            lease.clone(),
+        );
+        let child_authorization = awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
+            child_effect.clone(),
+            projection.workspace_id.clone(),
+            child_aggregate.authorize_terminal_cleanup_effect(&child_effect).unwrap(),
+        ).unwrap();
+        for (guarded_effect, guarded_authorization) in [
+            (effect.clone(), authorization.clone()),
+            (child_effect, child_authorization),
+        ] {
+            for source in [
+                awaken_session_realization_contract::SessionTerminalSourceDispatch::Pending {},
+                awaken_session_realization_contract::SessionTerminalSourceDispatch::Unavailable {
+                    detail: "fixture source observation outage".into(),
+                },
+            ] {
+                let error = host
+                    .prepare_terminal_cleanup_effect(
+                        guarded_effect.clone(),
+                        guarded_authorization.clone().with_source_dispatch(source),
+                    )
+                    .await
+                    .unwrap_err();
+                assert_eq!(
+                    error.code, "session_terminal_source_dispatch_not_settled",
+                    "S1/S2 {error:?}"
+                );
+                assert!(
+                    host.file_application()
+                        .unwrap()
+                        .list("workspace", Some(thread))
+                        .await
+                        .unwrap()
+                        .is_empty(),
+                    "S1/S2 no live harvest"
+                );
+            }
+        }
         let blocked = tokio::spawn({
             let host = host.clone();
             let effect = effect.clone();
@@ -639,7 +697,8 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
                 .authorize_terminal_cleanup_effect(&effect)
                 .unwrap(),
         )
-        .unwrap();
+        .unwrap()
+        .with_source_dispatch(awaken_session_realization_contract::SessionTerminalSourceDispatch::Settled {});
     let first = host
         .prepare_terminal_cleanup_effect(effect.clone(), authorization.clone())
         .await

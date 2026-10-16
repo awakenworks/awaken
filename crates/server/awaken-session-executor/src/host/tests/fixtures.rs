@@ -563,7 +563,7 @@ impl awaken_session_realization_contract::SessionTerminalPreparationControl
                 effect.clone(),
                 authority.0.workspace_id,
                 inherited_provider_disposal,
-            )?;
+            )?.with_source_dispatch(awaken_session_realization_contract::SessionTerminalSourceDispatch::Settled {});
         let barrier = self.authorization_barrier.lock().unwrap().clone();
         if let Some((started, proceed)) = barrier {
             started.notify_one();

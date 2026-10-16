@@ -1381,7 +1381,7 @@ async fn mount_with_managed_over_and_models(
         worker_clock,
         org_admission,
     } = routing;
-    let worker_observations: Arc<dyn awaken_worker_contract::WorkerObservationSource> =
+    let worker_observations: Arc<dyn awaken_worker_contract::WorkerIncarnationSource> =
         worker_directory.clone();
     let preparation: Arc<dyn awaken_session_realization_contract::SessionPreparationPlacement> =
         host.clone();

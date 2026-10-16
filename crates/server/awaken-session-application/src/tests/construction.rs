@@ -188,6 +188,20 @@ impl awaken_worker_contract::WorkerObservationSource for ExecutionObservationPro
     }
 }
 
+#[async_trait::async_trait]
+impl awaken_worker_contract::WorkerIncarnationSource for ExecutionObservationProbe {
+    async fn incarnation(
+        &self,
+        _identity: &awaken_worker_contract::WorkerIdentity,
+    ) -> Result<
+        Option<awaken_worker_contract::RegisteredWorker>,
+        awaken_worker_contract::RegistryError,
+    > {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(None)
+    }
+}
+
 impl awaken_session_realization_contract::SessionPreparationPlacement
     for ExecutionObservationProbe
 {
@@ -217,12 +231,12 @@ async fn builder_freezes_execution_services_and_mount_checks_reject_foreign_inst
         let probe = Arc::new(ExecutionObservationProbe::default());
         let foreign = Arc::new(ExecutionObservationProbe::default());
         let dispatch: Arc<dyn awaken_dispatch_contract::DispatchOperationalFeed> = probe.clone();
-        let workers: Arc<dyn awaken_worker_contract::WorkerObservationSource> = probe.clone();
+        let workers: Arc<dyn awaken_worker_contract::WorkerIncarnationSource> = probe.clone();
         let placement: Arc<dyn awaken_session_realization_contract::SessionPreparationPlacement> =
             probe.clone();
         let foreign_dispatch: Arc<dyn awaken_dispatch_contract::DispatchOperationalFeed> =
             foreign.clone();
-        let foreign_workers: Arc<dyn awaken_worker_contract::WorkerObservationSource> =
+        let foreign_workers: Arc<dyn awaken_worker_contract::WorkerIncarnationSource> =
             foreign.clone();
         let foreign_placement: Arc<
             dyn awaken_session_realization_contract::SessionPreparationPlacement,
@@ -286,10 +300,10 @@ fn fixture_execution_completion_validates_existing_bindings_before_filling_missi
     // foreign role after completion -> refusal preserves both canonical handles.
     let probe = Arc::new(ExecutionObservationProbe::default());
     let foreign = Arc::new(ExecutionObservationProbe::default());
-    let workers: Arc<dyn awaken_worker_contract::WorkerObservationSource> = probe.clone();
+    let workers: Arc<dyn awaken_worker_contract::WorkerIncarnationSource> = probe.clone();
     let placement: Arc<dyn awaken_session_realization_contract::SessionPreparationPlacement> =
         probe.clone();
-    let foreign_workers: Arc<dyn awaken_worker_contract::WorkerObservationSource> = foreign.clone();
+    let foreign_workers: Arc<dyn awaken_worker_contract::WorkerIncarnationSource> = foreign.clone();
     let foreign_placement: Arc<
         dyn awaken_session_realization_contract::SessionPreparationPlacement,
     > = foreign.clone();

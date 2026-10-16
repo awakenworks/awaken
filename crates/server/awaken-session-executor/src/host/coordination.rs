@@ -15,7 +15,10 @@ mod committed_links;
 mod reads;
 mod session_reply_receipt;
 
-use committed_links::{apply_lifecycle_latest_runs, project_committed_coordination_links};
+use committed_links::apply_lifecycle_latest_runs;
+pub(in crate::host) use committed_links::{
+    CoordinationReadPurpose, project_committed_coordination,
+};
 
 pub(super) use session_reply_receipt::{SessionReplyReceipt, validate_awaiting_tool_authority};
 
@@ -678,7 +681,7 @@ impl SharedHost {
                     .coordinated_thread_dispatches(session_id, thread_id)
                     .await?
                     .into_iter()
-                    .any(|dispatch| dispatch_remains_unsettled(dispatch.state));
+                    .any(|dispatch| dispatch.state.remains_unsettled());
                 if !active {
                     return Ok(());
                 }

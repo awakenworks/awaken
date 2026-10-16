@@ -206,6 +206,49 @@ pub struct SessionRealizationTarget {
     pub reassign_existing_lease: bool,
 }
 
+impl SessionRealizationTarget {
+    /// Match this claimed target against one observed Registry roster, retaining
+    /// exact incarnation, current time, protocol and immutable manifest checks.
+    /// This pure projection performs no query and grants no Root lease.
+    pub fn worker_from_registry_observation(
+        &self,
+        workers: Vec<awaken_worker_contract::RegisteredWorker>,
+        now: u64,
+    ) -> Result<Option<awaken_worker_contract::WorkerSnapshot>, SessionRealizationControlFailure>
+    {
+        let mut matching = workers
+            .into_iter()
+            .filter(|registered| registered.snapshot.identity.worker_id == self.owner);
+        let Some(registered) = matching.next() else {
+            return Ok(None);
+        };
+        if matching.next().is_some() {
+            return Err(SessionRealizationControlFailure::Unavailable(
+                "Worker observation source returned duplicate logical owners".into(),
+            ));
+        }
+        let worker = registered.snapshot;
+        let fingerprint = worker
+            .manifest
+            .fingerprint()
+            .map_err(|error| SessionRealizationControlFailure::Unavailable(error.to_string()))?;
+        if worker.identity.lease_owner() != self.runtime_incarnation
+            || worker.expires_at_ms <= now
+            || self.lease_expires_at_unix_ms > worker.expires_at_ms
+            || !matches!(
+                worker.state,
+                awaken_worker_contract::WorkerState::Ready
+                    | awaken_worker_contract::WorkerState::Draining
+            )
+            || fingerprint != worker.capability_fingerprint
+            || !worker.manifest.supports_current_runtime_protocol()
+        {
+            return Ok(None);
+        }
+        Ok(Some(worker))
+    }
+}
+
 /// Assignment result for one atomically loaded Session realization fence.
 /// The aggregate applies the returned epoch in the same root-CAS commit that
 /// installs the owner; callers cannot mint or reinterpret an epoch themselves.

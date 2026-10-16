@@ -6,6 +6,81 @@ use pc::Sandbox as _;
 use std::sync::Arc;
 
 #[tokio::test]
+async fn terminal_takeover_cannot_borrow_absence_from_another_provider_base() {
+    // Source-location cause/effect table: P1 original provider base, P2 another
+    // base, each for Workdir and Namespace; C1 exact frozen spec/handle; C2 a
+    // higher-epoch terminal actor. P1+C1+C2 may recover the retained source;
+    // P2 must reject, never call an inaccessible original source absent. In
+    // both rows original bytes remain until separately authorized disposal.
+    for namespace in [false, true] {
+        for foreign_base in [false, true] {
+            let original = tempfile::tempdir().unwrap();
+            let foreign = tempfile::tempdir().unwrap();
+            let provider = |base: &std::path::Path| -> Box<dyn pc::SandboxProvider> {
+                if namespace {
+                    Box::new(crate::NamespaceProvider::new(base))
+                } else {
+                    Box::new(LocalProvider::new(base))
+                }
+            };
+            let source = provider(original.path());
+            let mut spec = workdir_spec("terminal-source-location", false);
+            if namespace {
+                spec.isolation = pc::IsolationClass::Namespace;
+            }
+            let create =
+                pc::SandboxEffectFence::new("create", "old-worker", "old-boot", 1, u64::MAX)
+                    .unwrap();
+            let terminal =
+                pc::SandboxEffectFence::new("terminal", "new-worker", "new-boot", 2, u64::MAX)
+                    .unwrap();
+            let sandbox = source
+                .claim_for_effect(
+                    &spec,
+                    &create,
+                    &pc::test_support::EffectAuthority::new(&create),
+                )
+                .await
+                .unwrap();
+            let handle = sandbox.handle();
+            let evidence =
+                crate::sandbox_dir(original.path(), &spec.scope).join("retained-source.txt");
+            std::fs::write(&evidence, "original source bytes").unwrap();
+            let replacement = provider(if foreign_base {
+                foreign.path()
+            } else {
+                original.path()
+            });
+            let result = replacement
+                .prepare_terminal_for_effect(
+                    &spec,
+                    Some(&handle),
+                    Some(&create),
+                    &terminal,
+                    &pc::test_support::EffectAuthority::new(&terminal),
+                )
+                .await;
+            if foreign_base {
+                assert!(
+                    result.is_err(),
+                    "P2 {namespace}: inaccessible original source must stay unproven"
+                );
+            } else {
+                assert!(
+                    matches!(result, Ok(Some(_))),
+                    "P1 {namespace}: exact source is recoverable"
+                );
+            }
+            assert_eq!(
+                std::fs::read_to_string(&evidence).unwrap(),
+                "original source bytes",
+                "P1/P2 no source disposal"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn physical_disposal_rechecks_current_authority_after_every_retained_wait() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;

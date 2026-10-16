@@ -1503,6 +1503,14 @@ fn worker_manifest_advertises_only_installed_resource_seams() {
         application_capabilities: Default::default(),
         config: &StandardManifestConfig::default(),
     });
+    // Wire rule W5: the shipped terminal driver decodes/enforces the source
+    // authorization independently of optional Resource materializers. This
+    // advertises the protocol without synthesizing any Resource capability.
+    assert!(
+        without
+            .capabilities
+            .contains(awaken_worker_contract::SESSION_TERMINAL_SOURCE_ADMISSION_CAPABILITY)
+    );
     assert!(
         !without
             .capabilities

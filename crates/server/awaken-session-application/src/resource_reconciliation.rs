@@ -367,51 +367,6 @@ impl SessionApplication {
         }
     }
 
-    pub(crate) async fn authorize_terminal_cleanup_effect_from_root(
-        &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
-    ) -> Result<
-        awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
-        SessionRealizationControlFailure,
-    > {
-        let session = self
-            .session_repository()
-            .get(&effect.command.session_id)
-            .await
-            .map_err(repository_control)?;
-        // Terminal generation lifetime lets an already-admitted effect finish
-        // after its asserted expiry. Starting a new physical effect is narrower:
-        // the one current Session-root lease must still be live, while the
-        // domain check below proves the old assertion is that same generation.
-        // Worker Registry authentication remains the independent transport
-        // identity edge; no second lease record or timer authority is created.
-        self.require_current_live_terminal_generation(&session)?;
-        let workspace_id = self
-            .session_repository()
-            .owner(&effect.command.session_id)
-            .await
-            .map_err(repository_control)?;
-        if effect.command.restore_target
-            != terminal_restore_target_for_thread(
-                &workspace_id,
-                &session,
-                &effect.command.thread_id,
-            )
-        {
-            return Err(SessionRealizationControlFailure::Invalid(
-                "terminal cleanup restore target differs from durable Environment authority".into(),
-            ));
-        }
-        let inherited_provider_disposal = session
-            .authorize_terminal_cleanup_effect(effect)
-            .map_err(terminal_cleanup_authorization_failure)?;
-        awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
-            effect.clone(),
-            workspace_id,
-            inherited_provider_disposal,
-        )
-    }
-
     pub(crate) async fn authorize_terminal_cleanup_disposal_from_root(
         &self,
         effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
