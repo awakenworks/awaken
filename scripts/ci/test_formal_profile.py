@@ -15,6 +15,7 @@ import subprocess
 import sys
 import unittest
 import _strict_unittest as strict_unittest
+from _native_shell import bash_executable
 from unittest import mock
 
 import check_feature_coverage
@@ -396,7 +397,7 @@ class ProfileTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         gate = (root / "scripts/ci/check_formal.sh").read_text()
         frozen = {
-            "resume-validator-empty-object-v1": "c0c52971b7645cf31c694554ca286f520d10af37787c2ec966af176a906d55e1",
+            "resume-validator-empty-object-v1": "ba42ca4ec6b2b31c39b37038cd4177f8e9eff7307660b775a1f75f1431293aed",
             "erasure-progress-selection-v1": "4052ded580c29bca71f8cbd73a747fa1b9d85d43c709b8006fbaf5313652012d",
             "erasure-checkpoint-successor-v1": "012c22d237f41cee1953bc1322707632f45f88c4981c0499b1f1b49645a95d91",
             "fingerprint-fnv-hex-v1": "999182642c04b9eeb4fdff6a51aab78f91f31203383015d1e5c044481ce8e9c3",
@@ -450,14 +451,14 @@ class ProfileTests(unittest.TestCase):
             ("empty plan", "return 0", 1),
         ):
             shell = (f"set -euo pipefail\nz3_version='{pinned_z3}'; kani_jobs=1; kani_batch_timeout_seconds=600; "
-                     f"formal_artifact_dir={shlex.quote(str(solver_bin))}; "
+                     f"formal_artifact_dir={shlex.quote((solver_bin).as_posix())}; "
                      "CARGO_TARGET_DIR=/tmp/checked-profile-test; missing=0\n"
                      "formal_selection=(--tier full); formal_affected=''\n"
                      "awaken_configure_kani_driver_target() { :; }\n"
                      "run_with_deadline() { printf 'CALL'; printf ' %s' \"$@\"; printf '\\n'; }\n"
                      f"python3() {{ {plan}; }}\n" + runner + z3_check + loop)
             with self.subTest(runner=label):
-                result = subprocess.run(["bash", "-c", shell], cwd=root, text=True, capture_output=True,
+                result = subprocess.run([bash_executable(), "-c", shell], cwd=root, text=True, capture_output=True,
                                         env=dict(os.environ, PATH=f"{solver_bin}{os.pathsep}{os.environ['PATH']}"))
                 self.assertEqual(result.returncode, status, result.stderr)
                 calls = [line for line in result.stdout.splitlines() if line.startswith("CALL ")]
@@ -465,7 +466,7 @@ class ProfileTests(unittest.TestCase):
                     self.assertEqual(calls, [], "P4 no batch starts without a plan")
                 else:
                     self.assertEqual(calls, [
-                        f"CALL 600 cargo kani -p {line.split()[0]} --output-format terse -j 1 "
+                        f"CALL 600 cargo kani -p {line.split()[0]} --output-format terse --verbose -j 1 "
                         + " ".join(line.split()[1:]) for line in planned
                     ], "P4 every planned batch reaches Cargo verbatim")
 

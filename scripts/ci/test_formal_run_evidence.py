@@ -14,12 +14,32 @@ import time
 import unittest
 from unittest import mock
 import _strict_unittest as strict_unittest
+from _native_shell import bash_executable
 
 import formal_budget
 import formal_plan
 import formal_sources
 from formal_sources import detached_git_environment
 from formal_run_evidence import FULL_SELECTION, ROOT, begin_record, finish_record, validate_record, write_record, begin_artifacts, finish_artifacts, verify_artifacts, source_snapshot, digest_bytes, committed_file_digest
+
+
+
+def run_shell_fixture(arguments, **kwargs):
+    """Keep multiline shell payloads out of native Windows argv quoting.
+
+    The file contains the exact gate slice. A short source trampoline retains
+    its original $0 and positional arguments, so receipt/EXIT behavior remains
+    the behavior under test. The file stays outside the fixture's Git source.
+    """
+    if arguments[1:2] != ["-c"]:
+        return subprocess.run(arguments, **kwargs)
+    script, *positionals = arguments[2:]
+    argv0 = positionals[0] if positionals else arguments[0]
+    with tempfile.TemporaryDirectory(prefix="awaken-formal-shell-") as directory:
+        entry = Path(directory) / "gate-slice.sh"
+        entry.write_text(script, encoding="utf-8", newline="\n")
+        return subprocess.run([arguments[0], "-c", 'entry=$1; shift; source "$entry"',
+                               argv0, entry.as_posix(), *positionals[1:]], **kwargs)
 
 
 def nested_shell_function(source: str, name: str) -> str:
@@ -114,7 +134,14 @@ def link_runner_tools(bindir: Path) -> None:
         resolved = shutil.which(tool)
         if resolved is None:
             raise RuntimeError(f"the batch runner needs {tool}, which is not installed")
-        (bindir / tool).symlink_to(resolved)
+        if os.name == "nt":
+            # A shell wrapper keeps the executable beside its MSYS runtime
+            # without requiring native symlink privileges or extending PATH.
+            entry = bindir / tool
+            entry.write_text("#!/bin/sh\nexec " + shlex.quote(Path(resolved).as_posix()) + ' "$@"\n')
+            entry.chmod(0o755)
+        else:
+            (bindir / tool).symlink_to(resolved)
 
 
 class EvidenceTests(unittest.TestCase):
@@ -160,9 +187,9 @@ class EvidenceTests(unittest.TestCase):
             # authority so the batch runner and a person share one expression.
             # What this test asserts is unchanged: the fact still has to reach
             # cargo.
-            f"source {shlex.quote(str(self.root / 'scripts/ci/_cargo_target.sh'))}\n"
-            f"CARGO_TARGET_DIR={shlex.quote(str(target))}\n"
-            f"formal_artifact_dir={shlex.quote(str(bindir))}\n"
+            f"source {shlex.quote((self.root / 'scripts/ci/_cargo_target.sh').as_posix())}\n"
+            f"CARGO_TARGET_DIR={shlex.quote((target).as_posix())}\n"
+            f"formal_artifact_dir={shlex.quote((bindir).as_posix())}\n"
             "kani_jobs=1\n"
             "kani_batch_timeout_seconds=37\n"
             "formal_failure_kind= formal_failure_stage= formal_failure_subject= "
@@ -171,19 +198,19 @@ class EvidenceTests(unittest.TestCase):
             + function
             + "\nrun_kani awaken-dispatch --no-default-features --harness exact_claim\n"
         )
-        result = subprocess.run(
-            ["/bin/bash", "-c", script],
-            env=dict(os.environ, PATH=str(bindir), CALLS=str(calls), DEADLINE_CALL=str(deadline_call)),
+        result = run_shell_fixture(
+            [bash_executable(), "-c", script],
+            env=dict(os.environ, PATH=str(bindir), CALLS=calls.as_posix(), DEADLINE_CALL=deadline_call.as_posix()),
             capture_output=True,
             text=True,
             timeout=10,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         lines = calls.read_text().splitlines()
-        self.assertEqual(lines[0], str(target / "kani"))
+        self.assertEqual(Path(lines[0]), target / "kani")
         self.assertEqual(
             lines[1],
-            "kani -p awaken-dispatch --output-format terse -j 1 "
+            "kani -p awaken-dispatch --output-format terse --verbose -j 1 "
             "--no-default-features --harness exact_claim",
         )
         self.assertEqual(deadline_call.read_text(), "37\n")
@@ -209,8 +236,9 @@ class EvidenceTests(unittest.TestCase):
                 artifact_dir.mkdir()
                 script = (
                     "set -uo pipefail\nCARGO_TARGET_DIR=/build/fixture\nkani_jobs=1\n"
-                    f"formal_artifact_dir={shlex.quote(str(artifact_dir))}\n"
+                    f"formal_artifact_dir={shlex.quote((artifact_dir).as_posix())}\n"
                     "kani_batch_timeout_seconds=37\n"
+                    "awaken_configure_kani_driver_target() { :; }\n"
                     "formal_failure_kind= formal_failure_stage= formal_failure_subject= "
                     "formal_failure_deadline_seconds=\n"
                     f"run_with_deadline() {{ printf 'proof transcript\\n'; return {wrapped_status}; }}\n"
@@ -220,7 +248,7 @@ class EvidenceTests(unittest.TestCase):
                     "\"$formal_failure_stage\" \"$formal_failure_subject\" "
                     "\"$formal_failure_deadline_seconds\"\n"
                 )
-                result = subprocess.run(["/bin/bash", "-c", script], capture_output=True,
+                result = run_shell_fixture([bash_executable(), "-c", script], capture_output=True,
                                         text=True, timeout=10)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 lines = result.stdout.splitlines()[-5:]
@@ -229,7 +257,48 @@ class EvidenceTests(unittest.TestCase):
                 self.assertEqual(len(transcripts), 0 if wrapped_status == 0 else 1)
                 if transcripts:
                     self.assertEqual(transcripts[0].read_text(), "proof transcript\n")
-                    self.assertIn(str(transcripts[0]), result.stderr)
+                    self.assertIn(transcripts[0].as_posix(), result.stderr)
+
+    def test_kani_backend_configuration_and_memory_diagnostics_survive(self):
+        # D1 a CBMC option rejection and D2 a backend memory failure each keep
+        # the original exit and raw reason. The actual batch runner invokes a
+        # backend port that exposes its reason only when verbose was requested;
+        # removing that flag reproduces the opaque status-1 failure. Memory
+        # classification consumes that same transcript, without rerunning proof.
+        source = (self.root / "scripts/ci/check_formal.sh").read_text()
+        function = nested_shell_function(source, "run_kani")
+        for label, diagnostic, kind in (
+            ("invalid-option", "Invalid User Input\nOption: unwindset\nReason: invalid loop identifier stale_drop", "execution-failed"),
+            ("memory", "CBMC appears to have run out of memory", "memory-bound"),
+        ):
+            with self.subTest(label=label):
+                bindir = Path(self.temporary.name) / ("backend-" + label)
+                bindir.mkdir()
+                artifact_dir = bindir / "artifacts"
+                artifact_dir.mkdir()
+                link_runner_tools(bindir)
+                cargo = bindir / "cargo"
+                cargo.write_text("#!/bin/sh\ncase \" $* \" in *' --verbose '*) printf '%s\\n' \"$PROOF_DIAGNOSTIC\";; esac\nexit 1\n")
+                cargo.chmod(0o755)
+                script = (
+                    "set -uo pipefail\nkani_jobs=1; kani_batch_timeout_seconds=37\n"
+                    f"formal_artifact_dir={shlex.quote((artifact_dir).as_posix())}\n"
+                    "formal_failure_kind= formal_failure_stage= formal_failure_subject= formal_failure_deadline_seconds=\n"
+                    "awaken_configure_kani_driver_target() { :; }\n"
+                    "run_with_deadline() { shift; \"$@\"; }\n" + function +
+                    "\nrun_kani awaken-runtime-contract --harness resume_binding\n"
+                    "status=$?; printf 'kind=%s\\n' \"$formal_failure_kind\"; exit \"$status\"\n"
+                )
+                result = run_shell_fixture(
+                    [bash_executable(), "-c", script], capture_output=True, text=True, timeout=10,
+                    env=dict(os.environ, PATH=str(bindir), PROOF_DIAGNOSTIC=diagnostic),
+                )
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(diagnostic, result.stdout)
+                self.assertIn("kind=" + kind, result.stdout)
+                [transcript] = artifact_dir.glob("kani-awaken-runtime-contract.*.log")
+                self.assertEqual(transcript.read_text(), diagnostic + "\n")
+                self.assertIn(transcript.as_posix(), result.stderr)
 
     def test_pinned_solver_selection_and_strict_missing_tool_policy(self):
         # Z1 installed exact version + proof success => invoke the exact harness.
@@ -266,17 +335,17 @@ class EvidenceTests(unittest.TestCase):
                     tool.chmod(0o755)
                 calls = bindir / "calls"
                 script = f"set -euo pipefail\nmissing=0\nrequire_tools={strict}\nz3_version={shlex.quote(version)}\n"
-                script += f"formal_artifact_dir={shlex.quote(str(bindir))}\n"
+                script += f"formal_artifact_dir={shlex.quote((bindir).as_posix())}\n"
                 script += "kani_jobs=1\nkani_batch_timeout_seconds=1\nawaken_configure_kani_driver_target() { :; }\n"
                 script += "run_with_deadline() { shift; printf '%s\\n' \"$*\" > \"$CALLS\"; return \"$PROOF_EXIT\"; }\n"
-                result = subprocess.run(["/bin/bash", "-c", script + selection + strict_check],
-                                        env=dict(os.environ, PATH=str(bindir), CALLS=str(calls), PROOF_EXIT=str(proof_exit)),
+                result = run_shell_fixture([bash_executable(), "-c", script + selection + strict_check],
+                                        env=dict(os.environ, PATH=str(bindir), CALLS=calls.as_posix(), PROOF_EXIT=str(proof_exit)),
                                         capture_output=True, text=True, timeout=10)
                 self.assertEqual(result.returncode, expected, result.stderr)
                 invoked = installed and reported == version and version_exit == 0
                 self.assertEqual(calls.exists(), invoked)
                 if invoked:
-                    self.assertEqual(calls.read_text().strip(), "cargo kani -p awaken-protocol-managed --output-format terse -j 1 --solver z3 --exact --harness "
+                    self.assertEqual(calls.read_text().strip(), "cargo kani -p awaken-protocol-managed --output-format terse --verbose -j 1 --solver z3 --exact --harness "
                                      "resources::memory_stores::memory_time_filter_compares_visible_milliseconds_without_merging_them")
                 if not installed:
                     self.assertIn("skipped Z3", result.stdout)
@@ -301,18 +370,19 @@ class EvidenceTests(unittest.TestCase):
         ):
             with self.subTest(solver=solver, installed=installed, strict=strict), tempfile.TemporaryDirectory() as temporary:
                 bindir = Path(temporary)
+                link_runner_tools(bindir)
                 if installed:
                     (bindir / solver).write_text("#!/bin/sh\nexit 0\n")
                     (bindir / solver).chmod(0o755)
                 calls = bindir / "calls"
                 script = (f"set -euo pipefail\nmissing=0\nrequire_tools={strict}\nz3_version=unused\n"
-                          f"formal_artifact_dir={shlex.quote(str(bindir))}\n"
+                          f"formal_artifact_dir={shlex.quote((bindir).as_posix())}\n"
                           "kani_solver_tools=/released/kani/bin\nkani_jobs=1\nkani_batch_timeout_seconds=1\n"
                           "awaken_configure_kani_driver_target() { :; }\n"
                           "run_with_deadline() { shift; printf '%s\\n' \"$*\" > \"$CALLS\"; }\n")
                 invocation = f"  run_kani awaken-protocol-managed --harness a --solver {solver} --harness b\n"
-                result = subprocess.run(["/bin/bash", "-c", script + runner + invocation + strict_check],
-                                        env=dict(os.environ, PATH=str(bindir) + os.pathsep + "/usr/bin:/bin", CALLS=str(calls)),
+                result = run_shell_fixture([bash_executable(), "-c", script + runner + invocation + strict_check],
+                                        env=dict(os.environ, PATH=str(bindir), CALLS=calls.as_posix()),
                                         capture_output=True, text=True, timeout=10)
                 self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
                 self.assertEqual(calls.exists(), invoked)
@@ -418,6 +488,48 @@ class EvidenceTests(unittest.TestCase):
                     exit_code, "resource-bound", "cargo-kani", subject, deadline,
                 )
 
+    def test_memory_bound_failure_seals_without_a_deadline_or_release_promotion(self):
+        # M1 backend exit 1 or an OOM exit 137 with an exact package seals the
+        # original non-passing cause. M2 an absent/empty subject, a deadline
+        # exit, or a claimed deadline is rejected. M3 the actual CLI accepts the
+        # same kind as the runner/API and writes Not-passed, never Running or
+        # Passed. Release validation rejects every successful sealing result.
+        for exit_code in (1, 137):
+            with self.subTest(exit_code=exit_code):
+                failed = finish_record(
+                    begin_record(self.root, True, 100, FULL_SELECTION), self.root, False, 110,
+                    exit_code, "memory-bound", "cargo-kani", "awaken-runtime-contract",
+                )
+                self.assertEqual(failed["status"], "not-passed")
+                self.assertTrue(failed["source_unchanged"])
+                self.assertEqual(failed["outcome"], {
+                    "kind": "memory-bound", "exit_code": exit_code,
+                    "stage": "cargo-kani", "subject": "awaken-runtime-contract",
+                })
+                with self.assertRaisesRegex(ValueError, "not a completed strict run"):
+                    validate_record(failed, self.root, 110)
+        for exit_code, subject, deadline in ((1, None, None), (1, "", None),
+                                             (124, "package", None), (1, "package", 37)):
+            with self.subTest(exit_code=exit_code, subject=subject, deadline=deadline), \
+                    self.assertRaises(ValueError):
+                finish_record(
+                    begin_record(self.root, True, 100, FULL_SELECTION), self.root, False, 110,
+                    exit_code, "memory-bound", "cargo-kani", subject, deadline,
+                )
+        record_path = self.root / "target/memory-bound.json"
+        write_record(record_path, begin_record(self.root, True, 100, FULL_SELECTION))
+        result = subprocess.run([
+            sys.executable, str(self.root / "scripts/ci/formal_run_evidence.py"), "finish",
+            "--record", str(record_path), "--exit-code", "1", "--failure-kind", "memory-bound",
+            "--failure-stage", "cargo-kani", "--failure-subject", "awaken-runtime-contract",
+        ], cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        sealed = json.loads(record_path.read_text())
+        self.assertEqual(sealed["status"], "not-passed")
+        self.assertEqual(sealed["outcome"]["kind"], "memory-bound")
+        with self.assertRaisesRegex(ValueError, "not a completed strict run"):
+            validate_record(sealed, self.root)
+
     def test_every_release_identity_axis_is_binding(self):
         # V2-V4: take a valid completed receipt, change one axis at a time.
         # Every mutation rejects independently; the positive row prevents a
@@ -484,11 +596,11 @@ class EvidenceTests(unittest.TestCase):
         checker_started = bindir / "checker-started"
         shim = bindir / "python3"
         shim.write_text("#!/bin/sh\ncase \"$1\" in\n"
-                        "  scripts/ci/formal_run_evidence.py|scripts/ci/formal_budget.py) exec " + shlex.quote(sys.executable) + " \"$@\" ;;\n"
+                        "  scripts/ci/formal_run_evidence.py|scripts/ci/formal_budget.py) exec " + shlex.quote(Path(sys.executable).as_posix()) + " \"$@\" ;;\n"
                         "  *) touch \"$CHECKER_STARTED\"; exit 23 ;;\nesac\n")
         shim.chmod(0o755)
         env = dict(os.environ, PATH=str(bindir) + os.pathsep + os.environ["PATH"],
-                   AWAKEN_FORMAL_RUN_EVIDENCE=str(path), CHECKER_STARTED=str(checker_started))
+                   AWAKEN_FORMAL_RUN_EVIDENCE=path.as_posix(), CHECKER_STARTED=checker_started.as_posix())
         patch = self.root / "scripts/ci/patches/cbmc-smt-type-dependencies.patch"
         original = patch.read_bytes()
         for stage, expected in (("checker", 23), ("tool-selection", 1)):
@@ -498,7 +610,7 @@ class EvidenceTests(unittest.TestCase):
                 if stage == "tool-selection":
                     patch.write_bytes(original + b"\n")
                 write_record(path, finish_record(begin_record(self.root, True, 100, FULL_SELECTION), self.root, False, 110))
-                result = subprocess.run(["bash", "scripts/ci/check_formal.sh", "--require-tools"],
+                result = run_shell_fixture([bash_executable(), "scripts/ci/check_formal.sh", "--require-tools"],
                                         cwd=self.root, env=env, capture_output=True, text=True, timeout=30)
                 self.assertEqual(result.returncode, expected, result.stderr)
                 self.assertEqual(checker_started.exists(), stage == "checker")
@@ -526,7 +638,7 @@ class EvidenceTests(unittest.TestCase):
         shim.write_text(
             "#!/bin/sh\ncase \"$1\" in\n"
             "  scripts/ci/formal_run_evidence.py|scripts/ci/formal_budget.py) exec "
-            + shlex.quote(sys.executable) + " \"$@\" ;;\n"
+            + shlex.quote(Path(sys.executable).as_posix()) + " \"$@\" ;;\n"
             "  *) touch \"$CHECKER_STARTED\"; exit 0 ;;\n"
             "esac\n"
         )
@@ -536,13 +648,13 @@ class EvidenceTests(unittest.TestCase):
             with self.subTest(override=override):
                 shutil.rmtree(self.root / "target", ignore_errors=True)
                 checker_started.unlink(missing_ok=True)
-                result = subprocess.run(
-                    ["bash", "scripts/ci/check_formal.sh", "--require-tools"],
+                result = run_shell_fixture(
+                    [bash_executable(), "scripts/ci/check_formal.sh", "--require-tools"],
                     cwd=self.root,
                     env=dict(os.environ, PATH=str(bindir) + os.pathsep + os.environ["PATH"],
-                             AWAKEN_FORMAL_RUN_EVIDENCE=str(path),
+                             AWAKEN_FORMAL_RUN_EVIDENCE=path.as_posix(),
                              AWAKEN_KANI_BATCH_TIMEOUT_SECONDS=override,
-                             CHECKER_STARTED=str(checker_started)),
+                             CHECKER_STARTED=checker_started.as_posix()),
                     capture_output=True, text=True, timeout=30,
                 )
                 self.assertEqual(result.returncode, 2, result.stderr)
@@ -571,7 +683,7 @@ class EvidenceTests(unittest.TestCase):
         shim = bindir / "python3"
         shim.write_text(
             '#!/bin/sh\nif [ "$2" = artifacts-finish ]; then exit 37; fi\nexec '
-            + shlex.quote(sys.executable) + ' "$@"\n'
+            + shlex.quote(Path(sys.executable).as_posix()) + ' "$@"\n'
         )
         shim.chmod(0o755)
         path = self.root / "target/test-timings/formal-run.json"
@@ -581,11 +693,11 @@ class EvidenceTests(unittest.TestCase):
             "formal_failure_subject=awaken-provider-genai\n"
             "formal_failure_deadline_seconds=37\nexit 124\n"
         )
-        result = subprocess.run(
-            ["bash", "-c", body, "scripts/ci/check_formal.sh", "--require-tools"],
+        result = run_shell_fixture(
+            [bash_executable(), "-c", body, "scripts/ci/check_formal.sh", "--require-tools"],
             cwd=self.root,
             env=dict(os.environ, PATH=str(bindir) + os.pathsep + os.environ["PATH"],
-                     AWAKEN_FORMAL_RUN_EVIDENCE=str(path)),
+                     AWAKEN_FORMAL_RUN_EVIDENCE=path.as_posix()),
             capture_output=True, text=True, timeout=30,
         )
         self.assertEqual(result.returncode, 124, result.stderr)
@@ -602,12 +714,11 @@ class EvidenceTests(unittest.TestCase):
         # first status survives; E2 its Not-passed outcome survives; E3 cleanup
         # failure is diagnostic only. Constraints: cleanup cannot promote or
         # rewrite verification evidence. Rules R1=C1+C3->23, R2=C2+C3->124.
-        initialization = formal_gate_initialization(self.root)
-        bindir = Path(self.temporary.name) / "cleanup-bin"
-        bindir.mkdir()
-        cleanup = bindir / "rm"
-        cleanup.write_text('#!/bin/sh\necho cleanup-failure >&2\nexit 41\n')
-        cleanup.chmod(0o755)
+        # Inject the cleanup command port explicitly. Native shell startup
+        # may resolve its own rm before an extensionless PATH fixture, which
+        # leaves the intended cleanup failure unexercised.
+        initialization = ('rm() { echo cleanup-failure >&2; return 41; }\n'
+                          + formal_gate_initialization(self.root))
         for body_status in (23, 124):
             with self.subTest(body_status=body_status):
                 path = self.root / f"target/test-timings/formal-run-{body_status}.json"
@@ -619,16 +730,16 @@ class EvidenceTests(unittest.TestCase):
                         "formal_failure_subject=awaken-provider-genai\n"
                         "formal_failure_deadline_seconds=37\n"
                     )
-                result = subprocess.run(
-                    ["bash", "-c", initialization + "\n" + metadata
+                result = run_shell_fixture(
+                    [bash_executable(), "-c", initialization + "\n" + metadata
                      + f"exit {body_status}\n",
                      "scripts/ci/check_formal.sh", "--require-tools"],
                     cwd=self.root,
-                    env=dict(os.environ, PATH=str(bindir) + os.pathsep + os.environ["PATH"],
-                             AWAKEN_FORMAL_RUN_EVIDENCE=str(path)),
+                    env=dict(os.environ, AWAKEN_FORMAL_RUN_EVIDENCE=path.as_posix()),
                     capture_output=True, text=True, timeout=30,
                 )
                 self.assertEqual(result.returncode, body_status, result.stderr)
+                self.assertIn("cleanup-failure", result.stderr)
                 self.assertIn("failed to clean formal temporary directory", result.stderr)
                 record = json.loads(path.read_text())
                 self.assertEqual(record["status"], "not-passed")
@@ -645,14 +756,14 @@ class EvidenceTests(unittest.TestCase):
         bindir.mkdir()
         shim = bindir / "python3"
         shim.write_text('#!/bin/sh\nif [ "$2" = artifacts-finish ] && [ "$FAIL_SEAL" = 1 ]; then exit 37; fi\nexec '
-                        + shlex.quote(sys.executable) + ' "$@"\n')
+                        + shlex.quote(Path(sys.executable).as_posix()) + ' "$@"\n')
         shim.chmod(0o755)
         path = self.root / "target/test-timings/formal-run.json"
         for fail_seal in (False, True):
             with self.subTest(fail_seal=fail_seal):
                 env = dict(os.environ, PATH=str(bindir) + os.pathsep + os.environ["PATH"],
-                           FAIL_SEAL=str(int(fail_seal)), AWAKEN_FORMAL_RUN_EVIDENCE=str(path))
-                result = subprocess.run(["bash", "-c", initialization + "\nformal_body_complete=1\nexit 0\n",
+                           FAIL_SEAL=str(int(fail_seal)), AWAKEN_FORMAL_RUN_EVIDENCE=path.as_posix())
+                result = run_shell_fixture([bash_executable(), "-c", initialization + "\nformal_body_complete=1\nexit 0\n",
                                          "scripts/ci/check_formal.sh", "--require-tools"],
                                         cwd=self.root, env=env, capture_output=True, text=True, timeout=30)
                 self.assertEqual(result.returncode, 37 if fail_seal else 0, result.stderr)
@@ -679,11 +790,11 @@ class EvidenceTests(unittest.TestCase):
         ):
             with self.subTest(label=label):
                 shutil.rmtree(self.root / "target", ignore_errors=True)
-                result = subprocess.run(
-                    ["bash", "-c", initialization + "\n" + body + "\n",
+                result = run_shell_fixture(
+                    [bash_executable(), "-c", initialization + "\n" + body + "\n",
                      "scripts/ci/check_formal.sh", "--require-tools"],
                     cwd=self.root,
-                    env=dict(os.environ, AWAKEN_FORMAL_RUN_EVIDENCE=str(path)),
+                    env=dict(os.environ, AWAKEN_FORMAL_RUN_EVIDENCE=path.as_posix()),
                     capture_output=True, text=True, timeout=30,
                 )
                 self.assertEqual(result.returncode, expected_exit, result.stderr)
@@ -695,6 +806,7 @@ class EvidenceTests(unittest.TestCase):
                 failure = verify_artifacts(bundles[0].parent, self.root)
                 self.assertEqual((failure["status"], failure["exit_code"]), ("failed", expected_exit))
 
+    @unittest.skipUnless(hasattr(os, "killpg"), "POSIX process-group signaling; native Job termination is covered by deadline tests")
     def test_external_group_termination_cannot_certify_partial_formal_run(self):
         # C1 the receipt and EXIT owner are installed; C2 the active child has
         # installed its TERM disposition before an external TERM reaches the
@@ -716,14 +828,14 @@ class EvidenceTests(unittest.TestCase):
             "print('ready', flush=True); time.sleep(30)"
         )
         child_command = (
-            f"{shlex.quote(sys.executable)} -u -c {shlex.quote(child_script)} "
+            f"{shlex.quote(Path(sys.executable).as_posix())} -u -c {shlex.quote(child_script)} "
             '& child=$!\nwait "$child"\n'
         )
         process = subprocess.Popen(
-            ["bash", "-c", initialization + "\n" + child_command,
+            [bash_executable(), "-c", initialization + "\n" + child_command,
              "scripts/ci/check_formal.sh", "--require-tools"],
             cwd=self.root,
-            env=dict(os.environ, AWAKEN_FORMAL_RUN_EVIDENCE=str(path)),
+            env=dict(os.environ, AWAKEN_FORMAL_RUN_EVIDENCE=path.as_posix()),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             start_new_session=True,
         )
@@ -763,11 +875,11 @@ class EvidenceTests(unittest.TestCase):
         cargo.write_text('#!/bin/sh\nmkdir -p "$AWAKEN_OBSERVATION_TRACE_DIR"\nprintf \'{"partial":true}\\n\' > "$AWAKEN_OBSERVATION_TRACE_DIR/partial.json"\necho native-failure-marker\nexit 31\n')
         cargo.chmod(0o755)
         pnpm = bindir / "pnpm"
-        pnpm.write_text('#!/bin/sh\ntouch "' + str(self.root / "unexpected-pnpm") + '"\nexit 0\n')
+        pnpm.write_text('#!/bin/sh\ntouch "' + (self.root / "unexpected-pnpm").as_posix() + '"\nexit 0\n')
         pnpm.chmod(0o755)
         env = dict(os.environ, PATH=str(bindir) + os.pathsep + os.environ["PATH"])
         env.pop("AWAKEN_SESSION_EVIDENCE_DIR", None)
-        result = subprocess.run(["bash", "scripts/ci/check-reliability.sh", "--session-observations"],
+        result = run_shell_fixture([bash_executable(), "scripts/ci/check-reliability.sh", "--session-observations"],
             cwd=self.root, env=env, capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 31, result.stderr)
         self.assertFalse((self.root / "unexpected-pnpm").exists())
@@ -798,13 +910,13 @@ class EvidenceTests(unittest.TestCase):
                 original = path.read_bytes() if path.exists() else None
                 path.write_bytes(b"first\n")
                 if cause == "index":
-                    self.git("add", str(path))
+                    self.git("add", path.as_posix())
                     path.write_bytes(original)
                 before = source_snapshot(self.root)
                 directory = begin_artifacts(self.root, self.root / "target/evidence", "formal")
                 path.write_bytes(b"second\n")
                 if cause == "index":
-                    self.git("add", str(path))
+                    self.git("add", path.as_posix())
                     path.write_bytes(original)
                 after = source_snapshot(self.root)
                 self.assertEqual(before["status_digest"], after["status_digest"], "the hidden axis actually stayed hidden")
@@ -815,7 +927,7 @@ class EvidenceTests(unittest.TestCase):
                     path.unlink()
                 else:
                     path.write_bytes(original)
-                    self.git("add", str(path))
+                    self.git("add", path.as_posix())
 
     def test_old_weak_dirty_artifact_is_rejected_without_a_compatibility_fallback(self):
         # S11: schema1 stays unchanged, but an old dirty artifact bound only
