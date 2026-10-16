@@ -1898,14 +1898,16 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
         Arc::new(RecordingEnvironmentSource::default()),
     );
     let effects_before_foreign = runtime.terminal_effect_order.lock().unwrap().len();
+    let foreign_outcome = guarded
+        .release_terminal_resources("workspace", "profiled-foreign-outcome")
+        .await;
     assert!(
         matches!(
-            guarded
-                .release_terminal_resources("workspace", "profiled-foreign-outcome")
-                .await,
-            Err(SessionPreparationError::Rejected(_))
+            &foreign_outcome,
+            Err(SessionPreparationError::Unavailable(message))
+                if message == "Session terminal cleanup is inconsistent with its root: Session cleanup operation does not match its Session identity"
         ),
-        "R5 foreign Completed outcome fails closed"
+        "R5 foreign Completed outcome fails closed at aggregate import: {foreign_outcome:?}"
     );
     assert_eq!(
         runtime.terminal_effect_order.lock().unwrap().len(),
