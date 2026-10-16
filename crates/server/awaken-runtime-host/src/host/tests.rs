@@ -2576,3 +2576,5 @@ fn install_test_renewal_authority(
 use awaken_run_ingress_contract::{
     DispatchClaims as _, DispatchEnqueue as _, DispatchSettlement as _, InboxRead as _,
 };
+
+mod interruption_selection;
