@@ -56,20 +56,20 @@ fn decode_zip(bytes: &[u8]) -> Result<Vec<UploadedSkillBundleFile>, String> {
         if entry.is_dir() {
             continue;
         }
+        let path = entry
+            .name()
+            .map_err(|error| format!("invalid skill ZIP entry name: {error}"))?
+            .into_owned();
         let unix_mode = entry.unix_mode().unwrap_or_default();
         let file_type = unix_mode & 0o170_000;
         if file_type == 0o120_000 || (file_type != 0 && file_type != 0o100_000) {
-            return Err(format!(
-                "skill ZIP entry `{}` is not a regular file",
-                entry.name()
-            ));
+            return Err(format!("skill ZIP entry `{path}` is not a regular file"));
         }
         if entry.size() > MAX_SKILL_FILE_BYTES as u64 {
             return Err(format!(
                 "skill bundle file exceeds {MAX_SKILL_FILE_BYTES} bytes"
             ));
         }
-        let path = entry.name().to_string();
         let mut content = Vec::with_capacity(entry.size() as usize);
         entry
             .take(MAX_SKILL_FILE_BYTES as u64 + 1)
@@ -234,6 +234,11 @@ mod tests {
     /// | I4 | ZIP | yes | yes | yes | no | E2/F2 |
     /// | I5 | either | yes | yes | no | yes | E2/F3 |
     /// | I6 | either | yes | no | yes | yes | E2/F4 |
+    ///
+    /// ZIP 9 compatibility reuses I1-I6 at this sole ingestion boundary: the
+    /// same feature selection must preserve canonical files and executable
+    /// bits, and reject unsafe paths, special files, limits and invalid roots
+    /// before any persistence. No ZIP extraction or second parser is added.
     #[test]
     fn canonical_ingest_decision_table() {
         let loose = canonicalize_skill_bundle(vec![
@@ -249,6 +254,41 @@ mod tests {
         let zip = zip_file(&[("pkg/SKILL.md", b"valid", 0o100644)]);
         let zipped = canonicalize_skill_bundle(vec![uploaded("skill.zip", zip)]).expect("I2");
         assert_eq!(zipped.source_directory.as_deref(), Some("pkg"), "I2/E1");
+
+        // I2a UTF-8 and I2b legacy CP437 names -> the same owned canonical
+        // path and bytes. ZIP 9 returns a fallible Cow; retain both borrowed
+        // and allocated-name behavior through the real parser. Its current
+        // CP437 map is total, so no synthetic unreachable decoder error is used.
+        for legacy in [false, true] {
+            let name = if legacy {
+                "pkg/references/cafX.md"
+            } else {
+                "pkg/references/café.md"
+            };
+            let mut bytes = zip_file(&[
+                ("pkg/SKILL.md", b"valid", 0o100644),
+                (name, b"reference bytes", 0o100644),
+            ]);
+            if legacy {
+                // Replace only this ASCII name's local/central header bytes;
+                // entry contents and their CRC remain unchanged.
+                let locations = bytes
+                    .windows(name.len())
+                    .enumerate()
+                    .filter_map(|(offset, value)| (value == name.as_bytes()).then_some(offset))
+                    .collect::<Vec<_>>();
+                assert_eq!(locations.len(), 2, "I2b two real ZIP headers");
+                for offset in locations {
+                    bytes[offset + name.find('X').unwrap()] = 0x82;
+                }
+            }
+            let bundle = canonicalize_skill_bundle(vec![uploaded("skill.zip", bytes)])
+                .expect("I2a/I2b canonical names");
+            assert_eq!(bundle.source_directory.as_deref(), Some("pkg"));
+            assert_eq!(bundle.files[1].path, "references/café.md");
+            assert_eq!(bundle.files[1].content, b"reference bytes");
+            assert!(!bundle.files[1].executable);
+        }
 
         for files in [
             vec![uploaded("../SKILL.md", b"bad".to_vec())],

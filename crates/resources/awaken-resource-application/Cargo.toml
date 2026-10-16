@@ -22,7 +22,7 @@ awaken-session-configuration-contract.workspace = true
 uuid = { version = "1", features = ["v4"] }
 url.workspace = true
 # Skill import is an application trust-boundary operation, not persistence.
-zip = { version = "8.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip.workspace = true
 
 [dev-dependencies]
 awaken-lease-testkit.workspace = true
