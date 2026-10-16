@@ -77,37 +77,31 @@ struct ActivationOptions {
         Option<Arc<std::sync::Mutex<Option<awaken_runtime_contract::CancellationToken>>>>,
 }
 
-/// The one executor router owned by a Session. Backend identity comes only from
-/// the immutable activation snapshot, so foreground, durable, recovery, and a
-/// cold replacement worker make the same choice without a process-local route.
-pub(crate) struct SessionAttemptExecutor {
-    registry: AttemptExecutorRegistry,
-}
-
 /// Persist Sandbox outputs after every completed attempt, independently of
 /// whether delivery was direct, durable, or recovered by another claim.
 pub(crate) struct ArtifactHarvestAttemptExecutor {
     inner: Arc<dyn RunAttemptExecutor>,
-    harvester: crate::provisioning::ArtifactHarvester,
+    harvester: std::sync::Weak<crate::provisioning::ArtifactHarvester>,
 }
 
 impl ArtifactHarvestAttemptExecutor {
+    /// The physical cleanup owner outlives attempts; the resident cache only borrows it.
     pub(crate) fn new(
         inner: Arc<dyn RunAttemptExecutor>,
-        harvester: crate::provisioning::ArtifactHarvester,
+        harvester: std::sync::Weak<crate::provisioning::ArtifactHarvester>,
     ) -> Self {
         Self { inner, harvester }
     }
 
     async fn finish<T>(
-        &self,
+        harvester: &crate::provisioning::ArtifactHarvester,
         thread: &str,
         claim: Option<awaken_dispatch_contract::RunClaim>,
         result: ExecutionResult<T>,
     ) -> ExecutionResult<T> {
         match result {
             Ok(value) => {
-                self.harvester
+                harvester
                     .harvest_with_claim(thread, claim)
                     .await
                     .map_err(|error| ExecutionError::Execution(error.to_string()))?;
@@ -116,7 +110,7 @@ impl ArtifactHarvestAttemptExecutor {
             Err(error) => {
                 // Preserve the execution failure while still retaining any bytes
                 // written before the failed model/tool step.
-                let _ = self.harvester.harvest_with_claim(thread, claim).await;
+                let _ = harvester.harvest_with_claim(thread, claim).await;
                 Err(error)
             }
         }
@@ -130,12 +124,17 @@ impl RunExecutor for ArtifactHarvestAttemptExecutor {
         activation: RunActivation,
         context: RuntimeRunContext,
     ) -> ExecutionResult<RunState> {
+        let harvester = self.harvester.upgrade().ok_or_else(|| {
+            ExecutionError::Resolution("Artifact harvest owner is unavailable".into())
+        })?;
         let thread = activation.thread_id.0.clone();
         // Capture before execution: a stale attempt must never borrow a newer
         // replacement claim for its post-attempt Resource effects.
-        let claim = self.harvester.current_claim(&thread);
+        let claim = harvester.current_claim(&thread);
         let result = self.inner.execute(activation, context).await;
-        self.finish(&thread, claim, result).await
+        let result = Self::finish(&harvester, &thread, claim, result).await;
+        drop(harvester);
+        result
     }
 }
 
@@ -155,10 +154,15 @@ impl RunAttemptExecutor for ArtifactHarvestAttemptExecutor {
         command: ResumeCommand,
         context: RuntimeRunContext,
     ) -> ExecutionResult<RunState> {
+        let harvester = self.harvester.upgrade().ok_or_else(|| {
+            ExecutionError::Resolution("Artifact harvest owner is unavailable".into())
+        })?;
         let thread = activation.thread_id.0.clone();
-        let claim = self.harvester.current_claim(&thread);
+        let claim = harvester.current_claim(&thread);
         let result = self.inner.resume(activation, command, context).await;
-        self.finish(&thread, claim, result).await
+        let result = Self::finish(&harvester, &thread, claim, result).await;
+        drop(harvester);
+        result
     }
 
     async fn cancel(
@@ -377,78 +381,40 @@ impl RunExecutor for BoundRunExecutor<'_> {
     }
 }
 
-impl SessionAttemptExecutor {
-    pub(crate) fn from_executors(
-        native: Arc<dyn RunAttemptExecutor>,
-        acp: Option<Arc<dyn RunAttemptExecutor>>,
-        a2a: Option<Arc<dyn RunAttemptExecutor>>,
-        resolved: &[&awaken_runtime_contract::resolved::ResolvedSpec],
-    ) -> Self {
-        let mut registry = AttemptExecutorRegistry::new();
-        registry
-            .register_native(native)
-            .expect("fresh Session registry has one native slot");
-        for binding in resolved.iter().flat_map(|resolved| {
-            resolved
-                .attempt_candidates(None)
-                .into_iter()
-                .map(|candidate| candidate.binding())
-        }) {
-            let executor = match Backend::from_ref(binding.identity().2) {
-                Backend::Native => continue,
-                Backend::Acp(_) => acp.clone(),
-                Backend::Remote(_) => a2a.clone(),
-                Backend::Invalid(_) => continue,
-            };
-            if let Some(executor) = executor
-                && !registry.supports(binding.identity().2)
-            {
-                registry
-                    .register(binding.identity().2.to_owned(), executor)
-                    .expect("resolved backend_ref is an exact ACP/A2A route");
-            }
+/// The one executor router owned by a Session. Backend identity comes only from
+/// the immutable activation snapshot, so foreground, durable, recovery, and a
+/// cold replacement worker make the same choice without a process-local route.
+pub(crate) fn session_attempt_executor(
+    native: Arc<dyn RunAttemptExecutor>,
+    acp: Option<Arc<dyn RunAttemptExecutor>>,
+    a2a: Option<Arc<dyn RunAttemptExecutor>>,
+    resolved: &[&awaken_runtime_contract::resolved::ResolvedSpec],
+) -> AttemptExecutorRegistry {
+    let mut registry = AttemptExecutorRegistry::new();
+    registry
+        .register_native(native)
+        .expect("fresh Session registry has one native slot");
+    for binding in resolved.iter().flat_map(|resolved| {
+        resolved
+            .attempt_candidates(None)
+            .into_iter()
+            .map(|candidate| candidate.binding())
+    }) {
+        let executor = match Backend::from_ref(binding.identity().2) {
+            Backend::Native => continue,
+            Backend::Acp(_) => acp.clone(),
+            Backend::Remote(_) => a2a.clone(),
+            Backend::Invalid(_) => continue,
+        };
+        if let Some(executor) = executor
+            && !registry.supports(binding.identity().2)
+        {
+            registry
+                .register(binding.identity().2.to_owned(), executor)
+                .expect("resolved backend_ref is an exact ACP/A2A route");
         }
-        Self { registry }
     }
-}
-
-#[async_trait::async_trait]
-impl RunExecutor for SessionAttemptExecutor {
-    async fn execute(
-        &self,
-        activation: RunActivation,
-        context: RuntimeRunContext,
-    ) -> ExecutionResult<RunState> {
-        self.registry.execute(activation, context).await
-    }
-}
-
-#[async_trait::async_trait]
-impl RunAttemptExecutor for SessionAttemptExecutor {
-    fn physical_attempt_recovery(
-        &self,
-        activation: &RunActivation,
-        context: &RuntimeRunContext,
-    ) -> awaken_runtime_contract::AttemptRecoveryMode {
-        self.registry.physical_attempt_recovery(activation, context)
-    }
-
-    async fn resume(
-        &self,
-        activation: RunActivation,
-        command: ResumeCommand,
-        context: RuntimeRunContext,
-    ) -> ExecutionResult<RunState> {
-        self.registry.resume(activation, command, context).await
-    }
-
-    async fn cancel(
-        &self,
-        activation: RunActivation,
-        context: RuntimeRunContext,
-    ) -> ExecutionResult<()> {
-        self.registry.cancel(activation, context).await
-    }
+    registry
 }
 
 impl SharedHost {
@@ -1078,7 +1044,7 @@ pub(crate) mod tests {
         let inner = Arc::new(RecordingExecutor::new("harvested"));
         let executor = ArtifactHarvestAttemptExecutor::new(
             inner.clone(),
-            host.realizer.cleanup.artifacts.clone(),
+            Arc::downgrade(&host.realizer.cleanup.artifacts),
         );
         executor
             .execute(activation("awaken"), RuntimeRunContext::new())
@@ -1123,7 +1089,7 @@ pub(crate) mod tests {
         std::fs::write(output_dir.join("partial.txt"), b"partial").unwrap();
         let error = ArtifactHarvestAttemptExecutor::new(
             Arc::new(FailingExecutor),
-            host.realizer.cleanup.artifacts.clone(),
+            Arc::downgrade(&host.realizer.cleanup.artifacts),
         )
         .execute(activation("awaken"), RuntimeRunContext::new())
         .await
@@ -1159,7 +1125,7 @@ pub(crate) mod tests {
                 thread,
                 replacement,
             )),
-            host.realizer.cleanup.artifacts.clone(),
+            Arc::downgrade(&host.realizer.cleanup.artifacts),
         )
         .execute(activation("awaken"), RuntimeRunContext::new())
         .await
@@ -1198,7 +1164,7 @@ pub(crate) mod tests {
                 thread,
                 replacement,
             )),
-            host.realizer.cleanup.artifacts.clone(),
+            Arc::downgrade(&host.realizer.cleanup.artifacts),
         )
         .resume(resumed.clone(), resume(&resumed), RuntimeRunContext::new())
         .await
@@ -1236,7 +1202,7 @@ pub(crate) mod tests {
                 replacement,
                 "in-flight replacement failed",
             )),
-            host.realizer.cleanup.artifacts.clone(),
+            Arc::downgrade(&host.realizer.cleanup.artifacts),
         )
         .execute(activation("awaken"), RuntimeRunContext::new())
         .await
@@ -1272,7 +1238,7 @@ pub(crate) mod tests {
                 thread,
                 replacement,
             )),
-            host.realizer.cleanup.artifacts.clone(),
+            Arc::downgrade(&host.realizer.cleanup.artifacts),
         )
         .execute(activation("awaken"), RuntimeRunContext::new())
         .await
@@ -1349,7 +1315,7 @@ pub(crate) mod tests {
         std::fs::write(failed_output.join("blocked.txt"), b"blocked").unwrap();
         let error = ArtifactHarvestAttemptExecutor::new(
             Arc::new(RecordingExecutor::new("must-not-escape")),
-            failed_host.realizer.cleanup.artifacts.clone(),
+            Arc::downgrade(&failed_host.realizer.cleanup.artifacts),
         )
         .execute(activation("awaken"), RuntimeRunContext::new())
         .await
@@ -1386,11 +1352,23 @@ pub(crate) mod tests {
         let a2a = Arc::new(RecordingExecutor::new("a2a"));
         let worker = resolved_with(&["awaken", "a2a:https://agent.example"]);
         let grader = resolved_with(&["acp:claude"]);
-        let router = SessionAttemptExecutor::from_executors(
+        let router: AttemptExecutorRegistry = session_attempt_executor(
             native.clone(),
             Some(acp.clone() as Arc<dyn RunAttemptExecutor>),
             Some(a2a.clone() as Arc<dyn RunAttemptExecutor>),
             &[&worker, &grader],
+        );
+        assert_eq!(
+            router.manifest_capabilities(),
+            [
+                awaken_runtime_contract::execution::NATIVE_RUNTIME_CAPABILITY,
+                "acp:claude",
+                "a2a:https://agent.example"
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+            "the SDK registry derives exact routes from the original registrations",
         );
 
         let native_activation = activation("awaken");
@@ -1448,8 +1426,7 @@ pub(crate) mod tests {
         // matching adapter. Both attempts reject; Native receives zero calls.
         let native = Arc::new(RecordingExecutor::new("native"));
         let resolved = resolved_with(&["acp:claude", "a2a:https://agent.example"]);
-        let router =
-            SessionAttemptExecutor::from_executors(native.clone(), None, None, &[&resolved]);
+        let router = session_attempt_executor(native.clone(), None, None, &[&resolved]);
 
         let error = router
             .execute(activation("acp:claude"), RuntimeRunContext::new())
@@ -1470,3 +1447,6 @@ pub(crate) mod tests {
         assert_eq!(native.cancels.load(Ordering::SeqCst), 0, "R3");
     }
 }
+
+#[cfg(test)]
+mod lifetime_tests;

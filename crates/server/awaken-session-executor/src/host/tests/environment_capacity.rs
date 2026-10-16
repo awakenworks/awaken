@@ -250,11 +250,11 @@ fn executor(
                 ),
             ),
             cleanup: crate::terminal_cleanup::TerminalCleanup {
-                artifacts: crate::provisioning::ArtifactHarvester::new(
+                artifacts: Arc::new(crate::provisioning::ArtifactHarvester::new(
                     sessions.clone(),
                     "capacity-workspace".into(),
                     Arc::new(awaken_resource_contract::UnavailableArtifactPublisher),
-                ),
+                )),
                 sessions,
             },
         },
