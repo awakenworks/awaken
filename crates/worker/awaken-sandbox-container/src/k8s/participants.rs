@@ -48,6 +48,114 @@ fn projected_binds(plan: &ContainerPlan) -> Vec<(Kind, usize, &BindPlan)> {
         .collect()
 }
 
+/// Before materialization, an unresolved reference has no content yet. Only
+/// this closed inline shape can make object enumeration complete evidence.
+pub(super) fn self_contained_inline_projection(plan: &ContainerPlan) -> bool {
+    plan.memory_mounts.is_empty()
+        && plan.binds.iter().all(|bind| {
+            bind.read_only
+                && !bind.secret_writeback
+                && bind.secret_content.is_none()
+                && (bind.content.is_some() != bind.content_bytes.is_some())
+        })
+}
+
+/// Normalize only published legacy identity or revalidate this same derived
+/// carrier. The original builder owns membership; no live API read supplies it.
+pub(super) fn terminal_continuation(
+    runtime: &K8sRuntime,
+    plan: &ContainerPlan,
+    expected_adoption: &pc::SandboxRealizationFingerprint,
+    handle: &crate::DecodedContainerHandle,
+) -> Result<Option<crate::ContainerContinuationHandle>, RuntimeError> {
+    use crate::ContainerContinuationHandle::{KubernetesContinuationV2, KubernetesContinuationV3};
+    let (pod_uid, claim_uid, derived) = match &handle.payload.runtime_handle {
+        Some(KubernetesContinuationV2 { pod_uid, claim_uid }) => (pod_uid, claim_uid, false),
+        Some(KubernetesContinuationV3 {
+            pod_uid,
+            claim_uid,
+            participants,
+        }) if matches!(
+            participants.origin,
+            crate::kubernetes_handle::KubernetesProjectedOrigin::FrozenPlanEmpty { .. }
+        ) =>
+        {
+            if participants.namespace != runtime.namespace {
+                return Err(backend(
+                    "derived Kubernetes empty projection belongs to another namespace",
+                ));
+            }
+            (pod_uid, claim_uid, true)
+        }
+        _ => return Ok(None),
+    };
+    let (Some(adoption), Some(realization)) = (
+        &handle.adoption_fingerprint,
+        &handle.realization_fingerprint,
+    ) else {
+        return Ok(None);
+    };
+    if adoption != expected_adoption
+        || !self_contained_inline_projection(plan)
+        || !projected_binds(plan).is_empty()
+    {
+        return if derived {
+            Err(backend(
+                "derived Kubernetes empty projection differs from its frozen plan",
+            ))
+        } else {
+            Ok(None)
+        };
+    }
+    let participants = KubernetesProjectedParticipants::frozen_plan_empty(
+        runtime.namespace.clone(),
+        pod_uid.clone(),
+        adoption.clone(),
+        realization.clone(),
+    )
+    .map_err(backend)?;
+    Ok(Some(KubernetesContinuationV3 {
+        pod_uid: pod_uid.clone(),
+        claim_uid: claim_uid.clone(),
+        participants: Box::new(participants),
+    }))
+}
+
+/// Project only this observer's original API-membership obligation. The generic
+/// Pod/PVC observer and exact UID disposer retain their separate authorities.
+pub(super) async fn terminal_observation(
+    runtime: &K8sRuntime,
+    expectation: crate::ContainerObservationExpectation<'_>,
+    expected_pod_uid: Option<&str>,
+    pod: Option<&Pod>,
+    observation: pc::SandboxObservation,
+) -> Result<pc::SandboxObservation, RuntimeError> {
+    if expectation.purpose != crate::ContainerObservationPurpose::TerminalCleanup {
+        return Ok(observation);
+    }
+    let participants = expectation
+        .runtime_handle
+        .and_then(crate::ContainerContinuationHandle::projected_participants)
+        .ok_or_else(|| backend("terminal Kubernetes projected-object membership is unknown"))?;
+    if matches!(
+        participants.origin,
+        crate::kubernetes_handle::KubernetesProjectedOrigin::FrozenPlanEmpty { .. }
+    ) {
+        validate_bound(runtime, Some(participants), expected_pod_uid, pod, true)?;
+    }
+    let absent = projected_absent(runtime, participants, &|| Ok(())).await?;
+    if !absent
+        && let pc::SandboxObservation::DefinitivelyUnavailable {
+            physical_incarnation: Some(physical_incarnation),
+        } = observation
+    {
+        return Ok(pc::SandboxObservation::Disposing {
+            physical_incarnation,
+        });
+    }
+    Ok(observation)
+}
+
 fn desired_objects(
     id: &str,
     plan: &ContainerPlan,
@@ -683,6 +791,31 @@ pub(super) fn validate_bound(
         ));
     }
     if let Some(pod) = pod {
+        if let crate::kubernetes_handle::KubernetesProjectedOrigin::FrozenPlanEmpty {
+            adoption,
+            realization,
+        } = &projected.origin
+        {
+            let annotations = pod.metadata.annotations.as_ref();
+            let stamped = |key| {
+                annotations
+                    .and_then(|values| values.get(key))
+                    .map(String::as_str)
+            };
+            if pod.metadata.uid.as_deref() != Some(projected.pod_uid.as_str())
+                || !projected.objects.is_empty()
+                || stamped(super::SANDBOX_ADOPTION_ANNOTATION) != Some(adoption.as_str())
+                || stamped(super::SANDBOX_REALIZATION_ANNOTATION) != Some(realization.as_str())
+                || (annotations.is_some_and(|values| values.contains_key(DECLARATION))
+                    && !declaration(pod)?.is_empty())
+                || retained(pod)?.is_some_and(|retained| !retained.objects.is_empty())
+            {
+                return Err(backend(
+                    "original Kubernetes Pod contradicts its frozen-plan empty projection",
+                ));
+            }
+            return Ok(());
+        }
         match retained(pod)? {
             Some(retained) if &retained == projected => {}
             None if matches!(&projected.origin,crate::kubernetes_handle::KubernetesProjectedOrigin::JoinedEmpty {attempt,predecessor,..} if pod.metadata.annotations.as_ref().and_then(|values|values.get(SANDBOX_ATTEMPT_ANNOTATION))==Some(attempt) && pod_effect_fence(pod.metadata.annotations.as_ref())?.as_ref().is_some_and(|observed|observed.same_effect_identity(predecessor))) =>

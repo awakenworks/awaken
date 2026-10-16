@@ -13,6 +13,9 @@ use tokio::sync::{Notify, Semaphore};
 
 use super::participants::tests::ClosedProjectedRequests;
 
+mod retained_plan;
+mod retained_source;
+
 #[tokio::test]
 async fn original_joined_empty_runs_the_provider_terminal_protocol_but_never_adopts_for_execution()
 {
@@ -135,6 +138,29 @@ async fn original_joined_empty_runs_the_provider_terminal_protocol_but_never_ado
         environment.spawn(pc::Command::new(["true"])).await.is_err(),
         "JE2 no Session exec"
     );
+    // JE4: a returned JoinedEmpty carrier is the same physical-only proof on
+    // replay, even if its never-adopted original is still provisioning. The
+    // new published-plan empty witness must not alter this existing role.
+    state.lock().unwrap().pod.as_mut().unwrap().status =
+        Some(serde_json::from_value(json!({"phase":"Pending"})).unwrap());
+    let replay = provider
+        .prepare_terminal_environment_for_effect(
+            &spec,
+            Some(&handle),
+            Some(&create),
+            &terminal,
+            &authority,
+        )
+        .await
+        .expect("JE4 JoinedEmpty replay keeps physical-only preparation")
+        .unwrap();
+    assert_eq!(replay.handle(), handle, "JE4 retains the exact witness");
+    assert!(
+        state.lock().unwrap().writes.is_empty(),
+        "JE4 no physical preparation writes"
+    );
+    state.lock().unwrap().pod.as_mut().unwrap().status =
+        Some(serde_json::from_value(json!({"phase":"Succeeded"})).unwrap());
     let prepared = environment
         .prepare_disposal_for_effect(&terminal, &authority)
         .await

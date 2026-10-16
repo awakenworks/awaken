@@ -1007,3 +1007,141 @@ existing Worker manifest capability mechanism. Shipped Workers advertise
 pure disposal retains its prior requirements. Ordinary Run protocol v5 is not
 renumbered by this preparation-only wire extension. Old Workers cannot receive
 new preparation assignments merely because their execution version matches.
+
+
+## Amendment 2026-10-16: separate source preparation, physical cleanup and Actor retirement
+
+**Implementation status: target; the legacy K8s and Actor-retirement paths below
+are not qualified by the earlier logical-scope and predecessor-exit tests.**
+
+The original local CRM and autonomous-development roots exposed the next two
+provider partitions after logical scope freeze and exact predecessor-exit
+reassignment succeeded. A retained V2 Pod/PVC handle can lack a projected-object
+handoff. A failed original Pod can already have a deletion timestamp while its
+exact continuation PVC remains live. Both currently stop before source
+preparation. The replacement barrier correctly retains the current Worker when
+its Session realization domain is still occupied. Repeated expiry or a sampled
+404 must not convert any of these facts into cleanup completion.
+
+The objective remains one original Session root and one cleanup driver. Source
+readiness, physical cleanup and the lifetime of its process-local Actor are
+separate questions with separate evidence; none substitutes for the others.
+
+| Scope | Authoritative existing owner and reuse | Required change |
+| --- | --- | --- |
+| Logical creation and execution | Runtime committed heads, sealed creation scope and `SessionSourceDispatchObservation`; retain their current meaning | Reuse unchanged; a settled source read is not a physical disposal receipt |
+| Source and physical participant identity | Sandbox provider, frozen specification, retained handle, original Create ledger and K8s UID checks | Distinguish terminal source preparation from destructive cleanup; normalize a retained legacy handle only from sufficient provider-owned evidence |
+| Actor authority and retained source obligation | Session root realization lease, terminal cleanup operation and Worker Registry incarnation | Fence new Actor grants on drain and distinguish an inactive Actor from a source obligation which remains retained |
+| Replacement and publication | Existing Native Worker-domain observation and Cloud release/restore barrier | Consume an explicit Native retirement decision, observe real process exit, then permit exact successor admission; preserve the current source objects and root |
+
+New code is limited to transient role-specific evidence where the existing
+observation types cannot express the distinction, plus their regression/model
+cases. It introduces no additional persisted cleanup flag, queue, scheduler,
+provider journal, receipt issuer or replacement controller. Existing provider
+builders, participant verifiers, lease succession, UID deletion and root CAS
+remain authoritative.
+
+A terminal source-preparation observation may admit an exact failed/deleting Pod
+and its still-live exact PVC for bounded source access. It does not report that
+the Pod is absent, release a claim, or certify participant disposal. Ordinary
+execution and checkpoint admission retain their own rules. Destructive cleanup
+still requires original participant identities, complete preparations and the
+existing current-authority/finalizer/UID protocol.
+
+A retained V2 handle supplies original Pod/PVC identity but does not itself
+supply an original projected-object result set. A known-empty API projection
+must be established from the exact retained handle and verified frozen provider
+plan, not from missing RESULTS or an empty current LIST. A nonempty, partial,
+foreign or otherwise unproved membership keeps its existing Unknown result.
+Retained control/Memory/Secret evidence must be preserved rather than replaced
+by the handle-free narrow joined-empty witness.
+
+Ordinary drain must still let an already-owned cleanup reach its durable
+boundary. A Pool-wide switch which stops all cold recovery is not an Actor
+retirement protocol: Control must distinguish fresh takeover from continuation
+of the original Actor.
+
+Actor retirement must not reuse `cleanup_completed` as its permission bit.
+Retirement with retained sources requires exact draining Registry identity,
+closed new work/effect admission, expiry of the Actor's remaining grants,
+quiescent process-local work and a positive provider observation that the
+original source survives this Actor's stop. An unavailable retention observation
+or a nonterminal/unsealed Session blocks that path. The real exit and original
+Create closure are still required before another Actor acquires the root;
+retirement never acknowledges the old Source, Runtime slot, Session cleanup or
+Flow inbox.
+
+The dynamic order is: close admission -> fence new Actor grants -> establish
+source retention and Actor quiescence -> stop the old Actor -> independently
+observe its exact process exit and close original Create issuance -> claim the
+same Session through its existing CAS -> prepare the original source -> perform
+only authorized UID-fenced disposal -> commit the original cleanup receipt ->
+let Flow close its exact retained link and make its Work-owned recovery decision.
+
+A forward code correction while a source is retained must use the existing
+release owner and command-start Pod/template identities. It may not replace the
+held Worker through compensation, reset rollback evidence, publish a different
+business identity, or bypass an Unknown observation. Tests must cover the source
+and Actor partitions together with the current physical, WorkQueue and Session
+domain checks before this target can be called implemented.
+
+
+## Amendment 2026-10-16: derive only an empty API projection from a published legacy handle
+
+The complete objective is to resume the same terminal Session through source
+preparation, authorized physical disposal and its original receipt. This bounded
+change addresses the published Kubernetes V2-handle partition; it does not qualify
+Actor retirement or a deleting Pod with a live continuation claim.
+
+Unchanged owners are the Session cleanup operation and its two-phase authority,
+Worker Registry, original Create ledger, and the Kubernetes UID/finalizer deletion
+protocol. Modified owners are the existing Container provider's terminal adoption
+and its Kubernetes projected-participant verifier. The one existing projected
+object builder remains authoritative for membership. The only new vocabulary is
+a terminal-only empty-set provenance in the existing handle codec, plus a default
+no-op runtime normalization seam; no store, queue, receipt or cleanup owner is added.
+
+A published V2 handle already fixes the original Pod/PVC UIDs, effective adoption
+and realization fingerprints, Control incarnation, Memory and owned paths. When
+the exact frozen effective plan matches that handle, its inputs are self-contained
+read-only Inline/InlineBytes with no Memory mounts, and the same projected-object
+builder yields zero API participants, terminal adoption may derive that empty set.
+The pre-materialization plan leaves content unset for File, Resource and Secret
+references; an empty enumeration at that stage is not complete membership. Those
+references, Memory and unresolved cache binds remain Unknown. The existing
+handle-free inline recovery and this bound-handle proof share one input-closure
+predicate; package-image and Control admission keep their existing separate rules.
+This is positive plan evidence, independent of a current LIST or missing RESULTS.
+The provider preserves the complete original handle and changes only the runtime
+participant carrier. It cannot do this for an unbound/handle-free attempt, a V1
+continuity-only handle, a nonempty plan or an incompatible configuration.
+
+The derived origin carries both original fingerprints, is terminal-only, and is
+validated by the existing bound-participant owner. A live Pod must still match
+its exact UID and fingerprints; any retained declaration or results contradicting
+the empty plan is an error. A later absent Pod does not erase the proof: the same
+frozen plan and published original handle deterministically reproduce it after
+response loss. No historical object UID is supplied by a current GET.
+
+The dynamic order is current authority -> effective-plan compatibility -> pure
+normalization -> existing exact Pod/PVC observation -> original terminal adoption
+and source preparation -> separately authorized UID disposal -> original receipt.
+Normalization neither removes objects nor opens a Control listener. Existing
+nonempty/unknown participant and deleting-Pod denials remain intact. Tests must
+exercise complete metadata preservation, configuration/member contradictions,
+execution refusal and exact-UID disposal/replay before this change is qualified.
+The distinct joined-empty witness retains physical-only preparation on both
+first recovery and returned-handle replay; it does not inherit the published
+handle's source-preparation role.
+
+
+The existing Container codec and Kubernetes participant adapter remain the
+reviewed owners of this bounded compatibility behavior until the separate W34
+Kubernetes extraction. The modularity review records only their required new
+provenance, validation and default-no-evidence port. Effective-plan construction,
+member classification, envelope validation and UID disposal each keep one owner.
+Terminal normalization is separated from orchestration, and terminal membership
+observation joins the existing participant owner. This adds no dependency,
+store, lifecycle, or second projection builder; it does not qualify W34 or Actor
+retirement. The reviewed growth uses the existing modularity baseline protocol;
+all structural, clock, test and physical evidence checks remain mandatory.
