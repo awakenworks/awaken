@@ -114,6 +114,7 @@ fn continuation_observation_has_one_disposing_authority() {
             pod_present,
             pod_deleting,
             cleanup_gate_held: cleanup_gate,
+            original_terminal_guard: false,
             expected_uid: Some("p"),
             observed_uid: observed_claim_uid,
             observed_terminating: claim_terminating,
@@ -218,6 +219,7 @@ fn absent_pod_observation_separates_recovery_from_terminal_absence() {
                                 pod_present: false,
                                 pod_deleting: false,
                                 cleanup_gate_held: false,
+                                original_terminal_guard: false,
                                 expected_uid: Some("p"),
                                 observed_uid,
                                 observed_terminating: terminating,
@@ -2125,4 +2127,61 @@ fn null_secret_exec_observes_eof_without_closing_transport_stdin() {
     assert!(output.status.success(), "S1-S3: {:?}", output.status);
     assert_eq!(output.stdout, b"fixture");
     let _ = std::fs::remove_file(execution.pid_file);
+}
+
+#[test]
+fn retained_original_source_observation_never_grants_absence_or_execution() {
+    // C1 exact/absent/foreign claim UID; C2 retained terminal original guard;
+    // C3 current effect; C4 claim is live/terminating; C5 Recovery/TerminalCleanup.
+    // R1 foreign/absent -> Incompatible. R2 exact terminating + current effect
+    // retains the existing Disposing result. R3 exact live + terminal guard +
+    // current TerminalCleanup -> RetainedOriginal, never absence/Disposing.
+    // R4 every remaining deleting-source combination stays unresolved.
+    for purpose in [
+        ContainerObservationPurpose::Recovery,
+        ContainerObservationPurpose::TerminalCleanup,
+    ] {
+        for observed in [None, Some("claim"), Some("foreign")] {
+            for guard in [false, true] {
+                for fenced in [false, true] {
+                    for terminating in [false, true] {
+                        let result =
+                            continuation_observation_disposition(ContinuationObservationEvidence {
+                                purpose,
+                                pod_present: true,
+                                pod_deleting: true,
+                                cleanup_gate_held: false,
+                                original_terminal_guard: guard,
+                                expected_uid: Some("claim"),
+                                observed_uid: observed,
+                                observed_terminating: terminating,
+                                effect_fenced: fenced,
+                                effect_fenced_total_absence: false,
+                            });
+                        if observed != Some("claim") {
+                            assert_eq!(
+                                result.unwrap(),
+                                ContinuationObservationDisposition::Incompatible
+                            );
+                        } else if terminating && fenced {
+                            assert_eq!(
+                                result.unwrap(),
+                                ContinuationObservationDisposition::Disposing
+                            );
+                        } else if purpose == ContainerObservationPurpose::TerminalCleanup
+                            && guard
+                            && fenced
+                        {
+                            assert_eq!(
+                                result.unwrap(),
+                                ContinuationObservationDisposition::RetainedOriginal
+                            );
+                        } else {
+                            assert!(result.is_err());
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

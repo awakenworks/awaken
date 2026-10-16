@@ -271,8 +271,41 @@ enum PodCleanupAuthorizationAdmission {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 pub(super) enum PodCleanupAuthorization {
+    OriginalCreate(OriginalCreateGuardAuthorization),
     Aggregate(pc::SandboxDisposalAuthorization),
     Restoration(pc::SandboxRestorationEvidence),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct OriginalCreateGuardAuthorization {
+    original_create_guard: pc::SandboxDisposalAuthorization,
+}
+
+impl PodCleanupAuthorization {
+    fn aggregate(&self) -> Option<&pc::SandboxDisposalAuthorization> {
+        match self {
+            Self::Aggregate(value) => Some(value),
+            Self::OriginalCreate(value) => Some(&value.original_create_guard),
+            Self::Restoration(_) => None,
+        }
+    }
+
+    fn retainer(&self) -> &'static str {
+        match self {
+            Self::OriginalCreate(_) => super::create_ledger::ORIGINAL_GUARD_FINALIZER,
+            _ => CONTINUATION_CLEANUP_FINALIZER,
+        }
+    }
+
+    fn for_original_guard(&self) -> Result<Self, RuntimeError> {
+        let original_create_guard = self.aggregate().ok_or_else(|| {
+            backend("original Create guard succession requires aggregate disposal authority")
+        })?;
+        Ok(Self::OriginalCreate(OriginalCreateGuardAuthorization {
+            original_create_guard: original_create_guard.clone(),
+        }))
+    }
 }
 
 fn pod_cleanup_authorization_admission(
@@ -281,44 +314,42 @@ fn pod_cleanup_authorization_admission(
 ) -> Result<PodCleanupAuthorizationAdmission, RuntimeError> {
     use PodCleanupAuthorizationAdmission::{Acquire, AdvanceSuccessor, Resume};
 
+    if let (Some(observed), Some(requested)) = (
+        observed.and_then(PodCleanupAuthorization::aggregate),
+        requested.aggregate(),
+    ) {
+        if observed.prepared_effect_fence() != requested.prepared_effect_fence()
+            || observed.preparation_fingerprint() != requested.preparation_fingerprint()
+        {
+            return Err(backend(
+                "Kubernetes continuation cleanup gate belongs to a different preparation",
+            ));
+        }
+        if observed.effect_fence() == requested.effect_fence() {
+            return Ok(Resume);
+        }
+        if observed
+            .effect_fence()
+            .authorizes_successor(requested.effect_fence())
+        {
+            return Ok(AdvanceSuccessor);
+        }
+        return Err(backend(
+            "Kubernetes continuation cleanup gate is owned by a newer or conflicting successor",
+        ));
+    }
     match observed {
         None => Ok(Acquire),
-        Some(PodCleanupAuthorization::Aggregate(observed))
-            if matches!(requested, PodCleanupAuthorization::Aggregate(_)) =>
-        {
-            let PodCleanupAuthorization::Aggregate(requested) = requested else {
-                unreachable!("match guard proves aggregate cleanup authority")
-            };
-            if observed.prepared_effect_fence() != requested.prepared_effect_fence()
-                || observed.preparation_fingerprint() != requested.preparation_fingerprint()
-            {
-                return Err(backend(
-                    "Kubernetes continuation cleanup gate belongs to a different preparation",
-                ));
-            }
-            if observed.effect_fence() == requested.effect_fence() {
-                return Ok(Resume);
-            }
-            if observed
-                .effect_fence()
-                .authorizes_successor(requested.effect_fence())
-            {
-                return Ok(AdvanceSuccessor);
-            }
-            Err(backend(
-                "Kubernetes continuation cleanup gate is owned by a newer or conflicting successor",
-            ))
-        }
         Some(PodCleanupAuthorization::Restoration(observed)) => match requested {
             PodCleanupAuthorization::Restoration(requested) if observed == requested => Ok(Resume),
             PodCleanupAuthorization::Restoration(_) => Err(backend(
                 "Kubernetes continuation cleanup gate belongs to a different exact restoration",
             )),
-            PodCleanupAuthorization::Aggregate(_) => Err(backend(
+            _ => Err(backend(
                 "Kubernetes continuation cleanup gate belongs to restoration authority",
             )),
         },
-        Some(PodCleanupAuthorization::Aggregate(_)) => Err(backend(
+        Some(_) => Err(backend(
             "Kubernetes continuation cleanup gate belongs to aggregate authority",
         )),
     }
@@ -348,9 +379,21 @@ fn pod_cleanup_authorization(pod: &Pod) -> Result<Option<PodCleanupAuthorization
 pub(super) fn observed_pod_cleanup_authorization(
     pod: &Pod,
 ) -> Result<Option<PodCleanupAuthorization>, RuntimeError> {
-    let held = pod_cleanup_gate_held(pod);
     let authorization = pod_cleanup_authorization(pod)?;
-    if held != authorization.is_some() {
+    let finalizers = pod.metadata.finalizers.as_deref().unwrap_or_default();
+    let continuation_held = pod_cleanup_gate_held(pod);
+    let consistent = match authorization.as_ref() {
+        Some(PodCleanupAuthorization::OriginalCreate(_)) => {
+            !continuation_held
+                && pod.metadata.deletion_timestamp.is_some()
+                && finalizers
+                    .iter()
+                    .any(|value| value == super::create_ledger::ORIGINAL_GUARD_FINALIZER)
+        }
+        Some(_) => continuation_held,
+        None => !continuation_held,
+    };
+    if !consistent {
         return Err(backend(
             "Kubernetes continuation cleanup finalizer and provenance annotation disagree",
         ));
@@ -373,6 +416,7 @@ fn stamp_pod_cleanup_authorization(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PodCleanupGateAdmission {
     Acquire,
+    AdoptOriginal,
     Resume,
     MissingUid,
     StaleUid,
@@ -408,6 +452,7 @@ const fn pod_cleanup_gate_admission(
     resource_version_present: bool,
     terminating: bool,
     cleanup_finalizer_present: bool,
+    original_retention: bool,
 ) -> PodCleanupGateAdmission {
     if !uid_present {
         PodCleanupGateAdmission::MissingUid
@@ -415,10 +460,14 @@ const fn pod_cleanup_gate_admission(
         PodCleanupGateAdmission::StaleUid
     } else if !resource_version_present {
         PodCleanupGateAdmission::MissingResourceVersion
-    } else if terminating && !cleanup_finalizer_present {
-        PodCleanupGateAdmission::DeletingBeforeGate
     } else if cleanup_finalizer_present {
         PodCleanupGateAdmission::Resume
+    } else if terminating {
+        if original_retention {
+            PodCleanupGateAdmission::AdoptOriginal
+        } else {
+            PodCleanupGateAdmission::DeletingBeforeGate
+        }
     } else {
         PodCleanupGateAdmission::Acquire
     }
@@ -430,6 +479,34 @@ pub(super) struct PendingPodCleanup {
     name: String,
     uid: String,
     authorization: PodCleanupAuthorization,
+}
+
+impl PendingPodCleanup {
+    pub(super) fn releases_original_guard(&self) -> bool {
+        matches!(
+            self.authorization,
+            PodCleanupAuthorization::OriginalCreate(_)
+        )
+    }
+}
+
+pub(super) fn terminal_original_guard_retained(pod: &Pod) -> bool {
+    pod.metadata.finalizers.as_ref().is_some_and(|values| {
+        values
+            .iter()
+            .any(|value| value == super::create_ledger::ORIGINAL_GUARD_FINALIZER)
+    }) && pod
+        .metadata
+        .labels
+        .as_ref()
+        .and_then(|labels| labels.get(super::create_ledger::ISOLATION_LABEL))
+        .is_none()
+        && matches!(
+            pod.status
+                .as_ref()
+                .and_then(|status| status.phase.as_deref()),
+            Some("Failed" | "Succeeded")
+        )
 }
 
 pub(super) fn pod_cleanup_gate_held(pod: &Pod) -> bool {
@@ -495,17 +572,20 @@ pub(super) async fn acquire_pod_cleanup_gate_with_authorization(
         .clone()
         .ok_or_else(|| backend("Kubernetes Sandbox Pod has no name"))?;
     let uid = observed.metadata.uid.clone();
-    let resource_version = observed.metadata.resource_version.clone();
-    let has_finalizer = pod_cleanup_gate_held(observed);
     let observed_authorization = observed_pod_cleanup_authorization(observed)?;
-    match pod_cleanup_gate_admission(
+    let has_gate = observed_authorization.is_some();
+    let admission = pod_cleanup_gate_admission(
         uid.is_some(),
         uid.as_deref() == Some(expected_uid),
-        resource_version.is_some(),
+        observed.metadata.resource_version.is_some(),
         observed.metadata.deletion_timestamp.is_some(),
-        has_finalizer,
-    ) {
-        PodCleanupGateAdmission::Acquire | PodCleanupGateAdmission::Resume => {}
+        has_gate,
+        authorization.aggregate().is_some() && terminal_original_guard_retained(observed),
+    );
+    match admission {
+        PodCleanupGateAdmission::Acquire
+        | PodCleanupGateAdmission::Resume
+        | PodCleanupGateAdmission::AdoptOriginal => {}
         PodCleanupGateAdmission::MissingUid => {
             return Err(backend("Kubernetes Sandbox Pod has no UID"));
         }
@@ -524,34 +604,48 @@ pub(super) async fn acquire_pod_cleanup_gate_with_authorization(
         }
     }
     let uid = uid.expect("cleanup admission proved Pod UID is present");
-    match pod_cleanup_authorization_admission(observed_authorization.as_ref(), authorization)? {
+    let original = admission == PodCleanupGateAdmission::AdoptOriginal
+        || observed_authorization
+            .as_ref()
+            .is_some_and(|value| matches!(value, PodCleanupAuthorization::OriginalCreate(_)));
+    let selected = if original {
+        authorization.for_original_guard()?
+    } else {
+        authorization.clone()
+    };
+    match pod_cleanup_authorization_admission(observed_authorization.as_ref(), &selected)? {
         PodCleanupAuthorizationAdmission::Resume => {
             return Ok(PendingPodCleanup {
                 pod: observed.clone(),
                 name,
                 uid,
-                authorization: authorization.clone(),
+                authorization: selected,
             });
         }
         PodCleanupAuthorizationAdmission::Acquire
         | PodCleanupAuthorizationAdmission::AdvanceSuccessor => {}
     }
     let mut replacement = observed.clone();
-    if !has_finalizer {
-        let mut finalizers = observed.metadata.finalizers.clone().unwrap_or_default();
-        finalizers.push(CONTINUATION_CLEANUP_FINALIZER.to_owned());
-        replacement.metadata.finalizers = Some(finalizers);
+    if !has_gate && !original {
+        replacement
+            .metadata
+            .finalizers
+            .get_or_insert_with(Vec::new)
+            .push(CONTINUATION_CLEANUP_FINALIZER.to_owned());
     }
-    stamp_pod_cleanup_authorization(&mut replacement, authorization)?;
+    // A deleting original keeps its existing finalizer. Only the exact
+    // preparation/successor annotation changes in this UID/resourceVersion CAS.
+    stamp_pod_cleanup_authorization(&mut replacement, &selected)?;
     let patched = pods
         .replace(&name, &PostParams::default(), &replacement)
         .await
         .map_err(backend)?;
     admit()?;
-    let patched_authorization = observed_pod_cleanup_authorization(&patched)?;
+    let patched_authorization = observed_pod_cleanup_authorization(&patched)?
+        .ok_or_else(|| backend("Kubernetes Sandbox Pod cleanup gate lost its provenance"))?;
     if patched.metadata.uid.as_deref() != Some(uid.as_str())
-        || !pod_cleanup_gate_held(&patched)
-        || pod_cleanup_authorization_admission(patched_authorization.as_ref(), authorization)?
+        || patched_authorization.retainer() != selected.retainer()
+        || pod_cleanup_authorization_admission(Some(&patched_authorization), &selected)?
             != PodCleanupAuthorizationAdmission::Resume
     {
         return Err(backend(
@@ -562,7 +656,7 @@ pub(super) async fn acquire_pod_cleanup_gate_with_authorization(
         pod: patched,
         name,
         uid,
-        authorization: authorization.clone(),
+        authorization: selected,
     })
 }
 
@@ -577,7 +671,7 @@ pub(super) async fn release_pod_cleanup_gate(
     update_exact_pod_finalizer(
         pods,
         &pending.name,
-        CONTINUATION_CLEANUP_FINALIZER,
+        pending.authorization.retainer(),
         false,
         admit,
         &|observed| {
@@ -589,10 +683,11 @@ pub(super) async fn release_pod_cleanup_gate(
         let observed_authorization = observed_pod_cleanup_authorization(observed)?;
         match pod_cleanup_gate_release_admission(
             observed.metadata.deletion_timestamp.is_some(),
-            pod_cleanup_gate_held(observed),
+            observed_authorization.is_some(),
         ) {
             PodCleanupGateReleaseAdmission::Remove => {
-                if pod_cleanup_authorization_admission(
+                if observed_authorization.as_ref().is_none_or(|value| value.retainer()!=pending.authorization.retainer())
+                    || pod_cleanup_authorization_admission(
                     observed_authorization.as_ref(),
                     &pending.authorization,
                 )? != PodCleanupAuthorizationAdmission::Resume
@@ -620,6 +715,52 @@ pub(super) async fn release_pod_cleanup_gate(
         },
     )
     .await
+}
+
+/// Release the selected physical retainer once. A claimed original guard is
+/// not also released through the independent original-result cleanup edge.
+pub(super) async fn release_bound_guards(
+    pods: &Api<Pod>,
+    container_id: &str,
+    pod_uid: &str,
+    pending: Option<&PendingPodCleanup>,
+    original: bool,
+    admit: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
+) -> Result<(), RuntimeError> {
+    if let Some(pending) = pending {
+        release_pod_cleanup_gate(pods, pending, admit).await?;
+    }
+    if original && !pending.is_some_and(PendingPodCleanup::releases_original_guard) {
+        super::create_ledger::release_original_guard(pods, container_id, pod_uid, admit).await?;
+    }
+    Ok(())
+}
+
+/// Finish the existing response-loss row after its cleanup interlock was
+/// released. The exact Pod/PVC and original projected identities remain owned.
+pub(super) async fn finish_released_bound_disposal(
+    runtime: &K8sRuntime,
+    container_id: &str,
+    pod_uid: &str,
+    claim_uid: Option<&str>,
+    projected: Option<&crate::kubernetes_handle::KubernetesProjectedParticipants>,
+    original: bool,
+    admit: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
+) -> Result<(), RuntimeError> {
+    release_bound_guards(
+        &runtime.pods(),
+        container_id,
+        pod_uid,
+        None,
+        original,
+        admit,
+    )
+    .await?;
+    runtime
+        .await_exact_pod_deleted(container_id, pod_uid, admit)
+        .await?;
+    super::participants::finish_after_absent_pod(runtime, container_id, claim_uid, projected, admit)
+        .await
 }
 
 /// Closed admission decision for the irreversible PVC deletion API call. The
@@ -787,34 +928,34 @@ fn pod_cleanup_gate_serializes_rebuild_and_claim_deletion() {
     };
 
     assert_eq!(
-        pod_cleanup_gate_admission(true, true, true, false, false),
+        pod_cleanup_gate_admission(true, true, true, false, false, false),
         Acquire,
         "KPG1a"
     );
     for terminating in [false, true] {
         assert_eq!(
-            pod_cleanup_gate_admission(true, true, true, terminating, true),
+            pod_cleanup_gate_admission(true, true, true, terminating, true, false),
             Resume,
             "KPG1b"
         );
     }
     assert_eq!(
-        pod_cleanup_gate_admission(true, true, true, true, false),
+        pod_cleanup_gate_admission(true, true, true, true, false, false),
         DeletingBeforeGate,
         "KPG1c"
     );
     assert_eq!(
-        pod_cleanup_gate_admission(false, false, true, false, false),
+        pod_cleanup_gate_admission(false, false, true, false, false, false),
         MissingUid,
         "KPG1d"
     );
     assert_eq!(
-        pod_cleanup_gate_admission(true, false, true, false, false),
+        pod_cleanup_gate_admission(true, false, true, false, false, false),
         StaleUid,
         "KPG1d"
     );
     assert_eq!(
-        pod_cleanup_gate_admission(true, true, false, false, false),
+        pod_cleanup_gate_admission(true, true, false, false, false, false),
         MissingResourceVersion,
         "KPG1d"
     );
@@ -1827,5 +1968,84 @@ mod tests {
             Some("claim-incarnation-1"),
             "V2/C3"
         );
+    }
+}
+
+#[cfg(any(test, kani))]
+fn check_original_guard_admission_domain(bits: u8) {
+    let uid = bits & 1 != 0;
+    let exact = bits & 2 != 0;
+    let rv = bits & 4 != 0;
+    let deleting = bits & 8 != 0;
+    let owned = bits & 16 != 0;
+    let original = bits & 32 != 0;
+    let result = pod_cleanup_gate_admission(uid, exact, rv, deleting, owned, original);
+    let valid = uid && exact && rv;
+    use PodCleanupGateAdmission::{Acquire, AdoptOriginal, DeletingBeforeGate, Resume};
+    assert!(!matches!(result, Acquire | AdoptOriginal | Resume) || valid);
+    assert_eq!(
+        matches!(result, AdoptOriginal),
+        valid && deleting && !owned && original
+    );
+    assert_eq!(matches!(result, Acquire), valid && !deleting && !owned);
+    assert_eq!(matches!(result, Resume), valid && owned);
+    if valid && deleting && !owned && !original {
+        assert_eq!(result, DeletingBeforeGate);
+    }
+}
+
+#[test]
+fn original_guard_gate_admission_exhausts_the_exact_authority_domain() {
+    // Cause/effect rules: exact UID + RV are mandatory for every admitting
+    // outcome. An already-owned gate resumes; an unprotected live source may
+    // acquire; a deleting source may only adopt its independently eligible
+    // original guard. Exhaust all 64 raw combinations, including contradictory
+    // UID facts. No sampled absence or raw finalizer alone authorizes deletion.
+    for bits in 0u8..64 {
+        check_original_guard_admission_domain(bits);
+    }
+}
+
+#[cfg(kani)]
+/// @obligation resource_reclamation.continuation_claim_deletion_requires_exact_incarnation_fence
+/// @kani profile=solver-kissat-v1 features=k8s
+#[kani::proof]
+#[kani::unwind(65)]
+fn original_guard_gate_admission_preserves_exact_uid_and_retention() {
+    // The complete finite production-kernel domain, not unconstrained physical
+    // observations. HTTP tests qualify eligibility mapping and API CAS effects;
+    // this harness does not prove Kubernetes linearizability or source bytes.
+    for bits in 0u8..64 {
+        check_original_guard_admission_domain(bits);
+    }
+}
+
+#[test]
+fn original_guard_retention_requires_a_terminal_unisolated_original() {
+    // Mapping causes: guard absent/present; Failed/Succeeded/Running/Pending;
+    // isolation label absent/true/false. Only terminal, retained, non-isolated
+    // original sources produce eligibility. This gives the finite gate input
+    // its actual Pod meaning; it is still not aggregate disposal authority.
+    for guard in [false, true] {
+        for phase in ["Failed", "Succeeded", "Running", "Pending"] {
+            for label in [None, Some("true"), Some("false")] {
+                let mut pod = Pod::default();
+                pod.metadata.finalizers =
+                    guard.then(|| vec![super::create_ledger::ORIGINAL_GUARD_FINALIZER.into()]);
+                pod.status =
+                    Some(serde_json::from_value(serde_json::json!({"phase":phase})).unwrap());
+                if let Some(value) = label {
+                    pod.metadata.labels = Some(
+                        [(super::create_ledger::ISOLATION_LABEL.into(), value.into())]
+                            .into_iter()
+                            .collect(),
+                    );
+                }
+                assert_eq!(
+                    terminal_original_guard_retained(&pod),
+                    guard && matches!(phase, "Failed" | "Succeeded") && label.is_none()
+                );
+            }
+        }
     }
 }
