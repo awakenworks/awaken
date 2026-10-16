@@ -1168,7 +1168,7 @@ async fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epo
             host.installed_sessions.realizations().update_realization(
                 expired.session_id().as_str(),
                 |r| {
-                    r.authority =
+                    r.execution.authority =
                         crate::installed_session::SessionRealizationAuthority::Live(proof);
                 },
             );
@@ -1264,7 +1264,7 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
             host.installed_sessions
                 .realizations()
                 .modify_realization(old_generation.session_id().as_str(), |r| {
-                    r.mcp.projections_mut()[0].state = live_state
+                    r.staging.mcp.projections_mut()[0].state = live_state
                 });
             assert!(
                 !host.forget_replayable_removed_mcp_projection(&renewed),
@@ -1278,7 +1278,7 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
         host.installed_sessions
             .realizations()
             .modify_realization(old_generation.session_id().as_str(), |r| {
-                r.mcp.projections_mut()[0].state = state
+                r.staging.mcp.projections_mut()[0].state = state
             });
         host.install_session_realization_lease(
             old_generation.session_id().as_str(),
@@ -1311,7 +1311,7 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
             host.installed_sessions
                 .realizations()
                 .read_realization(renewed.generation.session_id().as_str(), |r| {
-                    r.mcp.projection_count()
+                    r.staging.mcp.projection_count()
                 }),
             Some(1),
             "{rule}/E2"

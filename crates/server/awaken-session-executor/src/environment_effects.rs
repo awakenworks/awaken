@@ -53,10 +53,14 @@ impl crate::realization_executor::RealizationExecutor {
         let (claimed_ordinary_run, managed_projection, closed) = realizations
             .modify_session(thread, |slot| {
                 let managed = slot.inputs.baseline.is_some() || slot.run.session_dispatch();
-                let ordinary = slot.realization.authority.lease().is_none()
+                let ordinary = slot.realization.execution.authority.lease().is_none()
                     && slot.run.dispatch_claim().is_some()
                     && !managed;
-                (ordinary, managed, slot.realization.authority.is_closed())
+                (
+                    ordinary,
+                    managed,
+                    slot.realization.execution.authority.is_closed(),
+                )
             })
             .unwrap_or_default();
         if closed {

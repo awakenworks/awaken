@@ -36,11 +36,11 @@ impl McpSessionSlots for InstalledSessions {
     type Runtime = Arc<crate::host::SessionCtx>;
 
     fn read_mcp<R>(&self, session: &str, read: impl FnOnce(&SessionMcpState) -> R) -> Option<R> {
-        self.read(session, |slot| read(&slot.realization.mcp))
+        self.read(session, |slot| read(&slot.realization.staging.mcp))
     }
 
     fn update_mcp<R>(&self, session: &str, update: impl FnOnce(&mut SessionMcpState) -> R) -> R {
-        self.update(session, |slot| update(&mut slot.realization.mcp))
+        self.update(session, |slot| update(&mut slot.realization.staging.mcp))
     }
 
     fn modify_mcp<R>(
@@ -48,7 +48,7 @@ impl McpSessionSlots for InstalledSessions {
         session: &str,
         modify: impl FnOnce(&mut SessionMcpState) -> R,
     ) -> Option<R> {
-        self.modify(session, |slot| modify(&mut slot.realization.mcp))
+        self.modify(session, |slot| modify(&mut slot.realization.staging.mcp))
     }
 
     fn modify_mcp_and_runtime<R>(
@@ -57,7 +57,7 @@ impl McpSessionSlots for InstalledSessions {
         modify: impl FnOnce(&mut SessionMcpState, &mut Option<Self::Runtime>) -> R,
     ) -> Option<R> {
         self.modify(session, |slot| {
-            modify(&mut slot.realization.mcp, &mut slot.run.context)
+            modify(&mut slot.realization.staging.mcp, &mut slot.run.context)
         })
     }
 

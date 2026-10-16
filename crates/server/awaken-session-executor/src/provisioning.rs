@@ -530,7 +530,7 @@ impl ArtifactHarvester {
         }
         let projected_environment = exact_environment.cloned().or_else(|| {
             self.sessions
-                .read_realization(thread, |r| r.environment_owner.resident())
+                .read_realization(thread, |r| r.environment.owner.resident())
                 .flatten()
         });
         let Some(env) = projected_environment else {
@@ -1070,13 +1070,14 @@ impl crate::resource_staging::ResourceStaging {
             .sessions
             .read_realization(thread, |r| {
                 let create_time_mounts = r
+                    .staging
                     .resources
                     .mounts
                     .iter()
                     .filter(|mount| resource_mount_is_create_time(mount))
                     .cloned()
                     .collect();
-                let has_repositories = r.resource_transition.as_ref().is_some_and(|transition| {
+                let has_repositories = r.staging.transition.as_ref().is_some_and(|transition| {
                     transition.desired().resources.inputs().iter().any(|input| {
                         matches!(
                             input.source,
@@ -1157,7 +1158,7 @@ impl crate::resource_staging::ResourceStaging {
             .modify_session(thread, |slot| {
                 (
                     slot.inputs.baseline.clone(),
-                    slot.realization.content_delivery,
+                    slot.realization.staging.content_delivery,
                     slot.inputs.environment_projection.clone(),
                 )
             })
@@ -1239,7 +1240,7 @@ impl crate::resource_staging::ResourceStaging {
     #[cfg(test)]
     pub(crate) fn register_thread_resources(&self, thread: &str, staged: StagedResources) {
         self.sessions
-            .update_realization(thread, |r| r.resources = staged);
+            .update_realization(thread, |r| r.staging.resources = staged);
     }
 
     pub(crate) fn register_thread_resource_manifest(
@@ -1248,7 +1249,7 @@ impl crate::resource_staging::ResourceStaging {
         manifest: session_resource::SessionResourceManifest,
     ) {
         self.sessions
-            .update_realization(thread, |r| r.manifest = Some(manifest));
+            .update_realization(thread, |r| r.staging.manifest = Some(manifest));
     }
 
     pub(crate) fn thread_resource_manifest(
@@ -1256,13 +1257,13 @@ impl crate::resource_staging::ResourceStaging {
         thread: &str,
     ) -> Option<session_resource::SessionResourceManifest> {
         self.sessions
-            .read_realization(thread, |r| r.manifest.clone())
+            .read_realization(thread, |r| r.staging.manifest.clone())
             .flatten()
     }
 
     pub(crate) fn thread_resources_snapshot(&self, thread: &str) -> StagedResources {
         self.sessions
-            .read_realization(thread, |r| r.resources.clone())
+            .read_realization(thread, |r| r.staging.resources.clone())
             .unwrap_or_default()
     }
 
@@ -1272,7 +1273,7 @@ impl crate::resource_staging::ResourceStaging {
     #[cfg(test)]
     pub(crate) fn thread_repository_activations(&self, thread: &str) -> Vec<RepositoryActivation> {
         self.sessions
-            .read_realization(thread, |r| r.resources.repositories.clone())
+            .read_realization(thread, |r| r.staging.resources.repositories.clone())
             .unwrap_or_default()
     }
 

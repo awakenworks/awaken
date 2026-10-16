@@ -50,10 +50,10 @@ impl RealizationExecutor {
         let realizations = self.sessions.clone();
         let (current, live) = realizations
             .read_realization(thread, |r| {
-                r.authority.lease().map(|current| {
+                r.execution.authority.lease().map(|current| {
                     (
                         current.clone(),
-                        r.authority.remaining_for(asserted).is_some(),
+                        r.execution.authority.remaining_for(asserted).is_some(),
                     )
                 })
             })
@@ -517,7 +517,7 @@ mod tests {
             };
             host.installed_sessions
                 .realizations()
-                .update_realization(rule, |r| r.authority = authority);
+                .update_realization(rule, |r| r.execution.authority = authority);
             let generation = awaken_session_state_contract::SandboxGeneration::new(
                 &awaken_session_types::SessionId::from(rule),
                 1,
@@ -574,7 +574,7 @@ mod tests {
             host.installed_sessions
                 .realizations()
                 .update_realization(thread, |r| {
-                    r.authority =
+                    r.execution.authority =
                         Authority::Live(
                             awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
                                 lease, 0,

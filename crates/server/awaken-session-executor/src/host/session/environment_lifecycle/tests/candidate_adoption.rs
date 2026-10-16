@@ -232,9 +232,9 @@ async fn unknown_candidate_retry_never_authorizes_or_relabels_its_owner() {
         );
         host.installed_sessions.realizations().read_realization(thread, |realization| {
             if let Some(retirement) = &retirement {
-                assert!(matches!(&realization.environment_owner, SessionEnvironmentOwner::Retiring(current) if current.exact_matches(&retirement.owner)), "U1 exact retirement");
+                assert!(matches!(&realization.environment.owner, SessionEnvironmentOwner::Retiring(current) if current.exact_matches(&retirement.owner)), "U1 exact retirement");
             } else {
-                assert!(realization.environment_owner.unpublished_candidate().unwrap().exact_matches(&candidate), "U1 exact hidden owner");
+                assert!(realization.environment.owner.unpublished_candidate().unwrap().exact_matches(&candidate), "U1 exact hidden owner");
             }
         }).unwrap();
     }
@@ -486,14 +486,16 @@ async fn adopted_candidate_retains_successor_receipt_after_dispatch_fencing() {
                 .realizations()
                 .update_realization(thread, |r| {
                     let retiring = r
-                        .environment_owner
+                        .environment
+                        .owner
                         .begin_retirement(
                             SessionEnvironmentRetirementCause::RealizationRevocation,
                             state::RetirementSelection::Current,
                         )
                         .unwrap()
                         .unwrap();
-                    r.environment_owner
+                    r.environment
+                        .owner
                         .prepare_retiring_realization_adoption(&retiring, environment.clone(), None)
                         .unwrap();
                 });
@@ -692,7 +694,7 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
             assert!(
                 host.installed_sessions
                     .realizations()
-                    .read_realization(thread, |r| matches!(&r.environment_owner,
+                    .read_realization(thread, |r| matches!(&r.environment.owner,
                 SessionEnvironmentOwner::Resident(owned) if owned.identity == expected))
                     .unwrap()
             );
@@ -702,7 +704,7 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
                 "B direct success"
             );
         }
-        assert!(host.installed_sessions.realizations().read_realization(thread, |r| matches!(&r.environment_owner,
+        assert!(host.installed_sessions.realizations().read_realization(thread, |r| matches!(&r.environment.owner,
             SessionEnvironmentOwner::Resident(owned) if matches!(&owned.identity,
                 BoundSessionEnvironmentIdentity::Durable { effect_id, generation }
                     if effect_id == effect.authorization.intent().effect_id() && Some(generation) == source.generation()
@@ -788,7 +790,8 @@ async fn committed_hidden_create_candidate_is_terminally_retired_without_publica
         .installed_sessions
         .realizations()
         .update_realization(thread, |r| {
-            r.environment_owner
+            r.environment
+                .owner
                 .begin_retirement_with_committed_candidate(&committed, cause)
         })
         .expect("C4 terminal takeover");
@@ -1083,7 +1086,7 @@ async fn unacknowledged_candidate_adoption_requires_aggregate_authority() {
     host.installed_sessions
         .realizations()
         .read_realization(thread, |r| {
-            assert!(matches!(&r.environment_owner,
+            assert!(matches!(&r.environment.owner,
         SessionEnvironmentOwner::Retiring(current) if current.exact_matches(&retirement.owner)))
         })
         .unwrap();

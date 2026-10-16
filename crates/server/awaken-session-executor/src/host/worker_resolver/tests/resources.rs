@@ -215,14 +215,22 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         .installed_sessions
         .read("thread-cold-resource", |slot| {
             (
-                slot.realization.resources.mounts.is_empty(),
-                slot.realization.resources.prompts.is_empty(),
-                slot.realization.resources.resource_prompts.is_empty(),
-                slot.realization.resources.binding_checks.is_empty(),
-                slot.realization.resources.repositories.is_empty(),
-                slot.realization.memory_bindings.is_empty(),
-                slot.realization.memory.is_none(),
-                slot.realization.skills.as_ref().is_some_and(Vec::is_empty),
+                slot.realization.staging.resources.mounts.is_empty(),
+                slot.realization.staging.resources.prompts.is_empty(),
+                slot.realization
+                    .staging
+                    .resources
+                    .resource_prompts
+                    .is_empty(),
+                slot.realization.staging.resources.binding_checks.is_empty(),
+                slot.realization.staging.resources.repositories.is_empty(),
+                slot.realization.staging.memory_bindings.is_empty(),
+                slot.realization.staging.memory.is_none(),
+                slot.realization
+                    .staging
+                    .skills
+                    .as_ref()
+                    .is_some_and(Vec::is_empty),
                 slot.run.context.is_none(),
             )
         })

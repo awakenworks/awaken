@@ -42,7 +42,8 @@ async fn captured_environment_intent_survives_renewal_without_rebuilding_adopt()
     host.installed_sessions
         .realizations()
         .update_realization(thread, |r| {
-            r.authority = crate::installed_session::SessionRealizationAuthority::Live(proof);
+            r.execution.authority =
+                crate::installed_session::SessionRealizationAuthority::Live(proof);
         });
     *sink.original_intent.lock().unwrap() = Some(original.clone());
     for request_expiry in [60_000, 120_000] {
@@ -117,7 +118,7 @@ async fn managed_projection_without_a_lease_never_falls_back_to_unowned() {
                 });
             }
             if closed {
-                slot.realization.authority =
+                slot.realization.execution.authority =
                     crate::installed_session::SessionRealizationAuthority::Closed(None);
             }
         });

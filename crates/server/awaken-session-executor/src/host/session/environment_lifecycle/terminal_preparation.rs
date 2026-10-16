@@ -36,8 +36,8 @@ impl SharedHost {
                 let baseline = slot.inputs.baseline.as_ref();
                 let r = &slot.realization;
                 (
-                    r.terminal_cleanup_assignment.clone(),
-                    r.environment_owner.clone(),
+                    r.cleanup.assignment.clone(),
+                    r.environment.owner.clone(),
                     r.previous_resources(),
                     slot.inputs.workspace.clone(),
                     baseline.map(|baseline| baseline.environment.idle_retention.clone()),
@@ -440,7 +440,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
         self
             .sessions
             .read_realization(session_id.as_str(), |r| {
-                let current = r.authority.lease().ok_or_else(|| {
+                let current = r.execution.authority.lease().ok_or_else(|| {
                     HostError::unavailable_classified(
                         "session_terminal_cleanup_projection_missing",
                         "terminal cleanup has no installed realization generation",
@@ -452,7 +452,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
                         "terminal cleanup realization generation was replaced",
                     ));
                 }
-                if r.authority.remaining_for(lease).is_none() {
+                if r.execution.authority.remaining_for(lease).is_none() {
                     return Err(HostError::unavailable_classified(
                         "session_terminal_cleanup_effect_expired",
                         "terminal cleanup generation has no current live renewal at its physical boundary",
@@ -477,7 +477,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
         environment: &Arc<crate::session_environment::SessionEnvironment>,
     ) -> bool {
         self.sessions
-            .read_realization(thread, |r| match &r.environment_owner {
+            .read_realization(thread, |r| match &r.environment.owner {
                 SessionEnvironmentOwner::Retiring(retirement)
                     if matches!(
                         retirement.cause,
@@ -537,7 +537,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
     ) -> Result<TerminalMemoryPlan, HostError> {
         let transition = self
             .sessions
-            .read_realization(&effect.command.thread_id, |r| r.resource_transition.clone())
+            .read_realization(&effect.command.thread_id, |r| r.staging.transition.clone())
             .flatten()
             .ok_or_else(|| {
                 HostError::internal("terminal Memory validation has no frozen Resource transition")

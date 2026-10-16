@@ -901,7 +901,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for RecordingMcpRe
             let physical_only = host.upgrade().is_some_and(|host| {
                 host.installed_sessions
                     .read(thread, |slot| {
-                        slot.realization.environment_owner.is_resident()
+                        slot.realization.environment.owner.is_resident()
                             && slot.run.context.is_none()
                     })
                     .unwrap_or(false)
@@ -1334,16 +1334,17 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
     };
     host.installed_sessions.update("ordinary-remote", |slot| {
         slot.run.dispatch_claim = Some(predecessor.clone());
-        slot.realization.authority = crate::installed_session::SessionRealizationAuthority::Live(
-            crate::installed_session::test_observed_lease(
-                crate::session_resource::SessionRealizationLease {
-                    owner: claimed.lease.owner().to_owned(),
-                    runtime_incarnation: claimed.lease.owner().to_owned(),
-                    epoch: 0,
-                    expires_at_unix_ms: u64::MAX,
-                },
-            ),
-        );
+        slot.realization.execution.authority =
+            crate::installed_session::SessionRealizationAuthority::Live(
+                crate::installed_session::test_observed_lease(
+                    crate::session_resource::SessionRealizationLease {
+                        owner: claimed.lease.owner().to_owned(),
+                        runtime_incarnation: claimed.lease.owner().to_owned(),
+                        epoch: 0,
+                        expires_at_unix_ms: u64::MAX,
+                    },
+                ),
+            );
     });
     let frozen = projection.lock().unwrap().take();
     for _ in 0..2 {
@@ -1382,7 +1383,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
                 Some(ingress::RunClaim::from(&claimed.lease)),
                 "CR2"
             );
-            slot.realization.authority.lease().cloned()
+            slot.realization.execution.authority.lease().cloned()
         })
         .flatten()
         .expect("CR2 installed lease");
@@ -1402,9 +1403,15 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
         host.installed_sessions
             .read("ordinary-remote", |slot| {
                 slot.inputs.baseline.is_some()
-                    && slot.realization.authority.lease().is_some_and(|lease| {
-                        lease.owner == claimed.lease.owner() && lease.epoch == claimed.lease.epoch()
-                    })
+                    && slot
+                        .realization
+                        .execution
+                        .authority
+                        .lease()
+                        .is_some_and(|lease| {
+                            lease.owner == claimed.lease.owner()
+                                && lease.epoch == claimed.lease.epoch()
+                        })
             })
             .unwrap_or(false),
         "O1/E1-E2"
@@ -1695,7 +1702,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
     let exact_before = host
         .installed_sessions
         .realizations()
-        .read_realization("exact-cold-transition", |r| r.resource_transition.clone())
+        .read_realization("exact-cold-transition", |r| r.staging.transition.clone())
         .flatten()
         .expect("R1 exact transition projection");
     assert_eq!(exact_before.previous(), &revision_one, "R1/C1 previous");
@@ -1706,7 +1713,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
     assert_eq!(
         host.installed_sessions
             .realizations()
-            .read_realization("exact-cold-transition", |r| r.resource_transition.clone())
+            .read_realization("exact-cold-transition", |r| r.staging.transition.clone())
             .flatten(),
         Some(exact_before),
         "R1/E1 retains the exact producer transition"
@@ -1719,7 +1726,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
     let active_transition = host
         .installed_sessions
         .realizations()
-        .read_realization(active_thread, |r| r.resource_transition.clone())
+        .read_realization(active_thread, |r| r.staging.transition.clone())
         .flatten()
         .expect("R2 exact transition projection");
     assert_eq!(
@@ -1734,7 +1741,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
     assert_eq!(
         host.installed_sessions
             .realizations()
-            .read_realization(active_thread, |r| r.resource_transition.clone())
+            .read_realization(active_thread, |r| r.staging.transition.clone())
             .flatten(),
         Some(active_transition),
         "R2/E1 retains the exact producer transition"
@@ -1750,10 +1757,10 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
         .installed_sessions
         .read(mismatched_thread, |slot| {
             (
-                slot.realization.resource_transition.clone(),
-                slot.realization.staged_resource_effect_key.clone(),
+                slot.realization.staging.transition.clone(),
+                slot.realization.staging.effect_key.clone(),
                 slot.inputs.workspace.clone(),
-                slot.realization.manifest.clone(),
+                slot.realization.staging.manifest.clone(),
             )
         })
         .expect("R3 producer slot");
@@ -1765,10 +1772,10 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
     assert_eq!(
         host.installed_sessions.read(mismatched_thread, |slot| {
             (
-                slot.realization.resource_transition.clone(),
-                slot.realization.staged_resource_effect_key.clone(),
+                slot.realization.staging.transition.clone(),
+                slot.realization.staging.effect_key.clone(),
                 slot.inputs.workspace.clone(),
-                slot.realization.manifest.clone(),
+                slot.realization.staging.manifest.clone(),
             )
         }),
         Some(before_mismatch),
@@ -1818,9 +1825,9 @@ async fn complete_projection_resource_guard_excludes_desired_only_staging() {
         host.installed_sessions
             .realizations()
             .read_realization(thread, |r| {
-                r.resource_transition.is_none()
-                    && r.staged_resource_effect_key.is_none()
-                    && r.manifest.is_none()
+                r.staging.transition.is_none()
+                    && r.staging.effect_key.is_none()
+                    && r.staging.manifest.is_none()
             })
             .unwrap_or(false),
         "L1 no correlated Resource fact is published while the guard is held"
@@ -1835,9 +1842,9 @@ async fn complete_projection_resource_guard_excludes_desired_only_staging() {
         host.installed_sessions
             .realizations()
             .read_realization(thread, |r| {
-                r.resource_transition.is_some()
-                    && r.staged_resource_effect_key.is_some()
-                    && r.manifest.is_none()
+                r.staging.transition.is_some()
+                    && r.staging.effect_key.is_some()
+                    && r.staging.manifest.is_none()
             })
             .unwrap_or(false),
         "L2 cold requirements and command stage without active completion"
@@ -1935,7 +1942,7 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
         .register_thread_resource_manifest(foreign_thread, foreign.clone());
     host.installed_sessions.update(foreign_thread, |slot| {
         slot.replace_frozen_with(|next| next.workspace = Some("sentinel-workspace".into()));
-        slot.realization.staged_resource_effect_key = Some("sentinel-key".into());
+        slot.realization.staging.effect_key = Some("sentinel-key".into());
     });
     let _guard = host
         .installed_sessions
@@ -1956,11 +1963,10 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
     assert!(
         host.installed_sessions
             .read(foreign_thread, |slot| {
-                slot.realization.manifest.as_ref() == Some(&foreign)
+                slot.realization.staging.manifest.as_ref() == Some(&foreign)
                     && slot.inputs.workspace.as_deref() == Some("sentinel-workspace")
-                    && slot.realization.staged_resource_effect_key.as_deref()
-                        == Some("sentinel-key")
-                    && slot.realization.resources.mounts.is_empty()
+                    && slot.realization.staging.effect_key.as_deref() == Some("sentinel-key")
+                    && slot.realization.staging.resources.mounts.is_empty()
             })
             .unwrap_or(false),
         "P1 rejects before compilation or any correlated slot write"
@@ -1986,11 +1992,11 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
         host.installed_sessions
             .realizations()
             .read_realization(bound_thread, |r| {
-                r.manifest.is_none()
-                    && r.resource_transition.is_none()
-                    && r.staged_resource_effect_key.is_none()
-                    && r.resources.mounts.is_empty()
-                    && r.skills.as_ref().is_some_and(|skills| {
+                r.staging.manifest.is_none()
+                    && r.staging.transition.is_none()
+                    && r.staging.effect_key.is_none()
+                    && r.staging.resources.mounts.is_empty()
+                    && r.staging.skills.as_ref().is_some_and(|skills| {
                         skills.len() == 1 && skills[0].skill_id.as_str() == "cold-recovery"
                     })
             })
@@ -2655,7 +2661,7 @@ async fn an_aba_replacement_with_the_same_handle_survives_stale_discard() {
     let original_identity = host
         .installed_sessions
         .realizations()
-        .read_realization(thread, |r| match &r.environment_owner {
+        .read_realization(thread, |r| match &r.environment.owner {
             crate::environment_owner::SessionEnvironmentOwner::Resident(bound) => {
                 bound.identity.clone()
             }
@@ -2674,7 +2680,7 @@ async fn an_aba_replacement_with_the_same_handle_survives_stale_discard() {
         host.installed_sessions
             .realizations()
             .read_realization(thread, |r| {
-                match &r.environment_owner {
+                match &r.environment.owner {
                     crate::environment_owner::SessionEnvironmentOwner::Resident(bound) => {
                         bound.identity.clone()
                     }

@@ -246,7 +246,9 @@ async fn managed_multi_memory_mounts_are_backend_neutral_pairwise() {
         let (binding_count, automatic_absent) = host
             .installed_sessions
             .realizations()
-            .read_realization(&thread, |r| (r.memory_bindings.len(), r.memory.is_none()))
+            .read_realization(&thread, |r| {
+                (r.staging.memory_bindings.len(), r.staging.memory.is_none())
+            })
             .unwrap();
         assert_eq!(binding_count, count, "{} E1 bindings", case.rule);
         assert!(automatic_absent, "{} E3", case.rule);
@@ -254,7 +256,7 @@ async fn managed_multi_memory_mounts_are_backend_neutral_pairwise() {
             .realizations()
             .read_realization(&thread, |r| {
                 for (index, access) in expected_access.iter().enumerate() {
-                    let binding = &r.memory_bindings[&format!("test-input-{index}")];
+                    let binding = &r.staging.memory_bindings[&format!("test-input-{index}")];
                     assert_eq!(
                         binding.extraction_enabled,
                         *access == ResourceAccess::ReadWrite,

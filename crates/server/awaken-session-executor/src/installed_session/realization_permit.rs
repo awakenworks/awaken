@@ -30,16 +30,15 @@ impl InstalledSessions {
         SessionRealizationPermit::acquire(
             &awaken_session_types::SessionId::from(session),
             move || {
-                let identity: Arc<tokio::sync::Mutex<()>> =
-                    slots.update(session, |slot| slot.realization.realization.clone());
+                let phase = slots.update(session, |slot| slot.realization.execution.phase.clone());
                 async move {
-                    let owner = identity.clone().lock_owned().await;
-                    (identity, owner)
+                    let owner = phase.clone().lock_owned().await;
+                    (phase, owner)
                 }
             },
             |identity| {
                 self.modify(session, |slot| {
-                    Arc::ptr_eq(&slot.realization.realization, identity).then(|| on_admit(slot))
+                    Arc::ptr_eq(&slot.realization.execution.phase, identity).then(|| on_admit(slot))
                 })
                 .flatten()
             },
@@ -66,13 +65,13 @@ mod tests {
         let slots = Arc::new(InstalledSessions::default());
         let held = slots.acquire_realization_with("session-a", |_| ()).await.0;
         let waiting = slots
-            .acquire_realization_with("session-a", |slot| slot.realization.realization.clone());
+            .acquire_realization_with("session-a", |slot| slot.realization.execution.phase.clone());
         let mut waiting = std::pin::pin!(waiting);
         assert!(futures_util::poll!(waiting.as_mut()).is_pending(), "R1/E1");
         slots.remove("session-a");
         let recreated = slots
             .realizations()
-            .update_realization("session-a", |r| r.realization.clone());
+            .update_realization("session-a", |r| r.execution.phase.clone());
         drop(held);
         let (_permit, admitted) = tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
             .await

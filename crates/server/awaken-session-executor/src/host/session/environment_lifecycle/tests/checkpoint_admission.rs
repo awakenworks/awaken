@@ -106,8 +106,8 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                 let host = (raw).build().expect("validated Host dependencies");
                 let install = || {
                     host.installed_sessions.realizations().update_realization(thread, |r| {
-                        r.environment_owner = resident(thread, environment.clone());
-                        r.authority = Authority::Live(
+                        r.environment.owner = resident(thread, environment.clone());
+                        r.execution.authority = Authority::Live(
                             awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
                                 lease.clone(),
                                 0,
@@ -134,7 +134,7 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                 let lifecycle = host
                     .installed_sessions
                     .realizations()
-                    .read_realization(thread, |r| r.lifecycle.clone())
+                    .read_realization(thread, |r| r.environment.lifecycle.clone())
                     .unwrap();
                 let held = if wait == "lifecycle" {
                     Some(lifecycle.lock().await)
@@ -160,7 +160,7 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                         .installed_sessions
                         .realizations()
                         .update_realization(thread, |r| {
-                            r.authority = Authority::Closed(Some(lease.clone()))
+                            r.execution.authority = Authority::Closed(Some(lease.clone()))
                         }),
                     "slot-replace" => {
                         host.installed_sessions.remove(thread);
@@ -174,7 +174,7 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                         let mut renewed = lease.clone();
                         renewed.expires_at_unix_ms += 1;
                         host.installed_sessions.realizations().update_realization(thread, |r| {
-                            r.authority = Authority::Live(
+                            r.execution.authority = Authority::Live(
                                 awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
                                     renewed, 0,
                                 )
@@ -279,7 +279,7 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
         host.installed_sessions
             .realizations()
             .update_realization(thread, |r| {
-                r.authority = crate::installed_session::SessionRealizationAuthority::Live(
+                r.execution.authority = crate::installed_session::SessionRealizationAuthority::Live(
                     crate::installed_session::test_observed_lease(lease.clone()),
                 );
             });
@@ -309,9 +309,10 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
                 host.installed_sessions
                     .realizations()
                     .update_realization(thread, |r| {
-                        r.authority = crate::installed_session::SessionRealizationAuthority::Closed(
-                            Some(lease.clone()),
-                        );
+                        r.execution.authority =
+                            crate::installed_session::SessionRealizationAuthority::Closed(Some(
+                                lease.clone(),
+                            ));
                     })
             }
             "replace" | "renew" => {
@@ -323,9 +324,10 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
                             next.epoch += 1;
                         }
                         next.expires_at_unix_ms += 10_000;
-                        r.authority = crate::installed_session::SessionRealizationAuthority::Live(
-                            crate::installed_session::test_observed_lease(next),
-                        );
+                        r.execution.authority =
+                            crate::installed_session::SessionRealizationAuthority::Live(
+                                crate::installed_session::test_observed_lease(next),
+                            );
                     })
             }
             "cancel" => {}
@@ -349,7 +351,7 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
         host.installed_sessions
             .realizations()
             .update_realization(thread, |r| {
-                r.authority = crate::installed_session::SessionRealizationAuthority::Live(
+                r.execution.authority = crate::installed_session::SessionRealizationAuthority::Live(
                     crate::installed_session::test_observed_lease(lease.clone()),
                 );
             });
@@ -425,7 +427,7 @@ async fn suspension_and_terminal_admission_use_live_observation_and_never_reopen
         if state != "absent" {
             host.installed_sessions
                 .realizations()
-                .update_realization(rule, |r| r.authority = root.clone());
+                .update_realization(rule, |r| r.execution.authority = root.clone());
         }
         let mut asserted = current.clone();
         match assertion {
@@ -465,7 +467,7 @@ async fn suspension_and_terminal_admission_use_live_observation_and_never_reopen
         assert_eq!(
             host.installed_sessions
                 .realizations()
-                .read_realization(rule, |r| r.authority.clone()),
+                .read_realization(rule, |r| r.execution.authority.clone()),
             (state != "absent").then_some(root),
             "{rule}/no root mutation"
         );
