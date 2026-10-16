@@ -60,6 +60,7 @@ pub trait SessionRunQuery {
     fn drop_context(&mut self);
     /// Mark the Session's dispatch as entered through the Session application.
     fn enter_session_dispatch(&mut self);
+    fn install_dispatch_claim(&mut self, claim: awaken_dispatch_contract::RunClaim);
 }
 
 /// One installed Session as the realizer sees it, borrowed under the lock.
@@ -81,6 +82,7 @@ pub trait SessionRealizationSource: Send + Sync {
     fn acquire_realization<'a>(
         &'a self,
         session: &'a str,
+        admit: &'a mut (dyn FnMut(SessionRealizationAccess<'_>) + Send),
     ) -> futures_util::future::BoxFuture<
         'a,
         awaken_session_realization_contract::SessionRealizationPermit,
@@ -99,6 +101,9 @@ pub trait SessionRealizationSource: Send + Sync {
     /// Validate and retain an exact immutable publication under the same slot
     /// lock. This is the only publication write available to the selector;
     /// ordinary realization visitors still cannot mutate frozen inputs.
+    /// Replace frozen inputs through their original slot owner.
+    fn replace_frozen(&self, session: &str, update: &mut dyn FnMut(&mut FrozenSessionInputs));
+
     fn retain_publication(
         &self,
         session: &str,
@@ -127,6 +132,15 @@ pub struct InstalledSessionsPoisoned;
 pub struct SessionRealizations(Arc<dyn SessionRealizationSource>);
 
 impl SessionRealizations {
+    /// This view never holds a second copy of the frozen inputs.
+    pub fn replace_frozen_with(
+        &self,
+        session: &str,
+        mut update: impl FnMut(&mut FrozenSessionInputs),
+    ) {
+        self.0.replace_frozen(session, &mut update);
+    }
+
     pub fn session_ids(&self) -> Vec<String> {
         self.0.session_ids()
     }
@@ -145,7 +159,29 @@ impl SessionRealizations {
         &self,
         session: &str,
     ) -> awaken_session_realization_contract::SessionRealizationPermit {
-        self.0.acquire_realization(session).await
+        self.acquire_realization_with(session, |_| ()).await.0
+    }
+
+    /// Observe/admit through the slot owner's same acquire callback. Reading
+    /// after acquiring a permit would leave a remove/recreate gap between the
+    /// identity check and the observation; the original owner closes that gap.
+    pub async fn acquire_realization_with<R: Send>(
+        &self,
+        session: &str,
+        mut admit: impl FnMut(SessionRealizationAccess<'_>) -> R + Send,
+    ) -> (
+        awaken_session_realization_contract::SessionRealizationPermit,
+        R,
+    ) {
+        let mut result = None;
+        let permit = self
+            .0
+            .acquire_realization(session, &mut |slot| result = Some(admit(slot)))
+            .await;
+        (
+            permit,
+            result.expect("canonical permit acquisition admits its current slot"),
+        )
     }
 
     pub fn retain_publication(
@@ -297,12 +333,25 @@ impl SessionRealizations {
         self.frozen(session).published_snapshot.clone()
     }
 
-    /// Read the current frozen Workspace; unknown flat-protocol Sessions keep
-    /// the selected process fallback without creating or publishing a slot.
-    pub fn workspace(&self, session: &str, fallback: &str) -> String {
+    /// Exact registered ownership; an unknown Thread has no inherited Scope.
+    pub fn registered_workspace(&self, session: &str) -> Option<String> {
+        self.frozen(session).workspace.clone()
+    }
+
+    /// The credential profile remains a projection of the frozen Environment.
+    pub fn credential_realization(
+        &self,
+        session: &str,
+    ) -> Option<awaken_credential_contract::CredentialRealizationProfile> {
         self.frozen(session)
-            .workspace
-            .clone()
+            .environment_snapshot
+            .as_ref()
+            .map(|environment| environment.credential_realization.clone())
+    }
+
+    /// Read registered ownership with the selected process fallback for flat protocols.
+    pub fn workspace(&self, session: &str, fallback: &str) -> String {
+        self.registered_workspace(session)
             .unwrap_or_else(|| fallback.to_owned())
     }
 

@@ -1,6 +1,5 @@
 // @formal evidence session_resources.dispatch_activation_requires_capability_scope_live_state_and_exact_pin
 // @formal evidence session_resources.explicit_empty_manifest_revokes_runtime_projection
-use super::claimed_dispatch::adopt_bound_sandbox;
 use super::test_support::{
     ToggleBindingSink, adoption_dependencies, adoption_dependencies_at, adoption_host,
     adoption_host_at, adoption_host_over, available_local_environment_binding, claim,
@@ -10,6 +9,7 @@ use super::test_support::{
 };
 use super::*;
 use crate::host::tests::ManagedSessionRootFixture;
+use awaken_dispatch_execution::session_worker_resolver::claimed_dispatch::adopt_bound_sandbox;
 use awaken_dispatch_contract as ingress;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshotId};
@@ -30,8 +30,8 @@ async fn session_run_reservation_repair_skips_execution_realization() {
     // immutable command fingerprint; C1 a complete self-affine Session Run
     // reservation expires; C2 the queue grants its dedicated recovery claim;
     // C3 no Session Environment has been realized. Effects: E1 the claim is
-    // marked admission-only; E2 Host resolves the existing environment-free
-    // boundary Worker; E3 no Session Environment or Sandbox side effect is
+    // marked admission-only; E2 the canonical dispatch resolver selects the existing
+    // Environment-free boundary Worker; E3 no Session Environment or Sandbox side effect is
     // created. Decision rule R1=C0+C1+C2+C3=>E1+E2+E3. Missing/unknown command
     // fingerprints remain owned by the queue conformance table.
 
@@ -84,7 +84,7 @@ async fn session_run_reservation_repair_skips_execution_realization() {
         .with_ephemeral_dispatch(store))
     .build()
     .expect("validated Host dependencies");
-    HostWorkerResolver {
+    SessionWorkerResolver {
         host: Arc::downgrade(&host),
     }
     .worker_for_claimed(&claimed)
@@ -158,8 +158,10 @@ async fn ephemeral_parent_routes_a_coordinated_child_through_the_boundary_worker
                     awaken_tenancy::ScopeId::from(projection.workspace_id.as_str()),
                 ))
                 .with_session_resources(
-                    crate::dispatch_session_runtime::resource_envelope(transition.desired())
-                        .unwrap(),
+                    awaken_dispatch_execution::session_envelope::resource_envelope(
+                        transition.desired(),
+                    )
+                    .unwrap(),
                 ),
         )
         .await
@@ -169,7 +171,7 @@ async fn ephemeral_parent_routes_a_coordinated_child_through_the_boundary_worker
         .await
         .expect("E1 claim")
         .expect("E1 child work");
-    let resolver = HostWorkerResolver {
+    let resolver = SessionWorkerResolver {
         host: Arc::downgrade(&host),
     };
 
@@ -263,7 +265,7 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
         .await
         .expect("R1 claim root continuation")
         .expect("R1 root continuation is runnable");
-    let ephemeral_resolver = HostWorkerResolver {
+    let ephemeral_resolver = SessionWorkerResolver {
         host: Arc::downgrade(&ephemeral),
     };
     let worker = ephemeral_resolver
@@ -309,7 +311,7 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
         .await
         .expect("R2 durable context");
     assert!(durable_ctx.delivery.is_durable(), "R2 precondition");
-    let durable_resolver = HostWorkerResolver {
+    let durable_resolver = SessionWorkerResolver {
         host: Arc::downgrade(&durable),
     };
     let resolved = durable_resolver
@@ -341,7 +343,7 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
         &clock,
     )
     .await;
-    let coordinator_resolver = HostWorkerResolver {
+    let coordinator_resolver = SessionWorkerResolver {
         host: Arc::downgrade(&coordinator),
     };
     let error = match coordinator_resolver
@@ -401,7 +403,7 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
         .build()
         .expect("validated Root-backed Host dependencies");
     let managed = managed_test_host(host.clone());
-    let resolver = HostWorkerResolver {
+    let resolver = SessionWorkerResolver {
         host: Arc::downgrade(&host),
     };
     let child = awaken_runtime_contract::ExecutableAgentSnapshot::builder("researcher")
@@ -470,8 +472,10 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
                     awaken_tenancy::ScopeId::from(projection.workspace_id.as_str()),
                 ))
                 .with_session_resources(
-                    crate::dispatch_session_runtime::resource_envelope(transition.desired())
-                        .expect("D1 carry the Root's prepared Resource generation"),
+                    awaken_dispatch_execution::session_envelope::resource_envelope(
+                        transition.desired(),
+                    )
+                    .expect("D1 carry the Root's prepared Resource generation"),
                 ),
         )
         .await
@@ -494,7 +498,7 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
     );
     let missing_host = adoption_host_over(missing_store.clone()).await;
     let _missing_managed = crate::ManagedHost::new(missing_host.clone());
-    let missing_resolver = HostWorkerResolver {
+    let missing_resolver = SessionWorkerResolver {
         host: Arc::downgrade(&missing_host),
     };
     missing_store
@@ -618,7 +622,7 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
             awaken_tenancy::ScopeId::from(projection.workspace_id.as_str()),
         ))
         .with_session_resources(
-            crate::dispatch_session_runtime::resource_envelope(transition.desired())
+            awaken_dispatch_execution::session_envelope::resource_envelope(transition.desired())
                 .expect("K1 carry the exact Root's prepared Resource generation"),
         );
     store.enqueue(request).await.expect("enqueue K1");
@@ -634,7 +638,7 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
         &claimed.request.agent_publications,
         claimed.request.activation.effective_model_ref(),
     );
-    let resolver = HostWorkerResolver {
+    let resolver = SessionWorkerResolver {
         host: Arc::downgrade(&host),
     };
     resolver
@@ -739,7 +743,7 @@ async fn durable_deferred_sandbox_publication_decision_table() {
     let managed = prepare_deferred_session(host.clone(), "durable-lazy").await;
     managed.install_test_environment_binding_sink(sink.clone());
     let claimed = claim(&store, "durable-lazy", "run-lazy", "worker-a", now, &clock).await;
-    let resolver = HostWorkerResolver {
+    let resolver = SessionWorkerResolver {
         host: Arc::downgrade(&host),
     };
     resolver
@@ -810,7 +814,7 @@ async fn durable_deferred_sandbox_publication_decision_table() {
         &clock,
     )
     .await;
-    let loss_resolver = HostWorkerResolver {
+    let loss_resolver = SessionWorkerResolver {
         host: Arc::downgrade(&loss_host),
     };
     loss_resolver
@@ -1039,8 +1043,10 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
                     awaken_tenancy::ScopeId::from(projection.workspace_id.as_str()),
                 ))
                 .with_session_resources(
-                    crate::dispatch_session_runtime::resource_envelope(transition.desired())
-                        .expect("S1 carry the Root's prepared Resource generation"),
+                    awaken_dispatch_execution::session_envelope::resource_envelope(
+                        transition.desired(),
+                    )
+                    .expect("S1 carry the Root's prepared Resource generation"),
                 ),
         )
         .await
@@ -1051,7 +1057,7 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
         .expect("claim")
         .expect("claimed Run");
 
-    HostWorkerResolver {
+    SessionWorkerResolver {
         host: Arc::downgrade(&host),
     }
     .worker_for_claimed(&claimed)
@@ -1353,7 +1359,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
     let frozen = projection.lock().unwrap().take();
     for _ in 0..2 {
         assert!(
-            HostWorkerResolver {
+            SessionWorkerResolver {
                 host: Arc::downgrade(&host)
             }
             .worker_for_claimed(&claimed)
@@ -1371,7 +1377,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
     }
     assert_eq!(*continuations.lock().unwrap(), vec![None, None], "CR1");
     *projection.lock().unwrap() = frozen;
-    HostWorkerResolver {
+    SessionWorkerResolver {
         host: Arc::downgrade(&host),
     }
     .worker_for_claimed(&claimed)
@@ -1391,7 +1397,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
         })
         .flatten()
         .expect("CR2 installed lease");
-    HostWorkerResolver {
+    SessionWorkerResolver {
         host: Arc::downgrade(&host),
     }
     .worker_for_claimed(&claimed)
@@ -1446,7 +1452,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
         .await
         .expect("O5 claim")
         .expect("O5 claimed Run");
-    HostWorkerResolver {
+    SessionWorkerResolver {
         host: Arc::downgrade(&host),
     }
     .worker_for_claimed(&claimed)
@@ -1523,7 +1529,7 @@ async fn claimed_resource_conflict_is_terminal_before_realization() {
             .await
             .unwrap()
             .unwrap();
-        let result = HostWorkerResolver {
+        let result = SessionWorkerResolver {
             host: Arc::downgrade(&host),
         }
         .worker_for_claimed(&claimed)
@@ -1582,7 +1588,7 @@ async fn resource_manifest_must_match_the_durable_execution_scope() {
         sandbox: None,
         assignment: None,
     };
-    let resolver = HostWorkerResolver {
+    let resolver = SessionWorkerResolver {
         host: Arc::downgrade(&host),
     };
 
@@ -1628,7 +1634,7 @@ async fn malformed_resource_manifest_is_rejected_before_sandbox_creation() {
         sandbox: None,
         assignment: None,
     };
-    let resolver = HostWorkerResolver {
+    let resolver = SessionWorkerResolver {
         host: Arc::downgrade(&host),
     };
 
@@ -1711,7 +1717,9 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
         .expect("R1 exact transition projection");
     assert_eq!(exact_before.previous(), &revision_one, "R1/C1 previous");
     assert_eq!(exact_before.desired(), &revision_one, "R1/C1 desired");
-    host.install_dispatched_resources("exact-cold-transition", &revision_one, None)
+    host.realizer
+        .staging
+        .install_dispatched_resources(&host.realizer, "exact-cold-transition", &revision_one, None)
         .await
         .expect("R1/E1 exact desired-only consumer");
     assert_eq!(
@@ -1739,7 +1747,9 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
         "R2/C1 previous"
     );
     assert_eq!(active_transition.desired(), &revision_two, "R2/C1 desired");
-    host.install_dispatched_resources(active_thread, &revision_two, None)
+    host.realizer
+        .staging
+        .install_dispatched_resources(&host.realizer, active_thread, &revision_two, None)
         .await
         .expect("R2/E1 exact desired consumer with active previous");
     assert_eq!(
@@ -1769,7 +1779,9 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
         })
         .expect("R3 producer slot");
     let error = host
-        .install_dispatched_resources(mismatched_thread, &revision_two, None)
+        .realizer
+        .staging
+        .install_dispatched_resources(&host.realizer, mismatched_thread, &revision_two, None)
         .await
         .expect_err("R3/E2 mismatched desired-only consumer");
     assert_eq!(error.code, "session_resource_transition_conflict", "R3/E2");
@@ -1814,7 +1826,9 @@ async fn complete_projection_resource_guard_excludes_desired_only_staging() {
         let host = host.clone();
         let manifest = manifest.clone();
         async move {
-            host.install_dispatched_resources(thread, &manifest, None)
+            host.realizer
+                .staging
+                .install_dispatched_resources(&host.realizer, thread, &manifest, None)
                 .await
         }
     });
@@ -2088,7 +2102,9 @@ async fn cold_worker_file_staging_uses_only_the_claim_bound_source() {
         epoch: 7,
     };
 
-    host.install_dispatched_resources("remote-file-ok", &manifest, Some(&claim))
+    host.realizer
+        .staging
+        .install_dispatched_resources(&host.realizer, "remote-file-ok", &manifest, Some(&claim))
         .await
         .expect("W1");
     let mount = host
@@ -2119,7 +2135,9 @@ async fn cold_worker_file_staging_uses_only_the_claim_bound_source() {
         .expect("W1 has no redundant local File catalog check");
 
     let error = host
-        .install_dispatched_resources("remote-file-no-claim", &manifest, None)
+        .realizer
+        .staging
+        .install_dispatched_resources(&host.realizer, "remote-file-no-claim", &manifest, None)
         .await
         .expect_err("W2");
     assert!(error.to_string().contains("not found"), "W2: {error}");
@@ -2214,7 +2232,7 @@ async fn recovery_mode_controls_the_production_adoption_seam() {
         .expect("A1 replay the same Root and its original consumer identity");
     let run_id = RunId("run-adoption".into());
     let adopted = adopt_bound_sandbox(
-        &replacement,
+        replacement.as_ref(),
         Some(&encoded),
         thread,
         &run_id,
@@ -2225,7 +2243,7 @@ async fn recovery_mode_controls_the_production_adoption_seam() {
     .expect("continuity mode adopts the durable handle");
     assert_eq!(
         adopted,
-        crate::host::session::SessionEnvironmentAdoptionDisposition::Ready
+        awaken_session_realization::session_environment::SessionEnvironmentAdoptionDisposition::Ready
     );
     assert_eq!(
         replacement
@@ -2345,7 +2363,7 @@ async fn recovery_mode_controls_the_production_adoption_seam() {
 
     assert!(
         adopt_bound_sandbox(
-            &replacement,
+            replacement.as_ref(),
             Some(&missing),
             missing_thread,
             &run_id,
@@ -2435,7 +2453,7 @@ async fn cold_adoption_uses_the_provider_owned_by_frozen_model_provisioning() {
         .await
         .expect("A2 replay the original Root under the same provider selection");
     let adopted = adopt_bound_sandbox(
-        &replacement,
+        replacement.as_ref(),
         Some(&encoded),
         thread,
         &RunId("run-backend-owned-adoption".into()),
@@ -2446,7 +2464,7 @@ async fn cold_adoption_uses_the_provider_owned_by_frozen_model_provisioning() {
     .expect("A2 adopt from the provisioning-selected provider");
     assert_eq!(
         adopted,
-        crate::host::session::SessionEnvironmentAdoptionDisposition::Ready,
+        awaken_session_realization::session_environment::SessionEnvironmentAdoptionDisposition::Ready,
         "A2"
     );
     assert_eq!(
@@ -2477,7 +2495,7 @@ async fn a_resident_environment_is_reused_without_a_second_adoption() {
     let encoded = serde_json::to_string(&handle).unwrap();
 
     let adopted = adopt_bound_sandbox(
-        &host,
+        host.as_ref(),
         Some(&encoded),
         thread,
         &RunId("resident-run".into()),
@@ -2489,7 +2507,7 @@ async fn a_resident_environment_is_reused_without_a_second_adoption() {
 
     assert_eq!(
         adopted,
-        crate::host::session::SessionEnvironmentAdoptionDisposition::Ready,
+        awaken_session_realization::session_environment::SessionEnvironmentAdoptionDisposition::Ready,
         "the lifecycle owner publishes no duplicate wrapper"
     );
     assert_eq!(host.session_environment_handle(thread).await, Some(handle));
@@ -2517,7 +2535,7 @@ async fn a_dead_resident_environment_fails_continuity_and_is_fenced_before_rebui
     let run = RunId("dead-resident-run".into());
     assert!(
         adopt_bound_sandbox(
-            &host,
+            host.as_ref(),
             Some(&encoded),
             thread,
             &run,
@@ -2535,7 +2553,7 @@ async fn a_dead_resident_environment_fails_continuity_and_is_fenced_before_rebui
     );
 
     let adopted = adopt_bound_sandbox(
-        &host,
+        host.as_ref(),
         Some(&encoded),
         thread,
         &run,
@@ -2546,7 +2564,7 @@ async fn a_dead_resident_environment_fails_continuity_and_is_fenced_before_rebui
     .expect("explicit rebuild may discard the dead resident environment");
     assert_eq!(
         adopted,
-        crate::host::session::SessionEnvironmentAdoptionDisposition::RebuildRequired
+        awaken_session_realization::session_environment::SessionEnvironmentAdoptionDisposition::RebuildRequired
     );
     assert!(host.realizer.session_environment(thread).await.is_none());
     assert!(
@@ -2580,7 +2598,7 @@ async fn a_stale_binding_cannot_evict_a_different_resident_environment() {
 
     assert!(
         adopt_bound_sandbox(
-            &host,
+            host.as_ref(),
             Some(&encoded),
             thread,
             &RunId("stale-binding-run".into()),
@@ -2632,7 +2650,7 @@ async fn an_aba_replacement_with_the_same_handle_survives_stale_discard() {
         .unwrap();
     let binding = available_local_environment_binding(&host, thread, &projection).await;
     adopt_bound_sandbox(
-        &host,
+        host.as_ref(),
         Some(&binding),
         thread,
         &RunId("aba-fixture-run".into()),
@@ -2769,7 +2787,7 @@ async fn cancellation_resolution_does_not_touch_an_invalid_sandbox_binding() {
         sandbox: Some("this is deliberately not a sandbox handle".to_string()),
         assignment: None,
     };
-    let resolver = HostWorkerResolver {
+    let resolver = SessionWorkerResolver {
         host: Arc::downgrade(&host),
     };
 
@@ -2848,7 +2866,7 @@ async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session
             }))
             .unwrap(),
         );
-        let result = HostWorkerResolver {
+        let result = SessionWorkerResolver {
             host: Arc::downgrade(&host),
         }
         .worker_for_claimed(&claimed)

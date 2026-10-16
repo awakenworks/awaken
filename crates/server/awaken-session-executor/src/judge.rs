@@ -214,8 +214,12 @@ mod tests {
         );
         // The same R1 surface must not acquire namespace requirements again
         // in Dispatch: a Workdir Worker can execute pure inference without a Hand.
-        let placement =
-            crate::remote_worker_placement(&inference_only.resolved_spec, None, None, true);
+        let placement = awaken_dispatch_execution::placement::remote_worker_placement(
+            &inference_only.resolved_spec,
+            None,
+            None,
+            true,
+        );
         assert_eq!(
             placement.sandbox,
             awaken_provisioning_contract::SandboxRequirements::default(),
@@ -289,12 +293,13 @@ mod tests {
             Some("workspace-judge-source")
         );
         let dispatch = host
-            .resolved_dispatch(awaken_runtime_contract::activation::RunActivation::new(
+            .prepare_dispatch(awaken_runtime_contract::activation::RunActivation::new(
                 RunId("judge-dispatch-scope".into()),
                 thread.clone(),
                 snapshot.clone(),
                 Vec::new(),
             ))
+            .fresh()
             .unwrap();
         assert_eq!(
             dispatch

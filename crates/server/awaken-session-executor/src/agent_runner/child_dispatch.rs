@@ -42,15 +42,16 @@ pub(crate) fn child_dispatch_request(
             ));
         }
     };
-    let child_publications = crate::agent_catalog::freeze_run_publications(
+    let child_publications = awaken_dispatch_execution::run_publications::freeze_run_publications(
         &activation.snapshot,
         publication_source,
         workspace,
     )
     .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
-    let inference_holder = crate::host::self_hosted_inference_holder(&activation)
-        .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
-    let mut placement = crate::host::remote_worker_placement(
+    let inference_holder =
+        awaken_dispatch_execution::placement::self_hosted_inference_holder(&activation)
+            .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
+    let mut placement = awaken_dispatch_execution::placement::remote_worker_placement(
         &activation.snapshot.resolved_spec,
         None,
         session_resources.as_ref(),
@@ -70,12 +71,12 @@ pub(crate) fn child_dispatch_request(
         request = request.with_inference_plaintext_holder(holder);
     }
     if let Some(resources) = session_resources {
-        let envelope =
-            crate::dispatch_session_runtime::resource_envelope(&resources).map_err(|error| {
-                AgentRunError::Configuration(format!(
-                    "serialize child Session resource manifest: {error}"
-                ))
-            })?;
+        let envelope = awaken_dispatch_execution::session_envelope::resource_envelope(&resources)
+            .map_err(|error| {
+            AgentRunError::Configuration(format!(
+                "serialize child Session resource manifest: {error}"
+            ))
+        })?;
         request = request
             .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
                 awaken_tenancy::ScopeId::from(resources.workspace_id.clone()),

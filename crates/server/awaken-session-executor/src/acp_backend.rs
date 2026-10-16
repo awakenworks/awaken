@@ -69,6 +69,7 @@ impl crate::host::SharedHost {
             .ok_or_else(|| crate::HostError::bad_request("ACP backend is not installed"))
     }
 
+    #[cfg(test)]
     pub(crate) fn register_thread_backend_projection(&self, thread: &str, backend_ref: &str) {
         self.installed_sessions.replace_frozen_with(thread, |next| {
             next.backend_ref = crate::frozen_inputs::backend_projection(backend_ref);

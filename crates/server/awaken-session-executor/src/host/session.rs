@@ -20,7 +20,6 @@ mod run_ingress;
 use super::*;
 pub(super) use crate::config::{SessionToolsetProjection, project_session_tool_override};
 use crate::host::session_ctx::{RuntimeContextPurpose, runtime_context_cache_reuse_admitted};
-pub(crate) use crate::session_environment::SessionEnvironmentAdoptionDisposition;
 pub(crate) use content_delivery::SkillDeliveryEvidence;
 pub(super) use input_projection::{ManagedCoordinationRole, project_managed_coordination_surface};
 

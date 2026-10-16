@@ -229,6 +229,7 @@ impl SharedHost {
             .replace_frozen_with(thread, |next| next.workspace = Some(workspace.to_string()));
     }
 
+    #[cfg(test)]
     pub(crate) fn register_thread_agent_projection(&self, thread: &str, agent_id: &str) {
         self.installed_sessions
             .replace_frozen_with(thread, |next| next.agent_id = Some(agent_id.to_string()));
@@ -252,8 +253,9 @@ impl SharedHost {
     /// Workspace for a prepared thread; unlike `thread_workspace`, unknown ids
     /// do not inherit local ownership and therefore cannot enumerate artifacts.
     pub fn registered_thread_workspace(&self, thread: &str) -> Option<String> {
-        let realizations = self.installed_sessions.realizations();
-        realizations.frozen(thread).workspace.clone()
+        self.installed_sessions
+            .realizations()
+            .registered_workspace(thread)
     }
 
     /// Clone the completion projection consumed by the authenticated Worker

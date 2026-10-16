@@ -1,228 +1,6 @@
-// @formal entrypoint session_realization.concurrent_phase_drivers_are_serialized_per_session
-// @formal entrypoint session_realization.control_failure_disposition_and_current_owner_loss_are_total_exact_and_terminal_absorbing
-// @formal entrypoint session_resources.dispatch_activation_requires_capability_scope_live_state_and_exact_pin
-// @formal entrypoint session_run.execution_requires_dispatch_work_and_realization_owner
-// @formal entrypoint session_run.stale_work_epoch_cannot_observe_authoritative_thread_commit
-//! Claimed Worker installation of one already-frozen Session projection.
-
-use super::realization_failure::{
-    SessionRealizationWorkerEffect, session_realization_worker_effect,
-};
+//! Integration tests for the dispatch-owned claim laws.
 use super::*;
-
-/// Session projection authority is independent from the Run's admission shape.
-/// Outcome Runs retain OrdinaryRoot identity, but the Coordinator's subordinate
-/// Work receipt still requires the same frozen Session realization before effects.
-pub(super) fn has_session_projection_authority(
-    claimed: &awaken_dispatch_contract::Claimed,
-) -> bool {
-    claimed.request.session_thread_id.is_some() || claimed.session_work_authority.is_some()
-}
-
-/// A co-located dispatch pool has no outbound Control client because its
-/// Session application already drives the same Runtime Host. It may consume a
-/// claimed Managed Run only after that application has installed the complete
-/// frozen projection. Treating the Run's derived execution snapshot as a
-/// substitute would create a second Agent-publication authority during restart.
-const fn local_claimed_projection_is_ready(
-    has_frozen_baseline: bool,
-    session_dispatch: bool,
-) -> bool {
-    has_frozen_baseline && session_dispatch
-}
-
-fn claimed_realization_continuation(
-    slot: &crate::installed_session::InstalledSession,
-    claim: &awaken_dispatch_contract::RunClaim,
-) -> Option<crate::session_resource::SessionRealizationLease> {
-    slot.run
-        .dispatch_claim
-        .as_ref()
-        .filter(|previous| previous.run_id == claim.run_id && previous.owner == claim.owner)
-        .and_then(|_| slot.realization.execution.authority.remaining())
-        .and_then(|_| slot.realization.execution.authority.lease())
-        .filter(|lease| lease.runtime_incarnation == claim.owner)
-        .cloned()
-}
-
-fn map_claimed_session_control_error(
-    run_id: &str,
-    error: awaken_session_realization_contract::ClaimedSessionControlError,
-) -> awaken_dispatch_execution::Error {
-    match session_realization_worker_effect(error.disposition()) {
-        SessionRealizationWorkerEffect::Defer => {
-            awaken_dispatch_execution::Error::ResolutionNotReady(format!(
-                "run {run_id} is waiting for its Session Environment Work slot"
-            ))
-        }
-        SessionRealizationWorkerEffect::Relinquish => HostWorkerResolver::execution_error(format!(
-            "run {run_id} frozen Session resume failed: {error}"
-        )),
-        SessionRealizationWorkerEffect::Absorb => HostWorkerResolver::terminal_resolution_error(
-            format!("run {run_id} frozen Session cannot resume: {error}"),
-        ),
-    }
-}
-
-/// Compare the carried Run manifest with the one effect-capable Resource
-/// transition authored by Control. Decoding through the projection's canonical
-/// transition boundary keeps legacy validation and physical replay rules out of
-/// the Worker transport adapter.
-fn control_projection_matches_dispatched_manifest(
-    projection: &awaken_session_realization_contract::FrozenSessionProjection,
-    dispatched: &crate::session_resource::SessionResourceManifest,
-) -> Result<bool, awaken_session_types::RunError> {
-    Ok(projection
-        .resource_transition(
-            awaken_session_realization_contract::FrozenResourceTransitionUse::ApplyEffects,
-        )?
-        .desired()
-        == dispatched)
-}
-
-/// Install the frozen Session projection under the authenticated Run claim.
-/// Session authoring is complete before WorkQueue dispatch; the Worker can
-/// realize committed truth but cannot contribute another desired-state input.
-pub(super) async fn install_claimed_session_projection(
-    host: &SharedHost,
-    claimed: &awaken_dispatch_contract::Claimed,
-    thread_id: &awaken_agent_contract::agent::thread::Id,
-    dispatched_resources: Option<&crate::session_resource::SessionResourceManifest>,
-) -> Result<(), awaken_dispatch_execution::Error> {
-    let claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
-    let (_realization, continuation) = host
-        .installed_sessions
-        .acquire_realization_with(&thread_id.0, |slot| {
-            // Only an unfinished retry of this same Run in the same process
-            // can retain its still-live creation authority. A new Run, closed
-            // Work, expired observation or cold Worker must request assignment.
-            // Do not publish the incoming claim before Control succeeds: a
-            // failed new Run must not relabel its predecessor's live lease as
-            // its own on the next retry. Frozen projection publication installs
-            // the claim with the admitted lease under the same slot lock.
-            claimed_realization_continuation(slot, &claim)
-        })
-        .await;
-    if !has_session_projection_authority(claimed) {
-        if let Some(manifest) = dispatched_resources {
-            host.install_dispatched_resources(&thread_id.0, manifest, Some(&claim))
-                .await
-                .map_err(|error| HostWorkerResolver::execution_error(error.to_string()))?;
-        } else if let Some(scope) = claimed.request.execution_scope.as_ref() {
-            // Model-only ordinary Runs still belong to the frozen execution
-            // Workspace; they need no fabricated Resource manifest to carry it.
-            host.register_thread_workspace(&thread_id.0, &scope.0.0);
-        }
-        return Ok(());
-    }
-    let Some(control) = host.worker.session_control.as_ref() else {
-        let projection_ready = host
-            .installed_sessions
-            .read(&thread_id.0, |slot| {
-                local_claimed_projection_is_ready(
-                    slot.inputs.baseline.is_some(),
-                    slot.run.session_dispatch,
-                )
-            })
-            .unwrap_or(false);
-        if !projection_ready {
-            return Err(awaken_dispatch_execution::Error::ResolutionNotReady(
-                format!(
-                    "run {} is waiting for its co-located frozen Session projection",
-                    claimed.lease.run_id().0
-                ),
-            ));
-        }
-        if let Some(manifest) = dispatched_resources {
-            host.install_dispatched_resources(&thread_id.0, manifest, Some(&claim))
-                .await
-                .map_err(|error| HostWorkerResolver::execution_error(error.to_string()))?;
-        }
-        return Ok(());
-    };
-
-    // Cause graph: concurrent attempts may address one Session, but only the
-    // admitted Work/Run owner may advance its realization lease. Serializing
-    // before the first Control mutation prevents a later entrant from fencing a
-    // slow earlier effect between directive creation and installation.
-    let dispatch: Arc<dyn awaken_dispatch_contract::DispatchClaimOwnership> = host
-        .dispatch_store()
-        .map_err(|error| HostWorkerResolver::execution_error(error.to_string()))?;
-    let ownership = awaken_dispatch_execution::claim_bound_ownership_verifier(
-        dispatch,
-        awaken_dispatch_contract::RunClaim::from(&claimed.lease),
-    );
-    ownership.verify_current().await.map_err(|error| {
-        HostWorkerResolver::execution_error(format!(
-            "run {} lost ownership before Session realization: {error}",
-            claimed.lease.run_id().0
-        ))
-    })?;
-    let request_started = awaken_authority_clock::authority_proof_started()
-        .map_err(|error| HostWorkerResolver::execution_error(error.to_string()))?;
-    let directive = control
-        .resume_frozen(
-            &claim,
-            &thread_id.0,
-            claimed.session_work_authority.as_ref(),
-            continuation.as_ref(),
-        )
-        .await
-        .map_err(|error| map_claimed_session_control_error(&claimed.lease.run_id().0, error))?
-        .ok_or_else(|| {
-            HostWorkerResolver::execution_error(
-                "WorkQueue dispatched a Session whose creation was not finalized",
-            )
-        })?;
-    if let Some(receipt) = claimed.session_work_authority.as_ref()
-        && !receipt.binds_realization(
-            &thread_id.0,
-            &directive.authority.lease.runtime_incarnation,
-            directive.projection.baseline.environment.self_hosted,
-            &directive.projection.baseline.environment.environment_id,
-        )
-    {
-        return Err(HostWorkerResolver::execution_error(
-            "Session realization directive identity does not match claimed Work authority",
-        ));
-    }
-    ownership.verify_current().await.map_err(|error| {
-        HostWorkerResolver::execution_error(format!(
-            "run {} lost ownership during frozen Session resume: {error}",
-            claimed.lease.run_id().0
-        ))
-    })?;
-    if let Some(dispatched) = dispatched_resources {
-        let exact = control_projection_matches_dispatched_manifest(
-            &directive.projection,
-            dispatched,
-        )
-        .map_err(|error| {
-            HostWorkerResolver::execution_error(format!(
-                "Control resume projection has no effect-capable Resource transition: {error}"
-            ))
-        })?;
-        if !exact {
-            // The claimed envelope is immutable. Relinquishing would claim
-            // the same incompatible Run forever; use the existing fenced
-            // terminal commit instead of replacing its resources on retry.
-            return Err(HostWorkerResolver::terminal_resolution_error(
-                "Control resume projection conflicts with the claimed resource snapshot",
-            ));
-        }
-    }
-    HostWorkerResolver::drive_session_realization(
-        host,
-        control.as_ref(),
-        &awaken_session_types::SessionId::from(&thread_id.0),
-        directive,
-        Some(claimed),
-        request_started,
-        &_realization,
-    )
-    .await
-}
-
+use awaken_dispatch_execution::session_worker_resolver::claimed_session::*;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,7 +71,7 @@ mod tests {
                 ),
             ] {
                 let expected = exact_claim && live_exact_proof;
-                let slot = InstalledSession {
+                let mut slot = InstalledSession {
                     realization: crate::session_realizations::SessionRealization {
                         execution: crate::session_realizations::ExecutionAuthorityState {
                             authority,
@@ -308,7 +86,14 @@ mod tests {
                     ..Default::default()
                 };
                 assert_eq!(
-                    claimed_realization_continuation(&slot, &claim),
+                    claimed_realization_continuation(
+                        &crate::session_realizations::SessionRealizationAccess {
+                            inputs: &slot.inputs,
+                            realization: &mut slot.realization,
+                            run: &mut slot.run
+                        },
+                        &claim
+                    ),
                     expected.then(|| lease.clone()),
                     "R1/R2"
                 );
@@ -515,7 +300,8 @@ mod tests {
         // revocation clears the claim -> the waiter publishes its exact new
         // claim after release. R3 retirement removes the whole slot -> retry
         // acquisition on the replacement Arc before publishing. No stale Arc
-        // can lend authority to a newly created Session slot.
+        // can lend authority to a newly created Session slot. The admissions below
+        // traverse SessionRealizations, the same view used by migrated dispatch.
         for remove_slot in [false, true] {
             let host = (crate::HostDependencies::ephemeral(
                 Arc::new(crate::no_model::NoModelConfiguredExecutor),
@@ -536,8 +322,9 @@ mod tests {
             };
             let (first, ()) = host
                 .installed_sessions
+                .realizations()
                 .acquire_realization_with("shared-session", |slot| {
-                    slot.run.dispatch_claim = Some(old.clone());
+                    slot.run.install_dispatch_claim(old.clone());
                 })
                 .await;
             let second_entered = Arc::new(AtomicBool::new(false));
@@ -548,8 +335,9 @@ mod tests {
                 tokio::spawn(async move {
                     let (guard, ()) = host
                         .installed_sessions
+                        .realizations()
                         .acquire_realization_with("shared-session", |slot| {
-                            slot.run.dispatch_claim = Some(claim.clone());
+                            slot.run.install_dispatch_claim(claim.clone());
                         })
                         .await;
                     entered.store(true, Ordering::SeqCst);

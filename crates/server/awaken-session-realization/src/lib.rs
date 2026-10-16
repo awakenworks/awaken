@@ -30,3 +30,7 @@ pub mod terminal_repository_publication;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub use realization_executor::RealizationExecutor;
+
+mod dispatched_resources;
+
+pub mod worker_projection;

@@ -432,7 +432,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
     // E3 C3 persists and publishes the same Arc without another provider
     // adoption or by-value owner. Rule R19/R20: C1+C2=>E1+E2;
     // C1+C2+C3=>E3. Fixture constraint: both process incarnations install the
-    // production DispatchSessionRuntime before constructing executable context.
+    // production SessionEffects before constructing executable context.
     let storage = tempfile::tempdir().expect("storage");
     let thread = "thread-adoption-retry";
     let activation = test_activation(thread, "run-adoption-retry-publication");

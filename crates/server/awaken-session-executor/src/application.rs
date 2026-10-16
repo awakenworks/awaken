@@ -327,7 +327,7 @@ impl crate::SharedHost {
                 // of installation, effect ordering, receipt admission, retry,
                 // and process-local acknowledgement for warm and cold slots.
                 let runtime = self
-                    .dispatch_session_runtime()
+                    .session_effects()
                     .managed()
                     .map_err(crate::managed_adapter_error::from_run_error)?;
                 awaken_session_realization_driver::drive_session_terminal_cleanup(
@@ -387,7 +387,7 @@ impl crate::SharedHost {
         let control = self.worker.session_control.as_ref().ok_or_else(|| {
             crate::HostError::internal("Worker has no Session realization Control client")
         })?;
-        crate::host::HostWorkerResolver::realize_session(
+        crate::application::worker_projection::realize_session(
             self,
             control.as_ref(),
             &assignment.session_id,
@@ -397,6 +397,9 @@ impl crate::SharedHost {
             false,
         )
         .await
+        .map_err(
+            awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error,
+        )
         .map_err(|error| {
             crate::HostError::internal(format!("Session preparation remained pending: {error}"))
         })
@@ -1066,12 +1069,9 @@ impl crate::SharedHost {
         &self,
         thread: &str,
     ) -> Option<awaken_credential_contract::CredentialRealizationProfile> {
-        let realizations = self.installed_sessions.realizations();
-        realizations
-            .frozen(thread)
-            .environment_snapshot
-            .as_ref()
-            .map(|environment| environment.credential_realization.clone())
+        self.installed_sessions
+            .realizations()
+            .credential_realization(thread)
     }
 
     #[cfg(test)]
@@ -1182,3 +1182,5 @@ mod network_policy_tests {
         ));
     }
 }
+
+pub(crate) mod worker_projection;

@@ -63,6 +63,21 @@ def dispatch_projection_violations(source: str) -> list[str]:
         errors.append("AnyDispatchStore is a Worker projection and cannot implement Coordinator roles")
     return errors
 
+
+def dispatch_handoff_violations(relative: str, production: str) -> list[str]:
+    """The canonical Session resolver is dispatch-owned; its Run factory points inward."""
+    syntax = _crate_boundary_workspace.rust_syntax(production)
+    errors = []
+    if relative.startswith("crates/server/awaken-session-executor/src/") and re.search(
+        r"\bimpl(?:\s*<[^>{}]*>)?\s+(?:[\w:]+::)?WorkerResolver\s*<", syntax
+    ):
+        errors.append(f"{relative}: Session dispatch routing belongs to awaken-dispatch-execution")
+    if relative.startswith("crates/shared/awaken-dispatch-execution/src/") and re.search(
+        r"\bawaken_runtime_host\s*::", syntax
+    ):
+        errors.append(f"{relative}: dispatch execution must consume its Run factory, never Runtime Host")
+    return errors
+
 TABLE_AUTHORITIES: tuple[tuple[str, re.Pattern[str], tuple[str, ...]], ...] = (
     (
         "dispatch delivery truth",
@@ -174,6 +189,20 @@ def table_violation(
 
 
 def selftest() -> None:
+    # Cause/effect graph: C1 the resolver implementation is in Host rather than
+    # Dispatch; C2 Dispatch reaches back into the concrete Host. Either cause
+    # recreates the extraction cycle/parallel routing owner and must reject.
+    # Decision rules: H1=(0,0) accept, H2=(1,0) reject owner,
+    # H3=(0,1) reject dependency, H4=comments/test-only code accept. Existing
+    # production_rust owns cfg filtering; this guard reuses that one parser.
+    host = "crates/server/awaken-session-executor/src/session.rs"
+    dispatch = "crates/shared/awaken-dispatch-execution/src/session.rs"
+    resolver = "impl<T> WorkerResolver<AnyDispatchStore> for SessionWorkerResolver<T> {}"
+    assert dispatch_handoff_violations(dispatch, resolver) == [], "H1 canonical owner"
+    assert dispatch_handoff_violations(host, resolver), "H2 misplaced resolver"
+    assert dispatch_handoff_violations(dispatch, "use awaken_session_executor::SharedHost;"), "H3 back edge"
+    fixture = "// impl WorkerResolver<Store> for Fixture {}\n#[cfg(test)]\nmod tests { impl WorkerResolver<Store> for Fixture {} }"
+    assert dispatch_handoff_violations(host, _crate_boundary_workspace.production_rust(fixture)) == [], "H4 fixtures"
     """Cause/effect decision table:
 
     R1 canonical durable owner + implementation/write -> accepted; R2 the one
@@ -279,6 +308,7 @@ def check_all(repo_root: Path, crates_root: Path) -> list[str]:
             else source
         )
         errors.extend(attempt_rule_violations(relative, production))
+        errors.extend(dispatch_handoff_violations(relative, production))
         errors.extend(f"{relative}: {error}" for error in dispatch_projection_violations(production))
         for match in implementation.finditer(production):
             errors.extend(implementation_violation(relative, match.group(1)))

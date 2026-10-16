@@ -13,7 +13,7 @@ pub(crate) struct DispatchCapability {
     /// Cold-Worker adapter over the configured Session Runtime. It owns only weak
     /// host wiring plus Resource/credential SPIs, so installing it cannot create
     /// an `Arc<SharedHost>` cycle or a second Vault/materialization path.
-    pub(crate) dispatch_session_runtime: crate::DispatchSessionRuntime,
+    pub(crate) session_effects: crate::SessionEffects,
     /// The process-level dispatch pool (O2), spawned once by `mount` when durable
     /// ingress is enabled. It is the sole claimer of the one shared queue and drives
     /// every session's runs by routing each claimed run back to the worker that owns
@@ -26,7 +26,7 @@ pub(crate) struct DispatchCapability {
     /// The coordinator-only maintenance loop and its terminal scan
     /// (`host::dispatch_reconciliation`).
     pub(crate) terminal_reconciliation:
-        crate::host::dispatch_reconciliation::TerminalReconciliationState,
+        awaken_dispatch_execution::session_reconciliation::TerminalReconciliationState,
 }
 
 impl DispatchCapability {
@@ -41,7 +41,7 @@ impl DispatchCapability {
         host: std::sync::Weak<SharedHost>,
     ) -> Self {
         Self {
-            dispatch_session_runtime: crate::DispatchSessionRuntime { host },
+            session_effects: crate::SessionEffects { host },
             dispatch_pool: std::sync::OnceLock::new(),
             execution,
             terminal_reconciliation: Default::default(),
@@ -137,7 +137,7 @@ impl SharedHost {
             // this Host owns only its process-local claimer.
             return Ok(());
         };
-        let resolver: Arc<dyn WorkerResolver<AnyDispatchStore>> = Arc::new(HostWorkerResolver {
+        let resolver: Arc<dyn WorkerResolver<AnyDispatchStore>> = Arc::new(SessionWorkerResolver {
             host: Arc::downgrade(self),
         });
         let config = self.dispatch.execution.dispatch_service_config();
@@ -234,70 +234,7 @@ impl SharedHost {
     ) -> Result<(), HostError> {
         self.dispatch
             .terminal_reconciliation
-            .worker_evidence
-            .set((directory, source))
-            .map_err(|_| HostError::internal("Worker evidence reconciliation already bound"))
-    }
-
-    pub(in crate::host) async fn reconcile_worker_evidence(
-        &self,
-    ) -> Result<(), awaken_dispatch_execution::Error> {
-        let Some((directory, source)) = self.dispatch.terminal_reconciliation.worker_evidence.get()
-        else {
-            return Ok(());
-        };
-        let dispatch = self.optional_dispatch_store().ok_or_else(|| {
-            HostWorkerResolver::execution_error(
-                "Worker evidence reconciliation requires a Coordinator owner",
-            )
-        })?;
-        let now = awaken_time::WallClockExt::now_ms(self.clock.as_ref());
-        let mut records = directory
-            .list()
-            .await
-            .map_err(|e| HostWorkerResolver::execution_error(e.to_string()))?;
-        let Ok(mut after) = self
-            .dispatch
-            .terminal_reconciliation
-            .worker_evidence_after
-            .try_lock()
-        else {
-            return Ok(());
-        };
-        records.sort_by(|a, b| {
-            a.snapshot
-                .identity
-                .worker_id
-                .cmp(&b.snapshot.identity.worker_id)
-        });
-        let start = after.as_ref().map_or(0, |cursor| {
-            records.partition_point(|r| r.snapshot.identity.worker_id <= *cursor)
-        });
-        let start = if start == records.len() { 0 } else { start };
-        // One candidate per original maintenance tick. Advance scheduling before
-        // provider I/O so cancellation/failure cannot starve a later Worker.
-        for record in records.into_iter().skip(start).take(1) {
-            let identity = &record.snapshot.identity;
-            *after = Some(identity.worker_id.clone());
-            // Ingress closes the exact Registry incarnation before optional
-            // provider ownership. This scan owns only cadence and cursor.
-            let result = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                source.release_closed_idle_worker_evidence(
-                    dispatch.as_ref(),
-                    directory.as_ref(),
-                    identity,
-                    now,
-                ),
-            )
-            .await;
-            match result {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => tracing::warn!(%error, "exact Worker retention retry pending"),
-                Err(_) => tracing::warn!("exact Worker retention retry timed out"),
-            }
-        }
-        Ok(())
+            .bind_worker_evidence(directory, source)
     }
 
     /// Start the one coordinator-side reconciliation loop when this Host owns
@@ -309,12 +246,7 @@ impl SharedHost {
         if !self.dispatch.durable_ingress()
             || self.runs_local_dispatch_pool()
             || !self.authority.scans_committed_terminals()
-            || self
-                .dispatch
-                .terminal_reconciliation
-                .dispatch_reconciler
-                .get()
-                .is_some()
+            || self.dispatch.terminal_reconciliation.reconciler_started()
         {
             return false;
         }
@@ -322,7 +254,7 @@ impl SharedHost {
             return false;
         };
         let resolver: Arc<dyn awaken_dispatch_execution::WorkerResolver<AnyDispatchStore>> =
-            Arc::new(HostWorkerResolver {
+            Arc::new(SessionWorkerResolver {
                 host: Arc::downgrade(self),
             });
         let wake = self
@@ -339,8 +271,6 @@ impl SharedHost {
         );
         self.dispatch
             .terminal_reconciliation
-            .dispatch_reconciler
-            .set(reconciler)
-            .is_ok()
+            .install_reconciler(reconciler)
     }
 }

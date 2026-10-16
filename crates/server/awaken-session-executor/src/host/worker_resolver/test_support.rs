@@ -249,7 +249,7 @@ pub(crate) fn managed_test_host(host: Arc<SharedHost>) -> crate::ManagedHost {
 }
 
 /// Install the one production composition required by every executable fixture:
-/// DispatchSessionRuntime plus the single Session coordination application.
+/// SessionEffects plus the single Session coordination application.
 pub(super) fn complete_managed_test_host(managed: crate::ManagedHost) -> crate::ManagedHost {
     static APPLICATION: std::sync::OnceLock<
         Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>,
@@ -399,7 +399,7 @@ pub(crate) fn with_empty_session_resources(
             awaken_tenancy::ScopeId::from(workspace_id),
         ))
         .with_session_resources(
-            crate::dispatch_session_runtime::resource_envelope(&manifest)
+            awaken_dispatch_execution::session_envelope::resource_envelope(&manifest)
                 .expect("serialize exact empty Resource manifest"),
         )
 }
