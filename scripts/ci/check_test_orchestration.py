@@ -20,6 +20,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import generate_hooks
+from test_trusted_host_portability import self_test as trusted_host_portability_self_test
 from shared_conformance import (TEST_ATTRIBUTE, shared_conformance_errors,
                                 self_test as shared_conformance_self_test)
 from check_sdk_consumer import admission_errors as sdk_admission_errors
@@ -1938,6 +1939,7 @@ def self_test() -> None:
     }
     ingress_tests = (ROOT / INGRESS_CONFORMANCE).read_text(encoding="utf-8")
     shared_conformance_self_test(store_suite, backend_tests, ingress_tests)
+    trusted_host_portability_self_test()
 
 
 def main(argv: list[str]) -> int:
