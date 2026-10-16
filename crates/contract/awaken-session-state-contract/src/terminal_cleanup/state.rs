@@ -83,6 +83,67 @@ mod unprepared_root_request_tests {
             "Q3 Preparing"
         );
     }
+
+    #[test]
+    fn legacy_cleanup_scope_requires_exact_effect_and_frozen_root_membership() {
+        // S1 canonical effect + root target -> accept the same persisted scope.
+        // S2 another Session -> OperationMismatch, in every identity-bearing phase.
+        // S3 canonical effect without its root target -> FrozenTargetsMismatch.
+        // The empty operation has no identity to borrow. All checks are read-only;
+        // the historical completion fingerprint remains an opaque retained field.
+        let id = SessionId::from("root");
+        let foreign = SessionId::from("foreign");
+        assert!(
+            SessionCleanupOperation::default()
+                .verify_for(&foreign)
+                .is_ok()
+        );
+        for phase in ["fenced", "requested", "completed"] {
+            for has_root in [false, true] {
+                let effect_id = cleanup_effect_id(&id);
+                let thread_ids =
+                    BTreeSet::from([if has_root { "root" } else { "child" }.to_owned()]);
+                let state = match phase {
+                    "fenced" => SessionCleanupState::Fenced { effect_id },
+                    "requested" => SessionCleanupState::Requested {
+                        effect_id,
+                        thread_ids,
+                        delegation_watermark: 0,
+                        runtime_commit_cursor: Some(0),
+                        completions: BTreeMap::new(),
+                    },
+                    "completed" => SessionCleanupState::Completed {
+                        effect_id,
+                        thread_ids,
+                        delegation_watermark: 0,
+                        runtime_commit_cursor: Some(0),
+                        receipt_fingerprint: "retained-legacy-receipt".into(),
+                    },
+                    _ => unreachable!(),
+                };
+                let operation = SessionCleanupOperation::from_state(state);
+                let before = operation.clone();
+                assert_eq!(
+                    operation.verify_for(&foreign),
+                    Err(SessionCleanupError::OperationMismatch),
+                    "S2 {phase}"
+                );
+                assert_eq!(
+                    operation.verify_for(&id),
+                    if phase == "fenced" || has_root {
+                        Ok(())
+                    } else {
+                        Err(SessionCleanupError::FrozenTargetsMismatch)
+                    },
+                    "S1/S3 {phase} root={has_root}"
+                );
+                assert_eq!(
+                    operation, before,
+                    "scope verification cannot rewrite legacy state"
+                );
+            }
+        }
+    }
 }
 
 /// Unforgeable-in-public-API identity for the one cleanup operation owned by a
@@ -234,6 +295,38 @@ impl SessionCleanupOperation {
 
     pub(super) fn state_mut(&mut self) -> &mut SessionCleanupState {
         &mut self.state
+    }
+
+    pub(super) fn verify_identity_for(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<(), SessionCleanupError> {
+        let (effect_id, targets) = match self.legacy_cleanup().state() {
+            SessionCleanupState::NotRequested => return Ok(()),
+            SessionCleanupState::Fenced { effect_id } => (effect_id, None),
+            SessionCleanupState::Requested {
+                effect_id,
+                thread_ids,
+                ..
+            }
+            | SessionCleanupState::Completed {
+                effect_id,
+                thread_ids,
+                ..
+            } => (effect_id, Some(thread_ids)),
+            SessionCleanupState::RepositoryPublication(_)
+            | SessionCleanupState::Preparing(_)
+            | SessionCleanupState::Disposing(_) => {
+                unreachable!("legacy_cleanup removes every wrapper")
+            }
+        };
+        if effect_id != &cleanup_effect_id(session_id) {
+            return Err(SessionCleanupError::OperationMismatch);
+        }
+        if targets.is_some_and(|targets| !targets.contains(session_id.as_str())) {
+            return Err(SessionCleanupError::FrozenTargetsMismatch);
+        }
+        Ok(())
     }
 
     #[must_use]

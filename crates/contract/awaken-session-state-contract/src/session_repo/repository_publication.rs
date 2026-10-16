@@ -63,8 +63,8 @@ impl PersistedSession {
             .record_repository_publication_rejection(&self.session_id, rejection)
     }
 
-    /// Return terminal cleanup authority only after binding any Repository
-    /// publication sidecar to this aggregate's outer Session identity.
+    /// Return terminal cleanup authority only after binding the retained
+    /// operation and any publication sidecar to this aggregate's Session identity.
     pub fn verified_terminal_cleanup(
         &self,
     ) -> Result<&crate::SessionCleanupOperation, crate::SessionCleanupError> {

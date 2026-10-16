@@ -210,6 +210,8 @@ pub enum SessionMutationValidationError {
     RuntimeIntervalFactMismatch,
     #[error("Session update history or initial configuration is inconsistent or was rewritten")]
     UpdateHistoryMismatch,
+    #[error("Session terminal cleanup is inconsistent with its root: {0}")]
+    TerminalCleanup(#[from] crate::SessionCleanupError),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -240,6 +242,7 @@ pub(crate) fn validate_aggregate_state(
     session: &PersistedSession,
 ) -> Result<(), SessionMutationValidationError> {
     crate::SessionEnvironmentMaterialization::validate_for(session)?;
+    session.verified_terminal_cleanup()?;
     if session.run_activities.as_deref().is_some_and(|history| {
         !history.valid(awaken_lease_contract::fence::Epoch::try_from(session.activity_epoch).ok())
             || (!history.unrecorded

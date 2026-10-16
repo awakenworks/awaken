@@ -213,7 +213,7 @@ pub(super) fn verified_repository_publication_outcome_for(
 }
 
 impl SessionCleanupOperation {
-    /// Rebind a persisted publication sidecar to its outer Session identity.
+    /// Bind the retained cleanup operation and any publication sidecar to their Session.
     ///
     /// The sidecar decoder can verify intent-local fingerprints, but the
     /// Session id is deliberately owned by crate::PersistedSession. The public
@@ -221,32 +221,19 @@ impl SessionCleanupOperation {
     /// crate-internal projections reuse this kernel before a Completed phase
     /// can suppress work or authorize a tombstone.
     pub(crate) fn verify_for(&self, session_id: &SessionId) -> Result<(), SessionCleanupError> {
+        self.verify_identity_for(session_id)?;
         let envelope = self.progress_inner();
         let SessionCleanupState::RepositoryPublication(publication) = envelope.state() else {
             return Ok(());
         };
         publication.intent.validate()?;
-        let expected_effect_id = cleanup_effect_id(session_id);
         match publication.cleanup.state() {
-            SessionCleanupState::Fenced { effect_id } => {
-                if effect_id != &expected_effect_id {
-                    return Err(SessionCleanupError::OperationMismatch);
-                }
+            SessionCleanupState::Fenced { .. } => {
                 if publication.receipt.is_some() || publication.rejection.is_some() {
                     return Err(SessionCleanupError::RepositoryPublicationOutcomeMismatch);
                 }
             }
-            SessionCleanupState::Requested {
-                effect_id,
-                thread_ids,
-                ..
-            } => {
-                if effect_id != &expected_effect_id {
-                    return Err(SessionCleanupError::OperationMismatch);
-                }
-                if !thread_ids.contains(session_id.as_str()) {
-                    return Err(SessionCleanupError::FrozenTargetsMismatch);
-                }
+            SessionCleanupState::Requested { effect_id, .. } => {
                 if publication.receipt.is_some() || publication.rejection.is_some() {
                     let command = SessionRepositoryPublicationCommand::new(
                         session_id,
@@ -256,17 +243,7 @@ impl SessionCleanupOperation {
                     verified_repository_publication_outcome(publication, &command)?;
                 }
             }
-            SessionCleanupState::Completed {
-                effect_id,
-                thread_ids,
-                ..
-            } => {
-                if effect_id != &expected_effect_id {
-                    return Err(SessionCleanupError::OperationMismatch);
-                }
-                if !thread_ids.contains(session_id.as_str()) {
-                    return Err(SessionCleanupError::FrozenTargetsMismatch);
-                }
+            SessionCleanupState::Completed { effect_id, .. } => {
                 let command = SessionRepositoryPublicationCommand::new(
                     session_id,
                     effect_id,
