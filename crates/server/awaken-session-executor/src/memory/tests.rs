@@ -291,6 +291,94 @@ async fn bound_test_memory(
     (runtime, bound, repository, extractions)
 }
 
+#[test]
+fn memory_recovery_projection_preserves_handle_identity_and_read_only_bindings() {
+    // C1 standard aliases={0,1,2}; C2 automatic={absent,shared,distinct};
+    // C3 maximum access={read-only,writable}. All18 rows use equal storage
+    // coordinates: aliases collapse, distinct handles survive, and selecting
+    // recovery work or attaching commit authority remains the caller's step.
+    let repository = Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+        awaken_time::system_clock(),
+    ));
+    let config = awaken_resource_contract::MemoryStoreConfigVersion {
+        memory_store_id: "projection-store".into(),
+        version: awaken_resource_contract::ConfigVersion::INITIAL,
+        retention_policy: Default::default(),
+    };
+    let mut checked = 0;
+    for writable in [false, true] {
+        let platform = Arc::new(PlatformMemoryHandle::new(
+            repository.clone(),
+            config.memory_store_id.to_string(),
+            writable,
+        ));
+        let binding = || {
+            Arc::new(MemoryBinding::new(
+                "projection-session",
+                "projection-workspace",
+                platform.clone(),
+                None,
+                &config,
+                writable,
+            ))
+        };
+        let first = binding();
+        let distinct = binding();
+        for aliases in 0..=2 {
+            for automatic in ["absent", "shared", "distinct"] {
+                let mut staging =
+                    awaken_session_realization::realization_state::ResourceStagingState::default();
+                for index in 0..aliases {
+                    staging
+                        .memory_bindings
+                        .insert(format!("binding-{index}"), first.clone());
+                }
+                staging.memory = match automatic {
+                    "shared" => Some(first.clone()),
+                    "distinct" => Some(distinct.clone()),
+                    _ => None,
+                };
+                let refs = (Arc::strong_count(&first), Arc::strong_count(&distinct));
+                let projected = staging.memory_recovery_bindings();
+                let expected_first = aliases > 0 || automatic == "shared";
+                let expected_distinct = automatic == "distinct";
+                assert_eq!(
+                    projected.len(),
+                    usize::from(expected_first) + usize::from(expected_distinct)
+                );
+                assert_eq!(
+                    projected.iter().any(|memory| Arc::ptr_eq(memory, &first)),
+                    expected_first
+                );
+                assert_eq!(
+                    projected
+                        .iter()
+                        .any(|memory| Arc::ptr_eq(memory, &distinct)),
+                    expected_distinct
+                );
+                assert_eq!(staging.memory_bindings.len(), aliases);
+                assert!(
+                    first
+                        .extraction_commit()
+                        .expect("healthy Memory context")
+                        .is_none()
+                        && distinct
+                            .extraction_commit()
+                            .expect("healthy Memory context")
+                            .is_none()
+                );
+                drop(projected);
+                assert_eq!(
+                    (Arc::strong_count(&first), Arc::strong_count(&distinct)),
+                    refs
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert_eq!(checked, 18);
+}
+
 struct RecallSnapshotRepository {
     heads: Vec<awaken_memory_store::Memory>,
 }
