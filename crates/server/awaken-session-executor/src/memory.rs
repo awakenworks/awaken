@@ -15,7 +15,7 @@ use awaken_credential_contract::{
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::{future::Future, pin::Pin, time::Duration};
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::ContentBlock;
@@ -520,9 +520,7 @@ impl crate::host::SharedHost {
         &'a self,
         session_thread: &'a str,
         commit: Arc<HostCommit>,
-    ) -> std::pin::Pin<
-        Box<impl std::future::Future<Output = Result<usize, crate::HostError>> + Send + 'a>,
-    > {
+    ) -> Pin<Box<impl Future<Output = Result<usize, crate::HostError>> + Send + 'a>> {
         // Keep extraction recovery's typed state out of enclosing context polls,
         // including resident-cache hits during the next Run of the same Session.
         Box::pin(async move {
