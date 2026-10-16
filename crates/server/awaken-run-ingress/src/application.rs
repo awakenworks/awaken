@@ -254,13 +254,31 @@ pub enum AttemptStopStatus {
 
 /// Trusted, independent infrastructure control, selected by Coordinator startup.
 /// Implementations must validate the provider and exact frozen process identity,
-/// stop idempotently and preserve evidence. The two methods report DIFFERENT
-/// facts; a local-only implementation must retain the default Unknown below.
+/// stop idempotently and preserve evidence. Worker exit, complete execution
+/// closure and Create admission remain distinct; a local-only implementation
+/// must retain the default Unknown for complete execution below.
 #[async_trait::async_trait]
 pub trait WorkerExecutionStopSource: Send + Sync {
     /// Whether this provider owns retention for this exact incarnation.
     fn owns_worker_evidence(&self, _identity: &crate::WorkerIdentity) -> bool {
         false
+    }
+    /// Fence the closed incarnation's original provider Create admission.
+    /// This independent operation supplies no process-exit or disposal receipt.
+    /// Providers without a Create ledger have no additional owner to seal;
+    /// a retained anchor requires an implementation rather than silent success.
+    async fn seal_closed_worker_admission(
+        &self,
+        _identity: &crate::WorkerIdentity,
+        create_ledger: Option<&crate::WorkerCreateLedger>,
+    ) -> Result<(), ApplicationError> {
+        if create_ledger.is_some() {
+            Err(ApplicationError::unavailable(
+                "original Worker Create admission sealing is unsupported",
+            ))
+        } else {
+            Ok(())
+        }
     }
     /// Observe one closed Worker using provider-retained pre-exit coordinates.
     /// With `may_stop_active == false`, an occupied or uninspected physical slot
@@ -420,15 +438,29 @@ pub async fn release_closed_idle_worker_evidence(
     // Exit is an infrastructure fact, independent of permission to release
     // retention. An occupied, inconsistent or unavailable slot scan must not
     // suppress a natural exit; it still blocks active stop and release below.
-    let exited = record.process_exit.is_some()
-        || observe_closed_worker_exit(
-            directory,
-            source,
-            identity,
-            record.create_ledger.as_ref(),
-            false,
-        )
-        .await?;
+    // Both independent owners are attempted even when their peer fails. Exit
+    // observation persists its fact before this join; a failed Create seal can
+    // withhold retention release but cannot suppress that infrastructure fact.
+    // Already-retained exits still retry the original Create seal.
+    let (admission, exited) = tokio::join!(
+        source.seal_closed_worker_admission(identity, record.create_ledger.as_ref()),
+        async {
+            if record.process_exit.is_some() {
+                Ok(true)
+            } else {
+                observe_closed_worker_exit(
+                    directory,
+                    source,
+                    identity,
+                    record.create_ledger.as_ref(),
+                    false,
+                )
+                .await
+            }
+        }
+    );
+    let exited = exited?;
+    admission?;
     if has_active_physical_attempt_for_owner(dispatch, &identity.lease_owner()).await? {
         return Ok(());
     }

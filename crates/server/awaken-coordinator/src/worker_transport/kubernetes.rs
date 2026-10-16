@@ -329,6 +329,21 @@ impl WorkerExecutionStopSource for KubernetesWorkerStops {
         KubernetesPodIdentity::from_worker_id(&worker.worker_id)
             .is_ok_and(|pod| pod.namespace() == self.namespace && pod.matches_worker(worker))
     }
+    async fn seal_closed_worker_admission(
+        &self,
+        worker: &WorkerIdentity,
+        original_create_ledger: Option<&WorkerCreateLedger>,
+    ) -> Result<(), ApplicationError> {
+        let pod = KubernetesPodIdentity::from_worker_id(&worker.worker_id)
+            .map_err(ApplicationError::invalid)?;
+        if pod.namespace() != self.namespace || !pod.matches_worker(worker) {
+            return Err(ApplicationError::invalid(
+                "closed Worker admission belongs to another Kubernetes domain",
+            ));
+        }
+        self.seal_original_create_admission(&pod, worker, original_create_ledger)
+            .await
+    }
     async fn observe_closed_idle_worker(
         &self,
         worker: &WorkerIdentity,

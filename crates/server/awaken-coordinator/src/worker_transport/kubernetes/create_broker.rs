@@ -22,9 +22,8 @@ use awaken_sandbox_container::ContainerEffectFence;
 use awaken_sandbox_container::k8s::{
     CreateReplyProfile, CreateTicketRequest, ISOLATION_ID_ANNOTATION, ISOLATION_LABEL,
     K8S_CREATE_WIRE_VERSION, K8sCreateRequest, K8sCreateResponse, K8sLedgerBinding,
-    K8sWorkerCreateLedger, ORIGINAL_GUARD_FINALIZER, PodProcessBinding, REQUEST_DIGEST_ANNOTATION,
-    RequestJoin, TicketAdmission, TicketResult, collect_create_body,
-    original_request_metadata_matches,
+    K8sWorkerCreateLedger, ORIGINAL_GUARD_FINALIZER, REQUEST_DIGEST_ANNOTATION, RequestJoin,
+    TicketAdmission, TicketResult, collect_create_body, original_request_metadata_matches,
 };
 use awaken_time::{WallClock, WallClockExt};
 use awaken_worker_transport_security::kubernetes::KubernetesPodIdentity;
@@ -652,9 +651,11 @@ impl K8sCreateBroker {
         Ok(object)
     }
 
-    /// Reuse the Registry's already-committed exact process-exit receipt. A
-    /// Worker that is merely expired, a missing historical record or a Pod
-    /// coordinate that cannot be decoded never authorizes ledger closure.
+    /// Close Create admission through its original provider owner after the
+    /// exact Registry incarnation closes. The ledger CAS and ticket join, not
+    /// process exit, fence late Creates. A merely expired Ready Worker or absent
+    /// original anchor stays Unknown. This grants no physical-exit or disposal
+    /// evidence for the Worker or any existing participant.
     async fn seal_predecessor(
         &self,
         directory: Arc<dyn WorkerDirectory>,
@@ -686,19 +687,6 @@ impl K8sCreateBroker {
             record.snapshot.state,
             WorkerState::Quiesced | WorkerState::Dead
         ) {
-            return Ok(RequestJoin::Unknown);
-        }
-        let Some(exit) = record.process_exit else {
-            return Ok(RequestJoin::Unknown);
-        };
-        let process: PodProcessBinding =
-            serde_json::from_str(exit.execution_ref()).map_err(|_| {
-                ApplicationError::unavailable("historical Worker process binding is undecodable")
-            })?;
-        if exit.provider_id() != self.provider_id
-            || !process.matches_pod(pod.namespace(), pod.name(), pod.uid())
-            || !process.worker_evidence_was_retained()
-        {
             return Ok(RequestJoin::Unknown);
         }
         let Some(anchor) = record.create_ledger else {

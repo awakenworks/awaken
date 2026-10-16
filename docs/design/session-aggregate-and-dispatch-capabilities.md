@@ -103,6 +103,21 @@ ledger refuses release and retries with the already retained process exit.
 The seal excludes future Create admission, not existing participant execution or
 cleanup. Its existing per-group join still owns completion of admitted requests.
 
+The terminal Create join requires a closed exact Registry incarnation and its
+original ledger anchor, not a process-exit receipt. The provider's own CAS seals
+future admission; its existing ticket/isolation join accounts for requests that
+crossed admission before that seal. Lost container exit history therefore cannot
+prevent this independent logical fence. This join neither observes the Worker
+process nor closes existing Sandbox participants: their original stop,
+preparation and disposal owners still require their own evidence. Ready Workers,
+missing historical anchors and foreign or unavailable ledgers cannot borrow it.
+Closed-Worker maintenance attempts this same original-anchor seal and process
+observation independently through the existing StopSource role. A missing
+binding or unavailable exit observation cannot suppress the Create seal; a
+failed seal cannot suppress persistence of an independently observed exit.
+Already-retained exits still retry the seal. Either failure retains physical
+obligations and provider evidence under the unchanged release admission.
+
 Local composition constructs `AnyCoordinatorDispatch` from an owner implementing
 `DurableDispatch`, then uses `DispatchBinding::local`. Its cached Worker view
 retains the exact queue owner. Remote composition uses
