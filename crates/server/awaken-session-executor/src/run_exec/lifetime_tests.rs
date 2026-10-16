@@ -135,8 +135,10 @@ async fn entered(
 
 #[tokio::test]
 async fn session_projection_without_owner_refuses_start_and_resume_but_preserves_cancel() {
-    // C1 original owner released; C2 execute/resume/cancel. E1 no inner I/O for
-    // new effects; E2 old cancellation still reaches its original physical port.
+    // Cause/effect graph: C1 original slots owner is released; C2 operation is
+    // execute/resume/cancel. Effects: E1 new execution refuses before inner I/O;
+    // E2 cancellation reaches its original physical port without slot access.
+    // Decision rows S1=C1+execute => E1; S2=C1+resume => E1; S3=C1+cancel => E2.
     let slots = Arc::new(crate::installed_session::InstalledSessions::default());
     let weak_slots = Arc::downgrade(&slots);
     let probe = Arc::new(AttemptProbe::new(false, false));
@@ -174,9 +176,11 @@ async fn session_projection_without_owner_refuses_start_and_resume_but_preserves
 
 #[tokio::test]
 async fn session_projection_active_future_holds_original_slots_until_success_or_error() {
-    // Rows: execute/resume x success/error. Drop the last external owner only
-    // after inner execution starts. No Weak-count-only test can satisfy this:
-    // the active original future must finish with its original result.
+    // Cause/effect graph: C1 execute/resume; C2 inner succeeds/fails; C3 the last
+    // external owner drops after inner entry. All four C1 x C2 rows under C3
+    // retain the original slots until completion, preserve the exact result,
+    // then release them. A subsequent attempt refuses without a second I/O.
+    // This exercises the real entry point, not only Arc reference counts.
     for is_resume in [false, true] {
         for fails in [false, true] {
             let slots = Arc::new(crate::installed_session::InstalledSessions::default());
@@ -218,6 +222,11 @@ async fn session_projection_active_future_holds_original_slots_until_success_or_
 
 #[tokio::test]
 async fn artifact_decorator_without_harvest_owner_refuses_effects_even_if_slots_live() {
+    // Causes: C1 harvest owner is gone; C2 the canonical slots remain alive;
+    // C3 execute/resume/cancel. Effects: E1 execute/resume refuse before I/O;
+    // E2 cancel still forwards. A1=C1+C2+execute=>E1;
+    // A2=C1+C2+resume=>E1; A3=C1+C2+cancel=>E2. C2 proves that readable state
+    // cannot substitute for the independent original publication operation.
     let host =
         crate::HostDependencies::ephemeral(Arc::new(crate::NoModelConfiguredExecutor), "stub")
             .await
@@ -260,6 +269,10 @@ async fn artifact_decorator_without_harvest_owner_refuses_effects_even_if_slots_
 
 #[tokio::test]
 async fn artifact_decorator_active_future_holds_owner_through_attempt_success_or_error() {
+    // Causes: C1 execute/resume; C2 inner success/failure; C3 drop the last
+    // external Host/harvest owner after inner entry. The four C1 x C2 rules
+    // under C3 retain the same operation and slots, preserve the inner result,
+    // then release both. No new claim or publication authority is created.
     for is_resume in [false, true] {
         for fails in [false, true] {
             let host = crate::HostDependencies::ephemeral(
@@ -365,9 +378,11 @@ impl awaken_resource_contract::ArtifactPublisher<crate::ResourceOperationFence>
 
 #[tokio::test]
 async fn artifact_decorator_holds_same_owner_until_real_publication_finishes() {
-    // execute/resume x physical success/failure; suspend actual local harvest
-    // at capture. Both branches must retain the owner through publication,
-    // keep real output bytes, and preserve the original physical result.
+    // Causes: C1 execute/resume; C2 physical success/failure; C3 real capture
+    // suspends after the physical result; C4 all external owners then drop.
+    // The four C1 x C2 rows with C3+C4 retain the original owner until capture
+    // and publication finish, commit exact output bytes on both result paths,
+    // preserve the physical result, and release slots/owner after completion.
     for is_resume in [false, true] {
         for fails in [false, true] {
             let storage = tempfile::tempdir().unwrap();
