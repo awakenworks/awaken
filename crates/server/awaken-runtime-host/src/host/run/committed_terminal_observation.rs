@@ -101,7 +101,7 @@ impl SharedHost {
                 let frozen = installed
                     .as_ref()
                     .map(|root| {
-                        crate::agent_catalog::freeze_run_publications(
+                        awaken_dispatch_execution::run_publications::freeze_run_publications(
                             root,
                             self.agent.agent_publications.as_deref(),
                             &workspace,

@@ -276,20 +276,24 @@ Direct and durable delivery use one physical-attempt composition:
 
 ```text
 runtime::DirectAttemptDriver
-run_ingress::{
+dispatch_execution::{
   RunDispatch,
-  DispatchQueue,
   DispatchWorker::{physical_attempt, claim_renewal},
   pool,
   live_control,
+  SessionWorkerResolver,
+  session_dispatch,
+  durable_control,
 }
 runtime_host::host::{
   completion,
   run,
-  durable_control,
+  run_admission,
+  run_control,
   session,
-  worker_resolver,
+  dispatch_execution, // composition into existing Run assembly only
 }
+session_realization::{ResourceStaging, worker_projection}
 ```
 
 The intended dependency direction is:

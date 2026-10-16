@@ -1,107 +1,6 @@
-// @formal entrypoint session_realization.control_failure_disposition_and_current_owner_loss_are_total_exact_and_terminal_absorbing
-//! Project canonical Session realization failures into Worker claim outcomes.
-
-use super::HostWorkerResolver;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum SessionRealizationWorkerEffect {
-    /// Keep the claim parked while the Session Work slot is occupied.
-    Defer,
-    /// Relinquish the claim through the retryable execution-failure path.
-    Relinquish,
-    /// Settle the still-current claim with an absorbing Run failure.
-    Absorb,
-}
-
-pub(super) const fn session_realization_worker_effect(
-    disposition: awaken_session_realization_contract::SessionRealizationControlDisposition,
-) -> SessionRealizationWorkerEffect {
-    match disposition {
-        awaken_session_realization_contract::SessionRealizationControlDisposition::NotReady => {
-            SessionRealizationWorkerEffect::Defer
-        }
-        awaken_session_realization_contract::SessionRealizationControlDisposition::Retryable => {
-            SessionRealizationWorkerEffect::Relinquish
-        }
-        awaken_session_realization_contract::SessionRealizationControlDisposition::Terminal => {
-            SessionRealizationWorkerEffect::Absorb
-        }
-    }
-}
-
-#[cfg(kani)]
-/// @obligation session_realization.control_failure_disposition_and_current_owner_loss_are_total_exact_and_terminal_absorbing
-#[kani::proof]
-fn session_realization_control_disposition_projects_exact_worker_effect() {
-    let selector = kani::any::<u8>() % 3;
-    let (disposition, expected) = match selector {
-        0 => (
-            awaken_session_realization_contract::SessionRealizationControlDisposition::NotReady,
-            SessionRealizationWorkerEffect::Defer,
-        ),
-        1 => (
-            awaken_session_realization_contract::SessionRealizationControlDisposition::Retryable,
-            SessionRealizationWorkerEffect::Relinquish,
-        ),
-        _ => (
-            awaken_session_realization_contract::SessionRealizationControlDisposition::Terminal,
-            SessionRealizationWorkerEffect::Absorb,
-        ),
-    };
-
-    assert_eq!(session_realization_worker_effect(disposition), expected);
-}
-
-impl HostWorkerResolver {
-    /// Preserve a deterministic Host admission refusal, and every classified
-    /// environment provider failure, through the Session realization
-    /// classification the realization driver uses, so both paths reach the
-    /// same claim outcome. Other Host failures keep their retryable behavior.
-    pub(super) fn map_host_resolution_error(
-        error: crate::HostError,
-    ) -> awaken_dispatch_execution::Error {
-        if error.kind == crate::HostErrorKind::BadRequest
-            || awaken_session_realization_contract::is_environment_effect_code(&error.code)
-        {
-            Self::map_session_realization_drive_error(
-                awaken_session_realization_contract::SessionRealizationDriveError::Effect(
-                    crate::managed_adapter_error::to_run_error(error),
-                ),
-            )
-        } else {
-            Self::execution_error(error.to_string())
-        }
-    }
-
-    pub(super) fn map_session_realization_drive_error(
-        error: awaken_session_realization_contract::SessionRealizationDriveError,
-    ) -> awaken_dispatch_execution::Error {
-        use awaken_session_realization_contract::SessionRealizationDriveError as Drive;
-        // An effect and a Control failure share one Worker projection; a
-        // capacity refusal is NotReady, the request-local deferral (ADR-0092).
-        let (disposition, message) = match error {
-            Drive::Effect(error) => (
-                awaken_session_realization_contract::effect_failure_disposition(&error),
-                error.to_string(),
-            ),
-            Drive::Control(control) => (control.disposition(), control.to_string()),
-            retryable @ Drive::DidNotConverge => {
-                return Self::execution_error(retryable.to_string());
-            }
-        };
-        match session_realization_worker_effect(disposition) {
-            SessionRealizationWorkerEffect::Defer => {
-                awaken_dispatch_execution::Error::ResolutionNotReady(message)
-            }
-            SessionRealizationWorkerEffect::Relinquish => Self::execution_error(message),
-            SessionRealizationWorkerEffect::Absorb => Self::terminal_resolution_error(message),
-        }
-    }
-}
-
+//! Integration tests for the dispatch-owned claim laws.
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn host_resolution_preserves_admission_and_retry_classes_by_kind() {
@@ -115,7 +14,10 @@ mod tests {
             (crate::HostError::internal("same detail"), false),
             (crate::HostError::conflict("same detail"), false),
         ] {
-            let actual = HostWorkerResolver::map_host_resolution_error(error);
+            let actual =
+                awaken_dispatch_execution::session_worker_resolver::map_host_resolution_error(
+                    error,
+                );
             assert_eq!(actual.is_terminal_resolution(), terminal);
             if !terminal {
                 assert!(matches!(
@@ -219,7 +121,10 @@ mod tests {
                     awaken_session_realization_contract::environment_effect_error(&sandbox),
                 )
             };
-            let resolver = HostWorkerResolver::map_host_resolution_error(host_error());
+            let resolver =
+                awaken_dispatch_execution::session_worker_resolver::map_host_resolution_error(
+                    host_error(),
+                );
             // P1: the driver sees the same Host error after the synchronizer's
             // Run projection, reports it to Control, then returns it.
             let run_error = crate::host_error::to_run_error(host_error());
@@ -236,7 +141,7 @@ mod tests {
                 &run_error,
             );
             let reported = (command.retryable, command.capacity_unavailable);
-            let driver = HostWorkerResolver::map_session_realization_drive_error(
+            let driver = awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error(
                 awaken_session_realization_contract::SessionRealizationDriveError::Effect(
                     run_error,
                 ),
@@ -253,13 +158,15 @@ mod tests {
         // existing retry, and a capacity code on a non-Unavailable fault is
         // not a capacity refusal.
         assert_eq!(
-            claim_outcome(&HostWorkerResolver::map_host_resolution_error(
-                crate::HostError::internal("unclassified")
-            )),
+            claim_outcome(
+                &awaken_dispatch_execution::session_worker_resolver::map_host_resolution_error(
+                    crate::HostError::internal("unclassified")
+                )
+            ),
             "relinquish"
         );
         assert_eq!(
-            claim_outcome(&HostWorkerResolver::map_session_realization_drive_error(
+            claim_outcome(&awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error(
                 awaken_session_realization_contract::SessionRealizationDriveError::Effect(
                     awaken_session_types::RunError::classified(
                         awaken_session_realization_contract::ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE,
@@ -285,20 +192,21 @@ mod tests {
         // | R2 | Control unavailable/conflict | retryable Execution |
         // | R3 | Control not ready | ResolutionNotReady |
         // | R4 | permanent effect/invalid Control | TerminalResolution |
-        let retryable_effect = HostWorkerResolver::map_session_realization_drive_error(
-            awaken_session_realization_contract::SessionRealizationDriveError::Effect(
-                awaken_session_types::RunError::unavailable_classified(
-                    "mcp_material_source_unavailable",
-                    "materializer unavailable",
+        let retryable_effect =
+            awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error(
+                awaken_session_realization_contract::SessionRealizationDriveError::Effect(
+                    awaken_session_types::RunError::unavailable_classified(
+                        "mcp_material_source_unavailable",
+                        "materializer unavailable",
+                    ),
                 ),
-            ),
-        );
+            );
         assert!(matches!(
             retryable_effect,
             awaken_dispatch_execution::Error::Execution(_)
         ));
 
-        let retryable_control = HostWorkerResolver::map_session_realization_drive_error(
+        let retryable_control = awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error(
             awaken_session_realization_contract::SessionRealizationDriveError::Control(
                 awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
                     "repository unavailable".into(),
@@ -310,11 +218,12 @@ mod tests {
             awaken_dispatch_execution::Error::Execution(_)
         ));
 
-        let not_ready = HostWorkerResolver::map_session_realization_drive_error(
-            awaken_session_realization_contract::SessionRealizationDriveError::Control(
-                awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
-            ),
-        );
+        let not_ready =
+            awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error(
+                awaken_session_realization_contract::SessionRealizationDriveError::Control(
+                    awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
+                ),
+            );
         assert!(matches!(
             not_ready,
             awaken_dispatch_execution::Error::ResolutionNotReady(_)
@@ -334,7 +243,7 @@ mod tests {
             ),
         ] {
             assert!(matches!(
-                HostWorkerResolver::map_session_realization_drive_error(permanent),
+                awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error(permanent),
                 awaken_dispatch_execution::Error::TerminalResolution(_)
             ));
         }

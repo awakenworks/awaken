@@ -61,7 +61,6 @@ LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (HOST, _MIXED_REASON, (
         "host",
         "host::session",
-        "host::worker_resolver",
     )),
     (HOST, "SharedHost run, coordination and capability assembly stay in the host (plan 10.2)", (
         "host::build",
@@ -70,10 +69,11 @@ LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "host::coordination",
         "host::credential_capabilities",
         "host::dependencies",
-        "host::dispatch_reconciliation",
-        "host::dispatch_resolution",
-        "host::durable_control",
-        "host::placement",
+        "host::dispatch_execution",
+        "host::claimed_run",
+        "host::boundary_run",
+        "host::run_admission",
+        "host::run_control",
         "host::run",
         "host::session_ctx",
         "host::types",
@@ -85,12 +85,6 @@ LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "host::session::context",
         "host::session::input_projection",
         "host::session::run_ingress",
-    )),
-    (HOST, "claimed dispatch routing to the host stays with the host (plan 10.2)", (
-        "host::worker_resolver::claimed_dispatch",
-        "host::worker_resolver::claimed_session",
-        "host::worker_resolver::realization_failure",
-        "host::worker_resolver::resolver",
     )),
     (HOST, "run execution, agent runs and auxiliary runs consume the whole host", (
         "agent_runner",
@@ -114,7 +108,7 @@ LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "store",
     )),
     (HOST, "protocol-neutral host adapters and their composition", (
-        "dispatch_session_runtime",
+        "session_effects",
         "hub",
         "live_inbox",
         "managed_adapter_error",

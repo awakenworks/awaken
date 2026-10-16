@@ -23,7 +23,7 @@ use awaken_runtime_contract::execution::RunAttemptExecutor;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
 use super::RunScheduler;
-use crate::host::{HostWorkerResolver, SharedHost};
+use crate::host::SharedHost;
 use crate::store::HostCommit;
 
 /// Assembles one child Worker from the already-selected dispatch and committed
@@ -123,7 +123,6 @@ impl ChildWorkerFactory {
     /// boundary Worker. Its constructor installs the local RunRecoverySource;
     /// replacing it with `from_parts` would lose committed-snapshot recovery.
     pub(crate) async fn claimed_recovery(
-        resolver: &HostWorkerResolver,
         host: &SharedHost,
         claimed: &Claimed,
         commit: Arc<HostCommit>,
@@ -143,9 +142,14 @@ impl ChildWorkerFactory {
             ),
         ));
         let has_model_request_gate = context.model_request_gate.is_some();
-        let mut worker = resolver
-            .boundary_worker(host, claimed, commit, Some(context), false)
-            .await?;
+        let mut worker = crate::host::boundary_run::construct_boundary_worker(
+            host,
+            claimed,
+            commit,
+            Some(context),
+            false,
+        )
+        .await?;
         // A cold/replacement child must resolve the same publication-pinned
         // model as its first attempt. The Worker's host fallback can be empty.
         if let Some(materializer) = host.worker_inference_materializer() {

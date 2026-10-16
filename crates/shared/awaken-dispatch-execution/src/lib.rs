@@ -70,3 +70,15 @@ pub use execution_recovery::{
     exact_expired_slot_remains, read_execution_recovery, read_expired_physical_attempt,
     read_source_dispatch_observation,
 };
+
+pub mod model_capability;
+pub mod placement;
+pub mod run_publications;
+pub mod session_envelope;
+pub mod session_execution;
+pub mod session_reconciliation;
+pub mod session_worker_resolver;
+
+pub mod session_dispatch;
+
+pub mod durable_control;

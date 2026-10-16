@@ -102,7 +102,9 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
             .is_err(),
         "F1 staged desired input alone cannot acknowledge physical preparation"
     );
-    host.install_dispatched_resources("thread-cold-resource", &manifest, None)
+    host.realizer
+        .staging
+        .install_dispatched_resources(&host.realizer, "thread-cold-resource", &manifest, None)
         .await
         .expect("F1 revalidate the exact desired manifest without republishing");
     assert!(
@@ -146,7 +148,9 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         crate::session_resource::ResolvedSessionResources::default(),
     );
     let error = host
-        .install_dispatched_resources("thread-cold-resource", &cleared, None)
+        .realizer
+        .staging
+        .install_dispatched_resources(&host.realizer, "thread-cold-resource", &cleared, None)
         .await
         .expect_err("F3 desired-only replacement must fail closed");
     assert_eq!(error.code, "session_resource_transition_conflict", "F3");
@@ -333,7 +337,14 @@ async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
         projection.resource_revision,
         projection.resources.clone(),
     );
-    host.install_dispatched_resources("thread-generation-fence", &initial_manifest, None)
+    host.realizer
+        .staging
+        .install_dispatched_resources(
+            &host.realizer,
+            "thread-generation-fence",
+            &initial_manifest,
+            None,
+        )
         .await
         .expect("revalidate the exact desired manifest without republishing");
     host.ctx_for_snapshot(
@@ -360,7 +371,14 @@ async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
         .expect("R0 actual File projection");
     assert_eq!(initial_files.len(), 1, "R0 actual File before removal");
 
-    host.install_dispatched_resources("thread-generation-fence", &initial_manifest, Some(&claim))
+    host.realizer
+        .staging
+        .install_dispatched_resources(
+            &host.realizer,
+            "thread-generation-fence",
+            &initial_manifest,
+            Some(&claim),
+        )
         .await
         .expect("R1 exact replay revalidation");
 
@@ -391,7 +409,14 @@ async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
         ),
     ] {
         let result = host
-            .install_dispatched_resources("thread-generation-fence", &rejected, Some(&claim))
+            .realizer
+            .staging
+            .install_dispatched_resources(
+                &host.realizer,
+                "thread-generation-fence",
+                &rejected,
+                Some(&claim),
+            )
             .await;
         assert!(
             result.is_err(),
@@ -408,7 +433,14 @@ async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
         initial_manifest.revision + 1,
         crate::session_resource::ResolvedSessionResources::default(),
     );
-    host.install_dispatched_resources("thread-generation-fence", &next_manifest, Some(&claim))
+    host.realizer
+        .staging
+        .install_dispatched_resources(
+            &host.realizer,
+            "thread-generation-fence",
+            &next_manifest,
+            Some(&claim),
+        )
         .await
         .expect_err("R2 newer desired-only generation still lacks previous");
     let updated = roots

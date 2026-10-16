@@ -525,7 +525,8 @@ async fn unconfigured_model_is_rejected_before_durable_enqueue() {
     );
 
     let error = host
-        .resolved_dispatch(activation)
+        .prepare_dispatch(activation)
+        .fresh()
         .expect_err("an unconfigured model must never enter durable dispatch");
     assert!(error.to_string().contains("No model is configured"));
     assert!(error.to_string().contains("Author > Quickstart"));

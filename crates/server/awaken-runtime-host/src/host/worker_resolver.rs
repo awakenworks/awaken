@@ -1,20 +1,9 @@
-// @formal entrypoint session_realization.control_failure_disposition_and_current_owner_loss_are_total_exact_and_terminal_absorbing
-//! [`HostWorkerResolver`]: routes a claimed dispatch to the worker that owns
-//! its thread, opening (or reusing) the session through the host.
-
+//! Host-composed dispatch integration tests; production routing belongs to dispatch-execution.
 use super::*;
-mod claimed_dispatch;
 mod claimed_session;
-#[cfg(test)]
 mod dispatched_mcp_tests;
 mod realization_failure;
-mod resolver;
 mod session_projection;
-#[cfg(test)]
 pub(super) mod test_support;
-use claimed_session::install_claimed_session_projection;
-pub(crate) use resolver::HostWorkerResolver;
-
-#[cfg(test)]
 #[path = "worker_resolver/tests.rs"]
 mod tests;

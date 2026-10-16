@@ -1411,7 +1411,7 @@ async fn dispatch_session_runtime_is_constructed_once_with_weak_host_ownership()
     let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .unwrap();
-    let dispatch = host.dispatch_session_runtime();
+    let dispatch = host.session_effects();
     let managed = dispatch.managed().unwrap();
     assert!(Arc::ptr_eq(&host, &managed.host), "R1");
     let weak = Arc::downgrade(&host);
@@ -1516,13 +1516,16 @@ async fn injected_mcp_realizer_is_exclusive_and_fails_without_local_fallback() {
         selected_plaintext_holder: None,
     };
 
-    host.stage_dispatched_mcp(request.clone())
+    host.session_effects()
+        .stage_mcp_attachment(request.clone())
         .await
         .expect("R1");
-    host.publish_dispatched_mcp(generation.clone())
+    host.session_effects()
+        .publish_mcp_generation(generation.clone())
         .await
         .expect("R1");
-    host.drain_dispatched_mcp(generation.clone())
+    host.session_effects()
+        .drain_mcp_generation(generation.clone())
         .await
         .expect("R1");
     assert_eq!(
@@ -1538,7 +1541,8 @@ async fn injected_mcp_realizer_is_exclusive_and_fails_without_local_fallback() {
         .fail_stage
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let error = host
-        .stage_dispatched_mcp(request)
+        .session_effects()
+        .stage_mcp_attachment(request)
         .await
         .expect_err("R2 external rejection is terminal");
     assert_eq!(error.code, "external_stage_rejected");

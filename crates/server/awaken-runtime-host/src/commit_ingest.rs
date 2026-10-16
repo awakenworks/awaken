@@ -379,7 +379,8 @@ mod tests {
             .staging
             .register_thread_resource_manifest(thread, manifest);
         let dispatch = admission
-            .resolved_dispatch(activation)
+            .prepare_dispatch(activation)
+            .fresh()
             .expect("production root dispatch decoration");
         assert_eq!(
             dispatch.activation.effective_model_ref(),
@@ -582,7 +583,8 @@ mod tests {
             .staging
             .register_thread_resource_manifest(thread, manifest);
         let dispatch = admission
-            .resolved_dispatch(activation)
+            .prepare_dispatch(activation)
+            .fresh()
             .expect("production root dispatch decoration");
         let commit = ThreadCommit::assemble(
             ThreadId(thread.into()),
@@ -615,7 +617,7 @@ mod tests {
             .await
             .expect("claim D1")
             .expect("D1 dispatch available");
-        crate::host::HostWorkerResolver {
+        crate::host::SessionWorkerResolver {
             host: Arc::downgrade(&host),
         }
         .worker_for_claimed(&claimed)

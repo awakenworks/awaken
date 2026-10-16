@@ -172,7 +172,9 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
             ),
         );
         let result = host
-            .install_dispatched_resources(&thread, &manifest, None)
+            .realizer
+            .staging
+            .install_dispatched_resources(&host.realizer, &thread, &manifest, None)
             .await;
         result.unwrap_or_else(|error| panic!("{rule}: {error}"));
         assert_eq!(
@@ -362,7 +364,9 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         host.local_workspace(),
         platform_resources(),
     );
-    host.install_dispatched_resources("platform-mediated", &manifest, Some(&claim))
+    host.realizer
+        .staging
+        .install_dispatched_resources(&host.realizer, "platform-mediated", &manifest, Some(&claim))
         .await
         .expect("P1 Gateway mediation needs no Worker materializer");
     let activations = host
@@ -532,7 +536,14 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         platform_resources(),
     );
     downgrade_host
-        .install_dispatched_resources("platform-downgrade", &downgrade_manifest, Some(&claim))
+        .realizer
+        .staging
+        .install_dispatched_resources(
+            &downgrade_host.realizer,
+            "platform-downgrade",
+            &downgrade_manifest,
+            Some(&claim),
+        )
         .await
         .expect("P6 initial Gateway route stages");
     let downgrade_realizer = RecordingRepositoryRealizer::default();
@@ -571,7 +582,14 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         platform_resources(),
     );
     let denied = direct_host
-        .install_dispatched_resources("platform-direct-denied", &direct_manifest, Some(&claim))
+        .realizer
+        .staging
+        .install_dispatched_resources(
+            &direct_host.realizer,
+            "platform-direct-denied",
+            &direct_manifest,
+            Some(&claim),
+        )
         .await
         .expect_err("P2 direct transport cannot receive Platform-held material");
     assert!(denied.message.contains("requires Gateway mediation"), "P2");
@@ -585,7 +603,14 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
     );
 
     direct_host
-        .install_dispatched_resources("platform-coordinator-stage", &direct_manifest, None)
+        .realizer
+        .staging
+        .install_dispatched_resources(
+            &direct_host.realizer,
+            "platform-coordinator-stage",
+            &direct_manifest,
+            None,
+        )
         .await
         .expect("P3 unclaimed Coordinator stages only the exact Repository binding");
     assert!(

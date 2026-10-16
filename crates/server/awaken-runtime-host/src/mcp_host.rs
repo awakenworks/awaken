@@ -215,7 +215,7 @@ impl SharedHost {
                 .ok_or_else(|| {
                     McpError::internal("MCP application input has no Session admission authority")
                 })?;
-            let host: Weak<dyn McpInputHost> = self.dispatch_session_runtime().host;
+            let host: Weak<dyn McpInputHost> = self.session_effects().host;
             Ok(McpInputRecipients { application, host })
         };
         Ok(self

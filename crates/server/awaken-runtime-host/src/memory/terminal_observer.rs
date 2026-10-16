@@ -113,7 +113,9 @@ impl crate::host::SharedHost {
                 )
             })?;
             let binding = self
-                .compile_dispatched_memory_binding(session_thread, manifest, binding_id)
+                .realizer
+                .staging
+                .compile_frozen_memory_binding(session_thread, manifest, binding_id)
                 .await
                 .map_err(|error| crate::HostError::internal(error.to_string()))?;
             let memory = self.resources.memory.bound(binding);

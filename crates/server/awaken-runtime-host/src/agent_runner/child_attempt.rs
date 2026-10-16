@@ -249,7 +249,7 @@ pub(super) fn bind_direct_child_credentials(
         )
     })?;
     let now_unix_ms = awaken_time::WallClockExt::now_ms(clock.as_ref());
-    let holder = crate::host::self_hosted_inference_holder(activation)
+    let holder = awaken_dispatch_execution::placement::self_hosted_inference_holder(activation)
         .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
     let bindings = credential::compile_candidate_credential_bindings(
         &candidates,

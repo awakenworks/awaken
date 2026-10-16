@@ -610,7 +610,8 @@ impl SharedHost {
         // cold restart; the settlement observer must always route this root
         // continuation back to the same Session application.
         let request = self
-            .resolved_dispatch(activation)?
+            .prepare_dispatch(activation)
+            .fresh()?
             .for_session(ThreadId(command.session_id.to_string()))
             .with_session_activity_epoch(command.session_activity_epoch);
         store

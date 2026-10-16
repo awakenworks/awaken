@@ -873,7 +873,7 @@ impl SharedHost {
         // snapshot, so the claiming worker resolves the effective model itself.
         activation.model_ref_override = self.agent.inference_routing.override_for(thread);
         activation.run_id = uid.clone();
-        let request = self.resolved_dispatch(activation)?;
+        let request = self.prepare_dispatch(activation).fresh()?;
         match self.dispatch_pool_or_err() {
             // Normal server: the local pool claims and drives it.
             Ok(pool) => pool
@@ -929,7 +929,8 @@ impl SharedHost {
             .resume_activation(ticket)
             .with_model_ref_override(self.agent.inference_routing.override_for(session_id));
         let request = self
-            .resolved_resume_dispatch(activation)?
+            .prepare_dispatch(activation)
+            .resume()?
             .for_session(ThreadId(session_id.to_string()))
             .with_session_activity_epoch(session_activity_epoch);
         // One exact enqueue closes the foreground-to-durable crash window. A

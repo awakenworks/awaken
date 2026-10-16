@@ -110,7 +110,7 @@ types replace the old paths and the listed evidence is green.
 For G42 Resource evidence, `hand_brain_remote_worker_e2e.ts` exercises a real
 Control-authored Session with File, binary Skill, and Memory content on a remote
 Docker Worker. The exact Workspace rejection belongs to
-`dispatch_session_runtime::tests::dispatched_resource_scope_decision_table_is_total_and_exact`
+`awaken_dispatch_execution::session_envelope::tests::dispatched_resource_scope_decision_table_is_total_and_exact`
 and its Kani proof; archived Memory denial belongs to
 `memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced` over the Worker
 HTTP port. A copied Resource dispatch on a different Thread cannot replace
