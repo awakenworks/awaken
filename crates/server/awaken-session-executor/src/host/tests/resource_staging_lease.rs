@@ -25,9 +25,11 @@ async fn realization_revocation_selection_fences_removed_and_recreated_slots() {
                 .realizations()
                 .update_realization(SESSION, |r| {
                     if leased {
-                        r.install_lease(crate::installed_session::test_observed_lease(
-                            lease.clone(),
-                        ));
+                        r.install_lease(
+                            awaken_session_realization::test_support::test_observed_lease(
+                                lease.clone(),
+                            ),
+                        );
                     }
                 });
             let lock = host
@@ -51,10 +53,11 @@ async fn realization_revocation_selection_fences_removed_and_recreated_slots() {
             };
             host.installed_sessions.update(SESSION, |slot| {
                 if leased {
-                    slot.realization
-                        .install_lease(crate::installed_session::test_observed_lease(
+                    slot.realization.install_lease(
+                        awaken_session_realization::test_support::test_observed_lease(
                             lease.clone(),
-                        ));
+                        ),
+                    );
                 }
                 slot.run.dispatch_claim = Some(claim.clone());
             });
@@ -108,14 +111,16 @@ async fn worker_revocation_closes_all_before_drain_and_joins_independent_cleanup
         host.installed_sessions
             .realizations()
             .update_realization(session, |r| {
-                r.install_lease(crate::installed_session::test_observed_lease(
-                    crate::session_resource::SessionRealizationLease {
-                        owner: "worker".into(),
-                        runtime_incarnation: "worker/1".into(),
-                        epoch: 1,
-                        expires_at_unix_ms: u64::MAX,
-                    },
-                ));
+                r.install_lease(
+                    awaken_session_realization::test_support::test_observed_lease(
+                        crate::session_resource::SessionRealizationLease {
+                            owner: "worker".into(),
+                            runtime_incarnation: "worker/1".into(),
+                            epoch: 1,
+                            expires_at_unix_ms: u64::MAX,
+                        },
+                    ),
+                );
                 let cancellation = Arc::new(awaken_runtime_contract::CancellationToken::new());
                 r.staging.preparation = Some(cancellation.clone());
                 cancellations.push(cancellation);
@@ -186,7 +191,7 @@ async fn worker_revocation_closes_all_before_drain_and_joins_independent_cleanup
 // Repeating the failed batch cannot manufacture a successful cleanup receipt.
 #[tokio::test]
 async fn worker_revocation_error_does_not_short_circuit_other_sessions() {
-    use crate::installed_session::{
+    use crate::environment_owner::{
         BoundSessionEnvironmentIdentity, SessionEnvironmentOwner, SessionEnvironmentPreparation,
     };
     let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
@@ -276,7 +281,7 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                     ))
                 .build()
                 .expect("validated Host dependencies");
-                let now = crate::terminal_repository_publication::runtime_unix_now_ms();
+                let now = awaken_session_realization::test_support::runtime_unix_now_ms();
                 let lease = crate::session_resource::SessionRealizationLease {
                     owner: "worker".into(),
                     runtime_incarnation: "worker/1".into(),
@@ -356,7 +361,7 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                     host.realizer
                         .authorize_environment_effect_before_io(
                             SESSION,
-                            &host.realizer.new_environment_effect_intent(
+                            &host.realizer.execution.new_environment_effect_intent(
                                 SESSION,
                                 awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
                                 None
@@ -400,7 +405,7 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                     awaken_session_execution_contract::RealizationRuntime::renew_session_realization_lease(
                         &managed,
                         SESSION,
-                        crate::installed_session::test_observed_lease(extended.clone()),
+                        awaken_session_realization::test_support::test_observed_lease(extended.clone()),
                     )
                     .await
                     .is_err(),
@@ -607,7 +612,7 @@ impl StagingFixture {
             initial_branch: None,
             initial_commit: None,
         }]);
-        let now = crate::terminal_repository_publication::runtime_unix_now_ms();
+        let now = awaken_session_realization::test_support::runtime_unix_now_ms();
         let lease = crate::session_resource::SessionRealizationLease {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a/boot-1".into(),
@@ -652,7 +657,7 @@ impl StagingFixture {
                 projection,
                 None,
                 true,
-                Some(crate::installed_session::test_observed_lease(lease)),
+                Some(awaken_session_realization::test_support::test_observed_lease(lease)),
             )
             .await
         });
@@ -810,7 +815,7 @@ async fn local_runtime_renewal_port_selects_exact_owner_without_requiring_mcp_or
         .build()
         .expect("validated Host dependencies");
     let control = Arc::new(RemoteTerminalCleanupControl::default());
-    let now = crate::terminal_repository_publication::runtime_unix_now_ms();
+    let now = awaken_session_realization::test_support::runtime_unix_now_ms();
     let mut initial = Vec::new();
     for rule in ["L1", "L2", "L3", "L4", "L5", "L6"] {
         let lease = crate::session_resource::SessionRealizationLease {
@@ -894,7 +899,8 @@ async fn missing_control_is_required_only_for_due_leases_without_skipping_refres
         owner: "worker".into(),
         runtime_incarnation: "boot".into(),
         epoch: 1,
-        expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms() + 90_000,
+        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
+            + 90_000,
     };
     host.install_session_realization_lease(SESSION, lease.clone())
         .unwrap();
@@ -906,8 +912,10 @@ async fn missing_control_is_required_only_for_due_leases_without_skipping_refres
     host.installed_sessions
         .realizations()
         .update_realization(SESSION, |r| {
-            r.execution.authority = crate::installed_session::SessionRealizationAuthority::Live(
-                crate::installed_session::test_expired_observed_lease(lease.clone()),
+            r.execution.authority = crate::session_realizations::SessionRealizationAuthority::Live(
+                awaken_session_realization::test_support::test_expired_observed_lease(
+                    lease.clone(),
+                ),
             );
         });
     assert!(
@@ -945,10 +953,10 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
     // The TrustedHost backend exactly as startup selection configures it:
     // the installed Hand and scoped execution discovered from the helper.
     let helper = crate::acp_backend::deployment_test_binary("AWAKEN_TEST_SCOPED_HELPER");
-    let mut trusted = crate::session_environment::SandboxEnvironmentProvider::
+    let mut trusted = awaken_session_environment::SandboxEnvironmentProvider::
         trusted_host_workdir_with_agent_stderr(base.path().join("trusted-host"), false);
     trusted.install_workdir_hand(
-        Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+        Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
         helper.to_string_lossy().into_owned(),
         std::time::Duration::ZERO,
     );
@@ -980,7 +988,7 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
         .backend_owned_session_provider
         .as_ref()
         .unwrap();
-    let mut spec = crate::session_environment::environment_test_spec();
+    let mut spec = awaken_session_environment::test_support::spec();
     spec.scope = SESSION.into();
     let fence = lease.sandbox_effect_fence("scoped-candidate").unwrap();
     let environment = provider
@@ -999,7 +1007,7 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
         .await
         .unwrap();
     let environment = Arc::new(environment);
-    let crate::session_environment::SandboxEnvironment::Workdir { sandbox, .. } =
+    let awaken_session_environment::SandboxEnvironment::Workdir { sandbox, .. } =
         environment.sandbox_environment()
     else {
         unreachable!()
@@ -1115,9 +1123,11 @@ async fn worker_root_denies_fresh_and_replaced_projection_before_resource_io() {
                     f.projection.clone(),
                     None,
                     true,
-                    Some(crate::installed_session::test_observed_lease(
-                        f.lease.clone(),
-                    )),
+                    Some(
+                        awaken_session_realization::test_support::test_observed_lease(
+                            f.lease.clone(),
+                        ),
+                    ),
                 ),
             )
             .await;
@@ -1191,7 +1201,7 @@ async fn worker_root_denies_renewal_even_before_cohort_close() {
         managed
             .renew_session_realization_lease(
                 SESSION,
-                crate::installed_session::test_observed_lease(renewed)
+                awaken_session_realization::test_support::test_observed_lease(renewed)
             )
             .await
             .is_err()
@@ -1454,9 +1464,9 @@ async fn preflight_failure_has_no_lease_and_failed_replay_preserves_existing_ren
                 f.projection.clone(),
                 None,
                 true,
-                Some(crate::installed_session::test_observed_lease(
-                    f.lease.clone()
-                ))
+                Some(
+                    awaken_session_realization::test_support::test_observed_lease(f.lease.clone())
+                )
             )
             .await
             .is_err()
@@ -1689,7 +1699,7 @@ async fn cold_staging_renews_for_ten_ttls_with_mixed_control_latency() {
     for index in 0..16 {
         let session = format!("soak-{index:02}");
         f.lease.expires_at_unix_ms =
-            crate::terminal_repository_publication::runtime_unix_now_ms() + ttl;
+            awaken_session_realization::test_support::runtime_unix_now_ms() + ttl;
         f.control
             .renewals
             .lock()

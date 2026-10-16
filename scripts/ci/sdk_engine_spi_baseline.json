@@ -1,6 +1,5 @@
 {
   "crate-dependencies": {
-    "awaken-credential-materializer -> awaken-ext-builtin-tools": "it registers web-search provider routes into the extension's registry; the Execution composition does that registration instead",
     "awaken-protocol-managed -> awaken-ext-skills": "it parses SKILL.md with the extension's parser; move the parser into a skill value crate the Platform may read",
     "awaken-dispatch -> awaken-runtime": "Dispatch's Coordinator adapter builds the engine Runtime for its worker pool; the Execution side hands it a RunExecutor instead",
     "awaken-dispatch-http -> awaken-runtime": "it calls awaken_runtime::fresh_process_id for message ids; take the id from a value crate instead of the engine",
@@ -9,12 +8,6 @@
     "awaken-session-store -> awaken-ext-memory": "it stores the extension's memory-extraction intents; persist an opaque extraction value owned by the Session instead"
   },
   "spi-paths": {
-    "awaken-credential-materializer": {
-      "awaken_runtime_contract::activation": 2,
-      "awaken_runtime_contract::execution": 4,
-      "awaken_runtime_contract::llm": 3,
-      "awaken_runtime_contract::runtime_context": 2
-    },
     "awaken-executable-agent-contract": {
       "awaken_runtime_contract::plugin": 1
     },

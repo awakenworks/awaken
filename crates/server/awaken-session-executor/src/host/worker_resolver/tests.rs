@@ -1094,7 +1094,7 @@ impl awaken_session_realization_contract::ClaimedSessionRealizationControl
         Ok(self.projection.lock().unwrap().clone().map(|projection| {
             awaken_session_realization_contract::SessionRealizationDirective {
                 projection,
-                authority: crate::installed_session::test_lease_receipt(
+                authority: awaken_session_realization::test_support::test_lease_receipt(
                     continuation.cloned().unwrap_or_else(|| {
                         crate::session_resource::SessionRealizationLease {
                             owner: claim.owner.clone(),
@@ -1141,7 +1141,7 @@ impl awaken_session_realization_contract::SessionRealizationControl for Recordin
         Ok(
             awaken_session_realization_contract::SessionRealizationDirective {
                 projection,
-                authority: crate::installed_session::test_lease_receipt(
+                authority: awaken_session_realization::test_support::test_lease_receipt(
                     crate::session_resource::SessionRealizationLease {
                         owner: command.target.owner,
                         runtime_incarnation: command.target.runtime_incarnation,
@@ -1173,7 +1173,9 @@ impl awaken_session_realization_contract::SessionRealizationControl for Recordin
                     .unwrap()
                     .clone()
                     .expect("frozen Session projection"),
-                authority: crate::installed_session::test_lease_receipt(command.lease),
+                authority: awaken_session_realization::test_support::test_lease_receipt(
+                    command.lease,
+                ),
                 action: awaken_session_realization_contract::SessionRealizationAction::Publish {
                     publish: command
                         .mcp_receipts
@@ -1202,7 +1204,9 @@ impl awaken_session_realization_contract::SessionRealizationControl for Recordin
                     .unwrap()
                     .clone()
                     .expect("frozen Session projection"),
-                authority: crate::installed_session::test_lease_receipt(command.lease),
+                authority: awaken_session_realization::test_support::test_lease_receipt(
+                    command.lease,
+                ),
                 action: awaken_session_realization_contract::SessionRealizationAction::Complete,
             },
         )
@@ -1229,7 +1233,7 @@ impl awaken_session_realization_contract::SessionRealizationControl for Recordin
             return Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership);
         }
         lease.expires_at_unix_ms = command.requested_expires_at_unix_ms;
-        Ok(crate::installed_session::test_lease_receipt(lease))
+        Ok(awaken_session_realization::test_support::test_lease_receipt(lease))
     }
 }
 
@@ -1335,8 +1339,8 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
     host.installed_sessions.update("ordinary-remote", |slot| {
         slot.run.dispatch_claim = Some(predecessor.clone());
         slot.realization.execution.authority =
-            crate::installed_session::SessionRealizationAuthority::Live(
-                crate::installed_session::test_observed_lease(
+            crate::session_realizations::SessionRealizationAuthority::Live(
+                awaken_session_realization::test_support::test_observed_lease(
                     crate::session_resource::SessionRealizationLease {
                         owner: claimed.lease.owner().to_owned(),
                         runtime_incarnation: claimed.lease.owner().to_owned(),
@@ -1950,7 +1954,10 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
         .lock_resource_projection(foreign_thread)
         .await;
     let error = host
-        .stage_prevalidated_dispatched_resource_transition_under_resource_projection(
+        .realizer
+        .staging
+        .stage_prevalidated_resource_transition_under_resource_projection(
+            &host.realizer,
             foreign_thread,
             &transition,
             None,
@@ -1979,15 +1986,18 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
         .realizations()
         .lock_resource_projection(bound_thread)
         .await;
-    host.stage_prevalidated_dispatched_resource_transition_under_resource_projection(
-        bound_thread,
-        &transition,
-        None,
-        None,
-        true,
-    )
-    .await
-    .expect("P2 prospective binding defers missing File compilation");
+    host.realizer
+        .staging
+        .stage_prevalidated_resource_transition_under_resource_projection(
+            &host.realizer,
+            bound_thread,
+            &transition,
+            None,
+            None,
+            true,
+        )
+        .await
+        .expect("P2 prospective binding defers missing File compilation");
     assert!(
         host.installed_sessions
             .realizations()
@@ -2103,7 +2113,8 @@ async fn cold_worker_file_staging_uses_only_the_claim_bound_source() {
     managed
         .host
         .realizer
-        .validate_thread_resource_bindings("remote-file-ok")
+        .staging
+        .validate_thread_resource_bindings(&managed.host.realizer, "remote-file-ok")
         .await
         .expect("W1 has no redundant local File catalog check");
 
@@ -2126,15 +2137,16 @@ async fn sandbox_binding_is_validated_before_provider_adoption() {
     let storage = tempfile::tempdir().expect("storage");
     let host = adoption_host_at(storage.path()).await;
     assert!(
-        host.adopt_bound_session_environment(
-            "thread-a",
-            Some("not-json"),
-            &host.realizer.env.session_provider,
-            None,
-            false,
-        )
-        .await
-        .is_err()
+        host.realizer
+            .adopt_bound_session_environment(
+                "thread-a",
+                Some("not-json"),
+                &host.realizer.env.session_provider,
+                None,
+                false
+            )
+            .await
+            .is_err()
     );
 
     let wrong = serde_json::to_string(&awaken_provisioning_contract::SandboxHandle::new(
@@ -2142,15 +2154,16 @@ async fn sandbox_binding_is_validated_before_provider_adoption() {
     ))
     .unwrap();
     assert!(
-        host.adopt_bound_session_environment(
-            "thread-a",
-            Some(&wrong),
-            &host.realizer.env.session_provider,
-            None,
-            false,
-        )
-        .await
-        .is_err()
+        host.realizer
+            .adopt_bound_session_environment(
+                "thread-a",
+                Some(&wrong),
+                &host.realizer.env.session_provider,
+                None,
+                false
+            )
+            .await
+            .is_err()
     );
 }
 
@@ -2255,6 +2268,7 @@ async fn recovery_mode_controls_the_production_adoption_seam() {
     );
     let source_generation_id = current_missing.environment.generation().map(|g| g.id());
     let refusal = replacement
+        .realizer
         .adopt_bound_session_environment(
             missing_thread,
             Some(&missing),
@@ -2379,7 +2393,7 @@ async fn cold_adoption_uses_the_provider_owned_by_frozen_model_provisioning() {
     let roots = ManagedSessionRootFixture::new().await;
     let mut first = adoption_dependencies_at(storage.path()).await;
     first.env.backend_owned_session_provider = Some(
-        crate::session_environment::SandboxEnvironmentProvider::workdir(&trusted_root)
+        awaken_session_environment::SandboxEnvironmentProvider::workdir(&trusted_root)
             .into_session_provider(),
     );
     let first = roots.configure(first).build().unwrap();
@@ -2410,7 +2424,7 @@ async fn cold_adoption_uses_the_provider_owned_by_frozen_model_provisioning() {
 
     let mut replacement = adoption_dependencies_at(storage.path()).await;
     replacement.env.backend_owned_session_provider = Some(
-        crate::session_environment::SandboxEnvironmentProvider::workdir(&trusted_root)
+        awaken_session_environment::SandboxEnvironmentProvider::workdir(&trusted_root)
             .into_session_provider(),
     );
     let replacement = roots.configure(replacement).build().unwrap();

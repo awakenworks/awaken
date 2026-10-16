@@ -132,7 +132,7 @@ impl HostDependencies {
         hand_factory: Arc<dyn awaken_session_environment_contract::HandExecutorFactory>,
     ) -> Self {
         let hand = crate::SandboxSettings::default();
-        let environment = crate::session_environment::SandboxEnvironmentProvider::
+        let environment = awaken_session_environment::SandboxEnvironmentProvider::
             container_with_capacity_hand_idle_and_residency(
                 provider,
                 None,

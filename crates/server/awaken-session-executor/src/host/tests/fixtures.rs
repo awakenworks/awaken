@@ -323,7 +323,7 @@ impl awaken_session_realization_contract::SessionRealizationControl
                     Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership)
                 } else {
                     current.expires_at_unix_ms = command.requested_expires_at_unix_ms;
-                    Ok(crate::installed_session::test_lease_receipt(current.clone()))
+                    Ok(awaken_session_realization::test_support::test_lease_receipt(current.clone()))
                 }
             })
         };
@@ -367,7 +367,7 @@ impl awaken_session_realization_contract::SessionRealizationControl
         }
         session.realization = Some(renewed.clone());
         *self.authority.lock().unwrap() = Some((projection, renewed.clone()));
-        Ok(crate::installed_session::test_lease_receipt(renewed))
+        Ok(awaken_session_realization::test_support::test_lease_receipt(renewed))
     }
 
     async fn activate_session_realization(
@@ -510,7 +510,9 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue
                     environment_creation_not_attempted: false,
                     session_id: session_id.clone(),
                     projection,
-                    authority: crate::installed_session::test_lease_receipt(current),
+                    authority: awaken_session_realization::test_support::test_lease_receipt(
+                        current,
+                    ),
                 },
                 action,
             },

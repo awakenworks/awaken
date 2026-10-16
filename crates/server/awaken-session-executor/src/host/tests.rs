@@ -1,7 +1,7 @@
 //! Host tests, split by capability topic. Shared fixtures live here; the
 //! crate-wide ones live in [`fixtures`].
 use super::*;
-use crate::session_environment::SandboxEnvironmentAccess;
+use awaken_session_environment::test_support::SandboxEnvironmentAccess;
 use awaken_time::system_clock;
 
 #[tokio::test]
@@ -293,7 +293,8 @@ async fn run_prepared_session_messages(
     managed
         .host
         .realizer
-        .validate_thread_resource_bindings(thread)
+        .staging
+        .validate_thread_resource_bindings(&managed.host.realizer, thread)
         .await?;
     let result = managed
         .host
@@ -2210,7 +2211,8 @@ pub(super) fn terminal_recovery_effect(
         owner: owner.into(),
         runtime_incarnation: format!("{owner}:incarnation"),
         epoch: 1,
-        expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms() + 60_000,
+        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
+            + 60_000,
     };
     let mut cleanup = awaken_session_state_contract::SessionCleanupOperation::default();
     assert!(cleanup.request(&awaken_session_types::SessionId::from(thread)));
@@ -2498,7 +2500,7 @@ async fn install_terminal_recovery_projection(
             environment_creation_not_attempted: false,
             session_id: thread.into(),
             projection: projection.clone(),
-            authority: crate::installed_session::test_lease_receipt(lease),
+            authority: awaken_session_realization::test_support::test_lease_receipt(lease),
         },
     )
     .await

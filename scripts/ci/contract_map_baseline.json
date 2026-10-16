@@ -42,6 +42,7 @@
     "ResourceReclamationRepository <- awaken-session-executor": 1,
     "SandboxCheckpointStore <- awaken-session-executor": 1,
     "SandboxCheckpointStore <- awaken-sandbox-local": 1,
+    "SandboxCheckpointStore <- awaken-session-realization": 1,
     "SandboxExecutionPolicyStore <- awaken-protocol-awaken": 1,
     "SandboxExecutionPolicyStore <- awaken-protocol-managed": 1,
     "SessionRepository <- awaken-resource-worker-http": 1,
@@ -107,5 +108,10 @@
     "SessionTerminalCleanupEffect": 2,
     "SessionTombstone": 3,
     "SourceDisposedReceipt": 4
+  },
+  "growth_reasons": {
+    "foreign-persistence-port": {
+      "SandboxCheckpointStore <- awaken-session-realization": "R extraction onto main822: move existing SandboxCheckpointStore byte-custody use into the canonical resource component; Host still names its existing assembly/provider method arguments. Record that exact usage instead of claiming debt removal. Incoming main MemoryExecutionContent and narrow Memory roles are preserved; the former MemoryRepository trait/usage records stay deleted, with no compatibility route."
+    }
   }
 }

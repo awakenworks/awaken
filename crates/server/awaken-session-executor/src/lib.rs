@@ -1,15 +1,16 @@
 // @formal entrypoint session.cleanup_completion_requires_exact_identity_and_canonical_artifact_evidence
 //! `awaken-session-executor` — authority-free shared execution host infrastructure.
 //!
-//! It owns protocol-neutral execution coordination, Session-environment
-//! realization, capability assembly, and the [`SharedHost`] used by every
+//! It owns protocol-neutral execution coordination, capability assembly, and
+//! the [`SharedHost`] used by every
 //! driving protocol. [`ManagedHost`] and [`RunApplicationHost`] adapt Managed
 //! Agents and AI SDK / AG-UI / A2A onto that one host, so they cannot create
 //! protocol-specific run, resume, or terminal-state implementations.
 //!
 //! This crate consumes capabilities selected by process startup. It never opens
 //! or selects a SQL/filesystem authority Store, never owns a public protocol or
-//! domain aggregate, and never decides the deployment topology. Coordinator
+//! domain aggregate, and never decides the deployment topology. Session resource
+//! effects are supplied by `awaken-session-realization`. Coordinator
 //! injects the sole durable [`RuntimeAuthority`]; a database-less Worker is
 //! constructed with an [`UpstreamAuthority`] carrying its claim-fenced
 //! transports. Product composition mounts the corresponding routers around
@@ -36,8 +37,6 @@ mod authority;
 mod auxiliary_sandbox;
 mod background;
 mod background_task;
-mod bound_environment;
-mod cache_volume;
 mod capabilities;
 mod commit_ingest;
 mod compact;
@@ -47,15 +46,10 @@ mod delegate;
 mod deployment_config;
 mod dispatch_session_runtime;
 mod durable_operations;
-mod environment_capacity;
-mod environment_continuation;
+
+#[cfg(test)]
 mod environment_effects;
-mod environment_holding;
-mod environment_owner;
-mod environment_providers;
-mod frozen_inputs;
 mod host;
-mod host_error;
 mod hub;
 mod inference_routing;
 mod installed_session;
@@ -64,38 +58,26 @@ mod lazy_sandbox;
 mod live_inbox;
 mod managed_adapter_error;
 mod managed_host_composition;
-mod managed_input_layout;
 mod managed_input_projection;
 mod managed_model_capability;
 mod managed_outcome;
-mod managed_resource_projection;
 mod mcp_host;
 mod memory;
-mod memory_binding;
 #[cfg(test)]
 mod memory_stores;
 mod model_content_materializer;
 mod no_model;
 mod outcome_controller;
-mod provisioning;
-mod realization_executor;
 mod redact;
-mod resource_staging;
 mod run_application_host;
 mod run_exec;
-mod session_environment;
 mod session_memory_tools;
-mod session_publication;
-mod session_realizations;
 mod session_tools;
 mod skill_catalog;
-mod skill_delivery;
 mod skills;
-mod staged_resources;
 mod step_projection;
 mod store;
-mod terminal_cleanup;
-mod terminal_repository_publication;
+
 #[cfg(test)]
 use awaken_session_mcp::test_mcp;
 use awaken_session_execution_contract::EnvironmentRuntime as _;
@@ -204,7 +186,8 @@ impl SessionRuntime for ManagedHost {
     ) -> Result<StepOutcome, RunError> {
         self.host
             .realizer
-            .validate_thread_resource_bindings(thread)
+            .staging
+            .validate_thread_resource_bindings(&self.host.realizer, thread)
             .await?;
         let result = self
             .host
@@ -221,7 +204,8 @@ impl SessionRuntime for ManagedHost {
     ) -> Result<StepOutcome, RunError> {
         self.host
             .realizer
-            .validate_thread_resource_bindings(thread)
+            .staging
+            .validate_thread_resource_bindings(&self.host.realizer, thread)
             .await?;
         let result = self
             .host
@@ -239,7 +223,8 @@ impl SessionRuntime for ManagedHost {
     ) -> Result<StepOutcome, RunError> {
         self.host
             .realizer
-            .validate_thread_resource_bindings(thread)
+            .staging
+            .validate_thread_resource_bindings(&self.host.realizer, thread)
             .await?;
         let result = self
             .host
@@ -290,7 +275,8 @@ impl awaken_session_execution_contract::RealizationRuntime for ManagedHost {
     ) -> Result<(), RunError> {
         self.host
             .realizer
-            .validate_prospective_session_layout(thread, layout)
+            .staging
+            .validate_prospective_session_layout(&self.host.realizer, thread, layout)
     }
 
     async fn install_session_projection(
@@ -395,7 +381,8 @@ impl awaken_session_execution_contract::CoordinationRuntime for ManagedHost {
         let input = command.messages.clone();
         self.host
             .realizer
-            .validate_thread_resource_bindings(command.session_id.as_str())
+            .staging
+            .validate_thread_resource_bindings(&self.host.realizer, command.session_id.as_str())
             .await?;
         let ctx = self
             .host
@@ -807,7 +794,8 @@ impl awaken_session_execution_contract::StreamingRunRuntime for ManagedHost {
     ) -> Result<StepOutcome, RunError> {
         self.host
             .realizer
-            .validate_thread_resource_bindings(thread)
+            .staging
+            .validate_thread_resource_bindings(&self.host.realizer, thread)
             .await?;
         let result = self
             .host
@@ -830,7 +818,8 @@ impl awaken_session_execution_contract::StreamingRunRuntime for ManagedHost {
     ) -> Result<StepOutcome, RunError> {
         self.host
             .realizer
-            .validate_thread_resource_bindings(thread)
+            .staging
+            .validate_thread_resource_bindings(&self.host.realizer, thread)
             .await?;
         // Same committed Run as `run`; `sink` mirrors in-flight `stream::Kind` so
         // the Managed adapter can project live `agent.message` previews.
@@ -851,7 +840,8 @@ impl awaken_session_execution_contract::StreamingRunRuntime for ManagedHost {
     ) -> Result<StepOutcome, RunError> {
         self.host
             .realizer
-            .validate_thread_resource_bindings(thread)
+            .staging
+            .validate_thread_resource_bindings(&self.host.realizer, thread)
             .await?;
         let result = self
             .host
@@ -924,6 +914,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ManagedHost {
             .map_err(to_run_error)?;
         let disposition = self
             .host
+            .realizer
             .adopt_bound_session_environment(thread, Some(binding), provider, None, false)
             .await
             .map_err(to_run_error)?;
@@ -1043,7 +1034,8 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ManagedHost {
     ) -> Result<(), RunError> {
         self.host
             .realizer
-            .apply_session_inputs_with_context(thread, transition, None, None)
+            .staging
+            .apply_session_inputs_with_context(&self.host.realizer, thread, transition, None, None)
             .await
     }
 }
@@ -1149,7 +1141,8 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ManagedHost {
     ) -> Result<awaken_session_state_contract::SessionRepositoryPublicationEffect, RunError> {
         self.host
             .realizer
-            .publish_terminal_repository(command, lease)
+            .cleanup
+            .publish_terminal_repository(&self.host.realizer, command, lease)
             .await
     }
 
@@ -1159,7 +1152,30 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ManagedHost {
         authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
     ) -> Result<awaken_session_state_contract::SessionCleanupPreparation, RunError> {
         self.host
-            .prepare_terminal_cleanup_effect(effect, authorization)
+            .realizer
+            .cleanup
+            .prepare_terminal_cleanup_effect(
+                &self.host.realizer,
+                effect,
+                authorization,
+                |thread| {
+                    let host = &self.host;
+                    async move { host.delegated_runs_under_lifecycle(&thread).await }
+                },
+                |thread, generation| {
+                    let background = self.host.resources.memory.background();
+                    async move {
+                        background
+                            .quiesce_shared_environment(
+                                &thread,
+                                &generation,
+                                std::time::Duration::from_secs(30),
+                            )
+                            .await
+                    }
+                },
+                (&self.host.mcp, self.host.installed_sessions.as_ref()),
+            )
             .await
             .map_err(to_run_error)
     }
@@ -1169,7 +1185,9 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ManagedHost {
         effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
     ) {
         self.host
-            .acknowledge_terminal_cleanup_preparation(effect)
+            .realizer
+            .cleanup
+            .acknowledge_terminal_cleanup_preparation(&self.host.mcp, effect)
             .await;
     }
 
@@ -1178,7 +1196,9 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ManagedHost {
         effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
     ) -> Result<awaken_session_state_contract::SessionCleanupDisposalReceipt, RunError> {
         self.host
-            .dispose_terminal_cleanup_effect(effect)
+            .realizer
+            .cleanup
+            .dispose_terminal_cleanup_effect(&self.host.realizer, effect)
             .await
             .map_err(to_run_error)
     }
@@ -1188,7 +1208,9 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ManagedHost {
         effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
     ) {
         self.host
-            .acknowledge_terminal_cleanup_disposal(effect)
+            .realizer
+            .cleanup
+            .acknowledge_terminal_cleanup_disposal(&self.host.mcp, effect)
             .await;
     }
 
@@ -1198,7 +1220,13 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ManagedHost {
         lease: &crate::session_resource::SessionRealizationLease,
     ) {
         self.host
-            .retire_completed_terminal_cleanup_projection(session_id.as_str(), lease)
+            .realizer
+            .cleanup
+            .retire_completed_terminal_cleanup_projection(
+                &self.host.mcp,
+                session_id.as_str(),
+                lease,
+            )
             .await;
     }
 
@@ -1362,3 +1390,15 @@ use awaken_dispatch_contract::SessionRunReservations as _;
 pub(crate) use awaken_session_configuration_contract::mcp as session_mcp;
 
 pub(crate) use awaken_session_configuration_contract::resource as session_resource;
+
+#[cfg(test)]
+use awaken_session_realization::environment_owner;
+use awaken_session_realization::{
+    cache_volume, environment_holding, environment_providers, frozen_inputs, host_error,
+    managed_input_layout, memory_binding, provisioning, realization_executor, resource_staging,
+    session_environment, session_publication, session_realizations, skill_delivery,
+    staged_resources, terminal_cleanup,
+};
+#[cfg(test)]
+#[path = "realization_composed_tests/mod.rs"]
+mod realization_composed_tests;

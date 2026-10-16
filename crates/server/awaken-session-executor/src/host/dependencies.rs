@@ -411,7 +411,7 @@ impl HostDependencies {
         let dir = dir.into();
         let repository = capability::local_memory_extraction_repository(Some(&dir)).await;
         self.with_durable_store_dir(dir, repository, |provider, base| {
-            crate::session_environment::relocated_provider(provider, base)
+            awaken_session_environment::test_support::relocated_provider(provider, base)
         })
     }
 

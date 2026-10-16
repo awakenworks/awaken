@@ -166,7 +166,7 @@ async fn probe_negotiator(
         .await
         .with_local_workspace(owner);
     dependencies.env.session_provider =
-        crate::session_environment::SandboxEnvironmentProvider::workdir(base)
+        awaken_session_environment::SandboxEnvironmentProvider::workdir(base)
             .into_session_provider();
     SessionAcpCapabilityNegotiator::new(
         (dependencies).build().expect("validated Host dependencies"),

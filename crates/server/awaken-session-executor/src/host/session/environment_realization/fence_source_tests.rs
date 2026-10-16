@@ -1,6 +1,6 @@
 // @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 use super::*;
-use crate::installed_session::SessionRealizationAuthority;
+use crate::session_realizations::SessionRealizationAuthority;
 use awaken_provisioning_contract::test_support::FenceTamper as _;
 use awaken_provisioning_contract::{CurrentExecutionAuthority, SandboxEffectFence};
 use awaken_session_configuration_contract::resource as session_resource;
@@ -144,10 +144,10 @@ async fn provider_fence_source_decision_table_preserves_exact_live_authority() {
                         .realizations()
                         .update_realization("session", |r| {
                             r.execution.authority = SessionRealizationAuthority::Live(
-                                crate::installed_session::test_expired_observed_lease(
-                                    current.clone(),
-                                ),
-                            );
+                            awaken_session_realization::test_support::test_expired_observed_lease(
+                                current.clone(),
+                            ),
+                        );
                         })
                 }
                 "realization" | "lifecycle" => host
@@ -603,10 +603,10 @@ async fn adoption_forwards_original_authority_across_observation_and_provider_wa
                     observation_boundary: Some(observation.clone()),
                     ..Default::default()
                 });
-                let provider = crate::session_environment::SandboxEnvironmentProvider::container(
+                let provider = awaken_session_environment::SandboxEnvironmentProvider::container(
                     probe.clone(),
                     vec![],
-                    Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+                    Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
                     "unused",
                 )
                 .into_session_provider();
@@ -630,14 +630,16 @@ async fn adoption_forwards_original_authority_across_observation_and_provider_wa
                     authorization:
                         awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized { intent: Box::new(intent) },
                 };
-                let adopt = host.adopt_bound_session_environment_under_lifecycle(
-                    "session",
-                    &binding,
-                    &provider,
-                    None,
-                    SessionEnvironmentUnavailablePolicy::Reject,
-                    Some(&effect),
-                );
+                let adopt = host
+                    .realizer
+                    .adopt_bound_session_environment_under_lifecycle(
+                        "session",
+                        &binding,
+                        &provider,
+                        None,
+                        SessionEnvironmentUnavailablePolicy::Reject,
+                        Some(&effect),
+                    );
                 let transition = async {
                     observation.entered.notified().await;
                     if wait == "provider" {
@@ -720,14 +722,14 @@ async fn provider_fence_source_is_wired_across_preparation_and_provider_awaits()
             host.installed_sessions.remove("session");
         }
         let probe = Arc::new(ProjectionProbe::default());
-        let provider = crate::session_environment::SandboxEnvironmentProvider::container(
+        let provider = awaken_session_environment::SandboxEnvironmentProvider::container(
             probe.clone(),
             vec![],
-            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
             "unused",
         )
         .into_session_provider();
-        let mut spec = crate::session_environment::environment_test_spec();
+        let mut spec = awaken_session_environment::test_support::spec();
         spec.scope = "session".into();
         let directory = tempfile::tempdir().unwrap();
         spec.mounts
@@ -754,18 +756,17 @@ async fn provider_fence_source_is_wired_across_preparation_and_provider_awaits()
         if rule == "initial_closed" {
             host.installed_sessions.close_realization("session", None);
         }
-        let create = host
-            .realizer
-            .create_session_environment_with_provider_effect(
-                &provider,
-                &spec,
-                (rule != "provider_unfenced").then_some(&initial),
-                authority
-                    .as_ref()
-                    .map(|source| source as &dyn CurrentExecutionAuthority),
-                None,
-                awaken_session_environment_contract::EnvironmentRealizationKind::Create,
-            );
+        let create = awaken_session_realization::test_support::create_session_environment(
+            &host.realizer,
+            &provider,
+            &spec,
+            (rule != "provider_unfenced").then_some(&initial),
+            authority
+                .as_ref()
+                .map(|source| source as &dyn CurrentExecutionAuthority),
+            None,
+            awaken_session_environment_contract::EnvironmentRealizationKind::Create,
+        );
         let transition = async {
             if rule == "initial_closed" {
                 return;
@@ -933,6 +934,7 @@ async fn environment_receipt_refreshes_only_the_captured_live_generation() {
             }
             let receipt = host
                 .realizer
+                .execution
                 .current_environment_receipt("binding".into(), &effect);
             assert_eq!(
                 receipt.is_ok(),

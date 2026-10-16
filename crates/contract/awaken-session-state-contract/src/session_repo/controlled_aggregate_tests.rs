@@ -877,15 +877,20 @@ fn materialization_intrinsic_and_replacement_laws_preserve_unknown_and_first_val
 fn terminal_cleanup_affinity_distinguishes_owner_and_runtime_incarnation() {
     // Cause graph: C1 logical owner exact; C2 Runtime incarnation exact;
     // C3 prior lease live; C4 physical Environment; C5 child/non-pristine
-    // cleanup set. The original same-process continuation is C1&&C2; a
+    // cleanup set; C6 terminal execution; C7 a frozen cleanup target projection.
+    // The original same-process continuation is C1&&C2; a
     // Worker restart is not that continuation merely because C1 still holds.
     //
     // | Rule | incumbent | C1+C2 | C3 | C4/C5 | effect |
     // | A1 | absent | - | - | - | original first-placement Unchanged |
     // | A2 | present | both exact | either | either | Unchanged |
     // | A3 | present | either changed | expired | neither | require original archive receipt |
-    // | A4 | present | either changed | live or physical or non-pristine | Retained |
-    // All 32 present combinations are covered. The pure query reads no
+    // | A4 | present | either changed | expired | physical + C6+C7 | requires independent predecessor exit |
+    // | A5 | present | either changed | all remaining rows | Retained |
+    // All 32 present combinations keep C6/C7 true. A6 below independently
+    // falsifies terminal state and the unfrozen cleanup phases: each retains.
+    // RequiresPredecessorExit is a request for independent proof, never a lease
+    // replacement or physical-source access grant (ADR-0078). The pure query reads no
     // receipt, changes no root and grants no physical takeover authority.
     use crate::{
         SessionTerminalCleanupAffinity as Affinity, session_terminal_cleanup_affinity_for,
@@ -933,7 +938,9 @@ fn terminal_cleanup_affinity_distinguishes_owner_and_runtime_incarnation() {
                         let before = session.clone();
                         let expected = if same_owner && same_runtime {
                             Affinity::Unchanged
-                        } else if !live && !physical && !child {
+                        } else if !live && physical {
+                            Affinity::RequiresPredecessorExit
+                        } else if !live && !child {
                             Affinity::RequiresUnattemptedArchiveReceipt
                         } else {
                             Affinity::Retained
@@ -950,13 +957,50 @@ fn terminal_cleanup_affinity_distinguishes_owner_and_runtime_incarnation() {
                                 10,
                             ),
                             expected,
-                            "A2-A4 owner={same_owner} runtime={same_runtime} live={live} physical={physical} child={child}",
+                            "A2-A5 owner={same_owner} runtime={same_runtime} live={live} physical={physical} child={child}",
                         );
-                        assert_eq!(session, before, "A1-A4 query never mutates root");
+                        assert_eq!(session, before, "A1-A5 query never mutates root");
                     }
                 }
             }
         }
+    }
+    // A6 controls: expired foreign physical affinity remains retained if the
+    // terminal precondition or frozen target projection is absent. NotRequested
+    // and Fenced are distinct legal pre-freeze phases; neither supplies targets.
+    // Root identity comes from the aggregate; this query creates no assignment.
+    for control in ["nonterminal", "unfrozen", "not_requested"] {
+        let mut session = initial.clone();
+        session.realization = Some(crate::SessionRealizationLease {
+            owner: "worker-a".into(),
+            runtime_incarnation: "worker-a:1:boot-old".into(),
+            epoch: 4,
+            expires_at_unix_ms: 1,
+        });
+        session.environment = crate::SessionEnvironmentState::Resident {
+            binding: "original-binding".into(),
+            effect_id: None,
+            generation: None,
+            idle_since_unix_ms: None,
+        };
+        if control == "not_requested" {
+            session.terminal_cleanup = crate::SessionCleanupOperation::default();
+        } else if control != "unfrozen" {
+            session
+                .terminal_cleanup
+                .freeze_targets(&session.session_id, [], 0, 0)
+                .unwrap();
+        }
+        if control == "nonterminal" {
+            session.execution = SessionExecutionState::Idle;
+        }
+        let before = session.clone();
+        assert_eq!(
+            session_terminal_cleanup_affinity_for(&session, "worker-b", "worker-b:2:boot-new", 10),
+            Affinity::Retained,
+            "A6 {control}",
+        );
+        assert_eq!(session, before, "A6 {control} query never mutates root");
     }
 }
 

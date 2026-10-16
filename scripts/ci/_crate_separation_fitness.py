@@ -36,6 +36,9 @@ REASONS: dict[str, str] = {
 # Dependencies heavy, optional or OS-specific enough that keeping them out of
 # the rest of a bounded context justifies a crate of their own.
 ISOLATED_DEPENDENCIES: dict[str, str] = {
+    # Execution last-mile adapter: links provider SDK, crypto and optional HTTP,
+    # while the realization library remains independent of the Runtime engine/Host.
+    "awaken-credential-materializer": "concrete credential/provider materialization",
     "sqlx": "database driver",
     "axum": "HTTP server",
     "reqwest": "HTTP client",
@@ -278,6 +281,14 @@ def selftest() -> None:
     assert "does not depend" in errors(crate("st", "isolation", isolates=("sqlx",)))[0], "I2 missing"
     assert "kept free" in errors(store, crate("app", "sole-in-layer", layer="application",
                                               deps=["sqlx"]))[0], "I2 sibling"
+
+    # I3: the concrete last-mile provider/crypto adapter is an isolation edge,
+    # under the same I1/I2 dependency and sibling checks, never a name-only waiver.
+    materialization = crate("effects", "isolation", deps=["awaken-credential-materializer"],
+                            isolates=("awaken-credential-materializer",))
+    assert errors(materialization, crate("run", "sole-in-layer", layer="application")) == [], "I3"
+    assert "kept free" in errors(materialization, crate("run", "sole-in-layer", layer="application",
+                                                      deps=["awaken-credential-materializer"]))[0], "I3 sibling"
 
     ag_ui = crate("ag", "protocol", "protocols", "interface", protocol="ag-ui")
     ai_sdk = crate("ai", "protocol", "protocols", "interface", protocol="ai-sdk")

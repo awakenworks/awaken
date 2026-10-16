@@ -15,6 +15,7 @@ separation = "isolation"
 isolates = ["axum"]
 
 [dependencies]
+awaken-session-realization.workspace = true
 awaken-tool-contract.workspace = true
 awaken-data-governance-contract.workspace = true
 awaken-executable-agent-contract.workspace = true
@@ -23,7 +24,6 @@ awaken-container-contract.workspace = true
 # The auxiliary-run sandbox ports the process composition injects.
 awaken-session-environment-contract.workspace = true
 # The neutral Agent channel the Session environment launches Agents over.
-awaken-agent-channel.workspace = true
 # The neutral session substrate (SharedHost) and the two port adapters
 # (ManagedHost / RunApplicationHost) live here; the assembly bin mounts them.
 awaken-agent-contract.workspace = true
@@ -39,7 +39,6 @@ awaken-session-event-contract.workspace = true
 # Per-Session MCP lifecycle and Worker relay; the Session slot holds its state.
 awaken-session-mcp.workspace = true
 awaken-session-types.workspace = true
-awaken-environment-contract.workspace = true
 # The topology-neutral Session realization and terminal-cleanup drivers over
 # contract ports; the Session application and this Host's Workers both call them.
 awaken-session-realization-driver.workspace = true
@@ -54,11 +53,9 @@ awaken-ext-memory = { workspace = true }
 awaken-ext-compact = { workspace = true }
 awaken-ext-permission = { workspace = true }
 awaken-ext-skills = { workspace = true }
-awaken-ext-mcp = { workspace = true }
 awaken-ext-goal = { workspace = true }
 awaken-ext-state-machine = { workspace = true, features = ["schema"] }
 awaken-ext-background-task.workspace = true
-awaken-sandbox-control.workspace = true
 # The neutral sandbox vocabulary the sandboxed ACP channel source speaks
 # (SandboxSpec/Command/NetworkPolicy) when realizing the namespace tier.
 awaken-provisioning-contract = { workspace = true }
@@ -97,13 +94,23 @@ default = []
 test-support = [
     "dep:awaken-store-inmem",
     "awaken-session-mcp/test-support",
+    "awaken-session-realization/test-support",
 ]
 # Live-backend tests only. The container tiers themselves are assembled by
 # `awaken-execution-composition`; these features enable a real backend in the
 # test-only container dependency for the Host tests that drive one.
-k8s-tests = ["awaken-sandbox-container/k8s"]
+k8s-tests = ["awaken-sandbox-container/k8s", "awaken-session-realization/k8s-tests"]
 
 [dev-dependencies]
+awaken-environment-contract.workspace = true
+
+awaken-agent-channel.workspace = true
+
+awaken-sandbox-control.workspace = true
+
+awaken-ext-mcp.workspace = true
+
+awaken-session-realization = { workspace = true, features = ["test-support"] }
 awaken-worker-contract.workspace = true
 # Managed fixtures use the real Session Root/sink and its existing Store port.
 awaken-session-application = { workspace = true, features = ["test-support"] }

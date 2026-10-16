@@ -417,3 +417,27 @@ This draft does not certify an external Cloud build or any unexecuted test.
 
 
 Memory role construction also preserves the original single-repository identity: private-field `MemoryExecutionContent`, `MemoryMountSource`, and `MemoryManagementContent` are derived only from one concrete `Arc<T>`. Public Host/Managed/mounter inputs accept these controlled values rather than independent view arrays. FUSE validates the actual decorator's required invalidator identity before retaining a projection; a different bus is an explicit construction error. No broad supertrait, optional capability discovery, second owner, or runtime unsupported adapter is introduced.
+## Implementation note 2026-10-16: resource realization boundary
+
+Following accepted ADR-0089, `awaken-session-realization` contains the existing
+Execution effects and process-local realization state; it neither owns the Session
+aggregate nor depends on Runtime Host. Environment holding, Resource staging,
+terminal cleanup and execution authority operate on the original installed-slot
+source and lock identities. Host retains Run assembly and claimed-dispatch routing
+until the separate E/H slices. The independent Session driver remains unchanged.
+
+`awaken-credential-materializer` belongs to Execution: it translates frozen
+credential pins into exact runtime/provider effects over the installed neutral
+material resolver. It owns no credential repository or Vault selection. Its
+metadata now reflects that existing responsibility. All its Platform consumers
+are Execution; the source/custody contract remains in Credentials. The realization
+crate's isolation reason names this concrete provider/crypto/optional-HTTP adapter;
+the existing separation guard verifies both that dependency and an Execution
+sibling that remains free of it. No context-pair or dependency-direction waiver
+is introduced.
+
+Moved functions and persistence-port usage retain their debt under the new paths.
+The Host budget is measured after the move, including Run/dispatch glue that was
+historically misclassified as extracting realization. This correction does not
+satisfy the final Host size, dependency or foreign-persistence-port targets.
+There is no wire-format, SDK release surface or database migration.

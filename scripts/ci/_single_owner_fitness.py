@@ -250,8 +250,16 @@ def selftest() -> None:
     assert realization_owner("awaken-sandbox-local", {"bounded_context": "sandbox"}), "S8 provider"
     assert not realization_owner("awaken-session-executor", {"bounded_context": "session"}), "S8 other"
     assert module_of(Path("host/session/environment_lifecycle/mod.rs")) == ("host", "session", "environment_lifecycle")
-    assert in_extracting_realization("awaken-session-executor", Path("host/session/environment_lifecycle/renewal.rs")), \
-        "S9 realizer-layer module of runtime-host is the extracting realization"
+    # S9 causes: historical transitional classification / completed extraction;
+    # effect: only explicitly classified in-place R code is excluded. The
+    # fixture keeps historical behavior covered without a blanket Host exemption.
+    transitional = {("host", "session", "environment_lifecycle"): _module_layer_fitness.REALIZATION}
+    assert in_extracting_realization(
+        "awaken-session-executor", Path("host/session/environment_lifecycle/renewal.rs"), transitional
+    ), "S9 explicit transitional R module is excluded"
+    assert not in_extracting_realization(
+        "awaken-session-executor", Path("host/session/environment_lifecycle/renewal.rs")
+    ), "S9 completed extraction has no implicit Host exemption"
     assert not in_extracting_realization("awaken-session-executor", Path("host/session/realization_view.rs")), \
         "S9 host-layer module stays counted"
     assert not in_extracting_realization("awaken-session-application", Path("realization/control.rs")), \

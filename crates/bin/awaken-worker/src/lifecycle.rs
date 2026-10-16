@@ -84,7 +84,7 @@ impl WarmCapacityPlan {
         host: &SharedHost,
         desired: Vec<awaken_session_configuration_contract::EnvironmentSnapshot>,
     ) -> Self {
-        let (per_shape, total) = host.realization_executor().environment_warmup_limits();
+        let (per_shape, total) = host.environment_capacity().environment_warmup_limits();
         if per_shape == 0 || total == 0 {
             return Self {
                 targets: Vec::new(),
@@ -98,7 +98,7 @@ impl WarmCapacityPlan {
                 continue;
             }
             let shape = host
-                .realization_executor()
+                .environment_capacity()
                 .environment_snapshot_capacity_shape(&snapshot);
             if !selected.insert(shape.clone()) {
                 continue;
@@ -113,7 +113,7 @@ impl WarmCapacityPlan {
         }
         if remaining > 0 {
             let shape = host
-                .realization_executor()
+                .environment_capacity()
                 .default_environment_capacity_shape();
             if selected.insert(shape.clone()) {
                 targets.push(WarmCapacityTarget {
@@ -301,7 +301,7 @@ impl WorkerSupervisor {
             .iter()
             .filter(|(_, snapshot)| {
                 self.host
-                    .realization_executor()
+                    .environment_capacity()
                     .ready_environment_snapshot_capacity(snapshot)
                     > 0
             })
@@ -325,7 +325,7 @@ impl WorkerSupervisor {
             .await;
         if let Err(error) = prepare_current_environment_images(&fetched, |desired| {
             self.host
-                .realization_executor()
+                .environment_capacity()
                 .prewarm_environment_images(desired)
         })
         .await
@@ -345,18 +345,18 @@ impl WorkerSupervisor {
         for (shape, snapshot) in &previous {
             if !selected_shapes.contains(shape) {
                 self.host
-                    .realization_executor()
+                    .environment_capacity()
                     .discard_environment_snapshot_capacity(snapshot)
                     .await;
             }
         }
         let default_shape = self
             .host
-            .realization_executor()
+            .environment_capacity()
             .default_environment_capacity_shape();
         if !selected_shapes.contains(&default_shape) {
             self.host
-                .realization_executor()
+                .environment_capacity()
                 .discard_default_environment_capacity()
                 .await;
         }
@@ -368,13 +368,13 @@ impl WorkerSupervisor {
             let result = match &target.demand {
                 WarmCapacityDemand::Environment(snapshot) => {
                     self.host
-                        .realization_executor()
+                        .environment_capacity()
                         .prewarm_environment_snapshot(snapshot, target.target)
                         .await
                 }
                 WarmCapacityDemand::Default => {
                     self.host
-                        .realization_executor()
+                        .environment_capacity()
                         .prewarm_default_environment_capacity(target.target)
                         .await
                 }
@@ -1044,7 +1044,7 @@ pub(crate) async fn shutdown_worker_capacity_before(
         revocation,
         lifecycle
             .host
-            .realization_executor()
+            .environment_capacity()
             .shutdown_environment_capacity(),
     )
     .await

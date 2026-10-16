@@ -81,7 +81,11 @@ pub(crate) fn read_pinned_skill(
         {
             return Err(failure());
         }
-        let manifest = slot.dispatch_resource_manifest().ok_or_else(failure)?;
+        let manifest = slot
+            .realization
+            .staging
+            .run_manifest(slot.run.session_dispatch)
+            .ok_or_else(failure)?;
         if slot.inputs.workspace.as_deref() != Some(manifest.workspace_id.as_str()) {
             return Err(failure());
         }
@@ -668,7 +672,7 @@ mod tests {
         let base = std::env::temp_dir().join(format!("awaken-authored-{}", std::process::id()));
         let provider = LocalProvider::new(&base);
         let env = Arc::new(
-            crate::session_environment::SandboxEnvironment::workdir(
+            awaken_session_environment::SandboxEnvironment::workdir(
                 provider
                     .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
                     .await
@@ -733,7 +737,7 @@ mod tests {
         ));
         std::fs::remove_dir_all(&base).ok();
         let env = Arc::new(
-            crate::session_environment::SandboxEnvironment::workdir(
+            awaken_session_environment::SandboxEnvironment::workdir(
                 LocalProvider::new(&base)
                     .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
                     .await
@@ -808,7 +812,7 @@ mod tests {
         // The filesystem read is independent of prompt spelling/normalization.
         let base = tempfile::tempdir().unwrap();
         let env = Arc::new(
-            crate::session_environment::SandboxEnvironment::workdir(
+            awaken_session_environment::SandboxEnvironment::workdir(
                 LocalProvider::new(base.path())
                     .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("skill-path"))
                     .await
@@ -863,7 +867,11 @@ mod tests {
         // The test installs a resident projection only, not a durable claim.
         // Actual Managed owner transitions retain their existing integration tests.
         slots.realizations().update_realization("skill-path", |r| {
-            use crate::installed_session::*;
+            use crate::environment_owner::{
+                BoundSessionEnvironment, BoundSessionEnvironmentIdentity,
+                LegacyDirectEnvironmentProvenance, LegacyEnvironmentEffect,
+                SessionEnvironmentOwner,
+            };
             r.environment.owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
                 binding: "fixture".into(),
                 environment: env.clone(),
@@ -954,7 +962,7 @@ mod tests {
         let base = std::env::temp_dir().join(format!("awaken-skilldir-{}", std::process::id()));
         std::fs::remove_dir_all(&base).ok();
         let env = Arc::new(
-            crate::session_environment::SandboxEnvironment::workdir(
+            awaken_session_environment::SandboxEnvironment::workdir(
                 LocalProvider::new(&base)
                     .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
                     .await
@@ -1016,7 +1024,7 @@ mod tests {
         ));
         std::fs::remove_dir_all(&base).ok();
         let env = Arc::new(
-            crate::session_environment::SandboxEnvironment::workdir(
+            awaken_session_environment::SandboxEnvironment::workdir(
                 LocalProvider::new(&base)
                     .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
                     .await
@@ -1150,7 +1158,7 @@ mod tests {
          * introducing a second discovery fake. */
         let base = tempfile::tempdir().expect("SS1/SS3 temporary repository root");
         let env = Arc::new(
-            crate::session_environment::SandboxEnvironment::workdir(
+            awaken_session_environment::SandboxEnvironment::workdir(
                 LocalProvider::new(base.path())
                     .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
                     .await
@@ -1210,7 +1218,7 @@ mod tests {
         ));
         std::fs::remove_dir_all(&base).ok();
         let env = Arc::new(
-            crate::session_environment::SandboxEnvironment::workdir(
+            awaken_session_environment::SandboxEnvironment::workdir(
                 LocalProvider::new(&base)
                     .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
                     .await

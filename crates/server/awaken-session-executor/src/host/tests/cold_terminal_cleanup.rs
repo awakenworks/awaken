@@ -290,7 +290,8 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
         owner: "remote-worker".into(),
         runtime_incarnation: "remote-worker:incarnation".into(),
         epoch: 3,
-        expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms() + 60_000,
+        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
+            + 60_000,
     };
     let create_fence = lease
         .sandbox_effect_fence("remote-terminal-create")
@@ -306,7 +307,7 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
         .await
         .expect("R1 exact Worker-local Sandbox");
     let environment = Arc::new(
-        crate::session_environment::SandboxEnvironment::workdir(physical)
+        awaken_session_environment::SandboxEnvironment::workdir(physical)
             .into_session_environment(),
     );
     let binding = serde_json::to_string(&environment.lifecycle().handle())
@@ -341,7 +342,7 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
         .publish_prepared_session_environment(
             "remote-terminal-worker",
             &candidate,
-            crate::installed_session::BoundSessionEnvironmentIdentity::Durable {
+            crate::environment_owner::BoundSessionEnvironmentIdentity::Durable {
                 effect_id: environment_effect_id.to_owned(),
                 generation: environment_generation,
             },
@@ -351,7 +352,7 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
         environment_creation_not_attempted: false,
         session_id: "remote-terminal-worker".into(),
         projection: projection.clone(),
-        authority: crate::installed_session::test_lease_receipt(lease.clone()),
+        authority: awaken_session_realization::test_support::test_lease_receipt(lease.clone()),
     };
     control
         .assignments
@@ -462,7 +463,7 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
     .build()
     .expect("validated Host dependencies");
     let managed = crate::ManagedHost::new(host.clone());
-    let now_unix_ms = crate::terminal_repository_publication::runtime_unix_now_ms();
+    let now_unix_ms = awaken_session_realization::test_support::runtime_unix_now_ms();
     let expiring_unix_ms = now_unix_ms.saturating_add(5_000);
     // Renewal extends the asserted Control coordinate by one renewal interval;
     // the Worker never supplies its own wall-clock epoch.
@@ -506,7 +507,9 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
             environment_creation_not_attempted: false,
             session_id: terminal_id.into(),
             projection: terminal_projection.clone(),
-            authority: crate::installed_session::test_lease_receipt(terminal_lease.clone()),
+            authority: awaken_session_realization::test_support::test_lease_receipt(
+                terminal_lease.clone(),
+            ),
         },
     );
     *control.session.lock().unwrap() = Some(terminal_test_session(
@@ -620,7 +623,9 @@ fn enqueue_completed_terminal_assignments(
                 environment_creation_not_attempted: false,
                 session_id: session_id.clone().into(),
                 projection: remote_terminal_cleanup_projection(),
-                authority: crate::installed_session::test_lease_receipt(lease.clone()),
+                authority: awaken_session_realization::test_support::test_lease_receipt(
+                    lease.clone(),
+                ),
             },
         );
         control
@@ -636,7 +641,8 @@ fn completed_terminal_test_lease() -> crate::session_resource::SessionRealizatio
         owner: "remote-worker".into(),
         runtime_incarnation: "remote-worker:incarnation".into(),
         epoch: 3,
-        expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms() + 60_000,
+        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
+            + 60_000,
     }
 }
 
@@ -983,7 +989,8 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
         owner: "remote-worker".into(),
         runtime_incarnation: "remote-worker:replacement".into(),
         epoch: 4,
-        expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms() + 60_000,
+        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
+            + 60_000,
     };
     let mut projection = remote_terminal_cleanup_projection();
     projection.resource_revision = 1;
@@ -999,7 +1006,7 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
             environment_creation_not_attempted: false,
             session_id: session_id.into(),
             projection: projection.clone(),
-            authority: crate::installed_session::test_lease_receipt(lease.clone()),
+            authority: awaken_session_realization::test_support::test_lease_receipt(lease.clone()),
         },
     );
     let terminal_session = terminal_test_session(

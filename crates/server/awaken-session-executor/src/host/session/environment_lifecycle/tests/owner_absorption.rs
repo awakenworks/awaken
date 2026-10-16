@@ -15,7 +15,7 @@ async fn revoked_owner_waits_for_exact_monotonic_resource_readoption() {
     // only for R1; the removed two-argument wrapper encoded only false.
     let thread = "revoked-file-resource";
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+    let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let environment = environment(&provider, thread).await;
     let previous = environment.lifecycle().handle();
@@ -121,7 +121,7 @@ async fn revoked_resource_successor_reaches_only_the_canonical_adoption_edge() {
     // `Option::or` preserves the resident/candidate/revoked priority.
     let thread = "revoked-resource-adoption";
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+    let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let environment = environment(&provider, thread).await;
     let initial = match resident(thread, environment.clone()) {
@@ -361,7 +361,7 @@ async fn resident_owner_absorbs_only_its_exact_monotonic_resource_reservation() 
     // | P3 | already projected | same | same | E3 |
     let thread = "resident-resource-reservation";
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+    let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let resident_environment = environment(&provider, thread).await;
     let initial_binding =
@@ -468,7 +468,7 @@ async fn realization_revocation_absorbs_only_a_compatible_durable_receipt() {
     // | V2 | realization revocation | different | E2 |
     let thread = "revoked-resource-receipt";
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+    let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let environment = environment(&provider, thread).await;
     let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
@@ -540,7 +540,7 @@ async fn cancelled_cleanup_keeps_the_exact_owner_retiring_and_hidden_from_tools(
     // phase+effect+generation+binding+Arc for retry; E3 C4 cannot relabel it.
     // Decision rules R18/R19: C1+C2+C3 => E1+E2; C2+C4 => E3.
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+    let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let environment = environment(&provider, "cancel-retirement").await;
     let owner = Arc::new(tokio::sync::Mutex::new(resident(
@@ -615,7 +615,7 @@ async fn source_free_projection_does_not_reopen_mcp_before_retiring_owner_is_dis
     // Q3+Q4 atomically consumes it, admitting the fresh realization generation.
     let thread = "expiry-before-source-dispose";
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+    let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let environment = environment(&provider, thread).await;
     let host = (crate::HostDependencies::ephemeral(
@@ -695,7 +695,7 @@ async fn discard_keeps_live_owner_and_exact_retry_clears_after_termination() {
     // R19/R21: C1+C2=>E1; C1+C2+C3+C4=>E2. The separate ABA rule owns !C4.
     let thread = "discard-live-retry";
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+    let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let environment = environment(&provider, thread).await;
     let host = (crate::HostDependencies::ephemeral(
@@ -745,7 +745,7 @@ async fn only_exact_terminated_status_clears_a_retiring_owner() {
     // C1+C4=>E3. A dispose Err returns before this status gate and therefore
     // has the same retained-owner effect as C3.
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+    let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let environment = environment(&provider, "status-retirement").await;
     let mut owner = resident("status-retirement", environment);
@@ -809,7 +809,7 @@ async fn terminal_takeover_is_highest_priority_and_other_causes_cannot_overwrite
     // each lower cause + Terminal => E1; every other different-cause pair => E2.
     let thread = "terminal-takeover";
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+    let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let environment = environment(&provider, thread).await;
     let generation = generation(thread);
@@ -933,7 +933,8 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
     // marker-free V1 that this compatibility path owns; a fenced V2 fixture
     // would require aggregate disposal authorization that does not exist here.
     let environment = Arc::new(
-        host.create_session_environment(provider, &spec)
+        host.realizer
+            .create_session_environment(provider, &spec)
             .await
             .expect("C1 exact LegacyDirect Environment"),
     );
@@ -954,7 +955,11 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
     {
         let _lifecycle = lifecycle.lock().await;
         assert!(
-            host.retire_session_environment_for_revocation(thread)
+            host.realizer
+                .retire_session_environment_for_revocation(
+                    thread,
+                    (&host.mcp, host.installed_sessions.as_ref())
+                )
                 .await
                 .unwrap(),
             "C2 exact revocation"

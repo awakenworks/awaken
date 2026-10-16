@@ -10,5 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tokio::io::AsyncReadExt;
 
+#[path = "tests/container_transfer.rs"]
 mod container_transfer;
+#[path = "tests/shared_environment.rs"]
 mod shared_environment;

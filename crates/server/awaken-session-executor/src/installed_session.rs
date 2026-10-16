@@ -14,170 +14,11 @@ use crate::session_realizations::InstalledSessionsPoisoned;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-pub(crate) use crate::environment_owner::*;
-pub(crate) use crate::session_realizations::{
-    FrozenProjectionReceipt, SessionRealization, SessionRealizationAuthority,
-};
+use crate::session_realizations::{SessionRealization, SessionRealizationAuthority};
 /// The exclusion every realization phase driver must hold is contract-owned
 /// (`SessionRealizationPermit`); this crate only supplies the Session slot
 /// allocation as its identity.
 mod realization_permit;
-
-/// Host fixtures use the actual Control-clock coordinate for live replies.
-/// Deliberately rejects expired input: an expiry test must construct and age
-/// its request observation explicitly, never silently manufacture fresh TTL.
-#[cfg(test)]
-pub(crate) fn test_lease_receipt(
-    lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
-) -> awaken_session_realization_contract::SessionRealizationLeaseReceipt {
-    awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
-        lease,
-        crate::terminal_repository_publication::runtime_unix_now_ms(),
-    )
-    .expect("live Control-clock fixture lease")
-}
-
-#[cfg(test)]
-pub(crate) fn test_observed_lease(
-    lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
-) -> awaken_session_realization_contract::ObservedSessionRealizationLease {
-    let started = awaken_authority_clock::authority_proof_started().unwrap();
-    test_lease_receipt(lease).observed(started)
-}
-
-/// Deliberately aged evidence for negative Host tests. Keep the exact durable
-/// fence bytes, but exhaust the local proof on the real platform clock before
-/// returning it. This is never the fallback for a failed live fixture.
-#[cfg(test)]
-pub(crate) fn test_expired_observed_lease(
-    lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
-) -> awaken_session_realization_contract::ObservedSessionRealizationLease {
-    let started = awaken_authority_clock::authority_proof_started().unwrap();
-    let proof = awaken_session_realization_contract::SessionRealizationLeaseReceipt {
-        lease,
-        remaining_ms: std::num::NonZeroU64::new(1).unwrap(),
-    }
-    .observed(started);
-    std::thread::sleep(std::time::Duration::from_millis(2));
-    assert!(
-        proof
-            .remaining_at(awaken_authority_clock::authority_proof_started().unwrap())
-            .is_none()
-    );
-    proof
-}
-
-impl InstalledSession {
-    /// Install a projected Environment owner and, in the same slot lock, let
-    /// the canonical projection reopen MCP admission when the run layer holds
-    /// no local effect.
-    pub(crate) fn install_projected_environment_owner(
-        &mut self,
-        owner: SessionEnvironmentOwner,
-        state: &awaken_session_state_contract::SessionEnvironmentState,
-    ) {
-        self.realization.environment.owner = owner;
-        self.reopen_mcp_realization_admission_from_projection(state);
-    }
-
-    /// Select the one Resource manifest carried by a newly authored durable
-    /// Run dispatch. A prepared Session carries the aggregate's desired
-    /// generation so a cold Worker can realize that exact transition; legacy
-    /// Sessions fall back to the physically active manifest. Ordinary Runs use
-    /// active truth only and are never promoted by a staged transition.
-    ///
-    /// This read is intentionally side-effect free. Publishing `manifest`
-    /// remains the exclusive completion edge for physical Resource effects.
-    pub(crate) fn dispatch_resource_manifest(
-        &self,
-    ) -> Option<crate::session_resource::SessionResourceManifest> {
-        if self.run.session_dispatch {
-            self.realization
-                .staging
-                .transition
-                .as_ref()
-                .map(|transition| transition.desired().clone())
-                .or_else(|| self.realization.staging.manifest.clone())
-        } else {
-            self.realization.staging.manifest.clone()
-        }
-    }
-
-    /// Consume the process-local fence only while installing one authoritative
-    /// durable Environment projection and while every old local effect owner is
-    /// already gone. This keeps expiry and restore from reopening MCP admission
-    /// during the gap between their durable transition and source cleanup.
-    pub(crate) fn reopen_mcp_realization_admission_from_projection(
-        &mut self,
-        environment: &awaken_session_state_contract::SessionEnvironmentState,
-    ) -> bool {
-        let Some(fence) = self.realization.staging.mcp.quiescence_fence() else {
-            return false;
-        };
-        let local_effects_cleared =
-            self.run.context.is_none() && self.realization.staging.mcp.local_effects_cleared();
-        if !local_effects_cleared {
-            return false;
-        }
-        let authoritative_reopen = if fence.restored_by(environment) {
-            matches!(
-                (&self.realization.environment.owner, environment),
-                (
-                    SessionEnvironmentOwner::Preparing(
-                        SessionEnvironmentPreparation::AwaitingAdoption {
-                            identity: BoundSessionEnvironmentIdentity::Durable {
-                                effect_id: owner_effect,
-                                generation: owner_generation,
-                            },
-                            binding: owner_binding,
-                        },
-                    ),
-                    awaken_session_state_contract::SessionEnvironmentState::Resident {
-                        binding,
-                        effect_id: Some(effect_id),
-                        generation: Some(generation),
-                        ..
-                    },
-                ) if owner_effect == effect_id
-                    && owner_generation == generation
-                    && owner_binding == binding
-            ) || matches!(
-                (&self.realization.environment.owner, environment),
-                (
-                    SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
-                        identity: BoundSessionEnvironmentIdentity::Durable {
-                            effect_id: owner_effect,
-                            generation: owner_generation,
-                        },
-                        binding: owner_binding,
-                        ..
-                    }),
-                    awaken_session_state_contract::SessionEnvironmentState::Resident {
-                        binding,
-                        effect_id: Some(effect_id),
-                        generation: Some(generation),
-                        ..
-                    },
-                ) if owner_effect == effect_id
-                    && owner_generation == generation
-                    && owner_binding == binding
-            )
-        } else {
-            matches!(
-                environment,
-                awaken_session_state_contract::SessionEnvironmentState::Unmaterialized
-            ) && matches!(
-                &self.realization.environment.owner,
-                SessionEnvironmentOwner::Vacant
-            )
-        };
-        if !authoritative_reopen {
-            return false;
-        }
-        self.realization.staging.mcp.reopen_admission();
-        true
-    }
-}
 
 /// One Session's process-local state, in three layers by lifetime. The
 /// Session aggregate stays the sole authority; every layer is a rebuildable
@@ -240,6 +81,24 @@ impl crate::session_realizations::SessionRunQuery for SessionRunBinding {
 }
 
 impl crate::session_realizations::SessionRealizationSource for InstalledSessions {
+    fn session_ids(&self) -> Vec<String> {
+        InstalledSessions::session_ids(self)
+    }
+
+    fn remove_session(&self, session: &str) -> bool {
+        InstalledSessions::remove(self, session).is_some()
+    }
+
+    fn retain_revoked_projection(&self, session: &str) {
+        self.modify(session, |slot| {
+            // The original revocation projection update stays atomic with the
+            // Run reset. This is a named view operation, never another registry.
+            slot.inputs = std::sync::Arc::new(slot.inputs.retained_on_revocation());
+            slot.realization = slot.realization.take_retained_on_revocation();
+            slot.run = SessionRunBinding::default();
+        });
+    }
+
     fn acquire_realization<'a>(
         &'a self,
         session: &'a str,

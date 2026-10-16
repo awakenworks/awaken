@@ -59,13 +59,14 @@ async fn native_process_and_agent_channel_share_one_live_environment() {
             .unwrap()
             .to_string_lossy()
             .into_owned();
-        let mut command = pc::Command::new([
-            exe.as_str(),
-            "--ignored",
-            "--exact",
-            "session_environment::tests::shared_environment::shared_filesystem_child",
-            "--nocapture",
-        ]);
+        // W0: use this module's actual harness identity after a crate/module move.
+        // A zero-match child still cannot satisfy the existing success marker.
+        let child = concat!(module_path!(), "::shared_filesystem_child")
+            .split_once("::")
+            .expect("shared filesystem fixture is inside a test module")
+            .1;
+        let mut command =
+            pc::Command::new([exe.as_str(), "--ignored", "--exact", child, "--nocapture"]);
         command.cwd = view.command_cwd;
         command.env = [
             ("AWAKEN_TEST_RESOURCE_PATH", relative),

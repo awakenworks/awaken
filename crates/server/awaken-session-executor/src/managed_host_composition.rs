@@ -153,7 +153,9 @@ impl ManagedHost {
             .map_err(to_run_error)?;
         self.host
             .realizer
+            .staging
             .stage_resource_manifest(
+                &self.host.realizer,
                 thread,
                 &init.workspace_id,
                 init.resource_revision,

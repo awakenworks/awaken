@@ -82,7 +82,8 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         owner: "terminal-test-worker".into(),
         runtime_incarnation: "terminal-test-worker:incarnation".into(),
         epoch: 1,
-        expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms() + 60_000,
+        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
+            + 60_000,
     };
     let create_fence = lease
         .sandbox_effect_fence("terminal-test-create")
@@ -98,7 +99,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         .await
         .expect("create the exact durable terminal-test Sandbox");
     let env = Arc::new(
-        crate::session_environment::SandboxEnvironment::workdir(physical)
+        awaken_session_environment::SandboxEnvironment::workdir(physical)
             .into_session_environment(),
     );
     let binding =
@@ -127,7 +128,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         &environment_state,
     )
     .expect("project the terminal-test durable Environment identity");
-    let identity = crate::installed_session::BoundSessionEnvironmentIdentity::Durable {
+    let identity = crate::environment_owner::BoundSessionEnvironmentIdentity::Durable {
         effect_id: environment_effect_id.to_owned(),
         generation: environment_generation,
     };
@@ -151,14 +152,14 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
             host.installed_sessions
                 .realizations()
                 .update_realization("t-end", |r| {
-                    let crate::installed_session::SessionEnvironmentOwner::Preparing(
-                        crate::installed_session::SessionEnvironmentPreparation::Candidate(current),
+                    let crate::environment_owner::SessionEnvironmentOwner::Preparing(
+                        crate::environment_owner::SessionEnvironmentPreparation::Candidate(current),
                     ) = &mut r.environment.owner
                     else {
                         panic!("U4 Candidate input")
                     };
                     current.origin =
-                        crate::installed_session::UnboundSessionEnvironmentOrigin::Adoption;
+                        crate::environment_owner::UnboundSessionEnvironmentOrigin::Adoption;
                 });
         }
         "uncommitted" | "lost-response" => {}
@@ -215,7 +216,9 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
                 environment_creation_not_attempted: false,
                 session_id: "t-end".into(),
                 projection: terminal_projection.clone(),
-                authority: crate::installed_session::test_lease_receipt(lease.clone()),
+                authority: awaken_session_realization::test_support::test_lease_receipt(
+                    lease.clone(),
+                ),
             },
         )
         .await
@@ -226,7 +229,11 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
             .read_realization("t-end", |r| r.environment.lifecycle.clone())
             .unwrap();
         let _lifecycle = lifecycle.lock().await;
-        host.retire_session_environment_for_revocation("t-end")
+        host.realizer
+            .retire_session_environment_for_revocation(
+                "t-end",
+                (&host.mcp, host.installed_sessions.as_ref()),
+            )
             .await
             .expect("U revoke retained owner");
         // Closed generation is absorbing. Control takeover must issue a new
@@ -238,7 +245,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
             environment_creation_not_attempted: false,
             session_id: "t-end".into(),
             projection: terminal_projection.clone(),
-            authority: crate::installed_session::test_lease_receipt(lease.clone()),
+            authority: awaken_session_realization::test_support::test_lease_receipt(lease.clone()),
         },
     )
     .await
@@ -301,7 +308,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     assert!(
         host.installed_sessions.realizations()
             .read_realization("t-end", |r| {
-                matches!(&r.environment.owner, crate::installed_session::SessionEnvironmentOwner::Retiring(retiring)
+                matches!(&r.environment.owner, crate::environment_owner::SessionEnvironmentOwner::Retiring(retiring)
                     if Arc::ptr_eq(&retiring.owned.environment(), &env)
                         && retiring.owned.environment().lifecycle().handle() == env.lifecycle().handle())
             })
@@ -315,8 +322,8 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     if initial == "uncommitted" || initial == "lost-response" {
         assert!(host.installed_sessions.realizations().read_realization("t-end", |r| matches!(
             &r.environment.owner,
-            crate::installed_session::SessionEnvironmentOwner::Retiring(crate::installed_session::RetiringSessionEnvironment {
-                owned: crate::installed_session::RetiringEnvironmentOwner::Unbound(candidate), ..
+            crate::environment_owner::SessionEnvironmentOwner::Retiring(crate::environment_owner::RetiringSessionEnvironment {
+                owned: crate::environment_owner::RetiringEnvironmentOwner::Unbound(candidate), ..
             }) if candidate.durable_identity().is_none()
         )).unwrap(), "U retains missing ordinary commit evidence");
     }
@@ -399,7 +406,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
             owner: "terminal-test-worker".into(),
             runtime_incarnation: "terminal-test-worker:incarnation".into(),
             epoch: 1,
-            expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms()
+            expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
                 + 60_000,
         },
     );
@@ -522,7 +529,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         .await
         .with_session_container_provider(
             provider.clone(),
-            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
         )
         .with_environment_checkpoint_store(Arc::new(RecordingTerminalCheckpointStore {
             events: events.clone(),
@@ -553,8 +560,8 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         assert!(matches!(
             host.installed_sessions.realizations()
                 .read_realization(thread, |r| r.environment.owner.clone()),
-            Some(crate::installed_session::SessionEnvironmentOwner::Restoring(
-                crate::installed_session::SessionEnvironmentRestoration::Awaiting { request }
+            Some(crate::environment_owner::SessionEnvironmentOwner::Restoring(
+                crate::environment_owner::SessionEnvironmentRestoration::Awaiting { request }
             )) if request == restore_target
         ));
 
@@ -598,7 +605,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
                     .realizations()
                     .update_realization(thread, |r| {
                         r.execution.authority =
-                            crate::installed_session::SessionRealizationAuthority::Closed(Some(
+                            crate::session_realizations::SessionRealizationAuthority::Closed(Some(
                                 lease.clone(),
                             ));
                     })
@@ -613,8 +620,8 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
                         }
                         next.expires_at_unix_ms += 10_000;
                         r.execution.authority =
-                            crate::installed_session::SessionRealizationAuthority::Live(
-                                crate::installed_session::test_observed_lease(next),
+                            crate::session_realizations::SessionRealizationAuthority::Live(
+                                awaken_session_realization::test_support::test_observed_lease(next),
                             );
                     })
             }
@@ -632,8 +639,8 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         }
         assert!(
             matches!(host.installed_sessions.realizations().read_realization(thread, |r| r.environment.owner.clone()),
-        Some(crate::installed_session::SessionEnvironmentOwner::Restoring(
-            crate::installed_session::SessionEnvironmentRestoration::Awaiting { request }
+        Some(crate::environment_owner::SessionEnvironmentOwner::Restoring(
+            crate::environment_owner::SessionEnvironmentRestoration::Awaiting { request }
         )) if request == restore_target),
             "TR4 retain original target, not Vacant"
         );
@@ -651,9 +658,12 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         host.installed_sessions
             .realizations()
             .update_realization(thread, |r| {
-                r.execution.authority = crate::installed_session::SessionRealizationAuthority::Live(
-                    crate::installed_session::test_observed_lease(lease.clone()),
-                );
+                r.execution.authority =
+                    crate::session_realizations::SessionRealizationAuthority::Live(
+                        awaken_session_realization::test_support::test_observed_lease(
+                            lease.clone(),
+                        ),
+                    );
             });
         probe.restored_release.notify_one();
         let first = managed
@@ -682,8 +692,8 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
             matches!(
                 host.installed_sessions.realizations()
                     .read_realization(thread, |r| r.environment.owner.clone()),
-                Some(crate::installed_session::SessionEnvironmentOwner::Restoring(
-                    crate::installed_session::SessionEnvironmentRestoration::Awaiting { request }
+                Some(crate::environment_owner::SessionEnvironmentOwner::Restoring(
+                    crate::environment_owner::SessionEnvironmentRestoration::Awaiting { request }
                 )) if request == restore_target
             ),
             "TR2/E3 response-loss fence"
@@ -726,14 +736,15 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
         owner: "terminal-retire-worker".into(),
         runtime_incarnation: "terminal-retire-worker:incarnation".into(),
         epoch: 7,
-        expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms() + 60_000,
+        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
+            + 60_000,
     };
     host.install_test_terminal_cleanup_projection(
         &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
             environment_creation_not_attempted: false,
             session_id: session_id.into(),
             projection: remote_terminal_cleanup_projection(),
-            authority: crate::installed_session::test_lease_receipt(lease.clone()),
+            authority: awaken_session_realization::test_support::test_lease_receipt(lease.clone()),
         },
     )
     .await
@@ -777,13 +788,17 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
             .unwrap(),
         lease.clone(),
     );
-    host.acknowledge_terminal_cleanup_preparation(&completed_child)
+    host.realizer
+        .cleanup
+        .acknowledge_terminal_cleanup_preparation(&host.mcp, &completed_child)
         .await;
     assert!(
         !host.installed_sessions.contains("terminal-retire-done"),
         "P1/E1"
     );
-    host.acknowledge_terminal_cleanup_preparation(&completed_child)
+    host.realizer
+        .cleanup
+        .acknowledge_terminal_cleanup_preparation(&host.mcp, &completed_child)
         .await;
     assert!(
         !host.installed_sessions.contains("terminal-retire-done"),
@@ -802,7 +817,9 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
             .unwrap(),
         lease.clone(),
     );
-    host.acknowledge_terminal_cleanup_preparation(&stale_foreign)
+    host.realizer
+        .cleanup
+        .acknowledge_terminal_cleanup_preparation(&host.mcp, &stale_foreign)
         .await;
     assert!(host.installed_sessions.contains(foreign), "P3/E3");
 
@@ -815,9 +832,14 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
             .unwrap(),
         lease,
     );
-    host.acknowledge_terminal_cleanup_preparation(&root).await;
+    host.realizer
+        .cleanup
+        .acknowledge_terminal_cleanup_preparation(&host.mcp, &root)
+        .await;
     assert!(host.installed_sessions.contains(session_id), "P4/E4");
-    host.retire_completed_terminal_cleanup_projection(session_id, &root.lease)
+    host.realizer
+        .cleanup
+        .retire_completed_terminal_cleanup_projection(&host.mcp, session_id, &root.lease)
         .await;
     assert!(!host.installed_sessions.contains(session_id), "P5/E5");
     assert!(
@@ -1280,7 +1302,7 @@ async fn checkpoint_source_disposal_separates_preparation_and_current_authority(
         BoundSessionEnvironment, BoundSessionEnvironmentIdentity, RetiringEnvironmentOwner,
         RetiringSessionEnvironment, SessionEnvironmentOwner, SessionEnvironmentRetirementCause,
     };
-    use crate::installed_session::SessionRealizationAuthority as Authority;
+    use crate::session_realizations::SessionRealizationAuthority as Authority;
     use awaken_session_realization_contract::SessionRealizationLeaseReceipt;
     use awaken_session_execution_contract::EnvironmentRuntime as _;
 
@@ -1318,7 +1340,7 @@ async fn checkpoint_source_disposal_separates_preparation_and_current_authority(
             .await
             .with_session_container_provider(
                 provider,
-                Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+                Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
             );
         dependencies.clock = clock.clone();
         let host = dependencies.build().expect("validated Host dependencies");

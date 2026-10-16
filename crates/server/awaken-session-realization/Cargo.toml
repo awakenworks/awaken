@@ -1,0 +1,60 @@
+[package]
+name = "awaken-session-realization"
+description = "Canonical Session resource realization effects over aggregate-owned authority"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "shared"
+product = "platform"
+bounded_context = "execution"
+layer = "infrastructure"
+authority = "session-realization"
+separation = "isolation"
+isolates = ["awaken-credential-materializer"]
+
+[dependencies]
+awaken-agent-contract.workspace = true
+awaken-authority-clock.workspace = true
+awaken-container-contract.workspace = true
+awaken-credential-contract.workspace = true
+awaken-credential-materializer.workspace = true
+awaken-environment-contract.workspace = true
+awaken-ext-memory.workspace = true
+awaken-ext-skills.workspace = true
+awaken-provisioning-contract.workspace = true
+awaken-resource-contract.workspace = true
+awaken-dispatch-contract.workspace = true
+awaken-runtime-contract.workspace = true
+awaken-sandbox-control.workspace = true
+awaken-session-application-contract.workspace = true
+awaken-session-configuration-contract.workspace = true
+awaken-session-environment-contract.workspace = true
+awaken-session-mcp.workspace = true
+awaken-session-realization-contract.workspace = true
+awaken-session-execution-contract.workspace = true
+awaken-session-state-contract.workspace = true
+awaken-session-types.workspace = true
+awaken-time.workspace = true
+awaken-tool-contract.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+tracing = "0.1"
+
+[features]
+default = []
+test-support = ["awaken-session-mcp/test-support"]
+k8s-tests = ["awaken-sandbox-container/k8s"]
+
+[dev-dependencies]
+awaken-agent-channel.workspace = true
+awaken-sandbox-container.workspace = true
+awaken-session-environment = { workspace = true, features = ["test-support"] }
+tempfile = "3"
+
+[lints]
+workspace = true

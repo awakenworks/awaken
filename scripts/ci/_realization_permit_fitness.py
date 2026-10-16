@@ -35,7 +35,7 @@ REALIZATION_PERMIT_MINTERS = {
 # The only two entry points that may reach the application-owned phase driver,
 # and the canonical accessor each must obtain its permit from.
 REALIZATION_DRIVER_ENTRIES = {
-    "crates/server/awaken-session-executor/src/host/worker_resolver/session_realization/driver.rs": (
+    "crates/server/awaken-session-executor/src/host/worker_resolver/session_projection/driver.rs": (
         "installed_sessions.acquire_realization_with("
     ),
     "crates/server/awaken-session-application/src/realization.rs": (
@@ -193,7 +193,7 @@ SessionRealizationPermit::acquire(session, || slot.realization.clone(), admit)
 pub(crate) struct LocalRealizationLocks();
 SessionRealizationPermit::acquire(session_id, || registry.entry(session_id.to_string()), admit)
 """,
-        "crates/server/awaken-session-executor/src/host/worker_resolver/session_realization/driver.rs": """
+        "crates/server/awaken-session-executor/src/host/worker_resolver/session_projection/driver.rs": """
 let realization = host.installed_sessions.acquire_realization_with(session_id, |_| ()).await.0;
 awaken_session_realization_driver::drive_session_realization(realization, None)
 """,

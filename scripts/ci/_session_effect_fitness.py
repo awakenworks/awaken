@@ -79,18 +79,18 @@ SESSION_REALIZATION_CONTROL_DEADLINE = (
     "control_deadline.rs"
 )
 RUNTIME_REPOSITORY_PUBLICATION = (
-    "crates/server/awaken-session-executor/src/terminal_repository_publication.rs"
+    "crates/server/awaken-session-realization/src/terminal_repository_publication.rs"
 )
 RUNTIME_HOST_TERMINAL = (
-    "crates/server/awaken-session-executor/src/host/session/environment_lifecycle.rs"
+    "crates/server/awaken-session-realization/src/environment_lifecycle.rs"
 )
-RUNTIME_BOUND_ENVIRONMENT = "crates/server/awaken-session-executor/src/bound_environment.rs"
+RUNTIME_BOUND_ENVIRONMENT = "crates/server/awaken-session-realization/src/bound_environment.rs"
 RUNTIME_HOST_TERMINAL_PREPARATION = (
-    "crates/server/awaken-session-executor/src/host/session/"
+    "crates/server/awaken-session-realization/src/"
     "environment_lifecycle/terminal_preparation.rs"
 )
 RUNTIME_HOST_TERMINAL_CLEANUP = (
-    "crates/server/awaken-session-executor/src/host/session/"
+    "crates/server/awaken-session-realization/src/"
     "environment_lifecycle/terminal_cleanup.rs"
 )
 GIT_REPOSITORY_PUBLICATION = (
@@ -104,7 +104,7 @@ WORKER_CONTROL_CLIENT = (
     "crates/server/awaken-coordinator-client/src/worker_control_client.rs"
 )
 WORKER_RUNTIME = "crates/bin/awaken-worker/src/lib.rs"
-ARTIFACT_HARVEST = "crates/server/awaken-session-executor/src/provisioning.rs"
+ARTIFACT_HARVEST = "crates/server/awaken-session-realization/src/provisioning.rs"
 ARTIFACT_TRANSPORT = (
     "crates/resources/awaken-resource-worker-http/src/artifact_publication_http.rs"
 )
@@ -701,7 +701,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
             "prepare_terminal_cleanup_effect",
             (
                 "authorization.verify_for(&effect)",
-                "self.realizer.cleanup.effect_fence(&effect)?",
+                "self.effect_fence(&effect)?",
                 "TerminalEnvironmentPreparation::artifact_capture_mode",
                 ".harvest_with_fence_mode(",
                 "SessionCleanupPreparation::try_new(",
@@ -756,8 +756,8 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
         _require_ordered_function(
             sources, RUNTIME_HOST_TERMINAL_PREPARATION,
             "cleanup_terminal_checkpoint",
-            ("self.realizer.cleanup.effect_fence(effect)?",
-             "self.realizer.execution.provider_effect_authority(",
+            ("self.effect_fence(effect)?",
+             "environments.execution.provider_effect_authority(",
              "with_current_sandbox_effect(", "match (checkpoint, pending_checkpoint)",
              ".cleanup_checkpoint_for_terminal(", "&authority,",
              "with_current_sandbox_effect("),
@@ -782,21 +782,21 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
             RUNTIME_HOST_TERMINAL_CLEANUP,
             "dispose_terminal_cleanup_effect",
             (
-                "let realizer = &self.realizer;",
+                "let realizer = environments;",
                 "root_realization.lock().await",
-                "realizer.cleanup.disposal_authorization(&effect)?",
+                "self.disposal_authorization(&effect)?",
                 "sessions.lock_lifecycle(session_id.as_str()).await",
-                "let authorization = realizer.cleanup.disposal_authorization(&effect)?",
+                "let authorization = self.disposal_authorization(&effect)?",
                 "self.prepare_terminal_environment_under_lifecycle(",
                 "authorization.effect_fence()",
                 "BoundEnvironmentPreparationMode::TerminalDisposal",
                 "(SessionEnvironmentOwner::Retiring(retirement), None)",
-                "let exact_authorization = realizer.cleanup.disposal_authorization(&effect)?",
+                "let exact_authorization = self.disposal_authorization(&effect)?",
                 "if exact_authorization != authorization",
                 "realizer.execution.provider_effect_authority(",
                 ".dispose_for_effect(&authorization, &authority)",
                 "sessions.end_terminal_disposal(",
-                "realizer.cleanup.disposal_authorization(&effect)?",
+                "self.disposal_authorization(&effect)?",
                 "SessionCleanupDisposalReceipt::new(",
             ),
             "physical terminal disposal",
@@ -1096,17 +1096,17 @@ def _migrated_effect_owner_mutation_selftest(sources: dict[str, str]) -> None:
         (RUNTIME_BOUND_ENVIRONMENT, "prepare_bound_environment_for_effect_under_lifecycle",
          ".install_bound_environment_under_lifecycle(", "bound Environment reconstruction handoff", False, ""),
         (RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
-         "let realizer = &self.realizer;", "physical terminal disposal", False, ""),
+         "let realizer = environments;", "physical terminal disposal", False, ""),
         (RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
-         "let authorization = realizer.cleanup.disposal_authorization(&effect)?", "physical terminal disposal", False, ""),
+         "let authorization = self.disposal_authorization(&effect)?", "physical terminal disposal", False, ""),
         (RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
-         "let exact_authorization = realizer.cleanup.disposal_authorization(&effect)?", "physical terminal disposal", False, ""),
+         "let exact_authorization = self.disposal_authorization(&effect)?", "physical terminal disposal", False, ""),
         (RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
          "realizer.execution.provider_effect_authority(", "physical terminal disposal", True, ""),
         (RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
          ".dispose_for_effect(&authorization, &authority)", "physical terminal disposal", False, ""),
         (RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
-         "realizer.cleanup.disposal_authorization(&effect)?", "physical terminal disposal", True, ""),
+         "self.disposal_authorization(&effect)?", "physical terminal disposal", True, ""),
         (RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
          "SessionCleanupDisposalReceipt::new(", "physical terminal disposal", False, ""),
         (RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
@@ -1336,8 +1336,8 @@ fn disposal_authorization() {
     effect.sandbox_disposal_authorization_for_current_generation(&current)
 }
 fn cleanup_terminal_checkpoint() {
-    let fence = self.realizer.cleanup.effect_fence(effect)?;
-    let authority = self.realizer.execution.provider_effect_authority(...);
+    let fence = self.effect_fence(effect)?;
+    let authority = environments.execution.provider_effect_authority(...);
     with_current_sandbox_effect(&fence, &authority, || Ok(()));
     match (checkpoint, pending_checkpoint) {
         provider.cleanup_checkpoint_for_terminal(request, store, expected, fence, &authority,);
@@ -1348,7 +1348,7 @@ fn cleanup_terminal_checkpoint() {
     canonical[RUNTIME_HOST_TERMINAL_CLEANUP] = """
 fn prepare_terminal_cleanup_effect() {
     authorization.verify_for(&effect);
-    self.realizer.cleanup.effect_fence(&effect)?;
+    self.effect_fence(&effect)?;
     TerminalEnvironmentPreparation::artifact_capture_mode;
     self.artifact_harvester().harvest_with_fence_mode(
         thread,
@@ -1358,11 +1358,11 @@ fn prepare_terminal_cleanup_effect() {
     SessionCleanupPreparation::try_new(&effect, provider_prepared_effect_fence, artifact_receipts);
 }
 fn dispose_terminal_cleanup_effect() {
-    let realizer = &self.realizer;
+    let realizer = environments;
     root_realization.lock().await;
-    realizer.cleanup.disposal_authorization(&effect)?;
+    self.disposal_authorization(&effect)?;
     sessions.lock_lifecycle(session_id.as_str()).await;
-    let authorization = realizer.cleanup.disposal_authorization(&effect)?;
+    let authorization = self.disposal_authorization(&effect)?;
     self.prepare_terminal_environment_under_lifecycle(
         session_id, authorization.effect_fence(), BoundEnvironmentPreparationMode::TerminalDisposal);
     let authority = realizer.execution.provider_effect_authority(...);
@@ -1370,14 +1370,14 @@ fn dispose_terminal_cleanup_effect() {
     with_current_sandbox_effect(authorization.effect_fence(), &authority, || Ok(()));
     match owner {
         (SessionEnvironmentOwner::Retiring(retirement), None) => {
-            let exact_authorization = realizer.cleanup.disposal_authorization(&effect)?;
+            let exact_authorization = self.disposal_authorization(&effect)?;
             if exact_authorization != authorization { return Err(changed); }
             let authority = realizer.execution.provider_effect_authority(...);
             environment.dispose_for_effect(&authorization, &authority);
         }
     }
     sessions.end_terminal_disposal(session_id);
-    realizer.cleanup.disposal_authorization(&effect)?;
+    self.disposal_authorization(&effect)?;
     SessionCleanupDisposalReceipt::new(&effect.command);
 }
 """
@@ -1582,7 +1582,7 @@ fn recover_terminal_receipts() {
     # post-response admission. Removing either authority edge is rejected in
     # this function even though cold reconstruction retains all its markers.
     for marker, replacement, last in (
-        ("self.realizer.execution.provider_effect_authority(", "", False),
+        ("environments.execution.provider_effect_authority(", "", False),
         ("with_current_sandbox_effect(", "", False),
         ("with_current_sandbox_effect(", "", True),
         (".cleanup_checkpoint_for_terminal(request, store, expected, fence, &authority,)",
