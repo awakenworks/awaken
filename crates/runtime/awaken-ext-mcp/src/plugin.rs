@@ -58,12 +58,25 @@ struct McpRegistry {
     tools: Vec<McpToolDefinition>,
 }
 
+/// One catalog observer shared only by explicit server/plugin owners. The
+/// observer itself never owns this guard, so it cannot keep itself alive.
+struct RegistryRefresh(tokio::task::AbortHandle);
+
+impl Drop for RegistryRefresh {
+    fn drop(&mut self) {
+        // Stop the original local catalog read task. This requests task cleanup;
+        // it is not a receipt for remote tool completion or process termination.
+        self.0.abort();
+    }
+}
+
 /// A connected MCP server with a self-refreshing tool registry.
 pub struct McpServer {
     server_name: String,
     namespace: String,
     transport: Arc<dyn McpToolTransport>,
     registry: Arc<Mutex<McpRegistry>>,
+    _refresh: Arc<RegistryRefresh>,
 }
 
 impl McpServer {
@@ -96,7 +109,7 @@ impl McpServer {
         let refresh_registry = Arc::clone(&registry);
         let refresh_transport = Arc::clone(&transport);
         let refresh_server_name = server_name.clone();
-        tokio::spawn(async move {
+        let refresh_task = tokio::spawn(async move {
             while let Ok(kind) = list_changed.recv().await {
                 if kind == ListChangedKind::Tools
                     && let Ok(mut tools) = refresh_transport.list_tools().await
@@ -120,6 +133,7 @@ impl McpServer {
             namespace,
             transport,
             registry,
+            _refresh: Arc::new(RegistryRefresh(refresh_task.abort_handle())),
         })
     }
 
@@ -151,6 +165,7 @@ impl McpServer {
             namespace: self.namespace.clone(),
             transport: Arc::clone(&self.transport),
             registry: Arc::clone(&self.registry),
+            _refresh: Arc::clone(&self._refresh),
         }
     }
 
@@ -191,6 +206,7 @@ pub struct McpPlugin {
     namespace: String,
     transport: Arc<dyn McpToolTransport>,
     registry: Arc<Mutex<McpRegistry>>,
+    _refresh: Arc<RegistryRefresh>,
 }
 
 impl Plugin for McpPlugin {

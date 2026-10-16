@@ -129,6 +129,15 @@ pub struct JsonRpcPeer {
     closed: CancellationToken,
 }
 
+impl Drop for JsonRpcPeer {
+    fn drop(&mut self) {
+        // End this original local connection even when callbacks retain a
+        // notifier. Reader/writer tasks share the existing stop signal; this
+        // requests I/O closure, not rollback of an already-dispatched effect.
+        self.close();
+    }
+}
+
 /// A cheap handle for sending notifications through a peer's write queue —
 /// what a request handler holds so it can emit `notifications/progress` while
 /// its call runs (the handler cannot hold the peer itself: the peer is built
@@ -811,3 +820,6 @@ mod tests {
         assert!(peer.pending.lock().await.is_empty());
     }
 }
+
+#[cfg(test)]
+mod owner_lifetime_tests;
