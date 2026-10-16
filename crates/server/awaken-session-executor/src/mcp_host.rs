@@ -47,6 +47,17 @@ impl McpSessionSlots for InstalledSessions {
         })
     }
 
+    fn modify_mcp_with_root<R>(
+        &self,
+        generation: &crate::session_mcp::McpGenerationRef,
+        modify: impl FnOnce(&mut SessionMcpState, Option<bool>) -> R,
+    ) -> Option<R> {
+        self.modify(generation.session_id().as_str(), |slot| {
+            let root = slot.realization.mcp_generation_root_authority(generation);
+            modify(&mut slot.realization.staging.mcp, root)
+        })
+    }
+
     fn cancel_runtime(runtime: &Self::Runtime) {
         if let Some(token) = runtime
             .cancel
@@ -251,8 +262,6 @@ mod tests {
 
     #[tokio::test]
     async fn sandbox_stdio_requires_reaper_before_environment_or_staging_effects() {
-        use awaken_session_execution_contract::McpAttachmentRealizer;
-
         // Causes: C1 Native sandbox-stdio MCP target; C2 no installed process
         // reaper. Effects: E1 stable unavailable reason; E2 no Environment
         // realization, Staging projection, or process spawn. Constraint: an
@@ -276,7 +285,7 @@ mod tests {
             selected_plaintext_holder: None,
         };
         let error = crate::ManagedHost::new(host.clone())
-            .stage_mcp_attachment(request)
+            .stage_direct_mcp_attachment(request)
             .await
             .expect_err("S0 missing process owner");
         assert_eq!(error.code, "mcp_generation_process_reaper_missing", "S0/E1");
@@ -290,3 +299,10 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "mcp_host/true_retirement.rs"]
+mod true_retirement;
+
+#[cfg(test)]
+mod admission_tests;

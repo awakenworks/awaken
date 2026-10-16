@@ -1486,7 +1486,8 @@ mod tests {
                 .realizer
                 .retire_session_environment_for_revocation(
                     thread,
-                    (&source_host.mcp, source_host.installed_sessions.as_ref())
+                    (&source_host.mcp, source_host.installed_sessions.as_ref()),
+                    None,
                 )
                 .await
                 .expect("C3 revoke/stop exact old execution"),

@@ -76,6 +76,8 @@ impl HostDependencies {
 
 fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHost>) -> SharedHost {
     let HostDependencies {
+        #[cfg(test)]
+        realization_source,
         local_workspace,
         clock,
         store_dir,
@@ -97,6 +99,15 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
         skill_bundle_source,
     } = dependencies;
     let installed_sessions = Arc::new(crate::installed_session::InstalledSessions::default());
+    #[cfg(test)]
+    let realizations = match realization_source {
+        Some(select) => crate::session_realizations::SessionRealizations::new(select(
+            installed_sessions.clone(),
+        )),
+        None => installed_sessions.realizations(),
+    };
+    #[cfg(not(test))]
+    let realizations = installed_sessions.realizations();
     let memory = Arc::new(crate::memory::MemoryRuntime::new(
         agent.llm.clone(),
         env.auxiliary_sandboxes.provider("mem"),
@@ -120,7 +131,7 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
         .dispatch_binding()
         .map(|binding| binding.queue() as Arc<dyn awaken_dispatch_contract::DispatchExecution>);
     let publication = crate::session_publication::SessionPublicationSelection::new(
-        installed_sessions.realizations(),
+        realizations.clone(),
         local_workspace.clone(),
         agent.agent_publications.clone(),
     );
@@ -134,7 +145,7 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
                 env,
                 execution.local.runs_local_pool(),
                 crate::resource_staging::ResourceStaging {
-                    sessions: installed_sessions.realizations(),
+                    sessions: realizations.clone(),
                     bundle_source: skill_bundle_source,
                     file_content_source: resources.file_content_source.clone(),
                     memory: resources.memory_stores.clone(),
@@ -153,11 +164,11 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
             ),
             cleanup: crate::terminal_cleanup::TerminalCleanup {
                 artifacts: Arc::new(crate::provisioning::ArtifactHarvester::new(
-                    installed_sessions.realizations(),
+                    realizations.clone(),
                     local_workspace.clone(),
                     resources.artifact_publisher.clone(),
                 )),
-                sessions: installed_sessions.realizations(),
+                sessions: realizations.clone(),
             },
         },
         tools,

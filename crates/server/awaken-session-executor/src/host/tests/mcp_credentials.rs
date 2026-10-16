@@ -175,13 +175,13 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     // | H32 | prepared external relay exits before a later stage | exact allowlist | stage | - | reject dead OnceCell owner before materialization |
     let exact_request = request("mcp-exact", "workspace-a", 1);
     let receipt = managed
-        .stage_mcp_attachment(exact_request.clone())
+        .stage_direct_mcp_attachment(exact_request.clone())
         .await
         .expect("H1");
     assert!(host.active_mcp_projections("mcp-exact").is_empty(), "H1");
     assert_eq!(
         managed
-            .stage_mcp_attachment(exact_request)
+            .stage_direct_mcp_attachment(exact_request)
             .await
             .expect("H2"),
         receipt,
@@ -214,13 +214,13 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     assert_eq!(host.active_mcp_projections("mcp-exact").len(), 1, "H3");
 
     let stale_error = managed
-        .stage_mcp_attachment(request("mcp-stale", "workspace-a", 2))
+        .stage_direct_mcp_attachment(request("mcp-stale", "workspace-a", 2))
         .await
         .unwrap_err();
     assert_eq!(stale_error.code, "mcp_credential_revision_mismatch", "H4");
 
     let foreign_error = managed
-        .stage_mcp_attachment(request("mcp-foreign", "workspace-b", 1))
+        .stage_direct_mcp_attachment(request("mcp-foreign", "workspace-b", 1))
         .await
         .unwrap_err();
     assert_eq!(foreign_error.code, "mcp_credential_revision_mismatch", "H5");
@@ -231,7 +231,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     };
     assert_eq!(
         managed
-            .stage_mcp_attachment(unsupported_usage)
+            .stage_direct_mcp_attachment(unsupported_usage)
             .await
             .unwrap_err()
             .code,
@@ -246,7 +246,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     prompt_skill.prompts_as_skills = true;
     assert_eq!(
         managed
-            .stage_mcp_attachment(prompt_skill)
+            .stage_direct_mcp_attachment(prompt_skill)
             .await
             .unwrap_err()
             .code,
@@ -266,7 +266,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         awaken_agent_contract::McpTarget::parse_http("https://other.example.test/mcp").unwrap();
     assert_eq!(
         managed
-            .stage_mcp_attachment(conflicting_renewal)
+            .stage_direct_mcp_attachment(conflicting_renewal)
             .await
             .unwrap_err()
             .code,
@@ -277,7 +277,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     non_increasing.stage_idempotency_key = "renew-without-extension".into();
     assert_eq!(
         managed
-            .stage_mcp_attachment(non_increasing)
+            .stage_direct_mcp_attachment(non_increasing)
             .await
             .unwrap_err()
             .code,
@@ -289,7 +289,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     renewal.stage_idempotency_key = "renew-exact".into();
     let renewed_generation = renewal.generation.clone();
     let renewed = managed
-        .stage_mcp_attachment(renewal.clone())
+        .stage_direct_mcp_attachment(renewal.clone())
         .await
         .expect("H14 stage");
     assert_eq!(renewed.generation, renewed_generation, "H14");
@@ -331,7 +331,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "H8"
     );
     let recovered = managed
-        .stage_mcp_attachment(renewal)
+        .stage_direct_mcp_attachment(renewal)
         .await
         .expect("H22 exact removed replay");
     assert_eq!(recovered.generation, renewed_generation, "H22");
@@ -358,7 +358,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     // binding, equal-expiry/new-key and in-flight Stage rejection coverage.
     let old_removed = request("mcp-removed-renewal", "workspace-a", 1);
     managed
-        .stage_mcp_attachment(old_removed.clone())
+        .stage_direct_mcp_attachment(old_removed.clone())
         .await
         .unwrap();
     managed
@@ -426,7 +426,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         );
     }
     let rebuilt = managed
-        .stage_mcp_attachment(renewed_removed.clone())
+        .stage_direct_mcp_attachment(renewed_removed.clone())
         .await
         .expect("H28");
     rebuilt
@@ -458,7 +458,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         });
     assert_eq!(
         managed
-            .stage_mcp_attachment(staging_request)
+            .stage_direct_mcp_attachment(staging_request)
             .await
             .unwrap_err()
             .code,
@@ -476,7 +476,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     expired.generation = expired.generation.expiring_at(0);
     assert_eq!(
         managed
-            .stage_mcp_attachment(expired)
+            .stage_direct_mcp_attachment(expired)
             .await
             .unwrap_err()
             .code,
@@ -506,14 +506,14 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         .expect("H19 publish admitted before renewal");
     let first = request("mcp-conflict", "workspace-a", 1);
     managed
-        .stage_mcp_attachment(first)
+        .stage_direct_mcp_attachment(first)
         .await
         .expect("H10 setup");
     let mut conflict = request("mcp-conflict", "workspace-a", 1);
     conflict.stage_idempotency_key = "another-key".into();
     assert_eq!(
         managed
-            .stage_mcp_attachment(conflict)
+            .stage_direct_mcp_attachment(conflict)
             .await
             .unwrap_err()
             .code,
@@ -573,7 +573,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     forbidden.credential.as_mut().unwrap().policy.model_exposure = ModelExposurePolicy::Forbidden;
     assert_eq!(
         acp_managed
-            .stage_mcp_attachment(forbidden)
+            .stage_direct_mcp_attachment(forbidden)
             .await
             .unwrap_err()
             .code,
@@ -587,7 +587,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "H18"
     );
     let acp_error = acp_managed
-        .stage_mcp_attachment(request("mcp-acp-protected", "workspace-a", 1))
+        .stage_direct_mcp_attachment(request("mcp-acp-protected", "workspace-a", 1))
         .await
         .unwrap_err();
     assert_eq!(acp_error.code, "mcp_holder_unsupported", "H12");
@@ -608,7 +608,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     basic_client_request.credential.as_mut().unwrap().policy =
         CredentialExecutionPolicy::exact(workload_holder.clone(), ModelExposurePolicy::Forbidden);
     let basic_client_receipt = basic_client
-        .stage_mcp_attachment(basic_client_request)
+        .stage_direct_mcp_attachment(basic_client_request)
         .await
         .expect("H23 client injection does not require WorkerRelay provider custody");
     assert_eq!(
@@ -627,7 +627,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     prompt_skill.prompts_as_skills = true;
     assert_eq!(
         acp_managed
-            .stage_mcp_attachment(prompt_skill)
+            .stage_direct_mcp_attachment(prompt_skill)
             .await
             .unwrap_err()
             .code,
@@ -641,7 +641,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "H24"
     );
     acp_managed
-        .stage_mcp_attachment(anonymous)
+        .stage_direct_mcp_attachment(anonymous)
         .await
         .expect("H13");
     assert!(
@@ -895,7 +895,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     let external_gate = crate::ManagedHost::new(secure_acp_host.clone());
     assert_eq!(
         external_gate
-            .stage_mcp_attachment(request("mcp-acp-unstarted", "workspace-a", 1))
+            .stage_direct_mcp_attachment(request("mcp-acp-unstarted", "workspace-a", 1))
             .await
             .unwrap_err()
             .code,
@@ -908,7 +908,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         .expect("H20 external relay transport is bound before staging");
     assert_eq!(
         external_gate
-            .stage_mcp_attachment(request("mcp-acp-wrong-network", "workspace-a", 1))
+            .stage_direct_mcp_attachment(request("mcp-acp-wrong-network", "workspace-a", 1))
             .await
             .unwrap_err()
             .code,
@@ -1082,7 +1082,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         .expect("H26 frozen BackendOwned publication");
     let backend_secure = crate::ManagedHost::new(backend_secure_host.clone());
     backend_secure
-        .stage_mcp_attachment(request("mcp-acp-backend-secure", "workspace-a", 1))
+        .stage_direct_mcp_attachment(request("mcp-acp-backend-secure", "workspace-a", 1))
         .await
         .expect("H26 selected BackendOwned provider admits WorkerRelay");
 
@@ -1107,7 +1107,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         .retain_session_publication("mcp-acp-backend-weak", Some(&backend_owned_snapshot))
         .expect("H27 frozen BackendOwned publication");
     let error = crate::ManagedHost::new(default_secure_host.clone())
-        .stage_mcp_attachment(request("mcp-acp-backend-weak", "workspace-a", 1))
+        .stage_direct_mcp_attachment(request("mcp-acp-backend-weak", "workspace-a", 1))
         .await
         .expect_err("H27 selected BackendOwned provider must reject WorkerRelay");
     assert_eq!(error.code, "mcp_holder_unsupported", "H27");
@@ -1185,7 +1185,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     }
     assert_eq!(
         secure_managed
-            .stage_mcp_attachment(request("mcp-acp-dead-relay", "workspace-a", 1))
+            .stage_direct_mcp_attachment(request("mcp-acp-dead-relay", "workspace-a", 1))
             .await
             .unwrap_err()
             .code,
@@ -1216,7 +1216,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         CredentialExecutionPolicy::exact(workload_holder.clone(), ModelExposurePolicy::VirtualOnly);
     assert_eq!(
         secure_managed
-            .stage_mcp_attachment(refreshable)
+            .stage_direct_mcp_attachment(refreshable)
             .await
             .unwrap_err()
             .code,
@@ -1234,7 +1234,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     client_request.credential.as_mut().unwrap().policy =
         CredentialExecutionPolicy::exact(workload_holder, ModelExposurePolicy::VirtualOnly);
     let client_receipt = secure_managed
-        .stage_mcp_attachment(client_request)
+        .stage_direct_mcp_attachment(client_request)
         .await
         .expect("H23 exact process-protocol client injection");
     assert_eq!(
@@ -1286,7 +1286,6 @@ async fn published_mcp_envelope_uses_the_authoring_target_binding_at_realization
         CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
         CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
     };
-    use awaken_session_execution_contract::McpAttachmentRealizer;
 
     struct ExactTargetResolver {
         expected: awaken_credential_contract::CredentialMaterialBinding,
@@ -1380,7 +1379,7 @@ async fn published_mcp_envelope_uses_the_authoring_target_binding_at_realization
     // The display name is not credential authority and must not enter the
     // recipient-bound payload fingerprint produced during Session authoring.
     managed
-        .stage_mcp_attachment(crate::session_mcp::StageMcpAttachment {
+        .stage_direct_mcp_attachment(crate::session_mcp::StageMcpAttachment {
             workspace_id: workspace.into(),
             generation: crate::test_mcp::mcp_fence(
                 "session-a",

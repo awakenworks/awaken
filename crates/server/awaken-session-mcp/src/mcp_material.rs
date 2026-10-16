@@ -317,6 +317,18 @@ impl SessionMcpState {
         }
     }
 
+    /// Capture the original process-local projections for one drain operation.
+    /// The caller holds its canonical Session lock; returned allocations are
+    /// observations for exact matching, not authority or a quiescence receipt.
+    #[must_use]
+    pub fn select_projections_for_drain(&self) -> Vec<McpGenerationProjection> {
+        self.projections
+            .iter()
+            .filter(|projection| projection.state != McpProjectionState::Removed)
+            .cloned()
+            .collect()
+    }
+
     /// The exact stage requests of every visible generation, as durable
     /// dispatch replays them on the execution Worker.
     #[must_use]

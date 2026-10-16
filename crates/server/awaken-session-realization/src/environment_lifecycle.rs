@@ -1355,56 +1355,80 @@ impl crate::environment_holding::EnvironmentHolding {
         &self,
         thread: &str,
         mcp: (&awaken_session_mcp::McpSessions, &S),
+        expected_selection: Option<
+            &crate::session_realizations::SessionRealizationRevocationSelection,
+        >,
     ) -> Result<bool, HostError> {
-        let realizations = self.sessions.clone();
-        let retained_realization_owner = realizations
-            .modify_realization(thread, |r| {
-                // Physical retirement of an Unowned LegacyDirect environment is
-                // not loss of a never-installed Control lease. Preserve that
-                // existing rebuild path. Explicit Worker/Session revocation has
-                // already closed admission, including Closed(None), before waiting.
-                // Closed retains provenance, not execution permission. A
-                // repeated revocation must not reinterpret that same Managed
-                // Candidate as an Unowned disposable legacy creation.
-                let retained = matches!(
-                    &r.execution.authority,
-                    crate::session_realizations::SessionRealizationAuthority::Live(_)
-                        | crate::session_realizations::SessionRealizationAuthority::Closed(Some(_))
-                );
-                if r.execution.authority.lease().is_some() {
-                    r.close_authority(None);
-                }
-                retained
-            })
-            .unwrap_or(false);
-        let cause = SessionEnvironmentRetirementCause::RealizationRevocation;
-        let retirement = match self.retire_current_environment(
-            thread,
-            cause,
-            RetirementSelection::Current,
-        )? {
-            Some(retirement) => Some(retirement.owner),
-            None if self.pending_environment_adoption(thread).is_some() => {
-                // Revocation decision table: C1 durable binding is projected,
-                // C2 no exact local Arc has been adopted, and C3 no terminal
-                // effect fence authorizes cold reconstruction. E1 fail before
-                // draining MCP or clearing any frozen provider/layout input;
-                // E2 retain AwaitingAdoption for the canonical terminal or
-                // ordinary adoption retry. Reconstructing here would duplicate
-                // terminal preparation and manufacture physical authority.
+        let (mcp, mcp_slots) = mcp;
+        let realizations = &self.sessions;
+        let projected = realizations.modify_session(thread, |slot| {
+            let r = slot.realization;
+            if expected_selection.is_some_and(|selected| !selected.matches(r)) {
+                return Ok::<_, HostError>(None);
+            }
+            // Preserve the original Managed-vs-legacy retirement policy, while
+            // binding physical transition and MCP selection to this same slot.
+            let retained = matches!(
+                &r.execution.authority,
+                crate::session_realizations::SessionRealizationAuthority::Live(_)
+                    | crate::session_realizations::SessionRealizationAuthority::Closed(Some(_))
+            );
+            if r.execution.authority.lease().is_some() {
+                r.close_authority(None);
+            }
+            let selected = crate::session_realizations::SessionRealizationRevocationSelection::from_realization(r);
+            let original_owner = r.environment.owner.clone();
+            let retirement = r.environment.owner.begin_retirement(
+                SessionEnvironmentRetirementCause::RealizationRevocation,
+                RetirementSelection::Current,
+            )?;
+            if retirement.is_some() {
+                slot.run.drop_context();
+            } else if matches!(&original_owner,
+                SessionEnvironmentOwner::Preparing(crate::environment_owner::SessionEnvironmentPreparation::AwaitingAdoption { .. })
+            ) {
                 return Err(HostError::unavailable_classified(
                     "session_environment_revocation_pending_adoption",
                     "Session Environment revocation cannot retire a durable binding without its exact local owner",
                 ));
             }
-            None => None,
+            let selected_projections = r.staging.mcp.select_projections_for_drain();
+            let residual_routes = mcp.drain_existing_relay_routes(thread);
+            Ok(Some((retained, selected, original_owner, retirement, selected_projections, residual_routes)))
+        }).transpose()?.flatten();
+        let Some((
+            retained_realization_owner,
+            selected,
+            original_owner,
+            retirement,
+            selected_projections,
+            residual_routes,
+        )) = projected
+        else {
+            // Absence is not a reusable identity. Do not reselect a new slot,
+            // physical owner, projection, or a later Vacant owner by Thread.
+            return Ok(false);
         };
 
-        mcp.0.drain_projections(mcp.1, thread, &[]).await?;
-        let retirement_result = match retirement {
+        // Some owner phases have no local physical wrapper. In particular an
+        // exact pending restore is retained, not treated as an empty slot.
+        let expected_owner = retirement.as_ref().map_or(original_owner, |retirement| {
+            SessionEnvironmentOwner::Retiring(retirement.clone())
+        });
+        let (projections, residual) = tokio::join!(
+            mcp.drain_selected_projections(mcp_slots, &selected_projections),
+            residual_routes,
+        );
+        projections?;
+        residual?;
+        let disposes_unbound = retirement.as_ref().is_some_and(|retirement| {
+            matches!(&retirement.owned, RetiringEnvironmentOwner::Unbound(_))
+                && !retained_realization_owner
+        });
+        let retirement_result = match retirement.as_ref() {
             Some(retirement) => match &retirement.owned {
                 RetiringEnvironmentOwner::Unbound(_) if !retained_realization_owner => {
-                    self.dispose_and_confirm_retirement(thread, &retirement)
+                    self.dispose_and_confirm_retirement(thread, retirement)
                         .await
                 }
                 // An absent response is not proof that the Session root did
@@ -1422,13 +1446,14 @@ impl crate::environment_holding::EnvironmentHolding {
             },
             None => Ok(()),
         };
-        if self.session_environment_owner_is_vacant(thread) {
-            self.sessions.remove_session(thread);
-        } else {
-            self.sessions.retain_revoked_projection(thread);
-        }
+        let retired = realizations.finish_realization_revocation(
+            thread,
+            &selected,
+            &expected_owner,
+            disposes_unbound && retirement_result.is_ok(),
+        );
         retirement_result?;
-        Ok(true)
+        Ok(retired)
     }
 }
 

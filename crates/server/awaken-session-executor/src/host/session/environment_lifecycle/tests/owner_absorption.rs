@@ -958,7 +958,8 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
             host.realizer
                 .retire_session_environment_for_revocation(
                     thread,
-                    (&host.mcp, host.installed_sessions.as_ref())
+                    (&host.mcp, host.installed_sessions.as_ref()),
+                    None,
                 )
                 .await
                 .unwrap(),

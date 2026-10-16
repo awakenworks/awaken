@@ -17,6 +17,25 @@ use crate::mcp_relay::{McpRelay, McpRelayOutboundProxy};
 
 const MCP_GENERATION_CALL_QUIESCENCE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Whether absence after the original drain lock is an idempotent current
+/// lookup or the loss of a caller's captured physical owner. This is operation
+/// intent only, never another authority or retained lifecycle state.
+#[derive(Clone, Copy)]
+enum ProjectionDrainIntent {
+    Current,
+    Captured,
+}
+
+// Existing transport/process/Runtime owners retained by one drain operation;
+// no new registry, generation authority, or independently mutable lifecycle.
+struct ProjectionDrain<R> {
+    call_fences: Vec<awaken_ext_mcp::transport::McpCallFence>,
+    process: Option<Arc<dyn awaken_provisioning_contract::ProcessHandle>>,
+    staging: Option<crate::mcp_material::McpStagingActivity>,
+    runtime: Option<R>,
+    route: Option<crate::mcp_relay::CapturedRelayRoute>,
+}
+
 /// The Runtime Host's per-Session slot registry, seen only through each
 /// slot's [`SessionMcpState`] and its cached Session Runtime. Every closure
 /// runs under the registry's own lock, exactly like a direct slot access.
@@ -36,6 +55,16 @@ pub trait McpSessionSlots: Send + Sync + 'static {
         &self,
         session: &str,
         modify: impl FnOnce(&mut SessionMcpState) -> R,
+    ) -> Option<R>;
+
+    /// Read the original exact-generation root and change its existing MCP
+    /// state under the same canonical slot lock. None means no existing slot;
+    /// the callback's None root means that slot has no installed root proof.
+    /// This does not grant the caller a direct-assertion fallback.
+    fn modify_mcp_with_root<R>(
+        &self,
+        generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
+        modify: impl FnOnce(&mut SessionMcpState, Option<bool>) -> R,
     ) -> Option<R>;
 
     /// Change an existing Session's MCP state together with its cached Runtime
@@ -147,6 +176,40 @@ impl McpSessions {
         if let Some(relay) = self.relay.get() {
             relay.remove_routes(thread);
         }
+    }
+
+    /// Eagerly select existing physical records while the caller still checks
+    /// its original canonical owner. The returned future owns only those
+    /// records' existing call fences, never root authority or a later rescan.
+    pub fn drain_existing_relay_routes(
+        &self,
+        thread: &str,
+    ) -> futures_util::future::BoxFuture<'static, Result<(), McpError>> {
+        let selected = self
+            .relay
+            .get()
+            .map(|relay| relay.capture_routes(thread))
+            .unwrap_or_default();
+        Box::pin(async move {
+            tokio::time::timeout(
+                MCP_GENERATION_CALL_QUIESCENCE_TIMEOUT,
+                futures_util::future::join_all(selected.iter().map(|route| {
+                    let fence = route.call_fence();
+                    async move { fence.close_and_wait().await }
+                })),
+            )
+            .await
+            .map_err(|_| {
+                McpError::unavailable_classified(
+                    "mcp_generation_call_quiescence_timeout",
+                    "MCP residual route drain could not quiesce an accepted MCP call",
+                )
+            })?;
+            for route in selected {
+                route.remove_if_current();
+            }
+            Ok(())
+        })
     }
 
     /// Start a relay bound to this deployment's exposure and outbound proxy,
@@ -535,21 +598,35 @@ impl McpSessions {
         slots: &S,
         generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
     ) -> Result<(), McpError> {
-        let Some(drain) = slots
-            .read_mcp(generation.session_id().as_str(), |mcp| {
-                mcp.projections
-                    .iter()
-                    .find(|projection| projection.request.generation == *generation)
-                    .map(|projection| projection.drain.clone())
-            })
-            .flatten()
-        else {
+        let Some(selected) = self.projection(slots, generation) else {
             return Ok(());
         };
-        // Keep the exact owner installed while awaiting. Cancellation releases
-        // only this serialization guard; a retry sees Draining plus the same
-        // process/activity and resumes the canonical cleanup.
-        let _drain = drain.lock().await;
+        self.drain_projection_selection(slots, &selected, ProjectionDrainIntent::Current)
+            .await
+    }
+
+    /// Drain only a previously selected physical projection. The caller selects
+    /// it under its original canonical operation; this never discovers a later
+    /// projection merely because it has the same Session or generation.
+    pub async fn drain_selected_projection<S: McpSessionSlots>(
+        &self,
+        slots: &S,
+        selected: &McpGenerationProjection,
+    ) -> Result<(), McpError> {
+        self.drain_projection_selection(slots, selected, ProjectionDrainIntent::Captured)
+            .await
+    }
+
+    // Close visibility and capture the exact physical owners in the original
+    // slot transaction. The caller holds selected.drain across this transaction
+    // and the subsequent waits; this value is only that operation's snapshot.
+    fn begin_projection_drain<S: McpSessionSlots>(
+        &self,
+        slots: &S,
+        selected: &McpGenerationProjection,
+        intent: ProjectionDrainIntent,
+    ) -> Result<Option<ProjectionDrain<S::Runtime>>, McpError> {
+        let generation = &selected.request.generation;
         let projected =
             slots.modify_mcp_and_runtime(generation.session_id().as_str(), |mcp, runtime| {
                 let Some(projection) = mcp
@@ -557,12 +634,18 @@ impl McpSessions {
                     .iter_mut()
                     .find(|projection| projection.request.generation == *generation)
                 else {
-                    // Cleanup is an idempotent exact-generation command. A fresh
-                    // Runtime incarnation legitimately has no process-local copy of
-                    // an already fenced durable Draining generation.
-                    return Ok::<_, McpError>(None);
+                    // Another authorized cleanup/replay may forget a Removed
+                    // tombstone while the current lookup waits for this mutex.
+                    // Preserve that entrance's original absence idempotence.
+                    return match intent {
+                        ProjectionDrainIntent::Current => Ok(None),
+                        ProjectionDrainIntent::Captured => Err(McpError::unavailable_classified(
+                            "mcp_generation_owner_changed",
+                            "selected MCP generation is no longer installed",
+                        )),
+                    };
                 };
-                if !Arc::ptr_eq(&projection.drain, &drain) {
+                if !Arc::ptr_eq(&projection.drain, &selected.drain) {
                     return Err(McpError::unavailable_classified(
                         "mcp_generation_owner_changed",
                         "MCP generation projection was replaced while cleanup was waiting",
@@ -582,15 +665,52 @@ impl McpSessions {
                     .unwrap_or_default();
                 let process = projection.mcp_process.clone();
                 let staging = projection.staging.clone();
+                let route = self
+                    .relay
+                    .get()
+                    .and_then(|relay| relay.capture_route(generation));
                 // The canonical Session slot must retain this Runtime owner across
                 // cancellation and timeout. Only the outer environment-quiescence
                 // transaction clears it after every MCP generation and the Hand
                 // have proved quiescent; otherwise a retry could lose the active-run
                 // fence and manufacture a Removed proof while the old Run is live.
                 let runtime = runtime.clone();
-                Ok(Some((call_fences, process, staging, runtime)))
+                Ok(Some(ProjectionDrain {
+                    call_fences,
+                    process,
+                    staging,
+                    runtime,
+                    route,
+                }))
             });
-        let Some((mut call_fences, process, staging, runtime)) = projected.transpose()?.flatten()
+        if projected.is_none() && matches!(intent, ProjectionDrainIntent::Captured) {
+            return Err(McpError::unavailable_classified(
+                "mcp_generation_owner_changed",
+                "selected MCP Session slot is no longer installed",
+            ));
+        }
+        projected.transpose().map(Option::flatten)
+    }
+
+    async fn drain_projection_selection<S: McpSessionSlots>(
+        &self,
+        slots: &S,
+        selected: &McpGenerationProjection,
+        intent: ProjectionDrainIntent,
+    ) -> Result<(), McpError> {
+        let generation = &selected.request.generation;
+        let drain = selected.drain.clone();
+        // Keep the exact owner installed while awaiting. Cancellation releases
+        // only this serialization guard; a retry sees Draining plus the same
+        // process/activity and resumes the canonical cleanup.
+        let _drain = drain.lock().await;
+        let Some(ProjectionDrain {
+            mut call_fences,
+            process,
+            staging,
+            runtime,
+            route,
+        }) = self.begin_projection_drain(slots, selected, intent)?
         else {
             return Ok(());
         };
@@ -600,10 +720,8 @@ impl McpSessions {
         // route owner's existing MCP call fence to the same drain barrier.
         // Removing the map entry is not quiescence because an accepted clone
         // can still hold its credential and upstream future.
-        if let Some(relay) = self.relay.get()
-            && let Some(fence) = relay.route_call_fence(generation)
-        {
-            call_fences.push(fence);
+        if let Some(route) = &route {
+            call_fences.push(route.call_fence());
         }
         // Poll every exact fence together so all admission closes before a
         // single slow permit can consume the bounded settlement window.
@@ -623,6 +741,37 @@ impl McpSessions {
         if let Some(staging) = staging {
             staging.wait().await;
         }
+        // A stage that was already registered may finish while drain waits.
+        // Read its route only under the original projection allocation check;
+        // never select a successor projection by generation alone.
+        let late_route = slots
+            .read_mcp(generation.session_id().as_str(), |mcp| {
+                mcp.projections
+                    .iter()
+                    .find(|projection| {
+                        projection.request.generation == *generation
+                            && Arc::ptr_eq(&projection.drain, &drain)
+                    })
+                    .and_then(|_| {
+                        self.relay
+                            .get()
+                            .and_then(|relay| relay.capture_route(generation))
+                    })
+            })
+            .flatten();
+        if let Some(route) = &late_route {
+            tokio::time::timeout(
+                MCP_GENERATION_CALL_QUIESCENCE_TIMEOUT,
+                route.call_fence().close_and_wait(),
+            )
+            .await
+            .map_err(|_| {
+                McpError::unavailable_classified(
+                    "mcp_generation_call_quiescence_timeout",
+                    "MCP generation drain could not quiesce a staged MCP call",
+                )
+            })?;
+        }
         // Spawn may have completed after Draining was installed but before the
         // activity barrier closed. The task transfers that process into this
         // same projection; re-read it before reaping so no post-snapshot child
@@ -632,7 +781,10 @@ impl McpSessions {
                 .read_mcp(generation.session_id().as_str(), |mcp| {
                     mcp.projections
                         .iter()
-                        .find(|projection| projection.request.generation == *generation)
+                        .find(|projection| {
+                            projection.request.generation == *generation
+                                && Arc::ptr_eq(&projection.drain, &drain)
+                        })
                         .and_then(|projection| projection.mcp_process.clone())
                 })
                 .flatten()
@@ -682,8 +834,8 @@ impl McpSessions {
         // exact route fence, Runtime, staging, and process owners are quiescent;
         // cancellation or any failure above leaves the closed Route installed
         // with the Draining projection so retry retains the same proof owner.
-        if let Some(relay) = self.relay.get() {
-            relay.remove_route(generation);
+        for route in route.iter().chain(late_route.iter()) {
+            route.remove_if_current();
         }
 
         match slots.modify_mcp(generation.session_id().as_str(), |mcp| {
@@ -694,6 +846,12 @@ impl McpSessions {
             else {
                 return Ok(());
             };
+            if !Arc::ptr_eq(&projection.drain, &drain) {
+                return Err(McpError::unavailable_classified(
+                    "mcp_generation_owner_changed",
+                    "MCP generation projection was replaced while cleanup was quiescing",
+                ));
+            }
             if projection.state == McpProjectionState::Removed {
                 return Ok(());
             }
@@ -712,6 +870,24 @@ impl McpSessions {
             Some(result) => result,
             None => Ok(()),
         }
+    }
+
+    /// Drain the caller's original physical selection, continuing after each
+    /// failure. New current projections are not an additional cleanup target.
+    pub async fn drain_selected_projections<S: McpSessionSlots>(
+        &self,
+        slots: &S,
+        selected: &[McpGenerationProjection],
+    ) -> Result<(), McpError> {
+        let mut first_error = None;
+        for projection in selected {
+            if let Err(error) = self.drain_selected_projection(slots, projection).await
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
     }
 
     /// Drain every exact durable generation requested by the Session owner and

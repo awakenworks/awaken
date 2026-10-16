@@ -233,6 +233,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
             .retire_session_environment_for_revocation(
                 "t-end",
                 (&host.mcp, host.installed_sessions.as_ref()),
+                None,
             )
             .await
             .expect("U revoke retained owner");
