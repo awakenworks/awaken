@@ -542,7 +542,7 @@ impl McpSessions {
                             ));
                         }
                         if !self.relay.get().is_some_and(|relay| {
-                            relay.matches_exposure(exposure) && relay.is_live()
+                            relay.matches_exposure(exposure) && relay.is_accepting()
                         }) {
                             return Err(RunError::unavailable_classified(
                                 "mcp_relay_unavailable",
@@ -893,7 +893,7 @@ impl McpSessions {
                         format!("could not stage Worker-held MCP route: {error}"),
                     )
                 })?;
-            if !relay.is_live() {
+            if !relay.is_accepting() {
                 return Err(RunError::unavailable_classified(
                     "mcp_relay_unavailable",
                     "Worker MCP relay transport is no longer serving",

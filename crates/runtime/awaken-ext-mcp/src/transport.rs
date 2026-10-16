@@ -9,8 +9,8 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 
 use async_trait::async_trait;
 use awaken_mcp_wire::McpTransportError;
@@ -37,6 +37,19 @@ struct McpCallFenceState {
     in_flight: AtomicUsize,
     cancellation: awaken_runtime_contract::CancellationToken,
     quiesced: Notify,
+    transport: Mutex<Option<Arc<dyn McpToolTransport>>>,
+}
+
+// Only explicit fence handles own admission. Counted permits retain State for
+// local cleanup, and must never prolong the authority to admit another effect.
+struct McpCallFenceOwner {
+    state: Arc<McpCallFenceState>,
+}
+
+impl Drop for McpCallFenceOwner {
+    fn drop(&mut self) {
+        self.state.close_admission();
+    }
 }
 
 /// Process-local lifecycle handle for one exact MCP generation transport.
@@ -44,18 +57,21 @@ struct McpCallFenceState {
 /// closes already-materialized I/O and proves local call quiescence before the
 /// generation's drain receipt is acknowledged.
 #[derive(Clone)]
-pub struct McpCallFence(Arc<McpCallFenceState>);
+pub struct McpCallFence(Arc<McpCallFenceOwner>);
 
 impl McpCallFence {
     /// Open one process-local activity fence. The caller must retain
     /// this exact handle with the generation effect owner; constructing a fence
     /// never creates durable desired state or another generation registry.
     pub fn open() -> Self {
-        Self(Arc::new(McpCallFenceState {
-            accepting: AtomicBool::new(true),
-            in_flight: AtomicUsize::new(0),
-            cancellation: awaken_runtime_contract::CancellationToken::new(),
-            quiesced: Notify::new(),
+        Self(Arc::new(McpCallFenceOwner {
+            state: Arc::new(McpCallFenceState {
+                accepting: AtomicBool::new(true),
+                in_flight: AtomicUsize::new(0),
+                cancellation: awaken_runtime_contract::CancellationToken::new(),
+                quiesced: Notify::new(),
+                transport: Mutex::new(None),
+            }),
         }))
     }
 
@@ -63,32 +79,21 @@ impl McpCallFence {
     /// acceptance check closes the increment-versus-drain race: either this
     /// permit is counted by `close_and_wait`, or the effect never begins.
     pub fn try_enter(&self) -> Option<McpCallPermit> {
-        let accepting_before_increment = self.0.accepting.load(Ordering::SeqCst);
-        if !accepting_before_increment {
-            return None;
-        }
-        self.0.in_flight.fetch_add(1, Ordering::SeqCst);
-        let permit = McpCallPermit(self.0.clone());
-        let accepting_after_increment = self.0.accepting.load(Ordering::SeqCst);
-        if !mcp_call_admitted(accepting_before_increment, accepting_after_increment) {
-            drop(permit);
-            return None;
-        }
-        Some(permit)
+        self.0.state.try_enter()
     }
 
     /// Hide the transport from new calls, cancel every in-flight future, and
     /// wait until all local call guards have left. Replays are idempotent.
     pub async fn close_and_wait(&self) {
-        self.0.accepting.store(false, Ordering::SeqCst);
-        self.0.cancellation.cancel();
+        self.0.state.close_admission();
         loop {
-            let notified = self.0.quiesced.notified();
+            let notified = self.0.state.quiesced.notified();
             tokio::pin!(notified);
             // Register before observing the counter so the last guard's
             // `notify_waiters` cannot fall into the check-to-await gap.
             notified.as_mut().enable();
-            if self.0.in_flight.load(Ordering::SeqCst) == 0 {
+            if self.0.state.in_flight.load(Ordering::SeqCst) == 0 {
+                self.0.state.release_transport();
                 return;
             }
             notified.await;
@@ -97,7 +102,7 @@ impl McpCallFence {
 
     #[cfg(test)]
     fn in_flight(&self) -> usize {
-        self.0.in_flight.load(Ordering::SeqCst)
+        self.0.state.in_flight.load(Ordering::SeqCst)
     }
 }
 
@@ -118,21 +123,59 @@ impl McpCallPermit {
     }
 }
 
+impl McpCallFenceState {
+    fn close_admission(&self) {
+        self.accepting.store(false, Ordering::SeqCst);
+        self.cancellation.cancel();
+        if self.in_flight.load(Ordering::SeqCst) == 0 {
+            self.release_transport();
+        }
+    }
+
+    fn try_enter(self: &Arc<Self>) -> Option<McpCallPermit> {
+        let accepting_before_increment = self.accepting.load(Ordering::SeqCst);
+        if !accepting_before_increment {
+            return None;
+        }
+        self.in_flight.fetch_add(1, Ordering::SeqCst);
+        let permit = McpCallPermit(self.clone());
+        let accepting_after_increment = self.accepting.load(Ordering::SeqCst);
+        if !mcp_call_admitted(accepting_before_increment, accepting_after_increment) {
+            drop(permit);
+            return None;
+        }
+        Some(permit)
+    }
+
+    fn release_transport(&self) {
+        // Never run a transport destructor under the ownership mutex. A cached
+        // consumer is only a weak view; it cannot prolong this local channel.
+        let transport = self.transport.lock().unwrap().take();
+        drop(transport);
+    }
+}
+
 impl Drop for McpCallPermit {
     fn drop(&mut self) {
         if self.0.in_flight.fetch_sub(1, Ordering::SeqCst) == 1 {
+            if !self.0.accepting.load(Ordering::SeqCst) {
+                // The last admitted call also completes local release when a
+                // close waiter was cancelled. It does not undo a remote effect.
+                self.0.release_transport();
+            }
             self.0.quiesced.notify_waiters();
         }
     }
 }
 
 struct RevocableMcpTransport {
-    inner: Arc<dyn McpToolTransport>,
-    fence: McpCallFence,
+    fence: Weak<McpCallFenceState>,
+    supports_task_tools_call: bool,
+    supports_task_cancel: bool,
 }
 
 struct FencedNotificationHandler {
-    fence: McpCallFence,
+    fence: Weak<McpCallFenceState>,
     handler: Arc<dyn crate::notification::McpNotificationHandler>,
 }
 
@@ -156,7 +199,7 @@ mod notification_tests {
         let counter = Arc::new(Counter(AtomicUsize::new(0)));
         let fence = McpCallFence::open();
         let handler = FencedNotificationHandler {
-            fence: fence.clone(),
+            fence: Arc::downgrade(&fence.0.state),
             handler: counter.clone(),
         };
         handler
@@ -174,7 +217,10 @@ mod notification_tests {
 #[async_trait]
 impl crate::notification::McpNotificationHandler for FencedNotificationHandler {
     async fn receive(&self, method: &str, params: Value) {
-        let Some(permit) = self.fence.try_enter() else {
+        let Some(state) = self.fence.upgrade() else {
+            return;
+        };
+        let Some(permit) = state.try_enter() else {
             return;
         };
         tokio::select! {
@@ -186,13 +232,23 @@ impl crate::notification::McpNotificationHandler for FencedNotificationHandler {
 }
 
 impl RevocableMcpTransport {
+    fn transport(&self) -> Result<Arc<dyn McpToolTransport>, McpTransportError> {
+        self.fence
+            .upgrade()
+            .and_then(|state| state.transport.lock().unwrap().clone())
+            .ok_or_else(|| McpTransportError::NotDispatched("MCP generation is draining".into()))
+    }
+
     async fn run<T, F>(&self, future: F) -> Result<T, McpTransportError>
     where
         T: Send,
         F: Future<Output = Result<T, McpTransportError>> + Send,
     {
-        let guard = self
+        let state = self
             .fence
+            .upgrade()
+            .ok_or_else(|| McpTransportError::NotDispatched("MCP generation is draining".into()))?;
+        let guard = state
             .try_enter()
             .ok_or_else(|| McpTransportError::NotDispatched("MCP generation is draining".into()))?;
         tokio::select! {
@@ -208,18 +264,23 @@ impl RevocableMcpTransport {
 /// Wrap one already-connected MCP transport with the exact generation's local
 /// revocation fence. This adds no registry or desired-state owner; the returned
 /// handle is retained by the existing Session projection and closed by its
-/// canonical drain phase.
+/// canonical drain phase. Cached consumers are weak views: callers must retain
+/// the returned fence while the connection is usable. Its last owner closes
+/// admission and cancels local calls; their original permits retain cleanup
+/// resources until settlement. An explicit drain waits for that settlement.
 pub fn revocable_transport(
     inner: Arc<dyn McpToolTransport>,
 ) -> (Arc<dyn McpToolTransport>, McpCallFence) {
     let fence = McpCallFence::open();
-    (
-        Arc::new(RevocableMcpTransport {
-            inner,
-            fence: fence.clone(),
-        }),
-        fence,
-    )
+    // Capability facts describe this generation even after admission closes;
+    // retaining those facts must not retain the original physical connection.
+    let transport = Arc::new(RevocableMcpTransport {
+        fence: Arc::downgrade(&fence.0.state),
+        supports_task_tools_call: inner.supports_task_tools_call(),
+        supports_task_cancel: inner.supports_task_cancel(),
+    });
+    *fence.0.state.transport.lock().unwrap() = Some(inner);
+    (transport, fence)
 }
 
 /// Which catalog a `notifications/*/list_changed` referred to. Consumed by the
@@ -356,7 +417,7 @@ impl McpToolTransport for RevocableMcpTransport {
         methods: Vec<String>,
         handler: Option<Arc<dyn crate::notification::McpNotificationHandler>>,
     ) -> Result<(), McpTransportError> {
-        self.inner.set_notification_handler(
+        self.transport()?.set_notification_handler(
             methods,
             handler.map(|handler| {
                 Arc::new(FencedNotificationHandler {
@@ -367,7 +428,7 @@ impl McpToolTransport for RevocableMcpTransport {
         )
     }
     async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
-        self.run(self.inner.list_tools()).await
+        self.run(self.transport()?.list_tools()).await
     }
 
     async fn call_tool(
@@ -375,7 +436,8 @@ impl McpToolTransport for RevocableMcpTransport {
         tool_name: &str,
         arguments: Value,
     ) -> Result<CallToolResult, McpTransportError> {
-        self.run(self.inner.call_tool(tool_name, arguments)).await
+        self.run(self.transport()?.call_tool(tool_name, arguments))
+            .await
     }
 
     async fn call_tool_with_progress(
@@ -385,7 +447,7 @@ impl McpToolTransport for RevocableMcpTransport {
         progress_tx: mpsc::Sender<McpProgressUpdate>,
     ) -> Result<CallToolResult, McpTransportError> {
         self.run(
-            self.inner
+            self.transport()?
                 .call_tool_with_progress(tool_name, arguments, progress_tx),
         )
         .await
@@ -395,11 +457,11 @@ impl McpToolTransport for RevocableMcpTransport {
         // Negotiated semantics are immutable for this generation. Draining
         // rejects operations through `run`; it must not reclassify a detached
         // tool as foreground/model-visible while the registry is being replaced.
-        self.inner.supports_task_tools_call()
+        self.supports_task_tools_call
     }
 
     fn supports_task_cancel(&self) -> bool {
-        self.inner.supports_task_cancel()
+        self.supports_task_cancel
     }
 
     async fn call_tool_as_task(
@@ -408,24 +470,27 @@ impl McpToolTransport for RevocableMcpTransport {
         arguments: Value,
         ttl_ms: Option<u64>,
     ) -> Result<CreateTaskResult, McpTransportError> {
-        self.run(self.inner.call_tool_as_task(tool_name, arguments, ttl_ms))
-            .await
+        self.run(
+            self.transport()?
+                .call_tool_as_task(tool_name, arguments, ttl_ms),
+        )
+        .await
     }
 
     async fn get_task(&self, task_id: &str) -> Result<McpTask, McpTransportError> {
-        self.run(self.inner.get_task(task_id)).await
+        self.run(self.transport()?.get_task(task_id)).await
     }
 
     async fn get_task_result(&self, task_id: &str) -> Result<CallToolResult, McpTransportError> {
-        self.run(self.inner.get_task_result(task_id)).await
+        self.run(self.transport()?.get_task_result(task_id)).await
     }
 
     async fn cancel_task(&self, task_id: &str) -> Result<McpTask, McpTransportError> {
-        self.run(self.inner.cancel_task(task_id)).await
+        self.run(self.transport()?.cancel_task(task_id)).await
     }
 
     async fn list_prompts(&self) -> Result<Vec<McpPromptDefinition>, McpTransportError> {
-        self.run(self.inner.list_prompts()).await
+        self.run(self.transport()?.list_prompts()).await
     }
 
     async fn get_prompt(
@@ -433,19 +498,23 @@ impl McpToolTransport for RevocableMcpTransport {
         name: &str,
         arguments: Option<HashMap<String, String>>,
     ) -> Result<McpPromptResult, McpTransportError> {
-        self.run(self.inner.get_prompt(name, arguments)).await
+        self.run(self.transport()?.get_prompt(name, arguments))
+            .await
     }
 
     async fn list_resources(&self) -> Result<Vec<McpResourceDefinition>, McpTransportError> {
-        self.run(self.inner.list_resources()).await
+        self.run(self.transport()?.list_resources()).await
     }
 
     async fn read_resource(&self, uri: &str) -> Result<Value, McpTransportError> {
-        self.run(self.inner.read_resource(uri)).await
+        self.run(self.transport()?.read_resource(uri)).await
     }
 
     fn is_alive(&self) -> bool {
-        self.fence.0.accepting.load(Ordering::SeqCst) && self.inner.is_alive()
+        self.fence.upgrade().is_some_and(|state| {
+            state.accepting.load(Ordering::SeqCst)
+                && self.transport().is_ok_and(|transport| transport.is_alive())
+        })
     }
 }
 
@@ -583,7 +652,7 @@ mod tests {
             ),
             "G2"
         );
-        let (other, _) = revocable_transport(Arc::new(ToolsOnly));
+        let (other, _other_owner) = revocable_transport(Arc::new(ToolsOnly));
         assert!(other.call_tool("busy", Value::Null).await.is_ok(), "G3");
     }
 
@@ -683,3 +752,6 @@ fn mcp_call_admission_requires_both_accepting_observations() {
         assert!(!admitted);
     }
 }
+
+#[cfg(test)]
+mod lifetime_tests;
