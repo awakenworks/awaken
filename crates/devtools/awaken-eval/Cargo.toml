@@ -45,7 +45,7 @@ awaken-outbound-http = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-zip = { version = "8.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip.workspace = true
 
 [lints]
 workspace = true
