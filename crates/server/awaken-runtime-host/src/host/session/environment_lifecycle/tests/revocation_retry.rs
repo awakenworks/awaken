@@ -236,7 +236,8 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
         host.realizer
             .retire_session_environment_for_revocation(
                 thread,
-                (&host.mcp, host.installed_sessions.as_ref())
+                (&host.mcp, host.installed_sessions.as_ref()),
+                None,
             )
             .await
             .is_err(),
@@ -366,6 +367,7 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
         .retire_session_environment_for_revocation(
             thread,
             (&host.mcp, host.installed_sessions.as_ref()),
+            None,
         )
         .await
         .expect("C2 live revocation");

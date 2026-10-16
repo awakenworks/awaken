@@ -55,6 +55,32 @@ struct Route {
 
 type RouteKey = (String, String, u64);
 type Routes = Arc<Mutex<HashMap<RouteKey, Route>>>;
+/// An operation-local selection of one existing physical route insertion.
+/// This carries no root authority and never discovers a later replacement.
+pub(crate) struct CapturedRelayRoute {
+    routes: Routes,
+    key: RouteKey,
+    generation: awaken_session_configuration_contract::mcp::McpGenerationRef,
+    capability: String,
+    call_fence: awaken_ext_mcp::transport::McpCallFence,
+}
+
+impl CapturedRelayRoute {
+    pub(crate) fn call_fence(&self) -> awaken_ext_mcp::transport::McpCallFence {
+        self.call_fence.clone()
+    }
+
+    pub(crate) fn remove_if_current(&self) {
+        let mut routes = self.routes.lock().expect("MCP relay routes mutex poisoned");
+        if routes.get(&self.key).is_some_and(|route| {
+            route.generation.tenure() == self.generation.tenure()
+                && route.capability == self.capability
+        }) {
+            routes.remove(&self.key);
+        }
+    }
+}
+
 type GenerationAuthority = Arc<
     dyn Fn(&awaken_session_configuration_contract::mcp::McpGenerationRef, u64) -> bool
         + Send
@@ -282,26 +308,68 @@ impl McpRelay {
         generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
         server: &McpTransportMaterial,
     ) -> bool {
-        let Some(url) = server.http_url() else {
-            return false;
-        };
+        self.stage_route_captured(generation, server).is_some()
+    }
+
+    pub(crate) fn stage_route_captured(
+        &self,
+        generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
+        server: &McpTransportMaterial,
+    ) -> Option<CapturedRelayRoute> {
+        let url = server.http_url()?;
         let mut routes = self.routes.lock().unwrap();
         let key = route_key(generation);
         if routes.contains_key(&key) {
-            return false;
+            return None;
         }
-        routes.insert(
-            key,
-            Route {
-                url: url.to_string(),
-                bearer: server.bearer().cloned(),
-                refresh: server.refresh(),
-                capability: uuid::Uuid::new_v4().simple().to_string(),
-                generation: generation.clone(),
-                call_fence: awaken_ext_mcp::transport::McpCallFence::open(),
-            },
-        );
-        true
+        let route = Route {
+            url: url.to_string(),
+            bearer: server.bearer().cloned(),
+            refresh: server.refresh(),
+            capability: uuid::Uuid::new_v4().simple().to_string(),
+            generation: generation.clone(),
+            call_fence: awaken_ext_mcp::transport::McpCallFence::open(),
+        };
+        let captured = CapturedRelayRoute {
+            routes: self.routes.clone(),
+            key: key.clone(),
+            generation: route.generation.clone(),
+            capability: route.capability.clone(),
+            call_fence: route.call_fence.clone(),
+        };
+        routes.insert(key, route);
+        Some(captured)
+    }
+
+    pub(crate) fn capture_route(
+        &self,
+        generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
+    ) -> Option<CapturedRelayRoute> {
+        let routes = self.routes.lock().expect("MCP relay routes mutex poisoned");
+        let key = route_key(generation);
+        let route = routes
+            .get(&key)
+            .filter(|route| route.generation.tenure() == generation.tenure())?;
+        Some(self.capture(&key, route))
+    }
+
+    pub(crate) fn capture_routes(&self, thread: &str) -> Vec<CapturedRelayRoute> {
+        let routes = self.routes.lock().expect("MCP relay routes mutex poisoned");
+        routes
+            .iter()
+            .filter(|(key, _)| key.0 == thread)
+            .map(|(key, route)| self.capture(key, route))
+            .collect()
+    }
+
+    fn capture(&self, key: &RouteKey, route: &Route) -> CapturedRelayRoute {
+        CapturedRelayRoute {
+            routes: self.routes.clone(),
+            key: key.clone(),
+            generation: route.generation.clone(),
+            capability: route.capability.clone(),
+            call_fence: route.call_fence.clone(),
+        }
     }
 
     /// Advance facts for an already-staged exact route without manufacturing a
@@ -1550,5 +1618,111 @@ mod tests {
             .unwrap()
             .status();
         assert_eq!(status, reqwest::StatusCode::NOT_FOUND);
+    }
+    #[tokio::test]
+    async fn captured_route_cleanup_preserves_same_tenure_reinsertion_and_is_idempotent() {
+        let upstream = fake_upstream().await;
+        let relay = McpRelay::start().await.unwrap();
+        let generation = generation("same-tenure-reinsertion", "docs", 1);
+        let selected = relay
+            .stage_route_captured(
+                &generation,
+                &http_material(
+                    "docs",
+                    format!("http://{upstream}/"),
+                    Some("old-secret".into()),
+                ),
+            )
+            .unwrap();
+        let old_url = relay.route_url(&generation).unwrap();
+        selected.call_fence().close_and_wait().await;
+        selected.remove_if_current();
+        assert!(relay.route_url(&generation).is_none());
+        assert!(relay.stage_route(
+            &generation,
+            &http_material(
+                "docs",
+                format!("http://{upstream}/"),
+                Some("new-secret".into())
+            )
+        ));
+        let current_url = relay.route_url(&generation).unwrap();
+        assert_ne!(
+            old_url, current_url,
+            "same tenure is a distinct physical insertion capability"
+        );
+        selected.remove_if_current();
+        selected.remove_if_current();
+        assert_eq!(
+            relay.route_url(&generation).as_deref(),
+            Some(current_url.as_str())
+        );
+        let response = reqwest::Client::new()
+            .post(&current_url)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(response.text().await.unwrap(), "Bearer new-secret");
+        assert_eq!(
+            reqwest::Client::new()
+                .post(&old_url)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            reqwest::StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn captured_orphan_routes_do_not_rescan_a_later_session_insertion() {
+        let upstream = fake_upstream().await;
+        let relay = McpRelay::start().await.unwrap();
+        let old = generation("captured-session", "docs", 1);
+        let successor = generation("captured-session", "docs", 2);
+        let unrelated = generation("other-session", "docs", 1);
+        let server = http_material("docs", format!("http://{upstream}/"), Some("token".into()));
+        assert!(relay.stage_route(&old, &server));
+        assert!(relay.stage_route(&unrelated, &server));
+        // There is deliberately no projection: capture selects the existing
+        // physical map record, not merely published generation projections.
+        let selected = relay.capture_routes("captured-session");
+        assert_eq!(selected.len(), 1);
+        let old_url = relay.route_url(&old).unwrap();
+        assert!(relay.stage_route(&successor, &server));
+        let successor_url = relay.route_url(&successor).unwrap();
+        for route in &selected {
+            route.call_fence().close_and_wait().await;
+            route.remove_if_current();
+            route.remove_if_current();
+        }
+        assert_eq!(
+            reqwest::Client::new()
+                .post(&old_url)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            reqwest::StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            reqwest::Client::new()
+                .post(&successor_url)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            reqwest::StatusCode::OK
+        );
+        assert_eq!(
+            reqwest::Client::new()
+                .post(relay.route_url(&unrelated).unwrap())
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            reqwest::StatusCode::OK
+        );
     }
 }

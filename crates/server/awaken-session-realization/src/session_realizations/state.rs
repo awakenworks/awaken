@@ -90,6 +90,27 @@ pub struct SessionRealization {
 }
 
 impl SessionRealization {
+    /// The original canonical MCP root rule, read under the Session slot lock.
+    /// Absence remains explicit and Closed never grants continuing admission.
+    pub fn mcp_generation_root_authority(
+        &self,
+        generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
+    ) -> Option<bool> {
+        if self.execution.authority.is_closed() {
+            return Some(false);
+        }
+        self.execution.authority.lease().map(|current| {
+            let asserted =
+                awaken_session_configuration_contract::resource::SessionRealizationLease {
+                    owner: current.owner.clone(),
+                    runtime_incarnation: generation.runtime_incarnation().to_owned(),
+                    epoch: generation.lease_epoch().get(),
+                    expires_at_unix_ms: generation.lease_expires_at_unix_ms(),
+                };
+            self.execution.authority.remaining_for(&asserted).is_some()
+        })
+    }
+
     pub fn validate_preparation_publication(
         &self,
         asserted: Option<&session_resource::SessionRealizationLease>,

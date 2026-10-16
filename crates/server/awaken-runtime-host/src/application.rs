@@ -290,21 +290,9 @@ impl crate::SharedHost {
         &self,
         generation: &crate::session_mcp::McpGenerationRef,
     ) -> Option<bool> {
-        let realizations = self.installed_sessions.realizations();
-        realizations
-            .read_realization(generation.session_id().as_str(), |r| {
-                if r.execution.authority.is_closed() {
-                    return Some(false);
-                }
-                r.execution.authority.lease().map(|current| {
-                    let asserted = crate::session_resource::SessionRealizationLease {
-                        owner: current.owner.clone(),
-                        runtime_incarnation: generation.runtime_incarnation().to_owned(),
-                        epoch: generation.lease_epoch().get(),
-                        expires_at_unix_ms: generation.lease_expires_at_unix_ms(),
-                    };
-                    r.execution.authority.remaining_for(&asserted).is_some()
-                })
+        self.installed_sessions
+            .read(generation.session_id().as_str(), |slot| {
+                slot.realization.mcp_generation_root_authority(generation)
             })
             .flatten()
     }
@@ -566,7 +554,7 @@ impl crate::SharedHost {
         // authorize cleanup of a replacement installed after the close edge.
         if !self
             .installed_sessions
-            .read(session_id, |slot| selected.matches(slot))
+            .read(session_id, |slot| selected.matches(&slot.realization))
             .unwrap_or(false)
         {
             return Ok(false);
@@ -579,15 +567,13 @@ impl crate::SharedHost {
                 )
                 .await;
         }
-        let retirement = self
-            .realizer
+        self.realizer
             .retire_session_environment_for_revocation(
                 session_id,
                 (&self.mcp, self.installed_sessions.as_ref()),
+                Some(&selected),
             )
-            .await?;
-        self.mcp.remove_relay_routes(session_id);
-        Ok(retirement)
+            .await
     }
 
     /// Revoke every process-local Session projection after Worker authority is

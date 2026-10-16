@@ -25,6 +25,80 @@ pub use execution_authority::{ExecutionAuthority, ExecutionAuthorityState};
 pub use projection_receipt::FrozenProjectionReceipt;
 pub use state::{SessionRealization, SessionRealizationAuthority};
 
+/// An ephemeral selection of the existing allocation and closed authority.
+/// It owns no new counter or admission law. Callers capture it while borrowing
+/// the canonical Session mutation, and compare it again at exact completion.
+pub struct SessionRealizationRevocationSelection {
+    pub realization: Arc<tokio::sync::Mutex<()>>,
+    pub lifecycle: Arc<tokio::sync::Mutex<()>>,
+    authority: SessionRealizationAuthority,
+}
+
+impl SessionRealizationRevocationSelection {
+    /// Close and select the original authority under its canonical slot lock.
+    pub fn close(
+        realization: &mut SessionRealization,
+        expected: Option<&awaken_session_configuration_contract::resource::SessionRealizationLease>,
+    ) -> Option<Self> {
+        realization
+            .close_authority(expected)
+            .then(|| Self::from_realization(realization))
+    }
+
+    /// Capture this original allocation during an already-held mutation.
+    /// The selection is cleanup identity, not proof of process death.
+    pub fn from_realization(realization: &SessionRealization) -> Self {
+        Self {
+            realization: realization.execution.phase.clone(),
+            lifecycle: realization.environment.lifecycle.clone(),
+            authority: realization.execution.authority.clone(),
+        }
+    }
+
+    /// Check the complete selected allocation and physical completion shape.
+    /// This pure rule must be consumed inside the canonical slot mutation;
+    /// it grants neither disposal nor process-stop authority.
+    pub fn matches_completion(
+        &self,
+        realization: &SessionRealization,
+        expected_owner: &crate::environment_owner::SessionEnvironmentOwner,
+        disposed: bool,
+    ) -> bool {
+        if !self.matches(realization) {
+            return false;
+        }
+        use crate::environment_owner::{
+            RetiringEnvironmentOwner, SessionEnvironmentOwner, SessionEnvironmentRestoration,
+        };
+        match (&realization.environment.owner, expected_owner) {
+            (SessionEnvironmentOwner::Vacant, SessionEnvironmentOwner::Vacant) => true,
+            (SessionEnvironmentOwner::Vacant, SessionEnvironmentOwner::Retiring(expected)) => {
+                disposed && matches!(&expected.owned, RetiringEnvironmentOwner::Unbound(_))
+            }
+            (
+                SessionEnvironmentOwner::Retiring(current),
+                SessionEnvironmentOwner::Retiring(expected),
+            ) => current.exact_matches(expected),
+            (
+                SessionEnvironmentOwner::Restoring(SessionEnvironmentRestoration::Awaiting {
+                    request: current,
+                }),
+                SessionEnvironmentOwner::Restoring(SessionEnvironmentRestoration::Awaiting {
+                    request: expected,
+                }),
+            ) => current == expected,
+            _ => false,
+        }
+    }
+
+    /// Require both original lock allocations and the original closed authority.
+    pub fn matches(&self, realization: &SessionRealization) -> bool {
+        Arc::ptr_eq(&self.realization, &realization.execution.phase)
+            && Arc::ptr_eq(&self.lifecycle, &realization.environment.lifecycle)
+            && self.authority == realization.execution.authority
+    }
+}
+
 /// The one local Primary/delegated activity combination. Callers retain their
 /// original Slot query adapter and already-held lifecycle scope; the delegated
 /// future is polled only after Primary, even when Primary was active. This is
@@ -75,7 +149,6 @@ pub trait SessionRealizationSource: Send + Sync {
     /// Existing registry operations; all keep the original slot owner/lock.
     fn session_ids(&self) -> Vec<String>;
     fn remove_session(&self, session: &str) -> bool;
-    fn retain_revoked_projection(&self, session: &str);
 
     /// Enter the installed-slot owner's canonical permit kernel. This is the
     /// same exclusion and replacement retry that Host admission uses.
@@ -97,6 +170,17 @@ pub trait SessionRealizationSource: Send + Sync {
         create: bool,
         visit: &mut dyn FnMut(SessionRealizationAccess<'_>),
     ) -> Result<(), InstalledSessionsPoisoned>;
+
+    /// Complete only the captured allocation/authority and exact physical owner.
+    /// The canonical slot implementation performs the comparison and mutation
+    /// together. Absence is false, never permission to select a later slot.
+    fn finish_realization_revocation(
+        &self,
+        session: &str,
+        selected: &SessionRealizationRevocationSelection,
+        expected_owner: &crate::environment_owner::SessionEnvironmentOwner,
+        disposed: bool,
+    ) -> bool;
 
     /// Validate and retain an exact immutable publication under the same slot
     /// lock. This is the only publication write available to the selector;
@@ -149,10 +233,6 @@ impl SessionRealizations {
         self.0.remove_session(session)
     }
 
-    pub fn retain_revoked_projection(&self, session: &str) {
-        self.0.retain_revoked_projection(session);
-    }
-
     /// Hold the Session's current realization allocation, revalidating any
     /// removal/recreation during the wait through the canonical slot owner.
     pub async fn acquire_realization(
@@ -182,6 +262,18 @@ impl SessionRealizations {
             permit,
             result.expect("canonical permit acquisition admits its current slot"),
         )
+    }
+
+    /// Apply the canonical slot owner's exact post-I/O cleanup CAS.
+    pub fn finish_realization_revocation(
+        &self,
+        session: &str,
+        selected: &SessionRealizationRevocationSelection,
+        expected_owner: &crate::environment_owner::SessionEnvironmentOwner,
+        disposed: bool,
+    ) -> bool {
+        self.0
+            .finish_realization_revocation(session, selected, expected_owner, disposed)
     }
 
     pub fn retain_publication(
