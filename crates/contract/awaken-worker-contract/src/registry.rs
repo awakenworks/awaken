@@ -672,6 +672,27 @@ pub async fn read_current_incarnation(
         .filter(|record| record.snapshot.identity == *identity))
 }
 
+/// Read the retained local-process exit of one exact, irreversibly closed
+/// incarnation. This supplies no whole-attempt closure or source-disposal
+/// receipt. Missing, foreign, active or malformed observations remain absent;
+/// read failures propagate without consulting the current roster.
+pub async fn read_closed_incarnation_exit(
+    source: &dyn WorkerIncarnationSource,
+    identity: &WorkerIdentity,
+) -> Result<Option<WorkerProcessExit>, RegistryError> {
+    Ok(source.incarnation(identity).await?.and_then(|record| {
+        if record.snapshot.identity != *identity
+            || !matches!(
+                record.snapshot.state,
+                WorkerState::Quiesced | WorkerState::Dead
+            )
+        {
+            return None;
+        }
+        record.process_exit.filter(|exit| exit.validate().is_ok())
+    }))
+}
+
 /// Worker-directory authority. Implementations must make every mutation atomic;
 /// all incarnation records remain in this authority so historical registrations
 /// cannot mint new generations. Current/list expose only the highest generation.
@@ -856,6 +877,118 @@ impl WorkerSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn exact_closed_incarnation_exit_never_uses_roster_or_foreign_receipts() {
+        // Causes: C1 exact identity, C2 closed state, C3 present valid exit,
+        // C4 successful exact query. Decision rule X1=C1+C2+C3+C4 -> return the
+        // unchanged exit; X2 any other combination -> None; X3 query failure
+        // -> propagate it. Cross all five states, both identities and all three
+        // receipt states (30 rows), then missing-row/read-error controls.
+        // The fake deliberately returns foreign records: this consumer must
+        // validate the response, never repair it through list/current fallback.
+        struct ExitRead {
+            identity: WorkerIdentity,
+            record: Option<RegisteredWorker>,
+            fail: bool,
+        }
+        #[async_trait]
+        impl WorkerObservationSource for ExitRead {
+            async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
+                panic!("exit evidence must not consult the current roster")
+            }
+        }
+        #[async_trait]
+        impl WorkerIncarnationSource for ExitRead {
+            async fn incarnation(
+                &self,
+                identity: &WorkerIdentity,
+            ) -> Result<Option<RegisteredWorker>, RegistryError> {
+                assert_eq!(identity, &self.identity);
+                if self.fail {
+                    Err(RegistryError::Persistence("exact-read-unavailable".into()))
+                } else {
+                    Ok(self.record.clone())
+                }
+            }
+        }
+        let identity = WorkerIdentity::new("original-worker", "original-boot", 1);
+        let exit = WorkerProcessExit::new("fixture", "original-process", "exit-fact").unwrap();
+        for state in [
+            WorkerState::Starting,
+            WorkerState::Ready,
+            WorkerState::Draining,
+            WorkerState::Quiesced,
+            WorkerState::Dead,
+        ] {
+            for exact in [false, true] {
+                for receipt in [
+                    None,
+                    Some(exit.clone()),
+                    Some(WorkerProcessExit {
+                        provider_id: String::new(),
+                        execution_ref: "original-process".into(),
+                        evidence_ref: "exit-fact".into(),
+                    }),
+                ] {
+                    let expected = exact
+                        && matches!(state, WorkerState::Quiesced | WorkerState::Dead)
+                        && receipt.as_ref() == Some(&exit);
+                    let source = ExitRead {
+                        identity: identity.clone(),
+                        record: Some(RegisteredWorker {
+                            snapshot: WorkerSnapshot {
+                                identity: if exact {
+                                    identity.clone()
+                                } else {
+                                    WorkerIdentity::new("original-worker", "different-boot", 2)
+                                },
+                                state,
+                                manifest: WorkerManifest::default(),
+                                capability_fingerprint: String::new(),
+                                in_flight: 0,
+                                warm_environment_shapes: Default::default(),
+                                credential_observations: Default::default(),
+                                acp_capability_observations: Default::default(),
+                                expires_at_ms: 0,
+                            },
+                            heartbeat_sequence: 0,
+                            observation_sequence: 0,
+                            registered_at_ms: 0,
+                            heartbeat_at_ms: 0,
+                            drain_deadline_ms: None,
+                            process_exit: receipt,
+                            create_ledger: None,
+                        }),
+                        fail: false,
+                    };
+                    assert_eq!(
+                        read_closed_incarnation_exit(&source, &identity)
+                            .await
+                            .unwrap(),
+                        expected.then(|| exit.clone()),
+                        "state={state:?}, exact={exact}"
+                    );
+                }
+            }
+        }
+        let mut source = ExitRead {
+            identity: identity.clone(),
+            record: None,
+            fail: false,
+        };
+        assert_eq!(
+            read_closed_incarnation_exit(&source, &identity)
+                .await
+                .unwrap(),
+            None
+        );
+        source.fail = true;
+        assert!(
+            matches!(read_closed_incarnation_exit(&source, &identity).await,
+            Err(RegistryError::Persistence(detail)) if detail == "exact-read-unavailable")
+        );
+    }
 
     #[test]
     fn worker_registration_wire_cannot_assert_a_create_ledger() {

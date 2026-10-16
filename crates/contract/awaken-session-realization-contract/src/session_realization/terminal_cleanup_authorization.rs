@@ -116,6 +116,23 @@ pub struct SessionTerminalCleanupWork {
     pub action: crate::SessionTerminalCleanupAction,
 }
 
+/// Control's observation of the original, frozen scope's dispatch boundary.
+/// This is transient input to source I/O admission, never a process exit,
+/// physical-attempt acknowledgement or persisted cleanup state.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SessionTerminalSourceDispatch {
+    Settled {},
+    Pending {},
+    Unavailable { detail: String },
+}
+
+fn unavailable_source_dispatch() -> SessionTerminalSourceDispatch {
+    SessionTerminalSourceDispatch::Unavailable {
+        detail: "terminal source dispatch observation was not supplied".into(),
+    }
+}
+
 /// Aggregate-derived authorization for one source-dependent terminal
 /// preparation effect.
 ///
@@ -131,6 +148,7 @@ pub struct SessionTerminalCleanupPreparationAuthorization {
     workspace_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     inherited_provider_disposal: Option<awaken_provisioning_contract::SandboxDisposalPreparation>,
+    source_dispatch: SessionTerminalSourceDispatch,
 }
 
 #[derive(serde::Deserialize)]
@@ -140,6 +158,8 @@ struct SessionTerminalCleanupPreparationAuthorizationWire {
     workspace_id: String,
     #[serde(default)]
     inherited_provider_disposal: Option<awaken_provisioning_contract::SandboxDisposalPreparation>,
+    #[serde(default = "unavailable_source_dispatch")]
+    source_dispatch: SessionTerminalSourceDispatch,
 }
 
 impl<'de> serde::Deserialize<'de> for SessionTerminalCleanupPreparationAuthorization {
@@ -153,6 +173,7 @@ impl<'de> serde::Deserialize<'de> for SessionTerminalCleanupPreparationAuthoriza
             wire.workspace_id,
             wire.inherited_provider_disposal,
         )
+        .map(|authorization| authorization.with_source_dispatch(wire.source_dispatch))
         .map_err(serde::de::Error::custom)
     }
 }
@@ -170,6 +191,7 @@ impl SessionTerminalCleanupPreparationAuthorization {
             effect,
             workspace_id,
             inherited_provider_disposal,
+            source_dispatch: unavailable_source_dispatch(),
         };
         authorization.validate()?;
         Ok(authorization)
@@ -225,6 +247,58 @@ impl SessionTerminalCleanupPreparationAuthorization {
     #[must_use]
     pub fn workspace_id(&self) -> &str {
         &self.workspace_id
+    }
+
+    /// Attach the original dispatch owner's observation. A missing observation
+    /// remains unavailable; callers cannot infer settled execution from absence.
+    #[must_use]
+    pub fn with_source_dispatch(mut self, observation: SessionTerminalSourceDispatch) -> Self {
+        self.source_dispatch = observation;
+        self
+    }
+
+    #[must_use]
+    pub fn source_dispatch(&self) -> &SessionTerminalSourceDispatch {
+        &self.source_dispatch
+    }
+
+    #[must_use]
+    pub fn permits_live_source(&self) -> bool {
+        matches!(
+            self.source_dispatch,
+            SessionTerminalSourceDispatch::Settled {}
+        )
+    }
+
+    /// Validate provider-derived Runtime observations without inferring a
+    /// physical closure or granting source access from an absent projection.
+    pub fn verify_runtime_source(
+        &self,
+        expected_restore: Option<&awaken_session_state_contract::SandboxRestoreRequest>,
+        reads_live_source: bool,
+    ) -> Result<(), awaken_session_types::RunError> {
+        use awaken_session_types::RunError;
+        if expected_restore != self.effect.command.restore_target.as_ref() {
+            return Err(
+                if self.effect.command.thread_id != self.effect.command.session_id {
+                    RunError::internal(
+                        "a child terminal cleanup command cannot own a restore target",
+                    )
+                } else {
+                    RunError::unavailable_classified(
+                        "session_terminal_restore_target_mismatch",
+                        "terminal preparation does not carry the aggregate's exact restore target",
+                    )
+                },
+            );
+        }
+        if reads_live_source && !self.permits_live_source() {
+            return Err(RunError::unavailable_classified(
+                "session_terminal_source_dispatch_not_settled",
+                "live source I/O requires the original frozen dispatch scope to settle",
+            ));
+        }
+        Ok(())
     }
 
     #[must_use]
@@ -325,11 +399,13 @@ pub fn terminal_cleanup_worker_requirements(
             .map(|request| request.format)
     };
 
-    Ok(physical_requirements(
-        awaken_worker_contract::PlacementRequirements::terminal_cleanup(
-            resource_facts.has_resources() || pending_publication.is_some(),
-            resource_facts.has_credentialed_repository() || publication_has_credential,
-            checkpoint_format,
-        ),
-    ))
+    let mut requirements = awaken_worker_contract::PlacementRequirements::terminal_cleanup(
+        resource_facts.has_resources() || pending_publication.is_some(),
+        resource_facts.has_credentialed_repository() || publication_has_credential,
+        checkpoint_format,
+    );
+    requirements
+        .required_capabilities
+        .insert(awaken_worker_contract::SESSION_TERMINAL_SOURCE_ADMISSION_CAPABILITY.to_owned());
+    Ok(physical_requirements(requirements))
 }

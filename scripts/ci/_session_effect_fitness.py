@@ -237,6 +237,8 @@ REQUIRED = {
         ".freeze_terminal_cleanup_targets(",
         '"terminal-cleanup-fence"',
         ".verified_terminal_cleanup()",
+        ".authorize_terminal_cleanup_effect(effect)",
+        "SessionTerminalCleanupPreparationAuthorization::try_new(",
     ),
     APPLICATION_PUBLICATION_CONTROL: (
         "record_terminal_repository_publication_rejection_after_refresh",
@@ -246,8 +248,6 @@ REQUIRED = {
     APPLICATION_EVENT_BATCHES: (".verified_terminal_cleanup()",),
     APPLICATION_RESOURCE_RECONCILIATION: (
         ".terminal_cleanup_work_action()",
-        ".authorize_terminal_cleanup_effect(effect)",
-        "SessionTerminalCleanupPreparationAuthorization::try_new(",
         ".authorize_terminal_cleanup_disposal_effect(&owner_scope, effect)",
         ".record_terminal_cleanup_preparation(",
         '"terminal-cleanup-preparation"',
@@ -535,10 +535,15 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
         "terminal generation consumes the installed application clock",
     ))
 
+    if _rust_function(sources.get(APPLICATION_RESOURCE_RECONCILIATION, ""),
+                      "authorize_terminal_cleanup_effect_from_root") is not None:
+        errors.append(f"{APPLICATION_CLEANUP}: terminal preparation authorization has a duplicate or retired owner")
+
     # Application Control re-derives authority from the root and commits both
     # receipt classes through that same root CAS; it owns no side queue.
-    for function, markers, ownership in (
+    for owner, function, markers, ownership in (
         (
+            APPLICATION_CLEANUP,
             "authorize_terminal_cleanup_effect_from_root",
             (
                 ".get(&effect.command.session_id)",
@@ -546,11 +551,15 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
                 ".owner(&effect.command.session_id)",
                 "terminal_restore_target_for_thread(",
                 ".authorize_terminal_cleanup_effect(effect)",
+                ".source_dispatch_observation(&session)",
+                ".terminal_source_dispatch()?",
                 "SessionTerminalCleanupPreparationAuthorization::try_new(",
+                ".with_source_dispatch(source_dispatch)",
             ),
             "root-derived terminal preparation authorization",
         ),
         (
+            APPLICATION_RESOURCE_RECONCILIATION,
             "authorize_terminal_cleanup_disposal_from_root",
             (
                 ".get(&effect.command.session_id)",
@@ -560,6 +569,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
             "root-derived terminal disposal authorization",
         ),
         (
+            APPLICATION_RESOURCE_RECONCILIATION,
             "record_terminal_cleanup_preparation_from_root",
             (
                 ".session_aggregate(&session_id)",
@@ -569,6 +579,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
             "root-CAS terminal preparation receipt",
         ),
         (
+            APPLICATION_RESOURCE_RECONCILIATION,
             "record_terminal_cleanup_disposal_from_root",
             (
                 ".session_aggregate(&session_id)",
@@ -581,7 +592,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
         errors.extend(
             _require_ordered_function(
                 sources,
-                APPLICATION_RESOURCE_RECONCILIATION,
+                owner,
                 function,
                 markers,
                 ownership,
@@ -1062,6 +1073,20 @@ def _migrated_effect_owner_mutation_selftest(sources: dict[str, str]) -> None:
     sibling calls, comments and legacy Host facades cannot mask a missing edge.
     """
     for relative, function, marker, ownership, last, after in (
+        (APPLICATION_CLEANUP, "authorize_terminal_cleanup_effect_from_root",
+         ".get(&effect.command.session_id)", "root-derived terminal preparation authorization", False, ""),
+        (APPLICATION_CLEANUP, "authorize_terminal_cleanup_effect_from_root",
+         "self.require_current_live_terminal_generation(&session)?", "root-derived terminal preparation authorization", False, ""),
+        (APPLICATION_CLEANUP, "authorize_terminal_cleanup_effect_from_root",
+         ".authorize_terminal_cleanup_effect(effect)", "root-derived terminal preparation authorization", False, ""),
+        (APPLICATION_CLEANUP, "authorize_terminal_cleanup_effect_from_root",
+         ".source_dispatch_observation(&session)", "root-derived terminal preparation authorization", False, ""),
+        (APPLICATION_CLEANUP, "authorize_terminal_cleanup_effect_from_root",
+         ".terminal_source_dispatch()?", "root-derived terminal preparation authorization", False, ""),
+        (APPLICATION_CLEANUP, "authorize_terminal_cleanup_effect_from_root",
+         "SessionTerminalCleanupPreparationAuthorization::try_new(", "root-derived terminal preparation authorization", False, ""),
+        (APPLICATION_CLEANUP, "authorize_terminal_cleanup_effect_from_root",
+         ".with_source_dispatch(source_dispatch)", "root-derived terminal preparation authorization", False, ""),
         (RUNTIME_BOUND_ENVIRONMENT, "install_bound_environment_under_lifecycle",
          "self.execution.provider_effect_authority(", "cold terminal reconstruction authority", False, ""),
         (RUNTIME_BOUND_ENVIRONMENT, "install_bound_environment_under_lifecycle",
@@ -1183,6 +1208,19 @@ fn verify_for() {
     if &self.effect != effect {}
 }
 """
+    preparation_authorization = """
+fn authorize_terminal_cleanup_effect_from_root() {
+    repository.get(&effect.command.session_id);
+    self.require_current_live_terminal_generation(&session)?;
+    repository.owner(&effect.command.session_id);
+    terminal_restore_target_for_thread(&workspace_id, &session, &effect.command.thread_id);
+    session.authorize_terminal_cleanup_effect(effect);
+    let source_dispatch = runtime.source_dispatch_observation(&session).await.terminal_source_dispatch()?;
+    SessionTerminalCleanupPreparationAuthorization::try_new(
+        effect, workspace_id, inherited_provider_disposal,
+    ).with_source_dispatch(source_dispatch);
+}
+"""
     canonical[APPLICATION_CLEANUP] = """
 fn release_terminal_resources_once() {
     session.verified_terminal_cleanup();
@@ -1198,20 +1236,11 @@ fn drive_local_terminal_cleanup() {
     drive_session_terminal_cleanup(session_id, lease, self, self.runtime());
 }
 """
+    canonical[APPLICATION_CLEANUP] += preparation_authorization
     canonical[APPLICATION_RESOURCE_RECONCILIATION] = """
 fn terminal_cleanup_projection() { session.terminal_cleanup_work_action(); }
 fn require_current_live_terminal_generation(&self, session: &PersistedSession) {
     realization_lease_is_live_at(current.expires_at_unix_ms, self.clock.now_ms());
-}
-fn authorize_terminal_cleanup_effect_from_root() {
-    repository.get(&effect.command.session_id);
-    self.require_current_live_terminal_generation(&session)?;
-    repository.owner(&effect.command.session_id);
-    terminal_restore_target_for_thread(&workspace_id, &session, &effect.command.thread_id);
-    session.authorize_terminal_cleanup_effect(effect);
-    SessionTerminalCleanupPreparationAuthorization::try_new(
-        effect, workspace_id, inherited_provider_disposal,
-    );
 }
 fn authorize_terminal_cleanup_disposal_from_root() {
     repository.get(&effect.command.session_id);
@@ -1390,6 +1419,16 @@ fn recover_terminal_receipts() {
     # owner graph; R2 any missing source -> reject instead of accepting stale
     # parent markers or a duplicate compatibility definition.
     assert session_effect_violations(canonical) == [], "canonical effect paths"
+    # Owner-migration decision table: M1 exact child+all guards -> accept;
+    # M2 move the complete function to the retired parent -> reject; M3 keep
+    # both implementations -> reject. Missing authority/read/attachment edges
+    # are separately mutated by the shared runner on fixtures and real source.
+    for keep_child in (False, True):
+        mutant = dict(canonical)
+        if not keep_child:
+            mutant[APPLICATION_CLEANUP] = mutant[APPLICATION_CLEANUP].replace(preparation_authorization, "")
+        mutant[APPLICATION_RESOURCE_RECONCILIATION] += preparation_authorization
+        assert session_effect_violations(mutant), ("retired/duplicate preparation owner", keep_child)
     assert repository_publication_writer_violations(canonical) == [], (
         "canonical Repository publication writer"
     )

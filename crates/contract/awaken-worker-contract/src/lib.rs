@@ -32,8 +32,8 @@ pub use manifest::{
     CURRENT_CONTRACT_VERSION, CURRENT_RUNTIME_PROTOCOL_VERSION, FingerprintError,
     HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,
     REPOSITORY_CREDENTIALS_CAPABILITY, RegisteredCapacity, SESSION_RESOURCES_CAPABILITY,
-    TRUSTED_HOST_SANDBOX_BACKEND, VersionRange, WORKER_LOCAL_CREDENTIALS_CAPABILITY,
-    WorkerCapacity, WorkerManifest, ZeroRegisteredCapacity,
+    SESSION_TERMINAL_SOURCE_ADMISSION_CAPABILITY, TRUSTED_HOST_SANDBOX_BACKEND, VersionRange,
+    WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerCapacity, WorkerManifest, ZeroRegisteredCapacity,
 };
 #[cfg(any(test, kani))]
 pub(crate) use observation::dynamic_observation_admitted;
@@ -54,10 +54,10 @@ pub use registry::{
     WorkerObservationPublicationFence, WorkerObservationSource, WorkerProcessExit,
     WorkerRegistration, WorkerRegistrationHistoryAdmission, WorkerSnapshot, WorkerState,
     assignment_recovery_rejection, can_assign, is_local_process_incarnation,
-    process_ready_after_startup, read_current_incarnation, worker_expiry_admission,
-    worker_heartbeat_admission, worker_observation_sequence_after_heartbeat,
-    worker_process_exit_admission, worker_registration_history_admission,
-    worker_slot_is_replaceable,
+    process_ready_after_startup, read_closed_incarnation_exit, read_current_incarnation,
+    worker_expiry_admission, worker_heartbeat_admission,
+    worker_observation_sequence_after_heartbeat, worker_process_exit_admission,
+    worker_registration_history_admission, worker_slot_is_replaceable,
 };
 pub use relay_route::{WORKER_RELAY_DESTINATION_PATH, WorkerRelayDestination};
 #[cfg(any(test, kani))]

@@ -38,6 +38,9 @@ pub(super) enum TerminalCleanupRootClaim {
 
 impl<'a> TerminalCleanupClaimScope<'a> {
     pub(super) fn admits(self, session: &PersistedSession) -> bool {
+        if !session.is_terminal() || !session.terminal_cleanup.is_requested() {
+            return false;
+        }
         match self {
             Self::External => session.requires_external_environment_owner(),
             Self::LocalSession(session_id) => {
@@ -55,11 +58,13 @@ impl<'a> TerminalCleanupClaimScope<'a> {
     }
 }
 
-/// Physical affinity remains immutable unless an expired cleanup-only claim
-/// has the exact archive no-Create witness and no accepted source progress.
+/// Release only terminal Actor affinity from existing exact no-Create or
+/// independently observed predecessor-exit evidence. Source identity is not
+/// transferred; the provider still owns every physical verification/effect.
 /// The existing claim CAS still owns replacement, Registry fencing and replay.
 pub(super) async fn terminal_cleanup_worker_affinity_rejection(
     repository: &dyn awaken_session_repository_contract::SessionRepository,
+    workers: Option<&dyn awaken_worker_contract::WorkerIncarnationSource>,
     scope: TerminalCleanupClaimScope<'_>,
     owner_scope: &str,
     session: &PersistedSession,
@@ -84,6 +89,31 @@ pub(super) async fn terminal_cleanup_worker_affinity_rejection(
             match unattempted_profiled_archive_witness(repository, owner_scope, session).await {
                 Ok(witness) => (!witness).then_some(TerminalCleanupRootClaim::Skip),
                 Err(error) => Some(TerminalCleanupRootClaim::Failed(repository_control(error))),
+            }
+        }
+        SessionTerminalCleanupAffinity::RequiresPredecessorExit => {
+            let Some(lease) = session.realization.as_ref() else {
+                return Some(TerminalCleanupRootClaim::Skip);
+            };
+            let Some(identity) = awaken_worker_contract::WorkerIdentity::from_lease_owner(
+                &lease.owner,
+                &lease.runtime_incarnation,
+            ) else {
+                return Some(TerminalCleanupRootClaim::Skip);
+            };
+            let Some(workers) = workers else {
+                return Some(TerminalCleanupRootClaim::Failed(
+                    SessionRealizationControlFailure::Unavailable(
+                        "exact predecessor Registry reader is not installed".into(),
+                    ),
+                ));
+            };
+            match awaken_worker_contract::read_closed_incarnation_exit(workers, &identity).await {
+                Ok(Some(_)) => None,
+                Ok(_) => Some(TerminalCleanupRootClaim::Skip),
+                Err(error) => Some(TerminalCleanupRootClaim::Failed(
+                    SessionRealizationControlFailure::Unavailable(error.to_string()),
+                )),
             }
         }
     }

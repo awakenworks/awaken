@@ -1547,6 +1547,15 @@ pub(crate) fn begin_terminal_takeover(
     let observed = read_marker_locked(root, &lock)?;
     observation::validate_terminal_preflight(expected_preflight, observed.as_ref())?;
     let Some(mut marker) = observed else {
+        // A returned handle could only follow original marker publication.
+        // Missing both names in this provider base does not establish that the
+        // published source is absent elsewhere. Keep identity uncertainty;
+        // only handle-free effects may enter the existing no-marker fence.
+        if handle.is_some() {
+            return Err(pc::SandboxError::not_ready(
+                "published filesystem source has no original realization marker; absence is unproven",
+            ));
+        }
         let (terminal_source, incarnation) = observation::validate_absent_terminal_source(
             fingerprint,
             handle.as_ref(),

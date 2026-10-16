@@ -66,4 +66,7 @@ pub use awaken_dispatch_erasure::{
 };
 
 mod execution_recovery;
-pub use execution_recovery::read_execution_recovery;
+pub use execution_recovery::{
+    exact_expired_slot_remains, read_execution_recovery, read_expired_physical_attempt,
+    read_source_dispatch_observation,
+};

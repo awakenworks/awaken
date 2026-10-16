@@ -83,10 +83,10 @@ pub use session::{
     SessionExecutionRecoveryObservation, SessionExecutionRoles, SessionExecutor,
     SessionModelRequestObservation, SessionProjectionReadTimings, SessionProjectionSource,
     SessionRecoveryPreparationReference, SessionRunExecutionObservation, SessionRuntime,
-    SessionThreadLiveSubscription, SessionToolUseObservation, StreamingRunRuntime,
-    TerminalCleanupRuntime, ThreadReadRuntime, ToolPermissionDecision, committed_lifecycle_prefix,
-    drain_mcp_generation_receipt, outcome_terminal_commit_cursor, publish_mcp_generation_receipt,
-    select_recovery_snapshot_run,
+    SessionSourceDispatchObservation, SessionThreadLiveSubscription, SessionToolUseObservation,
+    StreamingRunRuntime, TerminalCleanupRuntime, ThreadReadRuntime, ToolPermissionDecision,
+    committed_lifecycle_prefix, drain_mcp_generation_receipt, outcome_terminal_commit_cursor,
+    publish_mcp_generation_receipt, select_recovery_snapshot_run,
 };
 
 #[doc(hidden)]

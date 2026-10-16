@@ -12,6 +12,7 @@ use super::*;
 mod capacity_budget;
 mod cleanup_timing;
 mod initial_preparation;
+mod source_admission;
 mod unattempted_owner_recovery;
 mod worker_affinity;
 use awaken_session_realization_contract::{
@@ -20,7 +21,6 @@ use awaken_session_realization_contract::{
     SessionTerminalPreparationControl, SessionTerminalRepositoryPublicationControl,
 };
 use awaken_session_repository_contract::LifecycleOutbox as _;
-use awaken_session_types::SessionId;
 
 /// A fresh ephemeral durable Session repository; `expect` names it in the
 /// failure message when the in-memory database cannot be opened.
@@ -138,22 +138,9 @@ fn terminal_cleanup_retains_exact_process_owner_requirements_through_dispose() {
     // TC2 model/ACP/credential requirements remain empty; process cleanup is
     // independent of an available inference login. No cleanup effect is run
     // here: the production requirement compiler is the subject under test.
-    use awaken_provisioning_contract::{
-        HostAccessPolicy, SandboxDisposalPreparation, SandboxEffectFence,
-    };
-    use awaken_session_state_contract::{
-        SessionCleanupDisposalCommand, SessionTerminalCleanupAction,
-    };
-    let fence = SandboxEffectFence::new("terminal", "worker", "boot", 1, u64::MAX).unwrap();
-    let disposal = SessionTerminalCleanupAction::Dispose {
-        command: SessionCleanupDisposalCommand {
-            session_id: "supervised-terminal".into(),
-            effect_id: "terminal".into(),
-            preparation_fingerprint: "fixture-preparation".into(),
-            provider_disposal: SandboxDisposalPreparation::new(fence, "fixture-provider").unwrap(),
-            restore_target: None,
-        },
-    };
+    use awaken_provisioning_contract::HostAccessPolicy;
+    use awaken_session_state_contract::SessionTerminalCleanupAction;
+    let disposal = source_admission::terminal_disposal_action("supervised-terminal");
     for trusted in [false, true] {
         for supervised in [false, true] {
             let mut session = persisted("supervised-terminal", true, "terminated");

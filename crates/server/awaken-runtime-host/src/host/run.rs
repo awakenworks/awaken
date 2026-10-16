@@ -174,7 +174,7 @@ impl SharedHost {
         let commit = self.commit_for_read_under_lifecycle(thread).await?;
         self.delegated_run_snapshot_from_commit(thread, commit)
             .await
-            .map(|snapshot| snapshot.delegated_runs)
+            .map(|(snapshot, _)| snapshot.delegated_runs)
     }
 
     async fn delegated_run_snapshot(
@@ -184,13 +184,20 @@ impl SharedHost {
         let commit = self.commit_for_read(thread).await?;
         self.delegated_run_snapshot_from_commit(thread, commit)
             .await
+            .map(|(snapshot, _)| snapshot)
     }
 
     async fn delegated_run_snapshot_from_commit(
         &self,
         thread: &str,
         commit: Arc<crate::store::HostCommit>,
-    ) -> Result<awaken_session_application_contract::DelegatedRunSnapshot, HostError> {
+    ) -> Result<
+        (
+            awaken_session_application_contract::DelegatedRunSnapshot,
+            Option<RunRecoverySnapshot>,
+        ),
+        HostError,
+    > {
         let root_thread = ThreadId(thread.to_string());
         let recovery = match commit
             .authoritative_latest_run(&root_thread)
@@ -220,12 +227,15 @@ impl SharedHost {
         }
         projected.sort_by(|left, right| left.run_id.0.cmp(&right.run_id.0));
         projected.dedup_by(|left, right| left.run_id == right.run_id);
-        Ok(awaken_session_application_contract::DelegatedRunSnapshot {
-            delegated_runs: projected,
-            coordinated_thread_ids: Vec::new(),
-            watermark,
-            runtime_commit_cursor,
-        })
+        Ok((
+            awaken_session_application_contract::DelegatedRunSnapshot {
+                delegated_runs: projected,
+                coordinated_thread_ids: Vec::new(),
+                watermark,
+                runtime_commit_cursor,
+            },
+            recovery,
+        ))
     }
 
     /// True when `thread` has a run awaiting a decision.

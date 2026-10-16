@@ -800,7 +800,7 @@ mod execution_recovery;
 pub use execution_recovery::{
     SessionExecutionClosureReference, SessionExecutionOperationFootprint,
     SessionExecutionRecoveryGap, SessionExecutionRecoveryObservation,
-    SessionRecoveryPreparationReference,
+    SessionRecoveryPreparationReference, SessionSourceDispatchObservation,
 };
 
 mod execution_observation;

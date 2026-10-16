@@ -153,14 +153,6 @@ fn closed_environment_recovery_consumes_only_rebuildable_owner_classes() {
 }
 
 impl TerminalEnvironmentPreparation {
-    /// Resident and suspending states still name the Agent-authored source.
-    /// Hibernated has no live root, while Restoring may contain only a partial
-    /// replay of checkpoint bytes and must never publish those bytes as fresh
-    /// terminal output.
-    fn harvests_agent_outputs(&self) -> bool {
-        terminal_state_harvests_agent_outputs(&self.state)
-    }
-
     /// Select the one artifact edge without conflating aggregate state with
     /// provider I/O safety. Once the provider reports `Disposing`, durable
     /// receipt recovery is mandatory even when the aggregate state would not
@@ -168,22 +160,12 @@ impl TerminalEnvironmentPreparation {
     fn artifact_capture_mode(&self) -> Option<crate::provisioning::ArtifactCaptureMode> {
         if !self.environment.permits_live_io() {
             Some(crate::provisioning::ArtifactCaptureMode::ReceiptOnly)
-        } else if self.harvests_agent_outputs() {
+        } else if self.state.binding().is_some() {
             Some(crate::provisioning::ArtifactCaptureMode::Live)
         } else {
             None
         }
     }
-}
-
-fn terminal_state_harvests_agent_outputs(
-    state: &awaken_session_state_contract::SessionEnvironmentState,
-) -> bool {
-    matches!(
-        state,
-        awaken_session_state_contract::SessionEnvironmentState::Resident { .. }
-            | awaken_session_state_contract::SessionEnvironmentState::Suspending { .. }
-    )
 }
 
 impl SharedHost {
@@ -846,11 +828,29 @@ mod terminal_output_tests {
             generation: None,
             idle_since_unix_ms: None,
         };
-        assert!(terminal_state_harvests_agent_outputs(&resident), "HT1a");
-        assert!(
-            !terminal_state_harvests_agent_outputs(
-                &awaken_session_state_contract::SessionEnvironmentState::Unmaterialized
-            ),
+        // The aggregate's binding projection already owns exactly the
+        // Resident/Suspending source partition. Exercise the consuming artifact
+        // edge rather than maintaining a second variant classifier in Host.
+        let live_capture = |state| {
+            TerminalEnvironmentPreparation {
+                state,
+                environment: PreparedBoundEnvironment::new(
+                    None,
+                    None,
+                    TerminalEffectMode::LiveUnprepared,
+                ),
+                pending_checkpoint: None,
+            }
+            .artifact_capture_mode()
+        };
+        assert_eq!(
+            live_capture(resident),
+            Some(crate::provisioning::ArtifactCaptureMode::Live),
+            "HT1a"
+        );
+        assert_eq!(
+            live_capture(awaken_session_state_contract::SessionEnvironmentState::Unmaterialized),
+            None,
             "HT1b"
         );
 

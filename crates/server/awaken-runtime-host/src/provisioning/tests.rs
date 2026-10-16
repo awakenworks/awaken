@@ -363,6 +363,9 @@ fn root_terminal_preparation_authorization(
         inherited_provider_disposal,
     )
     .expect("close the exact root terminal preparation authorization")
+    .with_source_dispatch(
+        awaken_session_realization_contract::SessionTerminalSourceDispatch::Settled {},
+    )
 }
 
 #[tokio::test]

@@ -962,34 +962,7 @@ impl SessionApplication {
             )
         })?;
         let workers = observations.list().await.map_err(unavailable)?;
-        let mut matching = workers
-            .into_iter()
-            .filter(|registered| registered.snapshot.identity.worker_id == target.owner);
-        let Some(registered) = matching.next() else {
-            return Ok(None);
-        };
-        if matching.next().is_some() {
-            return Err(SessionRealizationControlFailure::Unavailable(
-                "Worker observation source returned duplicate logical owners".into(),
-            ));
-        }
-        let worker = registered.snapshot;
-        let fingerprint = worker.manifest.fingerprint().map_err(unavailable)?;
-        let now = self.clock.now_ms();
-        if worker.identity.lease_owner() != target.runtime_incarnation
-            || worker.expires_at_ms <= now
-            || target.lease_expires_at_unix_ms > worker.expires_at_ms
-            || !matches!(
-                worker.state,
-                awaken_worker_contract::WorkerState::Ready
-                    | awaken_worker_contract::WorkerState::Draining
-            )
-            || fingerprint != worker.capability_fingerprint
-            || !worker.manifest.supports_current_runtime_protocol()
-        {
-            return Ok(None);
-        }
-        Ok(Some(worker))
+        target.worker_from_registry_observation(workers, self.clock.now_ms())
     }
 
     /// Recompute the complete claim gate from one current Registry read and
@@ -1121,14 +1094,12 @@ impl SessionApplication {
         scope: TerminalCleanupClaimScope<'_>,
         replay_after_conflict: Option<&TerminalCleanupClaimConflict>,
     ) -> TerminalCleanupRootClaim {
-        if !scope.admits(&session)
-            || !session.is_terminal()
-            || !session.terminal_cleanup.is_requested()
-        {
+        if !scope.admits(&session) {
             return TerminalCleanupRootClaim::Skip;
         }
         if let Some(rejection) = terminal_cleanup_worker_affinity_rejection(
             self.session_repository(),
+            self.worker_observation_source(),
             scope,
             owner_scope,
             &session,

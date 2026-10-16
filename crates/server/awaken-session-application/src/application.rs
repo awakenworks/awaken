@@ -526,7 +526,7 @@ impl SessionApplication {
             .map_err(|_| "Session lifecycle notifier is already installed")
     }
 
-    pub(crate) fn worker_observation_source(&self) -> Option<&dyn WorkerObservationSource> {
+    pub(crate) fn worker_observation_source(&self) -> Option<&dyn WorkerIncarnationSource> {
         self.execution_admission.workers.get().map(Arc::as_ref)
     }
 

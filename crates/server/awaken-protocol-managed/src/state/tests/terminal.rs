@@ -1971,6 +1971,13 @@ impl awaken_session_runtime_contract::CoordinationRuntime for EndSessionFailer {
 
 #[async_trait::async_trait]
 impl awaken_session_runtime_contract::SessionCoordinationReads for EndSessionFailer {
+    async fn source_dispatch_observation(
+        &self,
+        _session: &awaken_session_state_contract::PersistedSession,
+    ) -> awaken_session_runtime_contract::SessionSourceDispatchObservation {
+        Default::default()
+    }
+
     async fn coordinated_admission_receipt(
         &self,
         command: awaken_session_runtime_contract::CoordinatedAdmissionRef<'_>,
