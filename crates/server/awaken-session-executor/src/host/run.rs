@@ -342,16 +342,29 @@ impl SharedHost {
         // operator unable to recover the exact Runs whose Environment cannot be
         // realized. Durable dispatch and committed Thread truth remain the
         // authorities for cold Managed Sessions.
-        let resident = self
+        let (resident, installed_claim) = self
             .installed_sessions
-            .read_run(thread, |run| run.context.clone())
-            .flatten();
-        let active_run = resident.as_ref().and_then(|ctx| {
-            ctx.active_run
-                .lock()
-                .expect("active run mutex poisoned")
-                .clone()
-        });
+            .read_run(thread, |run| {
+                (
+                    run.context.clone(),
+                    run.dispatch_claim
+                        .as_ref()
+                        .map(|claim| claim.run_id.clone()),
+                )
+            })
+            .unwrap_or_default();
+        // Select the original local controls before any durable read or intent
+        // await. A retained SessionCtx may serve a later Run; reading its mutable
+        // token after that await would cancel the successor. The Run hint guards
+        // this short snapshot, while cancellation remains the existing token.
+        let (active_run, cancellation) = resident
+            .as_ref()
+            .map(|ctx| {
+                let active = ctx.active_run.lock().expect("active run mutex poisoned");
+                let cancellation = ctx.cancel.lock().expect("cancel mutex poisoned").clone();
+                (active.clone(), cancellation)
+            })
+            .unwrap_or_default();
         if !self.authority.cancels_through_durable_intent() {
             // A Worker revokes its resident attempt, not the Coordinator's
             // durable cancellation intent. Its transport deliberately cannot
@@ -359,19 +372,11 @@ impl SharedHost {
             // and Runtime's existing local signal even after lease loss; this
             // cannot authorize a replacement attempt or acknowledge return.
             if let Some(ctx) = resident.as_ref() {
-                let run_id = active_run.or_else(|| {
-                    self.installed_sessions
-                        .read_run(thread, |run| {
-                            run.dispatch_claim
-                                .as_ref()
-                                .map(|claim| claim.run_id.clone())
-                        })
-                        .flatten()
-                });
+                let run_id = active_run.or(installed_claim);
                 if let Some(run_id) = run_id {
                     let _ = ctx.runtime.deliver(LiveCommand::Cancel { run_id });
                 }
-                if let Some(token) = ctx.cancel.lock().expect("cancel mutex poisoned").as_ref() {
+                if let Some(token) = cancellation.as_ref() {
                     token.cancel();
                 }
             }
@@ -404,7 +409,7 @@ impl SharedHost {
                 .await
                 .map_err(|error| HostError::internal(error.to_string()))?;
             }
-            if let Some(token) = ctx.cancel.lock().expect("cancel mutex poisoned").as_ref() {
+            if let Some(token) = cancellation.as_ref() {
                 token.cancel();
             }
             return Ok(());
@@ -437,9 +442,7 @@ impl SharedHost {
         // Direct/foreground ACP attempts retain this exact token outside the
         // Runtime registry. Durable paths reach it only after intent persistence;
         // direct paths have no durable ordering precondition.
-        if let Some(ctx) = resident
-            && let Some(token) = ctx.cancel.lock().expect("cancel mutex poisoned").as_ref()
-        {
+        if let Some(token) = cancellation {
             token.cancel();
         }
         Ok(())
