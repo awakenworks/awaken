@@ -9,7 +9,9 @@
 mod child_substrate;
 mod content_delivery;
 mod context;
+#[cfg(test)]
 mod environment_lifecycle;
+#[cfg(test)]
 mod environment_realization;
 mod input_projection;
 mod quiescence;
@@ -18,10 +20,7 @@ mod run_ingress;
 use super::*;
 pub(super) use crate::config::{SessionToolsetProjection, project_session_tool_override};
 use crate::host::session_ctx::{RuntimeContextPurpose, runtime_context_cache_reuse_admitted};
-pub(crate) use crate::session_environment::{
-    AuthorizedSessionEnvironmentEffect, BoundEnvironmentPreparationMode,
-    SessionEnvironmentAdoptionDisposition, SessionEnvironmentUnavailablePolicy,
-};
+pub(crate) use crate::session_environment::SessionEnvironmentAdoptionDisposition;
 pub(crate) use content_delivery::SkillDeliveryEvidence;
 pub(super) use input_projection::{ManagedCoordinationRole, project_managed_coordination_surface};
 
@@ -214,7 +213,8 @@ impl SharedHost {
             self.realizer
                 .retry_unpublished_session_environment_cleanup(thread)
                 .await?;
-            self.retry_session_environment_candidate_under_lifecycle(thread)
+            self.realizer
+                .retry_session_environment_candidate_under_lifecycle(thread)
                 .await?;
             if let Some(ctx) = self
                 .installed_sessions

@@ -1095,7 +1095,7 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
 /// | A8 | yes | yes | no OR C4=no | any | E2 |
 #[tokio::test]
 async fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epoch_renewal() {
-    let base = crate::terminal_repository_publication::runtime_unix_now_ms() + 60_000;
+    let base = awaken_session_realization::test_support::runtime_unix_now_ms() + 60_000;
     let generation = crate::test_mcp::mcp_fence(
         "mcp-effect-authority",
         "browser",
@@ -1161,15 +1161,15 @@ async fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epo
             // A4/A5 keep exact generation bytes but carry exhausted local
             // observations. Managed root admission must not use Worker wall time.
             let proof = if matches!(rule, "A4" | "A5") {
-                crate::installed_session::test_expired_observed_lease(lease)
+                awaken_session_realization::test_support::test_expired_observed_lease(lease)
             } else {
-                crate::installed_session::test_observed_lease(lease)
+                awaken_session_realization::test_support::test_observed_lease(lease)
             };
             host.installed_sessions.realizations().update_realization(
                 expired.session_id().as_str(),
                 |r| {
                     r.execution.authority =
-                        crate::installed_session::SessionRealizationAuthority::Live(proof);
+                        crate::session_realizations::SessionRealizationAuthority::Live(proof);
                 },
             );
         }

@@ -47,7 +47,8 @@ async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
         .staging
         .sandbox_spec_for_provider(thread, provider);
     let environment = Arc::new(
-        host.create_session_environment(provider, &spec)
+        host.realizer
+            .create_session_environment(provider, &spec)
             .await
             .expect("RR1 exact LegacyDirect Environment"),
     );
@@ -88,7 +89,11 @@ async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
     {
         let _lifecycle = lifecycle.lock().await;
         assert!(
-            host.retire_session_environment_for_revocation(thread)
+            host.realizer
+                .retire_session_environment_for_revocation(
+                    thread,
+                    (&host.mcp, host.installed_sessions.as_ref())
+                )
                 .await
                 .unwrap(),
             "RR1 exact revocation"
@@ -167,6 +172,7 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
         "R21/C5 ordinary direct Runtime has no frozen provider projection"
     );
     let disposition = ready_host
+        .realizer
         .adopt_bound_session_environment(
             ready_thread,
             Some(&ready_binding),
@@ -237,6 +243,7 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
         .await
         .expect("C3 terminated provider");
     let disposition = missing_host
+        .realizer
         .adopt_bound_session_environment(
             missing_thread,
             Some(&terminated_binding),
@@ -276,7 +283,7 @@ async fn closed_revoked_durable_environment_can_enter_canonical_rebuild() {
     // would be rejected by the retirement priority fence before any rebuild.
     let thread = "closed-revoked-durable-rebuild";
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+    let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let environment = environment(&provider, thread).await;
     let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
@@ -305,15 +312,16 @@ async fn closed_revoked_durable_environment_can_enter_canonical_rebuild() {
     // R0 C1+C2+!C3 => reject and retain the exact revoked owner; only the
     // frozen aggregate policy may authorize the subsequent R1 rebuild.
     assert!(
-        host.adopt_bound_session_environment(
-            thread,
-            Some(&binding),
-            &provider,
-            Some(&source_generation),
-            false
-        )
-        .await
-        .is_err()
+        host.realizer
+            .adopt_bound_session_environment(
+                thread,
+                Some(&binding),
+                &provider,
+                Some(&source_generation),
+                false
+            )
+            .await
+            .is_err()
     );
     assert!(
         matches!(
@@ -325,6 +333,7 @@ async fn closed_revoked_durable_environment_can_enter_canonical_rebuild() {
         "R0 retain revoked owner"
     );
     let disposition = host
+        .realizer
         .adopt_bound_session_environment(
             thread,
             Some(&binding),
@@ -352,53 +361,13 @@ async fn closed_revoked_durable_environment_can_enter_canonical_rebuild() {
     );
 }
 
-#[test]
-fn closed_environment_recovery_admission_covers_every_owner_class() {
-    // Causes: C1 Reject/Rebuild policy; C2 exact Revocation,
-    // RecoveryDiscard, Resident, pending, Vacant, or protected/stale owner.
-    // Effects: E1 only Rebuild plus an exact unprotected class consumes; E2
-    // every Reject or protected/stale row retains. This is the complete 2x6
-    // decision table used before the production plan carries the exact fence.
-    // Layout rule: large retirement/pending payloads remain exact owned values
-    // behind indirection; small variants and the fail-closed plan must not reserve
-    // hundreds of inline bytes across async recovery. A relative pointer-width
-    // budget covers the representation independently of target architecture.
-    assert!(
-        std::mem::size_of::<ClosedEnvironmentRecoveryOwner>() <= 4 * std::mem::size_of::<usize>()
-    );
-    assert!(
-        std::mem::size_of::<ClosedEnvironmentRecoveryPlan<'_>>()
-            <= 6 * std::mem::size_of::<usize>()
-    );
-    let owners = [
-        ClosedEnvironmentRecoveryOwnerClass::Revoked,
-        ClosedEnvironmentRecoveryOwnerClass::RecoveryDiscard,
-        ClosedEnvironmentRecoveryOwnerClass::Resident,
-        ClosedEnvironmentRecoveryOwnerClass::Pending,
-        ClosedEnvironmentRecoveryOwnerClass::Vacant,
-        ClosedEnvironmentRecoveryOwnerClass::ProtectedOrStale,
-    ];
-    for policy in [
-        SessionEnvironmentUnavailablePolicy::Reject,
-        SessionEnvironmentUnavailablePolicy::Rebuild,
-    ] {
-        for owner in owners {
-            assert_eq!(
-                closed_environment_recovery_admission(policy, owner),
-                policy == SessionEnvironmentUnavailablePolicy::Rebuild
-                    && owner != ClosedEnvironmentRecoveryOwnerClass::ProtectedOrStale
-            );
-        }
-    }
-}
-
 #[tokio::test]
 async fn closed_recovery_cannot_override_protected_retirements() {
     // C1 exact closed physical owner; C2 Terminal or Checkpoint owns retirement;
     // C3 rebuild is enabled. R2 C1+C2+C3 => error, identical protected fence,
     // no rebuild predecessor. Physical absence is not lifecycle authority.
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+    let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     for terminal in [false, true] {
         let thread = if terminal {
@@ -446,7 +415,8 @@ async fn closed_recovery_cannot_override_protected_retirements() {
             .unwrap();
         dispose_current_environment(&environment, thread).await;
         assert!(
-            host.adopt_bound_session_environment(thread, Some(&binding), &provider, None, true)
+            host.realizer
+                .adopt_bound_session_environment(thread, Some(&binding), &provider, None, true)
                 .await
                 .is_err(),
             "R2 protected intent"
@@ -474,7 +444,7 @@ async fn stale_same_binding_retirement_cannot_clear_an_aba_replacement() {
     // cannot clear replacement; E2 replacement's exact observation clears.
     // Decision rules R17/R19: C1+C2+C3=>E1; exact replacement=>E2.
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+    let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let first = environment(&provider, "aba-retirement").await;
     let second = Arc::new(
@@ -546,7 +516,7 @@ async fn checkpoint_disposal_cannot_consume_a_different_prepared_durable_owner()
     // `source_release_preparation_is_withheld_for_an_absent_pod_with_live_claim`.
     let thread = "checkpoint-owner-fence";
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+    let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let environment = environment(&provider, thread).await;
     let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();

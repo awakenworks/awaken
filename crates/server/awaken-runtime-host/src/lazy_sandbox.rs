@@ -48,6 +48,7 @@ impl ToolExecutor for DeferredSandboxExecutor {
             }
         }
         let environment = host
+            .realizer
             .ensure_session_environment_for_tool(&self.thread)
             .await
             .map_err(|error| ToolError::UnavailableBeforeDispatch(error.to_string()))?;
@@ -96,6 +97,7 @@ impl ToolExecutor for DeferredSandboxExecutor {
             }
         }
         let environment = host
+            .realizer
             .ensure_session_environment_for_tool(&self.thread)
             .await
             .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?;

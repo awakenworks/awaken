@@ -349,7 +349,7 @@ pub(super) async fn assemble(
     let attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
         Arc::new(crate::run_exec::ArtifactHarvestAttemptExecutor::new(
             attempt_executor,
-            host.realizer.artifacts.clone(),
+            host.realizer.cleanup.artifacts.clone(),
         ));
     // The foreground delivery seam (slice C/D): a Run's execution goes through
     // the selected delivery path rather than calling the Runtime loop directly. Direct

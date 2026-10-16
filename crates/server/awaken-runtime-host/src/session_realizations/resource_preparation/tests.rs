@@ -49,7 +49,7 @@ fn resource_scope_retains_success_and_removes_only_its_unpublished_introduced_le
             }
             let guard =
                 ResourcePreparation::begin(&authority, "session", proof(Epoch::FIRST)).unwrap();
-            let token = guard.cancellation.clone();
+            let token = guard.test_cancellation().clone();
             assert!(
                 ResourcePreparation::begin(&authority, "session", proof(Epoch::FIRST)).is_err()
             );
@@ -108,7 +108,7 @@ async fn resource_scope_cancellation_and_slot_replacement_cannot_erase_a_success
             tokio::pin!(ended);
             assert!(futures_util::poll!(ended.as_mut()).is_pending());
             match row {
-                "cancel" => guard.cancellation.cancel(),
+                "cancel" => guard.test_cancellation().cancel(),
                 "close" => sessions.update_realization("session", |r| {
                     assert!(r.close_authority(Some(&lease(Epoch::FIRST))));
                 }),

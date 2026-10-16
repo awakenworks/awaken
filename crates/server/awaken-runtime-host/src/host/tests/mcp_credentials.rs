@@ -1049,7 +1049,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     .with_acp(executor.clone()))
     .with_credentials(credentials.clone(), secrets.clone());
     backend_secure_host.env.backend_owned_session_provider = Some(
-        crate::session_environment::SandboxEnvironmentProvider::container(
+        awaken_session_environment::SandboxEnvironmentProvider::container(
             Arc::new(SecureExternalProvider),
             Vec::new(),
             Arc::new(UnusedHandFactory),
@@ -1095,7 +1095,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             Arc::new(UnusedHandFactory),
         );
     default_secure_host.env.backend_owned_session_provider = Some(
-        crate::session_environment::SandboxEnvironmentProvider::workdir(weak_backend_root.path())
+        awaken_session_environment::SandboxEnvironmentProvider::workdir(weak_backend_root.path())
             .into_session_provider(),
     );
     let default_secure_host = (default_secure_host).build().unwrap();

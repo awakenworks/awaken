@@ -129,15 +129,7 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
         exec,
         worker,
         realizer: crate::RealizationExecutor {
-            environment_binding_sink: std::sync::RwLock::new(environment_binding_sink),
-            dispatch_execution,
-            publication,
             clock: clock.clone(),
-            artifacts: crate::provisioning::ArtifactHarvester::new(
-                installed_sessions.realizations(),
-                local_workspace.clone(),
-                resources.artifact_publisher.clone(),
-            ),
             environments: crate::environment_holding::EnvironmentHolding::new(
                 env,
                 execution.local.runs_local_pool(),
@@ -155,8 +147,16 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
                     memory_reference_encoder: authority.memory_reference_encoder(),
                 },
                 execution_authority,
+                environment_binding_sink,
+                dispatch_execution,
+                publication,
             ),
             cleanup: crate::terminal_cleanup::TerminalCleanup {
+                artifacts: crate::provisioning::ArtifactHarvester::new(
+                    installed_sessions.realizations(),
+                    local_workspace.clone(),
+                    resources.artifact_publisher.clone(),
+                ),
                 sessions: installed_sessions.realizations(),
             },
         },
@@ -182,10 +182,10 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
 }
 
 impl SharedHost {
-    /// The realization executor this Host was built with (warm Environment capacity).
+    /// Warm Environment capacity supplied by this Host's existing providers.
     #[must_use]
-    pub fn realization_executor(&self) -> &crate::RealizationExecutor {
-        &self.realizer
+    pub fn environment_capacity(&self) -> &crate::environment_providers::EnvironmentProviders {
+        &self.realizer.env
     }
 
     /// Mint a fresh process-unique platform Workspace coordinate. This Host

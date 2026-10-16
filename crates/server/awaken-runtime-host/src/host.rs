@@ -114,7 +114,7 @@ pub(crate) use credential_capabilities::acp_mcp_client_injection_capabilities;
 mod run;
 mod session;
 mod session_ctx;
-mod terminal_reconciliation;
+
 #[cfg(test)]
 pub(crate) mod tests;
 #[cfg(test)]
@@ -217,6 +217,6 @@ impl SharedHost {
         crate::provisioning::HarvestedArtifacts,
         awaken_resource_contract::ArtifactPublicationError,
     > {
-        self.realizer.artifacts.harvest(thread).await
+        self.realizer.cleanup.artifacts.harvest(thread).await
     }
 }

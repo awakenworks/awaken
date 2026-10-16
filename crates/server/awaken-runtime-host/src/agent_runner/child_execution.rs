@@ -860,7 +860,7 @@ mod tests {
             .unwrap();
         let shared_path = shared_sandbox.workspace_path().to_path_buf();
         let shared_environment =
-            crate::session_environment::SandboxEnvironment::workdir(shared_sandbox)
+            awaken_session_environment::SandboxEnvironment::workdir(shared_sandbox)
                 .into_session_environment();
         let shared_inferences = Arc::new(AtomicUsize::new(0));
         let shared_config = child_config(None);

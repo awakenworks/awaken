@@ -32,10 +32,10 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
     // | F4 | F | n/a | n/a | yes | T | E4: physical + logical revocation |
     // Workdir remains correctly ineligible for F1's immutability requirement.
     raw_host.env.session_provider =
-        crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
+        awaken_session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             storage.path().join("sandboxes"),
             false,
-            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
             "/bin/sh",
             std::time::Duration::ZERO,
         )
@@ -263,10 +263,10 @@ async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
     let roots = ManagedSessionRootFixture::new().await;
     let mut raw_host = roots.configure(adoption_dependencies_at(storage.path()).await);
     raw_host.env.session_provider =
-        crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
+        awaken_session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             storage.path().join("sandboxes"),
             false,
-            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
             "/bin/sh",
             std::time::Duration::ZERO,
         )

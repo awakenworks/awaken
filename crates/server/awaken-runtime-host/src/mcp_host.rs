@@ -11,26 +11,12 @@
 use std::sync::{Arc, Weak};
 
 use crate::installed_session::InstalledSessions;
-use crate::{HostError, HostErrorKind, SharedHost};
+use crate::{HostError, SharedHost};
 use awaken_session_mcp::{
-    McpError, McpErrorKind, McpGenerationAuthority, McpInputHost, McpInputRecipients,
-    McpQuiescenceProof, McpSessionSlots,
+    McpError, McpGenerationAuthority, McpInputHost, McpInputRecipients, McpQuiescenceProof,
+    McpSessionSlots,
 };
 use awaken_session_mcp::{McpGenerationProjection, SessionMcpState};
-
-impl From<McpError> for HostError {
-    fn from(error: McpError) -> Self {
-        Self {
-            message: error.message,
-            kind: match error.kind {
-                McpErrorKind::Internal => HostErrorKind::Internal,
-                McpErrorKind::BadRequest => HostErrorKind::BadRequest,
-                McpErrorKind::Unavailable => HostErrorKind::Unavailable,
-            },
-            code: error.code,
-        }
-    }
-}
 
 impl McpSessionSlots for InstalledSessions {
     type Runtime = Arc<crate::host::SessionCtx>;

@@ -147,7 +147,7 @@ impl SharedHost {
                 // an Environment projection alone never promotes an ordinary
                 // Run to Session identity.
                 let is_session_dispatch = slot.run.session_dispatch;
-                let resources = slot.dispatch_resource_manifest();
+                let resources = slot.realization.staging.run_manifest(is_session_dispatch);
                 (resources, runtime_projection, is_session_dispatch)
             })
             .unwrap_or_default();

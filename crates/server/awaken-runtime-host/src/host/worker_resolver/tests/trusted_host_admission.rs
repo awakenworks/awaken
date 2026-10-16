@@ -11,7 +11,7 @@ async fn trusted_host_admission_rejection_preserves_permanent_class_without_effe
     // existing realization disposition table and the claim projection below.
     let root = tempfile::tempdir().expect("provider root");
     let host = adoption_host().await;
-    let provider = crate::session_environment::SandboxEnvironmentProvider::
+    let provider = awaken_session_environment::SandboxEnvironmentProvider::
         trusted_host_workdir_with_agent_stderr(root.path(), false)
         .into_session_provider();
     let mut spec = crate::provisioning::default_session_sandbox_spec("trusted-admission-class");

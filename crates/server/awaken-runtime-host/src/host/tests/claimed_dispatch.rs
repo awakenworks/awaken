@@ -999,12 +999,13 @@ async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
     let binding = serde_json::to_string(&handle).expect("encode durable handle");
     assert_eq!(
         replacement
+            .realizer
             .adopt_bound_session_environment(
                 thread,
                 Some(&binding),
                 &replacement.realizer.env.session_provider,
                 None,
-                false,
+                false
             )
             .await
             .expect("adopt durable handle"),
@@ -1059,15 +1060,16 @@ async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
 
     let resident_binding = serde_json::to_string(&resident_handle).unwrap();
     assert_eq!(
-        host.adopt_bound_session_environment(
-            "t-resident-adoption",
-            Some(&resident_binding),
-            &host.realizer.env.session_provider,
-            None,
-            false,
-        )
-        .await
-        .expect("adopt resident sandbox"),
+        host.realizer
+            .adopt_bound_session_environment(
+                "t-resident-adoption",
+                Some(&resident_binding),
+                &host.realizer.env.session_provider,
+                None,
+                false
+            )
+            .await
+            .expect("adopt resident sandbox"),
         crate::host::session::SessionEnvironmentAdoptionDisposition::Ready,
     );
     let reused = host
@@ -1094,6 +1096,7 @@ async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         .expect("foreign sandbox");
     let foreign_binding = serde_json::to_string(&foreign.lifecycle().handle()).unwrap();
     let error = match host
+        .realizer
         .adopt_bound_session_environment(
             "t-resident-adoption",
             Some(&foreign_binding),
@@ -1165,6 +1168,7 @@ async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         .expect("foreign sandbox");
     let foreign_binding = serde_json::to_string(&foreign.lifecycle().handle()).unwrap();
     let error = match host
+        .realizer
         .adopt_bound_session_environment(
             "t-retained-adoption",
             Some(&foreign_binding),
@@ -1185,15 +1189,16 @@ async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
 
     let retained_binding = serde_json::to_string(&retained_handle).unwrap();
     assert_eq!(
-        host.adopt_bound_session_environment(
-            "t-retained-adoption",
-            Some(&retained_binding),
-            &host.realizer.env.session_provider,
-            None,
-            false,
-        )
-        .await
-        .expect("adopt retained sandbox"),
+        host.realizer
+            .adopt_bound_session_environment(
+                "t-retained-adoption",
+                Some(&retained_binding),
+                &host.realizer.env.session_provider,
+                None,
+                false
+            )
+            .await
+            .expect("adopt retained sandbox"),
         crate::host::session::SessionEnvironmentAdoptionDisposition::Ready,
     );
     let rebuilt = host

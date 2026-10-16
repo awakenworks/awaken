@@ -163,7 +163,7 @@ async fn detached_realizer_binds_only_the_original_claim_and_preserves_failure_c
             outcome: row,
             bindings: Mutex::new(Vec::new()),
         });
-        realizer.dispatch_execution =
+        realizer.environments.dispatch_execution =
             (row != "missing_role").then(|| selected.clone() as Arc<dyn DispatchExecution>);
         if row != "direct" {
             sessions.update_run("session", |run| run.dispatch_claim = Some(claim()));
@@ -211,7 +211,7 @@ async fn detached_realizer_keeps_committed_identity_and_never_rebinds_resource_r
             outcome: "fenced",
             bindings: Mutex::new(Vec::new()),
         });
-        realizer.dispatch_execution = Some(selected.clone());
+        realizer.environments.dispatch_execution = Some(selected.clone());
         let sink = Arc::new(Sink {
             response_lost: row == "response_lost",
             persists: AtomicUsize::new(0),
@@ -228,7 +228,7 @@ async fn detached_realizer_keeps_committed_identity_and_never_rebinds_resource_r
         } else {
             SessionEnvironmentEffectKind::Create
         };
-        let intent = realizer.new_environment_effect_intent(
+        let intent = realizer.execution.new_environment_effect_intent(
             "session",
             kind,
             (row == "reservation").then_some("original-binding"),

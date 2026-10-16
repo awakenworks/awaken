@@ -142,7 +142,8 @@ fn terminal_cleanup_test_lease() -> session_resource::SessionRealizationLease {
         owner: "terminal-provisioning-test".into(),
         runtime_incarnation: "terminal-provisioning-test/incarnation".into(),
         epoch: 1,
-        expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms() + 60_000,
+        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
+            + 60_000,
     }
 }
 
@@ -266,7 +267,7 @@ fn install_terminal_artifact_environment(
         .realizer
         .begin_session_environment_adoption(session_id, environment, None)
         .expect("F2/E2 retain the exact adoption candidate");
-    let crate::installed_session::UnboundSessionEnvironmentOrigin::AdoptionFrom(identity) =
+    let crate::environment_owner::UnboundSessionEnvironmentOrigin::AdoptionFrom(identity) =
         &candidate.origin
     else {
         panic!("F3 aggregate projection must own the durable source identity");
@@ -340,7 +341,7 @@ async fn root_terminal_cleanup_effect(
             environment_creation_not_attempted: false,
             session_id: session_id.into(),
             projection,
-            authority: crate::installed_session::test_lease_receipt(lease.clone()),
+            authority: awaken_session_realization::test_support::test_lease_receipt(lease.clone()),
         },
     )
     .await
@@ -830,7 +831,7 @@ async fn repository_workspace_rejects_a_provider_with_split_tool_and_process_pat
     // single admission authority; no Bash command rewriting or alias mount
     // is introduced as a second path mapping.
     let host = host().await;
-    let local = crate::session_environment::SandboxEnvironmentProvider::workdir(
+    let local = awaken_session_environment::SandboxEnvironmentProvider::workdir(
         tempfile::tempdir().unwrap().path(),
     )
     .into_session_provider();
@@ -851,6 +852,7 @@ async fn repository_workspace_rejects_a_provider_with_split_tool_and_process_pat
         "W1/E1"
     );
     let error = match host
+        .realizer
         .create_session_environment(&local, &repository_spec)
         .await
     {
@@ -947,7 +949,7 @@ async fn projected_acp_rejects_a_provider_with_split_tool_and_process_paths() {
         .expect("install exact immutable Agent publication");
 
     let root = tempfile::tempdir().unwrap();
-    let local = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+    let local = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let spec = host.realizer.sandbox_spec("projected-acp");
     assert_eq!(
@@ -955,7 +957,11 @@ async fn projected_acp_rejects_a_provider_with_split_tool_and_process_paths() {
         pc::IsolationClass::Workdir,
         "A1 precondition"
     );
-    let error = match host.create_session_environment(&local, &spec).await {
+    let error = match host
+        .realizer
+        .create_session_environment(&local, &spec)
+        .await
+    {
         Ok(_) => panic!("A1/E2 projected ACP cannot run with split paths"),
         Err(error) => error,
     };
@@ -1028,7 +1034,7 @@ async fn model_override_only_acp_candidate_rejects_split_process_paths() {
     );
 
     let root = tempfile::tempdir().unwrap();
-    let local = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+    let local = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let spec = host.realizer.sandbox_spec("model-override-acp");
     assert_eq!(
@@ -1036,7 +1042,11 @@ async fn model_override_only_acp_candidate_rejects_split_process_paths() {
         pc::IsolationClass::Workdir,
         "M1 precondition"
     );
-    let error = match host.create_session_environment(&local, &spec).await {
+    let error = match host
+        .realizer
+        .create_session_environment(&local, &spec)
+        .await
+    {
         Ok(_) => panic!("M1/E3 override ACP fallback cannot run with split paths"),
         Err(error) => error,
     };
@@ -1086,7 +1096,7 @@ async fn realize_thread_repositories_fails_closed_on_an_unsafe_path() {
     }
 
     let tmp = tempfile::tempdir().unwrap();
-    let env = crate::session_environment::SandboxEnvironment::workdir(
+    let env = awaken_session_environment::SandboxEnvironment::workdir(
         LocalProvider::new(tmp.path())
             .create_sandbox(&agent_run_sandbox_spec("s"))
             .await
@@ -1617,7 +1627,8 @@ async fn install_batch_artifact_environment(host: &SharedHost, thread: &str, wor
     host.register_thread_workspace(thread, workspace);
     let spec = host.realizer.sandbox_spec(thread);
     let environment = Arc::new(
-        host.create_session_environment(&host.realizer.env.session_provider, &spec)
+        host.realizer
+            .create_session_environment(&host.realizer.env.session_provider, &spec)
             .await
             .expect("create batch Artifact Container Environment"),
     );
@@ -1659,7 +1670,7 @@ async fn live_container_artifact_harvest_reads_one_complete_batch() {
         .await
         .with_session_container_provider(
             provider,
-            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
         ))
     .build()
     .expect("validated Host dependencies");
@@ -1729,7 +1740,7 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         .sandbox_effect_fence("session-artifacts-create")
         .unwrap();
     let environment = Arc::new(
-        crate::session_environment::SandboxEnvironment::workdir(
+        awaken_session_environment::SandboxEnvironment::workdir(
             host.test_local_provider()
                 .create_sandbox_for_effect(
                     &spec,
@@ -1886,7 +1897,7 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
         .sandbox_effect_fence("artifact-response-loss-create")
         .unwrap();
     let environment = Arc::new(
-        crate::session_environment::SandboxEnvironment::workdir(
+        awaken_session_environment::SandboxEnvironment::workdir(
             host.test_local_provider()
                 .create_sandbox_for_effect(
                     &spec,
@@ -1918,6 +1929,7 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
 
     let ordinary = host
         .realizer
+        .cleanup
         .artifacts
         .clone()
         .harvest("artifact-response-loss")
@@ -1927,6 +1939,7 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
         root_terminal_cleanup_effect(host.as_ref(), "artifact-response-loss", lease).await;
     let terminal = host
         .realizer
+        .cleanup
         .artifacts
         .clone()
         .harvest_with_fence(
@@ -1943,10 +1956,11 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
     host.installed_sessions
         .realizations()
         .update_realization("artifact-response-loss", |r| {
-            r.environment.owner = crate::installed_session::SessionEnvironmentOwner::Vacant;
+            r.environment.owner = crate::environment_owner::SessionEnvironmentOwner::Vacant;
         });
     let recovered = host
         .realizer
+        .cleanup
         .artifacts
         .clone()
         .harvest_with_fence(
@@ -1962,12 +1976,13 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
         .delete(
             "workspace-a",
             &terminal.receipts[0].record.id,
-            crate::terminal_repository_publication::runtime_unix_now_ms(),
+            awaken_session_realization::test_support::runtime_unix_now_ms(),
         )
         .await
         .expect("H3 logical delete");
     let after_delete = host
         .realizer
+        .cleanup
         .artifacts
         .clone()
         .harvest_with_fence(
@@ -1979,6 +1994,7 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
     assert_eq!(after_delete.receipts, terminal.receipts, "H3");
     assert!(
         host.realizer
+            .cleanup
             .artifacts
             .clone()
             .harvest("artifact-response-loss")
@@ -2078,7 +2094,7 @@ async fn receipt_only_terminal_harvest_skips_a_present_container() {
         .await
         .with_session_container_provider(
             provider,
-            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
         );
     raw_host.resources.artifact_publisher = publisher.clone();
     let host = (raw_host).build().expect("validated Host dependencies");
@@ -2101,6 +2117,7 @@ async fn receipt_only_terminal_harvest_skips_a_present_container() {
     );
     let recovered = host
         .realizer
+        .cleanup
         .artifacts
         .clone()
         .harvest_with_fence_mode(
@@ -2134,6 +2151,7 @@ async fn receipt_only_terminal_harvest_skips_a_present_container() {
 
     assert!(
         host.realizer
+            .cleanup
             .artifacts
             .clone()
             .harvest("ordinary-absent")
@@ -2152,6 +2170,7 @@ async fn receipt_only_terminal_harvest_skips_a_present_container() {
     );
     let error = host
         .realizer
+        .cleanup
         .artifacts
         .clone()
         .harvest_with_fence_mode("ordinary-absent", None, ArtifactCaptureMode::ReceiptOnly)
@@ -2198,11 +2217,11 @@ async fn terminal_artifact_recovery_requires_the_root_workspace_before_catalog_i
         terminal_cleanup_test_lease(),
     );
     let publisher = Arc::new(RecordingArtifactRecovery::default());
-    let harvester = ArtifactHarvester {
-        sessions: Arc::new(crate::installed_session::InstalledSessions::default()).realizations(),
-        local_workspace: "must-not-be-used".into(),
-        publisher: publisher.clone(),
-    };
+    let harvester = ArtifactHarvester::new(
+        Arc::new(crate::installed_session::InstalledSessions::default()).realizations(),
+        "must-not-be-used".into(),
+        publisher.clone(),
+    );
 
     let error = harvester
         .harvest_with_fence(
@@ -2236,7 +2255,7 @@ async fn retained_artifact_harvester_observes_late_realization_without_retaining
         .await
         .build()
         .expect("Host");
-    let harvester = host.realizer.artifacts.clone();
+    let harvester = host.realizer.cleanup.artifacts.clone();
     let application = host.file_application().expect("File application");
     assert!(
         harvester
@@ -2251,7 +2270,7 @@ async fn retained_artifact_harvester_observes_late_realization_without_retaining
     host.register_thread_workspace("late-output", "workspace-late");
     let spec = agent_run_sandbox_spec("late-output");
     let environment = Arc::new(
-        crate::session_environment::SandboxEnvironment::workdir(
+        awaken_session_environment::SandboxEnvironment::workdir(
             LocalProvider::new(storage.path())
                 .create_sandbox(&spec)
                 .await
@@ -2306,7 +2325,7 @@ async fn artifact_harvest_has_one_file_authority_and_no_magic_bundle_gate() {
     host.register_thread_workspace("plain-files", "workspace-a");
     let spec = agent_run_sandbox_spec("plain-files");
     let environment = Arc::new(
-        crate::session_environment::SandboxEnvironment::workdir(
+        awaken_session_environment::SandboxEnvironment::workdir(
             LocalProvider::new(storage.path())
                 .create_sandbox(&spec)
                 .await
@@ -2526,7 +2545,7 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
         .sandbox_effect_fence("session-harvest-failure-create")
         .unwrap();
     let environment = Arc::new(
-        crate::session_environment::SandboxEnvironment::workdir(
+        awaken_session_environment::SandboxEnvironment::workdir(
             host.test_local_provider()
                 .create_sandbox_for_effect(
                     &spec,
@@ -2597,7 +2616,7 @@ async fn agent_authored_skill_remains_run_scoped_until_explicit_publication() {
 
     // A real sandbox env with a skill authored under the workspace `skills/` dir.
     let base = dir.join("sbx");
-    let env = crate::session_environment::SandboxEnvironment::workdir(
+    let env = awaken_session_environment::SandboxEnvironment::workdir(
         LocalProvider::new(&base)
             .create_sandbox(&agent_run_sandbox_spec("t"))
             .await
@@ -2861,7 +2880,7 @@ async fn artifact_capture_failures_do_not_publish_partial_or_rebased_sets() {
             .await
             .with_session_container_provider(
                 provider,
-                Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+                Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
             );
         let application = dependencies.resources.file_application.clone().unwrap();
         let request = awaken_resource_contract::ReplaceArtifactCapture {

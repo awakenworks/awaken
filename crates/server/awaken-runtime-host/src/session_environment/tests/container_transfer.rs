@@ -64,7 +64,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
         // W0: establish actual Root admission/binding before the revocation
         // table. The selected fake provider does not invent durable authority:
         // use the production sink's first CAS and generated receipt readback.
-        let intent = host.realizer.new_environment_effect_intent(
+        let intent = host.realizer.execution.new_environment_effect_intent(
             thread,
             awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
             None,
@@ -190,7 +190,11 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
                     .read_realization(thread, |r| r.environment.lifecycle.clone())
                     .unwrap();
                 let _lifecycle = lifecycle.lock().await;
-                host.retire_session_environment_for_revocation(thread)
+                host.realizer
+                    .retire_session_environment_for_revocation(
+                        thread,
+                        (&host.mcp, host.installed_sessions.as_ref()),
+                    )
                     .await
                     .unwrap();
             }
@@ -218,15 +222,10 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
             );
             fake.shared.lock().unwrap().remove("__ready_observation");
             assert!(
-                host.adopt_bound_session_environment(
-                    thread,
-                    Some(&binding),
-                    &provider,
-                    None,
-                    false
-                )
-                .await
-                .is_err(),
+                host.realizer
+                    .adopt_bound_session_environment(thread, Some(&binding), &provider, None, false)
+                    .await
+                    .is_err(),
                 "W1"
             );
             let retained = host
@@ -243,7 +242,8 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
                 .lock()
                 .unwrap()
                 .insert("__ready_observation".into(), Vec::new());
-            host.adopt_bound_session_environment(thread, Some(&binding), &provider, None, false)
+            host.realizer
+                .adopt_bound_session_environment(thread, Some(&binding), &provider, None, false)
                 .await
                 .unwrap();
             let rebound = host

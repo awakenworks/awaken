@@ -38,7 +38,7 @@ impl awaken_provisioning_contract::SandboxCheckpointStore for PendingUploadStore
 
 #[tokio::test]
 async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_and_store_waits() {
-    use crate::installed_session::SessionRealizationAuthority as Authority;
+    use crate::session_realizations::SessionRealizationAuthority as Authority;
     use awaken_provisioning_contract as pc;
     use awaken_provisioning_contract::test_support::FenceTamper as _;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -68,7 +68,7 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                 let thread = "current-upload-host";
                 let root = tempfile::tempdir().unwrap();
                 let provider =
-                    crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+                    awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
                         .into_session_provider();
                 let environment = environment(&provider, thread).await;
                 let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
@@ -279,23 +279,34 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
         host.installed_sessions
             .realizations()
             .update_realization(thread, |r| {
-                r.execution.authority = crate::installed_session::SessionRealizationAuthority::Live(
-                    crate::installed_session::test_observed_lease(lease.clone()),
-                );
+                r.execution.authority =
+                    crate::session_realizations::SessionRealizationAuthority::Live(
+                        awaken_session_realization::test_support::test_observed_lease(
+                            lease.clone(),
+                        ),
+                    );
             });
         let handle = terminal_fixture_container_handle(thread, &host.realizer.sandbox_spec(thread));
         let (state, _, _) =
             disposing_terminal_environment(thread, &lease, &handle, "exact-checkpoint");
         *worker.current.lock().unwrap() = None;
         assert!(
-            host.cleanup_terminal_checkpoint(&effect, &state, None, None)
+            host.realizer
+                .cleanup
+                .cleanup_terminal_checkpoint(&host.realizer, &effect, &state, None, None)
                 .await
                 .is_err(),
             "R1"
         );
         assert!(events.lock().unwrap().is_empty(), "R1");
         *worker.current.lock().unwrap() = Some((fence.clone(), Duration::from_secs(1)));
-        let mut pending = Box::pin(host.cleanup_terminal_checkpoint(&effect, &state, None, None));
+        let mut pending = Box::pin(host.realizer.cleanup.cleanup_terminal_checkpoint(
+            &host.realizer,
+            &effect,
+            &state,
+            None,
+            None,
+        ));
         tokio::select! {
             biased;
             result = &mut pending => panic!("C2 must wait: {result:?}"),
@@ -310,7 +321,7 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
                     .realizations()
                     .update_realization(thread, |r| {
                         r.execution.authority =
-                            crate::installed_session::SessionRealizationAuthority::Closed(Some(
+                            crate::session_realizations::SessionRealizationAuthority::Closed(Some(
                                 lease.clone(),
                             ));
                     })
@@ -325,8 +336,8 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
                         }
                         next.expires_at_unix_ms += 10_000;
                         r.execution.authority =
-                            crate::installed_session::SessionRealizationAuthority::Live(
-                                crate::installed_session::test_observed_lease(next),
+                            crate::session_realizations::SessionRealizationAuthority::Live(
+                                awaken_session_realization::test_support::test_observed_lease(next),
                             );
                     })
             }
@@ -351,11 +362,16 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
         host.installed_sessions
             .realizations()
             .update_realization(thread, |r| {
-                r.execution.authority = crate::installed_session::SessionRealizationAuthority::Live(
-                    crate::installed_session::test_observed_lease(lease.clone()),
-                );
+                r.execution.authority =
+                    crate::session_realizations::SessionRealizationAuthority::Live(
+                        awaken_session_realization::test_support::test_observed_lease(
+                            lease.clone(),
+                        ),
+                    );
             });
-        host.cleanup_terminal_checkpoint(&effect, &state, None, None)
+        host.realizer
+            .cleanup
+            .cleanup_terminal_checkpoint(&host.realizer, &effect, &state, None, None)
             .await
             .unwrap();
         assert_eq!(
@@ -368,7 +384,7 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
 
 #[tokio::test]
 async fn suspension_and_terminal_admission_use_live_observation_and_never_reopen_closed_slots() {
-    use crate::installed_session::SessionRealizationAuthority as Authority;
+    use crate::session_realizations::SessionRealizationAuthority as Authority;
     use awaken_session_configuration_contract::resource::SessionRealizationLease;
     use awaken_session_realization_contract::SessionRealizationLeaseReceipt;
 
@@ -414,9 +430,11 @@ async fn suspension_and_terminal_admission_use_live_observation_and_never_reopen
             "absent" | "uninstalled" => Authority::Uninstalled,
             "closed-empty" => Authority::Closed(None),
             "closed" => Authority::Closed(Some(current.clone())),
-            "expired" => Authority::Live(crate::installed_session::test_expired_observed_lease(
-                current.clone(),
-            )),
+            "expired" => Authority::Live(
+                awaken_session_realization::test_support::test_expired_observed_lease(
+                    current.clone(),
+                ),
+            ),
             "live" => Authority::Live(
                 SessionRealizationLeaseReceipt::issued_at(current.clone(), 0)
                     .unwrap()

@@ -408,7 +408,11 @@ impl SharedHost {
                 .read(thread, |slot| {
                     !slot.run.session_dispatch
                         && slot.inputs.environment_snapshot.is_none()
-                        && slot.dispatch_resource_manifest().is_none()
+                        && slot
+                            .realization
+                            .staging
+                            .run_manifest(slot.run.session_dispatch)
+                            .is_none()
                 })
                 .unwrap_or(true);
         if inference_only_claim {

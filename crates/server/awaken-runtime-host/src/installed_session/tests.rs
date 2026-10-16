@@ -1,8 +1,12 @@
 use super::*;
+use crate::environment_owner::*;
 use awaken_session_mcp::{McpGenerationProjection, McpProjectionState};
+use awaken_session_realization::test_support::test_observed_lease;
 
 #[test]
 fn dispatch_resource_manifest_has_one_session_generation_selector() {
+    // Ownership move: ResourceStagingState selects from the same locked slot;
+    // its input is the existing Run dispatch bit, never a second stored flag.
     // Cause/effect graph: C1 the slot is ordinary/prepared Session; C2 a
     // desired transition is absent/present; C3 active is absent/present.
     // Effects: E1 ordinary dispatch selects active only; E2 prepared
@@ -53,7 +57,9 @@ fn dispatch_resource_manifest_has_one_session_generation_selector() {
         };
 
         assert_eq!(
-            slot.dispatch_resource_manifest()
+            slot.realization
+                .staging
+                .run_manifest(slot.run.session_dispatch)
                 .unwrap_or_else(|| panic!("{rule} selected manifest"))
                 .revision,
             expected,
@@ -77,13 +83,13 @@ fn environment_only_session_lease_remains_supervised() {
         .realizations()
         .update_realization("environment-only", |r| {
             assert!(!r.staging.mcp.has_frozen_attachment(), "C2");
-            r.execution.authority = crate::installed_session::SessionRealizationAuthority::Live(
+            r.execution.authority = crate::session_realizations::SessionRealizationAuthority::Live(
                 test_observed_lease(crate::session_resource::SessionRealizationLease {
                     owner: "worker".into(),
                     runtime_incarnation: "worker/incarnation".into(),
                     epoch: 1,
-                    expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms(
-                    ) + 30_000,
+                    expires_at_unix_ms:
+                        awaken_session_realization::test_support::runtime_unix_now_ms() + 30_000,
                 }),
             );
         });
@@ -186,6 +192,9 @@ async fn unpolled_staging_future_drop_releases_drain_without_false_proof() {
 
 #[test]
 fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
+    // Ownership move: SessionRealization receives the Run context-presence bit
+    // from this same slot lock; it retains the original MCP-local-effects and
+    // durable-projection checks. Moving the code must not add a reopen path.
     // Cause graph: C1 exact suspend/source/generation closes admission; C2
     // the same close replays or conflicts; C3 Control projects the old
     // Resident, a wrong generation, an exact restored Resident, or an
@@ -265,7 +274,11 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
                     binding: "source-binding".into(),
                 },
             );
-            slot.reopen_mcp_realization_admission_from_projection(&old_resident)
+            slot.realization
+                .reopen_mcp_realization_admission_from_projection(
+                    &old_resident,
+                    slot.run.context.is_some(),
+                )
         }),
         "F3/E3 old Resident"
     );
@@ -292,7 +305,11 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
                     binding: "restored-binding".into(),
                 },
             );
-            slot.reopen_mcp_realization_admission_from_projection(&wrong_generation)
+            slot.realization
+                .reopen_mcp_realization_admission_from_projection(
+                    &wrong_generation,
+                    slot.run.context.is_some(),
+                )
         }),
         "F3/E3 wrong generation"
     );
@@ -313,7 +330,11 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
                     binding: "restored-binding".into(),
                 },
             );
-            slot.reopen_mcp_realization_admission_from_projection(&restored)
+            slot.realization
+                .reopen_mcp_realization_admission_from_projection(
+                    &restored,
+                    slot.run.context.is_some(),
+                )
         }),
         "F4/E4"
     );
@@ -339,18 +360,22 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
                     binding: fence.source_binding.clone(),
                 },
             );
-            slot.reopen_mcp_realization_admission_from_projection(
-                &awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
-            )
+            slot.realization
+                .reopen_mcp_realization_admission_from_projection(
+                    &awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
+                    slot.run.context.is_some(),
+                )
         }),
         "F5/E3 expiry before source disposal"
     );
     assert!(
         slots.update("mcp-admission", |slot| {
             slot.realization.environment.owner = SessionEnvironmentOwner::Vacant;
-            slot.reopen_mcp_realization_admission_from_projection(
-                &awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
-            )
+            slot.realization
+                .reopen_mcp_realization_admission_from_projection(
+                    &awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
+                    slot.run.context.is_some(),
+                )
         }),
         "F6/E4 exact source-free projection"
     );
@@ -364,6 +389,10 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
 
 #[test]
 fn frozen_inputs_keep_their_agent_publication() {
+    // This is also the complete-projection installer's canonical preflight law;
+    // it reads the same immutable FrozenSessionInputs as Environment validation
+    // and rechecks under final publication. The adapter retains its old error
+    // text; no separate equality predicate or write is permitted at preflight.
     // Decision table: C1 a publication is retained; C2 one is offered; C3 the
     // offer equals the retained one. Only a different offer against a retained
     // publication is refused (fail closed); every other row admits.

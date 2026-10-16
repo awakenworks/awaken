@@ -1774,3 +1774,5 @@ mod ticket_projection_tests {
         );
     }
 }
+
+mod committed_terminal_observation;

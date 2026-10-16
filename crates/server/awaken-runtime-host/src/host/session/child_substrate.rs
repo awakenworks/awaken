@@ -45,11 +45,13 @@ impl SharedHost {
                 let provider = self
                     .realizer
                     .projected_session_environment_provider(thread, None)?;
-                self.create_reserved_session_environment_under_lifecycle(thread, provider)
+                self.realizer
+                    .create_reserved_session_environment_under_lifecycle(thread, provider)
                     .await?
             }
         };
         let environment = self
+            .realizer
             .ensure_published_environment_reconciled_under_lifecycle(thread, environment)
             .await?;
         drop(lifecycle_guard);

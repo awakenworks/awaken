@@ -85,7 +85,7 @@ async fn conflicting_revocation_preserves_active_worker_relay_until_compatible_d
     // authority from either existing owner.
     let thread = "conflicting-revocation-retains-relay";
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+    let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let environment = environment(&provider, thread).await;
     let host = (crate::HostDependencies::ephemeral(
@@ -233,7 +233,11 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
         .unwrap();
     let _lifecycle = lifecycle.lock().await;
     assert!(
-        host.retire_session_environment_for_revocation(thread)
+        host.realizer
+            .retire_session_environment_for_revocation(
+                thread,
+                (&host.mcp, host.installed_sessions.as_ref())
+            )
             .await
             .is_err(),
         "R19/E1"
@@ -291,7 +295,7 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
     // preserves Closed(lease), never Uninstalled/Live or direct-assertion fallback.
     let thread = "revocation-retiring-retry-authority";
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+    let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let environment = environment(&provider, thread).await;
     let host = (crate::HostDependencies::ephemeral(
@@ -358,14 +362,18 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
         .read_realization(thread, |r| r.environment.lifecycle.clone())
         .unwrap();
     let _lifecycle = lifecycle.lock().await;
-    host.retire_session_environment_for_revocation(thread)
+    host.realizer
+        .retire_session_environment_for_revocation(
+            thread,
+            (&host.mcp, host.installed_sessions.as_ref()),
+        )
         .await
         .expect("C2 live revocation");
     assert_eq!(
         host.installed_sessions
             .realizations()
             .read_realization(thread, |r| r.execution.authority.clone()),
-        Some(crate::installed_session::SessionRealizationAuthority::Closed(Some(lease.clone()))),
+        Some(crate::session_realizations::SessionRealizationAuthority::Closed(Some(lease.clone()))),
         "E4"
     );
     assert!(
@@ -457,7 +465,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
             thread,
             projection.clone(),
             awaken_session_realization_contract::SessionProjectionInstallMode::Realization {
-                lease: crate::installed_session::test_observed_lease(lease.clone()),
+                lease: awaken_session_realization::test_support::test_observed_lease(lease.clone()),
                 prepare_session: true,
             },
         ),
@@ -516,7 +524,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
             thread,
             projection,
             awaken_session_realization_contract::SessionProjectionInstallMode::Realization {
-                lease: crate::installed_session::test_observed_lease(lease),
+                lease: awaken_session_realization::test_support::test_observed_lease(lease),
                 prepare_session: true,
             },
         ),
@@ -540,14 +548,15 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
         let host = host.clone();
         let binding = binding.clone();
         tokio::spawn(async move {
-            host.adopt_bound_session_environment(
-                thread,
-                Some(&binding),
-                &host.realizer.env.session_provider,
-                None,
-                false,
-            )
-            .await
+            host.realizer
+                .adopt_bound_session_environment(
+                    thread,
+                    Some(&binding),
+                    &host.realizer.env.session_provider,
+                    None,
+                    false,
+                )
+                .await
         })
     };
     if tokio::time::timeout(std::time::Duration::from_secs(2), sink.entered.notified())
@@ -583,7 +592,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
     sink.unblock();
     let disposition = tokio::time::timeout(
         std::time::Duration::from_secs(2),
-        host.adopt_bound_session_environment(
+        host.realizer.adopt_bound_session_environment(
             thread,
             Some(&binding),
             &host.realizer.env.session_provider,
@@ -616,7 +625,7 @@ async fn newer_projection_replaces_only_a_descriptor_and_preserves_every_physica
     // even with newer root. Revocation, discard, terminal and checkpoint each
     // retain their exact owner: root ordering never substitutes for closure.
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+    let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let env = environment(&provider, "owner-A").await;
     let bound = BoundSessionEnvironment {

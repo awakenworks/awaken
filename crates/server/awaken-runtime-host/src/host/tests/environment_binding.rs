@@ -43,7 +43,7 @@ async fn captured_environment_intent_survives_renewal_without_rebuilding_adopt()
         .realizations()
         .update_realization(thread, |r| {
             r.execution.authority =
-                crate::installed_session::SessionRealizationAuthority::Live(proof);
+                crate::session_realizations::SessionRealizationAuthority::Live(proof);
         });
     *sink.original_intent.lock().unwrap() = Some(original.clone());
     for request_expiry in [60_000, 120_000] {
@@ -119,10 +119,10 @@ async fn managed_projection_without_a_lease_never_falls_back_to_unowned() {
             }
             if closed {
                 slot.realization.execution.authority =
-                    crate::installed_session::SessionRealizationAuthority::Closed(None);
+                    crate::session_realizations::SessionRealizationAuthority::Closed(None);
             }
         });
-        let intent = host.realizer.new_environment_effect_intent(
+        let intent = host.realizer.execution.new_environment_effect_intent(
             thread,
             awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
             None,
@@ -349,7 +349,7 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
         .realizer
         .authorize_environment_effect_before_io(
             thread,
-            &host.realizer.new_environment_effect_intent(
+            &host.realizer.execution.new_environment_effect_intent(
                 thread,
                 awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
                 None,
@@ -372,7 +372,7 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
         .realizer
         .authorize_environment_effect_before_io(
             thread,
-            &host.realizer.new_environment_effect_intent(
+            &host.realizer.execution.new_environment_effect_intent(
                 thread,
                 awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
                 None,

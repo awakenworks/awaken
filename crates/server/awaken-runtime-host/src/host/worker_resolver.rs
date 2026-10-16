@@ -9,7 +9,7 @@ mod claimed_session;
 mod dispatched_mcp_tests;
 mod realization_failure;
 mod resolver;
-mod session_realization;
+mod session_projection;
 #[cfg(test)]
 pub(super) mod test_support;
 use claimed_session::install_claimed_session_projection;

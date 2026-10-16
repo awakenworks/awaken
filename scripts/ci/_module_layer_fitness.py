@@ -58,45 +58,6 @@ _MIXED_REASON = "mixed: its own items stay in the host, each child is classified
 # (target, reason, modules). Module paths are `::`-joined from the crate root
 # and follow `#[path]` attributes.
 LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
-    (REALIZATION, _REALIZATION_REASON, (
-        "host::session::environment_lifecycle",
-        "host::session::environment_realization",
-        "host::worker_resolver::session_realization",
-        "host::terminal_reconciliation",
-        "provisioning",
-        "managed_resource_projection",
-        "cache_volume",
-        "environment_continuation",
-        "environment_effects",
-        "bound_environment",
-        "terminal_cleanup",
-        "terminal_repository_publication",
-        "session_environment",
-        "environment_owner",
-        "realization_executor",
-        "session_publication",
-        "resource_staging",
-        "environment_capacity",
-        "environment_holding",
-        "environment_providers",
-    )),
-    (REALIZATION, _LEAF_REASON, (
-        "staged_resources",
-        "managed_input_layout",
-        "frozen_inputs",
-    )),
-    (REALIZATION, "Skill resource projection: the delivered-bundle installer and its prompt (plan 10.3 item 3)", (
-        "skill_delivery",
-    )),
-    (REALIZATION, "the error vocabulary realization and the run path both return; the host re-exports it", (
-        "host_error",
-    )),
-    (REALIZATION, "the Session MemoryStore binding realization projects; host extraction wraps it (plan 10.4 R)", (
-        "memory_binding",
-    )),
-    (REALIZATION, "the realization's view of installed Sessions and the realization layer it owns (plan 9.15)", (
-        "session_realizations",
-    )),
     (HOST, _MIXED_REASON, (
         "host",
         "host::session",

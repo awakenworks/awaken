@@ -55,10 +55,10 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
 
     let mut dependencies = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await;
     dependencies.env.session_provider =
-        crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
+        awaken_session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             sandbox_root,
             false,
-            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
             "/bin/sh",
             std::time::Duration::ZERO,
         )
@@ -108,7 +108,7 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
         owner: "continuity-worker".into(),
         runtime_incarnation: "continuity-worker/1".into(),
         epoch: 1,
-        expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms()
+        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
             .saturating_add(120_000),
     };
     let baseline = awaken_session_configuration_contract::SessionBaseline::compile(
@@ -216,7 +216,14 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
     managed
         .host
         .realizer
-        .apply_session_inputs_with_context(thread, &transition, None, Some(&lease))
+        .staging
+        .apply_session_inputs_with_context(
+            &managed.host.realizer,
+            thread,
+            &transition,
+            None,
+            Some(&lease),
+        )
         .await
         .expect("R1 adoption must not replay the main-branch initialization");
     let status = environment.sandbox_environment().run_test_command(pc::Command::new([

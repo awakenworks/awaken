@@ -2532,6 +2532,7 @@ dependencies = [
  "awaken-session-environment-contract",
  "awaken-session-event-contract",
  "awaken-session-mcp",
+ "awaken-session-realization",
  "awaken-session-realization-contract",
  "awaken-session-realization-driver",
  "awaken-session-repository-contract",
@@ -3101,6 +3102,45 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "awaken-session-realization"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-channel",
+ "awaken-agent-contract",
+ "awaken-authority-clock",
+ "awaken-container-contract",
+ "awaken-credential-contract",
+ "awaken-credential-materializer",
+ "awaken-environment-contract",
+ "awaken-ext-memory",
+ "awaken-ext-skills",
+ "awaken-provisioning-contract",
+ "awaken-resource-contract",
+ "awaken-run-ingress-contract",
+ "awaken-runtime-contract",
+ "awaken-sandbox-container",
+ "awaken-sandbox-control",
+ "awaken-session-application-contract",
+ "awaken-session-configuration-contract",
+ "awaken-session-environment",
+ "awaken-session-environment-contract",
+ "awaken-session-mcp",
+ "awaken-session-realization-contract",
+ "awaken-session-runtime-contract",
+ "awaken-session-state-contract",
+ "awaken-session-types",
+ "awaken-time",
+ "awaken-tool-contract",
+ "futures-util",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

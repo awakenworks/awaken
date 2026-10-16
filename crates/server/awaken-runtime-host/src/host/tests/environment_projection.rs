@@ -43,13 +43,13 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     // This test owns R2. Run-ingress sandbox-binding conformance owns R3.
     let mut raw_host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await;
     raw_host.env.session_provider =
-        crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
+        awaken_session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             std::env::temp_dir().join(format!(
                 "awaken-hot-attach-namespace-{}",
                 std::process::id()
             )),
             false,
-            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
             "/bin/sh",
             std::time::Duration::ZERO,
         )
@@ -246,10 +246,10 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
     let storage = tempfile::tempdir().unwrap();
     let mut raw_host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await;
     raw_host.env.session_provider =
-        crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
+        awaken_session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             storage.path().join("sandboxes"),
             false,
-            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
             "/bin/sh",
             std::time::Duration::ZERO,
         )
@@ -422,10 +422,10 @@ async fn applying_repository_detach_removes_the_resident_namespace_checkout() {
 
     let mut raw_host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await;
     raw_host.env.session_provider =
-        crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
+        awaken_session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             fixture.path().join("sandboxes"),
             false,
-            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
             "/bin/sh",
             std::time::Duration::ZERO,
         )
@@ -1418,7 +1418,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
     );
     let mut physical = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await;
     physical.env.backend_owned_session_provider = Some(
-        crate::session_environment::SandboxEnvironmentProvider::workdir_with_agent_stderr(
+        awaken_session_environment::SandboxEnvironmentProvider::workdir_with_agent_stderr(
             std::env::temp_dir().join("awaken-worker-layout-provider"),
             false,
         )
@@ -1481,16 +1481,16 @@ async fn frozen_environment_selects_trusted_host_exactly() {
     let mut host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await;
     host.env.trusted_host = crate::TrustedHostPolicy::Admitted;
     host.env.session_provider =
-        crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
+        awaken_session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             namespace_root.path(),
             false,
-            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
             "/bin/sh",
             std::time::Duration::ZERO,
         )
         .into_session_provider();
     host.env.backend_owned_session_provider = Some(
-        crate::session_environment::SandboxEnvironmentProvider::
+        awaken_session_environment::SandboxEnvironmentProvider::
             trusted_host_workdir_with_agent_stderr(trusted_root.path(), false).into_session_provider(),
     );
     let host = (host).build().expect("validated Host dependencies");
@@ -1516,10 +1516,10 @@ async fn frozen_environment_selects_trusted_host_exactly() {
     let mut absent = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await;
     absent.env.trusted_host = crate::TrustedHostPolicy::Admitted;
     absent.env.session_provider =
-        crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
+        awaken_session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             namespace_root.path(),
             false,
-            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
             "/bin/sh",
             std::time::Duration::ZERO,
         )

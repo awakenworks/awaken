@@ -166,7 +166,15 @@ async fn missing_projection_admits_only_the_direct_empty_revision_zero_noop() {
         );
 
         let result = host
-            .apply_dispatched_resource_transition(&thread, &transition, claim.as_ref(), None)
+            .realizer
+            .staging
+            .apply_session_inputs_with_context(
+                &host.realizer,
+                &thread,
+                &transition,
+                claim.as_ref(),
+                None,
+            )
             .await;
         if rule.accepted {
             result.unwrap_or_else(|error| panic!("{} must admit E1: {error}", rule.id));
@@ -1564,10 +1572,10 @@ async fn acp_execution_rebuilds_an_envelope_only_reservation_context() {
         )))
         .with_acp_tool_exporter(exporter.clone());
     raw_host.env.session_provider =
-        crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
+        awaken_session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             sandbox_root.path(),
             false,
-            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
             "/bin/sh",
             std::time::Duration::ZERO,
         )

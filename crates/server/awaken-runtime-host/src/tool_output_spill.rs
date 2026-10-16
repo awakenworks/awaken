@@ -116,7 +116,7 @@ fn truncated_preview(content: &str, visible_path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_environment::SandboxEnvironment;
+    use awaken_session_environment::SandboxEnvironment;
     use std::path::Path;
 
     use awaken_provisioning_contract::{

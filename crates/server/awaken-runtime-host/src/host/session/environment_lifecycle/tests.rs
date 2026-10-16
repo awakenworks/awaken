@@ -2,13 +2,19 @@
 use super::state::ProjectedEnvironmentOwner;
 use super::*;
 use crate::environment_owner::UnboundSessionEnvironmentOrigin;
-use crate::session_environment::SandboxEnvironmentAccess;
+use awaken_session_environment::test_support::SandboxEnvironmentAccess;
 
+#[path = "tests/candidate_adoption.rs"]
 mod candidate_adoption;
+#[path = "tests/checkpoint_admission.rs"]
 mod checkpoint_admission;
+#[path = "tests/owner_absorption.rs"]
 mod owner_absorption;
+#[path = "tests/recovery.rs"]
 mod recovery;
+#[path = "tests/revocation_retry.rs"]
 mod revocation_retry;
+#[path = "tests/terminal_background.rs"]
 mod terminal_background;
 
 fn environment_effect_fence(thread: &str) -> awaken_provisioning_contract::SandboxEffectFence {
