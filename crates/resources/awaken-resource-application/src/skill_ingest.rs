@@ -209,7 +209,9 @@ mod tests {
             writer
                 .start_file(
                     *path,
-                    zip::write::SimpleFileOptions::default().unix_permissions(*mode),
+                    zip::write::SimpleFileOptions::default()
+                        .system(zip::System::Unix)
+                        .unix_permissions(*mode),
                 )
                 .unwrap();
             writer.write_all(content).unwrap();
