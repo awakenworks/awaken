@@ -145,7 +145,7 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
                     sessions: installed_sessions.realizations(),
                     bundle_source: skill_bundle_source,
                     file_content_source: resources.file_content_source.clone(),
-                    memory_repository: resources.memory_stores.fs_handle(),
+                    memory: resources.memory_stores.clone(),
                     resource_validator: session_execution.resource_validator.clone(),
                     repository_binding_verifier: session_execution
                         .repository_binding_verifier
@@ -377,10 +377,17 @@ mod startup_tests {
         let host = (HostDependencies::for_coordinator(
             Arc::new(crate::NoModelConfiguredExecutor),
             crate::UNCONFIGURED_MODEL_REF,
-            Arc::new(awaken_resource_contract::UnavailableFileContentSource),
-            Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
-                awaken_time::system_clock(),
-            )),
+            {
+                let memory = Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+                    awaken_time::system_clock(),
+                ));
+                crate::WorkerContentAdapters {
+                    file_content_source: Arc::new(
+                        awaken_resource_contract::UnavailableFileContentSource,
+                    ),
+                    memory: awaken_resource_contract::MemoryExecutionContent::new(memory),
+                }
+            },
             expected.clone(),
             crate::DeploymentConfig::ephemeral()
                 .host_process(
@@ -414,9 +421,9 @@ mod startup_tests {
         // upstream authority; commit_ingest W1-W3 covers the port combinations.
         let file: Arc<dyn crate::FileContentSource<crate::ResourceOperationFence>> =
             Arc::new(awaken_resource_contract::UnavailableFileContentSource);
-        let memory: Arc<dyn awaken_resource_contract::MemoryRepository> = Arc::new(
-            awaken_memory_store::VolatileMemoryRepository::new(awaken_time::system_clock()),
-        );
+        let memory = Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+            awaken_time::system_clock(),
+        ));
         let extraction: Arc<dyn awaken_ext_memory::MemoryExtractionRepository> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
                 .await
@@ -434,8 +441,13 @@ mod startup_tests {
             HostDependencies::for_worker(
                 Arc::new(crate::NoModelConfiguredExecutor),
                 "stub",
-                file.clone(),
-                memory.clone(),
+                {
+                    let memory = memory.clone();
+                    crate::WorkerContentAdapters {
+                        file_content_source: file.clone(),
+                        memory: awaken_resource_contract::MemoryExecutionContent::new(memory),
+                    }
+                },
                 process(),
                 crate::UpstreamAuthority::default(),
                 awaken_dispatch_contract::RegisteredCapacity::of(
@@ -449,8 +461,13 @@ mod startup_tests {
         let worker = (HostDependencies::for_worker(
             Arc::new(crate::NoModelConfiguredExecutor),
             "stub",
-            file.clone(),
-            memory.clone(),
+            {
+                let memory = memory.clone();
+                crate::WorkerContentAdapters {
+                    file_content_source: file.clone(),
+                    memory: awaken_resource_contract::MemoryExecutionContent::new(memory),
+                }
+            },
             process(),
             crate::host::test_upstream_authority(),
             awaken_dispatch_contract::RegisteredCapacity::of(
@@ -464,8 +481,13 @@ mod startup_tests {
         let coordinator = (HostDependencies::for_coordinator(
             Arc::new(crate::NoModelConfiguredExecutor),
             "stub",
-            file,
-            memory,
+            {
+                let memory = memory;
+                crate::WorkerContentAdapters {
+                    file_content_source: file,
+                    memory: awaken_resource_contract::MemoryExecutionContent::new(memory),
+                }
+            },
             extraction,
             process(),
             Arc::new(crate::EphemeralRuntimeAuthority::new(
@@ -496,10 +518,17 @@ mod startup_tests {
         let worker_dependencies = HostDependencies::for_worker(
             Arc::new(crate::NoModelConfiguredExecutor),
             "stub",
-            Arc::new(awaken_resource_contract::UnavailableFileContentSource),
-            Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
-                awaken_time::system_clock(),
-            )),
+            {
+                let memory = Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+                    awaken_time::system_clock(),
+                ));
+                crate::WorkerContentAdapters {
+                    file_content_source: Arc::new(
+                        awaken_resource_contract::UnavailableFileContentSource,
+                    ),
+                    memory: awaken_resource_contract::MemoryExecutionContent::new(memory),
+                }
+            },
             process(),
             crate::host::test_upstream_authority(),
             awaken_dispatch_contract::RegisteredCapacity::of(

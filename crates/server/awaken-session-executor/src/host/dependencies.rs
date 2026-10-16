@@ -149,8 +149,7 @@ impl HostDependencies {
     pub fn for_worker(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
-        file_content_source: Arc<dyn crate::FileContentSource<crate::ResourceOperationFence>>,
-        memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
+        content: capability::WorkerContentAdapters,
         process: HostProcess,
         authority: crate::UpstreamAuthority,
         capacity: awaken_dispatch_contract::RegisteredCapacity,
@@ -167,10 +166,7 @@ impl HostDependencies {
             capability::ResourceInputs {
                 #[cfg(any(test, feature = "test-support"))]
                 local: None,
-                worker_content: Some(capability::WorkerContentAdapters {
-                    file_content_source,
-                    memory_repository,
-                }),
+                worker_content: Some(content),
                 extraction_repository: None,
             },
             process,
@@ -192,8 +188,7 @@ impl HostDependencies {
     pub fn for_coordinator(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
-        file_content_source: Arc<dyn crate::FileContentSource<crate::ResourceOperationFence>>,
-        memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
+        content: capability::WorkerContentAdapters,
         extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
         process: HostProcess,
         runtime_authority: Arc<dyn crate::RuntimeAuthority>,
@@ -204,10 +199,7 @@ impl HostDependencies {
             capability::ResourceInputs {
                 #[cfg(any(test, feature = "test-support"))]
                 local: None,
-                worker_content: Some(capability::WorkerContentAdapters {
-                    file_content_source,
-                    memory_repository,
-                }),
+                worker_content: Some(content),
                 extraction_repository: Some(extraction_repository),
             },
             process,
@@ -310,13 +302,6 @@ impl HostDependencies {
     #[must_use]
     pub fn local_workspace(&self) -> &str {
         &self.local_workspace
-    }
-
-    /// The Memory content data-plane port, for a composition that builds a
-    /// worker-side mounter over it. It carries no principal or policy state.
-    #[must_use]
-    pub fn memory_repository(&self) -> Arc<dyn awaken_resource_contract::MemoryRepository> {
-        self.resources.memory_stores.fs_handle()
     }
 
     /// Select the Coordinator-owned durable capability: the Host then owns

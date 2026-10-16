@@ -22,23 +22,30 @@ fn memory_test_snapshot(agent: &str) -> awaken_runtime_contract::ExecutableAgent
 async fn memory_test_host(
     model: Arc<dyn LlmExecutor>,
     agent: &str,
-) -> (Arc<SharedHost>, ManagedSessionRootFixture) {
+) -> (
+    Arc<SharedHost>,
+    ManagedSessionRootFixture,
+    Arc<dyn awaken_resource_contract::MemoryVersionQueries>,
+) {
     let roots = ManagedSessionRootFixture::new().await;
     let publications =
         awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([memory_test_snapshot(
             agent,
         )])
         .expect("valid Memory Agent publication");
-    let dependencies = crate::host::with_test_resource_validation(with_test_memory_mounter(
+    let (dependencies, versions) = crate::host::tests::fixtures::with_test_memory_history(
         crate::HostDependencies::ephemeral(model, "stub")
             .await
             .with_agent_publications(Arc::new(publications)),
-    ));
+    )
+    .await;
+    let dependencies =
+        crate::host::with_test_resource_validation(with_test_memory_mounter(dependencies));
     let host = roots
         .configure(dependencies)
         .build()
         .expect("validated Host dependencies");
-    (host, roots)
+    (host, roots, versions)
 }
 
 /// Install one complete Memory-enabled Session through the immutable Agent and
@@ -434,7 +441,7 @@ async fn memory_written_in_one_thread_is_recalled_and_used_in_another() {
     // The production binding sink performs its real admission/binding CAS.
     // This checks that selecting B never swaps A's Store, and a fixture cannot
     // backfill history on read or pretend a Resource update is fresh creation.
-    let (host, roots) = memory_test_host(Arc::new(MemLoopModel), "memory-agent").await;
+    let (host, roots, _versions) = memory_test_host(Arc::new(MemLoopModel), "memory-agent").await;
     let managed = managed_with_resource_source(host.clone());
     let store = test_memory_store_id();
     install_complete_memory_test_session(&managed, &roots, "thread-1", "memory-agent", &store)
@@ -516,7 +523,7 @@ async fn memory_written_in_one_thread_is_recalled_and_used_in_another() {
     assert!(
         host.resources
             .memory_stores
-            .fs()
+            .queries()
             .get_by_path(&store, "/beverage-preference.md")
             .await
             .unwrap()
@@ -568,7 +575,8 @@ async fn claimed_child_terminal_memory_uses_parent_physical_commit_partition() {
         let parent = format!("child-memory-parent-{warm}");
         let child = ThreadId(format!("child-memory-thread-{warm}"));
         let run = RunId(format!("child-memory-run-{warm}"));
-        let (host, roots) = memory_test_host(Arc::new(MemLoopModel), "memory-agent").await;
+        let (host, roots, versions) =
+            memory_test_host(Arc::new(MemLoopModel), "memory-agent").await;
         let managed =
             managed_with_resource_source_using(host.clone(), install_recording_session_application);
         let memory_store = test_memory_store_id();
@@ -676,9 +684,7 @@ async fn claimed_child_terminal_memory_uses_parent_physical_commit_partition() {
             "R1/R2 terminal extraction completed"
         );
         assert_eq!(
-            host.resources
-                .memory_stores
-                .fs()
+            versions
                 .list_versions(&memory_store)
                 .await
                 .expect("read governed Memory versions")
@@ -800,7 +806,7 @@ async fn reopening_a_direct_terminal_thread_recovers_a_missing_extraction_outbox
         second
             .resources
             .memory_stores
-            .fs()
+            .queries()
             .get_by_path("outbox-store", "/user-prefs.md")
             .await
             .unwrap()
@@ -853,7 +859,7 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
     let unbound_store = test_memory_store_id();
     host.resources
         .memory_stores
-        .fs()
+        .writer()
         .create(&unbound_store, "/must-not-leak.md", "the user prefers tea")
         .await
         .unwrap();
@@ -909,7 +915,7 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
     assert!(
         host.resources
             .memory_stores
-            .fs()
+            .queries()
             .get_by_path(&store_a, "/beverage-preference.md")
             .await
             .unwrap()
@@ -919,7 +925,7 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
     assert!(
         host.resources
             .memory_stores
-            .fs()
+            .queries()
             .list(&store_b, "/")
             .await
             .unwrap()
@@ -1034,7 +1040,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     let store = test_memory_store_id();
     host.resources
         .memory_stores
-        .fs()
+        .writer()
         .create(&store, "/seed.md", "seed")
         .await
         .unwrap();
@@ -1313,7 +1319,7 @@ async fn published_agent_memory_config_can_disable_recall_and_extraction() {
     let store = test_memory_store_id();
     host.resources
         .memory_stores
-        .fs()
+        .writer()
         .create(&store, "/existing.md", "the user prefers tea")
         .await
         .unwrap();
@@ -1352,7 +1358,7 @@ async fn published_agent_memory_config_can_disable_recall_and_extraction() {
     assert!(
         host.resources
             .memory_stores
-            .fs()
+            .queries()
             .get_by_path(&store, "/beverage-preference.md")
             .await
             .unwrap()
@@ -1480,7 +1486,7 @@ async fn resume_ended_run_triggers_memory_extraction() {
     let saved = host
         .resources
         .memory_stores
-        .fs()
+        .queries()
         .get_by_path(&store, "/resumed.md")
         .await
         .unwrap()
@@ -1552,7 +1558,7 @@ async fn extraction_cursor_only_processes_new_messages() {
     // previously processed messages must never re-enter a later seed. Decision rule:
     // advance the cursor once, append new messages, and require only the
     // suffix effect documented below.
-    let (host, roots) = memory_test_host(Arc::new(CursorModel), "memory-agent").await;
+    let (host, roots, _versions) = memory_test_host(Arc::new(CursorModel), "memory-agent").await;
     let managed = managed_with_resource_source(host.clone());
     let store = test_memory_store_id();
     install_complete_memory_test_session(&managed, &roots, "t-cur", "memory-agent", &store).await;
@@ -1571,7 +1577,7 @@ async fn extraction_cursor_only_processes_new_messages() {
     let seen = host
         .resources
         .memory_stores
-        .fs()
+        .queries()
         .get_by_path(&store, "/seen.md")
         .await
         .unwrap()
@@ -1591,7 +1597,8 @@ async fn run_end_fires_background_memory_extraction() {
     // blocking the Run response; E2 draining background work persists the result.
     // Constraint/Invariant: committed Run end triggers exactly one background job.
     // Decision rule: end one Run, observe prompt return, then drain and require E2.
-    let (host, roots) = memory_test_host(Arc::new(MemoryHostModel), "memory-agent").await;
+    let (host, roots, _versions) =
+        memory_test_host(Arc::new(MemoryHostModel), "memory-agent").await;
     let managed = managed_with_resource_source(host.clone());
     let store = test_memory_store_id();
     install_complete_memory_test_session(&managed, &roots, "t-mem", "memory-agent", &store).await;
@@ -1615,7 +1622,7 @@ async fn run_end_fires_background_memory_extraction() {
     let saved = host
         .resources
         .memory_stores
-        .fs()
+        .queries()
         .get_by_path(&store, "/user-prefs.md")
         .await
         .unwrap()

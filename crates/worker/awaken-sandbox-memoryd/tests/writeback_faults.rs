@@ -2,7 +2,8 @@
 
 mod support;
 use awaken_memory_store::{
-    MemErr, Memory, MemoryEntry, MemoryPurgeSummary, MemoryRepository, MemoryVersion,
+    MemErr, Memory, MemoryCopyConflictPreservation, MemoryCopyConflictQueries, MemoryCopyWriteback,
+    MemoryEntry, MemoryQueries, MemorySnapshotSource, MemoryVersionQueries, MemoryWriter,
     SqliteMemoryRepository,
 };
 use awaken_provisioning_contract::{
@@ -336,13 +337,16 @@ async fn recovery_without_temp_child() {
         }
         assert_eq!(repository.list_versions("s").await.unwrap().len(), 1);
         assert_eq!(
-            repository
-                .get_by_path("s", "/note.md")
-                .await
-                .unwrap()
-                .unwrap()
-                .content
-                .as_deref(),
+            awaken_resource_contract::MemoryQueries::get_by_path(
+                repository.as_ref(),
+                "s",
+                "/note.md"
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .content
+            .as_deref(),
             Some("private content")
         );
     }
@@ -395,8 +399,7 @@ impl FaultRepository {
     }
 }
 
-#[async_trait::async_trait]
-impl MemoryRepository for FaultRepository {
+impl FaultRepository {
     async fn preserve_copy_conflict(
         &self,
         s: &str,
@@ -406,20 +409,14 @@ impl MemoryRepository for FaultRepository {
         self.mutate(async move { inner.preserve_copy_conflict(&s, &candidate).await })
             .await
     }
-    async fn list_copy_conflicts(
-        &self,
-        s: &str,
-    ) -> Result<Vec<awaken_resource_contract::MemoryCopyConflict>, MemErr> {
-        self.inner.list_copy_conflicts(s).await
-    }
     async fn snapshot_heads(&self, s: &str) -> Result<Vec<Memory>, MemErr> {
         self.inner.snapshot_heads(s).await
     }
     async fn list(&self, s: &str, p: &str) -> Result<Vec<MemoryEntry>, MemErr> {
-        self.inner.list(s, p).await
+        MemoryQueries::list(self.inner.as_ref(), s, p).await
     }
     async fn get_by_path(&self, s: &str, p: &str) -> Result<Option<Memory>, MemErr> {
-        self.inner.get_by_path(s, p).await
+        MemoryQueries::get_by_path(self.inner.as_ref(), s, p).await
     }
     async fn create_as(
         &self,
@@ -435,29 +432,8 @@ impl MemoryRepository for FaultRepository {
             c.to_owned(),
             actor.cloned(),
         );
-        self.mutate(async move { inner.create_as(&s, &p, &c, actor.as_ref()).await })
-            .await
-    }
-    async fn update_head_as(
-        &self,
-        s: &str,
-        base: &awaken_resource_contract::MemoryGeneration,
-        c: &str,
-        target: Option<&str>,
-        actor: Option<&awaken_resource_contract::MemoryActor>,
-    ) -> Result<Memory, MemErr> {
-        let (inner, s, base, c, target, actor) = (
-            self.inner.clone(),
-            s.to_owned(),
-            base.clone(),
-            c.to_owned(),
-            target.map(str::to_owned),
-            actor.cloned(),
-        );
         self.mutate(async move {
-            inner
-                .update_head_as(&s, &base, &c, target.as_deref(), actor.as_ref())
-                .await
+            MemoryCopyWriteback::create_as(inner.as_ref(), &s, &p, &c, actor.as_ref()).await
         })
         .await
     }
@@ -478,17 +454,6 @@ impl MemoryRepository for FaultRepository {
         self.mutate(async move { inner.update_materialized(&s, &path, &base, &content).await })
             .await
     }
-    async fn rename(&self, s: &str, a: &str, b: &str) -> Result<Memory, MemErr> {
-        self.inner.rename(s, a, b).await
-    }
-    async fn delete_by_path_as(
-        &self,
-        s: &str,
-        p: &str,
-        actor: Option<&awaken_resource_contract::MemoryActor>,
-    ) -> Result<(), MemErr> {
-        self.inner.delete_by_path_as(s, p, actor).await
-    }
     async fn delete_if_match_as(
         &self,
         s: &str,
@@ -504,25 +469,10 @@ impl MemoryRepository for FaultRepository {
             actor.cloned(),
         );
         self.mutate(async move {
-            inner
-                .delete_if_match_as(&s, &p, &base, actor.as_ref())
+            MemoryCopyWriteback::delete_if_match_as(inner.as_ref(), &s, &p, &base, actor.as_ref())
                 .await
         })
         .await
-    }
-    async fn list_versions(&self, s: &str) -> Result<Vec<MemoryVersion>, MemErr> {
-        self.inner.list_versions(s).await
-    }
-    async fn redact_version_as(
-        &self,
-        s: &str,
-        id: &str,
-        actor: Option<&awaken_resource_contract::MemoryActor>,
-    ) -> Result<Option<MemoryVersion>, MemErr> {
-        self.inner.redact_version_as(s, id, actor).await
-    }
-    async fn purge_store(&self, s: &str) -> Result<MemoryPurgeSummary, MemErr> {
-        self.inner.purge_store(s).await
     }
 }
 
@@ -610,8 +560,13 @@ async fn interrupted_conflict_retention_retries_without_losing_the_proposal() {
                 tokio::time::timeout(std::time::Duration::from_secs(5), gate.reached.notified())
                     .await
                     .unwrap();
+                // Inspect the same durable inner backend, not the four-role
+                // CopyOnly wrapper; listing is not a mount capability.
                 assert_eq!(
-                    repository.list_copy_conflicts("s").await.unwrap().len(),
+                    MemoryCopyConflictQueries::list_copy_conflicts(repository.as_ref(), "s")
+                        .await
+                        .unwrap()
+                        .len(),
                     usize::from(after)
                 );
                 if error {
@@ -776,7 +731,13 @@ async fn interrupted_writeback_preserves_commit_truth_and_exact_retry() {
                         initial_history + usize::from(prefix) + usize::from(after),
                         "F1/F2/F3 {operation}/{after}/{error}/{prefix}"
                     );
-                    let head = repository.get_by_path("s", "/z.md").await.unwrap();
+                    let head = awaken_resource_contract::MemoryQueries::get_by_path(
+                        repository.as_ref(),
+                        "s",
+                        "/z.md",
+                    )
+                    .await
+                    .unwrap();
                     assert_eq!(
                         head.as_ref().and_then(|m| m.content.as_deref()),
                         match (operation, after) {
@@ -797,8 +758,14 @@ async fn interrupted_writeback_preserves_commit_truth_and_exact_retry() {
                             if operation == "create" {
                                 repository.create("s", "/z.md", "newer").await.unwrap();
                             } else {
-                                let head =
-                                    repository.get_by_path("s", "/z.md").await.unwrap().unwrap();
+                                let head = awaken_resource_contract::MemoryQueries::get_by_path(
+                                    repository.as_ref(),
+                                    "s",
+                                    "/z.md",
+                                )
+                                .await
+                                .unwrap()
+                                .unwrap();
                                 repository
                                     .update_head("s", &head.generation(), "newer", None)
                                     .await
@@ -812,7 +779,13 @@ async fn interrupted_writeback_preserves_commit_truth_and_exact_retry() {
                         )
                         .await
                         .expect("dispatched mutation finishes after caller cancellation");
-                        let head = repository.get_by_path("s", "/z.md").await.unwrap();
+                        let head = awaken_resource_contract::MemoryQueries::get_by_path(
+                            repository.as_ref(),
+                            "s",
+                            "/z.md",
+                        )
+                        .await
+                        .unwrap();
                         assert_eq!(
                             head.as_ref().and_then(|m| m.content.as_deref()),
                             if competitor {
@@ -895,5 +868,68 @@ async fn interrupted_writeback_preserves_commit_truth_and_exact_retry() {
                 }
             }
         }
+    }
+}
+
+#[async_trait::async_trait]
+#[cfg(test)]
+impl MemoryQueries for FaultRepository {
+    async fn list(&self, s: &str, p: &str) -> Result<Vec<MemoryEntry>, MemErr> {
+        FaultRepository::list(self, s, p).await
+    }
+    async fn get_by_path(&self, s: &str, p: &str) -> Result<Option<Memory>, MemErr> {
+        FaultRepository::get_by_path(self, s, p).await
+    }
+}
+
+#[async_trait::async_trait]
+#[cfg(test)]
+impl MemorySnapshotSource for FaultRepository {
+    async fn snapshot_heads(&self, s: &str) -> Result<Vec<Memory>, MemErr> {
+        FaultRepository::snapshot_heads(self, s).await
+    }
+}
+
+#[async_trait::async_trait]
+#[cfg(test)]
+impl MemoryCopyWriteback for FaultRepository {
+    async fn create_as(
+        &self,
+        s: &str,
+        p: &str,
+        c: &str,
+        actor: Option<&awaken_resource_contract::MemoryActor>,
+    ) -> Result<Memory, MemErr> {
+        FaultRepository::create_as(self, s, p, c, actor).await
+    }
+    async fn update_materialized(
+        &self,
+        s: &str,
+        path: &str,
+        base: &awaken_resource_contract::MemoryGeneration,
+        content: &str,
+    ) -> Result<Memory, MemErr> {
+        FaultRepository::update_materialized(self, s, path, base, content).await
+    }
+    async fn delete_if_match_as(
+        &self,
+        s: &str,
+        p: &str,
+        base: &awaken_resource_contract::MemoryGeneration,
+        actor: Option<&awaken_resource_contract::MemoryActor>,
+    ) -> Result<bool, MemErr> {
+        FaultRepository::delete_if_match_as(self, s, p, base, actor).await
+    }
+}
+
+#[async_trait::async_trait]
+#[cfg(test)]
+impl MemoryCopyConflictPreservation for FaultRepository {
+    async fn preserve_copy_conflict(
+        &self,
+        s: &str,
+        candidate: &awaken_resource_contract::MemoryCopyConflict,
+    ) -> Result<(), MemErr> {
+        FaultRepository::preserve_copy_conflict(self, s, candidate).await
     }
 }

@@ -1,6 +1,6 @@
 //! Durable memory persistence for the resources plane.
 //!
-//! The [`MemoryRepository`] port with durable SQLite and Postgres backends plus an
+//! The [`MemoryWriter`] port with durable SQLite and Postgres backends plus an
 //! explicit `test-support` volatile backend. A store is addressed only by an opaque,
 //! globally unique id; workspace ownership and authorization deliberately remain
 //! outside this storage adapter in the resource registry and authorization edge.
@@ -8,7 +8,7 @@
 //! Recall, extraction, API history, and mounts all use this same store-scoped
 //! aggregate; there is no Host-global extraction directory.
 
-/// Path-addressed, CAS memory model (ADR-0053): the `MemoryRepository` port a write-through
+/// Path-addressed, CAS memory model (ADR-0053): the Memory capability ports a write-through
 /// FUSE mount projects.
 pub mod repository;
 
@@ -20,9 +20,11 @@ pub use awaken_resource_contract::memory_store_stem as sanitize_stem;
 #[cfg(any(test, feature = "test-support"))]
 pub use repository::VolatileMemoryRepository;
 pub use repository::{
-    MAX_MEMORIES_PER_STORE, MAX_MEMORY_BYTES, MemErr, Memory, MemoryActor, MemoryEntry,
-    MemoryGeneration, MemoryPurgeSummary, MemoryRepository, MemoryVersion, MemoryVersionOperation,
-    sha256_hex,
+    MAX_MEMORIES_PER_STORE, MAX_MEMORY_BYTES, MemErr, Memory, MemoryActor, MemoryContentPurge,
+    MemoryCopyConflictPreservation, MemoryCopyConflictQueries, MemoryCopyWriteback, MemoryEntry,
+    MemoryFilesystem, MemoryGeneration, MemoryPurgeSummary, MemoryQueries, MemorySnapshotSource,
+    MemoryVersion, MemoryVersionOperation, MemoryVersionQueries, MemoryVersionRedaction,
+    MemoryWriter, sha256_hex,
 };
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]

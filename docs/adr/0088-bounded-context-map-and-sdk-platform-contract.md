@@ -380,3 +380,40 @@ Native candidate before updating their pin.
 The Runtime SDK release surface and Anthropic Managed Agents HTTP paths, DTOs,
 headers, errors, pagination, and Environment archive behavior are unchanged. There
 is no wire-format or database migration.
+
+
+### Memory caller capabilities and shared mutation observation (draft amendment)
+
+The former `MemoryRepository` public Rust trait is replaced by the caller roles
+`MemoryQueries`, `MemorySnapshotSource`, `MemoryWriter`, `MemoryFilesystem`,
+`MemoryCopyWriteback`, `MemoryCopyConflictQueries`,
+`MemoryCopyConflictPreservation`, `MemoryVersionQueries`,
+`MemoryVersionRedaction`, and `MemoryContentPurge`. Backend type names remain
+unchanged. Their atomic implementation methods remain private and are reached
+through the actual role implementations; no compatibility supertrait or public
+broad inherent method set remains.
+
+A Resources root constructs one `InvalidatingMemoryRepository` and derives every
+role view from that Arc. `MemoryInvalidator` lives in the existing Resource
+contract so the Resources caller and Sandbox implementation remain isolated.
+The existing `LocalInvalidator` transport is instantiated once by the process
+root and passed to both persistence and the selected mounter. Mounters consume
+already-decorated views and never create another mutation chain.
+
+The HTTP client implements its six actual capabilities: Queries, SnapshotSource,
+Writer, CopyWriteback, CopyConflictQueries and CopyConflictPreservation. It implements no filesystem rename,
+history, redaction or purge role. Querying retained conflicts and acknowledging
+preservation are separate capabilities: the Managed API only lists, while the
+mounter only preserves. Preservation does not manage TTL; failure keeps the
+source undisposable. Copy-only construction requires its four actual
+roles, whereas FUSE construction requires a real MemoryFilesystem and the shared
+bus. Actor attribution, complete-generation/location CAS, history and conflict
+retention remain in the original backend transaction/lock.
+
+Anthropic HTTP objects, public version ids, request parameters, authorization,
+error taxonomy and paging retain their existing protocol owners. Rust consumers
+must migrate to the actual role constructors at a coordinated repository pin.
+This draft does not certify an external Cloud build or any unexecuted test.
+
+
+Memory role construction also preserves the original single-repository identity: private-field `MemoryExecutionContent`, `MemoryMountSource`, and `MemoryManagementContent` are derived only from one concrete `Arc<T>`. Public Host/Managed/mounter inputs accept these controlled values rather than independent view arrays. FUSE validates the actual decorator's required invalidator identity before retaining a projection; a different bus is an explicit construction error. No broad supertrait, optional capability discovery, second owner, or runtime unsupported adapter is introduced.

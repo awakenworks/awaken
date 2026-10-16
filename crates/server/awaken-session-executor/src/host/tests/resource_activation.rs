@@ -19,7 +19,7 @@ async fn install_test_session_init_mounts_an_effective_memory_resource() {
     let store_id = test_memory_store_id();
     host.resources
         .memory_stores
-        .fs()
+        .writer()
         .create(&store_id, "/facts.md", "the secret code is BANANA-42")
         .await
         .expect("seed memory");
@@ -170,7 +170,9 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
     let managed = managed_with_resource_source(host.clone());
     let store_a = "semantic-store-a";
     let store_b = "semantic-store-b";
-    host.memory_repository()
+    host.resources
+        .memory_stores
+        .writer()
         .create(store_b, "/preference.md", "from-b")
         .await
         .unwrap();
@@ -426,7 +428,9 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         "M5/E4: {read_only}"
     );
     assert_eq!(
-        host.memory_repository()
+        host.resources
+            .memory_stores
+            .queries()
             .get_by_path(store_a, "/fact.md")
             .await
             .unwrap()

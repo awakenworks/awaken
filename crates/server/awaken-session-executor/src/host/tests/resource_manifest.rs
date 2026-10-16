@@ -15,7 +15,7 @@ async fn told_equals_mounted_the_prompt_path_and_access_match_the_realized_mount
     let store_id = test_memory_store_id();
     host.resources
         .memory_stores
-        .fs()
+        .writer()
         .create(&store_id, "/seed.md", "seed")
         .await
         .expect("seed memory");
@@ -353,7 +353,7 @@ async fn automatic_memory_requires_one_explicit_existing_binding() {
         for store in &stores {
             host.resources
                 .memory_stores
-                .fs()
+                .writer()
                 .create(store, "/seed.md", rule)
                 .await
                 .unwrap();
@@ -435,7 +435,7 @@ async fn runtime_stages_exactly_the_effective_resource_list() {
     let s2 = test_memory_store_id();
     host.resources
         .memory_stores
-        .fs()
+        .writer()
         .create(&s2, "/wire.md", "WIRE-BYTES")
         .await
         .unwrap();
@@ -783,7 +783,7 @@ async fn an_effective_resource_mounts_on_a_worker_without_the_binding_repository
     db_less
         .resources
         .memory_stores
-        .fs()
+        .writer()
         .create(&store_id, "/carried.md", "CARRIED-BYTES")
         .await
         .expect("seed");

@@ -6,7 +6,7 @@
 //!
 //! A write-through FUSE mount is the live path, but it needs `/dev/fuse` — absent on
 //! macOS, in CI, and in unprivileged containers. There, the same path-addressed
-//! [`MemoryRepository`] store is materialized the old way: [`materialize`] copies every
+//! [`MemorySnapshotSource`] store is materialized the old way: [`materialize`] copies every
 //! memory out to plain files the agent reads/writes, and [`harvest`] walks those
 //! files back into the store after a turn (create new, CAS-update changed, skip
 //! unchanged). [`fuse_available`] is the capability check a provider gates on.
@@ -17,7 +17,8 @@ use std::path::{Path, PathBuf};
 
 use awaken_provisioning_contract::MemoryMaterializationHead;
 use awaken_resource_contract::{
-    MemErr, MemoryCopyBase, MemoryCopyConflict, MemoryRepository, memory_sha256_hex as sha256_hex,
+    MemErr, MemoryCopyBase, MemoryCopyConflict, MemoryCopyWriteback, MemoryQueries,
+    MemorySnapshotSource, memory_sha256_hex as sha256_hex,
 };
 
 use crate::FuseError;
@@ -160,7 +161,7 @@ pub struct HarvestReport {
 /// Nested paths create their parent directories. Returns the exact observed heads
 /// needed for conflict-safe teardown.
 pub async fn materialize(
-    fs: &dyn MemoryRepository,
+    fs: &dyn MemorySnapshotSource,
     store: &str,
     root: &Path,
 ) -> Result<CopySnapshot, FuseError> {
@@ -250,8 +251,22 @@ pub async fn materialize(
 /// FUSE tier's `unlink` → `delete_by_path`: a memory materialized out to the copy dir
 /// but no longer present there is deleted from the store, so "rm note.md" sticks on
 /// both realization tiers.
-pub async fn harvest(
-    fs: &dyn MemoryRepository,
+pub async fn harvest<T>(
+    backend: &T,
+    store: &str,
+    root: &Path,
+    snapshot: &mut CopySnapshot,
+) -> Result<HarvestReport, FuseError>
+where
+    T: MemoryQueries + MemoryCopyWriteback,
+{
+    harvest_with_roles(backend, backend, store, root, snapshot).await
+}
+
+// Only the mounter's private, controlled CopyPorts may enter with erased views.
+pub(crate) async fn harvest_with_roles(
+    queries: &dyn MemoryQueries,
+    writeback: &dyn MemoryCopyWriteback,
     store: &str,
     root: &Path,
     snapshot: &mut CopySnapshot,
@@ -270,14 +285,15 @@ pub async fn harvest(
         .into_iter()
         .map(|file| Ok((memory_path(&file.relative_path)?, file.bytes)))
         .collect::<Result<Vec<_>, FuseError>>()?;
-    reconcile_files(fs, store, files, snapshot).await
+    reconcile_files(queries, writeback, store, files, snapshot).await
 }
 
 /// Recover an already-captured projection without rematerializing sensitive
 /// bytes on the host. Admission is all-or-nothing; Repository writes retain the
 /// same per-file CAS/retry semantics as a live tree scan.
 pub(crate) async fn harvest_recovered_files(
-    fs: &dyn MemoryRepository,
+    queries: &dyn MemoryQueries,
+    writeback: &dyn MemoryCopyWriteback,
     store: &str,
     files: &[(String, Vec<u8>)],
     snapshot: &mut CopySnapshot,
@@ -301,11 +317,12 @@ pub(crate) async fn harvest_recovered_files(
         .map(|(path, bytes)| (format!("/{path}"), bytes.clone()))
         .collect::<Vec<_>>();
     contents.sort_by(|a, b| a.0.cmp(&b.0));
-    reconcile_files(fs, store, contents, snapshot).await
+    reconcile_files(queries, writeback, store, contents, snapshot).await
 }
 
 async fn reconcile_files(
-    fs: &dyn MemoryRepository,
+    queries: &dyn MemoryQueries,
+    writeback: &dyn MemoryCopyWriteback,
     store: &str,
     files: Vec<(String, Vec<u8>)>,
     snapshot: &mut CopySnapshot,
@@ -331,7 +348,7 @@ async fn reconcile_files(
                 if sha256_hex(content) == base.content_sha256 {
                     continue;
                 }
-                match fs
+                match writeback
                     .update_materialized(store, path, &base.generation(), content)
                     .await
                 {
@@ -364,7 +381,7 @@ async fn reconcile_files(
                     Err(error) => return Err(error.into()),
                 }
             }
-            None => match fs.create(store, path, content).await {
+            None => match writeback.create_as(store, path, content, None).await {
                 Ok(created) => {
                     snapshot.heads.insert(
                         path.clone(),
@@ -378,7 +395,7 @@ async fn reconcile_files(
                     report.changed += 1;
                 }
                 Err(MemErr::PathConflict(_)) => {
-                    let current = fs.get_by_path(store, path).await?;
+                    let current = queries.get_by_path(store, path).await?;
                     if let Some(current) = current
                         && current.content_sha256 == sha256_hex(content)
                     {
@@ -416,7 +433,10 @@ async fn reconcile_files(
         .map(|(path, head)| (path.clone(), head.clone()))
         .collect();
     for (path, base) in removed {
-        match fs.delete_if_match(store, &path, &base.generation()).await {
+        match writeback
+            .delete_if_match_as(store, &path, &base.generation(), None)
+            .await
+        {
             Ok(deleted) => {
                 snapshot.heads.remove(&path);
                 report.changed += usize::from(deleted);
@@ -482,7 +502,8 @@ fn memory_path(relative: &Path) -> Result<String, FuseError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_memory_store::{MemErr, Memory, MemoryPurgeSummary, MemoryVersion};
+    use awaken_memory_store::{MemErr, Memory};
+    use awaken_resource_contract::MemoryWriter;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -554,109 +575,10 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl MemoryRepository for SnapshotOnlyRepository {
-        async fn preserve_copy_conflict(
-            &self,
-            _store: &str,
-            _candidate: &awaken_resource_contract::MemoryCopyConflict,
-        ) -> Result<(), MemErr> {
-            unreachable!("snapshot test performs no conflict writes")
-        }
-
-        async fn list_copy_conflicts(
-            &self,
-            _store: &str,
-        ) -> Result<Vec<awaken_resource_contract::MemoryCopyConflict>, MemErr> {
-            unreachable!("snapshot test performs no conflict reads")
-        }
-
+    #[cfg(test)]
+    impl MemorySnapshotSource for SnapshotOnlyRepository {
         async fn snapshot_heads(&self, _store: &str) -> Result<Vec<Memory>, MemErr> {
             Ok(self.heads.clone())
-        }
-
-        async fn list(
-            &self,
-            _store: &str,
-            _prefix: &str,
-        ) -> Result<Vec<awaken_memory_store::MemoryEntry>, MemErr> {
-            panic!("the copy snapshot must not emulate an atomic snapshot with list")
-        }
-
-        async fn get_by_path(&self, _store: &str, _path: &str) -> Result<Option<Memory>, MemErr> {
-            panic!("the copy snapshot must not emulate an atomic snapshot with per-path reads")
-        }
-
-        async fn create_as(
-            &self,
-            _store: &str,
-            _path: &str,
-            _content: &str,
-            _actor: Option<&awaken_resource_contract::MemoryActor>,
-        ) -> Result<Memory, MemErr> {
-            unreachable!("snapshot test performs no writes")
-        }
-
-        async fn update_head_as(
-            &self,
-            _store: &str,
-            _base: &awaken_resource_contract::MemoryGeneration,
-            _content: &str,
-            _target_path: Option<&str>,
-            _actor: Option<&awaken_resource_contract::MemoryActor>,
-        ) -> Result<Memory, MemErr> {
-            unreachable!("snapshot test performs no writes")
-        }
-
-        async fn update_materialized(
-            &self,
-            _store: &str,
-            _path: &str,
-            _base: &awaken_resource_contract::MemoryGeneration,
-            _content: &str,
-        ) -> Result<Memory, MemErr> {
-            Err(MemErr::Storage(
-                "atomic materialized Memory update is unsupported".into(),
-            ))
-        }
-
-        async fn rename(&self, _store: &str, _from: &str, _to: &str) -> Result<Memory, MemErr> {
-            unreachable!("snapshot test performs no writes")
-        }
-
-        async fn delete_by_path_as(
-            &self,
-            _store: &str,
-            _path: &str,
-            _actor: Option<&awaken_resource_contract::MemoryActor>,
-        ) -> Result<(), MemErr> {
-            unreachable!("snapshot test performs no writes")
-        }
-
-        async fn delete_if_match_as(
-            &self,
-            _store: &str,
-            _path: &str,
-            _base: &awaken_resource_contract::MemoryGeneration,
-            _actor: Option<&awaken_resource_contract::MemoryActor>,
-        ) -> Result<bool, MemErr> {
-            unreachable!("snapshot test performs no writes")
-        }
-
-        async fn list_versions(&self, _store: &str) -> Result<Vec<MemoryVersion>, MemErr> {
-            unreachable!("snapshot test performs no history reads")
-        }
-
-        async fn redact_version_as(
-            &self,
-            _store: &str,
-            _version_id: &str,
-            _actor: Option<&awaken_resource_contract::MemoryActor>,
-        ) -> Result<Option<MemoryVersion>, MemErr> {
-            unreachable!("snapshot test performs no history writes")
-        }
-
-        async fn purge_store(&self, _store: &str) -> Result<MemoryPurgeSummary, MemErr> {
-            unreachable!("snapshot test performs no lifecycle writes")
         }
     }
 
@@ -715,12 +637,47 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
+    struct RejectingCopyWriteback;
+    #[async_trait::async_trait]
+    #[cfg(test)]
+    impl MemoryCopyWriteback for RejectingCopyWriteback {
+        async fn create_as(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: Option<&awaken_resource_contract::MemoryActor>,
+        ) -> Result<Memory, MemErr> {
+            unreachable!("no create fallback is allowed")
+        }
+        async fn update_materialized(
+            &self,
+            _: &str,
+            _: &str,
+            _: &awaken_resource_contract::MemoryGeneration,
+            _: &str,
+        ) -> Result<Memory, MemErr> {
+            Err(MemErr::Storage(
+                "atomic materialized Memory update is unsupported".into(),
+            ))
+        }
+        async fn delete_if_match_as(
+            &self,
+            _: &str,
+            _: &str,
+            _: &awaken_resource_contract::MemoryGeneration,
+            _: Option<&awaken_resource_contract::MemoryActor>,
+        ) -> Result<bool, MemErr> {
+            unreachable!("no delete fallback is allowed")
+        }
+    }
+
     #[tokio::test]
     async fn unsupported_path_cas_never_falls_back_to_id_only_write() {
-        // MP-U: adapter has no atomic location operation => error before any
-        // get/update call. The existing snapshot-only double panics on either,
-        // detecting a racy read-then-update fallback in the contract default.
-        let fs = SnapshotOnlyRepository { heads: vec![] };
+        // MP-U: the atomic location operation refuses the write. This port has
+        // no query or ID-only update operation with which to emulate admission;
+        // the exact rejection must reach the caller without a fallback.
+        let fs = RejectingCopyWriteback;
         assert!(
             matches!(fs.update_materialized("s", "/a", &awaken_resource_contract::MemoryGeneration::new("id", 1, "sha"), "edit").await,
             Err(MemErr::Storage(message)) if message.contains("unsupported"))
@@ -777,7 +734,11 @@ mod tests {
         assert!(report.conflicts.is_empty());
 
         let keep = rt
-            .block_on(fs.get_by_path("s", "/keep.md"))
+            .block_on(awaken_resource_contract::MemoryQueries::get_by_path(
+                fs.as_ref(),
+                "s",
+                "/keep.md",
+            ))
             .unwrap()
             .unwrap();
         assert_eq!(keep.content.as_deref(), Some("v2"));
@@ -786,11 +747,15 @@ mod tests {
             "a changed file bumps the version"
         );
         assert_eq!(
-            rt.block_on(fs.get_by_path("s", "/sub/new.md"))
-                .unwrap()
-                .unwrap()
-                .content
-                .as_deref(),
+            rt.block_on(awaken_resource_contract::MemoryQueries::get_by_path(
+                fs.as_ref(),
+                "s",
+                "/sub/new.md"
+            ))
+            .unwrap()
+            .unwrap()
+            .content
+            .as_deref(),
             Some("fresh"),
         );
 
@@ -854,16 +819,24 @@ mod tests {
 
         // Parity with FUSE unlink: the removed file is gone from the store…
         assert!(
-            rt.block_on(fs.get_by_path("s", "/gone.md"))
-                .unwrap()
-                .is_none(),
+            rt.block_on(awaken_resource_contract::MemoryQueries::get_by_path(
+                fs.as_ref(),
+                "s",
+                "/gone.md"
+            ))
+            .unwrap()
+            .is_none(),
             "copy harvest deletes a removed file, matching FUSE unlink"
         );
         // …and an untouched memory is left intact.
         assert!(
-            rt.block_on(fs.get_by_path("s", "/keep.md"))
-                .unwrap()
-                .is_some(),
+            rt.block_on(awaken_resource_contract::MemoryQueries::get_by_path(
+                fs.as_ref(),
+                "s",
+                "/keep.md"
+            ))
+            .unwrap()
+            .is_some(),
             "an unremoved memory survives the harvest"
         );
         std::fs::remove_dir_all(&dir).ok();
@@ -903,11 +876,15 @@ mod tests {
         assert_eq!(report.changed, 0);
         assert_eq!(report.conflicts[0].candidate.path, "/note.md");
         assert_eq!(
-            rt.block_on(fs.get_by_path("s", "/note.md"))
-                .unwrap()
-                .unwrap()
-                .content
-                .as_deref(),
+            rt.block_on(awaken_resource_contract::MemoryQueries::get_by_path(
+                fs.as_ref(),
+                "s",
+                "/note.md"
+            ))
+            .unwrap()
+            .unwrap()
+            .content
+            .as_deref(),
             Some("remote-v2"),
             "copy reconciliation never clobbers the concurrent durable head"
         );
@@ -929,9 +906,13 @@ mod tests {
         assert_eq!(report.changed, 0);
         assert!(report.conflicts.is_empty());
         assert!(
-            rt.block_on(fs.get_by_path("s", "/remote.md"))
-                .unwrap()
-                .is_some(),
+            rt.block_on(awaken_resource_contract::MemoryQueries::get_by_path(
+                fs.as_ref(),
+                "s",
+                "/remote.md"
+            ))
+            .unwrap()
+            .is_some(),
             "a path created after materialization is outside the local delete set"
         );
         std::fs::remove_dir_all(&dir).ok();
@@ -954,11 +935,15 @@ mod tests {
         assert_eq!(report.changed, 0);
         assert_eq!(report.conflicts[0].candidate.path, "/note.md");
         assert_eq!(
-            rt.block_on(fs.get_by_path("s", "/note.md"))
-                .unwrap()
-                .unwrap()
-                .content
-                .as_deref(),
+            rt.block_on(awaken_resource_contract::MemoryQueries::get_by_path(
+                fs.as_ref(),
+                "s",
+                "/note.md"
+            ))
+            .unwrap()
+            .unwrap()
+            .content
+            .as_deref(),
             Some("remote-v2")
         );
         std::fs::remove_dir_all(&dir).ok();

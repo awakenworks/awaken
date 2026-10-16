@@ -122,7 +122,7 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
         deployment,
         worker_directory.clone(),
     )?;
-    let resources = open_resources_application(
+    let resources = crate::process_stores::ProcessResources::open(
         deployment.resources.clone(),
         postgres_schema,
         clock.clone(),
@@ -166,16 +166,15 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
                 run_recovery: persistence.run_recovery.clone(),
                 run_lifecycle: persistence.run_lifecycle.clone(),
             });
+    let coordinator_stores = stores
+        .coordinator
+        .as_ref()
+        .expect("Managed Execution owns WorkQueue");
     let executable_environment_wiring = executable_environment_registration::for_runtime_role(
         role,
         deployment,
         postgres_schema,
-        stores
-            .coordinator
-            .as_ref()
-            .expect("Managed Execution owns WorkQueue")
-            .environment_work
-            .clone(),
+        coordinator_stores.environment_work.clone(),
         &service_lifecycle,
         &mut postgres_pools,
         stores.clock.clone(),
@@ -185,17 +184,10 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
         role,
         deployment,
         postgres_schema,
-        stores
-            .coordinator
-            .as_ref()
-            .expect("Managed Execution owns captured content")
-            .captured_content_eraser
-            .clone(),
-        stores
-            .coordinator
-            .as_ref()
-            .expect("Managed Execution owns Resources")
+        coordinator_stores.captured_content_eraser.clone(),
+        coordinator_stores
             .resources
+            .application
             .authorities()
             .reclamation(),
         &mut postgres_pools,
@@ -309,7 +301,7 @@ pub(crate) async fn migrate_deployment_schema_prepared(
     );
     let resources = if manifest.contains(&MigrationComponent::Resources) {
         Some(
-            open_resources_application(
+            crate::process_stores::ProcessResources::open(
                 deployment.resources.clone(),
                 PostgresSchemaMode::Migrate,
                 clock.clone(),

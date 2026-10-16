@@ -8,10 +8,9 @@ use crate::host::*;
 /// Worker-side Resource content ports that must be installed as one unit.
 /// Keeping the pair named prevents a partially remote Host startup from
 /// silently opening a local content authority for the missing half.
-pub(in crate::host) struct WorkerContentAdapters {
-    pub(in crate::host) file_content_source:
-        Arc<dyn crate::FileContentSource<crate::ResourceOperationFence>>,
-    pub(in crate::host) memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
+pub struct WorkerContentAdapters {
+    pub file_content_source: Arc<dyn crate::FileContentSource<crate::ResourceOperationFence>>,
+    pub memory: awaken_resource_contract::MemoryExecutionContent,
 }
 
 /// Local Resource authorities a test or scenario composition hands to the
@@ -20,7 +19,7 @@ pub(in crate::host) struct WorkerContentAdapters {
 /// from a Resources application, which this crate no longer links.
 #[cfg(any(test, feature = "test-support"))]
 pub struct LocalResourcePorts {
-    pub memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
+    pub memory: awaken_resource_contract::MemoryExecutionContent,
     pub file_store: Arc<dyn awaken_resource_contract::FileStore>,
     pub file_catalog: Arc<dyn awaken_resource_contract::FileCatalog>,
     /// The durable delivered-Skill catalog, when the composition has one.
@@ -89,8 +88,8 @@ pub(crate) struct ResourcePorts {
     pub(crate) resource_reclamation:
         Option<Arc<dyn awaken_resource_contract::ResourceReclamationRepository>>,
     /// The Resources context's path-addressed Memory backend shared by API,
-    /// mounts, recall, and extraction. See [`crate::memory_stores`].
-    pub(crate) memory_stores: crate::memory_stores::MemoryStores,
+    /// mounts, recall, and extraction. See [`awaken_resource_contract::MemoryExecutionContent`].
+    pub(crate) memory_stores: awaken_resource_contract::MemoryExecutionContent,
 }
 
 /// The Resources-context ports a composition selects before the Host
@@ -111,7 +110,7 @@ pub(crate) struct ResourceSelection {
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) resource_reclamation:
         Option<Arc<dyn awaken_resource_contract::ResourceReclamationRepository>>,
-    pub(crate) memory_stores: crate::memory_stores::MemoryStores,
+    pub(crate) memory_stores: awaken_resource_contract::MemoryExecutionContent,
     /// The durable Memory extraction authority the Host's Memory runtime
     /// claims and records extraction intents through.
     pub(crate) extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
@@ -158,21 +157,17 @@ impl ResourceSelection {
         #[cfg(not(test))]
         let _ = (store_dir, clock);
         #[cfg(any(test, feature = "test-support"))]
-        let local_memory = resources
-            .as_ref()
-            .map(|plane| plane.memory_repository.clone());
+        let local_memory = resources.as_ref().map(|plane| plane.memory.clone());
         #[cfg(not(any(test, feature = "test-support")))]
-        let local_memory: Option<Arc<dyn awaken_resource_contract::MemoryRepository>> = None;
+        let local_memory: Option<awaken_resource_contract::MemoryExecutionContent> = None;
         let memory_stores = if let Some(content) = &worker_content {
-            crate::memory_stores::MemoryStores::with_repository(content.memory_repository.clone())
-        } else if let Some(repository) = local_memory {
-            crate::memory_stores::MemoryStores::with_repository(repository)
+            content.memory.clone()
+        } else if let Some(content) = local_memory {
+            content
         } else {
-            // Only the Host's own unit tests construct without a Resource
-            // component; every other composition injects one.
             #[cfg(test)]
             {
-                crate::memory_stores::MemoryStores::open(store_dir, clock.clone())
+                crate::memory_stores::open(store_dir, clock.clone())
             }
             #[cfg(not(test))]
             unreachable!("Host construction requires explicit Resource authorities")
@@ -352,4 +347,10 @@ pub(in crate::host) async fn local_memory_extraction_repository(
                 .expect("open ephemeral Memory extraction repository"),
         ),
     }
+}
+
+/// Return the exact controlled content held by this Host for fixture identity checks.
+#[cfg(any(test, feature = "test-support"))]
+pub fn test_memory_content(host: &SharedHost) -> awaken_resource_contract::MemoryExecutionContent {
+    host.resources.memory_stores.clone()
 }

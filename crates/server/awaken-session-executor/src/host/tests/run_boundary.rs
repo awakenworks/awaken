@@ -344,15 +344,20 @@ async fn runtime_constructor_installs_the_exact_file_content_source() {
     let host = (crate::HostDependencies::for_coordinator(
         Arc::new(MemoryHostModel),
         "stub",
-        Arc::new(ConstructorFileSource),
-        Arc::new(
-            awaken_memory_store::SqliteMemoryRepository::open(
-                ":memory:",
-                awaken_time::system_clock(),
-            )
-            .await
-            .expect("open test Memory repository"),
-        ),
+        {
+            let memory = Arc::new(
+                awaken_memory_store::SqliteMemoryRepository::open(
+                    ":memory:",
+                    awaken_time::system_clock(),
+                )
+                .await
+                .expect("open test Memory repository"),
+            );
+            crate::WorkerContentAdapters {
+                file_content_source: Arc::new(ConstructorFileSource),
+                memory: awaken_resource_contract::MemoryExecutionContent::new(memory),
+            }
+        },
         SharedHost::test_memory_extraction_repository(None).await,
         crate::DeploymentConfig::ephemeral()
             .host_process(SharedHost::mint_local_workspace(), system_clock())

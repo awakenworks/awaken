@@ -168,9 +168,22 @@ mod tests {
                             )),
                             files.clone(),
                             files.clone(),
-                            Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
-                                clock.clone(),
-                            )),
+                            {
+                                #[derive(Default)]
+                                struct MemoryEvents(std::sync::Mutex<Vec<(String, String)>>);
+                                #[cfg(test)]
+                                impl awaken_resource_contract::MemoryInvalidator for MemoryEvents {
+                                    fn publish(&self, store: &str, path: &str) {
+                                        self.0.lock().unwrap().push((store.into(), path.into()));
+                                    }
+                                }
+                                Arc::new(crate::memory::InvalidatingMemoryRepository::new(
+                                    Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+                                        clock.clone(),
+                                    )),
+                                    Arc::new(MemoryEvents::default()),
+                                ))
+                            },
                             Arc::new(awaken_skill_store::InMemorySkillStore::new()),
                             lifecycle.clone(),
                             clock,

@@ -152,8 +152,8 @@ fn platform_memory_projection(tier: awaken_session_executor::SandboxTier) -> Pla
     }
 }
 
-/// Select the governed MemoryRepository data plane's worker-side mount adapter
-/// over the Host's own Memory content port, unless the composition already
+/// Select the governed Memory data plane's worker-side mount adapter
+/// from the original Resources role views and bus, unless the composition already
 /// selected one (an explicitly injected Worker adapter is preserved). `tier`
 /// is the Session sandbox tier the composition's Deployment selected.
 /// Authorization has already selected workspace/store/access before this adapter
@@ -163,17 +163,25 @@ fn platform_memory_projection(tier: awaken_session_executor::SandboxTier) -> Pla
 pub fn with_platform_memory_data_plane(
     dependencies: HostDependencies,
     tier: awaken_session_executor::SandboxTier,
+    resources: &awaken_resource_application::ResourceAuthorities,
+    invalidator: Arc<awaken_sandbox_memoryd::LocalInvalidator>,
 ) -> HostDependencies {
     if dependencies.has_memory_mounter() {
         return dependencies;
     }
-    let repository = dependencies.memory_repository();
     let mounter = match platform_memory_projection(tier) {
         PlatformMemoryProjection::FusePreferred => {
-            awaken_sandbox_memoryd::MemoryStoreMounter::new(repository, dependencies.clock())
+            awaken_sandbox_memoryd::MemoryStoreMounter::fuse_preferred(
+                resources.memory_mount_source(),
+                invalidator,
+                dependencies.clock(),
+            )
+            .expect("selected Memory source and root bus match")
         }
         PlatformMemoryProjection::CopyOnly => {
-            awaken_sandbox_memoryd::MemoryStoreMounter::copy_only(repository)
+            awaken_sandbox_memoryd::MemoryStoreMounter::copy_only_from_source(
+                resources.memory_mount_source(),
+            )
         }
     };
     dependencies.with_memory_mounter(Arc::new(mounter))
@@ -211,6 +219,51 @@ mod platform_memory_projection_tests {
                 PlatformMemoryProjection::CopyOnly
             );
         }
+    }
+
+    #[cfg(all(not(target_os = "linux"), feature = "test-support"))]
+    #[tokio::test]
+    async fn default_mount_degrades_to_copy_and_harvests_off_linux() {
+        use awaken_provisioning_contract::{MemoryMounter as _, MountAccess, Realization};
+        let bus = std::sync::Arc::new(awaken_sandbox_memoryd::LocalInvalidator::default());
+        let resources =
+            awaken_resource_persistence::ephemeral(awaken_time::system_clock(), bus.clone())
+                .await
+                .unwrap();
+        let authorities = resources.authorities();
+        authorities
+            .memory_writer()
+            .create("s", "/note.md", "v1")
+            .await
+            .unwrap();
+        let source = authorities.memory_mount_source();
+        let mounter = awaken_sandbox_memoryd::MemoryStoreMounter::fuse_preferred(
+            source,
+            bus,
+            awaken_time::system_clock(),
+        )
+        .expect("same root bus");
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("platform-copy-fallback");
+        let guard = match mounter.mount("s", &dir, MountAccess::ReadWrite).await {
+            awaken_provisioning_contract::MemoryMountOutcome::Mounted(mount) => mount,
+            _ => panic!("platform fallback must realize the real copy"),
+        };
+        assert_eq!(guard.realization(), Realization::Copy);
+        assert_eq!(std::fs::read_to_string(dir.join("note.md")).unwrap(), "v1");
+        std::fs::write(dir.join("note.md"), "v2").unwrap();
+        guard.teardown().await.unwrap();
+        assert_eq!(
+            authorities
+                .memory_queries()
+                .get_by_path("s", "/note.md")
+                .await
+                .unwrap()
+                .unwrap()
+                .content
+                .as_deref(),
+            Some("v2")
+        );
     }
 }
 
@@ -611,29 +664,18 @@ async fn local_managed_state_over(
 pub async fn mount_with_managed(
     host: Arc<SharedHost>,
     managed_state: ScenarioManagedState,
+    resources: awaken_resource_application::ResourcesApplication,
 ) -> Router {
-    let registry = ephemeral_resource_registry(host.clock()).await;
     mount_with_managed_over(
         host,
         managed_state,
-        registry,
+        resources,
         ApplicationAccessMount::ExplicitlyUnguardedTest,
         awaken_service_lifecycle::ServiceLifecycle::new(),
         None,
     )
     .await
     .0
-}
-
-#[cfg(feature = "test-support")]
-async fn ephemeral_resource_registry(
-    clock: Arc<dyn awaken_time::WallClock>,
-) -> Arc<dyn awaken_resource_contract::ResourceRegistry> {
-    awaken_resource_persistence::ephemeral(clock)
-        .await
-        .expect("open ephemeral Resources application")
-        .authorities()
-        .resource_registry()
 }
 
 #[cfg(feature = "test-support")]
@@ -702,16 +744,11 @@ fn with_scenario_worker_transport(
 pub async fn mount_with_managed_and_resource_registry(
     host: Arc<SharedHost>,
     managed_state: ScenarioManagedState,
-    resource_registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
+    resources: awaken_resource_application::ResourcesApplication,
 ) -> Router {
-    mount_with_managed_and_resource_registry_and_dreams(
-        host,
-        managed_state,
-        resource_registry,
-        None,
-    )
-    .await
-    .0
+    mount_with_managed_and_resource_registry_and_dreams(host, managed_state, resources, None)
+        .await
+        .0
 }
 
 /// Test-support decoration of the existing Dream execution port. The
@@ -739,13 +776,13 @@ pub type ScenarioDreamExecutorDecorator = Arc<
 pub async fn mount_with_managed_and_resource_registry_and_dreams(
     host: Arc<SharedHost>,
     managed_state: ScenarioManagedState,
-    resource_registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
+    resources: awaken_resource_application::ResourcesApplication,
     dream_executor_decorator: Option<ScenarioDreamExecutorDecorator>,
 ) -> (Router, Arc<awaken_dream_application::DreamApplication>) {
     mount_with_managed_and_resource_registry_and_dreams_on_lifecycle(
         host,
         managed_state,
-        resource_registry,
+        resources,
         awaken_service_lifecycle::ServiceLifecycle::new(),
         dream_executor_decorator,
     )
@@ -759,7 +796,7 @@ pub async fn mount_with_managed_and_resource_registry_and_dreams(
 pub async fn mount_with_managed_and_resource_registry_and_dreams_on_lifecycle(
     host: Arc<SharedHost>,
     managed_state: ScenarioManagedState,
-    resource_registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
+    resources: awaken_resource_application::ResourcesApplication,
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
     dream_executor_decorator: Option<ScenarioDreamExecutorDecorator>,
 ) -> (Router, Arc<awaken_dream_application::DreamApplication>) {
@@ -767,7 +804,7 @@ pub async fn mount_with_managed_and_resource_registry_and_dreams_on_lifecycle(
     let (data, dreams) = mount_with_managed_over(
         host,
         managed_state,
-        resource_registry,
+        resources,
         ApplicationAccessMount::ExplicitlyUnguardedTest,
         lifecycle,
         dream_executor_decorator,
@@ -787,13 +824,13 @@ pub async fn mount_with_managed_and_resource_registry_and_dreams_on_lifecycle(
 pub async fn mount_with_managed_and_application_access(
     host: Arc<SharedHost>,
     managed_state: ScenarioManagedState,
-    resource_registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
+    resources: awaken_resource_application::ResourcesApplication,
     application_access: Arc<application_access_store::ApplicationAccessStore>,
 ) -> Router {
     mount_with_managed_over(
         host,
         managed_state,
-        resource_registry,
+        resources,
         ApplicationAccessMount::Guarded(application_access),
         awaken_service_lifecycle::ServiceLifecycle::new(),
         None,
@@ -807,26 +844,24 @@ pub async fn mount_with_managed_and_application_access(
 pub async fn mount_with_managed_and_application_access_and_models(
     host: Arc<SharedHost>,
     managed_state: ScenarioManagedState,
-    resource_registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
+    resources: awaken_resource_application::ResourcesApplication,
     application_access: Arc<application_access_store::ApplicationAccessStore>,
     model_inventory: Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>,
 ) -> Router {
+    let resource_authorities = resources.authorities();
+    let resource_registry = resource_authorities.resource_registry();
     let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
     let lifecycle_host = host.clone();
     let remote_worker_required = !host.runs_local_dispatch_pool();
     let dream_process_store = scenario_dream_process_store(host.as_ref()).await;
     // The Worker transport judges assertions on the Scenario Host's clock.
     let worker_clock = host.clock();
-    let (resources, memory_stores) =
-        resource_management_router_from_host(&host, resource_registry.clone());
+    let (resource_management_router, memory_stores) =
+        resource_management_router_from_application(&resources);
     let supervised_state = managed_state.clone();
     let session_application = managed_state.sessions;
-    let worker_file_application = host
-        .file_application()
-        .expect("test-support File application");
-    let worker_skill_bundles = Arc::new(awaken_resource_application::StoreSkillBundleSource::new(
-        host.skill_store().expect("test-support Skill store"),
-    ));
+    let worker_file_application = resources.files();
+    let worker_skill_bundles = resources.skill_bundle_source();
     let (managed, data, application, worker_private, dreams) = mount_with_managed_over_and_models(
         host,
         managed_state.managed,
@@ -841,7 +876,8 @@ pub async fn mount_with_managed_and_application_access_and_models(
             dream_executor_decorator: None,
         },
         ManagedRoutingExtensions {
-            resource_management_router: resources,
+            resource_management_router,
+            resource_authorities,
             memory_stores,
             worker_file_application,
             worker_skill_bundles,
@@ -873,6 +909,7 @@ pub async fn mount_with_managed_and_application_access_and_models(
 
 /// Router-owned services that must move together into the managed data plane.
 pub struct ManagedRoutingExtensions {
+    pub resource_authorities: awaken_resource_application::ResourceAuthorities,
     pub resource_management_router: Router,
     pub memory_stores: Arc<dyn awaken_resource_contract::MemoryStoreApplicationService>,
     pub worker_file_application: Arc<dyn awaken_resource_contract::FileApplicationService>,
@@ -1234,11 +1271,13 @@ pub async fn mount_with_managed_application_access_models_and_dreams(
 async fn mount_with_managed_over(
     host: Arc<SharedHost>,
     managed_state: ScenarioManagedState,
-    resource_registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
+    resources: awaken_resource_application::ResourcesApplication,
     application_access: ApplicationAccessMount,
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
     dream_executor_decorator: Option<ScenarioDreamExecutorDecorator>,
 ) -> (Router, Arc<awaken_dream_application::DreamApplication>) {
+    let resource_authorities = resources.authorities();
+    let resource_registry = resource_authorities.resource_registry();
     let lifecycle_host = host.clone();
     let remote_worker_required = !host.runs_local_dispatch_pool();
     // A scenario that opts into the same durable storage root as production
@@ -1250,14 +1289,10 @@ async fn mount_with_managed_over(
     let worker_clock = host.clock();
     let supervised_state = managed_state.clone();
     let session_application = managed_state.sessions;
-    let (resources, memory_stores) =
-        resource_management_router_from_host(&host, resource_registry.clone());
-    let worker_file_application = host
-        .file_application()
-        .expect("test-support File application");
-    let worker_skill_bundles = Arc::new(awaken_resource_application::StoreSkillBundleSource::new(
-        host.skill_store().expect("test-support Skill store"),
-    ));
+    let (resource_management_router, memory_stores) =
+        resource_management_router_from_application(&resources);
+    let worker_file_application = resources.files();
+    let worker_skill_bundles = resources.skill_bundle_source();
     let (managed, public, application, worker_private, dreams) =
         mount_with_managed_over_and_models(
             host,
@@ -1272,7 +1307,8 @@ async fn mount_with_managed_over(
                 dream_executor_decorator,
             },
             ManagedRoutingExtensions {
-                resource_management_router: resources,
+                resource_management_router,
+                resource_authorities,
                 memory_stores,
                 worker_file_application,
                 worker_skill_bundles,
@@ -1365,6 +1401,7 @@ async fn mount_with_managed_over_and_models(
         dream_executor_decorator,
     } = applications;
     let ManagedRoutingExtensions {
+        resource_authorities,
         resource_management_router,
         memory_stores,
         worker_file_application,
@@ -1429,7 +1466,7 @@ async fn mount_with_managed_over_and_models(
     let dream_worker: Arc<dyn awaken_dream_application::DreamExecutor> =
         Arc::new(dream::BuiltInDreamAgent::new(
             session_application.clone(),
-            host.memory_repository(),
+            &resource_authorities,
             resource_registry.clone(),
             memory_stores,
             worker_file_application.clone(),
@@ -1639,18 +1676,15 @@ async fn mount_with_managed_over_and_models(
             )
             .with_session_control(session_application.clone()),
         ));
-    let memory = awaken_resource_worker_http::worker_memory_router(Arc::new(
-        awaken_resource_worker_http::WorkerMemoryService::new(
-            host.memory_repository(),
-            resource_registry.clone(),
-            dispatch.clone() as Arc<dyn awaken_dispatch_http::WorkerDispatchAuthority>,
-            worker_authenticator.clone(),
-            worker_directory.clone(),
-            worker_clock.clone(),
-        )
-        .with_materialization_control(session_application.clone())
-        .with_terminal_memory_control(session_application.clone()),
-    ));
+    let memory = worker_transport::memory_router(
+        &resource_authorities,
+        resource_registry.clone(),
+        dispatch.clone() as Arc<dyn awaken_dispatch_http::WorkerDispatchAuthority>,
+        session_application.clone(),
+        worker_authenticator.clone(),
+        worker_directory.clone(),
+        worker_clock.clone(),
+    );
     let repository_service = awaken_resource_worker_http::WorkerRepositoryBindingService::new(
         resource_registry,
         dispatch.clone() as Arc<dyn awaken_dispatch_http::WorkerDispatchAuthority>,
@@ -1838,44 +1872,27 @@ fn with_local_workspace_scope(router: Router, local_workspace: String) -> Router
 }
 
 #[cfg(feature = "test-support")]
-fn resource_management_router_from_host(
-    host: &Arc<SharedHost>,
-    catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
+fn resource_management_router_from_application(
+    resources: &awaken_resource_application::ResourcesApplication,
 ) -> (
     Router,
     Arc<dyn awaken_resource_contract::MemoryStoreApplicationService>,
 ) {
-    // The Host's clock: registration commands, the Files API and the registry
-    // read the Scenario Host's one timeline.
-    let clock = host.clock();
-    let purge: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler> =
-        Arc::new(awaken_resource_application::RepositoryPurgeScheduler::new(
-            host.resource_reclamation()
-                .expect("resource management requires lifecycle persistence"),
-        ));
-    let memory_stores: Arc<dyn awaken_resource_contract::MemoryStoreApplicationService> =
-        Arc::new(awaken_resource_application::MemoryStoreApplication::new(
-            catalog.clone(),
-            purge.clone(),
-            clock.clone(),
-        ));
+    let authorities = resources.authorities();
+    let stores = resources.memory_stores();
     (
         resources_router(ResourcesRouterInput {
-            repositories: Arc::new(awaken_resource_application::RepositoryApplication::new(
-                catalog,
-                Arc::new(awaken_resource_contract::UnavailableRepositoryCredentialValidator),
-                clock.clone(),
+            repositories: resources.repositories(Arc::new(
+                awaken_resource_contract::UnavailableRepositoryCredentialValidator,
             )),
-            files: host
-                .file_application()
-                .expect("resource management requires the File application"),
-            memories: host.memory_repository(),
-            memory_stores: memory_stores.clone(),
-            skills: host.skill_store(),
-            purge,
-            clock,
+            files: resources.files(),
+            memory: authorities.memory_management_content(),
+            memory_stores: stores.clone(),
+            skills: Some(authorities.skill_store()),
+            purge: resources.purge_scheduler(),
+            clock: authorities.clock(),
         }),
-        memory_stores,
+        stores,
     )
 }
 

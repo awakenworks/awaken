@@ -8,8 +8,8 @@
 //! provider calls to realize a `MountSource::MemoryStore`. It exposes the store as a
 //! **live FUSE mount** where the kernel supports it ([`fuse_available`]), and
 //! otherwise falls back to a **copy** that is harvested back to the store on teardown
-//! (ADR-0053 D6). Both paths write through the same durable [`MemoryRepository`], wrapped in
-//! an [`InvalidatingMemoryRepository`] over one shared bus so a write in one sandbox drops the
+//! (ADR-0053 D6). Both paths write through the same durable Memory role views, wrapped in
+//! the Resources-owned decorator over one shared bus so a write in one sandbox drops the
 //! path from every other sandbox's FUSE cache (the D5 coherence model, applied
 //! per-sandbox rather than via a single shared mount — no bind/namespace splice
 //! needed, so it works on the unprivileged Workdir tier).
@@ -17,65 +17,144 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::LocalInvalidator;
+use crate::copy;
 use awaken_provisioning_contract::{
     MemoryMount, MemoryMountOutcome, MemoryMounter, MountAccess, Realization, SandboxError,
 };
-use awaken_resource_contract::MemoryRepository;
+use awaken_resource_contract::{
+    MemoryCopyConflictPreservation, MemoryCopyWriteback, MemoryMountSource, MemoryQueries,
+    MemorySnapshotSource,
+};
 
-use crate::copy;
-use crate::invalidate::{InvalidatingMemoryRepository, Invalidator, LocalInvalidator};
+#[derive(Clone)]
+struct CopyMountContent {
+    queries: Arc<dyn MemoryQueries>,
+    snapshots: Arc<dyn MemorySnapshotSource>,
+    writeback: Arc<dyn MemoryCopyWriteback>,
+    conflicts: Arc<dyn MemoryCopyConflictPreservation>,
+}
 
-/// Realizes memory stores over one durable [`MemoryRepository`], FUSE-first with a copy
-/// fallback. Construct once per host and inject into the sandbox providers.
-pub struct MemoryStoreMounter {
-    /// The durable store wrapped so every write publishes an invalidation.
-    fs: Arc<dyn MemoryRepository>,
-    /// The shared invalidation bus every FUSE mount subscribes to.
-    #[cfg(all(feature = "fuse", target_os = "linux"))]
+#[cfg(all(feature = "fuse", target_os = "linux"))]
+struct FuseProjection {
+    filesystem: Arc<dyn awaken_resource_contract::MemoryFilesystem>,
     bus: Arc<LocalInvalidator>,
-    /// The clock a FUSE projection stamps its mount instant with; `None` never
-    /// mounts FUSE — always copy. Absent for container isolation tiers that
-    /// cannot bind a host FUSE mount reliably. Workdir mounts directly in the
-    /// host namespace; Namespace binds that host projection into bwrap. A copy
-    /// projection carries the store's own times, so it needs no clock.
+    clock: Arc<dyn awaken_time::WallClock>,
+    #[cfg(test)]
+    mounted_cache: std::sync::Mutex<Option<crate::fuse::MountedCacheWitness>>,
+}
+
+/// Realizes copies or live mounts from explicitly selected narrow capabilities.
+/// All writes already pass through the Resources-owned decorator. This component
+/// never constructs another bus or wraps a raw backend.
+pub struct MemoryStoreMounter {
+    copy: CopyMountContent,
     #[cfg(all(feature = "fuse", target_os = "linux"))]
-    fuse_clock: Option<Arc<dyn awaken_time::WallClock>>,
+    fuse: Option<FuseProjection>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum MemoryMounterConstructionError {
+    #[error("Memory mount bus does not belong to the selected write decorator")]
+    InvalidationBusMismatch,
 }
 
 impl MemoryStoreMounter {
-    /// Wrap `durable` (the resources-plane store) with the invalidation bus, FUSE
-    /// where available. For the Workdir tier (host mount namespace).
-    #[must_use]
-    pub fn new(durable: Arc<dyn MemoryRepository>, clock: Arc<dyn awaken_time::WallClock>) -> Self {
-        Self::with_fuse(durable, Some(clock))
+    #[cfg(all(test, feature = "fuse", target_os = "linux"))]
+    pub(crate) fn shares_invalidator_for_test(&self, expected: &Arc<LocalInvalidator>) -> bool {
+        Arc::ptr_eq(
+            &self.fuse.as_ref().expect("FUSE mode selected").bus,
+            expected,
+        )
     }
 
-    /// A copy-only mounter (never FUSE) for a tier that cannot expose a host FUSE
-    /// mount inside its isolation (Docker/Podman; Kubernetes uses native sidecars).
-    /// The store is materialized to
-    /// plain files that bind into the namespace, and harvested back on teardown.
-    #[must_use]
-    pub fn copy_only(durable: Arc<dyn MemoryRepository>) -> Self {
-        Self::with_fuse(durable, None)
+    #[cfg(all(test, feature = "fuse", target_os = "linux"))]
+    pub(crate) fn invalidations_for_test(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<crate::Invalidation> {
+        self.fuse
+            .as_ref()
+            .expect("FUSE mode selected")
+            .bus
+            .subscribe()
     }
 
-    fn with_fuse(
-        durable: Arc<dyn MemoryRepository>,
-        fuse_clock: Option<Arc<dyn awaken_time::WallClock>>,
-    ) -> Self {
-        #[cfg(not(all(feature = "fuse", target_os = "linux")))]
-        let _ = fuse_clock;
-        let bus = Arc::new(LocalInvalidator::default());
-        let invalidator: Arc<dyn Invalidator> = bus.clone();
-        let fs: Arc<dyn MemoryRepository> =
-            Arc::new(InvalidatingMemoryRepository::new(durable, invalidator));
+    #[cfg(all(test, feature = "fuse", target_os = "linux"))]
+    pub(crate) fn mounted_cache_for_test(&self) -> Option<crate::fuse::MountedCacheWitness> {
+        self.fuse
+            .as_ref()?
+            .mounted_cache
+            .lock()
+            .expect("mount witness mutex is healthy")
+            .clone()
+    }
+
+    /// Select CopyOnly capabilities from one actual backend/client instance.
+    #[must_use]
+    pub fn copy_only<T>(backend: Arc<T>) -> Self
+    where
+        T: MemoryQueries
+            + MemorySnapshotSource
+            + MemoryCopyWriteback
+            + MemoryCopyConflictPreservation
+            + 'static,
+    {
         Self {
-            fs,
+            copy: CopyMountContent {
+                queries: backend.clone(),
+                snapshots: backend.clone(),
+                writeback: backend.clone(),
+                conflicts: backend,
+            },
             #[cfg(all(feature = "fuse", target_os = "linux"))]
-            bus,
-            #[cfg(all(feature = "fuse", target_os = "linux"))]
-            fuse_clock,
+            fuse: None,
         }
+    }
+
+    /// Select CopyOnly from the root's already-controlled source, retaining no FS capability.
+    #[must_use]
+    pub fn copy_only_from_source(source: MemoryMountSource) -> Self {
+        Self {
+            copy: CopyMountContent {
+                queries: source.queries(),
+                snapshots: source.snapshots(),
+                writeback: source.writeback(),
+                conflicts: source.conflict_preservation(),
+            },
+            #[cfg(all(feature = "fuse", target_os = "linux"))]
+            fuse: None,
+        }
+    }
+
+    /// Reject a second bus before retaining a projection or starting any listener/mount.
+    pub fn fuse_preferred(
+        source: MemoryMountSource,
+        bus: Arc<LocalInvalidator>,
+        clock: Arc<dyn awaken_time::WallClock>,
+    ) -> Result<Self, MemoryMounterConstructionError> {
+        let identity: Arc<dyn awaken_resource_contract::MemoryInvalidator> = bus.clone();
+        if !source.uses_invalidator(&identity) {
+            return Err(MemoryMounterConstructionError::InvalidationBusMismatch);
+        }
+        let copy = CopyMountContent {
+            queries: source.queries(),
+            snapshots: source.snapshots(),
+            writeback: source.writeback(),
+            conflicts: source.conflict_preservation(),
+        };
+        #[cfg(not(all(feature = "fuse", target_os = "linux")))]
+        let _ = (source, bus, clock);
+        Ok(Self {
+            copy,
+            #[cfg(all(feature = "fuse", target_os = "linux"))]
+            fuse: Some(FuseProjection {
+                filesystem: source.filesystem(),
+                bus,
+                clock,
+                #[cfg(test)]
+                mounted_cache: std::sync::Mutex::new(None),
+            }),
+        })
     }
 }
 
@@ -193,15 +272,15 @@ impl MemoryMounter for MemoryStoreMounter {
             })?;
 
             #[cfg(all(feature = "fuse", target_os = "linux"))]
-            if let Some(clock) = self.fuse_clock.as_ref()
+            if let Some(projection) = self.fuse.as_ref()
                 && copy::fuse_available()
             {
                 let handle = crate::fuse::spawn_mount_with_invalidations(
-                    self.fs.clone(),
+                    projection.filesystem.clone(),
                     store_id.to_string(),
                     host_path.to_path_buf(),
-                    self.bus.subscribe(),
-                    clock.as_ref(),
+                    projection.bus.subscribe(),
+                    projection.clock.as_ref(),
                 )
                 .map_err(|error| {
                     SandboxError::backend(
@@ -212,6 +291,14 @@ impl MemoryMounter for MemoryStoreMounter {
                         ),
                     )
                 })?;
+                #[cfg(test)]
+                {
+                    *projection
+                        .mounted_cache
+                        .lock()
+                        .expect("mount witness mutex is healthy") =
+                        Some(handle.cache_witness_for_test());
+                }
                 return Ok(Box::new(FuseMount {
                     handle: Arc::new(std::sync::Mutex::new(handle)),
                 }) as Box<dyn MemoryMount>);
@@ -221,13 +308,13 @@ impl MemoryMounter for MemoryStoreMounter {
             // harvest a writable mount back on teardown.
             let root = awaken_sandbox_fs::ProjectionRoot::capture(host_path)
                 .map_err(|error| SandboxError::backend("mount", error))?;
-            let snapshot = copy::materialize(&*self.fs, store_id, host_path)
+            let snapshot = copy::materialize(self.copy.snapshots.as_ref(), store_id, host_path)
                 .await
                 .map_err(SandboxError::from)?;
             let materialization_heads = snapshot.materialization_heads();
             Ok(Box::new(CopyMount {
                 root,
-                fs: self.fs.clone(),
+                copy: self.copy.clone(),
                 store_id: store_id.to_string(),
                 host_path: host_path.to_path_buf(),
                 writable: access == MountAccess::ReadWrite,
@@ -267,16 +354,22 @@ impl MemoryMounter for MemoryStoreMounter {
         }
         let mut snapshot = copy::CopySnapshot::from_materialization_heads(&evidence.heads)
             .map_err(SandboxError::from)?;
-        let report =
-            copy::harvest_recovered_files(&*self.fs, operation_reference, files, &mut snapshot)
-                .await
-                .map_err(SandboxError::from)?;
+        let report = copy::harvest_recovered_files(
+            self.copy.queries.as_ref(),
+            self.copy.writeback.as_ref(),
+            operation_reference,
+            files,
+            &mut snapshot,
+        )
+        .await
+        .map_err(SandboxError::from)?;
         // Terminal replay alone may retire a copy after preserving every losing
         // proposal in its original Memory aggregate. Live harvest still reports
         // conflicts. An unsupported, denied or failed durable write remains an
         // error; neither head overwrite nor a transient report permits disposal.
         for conflict in report.conflicts {
-            self.fs
+            self.copy
+                .conflicts
                 .preserve_copy_conflict(operation_reference, &conflict.candidate)
                 .await
                 .map_err(SandboxError::from)?;
@@ -322,7 +415,7 @@ impl MemoryMount for FuseMount {
 /// A materialized copy; teardown harvests a writable copy back to the store.
 struct CopyMount {
     root: awaken_sandbox_fs::ProjectionRoot,
-    fs: Arc<dyn MemoryRepository>,
+    copy: CopyMountContent,
     store_id: String,
     host_path: PathBuf,
     writable: bool,
@@ -348,9 +441,15 @@ impl MemoryMount for CopyMount {
             self.root
                 .verify(&self.host_path)
                 .map_err(|error| SandboxError::backend("teardown", error))?;
-            let report = copy::harvest(&*self.fs, &self.store_id, &self.host_path, &mut snapshot)
-                .await
-                .map_err(SandboxError::from)?;
+            let report = copy::harvest_with_roles(
+                self.copy.queries.as_ref(),
+                self.copy.writeback.as_ref(),
+                &self.store_id,
+                &self.host_path,
+                &mut snapshot,
+            )
+            .await
+            .map_err(SandboxError::from)?;
             if !report.conflicts.is_empty() {
                 return Err(SandboxError::conflict(format!(
                     "Memory copy harvest preserved {} concurrent durable head conflict(s)",
@@ -366,6 +465,8 @@ impl MemoryMount for CopyMount {
 mod tests {
     use super::*;
     use awaken_memory_store::VolatileMemoryRepository;
+    use awaken_resource_contract::MemoryCopyConflictQueries as _;
+    use awaken_resource_contract::MemoryWriter as _;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     trait MemoryMountOutcomeTestExt {
@@ -399,10 +500,12 @@ mod tests {
         // directly to assert the harvest-on-teardown contract deterministically.
         let durable = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
         durable.create("s", "/note.md", "v1").await.unwrap();
-        let mounter = MemoryStoreMounter::new(durable.clone(), awaken_time::system_clock());
+        let mounter = MemoryStoreMounter::copy_only(durable.clone());
         let dir = temp("copy");
 
-        let snapshot = copy::materialize(&*mounter.fs, "s", &dir).await.unwrap();
+        let snapshot = copy::materialize(mounter.copy.snapshots.as_ref(), "s", &dir)
+            .await
+            .unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("note.md")).unwrap(), "v1");
 
         // Agent edits the file; the writable copy guard harvests it back.
@@ -410,7 +513,7 @@ mod tests {
         let materialization_heads = snapshot.materialization_heads();
         let guard: Box<dyn MemoryMount> = Box::new(CopyMount {
             root: awaken_sandbox_fs::ProjectionRoot::capture(&dir).unwrap(),
-            fs: mounter.fs.clone(),
+            copy: mounter.copy.clone(),
             store_id: "s".into(),
             host_path: dir.clone(),
             writable: true,
@@ -421,8 +524,7 @@ mod tests {
         guard.teardown().await.unwrap();
 
         assert_eq!(
-            durable
-                .get_by_path("s", "/note.md")
+            MemoryQueries::get_by_path(durable.as_ref(), "s", "/note.md")
                 .await
                 .unwrap()
                 .unwrap()
@@ -469,8 +571,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            durable
-                .get_by_path("s", "/note.md")
+            MemoryQueries::get_by_path(durable.as_ref(), "s", "/note.md")
                 .await
                 .unwrap()
                 .unwrap()
@@ -479,8 +580,7 @@ mod tests {
             Some("after")
         );
         assert_eq!(
-            durable
-                .get_by_path("s", "/nested/new.md")
+            MemoryQueries::get_by_path(durable.as_ref(), "s", "/nested/new.md")
                 .await
                 .unwrap()
                 .unwrap()
@@ -519,8 +619,7 @@ mod tests {
                 .contains("unsafe recovered Memory copy path")
         );
         assert_eq!(
-            durable
-                .get_by_path("s", "/note.md")
+            MemoryQueries::get_by_path(durable.as_ref(), "s", "/note.md")
                 .await
                 .unwrap()
                 .unwrap()
@@ -529,8 +628,7 @@ mod tests {
             Some("after")
         );
         assert!(
-            durable
-                .get_by_path("s", "/escape.md")
+            MemoryQueries::get_by_path(durable.as_ref(), "s", "/escape.md")
                 .await
                 .unwrap()
                 .is_none()
@@ -541,16 +639,18 @@ mod tests {
     async fn a_read_only_copy_mount_does_not_harvest() {
         let durable = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
         durable.create("s", "/note.md", "v1").await.unwrap();
-        let mounter = MemoryStoreMounter::new(durable.clone(), awaken_time::system_clock());
+        let mounter = MemoryStoreMounter::copy_only(durable.clone());
         let dir = temp("ro");
-        let snapshot = copy::materialize(&*mounter.fs, "s", &dir).await.unwrap();
+        let snapshot = copy::materialize(mounter.copy.snapshots.as_ref(), "s", &dir)
+            .await
+            .unwrap();
 
         // A read-only edit on disk must NOT propagate back.
         std::fs::write(dir.join("note.md"), "tampered").unwrap();
         let materialization_heads = snapshot.materialization_heads();
         let guard: Box<dyn MemoryMount> = Box::new(CopyMount {
             root: awaken_sandbox_fs::ProjectionRoot::capture(&dir).unwrap(),
-            fs: mounter.fs.clone(),
+            copy: mounter.copy.clone(),
             store_id: "s".into(),
             host_path: dir.clone(),
             writable: false,
@@ -560,8 +660,7 @@ mod tests {
         guard.teardown().await.unwrap();
 
         assert_eq!(
-            durable
-                .get_by_path("s", "/note.md")
+            MemoryQueries::get_by_path(durable.as_ref(), "s", "/note.md")
                 .await
                 .unwrap()
                 .unwrap()
@@ -618,16 +717,14 @@ mod tests {
         );
         // The store read path is scoped too: neither store resolves the other's path.
         assert!(
-            durable
-                .get_by_path("beta", "/secret.md")
+            MemoryQueries::get_by_path(durable.as_ref(), "beta", "/secret.md")
                 .await
                 .unwrap()
                 .is_none(),
             "beta cannot read alpha's memory"
         );
         assert!(
-            durable
-                .get_by_path("alpha", "/note.md")
+            MemoryQueries::get_by_path(durable.as_ref(), "alpha", "/note.md")
                 .await
                 .unwrap()
                 .is_none(),
@@ -664,8 +761,7 @@ mod tests {
         std::fs::write(dir.join("note.md"), "v2").unwrap();
         guard.teardown().await.unwrap();
         assert_eq!(
-            durable
-                .get_by_path("s", "/note.md")
+            MemoryQueries::get_by_path(durable.as_ref(), "s", "/note.md")
                 .await
                 .unwrap()
                 .unwrap()
@@ -677,45 +773,13 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    #[cfg(not(target_os = "linux"))]
-    #[tokio::test]
-    async fn default_mount_degrades_to_copy_and_harvests_off_linux() {
-        use awaken_provisioning_contract::{MemoryMounter, MountAccess};
-
-        let durable = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
-        durable.create("s", "/note.md", "v1").await.unwrap();
-        let mounter = MemoryStoreMounter::new(durable.clone(), awaken_time::system_clock());
-        let dir = temp("platform-copy-fallback");
-
-        let guard = mounter
-            .mount("s", &dir, MountAccess::ReadWrite)
-            .await
-            .mounted();
-        assert_eq!(guard.realization(), Realization::Copy);
-        assert_eq!(std::fs::read_to_string(dir.join("note.md")).unwrap(), "v1");
-
-        std::fs::write(dir.join("note.md"), "v2").unwrap();
-        guard.teardown().await.unwrap();
-        assert_eq!(
-            durable
-                .get_by_path("s", "/note.md")
-                .await
-                .unwrap()
-                .unwrap()
-                .content
-                .as_deref(),
-            Some("v2")
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
     #[tokio::test]
     async fn remount_starts_from_store_truth_and_drops_stale_projection_bytes() {
         use awaken_provisioning_contract::{MemoryMounter, MountAccess};
 
         let durable = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
         durable.create("s", "/live.md", "truth").await.unwrap();
-        let mounter = MemoryStoreMounter::copy_only(durable);
+        let mounter = MemoryStoreMounter::copy_only(durable.clone());
         let dir = temp("fresh-projection");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("deleted.md"), "stale").unwrap();
@@ -763,5 +827,43 @@ mod tests {
         assert!(!projection.exists());
         std::fs::remove_dir_all(root).ok();
         std::fs::remove_dir_all(outside).ok();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn fuse_constructor_refuses_a_second_bus_before_any_listener_or_mount() {
+        let backend = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
+        let original = Arc::new(LocalInvalidator::default());
+        let second = Arc::new(LocalInvalidator::default());
+        let decorated = Arc::new(
+            awaken_resource_application::memory::InvalidatingMemoryRepository::new(
+                backend,
+                original.clone(),
+            ),
+        );
+        let source = MemoryMountSource::new(decorated.clone());
+        assert_eq!(original.subscriber_count_for_test(), 0);
+        assert_eq!(second.subscriber_count_for_test(), 0);
+        let result =
+            MemoryStoreMounter::fuse_preferred(source, second.clone(), awaken_time::system_clock());
+        assert!(matches!(
+            result,
+            Err(MemoryMounterConstructionError::InvalidationBusMismatch)
+        ));
+        assert_eq!(
+            original.subscriber_count_for_test(),
+            0,
+            "no original-bus listener was started"
+        );
+        assert_eq!(
+            second.subscriber_count_for_test(),
+            0,
+            "no second-bus listener was started"
+        );
+        assert_eq!(
+            Arc::strong_count(&decorated),
+            1,
+            "rejected construction retains no projection or mount task"
+        );
     }
 }

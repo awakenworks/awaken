@@ -4,7 +4,10 @@ use awaken_dispatch_testkit::worker_http as support;
 
 use std::sync::Arc;
 
-use awaken_memory_store::{MemErr, MemoryRepository as _};
+use awaken_memory_store::{
+    MemErr, MemoryCopyConflictPreservation as _, MemoryCopyConflictQueries as _,
+    MemorySnapshotSource as _, MemoryVersionQueries as _, MemoryWriter as _,
+};
 use awaken_provisioning_contract::{MemoryMaterializationEvidence, MemoryMaterializationHead};
 use awaken_resource_contract::{
     ChangeMemoryStoreState, ConfigVersion, MemoryMaterializationReferenceEncoder,
@@ -388,9 +391,9 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
         awaken_time::system_clock(),
     ));
     let address = support::serve(worker_memory_router(service)).await;
-    let client = Arc::new(HttpMemoryRepository::new(
-        WorkerUpstream::new(format!("http://{address}")).with_worker_identity(identity),
-    ));
+    let upstream =
+        WorkerUpstream::new(format!("http://{address}")).with_worker_identity(identity.clone());
+    let client = Arc::new(HttpMemoryRepository::new(upstream.clone()));
     let rw = memory_materialization_reference(
         "workspace-memory",
         "memory-rw",
@@ -436,13 +439,16 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
         .expect_err("M3");
     assert!(matches!(conflict, MemErr::Conflict { .. }), "M3");
     assert_eq!(
-        repository
-            .get_by_path("memory-rw", "/new.md")
-            .await
-            .unwrap()
-            .unwrap()
-            .content
-            .as_deref(),
+        awaken_resource_contract::MemoryQueries::get_by_path(
+            repository.as_ref(),
+            "memory-rw",
+            "/new.md"
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .content
+        .as_deref(),
         Some("v2"),
         "M3"
     );
@@ -457,14 +463,25 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
     let actor = awaken_resource_contract::MemoryActor::UserActor {
         user_id: "user-11".into(),
     };
-    let attributed = client
-        .create_as(&rw, "/attributed.md", "v1", Some(&actor))
-        .await
-        .expect("MA/C1 create");
-    client
-        .update_head_as(&rw, &attributed.generation(), "v2", None, Some(&actor))
-        .await
-        .expect("MA/C1 update");
+    let attributed = awaken_resource_contract::MemoryWriter::create_as(
+        client.as_ref(),
+        &rw,
+        "/attributed.md",
+        "v1",
+        Some(&actor),
+    )
+    .await
+    .expect("MA/C1 create");
+    awaken_resource_contract::MemoryWriter::update_head_as(
+        client.as_ref(),
+        &rw,
+        &attributed.generation(),
+        "v2",
+        None,
+        Some(&actor),
+    )
+    .await
+    .expect("MA/C1 update");
     client
         .create(&rw, "/anonymous.md", "v1")
         .await
@@ -492,20 +509,34 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
     // The Copy client must transmit its expected path; a rename between client
     // snapshot and server transaction must not turn this into ID-following IO.
     let copied = client.create(&rw, "/copy.md", "base").await.unwrap();
-    client
-        .update_materialized(&rw, "/copy.md", &copied.generation(), "edit")
-        .await
-        .unwrap();
-    repository
-        .rename("memory-rw", "/copy.md", "/copy-moved.md")
-        .await
-        .unwrap();
+    awaken_resource_contract::MemoryCopyWriteback::update_materialized(
+        client.as_ref(),
+        &rw,
+        "/copy.md",
+        &copied.generation(),
+        "edit",
+    )
+    .await
+    .unwrap();
+    awaken_resource_contract::MemoryFilesystem::rename(
+        repository.as_ref(),
+        "memory-rw",
+        "/copy.md",
+        "/copy-moved.md",
+    )
+    .await
+    .unwrap();
     let heads = repository.snapshot_heads("memory-rw").await.unwrap();
     let history = repository.list_versions("memory-rw").await.unwrap();
     assert!(matches!(
-        client
-            .update_materialized(&rw, "/copy.md", &copied.generation(), "edit")
-            .await,
+        awaken_resource_contract::MemoryCopyWriteback::update_materialized(
+            client.as_ref(),
+            &rw,
+            "/copy.md",
+            &copied.generation(),
+            "edit"
+        )
+        .await,
         Err(MemErr::Conflict { .. })
     ));
     assert_eq!(repository.snapshot_heads("memory-rw").await.unwrap(), heads);
@@ -524,11 +555,14 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
     .unwrap();
     assert!(client.create(&ro, "/denied.md", "no").await.is_err(), "M4");
     assert!(
-        repository
-            .get_by_path("memory-ro", "/denied.md")
-            .await
-            .unwrap()
-            .is_none(),
+        awaken_resource_contract::MemoryQueries::get_by_path(
+            repository.as_ref(),
+            "memory-ro",
+            "/denied.md"
+        )
+        .await
+        .unwrap()
+        .is_none(),
         "M4"
     );
 
@@ -542,9 +576,53 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
     .unwrap();
     assert!(client.snapshot_heads(&wrong_workspace).await.is_err(), "M5");
 
-    assert!(
-        client.rename(&rw, "/seed.md", "/renamed.md").await.is_err(),
-        "M7"
+    let before_unsupported = repository.snapshot_heads("memory-rw").await.unwrap();
+    let versions_before_unsupported = repository.list_versions("memory-rw").await.unwrap();
+    let unsupported_body = serde_json::json!({
+        "reference": &rw,
+        "identity": &identity,
+        "operation": {"kind": "rename", "from": "/seed.md", "to": "/renamed.md"},
+    });
+    let endpoint = format!("http://{address}/v1/worker/resources/memory/operation");
+    let unauthenticated = reqwest::Client::new()
+        .post(&endpoint)
+        .json(&unsupported_body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        unauthenticated.status(),
+        reqwest::StatusCode::UNAUTHORIZED,
+        "M7 operation decoding requires transport authentication"
+    );
+    let unsupported_request = upstream
+        .http_client()
+        .post(endpoint)
+        .json(&unsupported_body);
+    let unsupported = upstream
+        .authorize_request(
+            "POST",
+            "/v1/worker/resources/memory/operation",
+            unsupported_request,
+        )
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        unsupported.status(),
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+        "M7 unsupported wire operation"
+    );
+    assert_eq!(
+        repository.snapshot_heads("memory-rw").await.unwrap(),
+        before_unsupported,
+        "M7 performs no mutation"
+    );
+    assert_eq!(
+        repository.list_versions("memory-rw").await.unwrap(),
+        versions_before_unsupported,
+        "M7 neither authentication refusal nor unsupported operation appends history"
     );
 
     catalog
@@ -697,11 +775,14 @@ async fn realization_memory_is_read_only_and_fenced_by_worker_and_session_root()
         "R4/E4: {write_error}"
     );
     assert!(
-        repository
-            .get_by_path("memory-realization", "/must-not-exist.md")
-            .await
-            .expect("read repository after denied write")
-            .is_none(),
+        awaken_resource_contract::MemoryQueries::get_by_path(
+            repository.as_ref(),
+            "memory-realization",
+            "/must-not-exist.md"
+        )
+        .await
+        .expect("read repository after denied write")
+        .is_none(),
         "R4/E4 no mutation"
     );
 
@@ -904,17 +985,26 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
     // MP-HTTP: exact terminal A fence + content-preserving rename after B =>
     // both the old wire client (no expected_path) and Copy client reject. Even
     // equal candidate bytes at the new path cannot authorize an acknowledgement.
-    repository
-        .rename("memory-terminal", "/note.md", "/moved.md")
-        .await
-        .unwrap();
+    awaken_resource_contract::MemoryFilesystem::rename(
+        repository.as_ref(),
+        "memory-terminal",
+        "/note.md",
+        "/moved.md",
+    )
+    .await
+    .unwrap();
     let moved_heads = repository.snapshot_heads("memory-terminal").await.unwrap();
     let moved_history = repository.list_versions("memory-terminal").await.unwrap();
     for pinned in [false, true] {
         let result = if pinned {
-            client
-                .update_materialized(&reference, "/note.md", &note_a.generation(), "B")
-                .await
+            awaken_resource_contract::MemoryCopyWriteback::update_materialized(
+                &client,
+                &reference,
+                "/note.md",
+                &note_a.generation(),
+                "B",
+            )
+            .await
         } else {
             client.update(&reference, &note_a.generation(), "B").await
         };
@@ -1018,13 +1108,16 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
         "T3"
     );
     assert_eq!(
-        repository
-            .get_by_path("memory-terminal", "/conflict.md")
-            .await
-            .unwrap()
-            .unwrap()
-            .content
-            .as_deref(),
+        awaken_resource_contract::MemoryQueries::get_by_path(
+            repository.as_ref(),
+            "memory-terminal",
+            "/conflict.md"
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .content
+        .as_deref(),
         Some("C"),
         "T3 preserve C"
     );
@@ -1041,13 +1134,16 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
         "T4"
     );
     assert_eq!(
-        repository
-            .get_by_path("memory-terminal", "/conflict.md")
-            .await
-            .unwrap()
-            .unwrap()
-            .content
-            .as_deref(),
+        awaken_resource_contract::MemoryQueries::get_by_path(
+            repository.as_ref(),
+            "memory-terminal",
+            "/conflict.md"
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .content
+        .as_deref(),
         Some("C"),
         "T4 no mutation"
     );
@@ -1111,11 +1207,14 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
         .await
         .expect("T6 expired assertion uses the current same-generation renewal");
     assert_eq!(
-        repository
-            .get_by_path("memory-terminal", "/renewed-terminal.md")
-            .await
-            .unwrap()
-            .and_then(|record| record.content),
+        awaken_resource_contract::MemoryQueries::get_by_path(
+            repository.as_ref(),
+            "memory-terminal",
+            "/renewed-terminal.md"
+        )
+        .await
+        .unwrap()
+        .and_then(|record| record.content),
         Some("current generation authorizes old assertion".into()),
         "T6 mutation is owned by the renewed current root"
     );
@@ -1270,11 +1369,14 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
         "/no-control.md",
     ] {
         assert!(
-            repository
-                .get_by_path("memory-terminal", path)
-                .await
-                .unwrap()
-                .is_none(),
+            awaken_resource_contract::MemoryQueries::get_by_path(
+                repository.as_ref(),
+                "memory-terminal",
+                path
+            )
+            .await
+            .unwrap()
+            .is_none(),
             "T7-T9 no mutation: {path}"
         );
     }

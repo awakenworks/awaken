@@ -64,7 +64,7 @@ async fn mount_parts_on_lifecycle(
         awaken_coordinator::mount_with_managed_and_resource_registry_and_dreams_on_lifecycle(
             host.clone(),
             managed,
-            catalog,
+            resources.clone(),
             lifecycle,
             None,
         )
@@ -90,7 +90,7 @@ pub(super) async fn mount_parts_with_model_publication_resolver(
     let (router, dreams) = awaken_coordinator::mount_with_managed_and_resource_registry_and_dreams(
         host.clone(),
         managed,
-        catalog,
+        resources.clone(),
         dream_executor_decorator,
     )
     .await;
@@ -166,7 +166,7 @@ pub(super) async fn mount_parts_with_agent_source_on_lifecycle(
         awaken_coordinator::mount_with_managed_and_resource_registry_and_dreams_on_lifecycle(
             host.clone(),
             managed,
-            catalog,
+            resources.clone(),
             lifecycle,
             None,
         )
@@ -230,7 +230,7 @@ pub(super) async fn mount_with_environments_and_agent_source(
         environment_authoring.application(),
         environment_authoring.sandbox_policy_store(),
     ));
-    awaken_coordinator::mount_with_managed_and_resource_registry(host, managed, catalog)
+    awaken_coordinator::mount_with_managed_and_resource_registry(host, managed, resources.clone())
         .await
         .merge(environments)
         .layer(axum::middleware::from_fn_with_state(
@@ -600,7 +600,7 @@ pub async fn build_unscoped_resource_router() -> Router {
             awaken_resource_contract::UnavailableRepositoryCredentialValidator,
         )),
         files: resources.files(),
-        memories: authorities.memory_repository(),
+        memory: authorities.memory_management_content(),
         memory_stores: resources.memory_stores(),
         skills: Some(authorities.skill_store()),
         purge: resources.purge_scheduler(),

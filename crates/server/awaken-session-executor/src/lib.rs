@@ -72,6 +72,7 @@ mod managed_resource_projection;
 mod mcp_host;
 mod memory;
 mod memory_binding;
+#[cfg(test)]
 mod memory_stores;
 mod model_content_materializer;
 mod no_model;
@@ -146,8 +147,9 @@ pub use crate::deployment_config::{
     Wake, default_postgres_max_connections, session_sandbox_base,
 };
 pub(crate) use crate::host::ApplicationPortBinding;
+pub use crate::host::capability::WorkerContentAdapters;
 #[cfg(any(test, feature = "test-support"))]
-pub use crate::host::capability::{LocalResourcePorts, LocalSkillPorts};
+pub use crate::host::capability::{LocalResourcePorts, LocalSkillPorts, test_memory_content};
 pub use crate::host::{
     AttemptExecutorDecorator, DispatchPoolSizing, ExecutionTopology, HostDependencies, HostProcess,
     HostResume, LeaseOwnerId, LocalExecution, QueueDepthSource, RemoteAttemptInstallation,
