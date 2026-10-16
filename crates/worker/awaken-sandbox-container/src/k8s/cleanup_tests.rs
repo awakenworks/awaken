@@ -13,6 +13,8 @@ use tokio::sync::{Notify, Semaphore};
 
 use super::participants::tests::ClosedProjectedRequests;
 
+mod retained_source;
+
 #[tokio::test]
 async fn original_joined_empty_runs_the_provider_terminal_protocol_but_never_adopts_for_execution()
 {
