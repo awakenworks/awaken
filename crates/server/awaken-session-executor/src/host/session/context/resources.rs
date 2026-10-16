@@ -172,14 +172,14 @@ pub(super) async fn acquire(
         RuntimeEnvironmentAdmission::Create => {
             let provider = exec.session_environment_provider_for_thread(thread, provisioning)?;
             Some(
-                host.create_reserved_session_environment_under_lifecycle(thread, provider)
+                exec.create_reserved_session_environment_under_lifecycle(thread, provider)
                     .await?,
             )
         }
     };
     let env = match env {
         Some(environment) => Some(
-            host.ensure_published_environment_reconciled_under_lifecycle(thread, environment)
+            exec.ensure_published_environment_reconciled_under_lifecycle(thread, environment)
                 .await?,
         ),
         None => None,

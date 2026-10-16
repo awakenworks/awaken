@@ -1,8 +1,5 @@
 {
   "upward-edges": {
-    "awaken-credential-materializer -> awaken-acp-contract": "credential custody receives credential-contract values; Execution translates (ADR-0088 decision 4)",
-    "awaken-credential-materializer -> awaken-provisioning-contract": "credential custody receives credential-contract values; Execution translates (ADR-0088 decision 4)",
-    "awaken-credential-materializer -> awaken-worker-contract": "credential custody receives credential-contract values; Execution translates (ADR-0088 decision 4)",
     "awaken-credential-vault -> awaken-provisioning-contract": "credential custody receives credential-contract values; Execution translates (ADR-0088 decision 4)",
     "awaken-environment-package-image-builder -> awaken-sandbox-container": "depend on the sandbox contract, not its implementations; the composition root wires them",
     "awaken-provisioning-contract -> awaken-resource-contract": "resource reference values move with the environment contract they describe",

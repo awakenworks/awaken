@@ -207,7 +207,7 @@ async fn acp_fixture(
             .with_acp_tool_exporter(exporter.clone()),
     );
     host.env.backend_owned_session_provider = Some(
-        crate::session_environment::SandboxEnvironmentProvider::workdir_with_agent_stderr(
+        awaken_session_environment::SandboxEnvironmentProvider::workdir_with_agent_stderr(
             root, false,
         )
         .into_session_provider(),

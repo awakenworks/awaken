@@ -2,7 +2,7 @@
 // @formal entrypoint session_run.execution_requires_dispatch_work_and_realization_owner
 //! Claim-bound dispatch realization and worker selection.
 
-use super::session_realization::WorkerMcpEffects;
+use super::session_projection::WorkerMcpEffects;
 use super::*;
 use awaken_dispatch_execution::{DispatchWorker, Error};
 use awaken_session_configuration_contract::SessionRuntimeProjection;
@@ -30,18 +30,19 @@ pub(super) async fn adopt_bound_sandbox(
         .realizer
         .session_environment_provider_for_thread(expected_sandbox_id, provisioning)
         .map_err(HostWorkerResolver::map_host_resolution_error)?;
-    host.adopt_bound_session_environment(
-        expected_sandbox_id,
-        encoded,
-        provider,
-        None,
-        recovery == awaken_dispatch_contract::WorkerRecoveryMode::RebuildFromCommittedTruth,
-    )
-    .await
-    .map_err(|mut error| {
-        error.message = format!("run {}: {}", run_id.0, error.message);
-        HostWorkerResolver::map_host_resolution_error(error)
-    })
+    host.realizer
+        .adopt_bound_session_environment(
+            expected_sandbox_id,
+            encoded,
+            provider,
+            None,
+            recovery == awaken_dispatch_contract::WorkerRecoveryMode::RebuildFromCommittedTruth,
+        )
+        .await
+        .map_err(|mut error| {
+            error.message = format!("run {}: {}", run_id.0, error.message);
+            HostWorkerResolver::map_host_resolution_error(error)
+        })
 }
 
 /// The frozen projection a claimed dispatch carries. Bytes that do not decode

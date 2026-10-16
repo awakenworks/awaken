@@ -857,10 +857,10 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         .await
         .with_session_realization_control(control.clone());
     raw_host.env.session_provider =
-        crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
+        awaken_session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             sandbox_root.clone(),
             false,
-            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
             "/bin/sh",
             std::time::Duration::ZERO,
         )
@@ -881,7 +881,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         owner: "terminal-publication-worker".into(),
         runtime_incarnation: "terminal-publication-worker:incarnation".into(),
         epoch: 1,
-        expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms()
+        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
             .saturating_add(60_000),
     };
     // Reuse the Environment-binding test authority so the exact realization
@@ -1096,7 +1096,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         })
         .flatten()
         .expect("P1 retained exact Environment identity");
-    let crate::installed_session::BoundSessionEnvironmentIdentity::Durable {
+    let crate::environment_owner::BoundSessionEnvironmentIdentity::Durable {
         effect_id,
         generation,
     } = retained.identity
@@ -1125,9 +1125,9 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             environment_creation_not_attempted: false,
             session_id: session_id.into(),
             projection: terminal_projection.clone(),
-            authority: crate::installed_session::test_lease_receipt(lease.clone()),
+            authority: awaken_session_realization::test_support::test_lease_receipt(lease.clone()),
         },
-        crate::installed_session::test_observed_lease(lease.clone()),
+        awaken_session_realization::test_support::test_observed_lease(lease.clone()),
     )
     .await
     .expect("P1 install the aggregate-fenced publication assignment");
@@ -1188,13 +1188,13 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
                 .terminal_bound_environment()
                 .unwrap();
             slot.realization.environment.owner =
-                crate::installed_session::SessionEnvironmentOwner::Retiring(
-                    crate::installed_session::RetiringSessionEnvironment {
+                crate::environment_owner::SessionEnvironmentOwner::Retiring(
+                    crate::environment_owner::RetiringSessionEnvironment {
                         cause:
-                            crate::installed_session::SessionEnvironmentRetirementCause::Terminal {
+                            crate::environment_owner::SessionEnvironmentRetirementCause::Terminal {
                                 effect_id: "terminal-source-preparation".into(),
                             },
-                        owned: crate::installed_session::RetiringEnvironmentOwner::Bound(owned),
+                        owned: crate::environment_owner::RetiringEnvironmentOwner::Bound(owned),
                     },
                 );
             slot.run.context = None;
@@ -1219,6 +1219,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         let ordinary = host
             .realizer
             .prepare_bound_environment_for_effect_under_lifecycle(
+                &host.realizer.cleanup,
                 session_id,
                 binding,
                 &publication_fence,
@@ -1231,11 +1232,11 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             "P6 terminal retirement remains hidden from ordinary live IO"
         );
         host.installed_sessions.realizations().update_realization(session_id, |r| {
-            if let crate::installed_session::SessionEnvironmentOwner::Retiring(retiring) =
+            if let crate::environment_owner::SessionEnvironmentOwner::Retiring(retiring) =
                 &mut r.environment.owner
             {
                 retiring.cause =
-                    crate::installed_session::SessionEnvironmentRetirementCause::RealizationRevocation;
+                    crate::environment_owner::SessionEnvironmentRetirementCause::RealizationRevocation;
             } else {
                 panic!("P7 retained owner");
             }
@@ -1258,7 +1259,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
                 assert!(
                     matches!(
                         r.environment.owner,
-                        crate::installed_session::SessionEnvironmentOwner::Retiring(_)
+                        crate::environment_owner::SessionEnvironmentOwner::Retiring(_)
                     ),
                     "P7 not Resident"
                 );
@@ -1383,7 +1384,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             environment_creation_not_attempted: false,
             session_id: session_id.into(),
             projection: terminal_projection,
-            authority: crate::installed_session::test_lease_receipt(lease.clone()),
+            authority: awaken_session_realization::test_support::test_lease_receipt(lease.clone()),
         },
     );
     *control.session.lock().unwrap() = Some(control_session);
@@ -1426,10 +1427,10 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         )
         .with_local_workspace(workspace_id);
     raw_replacement.env.session_provider =
-        crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
+        awaken_session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             sandbox_root,
             false,
-            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
             "/bin/sh",
             std::time::Duration::ZERO,
         )

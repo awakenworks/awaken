@@ -468,7 +468,9 @@ impl SharedHost {
                     // for root and extension dispatch. Selection stays inside
                     // this one slot snapshot; child admission neither publishes
                     // nor reconstructs physical active truth.
-                    slot.dispatch_resource_manifest(),
+                    slot.realization
+                        .staging
+                        .run_manifest(slot.run.session_dispatch),
                     slot.inputs.published_snapshot.clone(),
                 )
             })

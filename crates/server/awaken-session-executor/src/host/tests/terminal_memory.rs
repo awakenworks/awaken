@@ -248,7 +248,9 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     managed
         .host
         .realizer
+        .staging
         .stage_prevalidated_resource_transition_under_resource_projection(
+            &managed.host.realizer,
             "realization-memory-session",
             &transition,
             None,
@@ -286,7 +288,9 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     managed
         .host
         .realizer
+        .staging
         .stage_prevalidated_resource_transition_under_resource_projection(
+            &managed.host.realizer,
             "realization-memory-session",
             &transition,
             None,
@@ -303,7 +307,9 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     managed
         .host
         .realizer
+        .staging
         .stage_prevalidated_resource_transition_under_resource_projection(
+            &managed.host.realizer,
             "realization-memory-session",
             &transition,
             None,
@@ -460,7 +466,9 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     let error = match managed
         .host
         .realizer
+        .staging
         .stage_prevalidated_resource_transition_under_resource_projection(
+            &managed.host.realizer,
             "unfenced-realization-memory-session",
             &transition,
             None,
@@ -637,7 +645,9 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     managed
         .host
         .realizer
+        .staging
         .stage_prevalidated_resource_transition_under_resource_projection(
+            &managed.host.realizer,
             "awaiting-memory-adoption",
             &transition,
             Some(&claim),
@@ -787,7 +797,7 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
         .await
         .with_session_container_provider(
             provider,
-            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
         ))
     .build()
     .expect("validated Host dependencies");
@@ -817,7 +827,8 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
         owner: "source-cleanup-worker".into(),
         runtime_incarnation: "source-cleanup-worker:incarnation".into(),
         epoch: 1,
-        expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms() + 60_000,
+        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
+            + 60_000,
     };
     host.install_session_environment_owner_projection(
         thread,
@@ -833,8 +844,8 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
     host.installed_sessions
         .realizations()
         .update_realization(thread, |r| {
-            r.execution.authority = crate::installed_session::SessionRealizationAuthority::Live(
-                crate::installed_session::test_observed_lease(lease.clone()),
+            r.execution.authority = crate::session_realizations::SessionRealizationAuthority::Live(
+                awaken_session_realization::test_support::test_observed_lease(lease.clone()),
             );
         });
     let generation = awaken_session_state_contract::SandboxGeneration::new(
@@ -1039,7 +1050,7 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
         .build()
         .expect("validated Host dependencies");
     let session_id = "terminal-renewed-provider-fence";
-    let now_unix_ms = crate::terminal_repository_publication::runtime_unix_now_ms();
+    let now_unix_ms = awaken_session_realization::test_support::runtime_unix_now_ms();
     let expired_lease = crate::session_resource::SessionRealizationLease {
         owner: "terminal-worker".into(),
         runtime_incarnation: "terminal-worker:boot".into(),
@@ -1082,8 +1093,10 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
     host.installed_sessions
         .realizations()
         .update_realization(session_id, |r| {
-            r.execution.authority = crate::installed_session::SessionRealizationAuthority::Live(
-                crate::installed_session::test_observed_lease(renewed_lease.clone()),
+            r.execution.authority = crate::session_realizations::SessionRealizationAuthority::Live(
+                awaken_session_realization::test_support::test_observed_lease(
+                    renewed_lease.clone(),
+                ),
             );
         });
     assert_eq!(
@@ -1117,7 +1130,7 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
         .realizations()
         .update_realization(session_id, |r| {
             r.execution.authority =
-                crate::installed_session::SessionRealizationAuthority::Live(skewed_proof);
+                crate::session_realizations::SessionRealizationAuthority::Live(skewed_proof);
         });
     assert_eq!(
         host.realizer.cleanup.effect_fence(&effect).unwrap(),
@@ -1137,8 +1150,10 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
     host.installed_sessions
         .realizations()
         .update_realization(session_id, |r| {
-            r.execution.authority = crate::installed_session::SessionRealizationAuthority::Live(
-                crate::installed_session::test_expired_observed_lease(renewed_lease.clone()),
+            r.execution.authority = crate::session_realizations::SessionRealizationAuthority::Live(
+                awaken_session_realization::test_support::test_expired_observed_lease(
+                    renewed_lease.clone(),
+                ),
             );
         });
     assert!(host.realizer.cleanup.effect_fence(&effect).is_err(), "R5");
@@ -1150,8 +1165,10 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
         "R5"
     );
     for closed in [
-        crate::installed_session::SessionRealizationAuthority::Closed(Some(renewed_lease.clone())),
-        crate::installed_session::SessionRealizationAuthority::Uninstalled,
+        crate::session_realizations::SessionRealizationAuthority::Closed(Some(
+            renewed_lease.clone(),
+        )),
+        crate::session_realizations::SessionRealizationAuthority::Uninstalled,
     ] {
         host.installed_sessions
             .realizations()
@@ -1169,8 +1186,10 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
     host.installed_sessions
         .realizations()
         .update_realization(session_id, |r| {
-            r.execution.authority = crate::installed_session::SessionRealizationAuthority::Live(
-                crate::installed_session::test_expired_observed_lease(expired_lease.clone()),
+            r.execution.authority = crate::session_realizations::SessionRealizationAuthority::Live(
+                awaken_session_realization::test_support::test_expired_observed_lease(
+                    expired_lease.clone(),
+                ),
             );
         });
     assert!(
@@ -1193,8 +1212,8 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
     host.installed_sessions
         .realizations()
         .update_realization(session_id, |r| {
-            r.execution.authority = crate::installed_session::SessionRealizationAuthority::Live(
-                crate::installed_session::test_observed_lease(successor),
+            r.execution.authority = crate::session_realizations::SessionRealizationAuthority::Live(
+                awaken_session_realization::test_support::test_observed_lease(successor),
             );
         });
     assert!(
@@ -1257,7 +1276,7 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
         )
         .with_session_container_provider(
             provider,
-            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
         )
         .with_environment_checkpoint_store(Arc::new(RecordingTerminalCheckpointStore {
             events: events.clone(),
@@ -1333,7 +1352,7 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
             environment_creation_not_attempted: false,
             session_id: thread.into(),
             projection: projection.clone(),
-            authority: crate::installed_session::test_lease_receipt(lease.clone()),
+            authority: awaken_session_realization::test_support::test_lease_receipt(lease.clone()),
         },
     )
     .await
@@ -1472,7 +1491,7 @@ async fn total_absence_recovers_artifacts_before_separate_terminal_disposal() {
         .await
         .with_session_container_provider(
             provider,
-            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
         );
     raw_host.resources.artifact_publisher = Arc::new(RecordingTerminalArtifactRecovery {
         events: events.clone(),
@@ -1578,7 +1597,7 @@ async fn disposing_cleanup_prepares_durability_before_resuming_physical_disposal
         .await
         .with_session_container_provider(
             provider,
-            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
         );
     raw_host.resources.artifact_publisher = Arc::new(RecordingScopedArtifactAuthority {
         events: events.clone(),
@@ -1712,7 +1731,7 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
         .await
         .with_session_container_provider(
             provider,
-            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
         )
         .with_environment_checkpoint_store(Arc::new(RecordingTerminalCheckpointStore {
             events: events.clone(),
@@ -1750,7 +1769,7 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
             environment_creation_not_attempted: false,
             session_id: thread.into(),
             projection: projection.clone(),
-            authority: crate::installed_session::test_lease_receipt(lease.clone()),
+            authority: awaken_session_realization::test_support::test_lease_receipt(lease.clone()),
         },
     )
     .await
@@ -1843,7 +1862,7 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
                 .await
                 .with_session_container_provider(
                     provider,
-                    Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+                    Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
                 ),
         ))
         .build()
@@ -1908,7 +1927,7 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
                 environment_creation_not_attempted: false,
                 session_id: thread.into(),
                 projection: projection.clone(),
-                authority: crate::installed_session::test_lease_receipt(lease),
+                authority: awaken_session_realization::test_support::test_lease_receipt(lease),
             },
         )
         .await
@@ -1945,7 +1964,7 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
                 host.installed_sessions.realizations()
                     .read_realization(thread, |r| {
                         match &r.environment.owner {
-                            crate::installed_session::SessionEnvironmentOwner::Retiring(retiring) => {
+                            crate::environment_owner::SessionEnvironmentOwner::Retiring(retiring) => {
                                 let environment = retiring.owned.environment();
                                 if let Some(previous) = &retained {
                                     assert!(
@@ -1957,7 +1976,7 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
                                 if candidate_unmaterialized.is_some() {
                                     assert!(
                                         matches!(&retiring.owned,
-                                crate::installed_session::RetiringEnvironmentOwner::Unbound(candidate)
+                                crate::environment_owner::RetiringEnvironmentOwner::Unbound(candidate)
                                 if candidate.durable_identity().is_none()),
                                         "M4/M5 no fabricated commitment"
                                     );
@@ -2018,7 +2037,7 @@ async fn provider_proved_unmaterialized_absence_closes_missing_memory_evidence()
             environment_creation_not_attempted: false,
             session_id: thread.into(),
             projection: projection.clone(),
-            authority: crate::installed_session::test_lease_receipt(lease),
+            authority: awaken_session_realization::test_support::test_lease_receipt(lease),
         },
     )
     .await
@@ -2154,7 +2173,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
             )
             .with_session_container_provider(
                 provider,
-                Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+                Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
             );
         let reject = Arc::new(AtomicBool::new(rule.rejection));
         let raw_host = raw_host.with_memory_mounter(Arc::new(RecordingTerminalMemoryMounter {
@@ -2233,7 +2252,9 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                 environment_creation_not_attempted: false,
                 session_id: SessionId::from(&thread),
                 projection: projection.clone(),
-                authority: crate::installed_session::test_lease_receipt(lease.clone()),
+                authority: awaken_session_realization::test_support::test_lease_receipt(
+                    lease.clone(),
+                ),
             },
         )
         .await
@@ -2245,6 +2266,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                 .expect("HM1 live resident preparation fence");
             host.realizer
                 .prepare_bound_environment_for_effect_under_lifecycle(
+                    &host.realizer.cleanup,
                     &thread,
                     &binding,
                     &warm_fence,
@@ -2358,7 +2380,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                 .read_realization(&thread, |r| {
                     matches!(
                         &r.environment.owner,
-                        crate::installed_session::SessionEnvironmentOwner::Retiring(_)
+                        crate::environment_owner::SessionEnvironmentOwner::Retiring(_)
                     )
                 })
                 .unwrap_or(false),
@@ -2367,14 +2389,15 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
         if rule.candidate_unmaterialized.is_some() {
             assert!(host.installed_sessions.realizations().read_realization(&thread, |r| matches!(
                 &r.environment.owner,
-                crate::installed_session::SessionEnvironmentOwner::Retiring(crate::installed_session::RetiringSessionEnvironment {
-                    owned: crate::installed_session::RetiringEnvironmentOwner::Unbound(candidate), ..
+                crate::environment_owner::SessionEnvironmentOwner::Retiring(crate::environment_owner::RetiringSessionEnvironment {
+                    owned: crate::environment_owner::RetiringEnvironmentOwner::Unbound(candidate), ..
                 }) if candidate.durable_identity().is_none()
             )).unwrap(), "H7/H8 no invented commit evidence");
             let before = events.lock().unwrap().clone();
             let error = host
                 .realizer
                 .prepare_bound_environment_for_effect_under_lifecycle(
+                    &host.realizer.cleanup,
                     &thread,
                     &binding,
                     &effect.sandbox_effect_fence().unwrap(),
@@ -2386,6 +2409,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                 .expect("H7/H8 retired Candidate cannot become a live source");
             assert_eq!(error.code, "session_terminal_unpublished_candidate");
             let error = host
+                .realizer
                 .adopt_bound_session_environment(
                     &thread,
                     Some(&binding),

@@ -23,16 +23,22 @@ runtime small.
 
 ## Implemented Session Realization Ownership
 
-The Host split currently lives inside `awaken-session-executor`; the crate extraction
-remains pending. Following [ADR-0089](../adr/0089-session-realization-single-owner.md)
-and [ADR-0091](../adr/0091-architecture-rules.md), the implemented components are:
+Session resource effects and process-local realization state live in
+`awaken-session-realization`. Host retains Run construction and claimed-dispatch
+routing for the separate E/H slices. Following
+[ADR-0089](../adr/0089-session-realization-single-owner.md) and
+[ADR-0091](../adr/0091-architecture-rules.md), the implemented components are:
 
 | Component | Implemented responsibility |
 |---|---|
-| [`RealizationExecutor`](../../crates/server/awaken-session-executor/src/realization_executor.rs) | Executes aggregate-authorized Environment effects, bound-source recovery, resource projection, continuation and terminal Repository publication with the selected providers and execution authority. |
-| [`ArtifactHarvester`](../../crates/server/awaken-session-executor/src/provisioning.rs) | One constructed publication operation shared by Run completion, continuation and terminal cleanup, using the same publisher, Session slots and receipt recovery. |
-| [`SessionPublicationSelection`](../../crates/server/awaken-session-executor/src/session_publication.rs) | Resolves and retains exact frozen Agent/model coordinates and Workspace fallback; context construction and provider selection share this selector. |
-| [`ResourcePreparation`](../../crates/server/awaken-session-executor/src/session_realizations/resource_preparation.rs) | Bounds Resource I/O with the canonical installed lease and cancellation token; failure/drop removes only its own preparation and any unpublished lease it introduced. |
+| [`RealizationExecutor`](../../crates/server/awaken-session-realization/src/realization_executor.rs) | Coordinates the existing continuation operations over the selected components and shared process clock. |
+| [`EnvironmentHolding`](../../crates/server/awaken-session-realization/src/environment_holding.rs) | Holds the original Environment owner and lifecycle lock; creates, adopts, publishes and retires through the selected providers. |
+| [`ResourceStaging`](../../crates/server/awaken-session-realization/src/resource_staging.rs) | Holds prepared Resources, manifest, transition, projection lock and cancellation; owns spec/layout projection and physical Resource application. |
+| [`TerminalCleanup`](../../crates/server/awaken-session-realization/src/terminal_cleanup.rs) | Holds the cleanup projection and shared Artifact operation; prepares, publishes, disposes and acknowledges the aggregate's exact terminal command. |
+| [`ExecutionAuthority`](../../crates/server/awaken-session-realization/src/session_realizations/execution_authority.rs) | Intersects the installed Session proof with the original Worker authority and exact slot/Environment identity at physical effect boundaries. |
+| [`ArtifactHarvester`](../../crates/server/awaken-session-realization/src/provisioning.rs) | One constructed publication operation shared by Run completion, continuation and terminal cleanup, using the same publisher, Session slots and receipt recovery. |
+| [`SessionPublicationSelection`](../../crates/server/awaken-session-realization/src/session_publication.rs) | Resolves and retains exact frozen Agent/model coordinates and Workspace fallback; context construction and provider selection share this selector. |
+| [`ResourcePreparation`](../../crates/server/awaken-session-realization/src/session_realizations/resource_preparation.rs) | Bounds Resource I/O with the canonical installed lease and cancellation token; failure/drop removes only its own preparation and any unpublished lease it introduced. |
 
 `InstalledSessions` retains the original slots and their realization, lifecycle
 and resource-projection locks. `SessionRealizations` is a narrow view of those
@@ -42,8 +48,12 @@ lease scheduler, durable receipt store or Session lifecycle decision point.
 The Session aggregate still supplies durable intent and preparation facts;
 physical disposal binds immutable preparation A to current successor B.
 
-Host compatibility and Session-runtime entry points delegate to these actual
-owners where required. Internal callers use the selected component directly.
+The Session driver obtains the aggregate command, the existing Host role adapter
+supplies delegated/background/MCP participants, and the owning R component applies
+the effect under the original slot locks and captured authority. Its receipt returns
+through the same aggregate acknowledgement and retry path. The independent Session
+driver and the Session aggregate remain separate from Execution infrastructure.
+Internal callers use the selected component directly.
 Run execution/history/events/delegation have not yet been extracted into the
 proposed `RunExecution`, `RunHistory`, `RunEvents` and `RunDelegation` components;
 the existing `McpSessions` remains the MCP lifecycle owner. The public

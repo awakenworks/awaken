@@ -15,7 +15,7 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
     // an Environment-free context retains the existing `brain` key.
     let thread = "durable-background-generation";
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+    let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let environment = environment(&provider, thread).await;
     let physical_id = environment.lifecycle().handle().sandbox_id;
@@ -197,7 +197,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             owner: format!("terminal-background-worker-{thread}"),
             runtime_incarnation: format!("terminal-background-worker-{thread}:incarnation"),
             epoch: 1,
-            expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms()
+            expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
                 + 60_000,
         };
         let create_fence = lease
@@ -215,7 +215,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             .await
             .expect("C1 create provider-effective terminal Sandbox");
         let environment = Arc::new(
-            crate::session_environment::SandboxEnvironment::workdir(physical)
+            awaken_session_environment::SandboxEnvironment::workdir(physical)
                 .into_session_environment(),
         );
         let physical_id = environment.lifecycle().handle().sandbox_id;
@@ -315,7 +315,11 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
                 .unwrap();
             let _lifecycle = lifecycle.lock().await;
             assert!(
-                host.retire_session_environment_for_revocation(thread)
+                host.realizer
+                    .retire_session_environment_for_revocation(
+                        thread,
+                        (&host.mcp, host.installed_sessions.as_ref())
+                    )
                     .await
                     .unwrap(),
                 "C1 public revocation transition"
@@ -334,7 +338,9 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
                 environment_creation_not_attempted: false,
                 session_id: thread.into(),
                 projection: projection.clone(),
-                authority: crate::installed_session::test_lease_receipt(lease.clone()),
+                authority: awaken_session_realization::test_support::test_lease_receipt(
+                    lease.clone(),
+                ),
             },
         )
         .await
@@ -412,12 +418,11 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
                     detail: "fixture source observation outage".into(),
                 },
             ] {
-                let error = host
-                    .prepare_terminal_cleanup_effect(
-                        guarded_effect.clone(),
-                        guarded_authorization.clone().with_source_dispatch(source),
-                    )
-                    .await
+                let error = awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
+                    &crate::ManagedHost::new(host.clone()),
+                    guarded_effect.clone(),
+                    guarded_authorization.clone().with_source_dispatch(source),
+                ).await.map_err(crate::host_error::from_run_error)
                     .unwrap_err();
                 assert_eq!(
                     error.code, "session_terminal_source_dispatch_not_settled",
@@ -439,8 +444,11 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             let effect = effect.clone();
             let authorization = authorization.clone();
             async move {
-                host.prepare_terminal_cleanup_effect(effect, authorization)
-                    .await
+                awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
+                    &crate::ManagedHost::new(host.clone()),
+                    effect,
+                    authorization,
+                ).await.map_err(crate::host_error::from_run_error)
             }
         });
         // A paused Tokio runtime may auto-advance once the quiescence timeout
@@ -500,9 +508,11 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
         );
 
         release.notify_one();
-        let preparation = host
-            .prepare_terminal_cleanup_effect(effect.clone(), authorization)
-            .await
+        let preparation = awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
+                    &crate::ManagedHost::new(host.clone()),
+                    effect.clone(),
+                    authorization,
+                ).await.map_err(crate::host_error::from_run_error)
             .expect("C4 identical Preparation retry");
         assert_eq!(
             preparation.artifact_receipts.len(),
@@ -549,7 +559,10 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
                 Some(repository_preparation),
             )
             .expect("C5 durably admit exact Preparation");
-        host.acknowledge_terminal_cleanup_preparation(&effect).await;
+        host.realizer
+            .cleanup
+            .acknowledge_terminal_cleanup_preparation(&host.mcp, &effect)
+            .await;
         let disposal_command = match aggregate
             .terminal_cleanup_work_action()
             .expect("C5 project canonical terminal action")
@@ -566,7 +579,9 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
                 lease.clone(),
             );
         let disposal_receipt = host
-            .dispose_terminal_cleanup_effect(disposal_effect.clone())
+            .realizer
+            .cleanup
+            .dispose_terminal_cleanup_effect(&host.realizer, disposal_effect.clone())
             .await
             .expect("C5 aggregate-authorized physical Disposal");
         assert_eq!(
@@ -586,7 +601,9 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
                 "terminal background test cleanup",
             )
             .expect("C5 durably admit exact Disposal receipt");
-        host.acknowledge_terminal_cleanup_disposal(&disposal_effect)
+        host.realizer
+            .cleanup
+            .acknowledge_terminal_cleanup_disposal(&host.mcp, &disposal_effect)
             .await;
         assert!(
             !host.installed_sessions.contains(thread),
@@ -634,7 +651,8 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         owner: "terminal-worker".into(),
         runtime_incarnation: "terminal-worker:boot".into(),
         epoch: 1,
-        expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms() + 60_000,
+        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
+            + 60_000,
     };
     // U1 requires the fresh root's original admission before physical I/O;
     // historical omission remains the explicit negative row in the cold table.
@@ -645,7 +663,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
             environment_creation_not_attempted: false,
             session_id: thread.into(),
             projection: projection.clone(),
-            authority: crate::installed_session::test_lease_receipt(lease.clone()),
+            authority: awaken_session_realization::test_support::test_lease_receipt(lease.clone()),
         },
     )
     .await
@@ -699,9 +717,11 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         )
         .unwrap()
         .with_source_dispatch(awaken_session_realization_contract::SessionTerminalSourceDispatch::Settled {});
-    let first = host
-        .prepare_terminal_cleanup_effect(effect.clone(), authorization.clone())
-        .await
+    let first = awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
+                    &crate::ManagedHost::new(host.clone()),
+                    effect.clone(),
+                    authorization.clone(),
+                ).await.map_err(crate::host_error::from_run_error)
         .expect("U1 provider-proved reconstruction");
     assert!(
         first.artifact_receipts.is_empty(),
@@ -742,8 +762,11 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         host.installed_sessions
             .realizations()
             .update_realization(thread, |r| r.environment.owner = wrong.clone());
-        host.prepare_terminal_cleanup_effect(effect.clone(), authorization.clone())
-            .await
+        awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
+                    &crate::ManagedHost::new(host.clone()),
+                    effect.clone(),
+                    authorization.clone(),
+                ).await.map_err(crate::host_error::from_run_error)
             .expect_err("U6 wrong ownership cannot prepare");
         assert!(
             output.exists(),
@@ -762,13 +785,20 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
             None,
         )
         .unwrap();
-    host.prepare_terminal_cleanup_effect(stale, stale_authorization)
-        .await
-        .expect_err("U6 foreign realization cannot prepare");
+    awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
+        &crate::ManagedHost::new(host.clone()),
+        stale,
+        stale_authorization,
+    )
+    .await
+    .map_err(crate::host_error::from_run_error)
+    .expect_err("U6 foreign realization cannot prepare");
     assert!(output.exists(), "U6 stale Preparation keeps physical bytes");
-    let preparation = host
-        .prepare_terminal_cleanup_effect(effect.clone(), authorization)
-        .await
+    let preparation = awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
+                    &crate::ManagedHost::new(host.clone()),
+                    effect.clone(),
+                    authorization,
+                ).await.map_err(crate::host_error::from_run_error)
         .expect("U2 identical Preparation after response loss");
     assert_eq!(first, preparation, "U2 stable receipt");
     let same_owner = || {
@@ -803,7 +833,10 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
             ),
         )
         .unwrap();
-    host.acknowledge_terminal_cleanup_preparation(&effect).await;
+    host.realizer
+        .cleanup
+        .acknowledge_terminal_cleanup_preparation(&host.mcp, &effect)
+        .await;
     let awaken_session_state_contract::SessionTerminalCleanupAction::Dispose { command } =
         aggregate.terminal_cleanup_work_action().unwrap().unwrap()
     else {
@@ -820,7 +853,9 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         host.installed_sessions
             .realizations()
             .update_realization(thread, |r| r.environment.owner = wrong);
-        host.dispose_terminal_cleanup_effect(disposal.clone())
+        host.realizer
+            .cleanup
+            .dispose_terminal_cleanup_effect(&host.realizer, disposal.clone())
             .await
             .expect_err("U6 wrong ownership cannot dispose");
         assert!(output.exists(), "U6 rejected Disposal keeps physical bytes");
@@ -830,19 +865,25 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         .update_realization(thread, |r| r.environment.owner = retained.clone());
     let mut stale_disposal = disposal.clone();
     stale_disposal.lease.epoch += 1;
-    host.dispose_terminal_cleanup_effect(stale_disposal)
+    host.realizer
+        .cleanup
+        .dispose_terminal_cleanup_effect(&host.realizer, stale_disposal)
         .await
         .expect_err("U6 foreign realization cannot dispose");
     assert!(same_owner(), "U6 denied effects retain original owner");
     assert!(output.exists(), "U6 stale Disposal keeps physical bytes");
     let first_disposal = host
-        .dispose_terminal_cleanup_effect(disposal.clone())
+        .realizer
+        .cleanup
+        .dispose_terminal_cleanup_effect(&host.realizer, disposal.clone())
         .await
         .expect("U3 exact aggregate-authorized Unbound disposal");
     assert!(!output.exists(), "U3 real physical bytes removed");
     assert!(same_owner(), "U3 retain until durable acknowledgement");
     let receipt = host
-        .dispose_terminal_cleanup_effect(disposal.clone())
+        .realizer
+        .cleanup
+        .dispose_terminal_cleanup_effect(&host.realizer, disposal.clone())
         .await
         .expect("U4 replay physical Disposal after response loss");
     assert_eq!(first_disposal, receipt, "U4 stable disposal receipt");
@@ -855,7 +896,10 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
             "unmaterialized replay",
         )
         .unwrap();
-    host.acknowledge_terminal_cleanup_disposal(&disposal).await;
+    host.realizer
+        .cleanup
+        .acknowledge_terminal_cleanup_disposal(&host.mcp, &disposal)
+        .await;
     assert!(
         !host.installed_sessions.contains(thread),
         "U5 only durable ack releases slot"

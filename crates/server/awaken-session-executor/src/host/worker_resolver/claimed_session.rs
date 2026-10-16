@@ -235,7 +235,8 @@ mod tests {
         // dispatch retry epoch. R2 every missing/changed/closed/expired input =>
         // no continuation, so ordinary fenced assignment remains authoritative.
         // In particular Work retirement must never reopen its Closed lease.
-        use crate::installed_session::{InstalledSession, SessionRealizationAuthority as A};
+        use crate::installed_session::InstalledSession;
+        use crate::session_realizations::SessionRealizationAuthority as A;
         let claim = awaken_dispatch_contract::RunClaim {
             run_id: awaken_agent_contract::agent::run::Id("run".into()),
             owner: "worker:incarnation".into(),
@@ -266,26 +267,34 @@ mod tests {
             for (authority, live_exact_proof) in [
                 (A::Uninstalled, false),
                 (
-                    A::Live(crate::installed_session::test_observed_lease(lease.clone())),
+                    A::Live(
+                        awaken_session_realization::test_support::test_observed_lease(
+                            lease.clone(),
+                        ),
+                    ),
                     true,
                 ),
                 (A::Closed(Some(lease.clone())), false),
                 (
-                    A::Live(crate::installed_session::test_expired_observed_lease(
-                        lease.clone(),
-                    )),
+                    A::Live(
+                        awaken_session_realization::test_support::test_expired_observed_lease(
+                            lease.clone(),
+                        ),
+                    ),
                     false,
                 ),
                 (
-                    A::Live(crate::installed_session::test_observed_lease(
-                        foreign_lease.clone(),
-                    )),
+                    A::Live(
+                        awaken_session_realization::test_support::test_observed_lease(
+                            foreign_lease.clone(),
+                        ),
+                    ),
                     false,
                 ),
             ] {
                 let expected = exact_claim && live_exact_proof;
                 let slot = InstalledSession {
-                    realization: crate::installed_session::SessionRealization {
+                    realization: crate::session_realizations::SessionRealization {
                         execution: crate::session_realizations::ExecutionAuthorityState {
                             authority,
                             ..Default::default()

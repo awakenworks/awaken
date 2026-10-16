@@ -112,7 +112,9 @@ impl DispatchSessionRuntime {
             return managed
                 .host
                 .realizer
+                .staging
                 .stage_prevalidated_resource_transition_under_resource_projection(
+                    &managed.host.realizer,
                     thread,
                     &projected_transition,
                     claim,
@@ -138,7 +140,9 @@ impl DispatchSessionRuntime {
             return managed
                 .host
                 .realizer
+                .staging
                 .stage_resource_manifest(
+                    &managed.host.realizer,
                     thread,
                     &manifest.workspace_id,
                     manifest.revision,
@@ -164,7 +168,9 @@ impl DispatchSessionRuntime {
         managed
             .host
             .realizer
+            .staging
             .stage_prevalidated_resource_transition_under_resource_projection(
+                &managed.host.realizer,
                 thread,
                 &proven_transition,
                 claim,
@@ -279,54 +285,6 @@ impl SharedHost {
     ) -> Result<(), RunError> {
         self.dispatch_session_runtime()
             .install(thread, manifest, claim)
-            .await
-    }
-
-    /// Stage cold requirements from one already-preflighted complete projection.
-    /// The caller holds `resource_projection` across prospective validation,
-    /// this staging, and publication of every immutable Session fact. The exact
-    /// aggregate transition is retained as cache identity, while the active
-    /// manifest remains owned by physical transition completion.
-    pub(crate) async fn stage_prevalidated_dispatched_resource_transition_under_resource_projection(
-        &self,
-        thread: &str,
-        transition: &crate::session_resource::SessionResourceTransition,
-        claim: Option<&awaken_dispatch_contract::RunClaim>,
-        realization_lease: Option<&crate::session_resource::SessionRealizationLease>,
-        prospective_environment_binding: bool,
-    ) -> Result<(), RunError> {
-        self.realizer
-            .stage_prevalidated_resource_transition_under_resource_projection(
-                thread,
-                transition,
-                claim,
-                realization_lease,
-                prospective_environment_binding,
-            )
-            .await
-    }
-
-    pub(crate) async fn apply_dispatched_resource_transition(
-        &self,
-        thread: &str,
-        transition: &crate::session_resource::SessionResourceTransition,
-        claim: Option<&awaken_dispatch_contract::RunClaim>,
-        realization_lease: Option<&crate::session_resource::SessionRealizationLease>,
-    ) -> Result<(), RunError> {
-        self.realizer
-            .apply_session_inputs_with_context(thread, transition, claim, realization_lease)
-            .await
-    }
-
-    pub(crate) async fn apply_dispatched_resource_transition_under_lifecycle(
-        &self,
-        thread: &str,
-        transition: &crate::session_resource::SessionResourceTransition,
-        claim: Option<&awaken_dispatch_contract::RunClaim>,
-        realization_lease: Option<&crate::session_resource::SessionRealizationLease>,
-    ) -> Result<(), RunError> {
-        self.realizer
-            .apply_session_inputs_under_lifecycle(thread, transition, claim, realization_lease)
             .await
     }
 

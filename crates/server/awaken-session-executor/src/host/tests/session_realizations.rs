@@ -523,17 +523,22 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         owner: "view-worker".into(),
         runtime_incarnation: "view-worker/boot".into(),
         epoch: 1,
-        expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms() + 30_000,
+        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
+            + 30_000,
     };
     for rule in ["missing", "foreign", "closed", "cancelled", "expired"] {
         let token = Arc::new(awaken_runtime_contract::CancellationToken::new());
         host.installed_sessions.update(thread, |slot| {
             slot.realization.execution.authority =
-                crate::installed_session::SessionRealizationAuthority::Live(if rule == "expired" {
-                    crate::installed_session::test_expired_observed_lease(lease.clone())
-                } else {
-                    crate::installed_session::test_observed_lease(lease.clone())
-                });
+                crate::session_realizations::SessionRealizationAuthority::Live(
+                    if rule == "expired" {
+                        awaken_session_realization::test_support::test_expired_observed_lease(
+                            lease.clone(),
+                        )
+                    } else {
+                        awaken_session_realization::test_support::test_observed_lease(lease.clone())
+                    },
+                );
             slot.realization.staging.preparation = Some(token.clone());
             slot.realization.staging.memory = Some(memory.clone());
             if rule == "closed" {
@@ -611,8 +616,8 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
     }
     host.installed_sessions.update(thread, |slot| {
         slot.realization.execution.authority =
-            crate::installed_session::SessionRealizationAuthority::Live(
-                crate::installed_session::test_observed_lease(lease.clone()),
+            crate::session_realizations::SessionRealizationAuthority::Live(
+                awaken_session_realization::test_support::test_observed_lease(lease.clone()),
             );
         slot.realization.staging.preparation =
             Some(Arc::new(awaken_runtime_contract::CancellationToken::new()));

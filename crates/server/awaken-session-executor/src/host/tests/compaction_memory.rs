@@ -1023,10 +1023,10 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_fallback_session_environment_provider(
-                crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
+                awaken_session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
                     sandbox_roots.path().to_path_buf(),
                     false,
-                    Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+                    Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
                     "/bin/sh",
                     std::time::Duration::ZERO,
                 )

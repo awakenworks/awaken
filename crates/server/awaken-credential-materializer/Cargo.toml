@@ -7,7 +7,7 @@ license.workspace = true
 [package.metadata.awaken]
 context = "shared"
 product = "platform"
-bounded_context = "credentials"
+bounded_context = "execution"
 layer = "infrastructure"
 authority = "credential-materializer"
 separation = "isolation"

@@ -46,17 +46,16 @@ async fn cold_unmaterialized_recovery_uses_the_saved_create_not_the_cleanup_leas
             session_id: thread.into(),
             projection,
             environment_creation_not_attempted: false,
-            authority: crate::installed_session::test_lease_receipt(lease),
+            authority: awaken_session_realization::test_support::test_lease_receipt(lease),
         };
         host.install_test_terminal_cleanup_projection(&assignment)
             .await
             .unwrap();
-        let result = host
-            .prepare_terminal_cleanup_effect(
-                effect.clone(),
-                terminal_preparation_authorization(&effect, &assignment.projection),
-            )
-            .await;
+        let result = awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
+                    &crate::ManagedHost::new(host.clone()),
+                    effect.clone(),
+                    terminal_preparation_authorization(&effect, &assignment.projection),
+                ).await.map_err(crate::host_error::from_run_error);
         if known {
             result.unwrap();
             let saved = old_lease
@@ -97,7 +96,7 @@ async fn cold_host(
     .await
     .with_session_container_provider(
         provider,
-        Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+        Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
     );
     deps.execution_authority = Some(Arc::new(pc::test_support::EffectAuthority::new(fence)));
     let host = deps.build().unwrap();
@@ -138,7 +137,7 @@ async fn cold_terminal_cleanup_consumes_only_control_no_create_evidence() {
             session_id: thread.into(),
             projection: projection.clone(),
             environment_creation_not_attempted: witness,
-            authority: crate::installed_session::test_lease_receipt(lease.clone()),
+            authority: awaken_session_realization::test_support::test_lease_receipt(lease.clone()),
         };
         let wire = serde_json::to_value(&assignment).unwrap();
         assert_eq!(
@@ -155,12 +154,11 @@ async fn cold_terminal_cleanup_consumes_only_control_no_create_evidence() {
         host.install_test_terminal_cleanup_projection(&assignment)
             .await
             .unwrap();
-        let result = host
-            .prepare_terminal_cleanup_effect(
-                effect.clone(),
-                terminal_preparation_authorization(&effect, &projection),
-            )
-            .await;
+        let result = awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
+                    &crate::ManagedHost::new(host.clone()),
+                    effect.clone(),
+                    terminal_preparation_authorization(&effect, &projection),
+                ).await.map_err(crate::host_error::from_run_error);
         if !witness {
             assert!(
                 result.is_err(),
@@ -176,7 +174,9 @@ async fn cold_terminal_cleanup_consumes_only_control_no_create_evidence() {
         host.install_test_terminal_cleanup_projection(&assignment)
             .await
             .unwrap();
-        host.dispose_terminal_cleanup_effect(disposal.clone())
+        host.realizer
+            .cleanup
+            .dispose_terminal_cleanup_effect(&host.realizer, disposal.clone())
             .await
             .expect("H1/H4 exact disposal without guessed provider I/O");
         assert!(events.lock().unwrap().is_empty(), "H1 no provider effects");
@@ -193,12 +193,11 @@ async fn cold_terminal_cleanup_consumes_only_control_no_create_evidence() {
         host.install_test_terminal_cleanup_projection(&conflicting)
             .await
             .unwrap();
-        let error = host
-            .prepare_terminal_cleanup_effect(
-                effect.clone(),
-                terminal_preparation_authorization(&effect, &conflicting.projection),
-            )
-            .await
+        let error = awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
+                    &crate::ManagedHost::new(host.clone()),
+                    effect.clone(),
+                    terminal_preparation_authorization(&effect, &conflicting.projection),
+                ).await.map_err(crate::host_error::from_run_error)
             .expect_err("H3 contradictory projection");
         assert_eq!(
             error.code, "session_terminal_unattempted_environment_conflict",

@@ -286,7 +286,7 @@ mod tests {
             .await
             .unwrap();
         let environment = Arc::new(
-            crate::session_environment::SandboxEnvironment::workdir(sandbox)
+            awaken_session_environment::SandboxEnvironment::workdir(sandbox)
                 .into_session_environment(),
         );
         for database_less_worker in [false, true] {

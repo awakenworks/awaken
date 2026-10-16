@@ -256,7 +256,7 @@ mod tests {
         // | E3 | HostExecutor | configured Namespace |
         let mut dependencies =
             with_fixture_acp(crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test").await);
-        let backend_owned = crate::session_environment::SandboxEnvironmentProvider::
+        let backend_owned = awaken_session_environment::SandboxEnvironmentProvider::
             trusted_host_workdir_with_agent_stderr(
                 dependencies.env.sandbox_root.join("backend-owned"),
                 false,
@@ -264,10 +264,10 @@ mod tests {
             .into_session_provider();
         dependencies = dependencies.with_backend_owned_environment_provider(backend_owned);
         dependencies.env.session_provider =
-            crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
+            awaken_session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
                 std::env::temp_dir().join("awaken-managed-environment"),
                 false,
-                Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+                Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
                 "/bin/sh",
                 std::time::Duration::ZERO,
             )

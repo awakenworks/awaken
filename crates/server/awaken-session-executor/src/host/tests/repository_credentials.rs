@@ -497,7 +497,8 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
     runtime
         .host
         .realizer
-        .validate_thread_resource_bindings("platform-mediated")
+        .staging
+        .validate_thread_resource_bindings(&runtime.host.realizer, "platform-mediated")
         .await
         .expect("P2 installed binding uses same Stage verifier");
     assert_eq!(

@@ -223,19 +223,7 @@ fn executor(
     );
     (
         crate::RealizationExecutor {
-            environment_binding_sink: std::sync::RwLock::new(None),
-            dispatch_execution: None,
-            publication: crate::session_publication::SessionPublicationSelection::new(
-                sessions.clone(),
-                "capacity-workspace".into(),
-                None,
-            ),
             clock: awaken_time::system_clock(),
-            artifacts: crate::provisioning::ArtifactHarvester::new(
-                sessions.clone(),
-                "capacity-workspace".into(),
-                Arc::new(awaken_resource_contract::UnavailableArtifactPublisher),
-            ),
             environments: crate::environment_holding::EnvironmentHolding::new(
                 env,
                 runs_local_dispatch_pool,
@@ -253,8 +241,22 @@ fn executor(
                     memory_reference_encoder: None,
                 },
                 None,
+                None,
+                None,
+                crate::session_publication::SessionPublicationSelection::new(
+                    sessions.clone(),
+                    "capacity-workspace".into(),
+                    None,
+                ),
             ),
-            cleanup: crate::terminal_cleanup::TerminalCleanup { sessions },
+            cleanup: crate::terminal_cleanup::TerminalCleanup {
+                artifacts: crate::provisioning::ArtifactHarvester::new(
+                    sessions.clone(),
+                    "capacity-workspace".into(),
+                    Arc::new(awaken_resource_contract::UnavailableArtifactPublisher),
+                ),
+                sessions,
+            },
         },
         recording,
     )
@@ -262,6 +264,10 @@ fn executor(
 
 #[tokio::test]
 async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target() {
+    // Ownership move: the existing provider component owns warm capacity;
+    // canonical Host construction supplies its final local-pool bit once.
+    // W1-W6 must still reach that exact recording provider through the narrowed
+    // capacity entry point, without a second warmup implementation or flag.
     // Decision table. C1 local dispatch pool; C2 warm pool on; C3 target > 0;
     // C4 Environment self-hosted. E1 the provider prewarms the exact shape the
     // Worker receipts publish; E2 nothing reaches the provider and 0 is ready.
@@ -279,9 +285,10 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
 
     for (row, local, pool) in [("W1", false, on), ("W2", true, crate::WarmPool::Disabled)] {
         let (executor, recording) = executor(local, pool, false);
-        assert_eq!(executor.environment_warmup_limits(), (0, 0), "{row}");
+        assert_eq!(executor.env.environment_warmup_limits(), (0, 0), "{row}");
         assert_eq!(
             executor
+                .env
                 .prewarm_default_environment_capacity(2)
                 .await
                 .unwrap(),
@@ -290,6 +297,7 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
         );
         assert_eq!(
             executor
+                .env
                 .prewarm_environment_snapshot(&environment, 2)
                 .await
                 .unwrap(),
@@ -300,9 +308,10 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
     }
 
     let (executor, recording) = executor(true, on, false);
-    assert_eq!(executor.environment_warmup_limits(), (2, 4), "W3");
+    assert_eq!(executor.env.environment_warmup_limits(), (2, 4), "W3");
     assert_eq!(
         executor
+            .env
             .prewarm_default_environment_capacity(0)
             .await
             .unwrap(),
@@ -311,6 +320,7 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
     );
     assert_eq!(
         executor
+            .env
             .prewarm_environment_snapshot(&environment, 0)
             .await
             .unwrap(),
@@ -319,6 +329,7 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
     );
     assert_eq!(
         executor
+            .env
             .prewarm_environment_snapshot(&self_hosted, 2)
             .await
             .unwrap(),
@@ -329,6 +340,7 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
 
     assert_eq!(
         executor
+            .env
             .prewarm_default_environment_capacity(2)
             .await
             .unwrap(),
@@ -337,6 +349,7 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
     );
     assert_eq!(
         executor
+            .env
             .prewarm_environment_snapshot(&environment, 3)
             .await
             .unwrap(),
@@ -346,21 +359,29 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
     assert_eq!(
         *recording.prewarmed.lock().unwrap(),
         vec![
-            (Some(executor.default_environment_capacity_shape()), 2),
+            (Some(executor.env.default_environment_capacity_shape()), 2),
             (
-                Some(executor.environment_snapshot_capacity_shape(&environment)),
+                Some(
+                    executor
+                        .env
+                        .environment_snapshot_capacity_shape(&environment)
+                ),
                 3
             ),
         ],
         "W5 exact published shapes"
     );
     assert_ne!(
-        executor.default_environment_capacity_shape(),
-        executor.environment_snapshot_capacity_shape(&environment),
+        executor.env.default_environment_capacity_shape(),
+        executor
+            .env
+            .environment_snapshot_capacity_shape(&environment),
         "W5 distinct shapes"
     );
     assert_eq!(
-        executor.ready_environment_snapshot_capacity(&environment),
+        executor
+            .env
+            .ready_environment_snapshot_capacity(&environment),
         7,
         "ready is observed"
     );
@@ -368,6 +389,7 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
     let (failing, _) = executor_for_failure();
     assert!(
         failing
+            .env
             .prewarm_default_environment_capacity(2)
             .await
             .is_err(),
@@ -375,6 +397,7 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
     );
     assert!(
         failing
+            .env
             .prewarm_environment_snapshot(&environment, 2)
             .await
             .is_err(),
@@ -395,6 +418,7 @@ async fn image_preparation_covers_the_default_shape_and_every_non_self_hosted_en
     let mut self_hosted = environment.clone();
     self_hosted.self_hosted = true;
     executor
+        .env
         .prewarm_environment_images(&[environment, self_hosted])
         .await
         .unwrap();

@@ -1059,7 +1059,7 @@ pub(crate) mod tests {
             "Managed Agents writes deliverables at its documented path"
         );
         let environment = Arc::new(
-            crate::session_environment::SandboxEnvironment::workdir(
+            awaken_session_environment::SandboxEnvironment::workdir(
                 awaken_sandbox_local::LocalProvider::new(storage.path())
                     .create_sandbox(&spec)
                     .await
@@ -1076,8 +1076,10 @@ pub(crate) mod tests {
         std::fs::write(output_dir.join("result.txt"), b"revision one").unwrap();
 
         let inner = Arc::new(RecordingExecutor::new("harvested"));
-        let executor =
-            ArtifactHarvestAttemptExecutor::new(inner.clone(), host.realizer.artifacts.clone());
+        let executor = ArtifactHarvestAttemptExecutor::new(
+            inner.clone(),
+            host.realizer.cleanup.artifacts.clone(),
+        );
         executor
             .execute(activation("awaken"), RuntimeRunContext::new())
             .await
@@ -1121,7 +1123,7 @@ pub(crate) mod tests {
         std::fs::write(output_dir.join("partial.txt"), b"partial").unwrap();
         let error = ArtifactHarvestAttemptExecutor::new(
             Arc::new(FailingExecutor),
-            host.realizer.artifacts.clone(),
+            host.realizer.cleanup.artifacts.clone(),
         )
         .execute(activation("awaken"), RuntimeRunContext::new())
         .await
@@ -1157,7 +1159,7 @@ pub(crate) mod tests {
                 thread,
                 replacement,
             )),
-            host.realizer.artifacts.clone(),
+            host.realizer.cleanup.artifacts.clone(),
         )
         .execute(activation("awaken"), RuntimeRunContext::new())
         .await
@@ -1196,7 +1198,7 @@ pub(crate) mod tests {
                 thread,
                 replacement,
             )),
-            host.realizer.artifacts.clone(),
+            host.realizer.cleanup.artifacts.clone(),
         )
         .resume(resumed.clone(), resume(&resumed), RuntimeRunContext::new())
         .await
@@ -1234,7 +1236,7 @@ pub(crate) mod tests {
                 replacement,
                 "in-flight replacement failed",
             )),
-            host.realizer.artifacts.clone(),
+            host.realizer.cleanup.artifacts.clone(),
         )
         .execute(activation("awaken"), RuntimeRunContext::new())
         .await
@@ -1270,7 +1272,7 @@ pub(crate) mod tests {
                 thread,
                 replacement,
             )),
-            host.realizer.artifacts.clone(),
+            host.realizer.cleanup.artifacts.clone(),
         )
         .execute(activation("awaken"), RuntimeRunContext::new())
         .await
@@ -1330,7 +1332,7 @@ pub(crate) mod tests {
         let failed_host = (raw_host).build().expect("validated Host dependencies");
         failed_host.register_thread_workspace(thread, "workspace-a");
         let failed_environment = Arc::new(
-            crate::session_environment::SandboxEnvironment::workdir(
+            awaken_session_environment::SandboxEnvironment::workdir(
                 awaken_sandbox_local::LocalProvider::new(failed_storage.path())
                     .create_sandbox(&spec)
                     .await
@@ -1347,7 +1349,7 @@ pub(crate) mod tests {
         std::fs::write(failed_output.join("blocked.txt"), b"blocked").unwrap();
         let error = ArtifactHarvestAttemptExecutor::new(
             Arc::new(RecordingExecutor::new("must-not-escape")),
-            failed_host.realizer.artifacts.clone(),
+            failed_host.realizer.cleanup.artifacts.clone(),
         )
         .execute(activation("awaken"), RuntimeRunContext::new())
         .await

@@ -278,7 +278,7 @@ pub(crate) async fn available_local_environment_binding(
     thread: &str,
     projection: &awaken_session_realization_contract::FrozenSessionProjection,
 ) -> String {
-    let intent = host.realizer.new_environment_effect_intent(
+    let intent = host.realizer.execution.new_environment_effect_intent(
         thread,
         awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
         None,

@@ -12,7 +12,7 @@ fn observation(host: &SharedHost) -> serde_json::Value {
     host.installed_sessions.realizations().read_realization("projection-convergence", |realization| {
         let receipt = realization.execution.frozen_receipt.as_ref();
         let binding = match &realization.environment.owner {
-            crate::installed_session::SessionEnvironmentOwner::Preparing(crate::installed_session::SessionEnvironmentPreparation::AwaitingAdoption { binding, .. }) => binding.as_str(),
+            crate::environment_owner::SessionEnvironmentOwner::Preparing(crate::environment_owner::SessionEnvironmentPreparation::AwaitingAdoption { binding, .. }) => binding.as_str(),
             _ => "none",
         };
         serde_json::json!({"exists": receipt.is_some(), "revision": receipt.map_or(0, |r| r.revision.0), "fingerprint": receipt.map_or("none", |r| r.fingerprint.as_str()), "binding": binding})
@@ -28,7 +28,7 @@ async fn deliver(
 ) -> Result<(), awaken_session_types::RunError> {
     let before = observation(host);
     let receipt =
-        crate::installed_session::FrozenProjectionReceipt::from_projection(&projection).unwrap();
+        crate::session_realizations::FrozenProjectionReceipt::from_projection(&projection).unwrap();
     let incoming = serde_json::json!({"revision": receipt.revision.0, "fingerprint": receipt.fingerprint, "binding": projection.environment.binding().unwrap_or("none")});
     let result = managed
         .install_session_projection(
