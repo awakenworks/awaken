@@ -7,7 +7,7 @@
 //! (retrieve / list / redact).
 //!
 //! Each **memory** is a path-addressed file with a `content_sha256` + CAS update in
-//! the durable [`awaken_resource_contract::MemoryRepository`] (ADR-0053). The same aggregate
+//! the durable [`awaken_resource_contract::MemoryWriter`] (ADR-0053). The same aggregate
 //! repository serves API heads, write-through mounts, recall/extraction, and the
 //! `/memory_versions` history: every mutation and its version row commit together.
 //! There is no API-side history registry or Host-global memory directory. The
@@ -16,10 +16,11 @@
 use std::sync::Arc;
 
 use awaken_resource_contract::{
-    CreateMemoryStoreCommand, MemErr, Memory, MemoryActor as DomainMemoryActor, MemoryRepository,
-    MemoryStoreApplicationError, MemoryStoreApplicationService, MemoryStoreDefinition,
-    MemoryVersion, MemoryVersionOperation, ResourceRegistryError, ResourceState,
-    UpdateMemoryStoreCommand, memory_sha256_hex,
+    CreateMemoryStoreCommand, MemErr, Memory, MemoryActor as DomainMemoryActor,
+    MemoryCopyConflictQueries, MemorySnapshotSource, MemoryStoreApplicationError,
+    MemoryStoreApplicationService, MemoryStoreDefinition, MemoryVersion, MemoryVersionOperation,
+    MemoryVersionQueries, MemoryVersionRedaction, MemoryWriter, ResourceRegistryError,
+    ResourceState, UpdateMemoryStoreCommand, memory_sha256_hex,
 };
 use axum::Extension;
 use axum::extract::{Path, State};
@@ -413,7 +414,7 @@ async fn project_current_memory(
     store_id: &str,
     view: MemoryView,
 ) -> Result<MemoryObject, MemErr> {
-    let versions = state.memories.list_versions(store_id).await?;
+    let versions = state.versions.list_versions(store_id).await?;
     let version_id = current_version_id(&versions, &memory.id).ok_or_else(|| {
         MemErr::Storage(format!(
             "memory `{}` has no atomic current version",
@@ -445,7 +446,11 @@ fn project_def(def: &MemoryStoreDefinition) -> MemoryStoreObject<'_> {
 }
 
 struct MemoryStoreApi {
-    memories: Arc<dyn MemoryRepository>,
+    snapshots: Arc<dyn MemorySnapshotSource>,
+    writer: Arc<dyn MemoryWriter>,
+    versions: Arc<dyn MemoryVersionQueries>,
+    redaction: Arc<dyn MemoryVersionRedaction>,
+    conflicts: Arc<dyn MemoryCopyConflictQueries>,
     stores: Arc<dyn MemoryStoreApplicationService>,
     /// The Resources context's clock; a store deletion is stamped with it.
     clock: Arc<dyn awaken_time::WallClock>,
@@ -455,12 +460,16 @@ struct MemoryStoreApi {
 /// resolution. Processes that manage Resources must use this variant so
 /// create/archive/delete and activation share one lifecycle truth.
 pub fn memory_stores_router(
-    memories: Arc<dyn MemoryRepository>,
+    content: awaken_resource_contract::MemoryManagementContent,
     stores: Arc<dyn MemoryStoreApplicationService>,
     clock: Arc<dyn awaken_time::WallClock>,
 ) -> Router {
     let state = Arc::new(MemoryStoreApi {
-        memories,
+        snapshots: content.snapshots(),
+        writer: content.writer(),
+        versions: content.versions(),
+        redaction: content.redaction(),
+        conflicts: content.conflict_queries(),
         stores,
         clock,
     });
@@ -718,7 +727,7 @@ async fn memory_by_id(
     mid: &str,
 ) -> Result<Option<Memory>, MemErr> {
     let memory = state
-        .memories
+        .snapshots
         .snapshot_heads(store)
         .await?
         .into_iter()
@@ -757,7 +766,7 @@ async fn create_memory(
     }
     // The durable path-addressed store is the source of truth for the head.
     match state
-        .memories
+        .writer
         .create_as(
             &id,
             &body.path,
@@ -820,11 +829,11 @@ async fn list_memories(
     // Full and basic views share one frozen head snapshot. Besides avoiding an
     // N+1 read, this keeps created_at/content/hash/version from different
     // generations out of one SDK page under concurrent writes.
-    let entries = match state.memories.snapshot_heads(&id).await {
+    let entries = match state.snapshots.snapshot_heads(&id).await {
         Ok(entries) => entries,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
-    let versions = match state.memories.list_versions(&id).await {
+    let versions = match state.versions.list_versions(&id).await {
         Ok(versions) => versions,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
@@ -967,7 +976,7 @@ async fn update_memory(
     };
 
     match state
-        .memories
+        .writer
         .update_head_as(
             &id,
             &base,
@@ -1038,7 +1047,7 @@ async fn delete_memory(
             Err(PreconditionRefusal::Stale) => return memory_conflict(),
         };
         match state
-            .memories
+            .writer
             .delete_if_match_as(&id, &path, &base, actor)
             .await
         {
@@ -1052,7 +1061,7 @@ async fn delete_memory(
                 );
             }
         }
-    } else if let Err(error) = state.memories.delete_by_path_as(&id, &path, actor).await {
+    } else if let Err(error) = state.writer.delete_by_path_as(&id, &path, actor).await {
         return err(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("delete failed: {error}"),
@@ -1177,7 +1186,7 @@ async fn list_versions(
         Ok(false) => return not_found("memory_store"),
         Err(error) => return application_error(error),
     }
-    let log = match state.memories.list_versions(&id).await {
+    let log = match state.versions.list_versions(&id).await {
         Ok(log) => log,
         Err(error) => return err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     };
@@ -1211,7 +1220,7 @@ async fn get_version(
         Ok(false) => return not_found("memory_store"),
         Err(error) => return application_error(error),
     }
-    let log = match state.memories.list_versions(&id).await {
+    let log = match state.versions.list_versions(&id).await {
         Ok(log) => log,
         Err(error) => return err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     };
@@ -1238,7 +1247,7 @@ async fn redact_version(
         Err(error) => return application_error(error),
     }
     match state
-        .memories
+        .redaction
         .redact_version_as(&id, &vid, actor.as_ref().map(|actor| &actor.0.0))
         .await
     {

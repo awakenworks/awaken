@@ -60,7 +60,7 @@ impl awaken_resource_contract::LiveResourceBindingVerifier for TestLiveResourceB
 /// Test startup adapter for runtime-host's dependency-inverted MemoryMounter
 /// port. Production installs `awaken-sandbox-memoryd` from awaken-coordinator.
 pub(crate) struct TestMemoryMounter {
-    pub(crate) fs: Arc<dyn awaken_memory_store::MemoryRepository>,
+    pub(crate) fs: Arc<dyn awaken_resource_contract::MemorySnapshotSource>,
 }
 
 pub(crate) struct TestMemoryMount {
@@ -100,20 +100,12 @@ impl awaken_provisioning_contract::MemoryMounter for TestMemoryMounter {
                 awaken_provisioning_contract::SandboxError::backend("mount", error)
             })?;
             let mut heads = Vec::new();
-            for entry in self
+            for memory in self
                 .fs
-                .list(store_id, "/")
+                .snapshot_heads(store_id)
                 .await
                 .map_err(awaken_provisioning_contract::SandboxError::from)?
             {
-                let Some(memory) = self
-                    .fs
-                    .get_by_path(store_id, &entry.path)
-                    .await
-                    .map_err(awaken_provisioning_contract::SandboxError::from)?
-                else {
-                    continue;
-                };
                 heads.push(awaken_provisioning_contract::MemoryMaterializationHead {
                     path: memory.path.clone(),
                     id: memory.id.clone(),
@@ -164,7 +156,7 @@ impl awaken_provisioning_contract::MemoryMounter for TestMemoryMounter {
 pub(crate) fn with_test_memory_mounter(
     dependencies: crate::HostDependencies,
 ) -> crate::HostDependencies {
-    let fs = dependencies.memory_repository();
+    let fs = dependencies.resources.memory_stores.snapshots();
     dependencies.with_memory_mounter(Arc::new(TestMemoryMounter { fs }))
 }
 
@@ -965,4 +957,22 @@ pub(crate) fn test_upstream_authority() -> crate::UpstreamAuthority {
         .with_stream_publisher(ports.clone())
         .with_memory_reference_encoder(ports)
         .with_terminal_cleanup_control(Arc::new(RemoteTerminalCleanupControl::default()))
+}
+
+/// Select one physical Memory store before Host construction and retain its
+/// audit role at the test root. Host receives only execution content roles.
+pub(crate) async fn with_test_memory_history(
+    mut dependencies: crate::HostDependencies,
+) -> (
+    crate::HostDependencies,
+    Arc<dyn awaken_resource_contract::MemoryVersionQueries>,
+) {
+    let backend = Arc::new(
+        awaken_memory_store::SqliteMemoryRepository::open_in_memory(dependencies.clock.clone())
+            .await
+            .expect("open test Memory backend"),
+    );
+    dependencies.resources.memory_stores =
+        awaken_resource_contract::MemoryExecutionContent::new(backend.clone());
+    (dependencies, backend)
 }

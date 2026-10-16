@@ -20,7 +20,7 @@
 
 use std::sync::Arc;
 
-use awaken_memory_store::{MemoryRepository, VolatileMemoryRepository};
+use awaken_memory_store::{MemoryWriter, VolatileMemoryRepository};
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_local::{LocalProvider, NamespaceProvider};
 use awaken_sandbox_memoryd::MemoryStoreMounter;
@@ -431,7 +431,11 @@ async fn run_case(case: &Case, can_exec: bool) -> bool {
     // when we could not exec (no bwrap) the untouched note must still round-trip.
     if let Some(fs) = &mem_fs {
         let expect = if did_exec { "v2" } else { "v1" };
-        let got = fs.get_by_path("s", "/note.md").await.unwrap().unwrap();
+        let got =
+            awaken_resource_contract::MemoryQueries::get_by_path(fs.as_ref(), "s", "/note.md")
+                .await
+                .unwrap()
+                .unwrap();
         assert_eq!(
             got.content.as_deref(),
             Some(expect),

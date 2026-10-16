@@ -11,9 +11,10 @@
 
 #[cfg(any(feature = "test-support", feature = "postgres"))]
 use awaken_lease_testkit::{FixedClock, ManualClock};
+use awaken_memory_store::MemErr;
 #[cfg(feature = "test-support")]
 use awaken_memory_store::VolatileMemoryRepository;
-use awaken_memory_store::{MemErr, MemoryRepository};
+use awaken_resource_contract::{MemoryQueries, MemoryVersionQueries, MemoryWriter};
 #[cfg(any(feature = "test-support", feature = "postgres"))]
 use awaken_time::UtcTime;
 #[cfg(any(feature = "test-support", feature = "postgres"))]
@@ -99,7 +100,10 @@ use shared::{
 //     durable backends so the real write_lock (fs) / connection-mutex (sqlite)
 //     serialize concurrent writers exactly one winner deep. ---
 
-async fn conditional_delete_never_removes_a_changed_or_recreated_head(fs: &dyn MemoryRepository) {
+async fn conditional_delete_never_removes_a_changed_or_recreated_head<M>(fs: &M)
+where
+    M: MemoryQueries + MemoryWriter + MemoryVersionQueries,
+{
     // Causes: C1 path absent/present; C2 present id matches; C3 present hash
     // matches; C4 a deleted path is recreated with equal content but fresh id.
     // Effects: E1 absent returns false and leaves history unchanged; E2 either
@@ -120,7 +124,7 @@ async fn conditional_delete_never_removes_a_changed_or_recreated_head(fs: &dyn M
     ));
     assert_eq!(fs.list_versions("guarded").await.unwrap(), before_stale);
     assert_eq!(
-        fs.get_by_path("guarded", "/note.md")
+        MemoryQueries::get_by_path(fs, "guarded", "/note.md")
             .await
             .unwrap()
             .unwrap()
@@ -157,7 +161,7 @@ async fn conditional_delete_never_removes_a_changed_or_recreated_head(fs: &dyn M
         Err(MemErr::Conflict { .. })
     ));
     assert_eq!(
-        fs.get_by_path("guarded", "/note.md")
+        MemoryQueries::get_by_path(fs, "guarded", "/note.md")
             .await
             .unwrap()
             .unwrap()
@@ -230,6 +234,16 @@ async fn sqlite_concurrent_cas_has_exactly_one_winner() {
 /// may skip an unavailable default development database.
 #[cfg(feature = "postgres")]
 mod postgres {
+    #[tokio::test]
+    async fn postgres_memory_roles_share_the_same_atomic_memory() {
+        let Some(pool) = schema_pool("memory_roles_atomic").await else {
+            return;
+        };
+        let backend = PostgresMemoryRepository::with_pool(pool, awaken_time::system_clock());
+        backend.ensure_schema().await.unwrap();
+        shared::role_views_share_the_same_atomic_memory(&backend).await;
+    }
+
     use super::*;
     use awaken_memory_store::PostgresMemoryRepository;
     use sqlx::Executor;
@@ -405,14 +419,35 @@ mod postgres {
         .expect("inject historical corruption");
         assert!(
             matches!(
-                fs.get_by_path("s", "/negative.md").await,
+                MemoryQueries::get_by_path(&fs, "s", "/negative.md").await,
                 Err(MemErr::Storage(_))
             ),
             "V2/E2"
         );
         assert!(
-            matches!(fs.list("s", "/").await, Err(MemErr::Storage(_))),
+            matches!(
+                MemoryQueries::list(&fs, "s", "/").await,
+                Err(MemErr::Storage(_))
+            ),
             "V3/E2"
         );
     }
+}
+
+#[cfg(feature = "test-support")]
+#[tokio::test]
+async fn volatile_memory_roles_share_the_same_atomic_memory() {
+    shared::role_views_share_the_same_atomic_memory(&VolatileMemoryRepository::new(
+        awaken_time::system_clock(),
+    ))
+    .await;
+}
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn sqlite_memory_roles_share_the_same_atomic_memory() {
+    let backend =
+        awaken_memory_store::SqliteMemoryRepository::open_in_memory(awaken_time::system_clock())
+            .await
+            .unwrap();
+    shared::role_views_share_the_same_atomic_memory(&backend).await;
 }

@@ -718,7 +718,9 @@ mod tests {
         let mut projection = frozen_projection();
         let memory_store = "replacement-chain-memory";
         if !successor_cancellations.is_empty() {
-            host.memory_repository()
+            host.resources
+                .memory_stores
+                .writer()
                 .create(memory_store, "/note.txt", "seed")
                 .await
                 .unwrap();
@@ -1322,7 +1324,9 @@ mod tests {
                 "MC-M exact local Copy bytes survive every cancelled adoption"
             );
             assert_eq!(
-                host.memory_repository()
+                host.resources
+                    .memory_stores
+                    .queries()
                     .get_by_path(memory_store, "/note.txt")
                     .await
                     .unwrap()

@@ -1,6 +1,6 @@
 //! Resources application port for the MemoryStore identity/lifecycle aggregate.
 //!
-//! Memory content remains owned by `MemoryRepository`; this port prevents HTTP,
+//! Memory content remains owned by the Memory content capabilities; this port prevents HTTP,
 //! Dream, and other driving adapters from independently coordinating Catalog
 //! writes, retention, and purge scheduling.
 

@@ -17,6 +17,28 @@ pub async fn resources_at(
     skill_store: Arc<dyn SkillStore>,
     clock: Arc<dyn awaken_time::WallClock>,
 ) -> ResourcesApplication {
+    resources_at_with_invalidator(
+        skill_store,
+        clock,
+        Arc::new(RecordingMemoryInvalidator::default()),
+    )
+    .await
+}
+
+#[derive(Default)]
+struct RecordingMemoryInvalidator(std::sync::Mutex<Vec<(String, String)>>);
+#[cfg(test)]
+impl awaken_resource_contract::MemoryInvalidator for RecordingMemoryInvalidator {
+    fn publish(&self, store: &str, path: &str) {
+        self.0.lock().unwrap().push((store.into(), path.into()));
+    }
+}
+
+pub async fn resources_at_with_invalidator(
+    skill_store: Arc<dyn SkillStore>,
+    clock: Arc<dyn awaken_time::WallClock>,
+    invalidator: Arc<dyn awaken_resource_contract::MemoryInvalidator>,
+) -> ResourcesApplication {
     let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
     let storage = Arc::new(
         awaken_resource_store::SqliteResourceStore::in_memory()
@@ -28,9 +50,14 @@ pub async fn resources_at(
         registry,
         files.clone(),
         files,
-        Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
-            clock.clone(),
-        )),
+        Arc::new(
+            awaken_resource_application::memory::InvalidatingMemoryRepository::new(
+                Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+                    clock.clone(),
+                )),
+                invalidator,
+            ),
+        ),
         skill_store,
         storage,
         clock,

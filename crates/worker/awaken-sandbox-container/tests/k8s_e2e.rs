@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use awaken_memory_store::{MemoryRepository, VolatileMemoryRepository};
+use awaken_memory_store::{MemoryWriter, VolatileMemoryRepository};
 use awaken_provisioning_contract as pc;
 use awaken_runtime_contract::llm::ToolCall;
 use awaken_sandbox_container::k8s::{
@@ -1383,8 +1383,7 @@ async fn multiple_memory_stores_round_trip_with_exact_access_in_a_live_pod() {
         .expect("R4 physical disposal runs only after preparation");
 
     assert_eq!(
-        memory
-            .get_by_path("k8s-rw", "/note.md")
+        awaken_resource_contract::MemoryQueries::get_by_path(memory.as_ref(), "k8s-rw", "/note.md")
             .await
             .unwrap()
             .unwrap()
@@ -1394,8 +1393,7 @@ async fn multiple_memory_stores_round_trip_with_exact_access_in_a_live_pod() {
         "RW Pod volume is harvested to the authoritative repository",
     );
     assert_eq!(
-        memory
-            .get_by_path("k8s-ro", "/note.md")
+        awaken_resource_contract::MemoryQueries::get_by_path(memory.as_ref(), "k8s-ro", "/note.md")
             .await
             .unwrap()
             .unwrap()

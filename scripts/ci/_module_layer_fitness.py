@@ -182,7 +182,6 @@ LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     )),
     (HOST, "memory and skill behaviour stay; their resource projection moves later (plan 10.3 item 3)", (
         "memory",
-        "memory_stores",
         "session_memory_tools",
         "skills",
     )),

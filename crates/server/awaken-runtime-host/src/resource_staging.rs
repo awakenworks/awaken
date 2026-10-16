@@ -20,7 +20,7 @@ pub(crate) struct ResourceStaging {
     pub(crate) bundle_source: Option<Arc<dyn SkillBundleSource<ResourceOperationFence>>>,
     pub(crate) file_content_source:
         Arc<dyn awaken_resource_contract::FileContentSource<ResourceOperationFence>>,
-    pub(crate) memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
+    pub(crate) memory: awaken_resource_contract::MemoryExecutionContent,
     pub(crate) resource_validator:
         Option<Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>>,
     pub(crate) repository_binding_verifier: Option<

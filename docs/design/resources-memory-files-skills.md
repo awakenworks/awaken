@@ -1167,3 +1167,32 @@ The bounded delivery sequence, explicit exclusions, and invariant index are
 maintained in the companion
 [Resources, Memory, Files, and Skills roadmap](resources-memory-files-skills-roadmap.md).
 That file is part of this design authority, not a parallel resource model.
+
+
+## Memory capability migration (planned)
+
+One physical Memory backend continues to own heads, versions, generations,
+conflict proposals and physical purge. Caller roles divide authority without
+introducing another repository, history registry or state model.
+
+| Consumer | Required Memory capabilities |
+|---|---|
+| Managed Memory content API | SnapshotSource, Writer, VersionQueries, VersionRedaction, CopyConflictStore |
+| Runtime Host | Queries, SnapshotSource, Writer, CopyWriteback |
+| Copy-only mounter / remote copy client | Queries, SnapshotSource, CopyWriteback, CopyConflictStore |
+| Live FUSE projection | Filesystem plus the root's existing invalidation subscription |
+| Worker HTTP service | SnapshotSource, Writer, CopyWriteback, CopyConflictStore |
+| HTTP client | Queries, SnapshotSource, Writer, CopyWriteback, CopyConflictStore |
+| Dream | SnapshotSource, Writer, ContentPurge |
+| Authorized physical reclamation | ContentPurge |
+
+API, mounted writes, remote writeback, recall/extraction and Dream consume role
+views derived from the same Resources-owned mutation decorator. A successful
+mutation publishes after commit through the one root-injected bus; failed CAS
+publishes nothing. Rename, path-changing updates and purge invalidate the store
+root. Read-only roles cannot acquire purge or writer operations, and a copy-only
+HTTP adapter cannot be passed as a FUSE filesystem.
+
+The prior broad names above remain historical context. The coordinated change
+must update composition roots, SDK Rust call sites, compatibility evidence and
+CI baseline keys together; it does not alter Anthropic wire names.

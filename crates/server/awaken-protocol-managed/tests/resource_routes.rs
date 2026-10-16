@@ -45,7 +45,7 @@ async fn resource_routes_share_one_application_without_conflicts() {
                 awaken_resource_contract::UnavailableRepositoryCredentialValidator,
             )),
             files: resources.files(),
-            memories: authorities.memory_repository(),
+            memory: authorities.memory_management_content(),
             memory_stores: resources.memory_stores(),
             skills: Some(authorities.skill_store()),
             purge: resources.purge_scheduler(),

@@ -11,7 +11,10 @@ mod support;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use awaken_memory_store::{MemoryRepository, SqliteMemoryRepository};
+use awaken_memory_store::{
+    MemoryCopyConflictQueries, MemorySnapshotSource, MemoryVersionQueries, MemoryWriter,
+    SqliteMemoryRepository,
+};
 use awaken_provisioning_contract::{MemoryMaterializationEvidence, MemoryMountOutcome};
 use awaken_provisioning_contract::{MemoryMounter, MountAccess};
 use awaken_sandbox_memoryd::MemoryStoreMounter;
@@ -72,10 +75,14 @@ async fn live_and_recovered_copy_do_not_follow_a_renamed_head() {
                     .await
                     .unwrap();
             }
-            repository
-                .rename("s", "/note.md", "/moved.md")
-                .await
-                .unwrap();
+            awaken_resource_contract::MemoryFilesystem::rename(
+                repository.as_ref(),
+                "s",
+                "/note.md",
+                "/moved.md",
+            )
+            .await
+            .unwrap();
             let heads = repository.snapshot_heads("s").await.unwrap();
             let history = repository.list_versions("s").await.unwrap();
             for _ in 0..2 {
@@ -507,19 +514,25 @@ async fn unrepresentable_copy_blocks_writeback_until_source_is_repaired() {
                         if access == MountAccess::ReadWrite {
                             assert_eq!(after.len(), history.len() + 4, "U4 four effects");
                             for (path, bytes) in &files {
-                                let head = repository
-                                    .get_by_path("s", &format!("/{path}"))
-                                    .await
-                                    .unwrap()
-                                    .unwrap();
+                                let head = awaken_resource_contract::MemoryQueries::get_by_path(
+                                    repository.as_ref(),
+                                    "s",
+                                    &format!("/{path}"),
+                                )
+                                .await
+                                .unwrap()
+                                .unwrap();
                                 assert_eq!(head.content.unwrap().as_bytes(), bytes);
                             }
                             assert!(
-                                repository
-                                    .get_by_path("s", "/gone.md")
-                                    .await
-                                    .unwrap()
-                                    .is_none()
+                                awaken_resource_contract::MemoryQueries::get_by_path(
+                                    repository.as_ref(),
+                                    "s",
+                                    "/gone.md"
+                                )
+                                .await
+                                .unwrap()
+                                .is_none()
                             );
                         } else {
                             assert_eq!(after, history);
@@ -648,8 +661,7 @@ async fn unreadable_projection_never_authorizes_partial_writeback() {
         assert_eq!(repository.list_versions("s").await.unwrap(), history);
         mount.teardown().await.unwrap();
         assert_eq!(
-            repository
-                .get_by_path("s", "/a.md")
+            awaken_resource_contract::MemoryQueries::get_by_path(repository.as_ref(), "s", "/a.md")
                 .await
                 .unwrap()
                 .unwrap()
@@ -772,21 +784,27 @@ async fn unavailable_copy_root_is_not_evidence_of_memory_deletion() {
             "M1/M2 incomplete scan must fail, got {failed:?}"
         );
         assert_eq!(
-            repository
-                .get_by_path("s", "/nested/note.md")
-                .await
-                .unwrap(),
+            awaken_resource_contract::MemoryQueries::get_by_path(
+                repository.as_ref(),
+                "s",
+                "/nested/note.md"
+            )
+            .await
+            .unwrap(),
             Some(original)
         );
         assert_eq!(repository.list_versions("s").await.unwrap(), history);
         assert_eq!(mount.materialization_heads(), evidence);
         for _ in 0..2 {
             mount.teardown().await.unwrap();
-            let head = repository
-                .get_by_path("s", "/nested/note.md")
-                .await
-                .unwrap()
-                .unwrap();
+            let head = awaken_resource_contract::MemoryQueries::get_by_path(
+                repository.as_ref(),
+                "s",
+                "/nested/note.md",
+            )
+            .await
+            .unwrap()
+            .unwrap();
             assert_eq!(head.content.as_deref(), Some("local edit"));
             assert_eq!(head.version, 2);
         }
@@ -887,7 +905,13 @@ async fn concurrent_copy_harvest_preserves_one_winner_and_retry_evidence() {
             } else {
                 (&right, &left, vec![("note.md".into(), b"left".to_vec())])
             };
-            let durable = repository.get_by_path("s", "/note.md").await.unwrap();
+            let durable = awaken_resource_contract::MemoryQueries::get_by_path(
+                repository.as_ref(),
+                "s",
+                "/note.md",
+            )
+            .await
+            .unwrap();
             assert_eq!(
                 durable.as_ref().and_then(|head| head.content.as_deref()),
                 if a.is_ok() {
@@ -931,7 +955,9 @@ async fn concurrent_copy_harvest_preserves_one_winner_and_retry_evidence() {
             .unwrap();
             assert_eq!(reopened.list_copy_conflicts("s").await.unwrap(), retained);
             assert_eq!(
-                reopened.get_by_path("s", "/note.md").await.unwrap(),
+                awaken_resource_contract::MemoryQueries::get_by_path(&reopened, "s", "/note.md")
+                    .await
+                    .unwrap(),
                 durable
             );
             drop(reopened);
@@ -1005,8 +1031,7 @@ async fn unsafe_copy_entries_fail_before_any_durable_mutation() {
         );
         mount.teardown().await.unwrap();
         assert_eq!(
-            repository
-                .get_by_path("s", "/a.md")
+            awaken_resource_contract::MemoryQueries::get_by_path(repository.as_ref(), "s", "/a.md")
                 .await
                 .unwrap()
                 .unwrap()
@@ -1046,8 +1071,7 @@ async fn an_existing_empty_copy_is_an_intentional_delete_not_a_missing_tree() {
     let history = repository.list_versions("s").await.unwrap();
     mount.teardown().await.unwrap();
     assert!(
-        repository
-            .get_by_path("s", "/note.md")
+        awaken_resource_contract::MemoryQueries::get_by_path(repository.as_ref(), "s", "/note.md")
             .await
             .unwrap()
             .is_none()
@@ -1126,8 +1150,7 @@ async fn windows_junction_is_not_a_readable_memory_projection() {
         );
         mount.teardown().await.unwrap();
         assert_eq!(
-            repository
-                .get_by_path("s", "/a.md")
+            awaken_resource_contract::MemoryQueries::get_by_path(repository.as_ref(), "s", "/a.md")
                 .await
                 .unwrap()
                 .unwrap()
@@ -1200,7 +1223,11 @@ async fn partial_copy_commit_keeps_per_file_truth_across_retry_and_reopen() {
             mount.teardown().await.unwrap();
             std::fs::write(projection.join("z.md"), &z_local).unwrap();
         }
-        let a_durable = repository.get_by_path("s", "/a.md").await.unwrap().unwrap();
+        let a_durable =
+            awaken_resource_contract::MemoryQueries::get_by_path(repository.as_ref(), "s", "/a.md")
+                .await
+                .unwrap()
+                .unwrap();
         assert_eq!(a_durable.content.as_deref(), Some("a-committed"));
         assert_eq!(a_durable.version, 2);
         let history = repository.list_versions("s").await.unwrap();
@@ -1233,11 +1260,15 @@ async fn partial_copy_commit_keeps_per_file_truth_across_retry_and_reopen() {
             "a repeated harvest with old generation evidence retains both stale proposals"
         );
         assert_eq!(
-            repository.get_by_path("s", "/a.md").await.unwrap(),
+            awaken_resource_contract::MemoryQueries::get_by_path(repository.as_ref(), "s", "/a.md")
+                .await
+                .unwrap(),
             Some(a_durable)
         );
         assert_eq!(
-            repository.get_by_path("s", "/z.md").await.unwrap(),
+            awaken_resource_contract::MemoryQueries::get_by_path(repository.as_ref(), "s", "/z.md")
+                .await
+                .unwrap(),
             Some(z_durable.clone())
         );
         assert_eq!(repository.list_versions("s").await.unwrap(), history);
@@ -1303,7 +1334,13 @@ async fn recovered_copy_retries_committed_write_without_a_second_version() {
             .await
             .unwrap();
         assert_eq!(
-            repository.get_by_path("s", "/note.md").await.unwrap(),
+            awaken_resource_contract::MemoryQueries::get_by_path(
+                repository.as_ref(),
+                "s",
+                "/note.md"
+            )
+            .await
+            .unwrap(),
             Some(committed.clone())
         );
     }
@@ -1319,7 +1356,9 @@ async fn recovered_copy_retries_committed_write_without_a_second_version() {
     assert_eq!(retained.len(), 1);
     assert_eq!(retained[0].content.as_deref(), Some("committed"));
     assert_eq!(
-        repository.get_by_path("s", "/note.md").await.unwrap(),
+        awaken_resource_contract::MemoryQueries::get_by_path(repository.as_ref(), "s", "/note.md")
+            .await
+            .unwrap(),
         Some(newer)
     );
     drop(replacement);
@@ -1406,7 +1445,13 @@ async fn concurrent_identical_edits_converge_but_different_creates_conflict() {
             },
             "{rule}"
         );
-        let durable = repository.get_by_path("s", "/note.md").await.unwrap();
+        let durable = awaken_resource_contract::MemoryQueries::get_by_path(
+            repository.as_ref(),
+            "s",
+            "/note.md",
+        )
+        .await
+        .unwrap();
         if rule == "same-delete" {
             assert!(durable.is_none());
         } else {
@@ -1424,7 +1469,13 @@ async fn concurrent_identical_edits_converge_but_different_creates_conflict() {
         assert_eq!(left.teardown().await.is_ok(), a.is_ok());
         assert_eq!(right.teardown().await.is_ok(), b.is_ok());
         assert_eq!(
-            repository.get_by_path("s", "/note.md").await.unwrap(),
+            awaken_resource_contract::MemoryQueries::get_by_path(
+                repository.as_ref(),
+                "s",
+                "/note.md"
+            )
+            .await
+            .unwrap(),
             durable
         );
         drop(left);

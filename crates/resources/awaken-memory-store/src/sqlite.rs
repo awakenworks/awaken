@@ -5,7 +5,7 @@
 // @formal entrypoint memory.rename_replace_preserves_source_identity
 // @formal entrypoint memory.stale_cas_never_clobbers_live_content
 // @formal entrypoint memory.stale_conditional_delete_never_removes_live_head
-//! SQLite [`MemoryRepository`] over the crate's `memory_store` migration scope.
+//! SQLite [`MemoryWriter`] over the crate's `memory_store` migration scope.
 
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
 use awaken_sqlite_pool::EmbeddedPool;
@@ -70,8 +70,11 @@ use crate::repository::{
     under_prefix, validate_path, validate_size,
 };
 use crate::{
-    MemErr, Memory, MemoryActor, MemoryEntry, MemoryGeneration, MemoryPurgeSummary,
-    MemoryRepository, MemoryVersion, MemoryVersionOperation, VersionAppend, sha256_hex,
+    MemErr, Memory, MemoryActor, MemoryContentPurge, MemoryCopyConflictPreservation,
+    MemoryCopyConflictQueries, MemoryCopyWriteback, MemoryEntry, MemoryFilesystem,
+    MemoryGeneration, MemoryPurgeSummary, MemoryQueries, MemorySnapshotSource, MemoryVersion,
+    MemoryVersionOperation, MemoryVersionQueries, MemoryVersionRedaction, MemoryWriter,
+    VersionAppend, sha256_hex,
 };
 
 fn mem_err(err: impl std::fmt::Display) -> MemErr {
@@ -107,7 +110,7 @@ where
     tokio::spawn(operation(connection)).await.map_err(mem_err)?
 }
 
-/// A SQLite-backed [`MemoryRepository`] (path-addressed, CAS). Each mutation holds the
+/// A SQLite-backed [`MemoryWriter`] (path-addressed, CAS). Each mutation holds the
 /// store's one connection, so a read-modify-write (compare-and-swap, rename-replace) is
 /// atomic within the process; a cross-node CAS is the postgres backend's job.
 pub struct SqliteMemoryRepository {
@@ -151,6 +154,9 @@ impl SqliteMemoryRepository {
         migrate_pool(&self.pool).await
     }
 }
+
+/// A live memory head: id, path, content, sha, generation, created, updated.
+type MemoryHeadRow = (String, String, Vec<u8>, String, i64, i64, i64);
 
 /// Build a [`Memory`] from a memories row (content included).
 fn row_memory(
@@ -320,9 +326,8 @@ async fn append_version(
     Ok(version)
 }
 
-#[async_trait::async_trait]
-impl MemoryRepository for SqliteMemoryRepository {
-    async fn preserve_copy_conflict(
+impl SqliteMemoryRepository {
+    async fn preserve_copy_conflict_inner(
         &self,
         store: &str,
         candidate: &awaken_resource_contract::MemoryCopyConflict,
@@ -376,7 +381,7 @@ impl MemoryRepository for SqliteMemoryRepository {
         .await
     }
 
-    async fn list_copy_conflicts(
+    async fn list_copy_conflicts_inner(
         &self,
         store: &str,
     ) -> Result<Vec<awaken_resource_contract::MemoryCopyConflict>, MemErr> {
@@ -392,8 +397,8 @@ impl MemoryRepository for SqliteMemoryRepository {
             .collect()
     }
 
-    async fn snapshot_heads(&self, store: &str) -> Result<Vec<Memory>, MemErr> {
-        let rows: Vec<(String, String, Vec<u8>, String, i64, i64, i64)> = sqlx::query_as(&format!(
+    async fn snapshot_heads_inner(&self, store: &str) -> Result<Vec<Memory>, MemErr> {
+        let rows: Vec<MemoryHeadRow> = sqlx::query_as(&format!(
             "SELECT id, path, content, sha, version, created, updated \
                  FROM {NS}_memories WHERE store_id = ?1 ORDER BY path"
         ))
@@ -408,7 +413,7 @@ impl MemoryRepository for SqliteMemoryRepository {
             .collect()
     }
 
-    async fn list(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr> {
+    async fn list_inner(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr> {
         let rows: Vec<(String, String, String, i64, i64, i64)> = sqlx::query_as(&format!(
             "SELECT id, path, sha, length(content), version, updated \
              FROM {NS}_memories WHERE store_id = ?1"
@@ -432,17 +437,16 @@ impl MemoryRepository for SqliteMemoryRepository {
             .collect::<Result<Vec<_>, MemErr>>()
     }
 
-    async fn get_by_path(&self, store: &str, path: &str) -> Result<Option<Memory>, MemErr> {
-        let row: Option<(String, String, Vec<u8>, String, i64, i64, i64)> =
-            sqlx::query_as(&format!(
-                "SELECT id, path, content, sha, version, created, updated \
+    async fn get_by_path_inner(&self, store: &str, path: &str) -> Result<Option<Memory>, MemErr> {
+        let row: Option<MemoryHeadRow> = sqlx::query_as(&format!(
+            "SELECT id, path, content, sha, version, created, updated \
                  FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"
-            ))
-            .bind(store)
-            .bind(path)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(mem_err)?;
+        ))
+        .bind(store)
+        .bind(path)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(mem_err)?;
         match row {
             Some((id, path, content, sha, version, created, updated)) => Ok(Some(row_memory(
                 id, path, content, sha, version, created, updated,
@@ -451,11 +455,11 @@ impl MemoryRepository for SqliteMemoryRepository {
         }
     }
 
-    async fn create(&self, store: &str, path: &str, content: &str) -> Result<Memory, MemErr> {
-        self.create_as(store, path, content, None).await
+    async fn create_inner(&self, store: &str, path: &str, content: &str) -> Result<Memory, MemErr> {
+        self.create_as_inner(store, path, content, None).await
     }
 
-    async fn create_as(
+    async fn create_as_inner(
         &self,
         store: &str,
         path: &str,
@@ -543,18 +547,18 @@ impl MemoryRepository for SqliteMemoryRepository {
         .await
     }
 
-    async fn update_head(
+    async fn update_head_inner(
         &self,
         store: &str,
         base: &MemoryGeneration,
         content: &str,
         target_path: Option<&str>,
     ) -> Result<Memory, MemErr> {
-        self.update_head_as(store, base, content, target_path, None)
+        self.update_head_as_inner(store, base, content, target_path, None)
             .await
     }
 
-    async fn update_head_as(
+    async fn update_head_as_inner(
         &self,
         store: &str,
         base: &MemoryGeneration,
@@ -566,7 +570,7 @@ impl MemoryRepository for SqliteMemoryRepository {
             .await
     }
 
-    async fn update_materialized(
+    async fn update_materialized_inner(
         &self,
         store: &str,
         path: &str,
@@ -577,7 +581,7 @@ impl MemoryRepository for SqliteMemoryRepository {
             .await
     }
 
-    async fn rename(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr> {
+    async fn rename_inner(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr> {
         validate_path(to)?;
         let (store, from, to) = (store.to_string(), from.to_string(), to.to_string());
         let clock = self.clock.clone();
@@ -676,11 +680,11 @@ impl MemoryRepository for SqliteMemoryRepository {
         .await
     }
 
-    async fn delete_by_path(&self, store: &str, path: &str) -> Result<(), MemErr> {
-        self.delete_by_path_as(store, path, None).await
+    async fn delete_by_path_inner(&self, store: &str, path: &str) -> Result<(), MemErr> {
+        self.delete_by_path_as_inner(store, path, None).await
     }
 
-    async fn delete_by_path_as(
+    async fn delete_by_path_as_inner(
         &self,
         store: &str,
         path: &str,
@@ -729,16 +733,16 @@ impl MemoryRepository for SqliteMemoryRepository {
         .await
     }
 
-    async fn delete_if_match(
+    async fn delete_if_match_inner(
         &self,
         store: &str,
         path: &str,
         base: &MemoryGeneration,
     ) -> Result<bool, MemErr> {
-        self.delete_if_match_as(store, path, base, None).await
+        self.delete_if_match_as_inner(store, path, base, None).await
     }
 
-    async fn delete_if_match_as(
+    async fn delete_if_match_as_inner(
         &self,
         store: &str,
         path: &str,
@@ -811,7 +815,7 @@ impl MemoryRepository for SqliteMemoryRepository {
         .await
     }
 
-    async fn list_versions(&self, store: &str) -> Result<Vec<MemoryVersion>, MemErr> {
+    async fn list_versions_inner(&self, store: &str) -> Result<Vec<MemoryVersion>, MemErr> {
         let rows: Vec<VersionRow> = sqlx::query_as(&format!(
             "SELECT id, memory_id, operation, path, content, created, redacted, created_by_json, redacted_by_json \
              FROM {NS}_versions WHERE store_id = ?1 ORDER BY ordinal"
@@ -823,15 +827,15 @@ impl MemoryRepository for SqliteMemoryRepository {
         rows.into_iter().map(row_version).collect()
     }
 
-    async fn redact_version(
+    async fn redact_version_inner(
         &self,
         store: &str,
         version_id: &str,
     ) -> Result<Option<MemoryVersion>, MemErr> {
-        self.redact_version_as(store, version_id, None).await
+        self.redact_version_as_inner(store, version_id, None).await
     }
 
-    async fn redact_version_as(
+    async fn redact_version_as_inner(
         &self,
         store: &str,
         version_id: &str,
@@ -883,7 +887,7 @@ impl MemoryRepository for SqliteMemoryRepository {
         .await
     }
 
-    async fn purge_store(&self, store: &str) -> Result<MemoryPurgeSummary, MemErr> {
+    async fn purge_store_inner(&self, store: &str) -> Result<MemoryPurgeSummary, MemErr> {
         let store = store.to_string();
         with_conn_mem(&self.pool, move |mut conn| async move {
             let mut tx = sqlx::Connection::begin(&mut *conn).await.map_err(mem_err)?;
@@ -1231,11 +1235,12 @@ mod memory_repository_tests {
             let redact_actor = MemoryActor::ServiceAccountActor {
                 service_account_id: "svac_redactor".into(),
             };
-            let created = fs
-                .create_as("s", "/keep.md", "durable", Some(&api_actor))
-                .await
-                .unwrap();
-            fs.update_head_as(
+            let created =
+                MemoryWriter::create_as(&fs, "s", "/keep.md", "durable", Some(&api_actor))
+                    .await
+                    .unwrap();
+            MemoryWriter::update_head_as(
+                &fs,
                 "s",
                 &created.generation(),
                 "updated",
@@ -1254,7 +1259,7 @@ mod memory_repository_tests {
             .await
             .unwrap();
         assert_eq!(
-            fs.get_by_path("s", "/keep.md")
+            MemoryQueries::get_by_path(&fs, "s", "/keep.md")
                 .await
                 .unwrap()
                 .unwrap()
@@ -1314,19 +1319,35 @@ mod memory_repository_tests {
             // tx dropped here without commit == process died mid-rename.
         }
         assert!(
-            fs.get_by_path("s", "/to.md").await.unwrap().is_some(),
+            MemoryQueries::get_by_path(&fs, "s", "/to.md")
+                .await
+                .unwrap()
+                .is_some(),
             "an aborted rename must not lose the destination"
         );
-        assert!(fs.get_by_path("s", "/from.md").await.unwrap().is_some());
+        assert!(
+            MemoryQueries::get_by_path(&fs, "s", "/from.md")
+                .await
+                .unwrap()
+                .is_some()
+        );
 
         // A real rename still replaces atomically and preserves the source's id.
-        let src = fs.get_by_path("s", "/from.md").await.unwrap().unwrap();
+        let src = MemoryQueries::get_by_path(&fs, "s", "/from.md")
+            .await
+            .unwrap()
+            .unwrap();
         let renamed = fs.rename("s", "/from.md", "/to.md").await.unwrap();
         assert_eq!(renamed.id, src.id, "the moved memory keeps its id");
         assert_eq!(renamed.path, "/to.md");
-        assert!(fs.get_by_path("s", "/from.md").await.unwrap().is_none());
+        assert!(
+            MemoryQueries::get_by_path(&fs, "s", "/from.md")
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
-            fs.get_by_path("s", "/to.md")
+            MemoryQueries::get_by_path(&fs, "s", "/to.md")
                 .await
                 .unwrap()
                 .unwrap()
@@ -1345,5 +1366,212 @@ mod memory_repository_tests {
                 .unwrap(),
         )
         .await;
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryQueries for SqliteMemoryRepository {
+    async fn list(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr> {
+        SqliteMemoryRepository::list_inner(self, store, prefix).await
+    }
+    async fn get_by_path(&self, store: &str, path: &str) -> Result<Option<Memory>, MemErr> {
+        SqliteMemoryRepository::get_by_path_inner(self, store, path).await
+    }
+}
+
+#[async_trait::async_trait]
+impl MemorySnapshotSource for SqliteMemoryRepository {
+    async fn snapshot_heads(&self, store: &str) -> Result<Vec<Memory>, MemErr> {
+        SqliteMemoryRepository::snapshot_heads_inner(self, store).await
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryWriter for SqliteMemoryRepository {
+    async fn create_as(
+        &self,
+        store: &str,
+        path: &str,
+        content: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr> {
+        SqliteMemoryRepository::create_as_inner(self, store, path, content, actor).await
+    }
+    async fn update_head_as(
+        &self,
+        store: &str,
+        base: &MemoryGeneration,
+        content: &str,
+        target_path: Option<&str>,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr> {
+        SqliteMemoryRepository::update_head_as_inner(self, store, base, content, target_path, actor)
+            .await
+    }
+    async fn delete_by_path_as(
+        &self,
+        store: &str,
+        path: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<(), MemErr> {
+        SqliteMemoryRepository::delete_by_path_as_inner(self, store, path, actor).await
+    }
+    async fn delete_if_match_as(
+        &self,
+        store: &str,
+        path: &str,
+        base: &MemoryGeneration,
+        actor: Option<&MemoryActor>,
+    ) -> Result<bool, MemErr> {
+        SqliteMemoryRepository::delete_if_match_as_inner(self, store, path, base, actor).await
+    }
+    async fn create(&self, store: &str, path: &str, content: &str) -> Result<Memory, MemErr> {
+        SqliteMemoryRepository::create_inner(self, store, path, content).await
+    }
+    async fn update_head(
+        &self,
+        store: &str,
+        base: &MemoryGeneration,
+        content: &str,
+        target_path: Option<&str>,
+    ) -> Result<Memory, MemErr> {
+        SqliteMemoryRepository::update_head_inner(self, store, base, content, target_path).await
+    }
+    async fn delete_by_path(&self, store: &str, path: &str) -> Result<(), MemErr> {
+        SqliteMemoryRepository::delete_by_path_inner(self, store, path).await
+    }
+    async fn delete_if_match(
+        &self,
+        store: &str,
+        path: &str,
+        base: &MemoryGeneration,
+    ) -> Result<bool, MemErr> {
+        SqliteMemoryRepository::delete_if_match_inner(self, store, path, base).await
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryFilesystem for SqliteMemoryRepository {
+    async fn list(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr> {
+        SqliteMemoryRepository::list_inner(self, store, prefix).await
+    }
+    async fn get_by_path(&self, store: &str, path: &str) -> Result<Option<Memory>, MemErr> {
+        SqliteMemoryRepository::get_by_path_inner(self, store, path).await
+    }
+    async fn create_as(
+        &self,
+        store: &str,
+        path: &str,
+        content: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr> {
+        SqliteMemoryRepository::create_as_inner(self, store, path, content, actor).await
+    }
+    async fn update_head_as(
+        &self,
+        store: &str,
+        base: &MemoryGeneration,
+        content: &str,
+        target_path: Option<&str>,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr> {
+        SqliteMemoryRepository::update_head_as_inner(self, store, base, content, target_path, actor)
+            .await
+    }
+    async fn rename(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr> {
+        SqliteMemoryRepository::rename_inner(self, store, from, to).await
+    }
+    async fn delete_by_path_as(
+        &self,
+        store: &str,
+        path: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<(), MemErr> {
+        SqliteMemoryRepository::delete_by_path_as_inner(self, store, path, actor).await
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryCopyWriteback for SqliteMemoryRepository {
+    async fn create_as(
+        &self,
+        store: &str,
+        path: &str,
+        content: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr> {
+        SqliteMemoryRepository::create_as_inner(self, store, path, content, actor).await
+    }
+    async fn update_materialized(
+        &self,
+        store: &str,
+        path: &str,
+        base: &MemoryGeneration,
+        content: &str,
+    ) -> Result<Memory, MemErr> {
+        SqliteMemoryRepository::update_materialized_inner(self, store, path, base, content).await
+    }
+    async fn delete_if_match_as(
+        &self,
+        store: &str,
+        path: &str,
+        base: &MemoryGeneration,
+        actor: Option<&MemoryActor>,
+    ) -> Result<bool, MemErr> {
+        SqliteMemoryRepository::delete_if_match_as_inner(self, store, path, base, actor).await
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryCopyConflictPreservation for SqliteMemoryRepository {
+    async fn preserve_copy_conflict(
+        &self,
+        store: &str,
+        candidate: &awaken_resource_contract::MemoryCopyConflict,
+    ) -> Result<(), MemErr> {
+        SqliteMemoryRepository::preserve_copy_conflict_inner(self, store, candidate).await
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryCopyConflictQueries for SqliteMemoryRepository {
+    async fn list_copy_conflicts(
+        &self,
+        store: &str,
+    ) -> Result<Vec<awaken_resource_contract::MemoryCopyConflict>, MemErr> {
+        SqliteMemoryRepository::list_copy_conflicts_inner(self, store).await
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryVersionQueries for SqliteMemoryRepository {
+    async fn list_versions(&self, store: &str) -> Result<Vec<MemoryVersion>, MemErr> {
+        SqliteMemoryRepository::list_versions_inner(self, store).await
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryVersionRedaction for SqliteMemoryRepository {
+    async fn redact_version_as(
+        &self,
+        store: &str,
+        version_id: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Option<MemoryVersion>, MemErr> {
+        SqliteMemoryRepository::redact_version_as_inner(self, store, version_id, actor).await
+    }
+    async fn redact_version(
+        &self,
+        store: &str,
+        version_id: &str,
+    ) -> Result<Option<MemoryVersion>, MemErr> {
+        SqliteMemoryRepository::redact_version_inner(self, store, version_id).await
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryContentPurge for SqliteMemoryRepository {
+    async fn purge_store(&self, store: &str) -> Result<MemoryPurgeSummary, MemErr> {
+        SqliteMemoryRepository::purge_store_inner(self, store).await
     }
 }

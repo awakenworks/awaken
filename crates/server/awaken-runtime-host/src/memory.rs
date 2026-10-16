@@ -481,12 +481,6 @@ fn classify_extraction_run_error(
 }
 
 impl crate::host::SharedHost {
-    /// The Memory content data-plane port used by an outer process startup to
-    /// construct a worker-side mounter. It carries no principal or policy state.
-    pub fn memory_repository(&self) -> Arc<dyn awaken_resource_contract::MemoryRepository> {
-        self.resources.memory_stores.fs_handle()
-    }
-
     /// The Workspace-scoped Skill aggregate port shared by HTTP authoring and
     /// runtime activation. `None` means this host has no durable Skill plane.
     #[cfg(any(test, feature = "test-support"))]
@@ -589,8 +583,8 @@ impl crate::host::SharedHost {
         resource_validator: Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>,
     ) {
         let writable = access == awaken_resource_contract::ResourceAccess::ReadWrite;
-        let handle = Arc::new(PlatformMemoryHandle::new(
-            self.resources.memory_stores.fs_handle(),
+        let handle = Arc::new(PlatformMemoryHandle::from_roles(
+            self.resources.memory_stores.clone(),
             config.memory_store_id.to_string(),
             writable,
         ));

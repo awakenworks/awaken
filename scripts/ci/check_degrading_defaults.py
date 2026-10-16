@@ -117,28 +117,28 @@ DEGRADING_DEFAULT_EXEMPTIONS: dict[str, str] = {
     # these are its unattributed spellings, each delegating with an explicit
     # `None` author. An implementation cannot satisfy the trait without
     # answering the attributed question, which is the property the rule is
-    # protecting; see `MemoryRepository::create_as`.
-    "MemoryRepository::create": (
+    # protecting; see `MemoryWriter::create_as`.
+    "MemoryWriter::create": (
         "not a degrade: the unattributed spelling of the required `create_as`, "
         "delegating with an explicit `None` author"
     ),
-    "MemoryRepository::update_head": (
+    "MemoryWriter::update_head": (
         "not a degrade: the unattributed spelling of the required "
         "`update_head_as`, delegating with an explicit `None` author"
     ),
-    "MemoryRepository::delete_by_path": (
+    "MemoryWriter::delete_by_path": (
         "not a degrade: the unattributed spelling of the required "
         "`delete_by_path_as`, delegating with an explicit `None` author"
     ),
-    "MemoryRepository::delete_if_match": (
+    "MemoryWriter::delete_if_match": (
         "not a degrade: the unattributed spelling of the required "
         "`delete_if_match_as`, delegating with an explicit `None` author"
     ),
-    "MemoryRepository::redact_version": (
+    "MemoryVersionRedaction::redact_version": (
         "not a degrade: the unattributed spelling of the required "
         "`redact_version_as`, delegating with an explicit `None` author"
     ),
-    "MemoryRepository::update": (
+    "MemoryWriter::update": (
         "not a degrade: the content-only convenience over `update_head`, "
         "delegating with an explicit `None` target path, which is what an "
         "update that does not move the memory means"

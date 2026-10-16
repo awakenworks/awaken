@@ -944,7 +944,7 @@ fn spec2_missing_required() -> pc::SandboxSpec {
 
 #[tokio::test]
 async fn memory_store_realizes_as_copy_and_harvests_on_dispose() {
-    use awaken_memory_store::{MemoryRepository, VolatileMemoryRepository};
+    use awaken_memory_store::{MemoryWriter, VolatileMemoryRepository};
     use awaken_sandbox_memoryd::MemoryStoreMounter;
 
     let fs = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
@@ -981,7 +981,7 @@ async fn memory_store_realizes_as_copy_and_harvests_on_dispose() {
     std::fs::write(&note, "v2").unwrap();
     sandbox.dispose_unattached().await.unwrap();
     assert_eq!(
-        fs.get_by_path("s", "/note.md")
+        awaken_resource_contract::MemoryQueries::get_by_path(fs.as_ref(), "s", "/note.md")
             .await
             .unwrap()
             .unwrap()
@@ -1012,7 +1012,7 @@ async fn bwrap_multiple_memory_store_access_and_parent_boundary_are_enforced() {
         eprintln!("skipping: bwrap/userns unavailable on this host");
         return;
     }
-    use awaken_memory_store::{MemoryRepository, VolatileMemoryRepository};
+    use awaken_memory_store::{MemoryWriter, VolatileMemoryRepository};
     use awaken_sandbox_memoryd::MemoryStoreMounter;
 
     let fs = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
@@ -1082,7 +1082,7 @@ async fn bwrap_multiple_memory_store_access_and_parent_boundary_are_enforced() {
     sandbox.dispose_unattached().await.unwrap();
 
     assert_eq!(
-        fs.get_by_path("readonly", "/note.md")
+        awaken_resource_contract::MemoryQueries::get_by_path(fs.as_ref(), "readonly", "/note.md")
             .await
             .unwrap()
             .unwrap()
@@ -1092,7 +1092,7 @@ async fn bwrap_multiple_memory_store_access_and_parent_boundary_are_enforced() {
         "RO2/E5"
     );
     assert_eq!(
-        fs.get_by_path("writable", "/work.md")
+        awaken_resource_contract::MemoryQueries::get_by_path(fs.as_ref(), "writable", "/work.md")
             .await
             .unwrap()
             .unwrap()
@@ -1124,7 +1124,7 @@ async fn bwrap_splices_a_live_fuse_memory_mount_into_the_namespace() {
         eprintln!("skipping: no /dev/fuse (copy fallback is covered by memory_mount.rs)");
         return;
     }
-    use awaken_memory_store::{MemoryRepository, VolatileMemoryRepository};
+    use awaken_memory_store::{MemoryWriter, VolatileMemoryRepository};
     use awaken_sandbox_memoryd::MemoryStoreMounter;
 
     let fs = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
@@ -1132,9 +1132,22 @@ async fn bwrap_splices_a_live_fuse_memory_mount_into_the_namespace() {
     let tmp = tempfile::tempdir().unwrap();
     // The FUSE-preferring mounter (not `copy_only`): it FUSE-mounts the store at the
     // host path the provider then binds into the namespace.
-    let provider = NamespaceProvider::new(tmp.path()).with_memory_mounter(Arc::new(
-        MemoryStoreMounter::new(fs.clone(), awaken_time::system_clock()),
-    ));
+    let provider = NamespaceProvider::new(tmp.path()).with_memory_mounter(Arc::new({
+        let backend = fs.clone();
+        let bus = Arc::new(awaken_sandbox_memoryd::LocalInvalidator::default());
+        let memory = Arc::new(
+            awaken_resource_application::memory::InvalidatingMemoryRepository::new(
+                backend,
+                bus.clone(),
+            ),
+        );
+        MemoryStoreMounter::fuse_preferred(
+            awaken_resource_contract::MemoryMountSource::new(memory),
+            bus,
+            awaken_time::system_clock(),
+        )
+        .expect("selected Memory source and root bus match")
+    }));
 
     let mut spec = spec("t-mem-fuse");
     spec.mounts.push(pc::MountRequirement {
@@ -1190,7 +1203,7 @@ async fn bwrap_splices_a_live_fuse_memory_mount_into_the_namespace() {
     // dispose unmounts the FUSE mount (write-through already flushed the edit to the store).
     sandbox.dispose_unattached().await.unwrap();
     assert_eq!(
-        fs.get_by_path("s", "/note.md")
+        awaken_resource_contract::MemoryQueries::get_by_path(fs.as_ref(), "s", "/note.md")
             .await
             .unwrap()
             .unwrap()

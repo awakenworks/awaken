@@ -2,7 +2,7 @@
 //! Strict Linux composition of the existing scoped owner and real Memory adapter.
 //! No fake guard, successful substrate skip, or Copy fallback in this case.
 use super::*;
-use awaken_memory_store::{MemoryRepository, SqliteMemoryRepository};
+use awaken_memory_store::{MemoryWriter, SqliteMemoryRepository};
 use awaken_sandbox_local::LocalSandbox;
 use awaken_sandbox_memoryd::MemoryStoreMounter;
 use std::path::PathBuf;
@@ -26,10 +26,22 @@ pub(super) async fn provider(base: &Path) -> LocalProvider {
     // One provider process reading stamps both the repository and the FUSE
     // mounter; the durable-head assertions below reopen SQLite independently.
     let clock = awaken_time::system_clock();
-    LocalProvider::trusted_host(base).with_memory_mounter(Arc::new(MemoryStoreMounter::new(
-        repository(base, clock.clone()).await,
-        clock,
-    )))
+    LocalProvider::trusted_host(base).with_memory_mounter(Arc::new({
+        let backend = repository(base, clock.clone()).await;
+        let bus = Arc::new(awaken_sandbox_memoryd::LocalInvalidator::default());
+        let memory = Arc::new(
+            awaken_resource_application::memory::InvalidatingMemoryRepository::new(
+                backend,
+                bus.clone(),
+            ),
+        );
+        MemoryStoreMounter::fuse_preferred(
+            awaken_resource_contract::MemoryMountSource::new(memory),
+            bus,
+            clock,
+        )
+        .expect("selected Memory source and root bus match")
+    }))
 }
 
 pub(super) fn specification() -> pc::SandboxSpec {
@@ -107,12 +119,14 @@ fn kernel_mount(path: &Path) -> Option<String> {
 
 async fn durable_head(base: &Path) -> awaken_memory_store::Memory {
     // Independent reopened SQLite connection, not the FUSE content cache.
-    repository(base, awaken_time::system_clock())
-        .await
-        .get_by_path(STORE, "/note.md")
-        .await
-        .unwrap()
-        .unwrap()
+    awaken_resource_contract::MemoryQueries::get_by_path(
+        repository(base, awaken_time::system_clock()).await.as_ref(),
+        STORE,
+        "/note.md",
+    )
+    .await
+    .unwrap()
+    .unwrap()
 }
 
 fn assert_disconnected(file: &mut std::fs::File) {

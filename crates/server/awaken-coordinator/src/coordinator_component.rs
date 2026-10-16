@@ -53,6 +53,7 @@ pub struct CoordinatorDependencies {
     pub resource_registry: Arc<dyn ResourceRegistry>,
     /// Resources-owned public API served by its application.
     pub resource_management_router: Router,
+    pub resource_authorities: awaken_resource_application::ResourceAuthorities,
     /// Exact Resources MemoryStore service shared by HTTP and Dream.
     pub memory_stores: Arc<dyn awaken_resource_contract::MemoryStoreApplicationService>,
     pub worker_file_application: Arc<dyn awaken_resource_contract::FileApplicationService>,
@@ -303,6 +304,7 @@ pub async fn build_coordinator_component(
         managed_state,
         resource_registry,
         resource_management_router,
+        resource_authorities,
         memory_stores,
         worker_file_application,
         worker_skill_bundles,
@@ -371,6 +373,7 @@ pub async fn build_coordinator_component(
             },
             crate::ManagedRoutingExtensions {
                 resource_management_router,
+                resource_authorities,
                 memory_stores,
                 worker_file_application,
                 worker_skill_bundles,
@@ -404,21 +407,14 @@ pub async fn build_coordinator_component(
     };
     let work_session_access =
         awaken_protocol_managed::ManagedWorkSessionAccess::new(environments.clone(), managed_state);
-    let managed_management = awaken_protocol_managed::with_managed_response_context(
-        awaken_protocol_managed::deployments_router(deployment_application.clone()).merge(
-            awaken_protocol_managed::environment_work_router(environments, clock.clone()),
-        ),
-    );
-    let management_router = crate::with_local_workspace_scope(
-        managed_management
-            .merge(awaken_protocol_awaken::dream_policy_router(
-                dream_application.clone(),
-            ))
-            .merge(crate::application_access::router(
-                application_access.clone(),
-                sessions,
-            )),
+    let management_router = management_router(
+        &deployment_application,
+        environments,
+        &dream_application,
+        &application_access,
+        sessions,
         default_workspace,
+        &clock,
     );
 
     register_application_access_retention(&service_lifecycle, application_access);
@@ -441,6 +437,34 @@ pub async fn build_coordinator_component(
         management_router,
         work_session_access,
     })
+}
+
+/// Compose the four existing management surfaces over their exact applications.
+/// Only Deployment/Environment receive the Managed response context; the local
+/// Workspace scope encloses all four, in the same merge order as public startup.
+fn management_router(
+    deployments: &Arc<DeploymentApplication>,
+    environments: Arc<EnvironmentExecutionApplication>,
+    dreams: &Arc<awaken_dream_application::DreamApplication>,
+    application_access: &Arc<ApplicationAccessStore>,
+    sessions: Arc<dyn SessionRepository>,
+    workspace: String,
+    clock: &Arc<dyn awaken_time::WallClock>,
+) -> Router {
+    let managed = awaken_protocol_managed::with_managed_response_context(
+        awaken_protocol_managed::deployments_router(deployments.clone()).merge(
+            awaken_protocol_managed::environment_work_router(environments, clock.clone()),
+        ),
+    );
+    crate::with_local_workspace_scope(
+        managed
+            .merge(awaken_protocol_awaken::dream_policy_router(dreams.clone()))
+            .merge(crate::application_access::router(
+                application_access.clone(),
+                sessions,
+            )),
+        workspace,
+    )
 }
 
 /// Start the exact already-built services only after every connection validates.

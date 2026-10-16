@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use awaken_memory_store::{MemoryRepository, VolatileMemoryRepository};
+use awaken_memory_store::{MemoryWriter, VolatileMemoryRepository};
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_local::LocalProvider;
 use awaken_sandbox_memoryd::MemoryStoreMounter;
@@ -76,7 +76,7 @@ async fn write_through_required_rejects_copy_before_agent_launch() {
     };
     assert!(error.to_string().contains("requires write-through FUSE"));
     assert_eq!(
-        fs.get_by_path("strict", "/note.md")
+        awaken_resource_contract::MemoryQueries::get_by_path(fs.as_ref(), "strict", "/note.md")
             .await
             .unwrap()
             .unwrap()
@@ -105,10 +105,22 @@ fn find_file(root: &Path, name: &str) -> Option<PathBuf> {
 async fn memory_store_mount_realizes_and_persists_an_edit() {
     let fs = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
     fs.create("s", "/note.md", "v1").await.unwrap();
-    let mounter = Arc::new(MemoryStoreMounter::new(
-        fs.clone(),
-        awaken_time::system_clock(),
-    ));
+    let mounter = Arc::new({
+        let backend = fs.clone();
+        let bus = Arc::new(awaken_sandbox_memoryd::LocalInvalidator::default());
+        let memory = Arc::new(
+            awaken_resource_application::memory::InvalidatingMemoryRepository::new(
+                backend,
+                bus.clone(),
+            ),
+        );
+        MemoryStoreMounter::fuse_preferred(
+            awaken_resource_contract::MemoryMountSource::new(memory),
+            bus,
+            awaken_time::system_clock(),
+        )
+        .expect("selected Memory source and root bus match")
+    });
 
     let tmp = tempfile::tempdir().unwrap();
     let provider = LocalProvider::new(tmp.path()).with_memory_mounter(mounter);
@@ -133,7 +145,7 @@ async fn memory_store_mount_realizes_and_persists_an_edit() {
     sandbox.dispose_unattached().await.unwrap();
 
     assert_eq!(
-        fs.get_by_path("s", "/note.md")
+        awaken_resource_contract::MemoryQueries::get_by_path(fs.as_ref(), "s", "/note.md")
             .await
             .unwrap()
             .unwrap()
@@ -171,7 +183,7 @@ async fn workdir_rejects_read_only_memory_before_materialization() {
     assert!(find_file(tmp.path(), "note.md").is_none(), "RO1/E2");
 
     assert_eq!(
-        fs.get_by_path("readonly", "/note.md")
+        awaken_resource_contract::MemoryQueries::get_by_path(fs.as_ref(), "readonly", "/note.md")
             .await
             .unwrap()
             .unwrap()

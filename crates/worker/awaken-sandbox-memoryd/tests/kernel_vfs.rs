@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use awaken_memory_store::{MemoryRepository, SqliteMemoryRepository};
+use awaken_memory_store::{MemoryWriter, SqliteMemoryRepository};
 use awaken_provisioning_contract::{MemoryMounter, MountAccess, Realization};
 use awaken_sandbox_memoryd::MemoryStoreMounter;
 use awaken_sandbox_memoryd::fuse::spawn_mount;
@@ -111,9 +111,13 @@ fn kernel_reads_writes_renames_and_persists_across_remount() {
 
     // The store of record holds every write, independent of the mount.
     let content = |p: &str| {
-        rt.block_on(backend.get_by_path(store, p))
-            .unwrap()
-            .and_then(|m| m.content)
+        rt.block_on(awaken_resource_contract::MemoryQueries::get_by_path(
+            backend.as_ref(),
+            store,
+            p,
+        ))
+        .unwrap()
+        .and_then(|m| m.content)
     };
     assert_eq!(content("/seed.md").as_deref(), Some("overwritten"));
     assert_eq!(
@@ -175,7 +179,22 @@ fn independent_mounter_projections_invalidate_peer_caches_and_teardown_independe
         .unwrap(),
     );
     rt.block_on(backend.create(store, "/x.md", "one")).unwrap();
-    let mounter = MemoryStoreMounter::new(backend.clone(), awaken_time::system_clock());
+    let mounter = {
+        let backend = backend.clone();
+        let bus = Arc::new(awaken_sandbox_memoryd::LocalInvalidator::default());
+        let memory = Arc::new(
+            awaken_resource_application::memory::InvalidatingMemoryRepository::new(
+                backend,
+                bus.clone(),
+            ),
+        );
+        MemoryStoreMounter::fuse_preferred(
+            awaken_resource_contract::MemoryMountSource::new(memory),
+            bus,
+            awaken_time::system_clock(),
+        )
+        .expect("selected Memory source and root bus match")
+    };
 
     // Cause/effect design (ADR-0053 D5): C1=same store, C2=two distinct sandbox
     // paths, C3=peer cache warmed, C4=write through A, C5=A torn down first.
@@ -281,11 +300,15 @@ fn kernel_exercises_metadata_truncate_offsets_dirs_and_errors() {
     file.sync_all().unwrap(); // fsync path
     drop(file); // release → flush
     assert_eq!(
-        rt.block_on(backend.get_by_path(store, "/f.md"))
-            .unwrap()
-            .unwrap()
-            .content
-            .as_deref(),
+        rt.block_on(awaken_resource_contract::MemoryQueries::get_by_path(
+            backend.as_ref(),
+            store,
+            "/f.md"
+        ))
+        .unwrap()
+        .unwrap()
+        .content
+        .as_deref(),
         Some("01XY"),
         "offset write + truncate flushed coherently"
     );

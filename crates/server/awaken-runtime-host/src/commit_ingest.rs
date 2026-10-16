@@ -239,18 +239,25 @@ mod tests {
         }
     }
 
-    async fn cold_claimed_memory_host() -> (Arc<SharedHost>, crate::ManagedHost) {
-        let host =
-            ((crate::HostDependencies::ephemeral(Arc::new(crate::host::MemoryHostModel), "stub")
-                .await)
-                .with_session_execution(
-                    crate::SessionExecutionDependencies::default()
-                        .with_resource_validator(crate::host::test_resource_validator()),
-                ))
+    async fn cold_claimed_memory_host() -> (
+        Arc<SharedHost>,
+        crate::ManagedHost,
+        Arc<dyn awaken_resource_contract::MemoryVersionQueries>,
+    ) {
+        let (dependencies, versions) = crate::host::tests::fixtures::with_test_memory_history(
+            crate::HostDependencies::ephemeral(Arc::new(crate::host::MemoryHostModel), "stub")
+                .await,
+        )
+        .await;
+        let host = dependencies
+            .with_session_execution(
+                crate::SessionExecutionDependencies::default()
+                    .with_resource_validator(crate::host::test_resource_validator()),
+            )
             .build()
             .expect("validated Host dependencies");
         let managed = crate::ManagedHost::new(host.clone());
-        (host, managed)
+        (host, managed, versions)
     }
 
     fn assert_no_resident_session_projection(host: &SharedHost, thread: &str, rule: &str) {
@@ -270,7 +277,10 @@ mod tests {
     }
 
     async fn assert_completed_memory(
-        host: &SharedHost,
+        memory: (
+            &SharedHost,
+            &dyn awaken_resource_contract::MemoryVersionQueries,
+        ),
         intent_id: &str,
         session_thread: &str,
         logical_thread: &str,
@@ -278,6 +288,7 @@ mod tests {
         override_candidate: &ResolvedModelCandidate,
         rule: &str,
     ) {
+        let (host, versions) = memory;
         assert!(
             host.drain_runtime(std::time::Duration::from_secs(10)).await,
             "{rule}: Memory extraction did not drain"
@@ -307,7 +318,7 @@ mod tests {
         assert!(
             host.resources
                 .memory_stores
-                .fs()
+                .queries()
                 .get_by_path(store_id, "/user-prefs.md")
                 .await
                 .expect("query extracted Memory")
@@ -315,9 +326,7 @@ mod tests {
             "{rule}: extraction must write the frozen MemoryStore"
         );
         assert_eq!(
-            host.resources
-                .memory_stores
-                .fs()
+            versions
                 .list_versions(store_id)
                 .await
                 .expect("list extracted Memory versions")
@@ -377,7 +386,7 @@ mod tests {
             OVERRIDE_MODEL_REF,
             "R1-R3/C5"
         );
-        let (host, _managed) = cold_claimed_memory_host().await;
+        let (host, _managed, versions) = cold_claimed_memory_host().await;
         assert!(
             host.installed_sessions.read(thread, |_| ()).is_none(),
             "R1-R3/C3 target starts cold"
@@ -473,7 +482,7 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{rule} settlement observation: {error}"));
         }
         assert_completed_memory(
-            &host,
+            (host.as_ref(), versions.as_ref()),
             &intent_id,
             thread,
             thread,
@@ -527,15 +536,16 @@ mod tests {
                 .expect("durable dispatch store"),
         );
         let roots = crate::host::tests::ManagedSessionRootFixture::new().await;
-        let host = ((crate::host::with_test_memory_mounter(
+        let (dependencies, versions) = crate::host::tests::fixtures::with_test_memory_history(
             roots.configure(
                 crate::HostDependencies::ephemeral(Arc::new(crate::host::MemoryHostModel), "stub")
                     .await
                     .with_ephemeral_dispatch(queue.clone())
                     .with_agent_publications(publications),
             ),
-        ))
-        .with_session_execution(
+        )
+        .await;
+        let host = ((crate::host::with_test_memory_mounter(dependencies)).with_session_execution(
             crate::SessionExecutionDependencies::default()
                 .with_resource_validator(crate::host::test_resource_validator()),
         ))
@@ -642,7 +652,7 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{rule} settlement observation: {error}"));
         }
         assert_completed_memory(
-            &host,
+            (host.as_ref(), versions.as_ref()),
             &intent_id,
             thread,
             thread,
@@ -712,7 +722,7 @@ mod tests {
             OVERRIDE_MODEL_REF,
             "R1-R5/C7"
         );
-        let (host, _managed) = cold_claimed_memory_host().await;
+        let (host, _managed, versions) = cold_claimed_memory_host().await;
         assert!(
             host.installed_sessions
                 .read(parent_thread, |_| ())
@@ -876,7 +886,7 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{rule} child settlement observation: {error}"));
         }
         assert_completed_memory(
-            &host,
+            (host.as_ref(), versions.as_ref()),
             &intent_id,
             parent_thread,
             child_thread,

@@ -227,7 +227,7 @@ async fn creation_and_adoption_recheck_authority_and_retain_pending_memory() {
 
 #[tokio::test]
 async fn copy_replay_keeps_original_bytes_and_ack_prevents_second_harvest() {
-    use awaken_resource_contract::MemoryRepository as _;
+    use awaken_resource_contract::MemoryWriter;
     use pc::MemoryMounter as _;
     // P13-P16: Local/Namespace x create replay/fenced adoption. The same live
     // Provider owns the original Copy guard after wrapper Drop. Replay must
@@ -303,13 +303,16 @@ async fn copy_replay_keeps_original_bytes_and_ack_prevents_second_harvest() {
             assert_eq!(replay.handle(), handle);
             assert_eq!(std::fs::read(&file).unwrap(), b"agent edit");
             assert_eq!(
-                store
-                    .get_by_path("memory", "/note.md")
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .content
-                    .as_deref(),
+                awaken_resource_contract::MemoryQueries::get_by_path(
+                    store.as_ref(),
+                    "memory",
+                    "/note.md"
+                )
+                .await
+                .unwrap()
+                .unwrap()
+                .content
+                .as_deref(),
                 Some("original")
             );
             mounter
@@ -345,13 +348,16 @@ async fn copy_replay_keeps_original_bytes_and_ack_prevents_second_harvest() {
                 .unwrap();
             assert!(!file.exists());
             assert_eq!(
-                store
-                    .get_by_path("memory", "/note.md")
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .content
-                    .as_deref(),
+                awaken_resource_contract::MemoryQueries::get_by_path(
+                    store.as_ref(),
+                    "memory",
+                    "/note.md"
+                )
+                .await
+                .unwrap()
+                .unwrap()
+                .content
+                .as_deref(),
                 Some("agent edit")
             );
         }

@@ -1,7 +1,7 @@
 // @formal surface requirement=resource.memory.memory_consistency
 // @formal reason: Static owner: the binding is an immutable projection of one frozen Session Memory
 // @formal reason: input; every data-plane access re-validates the live resource before it reaches the
-// @formal reason: canonical MemoryRepository, which keeps the only CAS rule. The one lock holds the
+// @formal reason: canonical Memory content implementation, which keeps the only CAS rule. The one lock holds the
 // @formal reason: physical Session commit an extraction writes through; absence makes extraction wait
 // @formal reason: (Retryable) and never chooses another commit. Runtime tests drive both rows.
 //! One Session-scoped MemoryStore binding, projected from the frozen Session

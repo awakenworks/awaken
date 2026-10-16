@@ -2,7 +2,7 @@ use super::*;
 use crate::SharedHost;
 use async_trait::async_trait;
 use awaken_ext_memory::{MEMORY_AGENT_ID, MemoryExtractionStatus, RecallSelector as _};
-use awaken_memory_store::MemoryRepository as _;
+use awaken_resource_contract::{MemoryVersionQueries as _, MemoryWriter as _};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, Result as LlmResult, ToolCall,
 };
@@ -295,126 +295,13 @@ struct RecallSnapshotRepository {
 }
 
 #[async_trait]
-impl awaken_memory_store::MemoryRepository for RecallSnapshotRepository {
-    async fn preserve_copy_conflict(
-        &self,
-        _store: &str,
-        _candidate: &awaken_resource_contract::MemoryCopyConflict,
-    ) -> Result<(), awaken_memory_store::MemErr> {
-        unreachable!("Recall snapshot test performs no conflict writes")
-    }
-
-    async fn list_copy_conflicts(
-        &self,
-        _store: &str,
-    ) -> Result<Vec<awaken_resource_contract::MemoryCopyConflict>, awaken_memory_store::MemErr>
-    {
-        unreachable!("Recall snapshot test performs no conflict reads")
-    }
-
+#[cfg(test)]
+impl awaken_resource_contract::MemorySnapshotSource for RecallSnapshotRepository {
     async fn snapshot_heads(
         &self,
         _store: &str,
     ) -> Result<Vec<awaken_memory_store::Memory>, awaken_memory_store::MemErr> {
         Ok(self.heads.clone())
-    }
-
-    async fn list(
-        &self,
-        _store: &str,
-        _prefix: &str,
-    ) -> Result<Vec<awaken_memory_store::MemoryEntry>, awaken_memory_store::MemErr> {
-        panic!("Recall must not emulate an atomic snapshot with list")
-    }
-
-    async fn get_by_path(
-        &self,
-        _store: &str,
-        _path: &str,
-    ) -> Result<Option<awaken_memory_store::Memory>, awaken_memory_store::MemErr> {
-        panic!("Recall must not emulate an atomic snapshot with per-path reads")
-    }
-
-    async fn create_as(
-        &self,
-        _store: &str,
-        _path: &str,
-        _content: &str,
-        _actor: Option<&awaken_resource_contract::MemoryActor>,
-    ) -> Result<awaken_memory_store::Memory, awaken_memory_store::MemErr> {
-        unreachable!("Recall snapshot test performs no writes")
-    }
-
-    async fn update_head_as(
-        &self,
-        _store: &str,
-        _base: &awaken_resource_contract::MemoryGeneration,
-        _content: &str,
-        _target_path: Option<&str>,
-        _actor: Option<&awaken_resource_contract::MemoryActor>,
-    ) -> Result<awaken_memory_store::Memory, awaken_memory_store::MemErr> {
-        unreachable!("Recall snapshot test performs no writes")
-    }
-
-    async fn update_materialized(
-        &self,
-        _store: &str,
-        _path: &str,
-        _base: &awaken_resource_contract::MemoryGeneration,
-        _content: &str,
-    ) -> Result<awaken_memory_store::Memory, awaken_memory_store::MemErr> {
-        unreachable!("Recall snapshot test performs no writes")
-    }
-
-    async fn rename(
-        &self,
-        _store: &str,
-        _from: &str,
-        _to: &str,
-    ) -> Result<awaken_memory_store::Memory, awaken_memory_store::MemErr> {
-        unreachable!("Recall snapshot test performs no writes")
-    }
-
-    async fn delete_by_path_as(
-        &self,
-        _store: &str,
-        _path: &str,
-        _actor: Option<&awaken_resource_contract::MemoryActor>,
-    ) -> Result<(), awaken_memory_store::MemErr> {
-        unreachable!("Recall snapshot test performs no writes")
-    }
-
-    async fn delete_if_match_as(
-        &self,
-        _store: &str,
-        _path: &str,
-        _base: &awaken_resource_contract::MemoryGeneration,
-        _actor: Option<&awaken_resource_contract::MemoryActor>,
-    ) -> Result<bool, awaken_memory_store::MemErr> {
-        unreachable!("Recall snapshot test performs no writes")
-    }
-
-    async fn list_versions(
-        &self,
-        _store: &str,
-    ) -> Result<Vec<awaken_memory_store::MemoryVersion>, awaken_memory_store::MemErr> {
-        unreachable!("Recall snapshot test performs no history reads")
-    }
-
-    async fn redact_version_as(
-        &self,
-        _store: &str,
-        _version_id: &str,
-        _actor: Option<&awaken_resource_contract::MemoryActor>,
-    ) -> Result<Option<awaken_memory_store::MemoryVersion>, awaken_memory_store::MemErr> {
-        unreachable!("Recall snapshot test performs no history writes")
-    }
-
-    async fn purge_store(
-        &self,
-        _store: &str,
-    ) -> Result<awaken_memory_store::MemoryPurgeSummary, awaken_memory_store::MemErr> {
-        unreachable!("Recall snapshot test performs no lifecycle writes")
     }
 }
 
@@ -502,13 +389,16 @@ async fn extraction_writes_a_memory_then_recall_reads_it_back() {
     assert!(runtime.drain(Duration::from_secs(10)).await);
 
     assert_eq!(
-        repository
-            .get_by_path("test-store", "/user-prefs.md")
-            .await
-            .unwrap()
-            .unwrap()
-            .content
-            .as_deref(),
+        awaken_resource_contract::MemoryQueries::get_by_path(
+            repository.as_ref(),
+            "test-store",
+            "/user-prefs.md"
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .content
+        .as_deref(),
         Some("user likes rust")
     );
     // The read side surfaces it through bounded recall.
@@ -533,7 +423,7 @@ async fn platform_handle_enforces_read_only_at_the_data_plane_boundary() {
         .unwrap_err();
     assert!(error.contains("read-only"));
     assert!(
-        fs.get_by_path("store-a", "/new.md")
+        awaken_resource_contract::MemoryQueries::get_by_path(fs.as_ref(), "store-a", "/new.md")
             .await
             .unwrap()
             .is_none()
@@ -669,18 +559,16 @@ async fn recall_entries_use_only_the_atomic_memory_snapshot() {
         updated_unix_nanos: 2,
         content: Some(content.into()),
     };
-    let handle = PlatformMemoryHandle::new(
-        Arc::new(RecallSnapshotRepository {
-            heads: vec![
-                memory("memory-a", "/a.md", "  remembered  "),
-                memory("memory-blank", "/blank.md", "  "),
-            ],
-        }),
-        "store-a".into(),
-        false,
-    );
+    let source = RecallSnapshotRepository {
+        heads: vec![
+            memory("memory-a", "/a.md", "  remembered  "),
+            memory("memory-blank", "/blank.md", "  "),
+        ],
+    };
 
-    let entries = handle.entries().await.expect("R1/R2");
+    let entries = PlatformMemoryHandle::entries_from_snapshot(&source, "store-a")
+        .await
+        .expect("R1/R2");
     assert_eq!(entries.len(), 1, "R1/R2");
     assert_eq!(entries[0].path, std::path::PathBuf::from("/a.md"), "R1");
     assert_eq!(entries[0].content, "remembered", "R1");
@@ -762,13 +650,16 @@ async fn extraction_seed_excludes_recalled_memory_messages() {
         .unwrap();
     assert!(runtime.drain(Duration::from_secs(10)).await);
 
-    let seen = repository
-        .get_by_path("test-store", "/seen.md")
-        .await
-        .unwrap()
-        .unwrap()
-        .content
-        .unwrap();
+    let seen = awaken_resource_contract::MemoryQueries::get_by_path(
+        repository.as_ref(),
+        "test-store",
+        "/seen.md",
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .content
+    .unwrap();
     assert!(seen.contains("please note this"), "real Run seen: {seen}");
     assert!(
         !seen.contains("RECALLED SECRET"),
@@ -802,13 +693,16 @@ async fn extraction_uses_the_per_agent_memory_prompts() {
         .unwrap();
     assert!(runtime.drain(Duration::from_secs(10)).await);
 
-    let seen = repository
-        .get_by_path("test-store", "/seen.md")
-        .await
-        .unwrap()
-        .unwrap()
-        .content
-        .unwrap();
+    let seen = awaken_resource_contract::MemoryQueries::get_by_path(
+        repository.as_ref(),
+        "test-store",
+        "/seen.md",
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .content
+    .unwrap();
     assert!(
         seen.contains("CUSTOM MEMORY SYSTEM"),
         "custom instructions reached extractor: {seen}"
@@ -1175,8 +1069,15 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
     let host = (crate::HostDependencies::for_worker(
         Arc::new(ExtractorModel),
         "stub",
-        Arc::new(awaken_resource_contract::UnavailableFileContentSource),
-        content.clone(),
+        {
+            let memory = content.clone();
+            crate::WorkerContentAdapters {
+                file_content_source: Arc::new(
+                    awaken_resource_contract::UnavailableFileContentSource,
+                ),
+                memory: awaken_resource_contract::MemoryExecutionContent::new(memory),
+            }
+        },
         crate::DeploymentConfig::ephemeral()
             .host_process(
                 SharedHost::mint_local_workspace(),

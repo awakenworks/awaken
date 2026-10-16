@@ -92,9 +92,12 @@ async fn destination_boundary_requires_exact_auth_root_registry_and_pod() {
     )
     .await;
     let environments = crate::volatile_environment_execution(clock.clone());
-    let resources = awaken_resource_persistence::ephemeral(clock.clone())
-        .await
-        .unwrap();
+    let resources = awaken_resource_persistence::ephemeral(
+        clock.clone(),
+        Arc::new(awaken_sandbox_memoryd::LocalInvalidator::default()),
+    )
+    .await
+    .unwrap();
     let assembled = crate::local_managed_state_with_environments(
         host,
         resources.authorities().resource_registry(),

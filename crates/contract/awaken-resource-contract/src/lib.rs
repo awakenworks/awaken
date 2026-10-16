@@ -4,7 +4,7 @@
 //! Contract-only vocabulary for the Resources context (files, memory, repositories, skills).
 //!
 //! The mountable-resource **SPIs** — [`FileStore`] + [`FileCatalog`] as the two
-//! capabilities of one File aggregate, [`MemoryRepository`], and [`SkillStore`]
+//! capabilities of one File aggregate, [`MemoryWriter`], and [`SkillStore`]
 //! — plus the value/error types in their signatures,
 //! and **nothing else**: no backend, no SQL driver, no filesystem. It mirrors
 //! [`awaken-provisioning-contract`](https://docs.rs/awaken-provisioning-contract):
@@ -23,6 +23,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
+use std::sync::Arc;
 
 mod artifact_capture;
 mod execution;
@@ -873,7 +874,7 @@ impl MemoryEntry {
 }
 
 /// A directory-listing entry (no content). Serializes with the same field names as a
-/// content-less [`Memory`], so a `MemoryRepository::list` result crosses the managed/HTTP
+/// content-less [`Memory`], so a `MemoryQueries::list` result crosses the managed/HTTP
 /// surfaces directly rather than being re-projected through `Memory` first.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryEntry {
@@ -934,7 +935,7 @@ pub struct MemoryPurgeSummary {
     pub copy_conflicts_deleted: u64,
 }
 
-/// A [`MemoryRepository`] failure.
+/// A [`MemoryWriter`] failure.
 #[derive(Debug, thiserror::Error)]
 pub enum MemErr {
     #[error("memory not found: {0}")]
@@ -971,7 +972,7 @@ pub fn validate_path_len(path: &str) -> Result<(), MemErr> {
     }
 }
 
-/// A path-addressed, CAS memory aggregate repository — the seam a write-through
+/// Path-addressed, CAS memory capabilities — the seam a write-through
 /// FUSE mount and the managed API share (ADR-0053/ADR-0063). All methods are
 /// store-scoped by an opaque, globally-unique `store` id.
 ///
@@ -979,37 +980,36 @@ pub fn validate_path_len(path: &str) -> Result<(), MemErr> {
 /// one or more [`MemoryVersion`] rows in the same atomic repository operation.
 /// Idempotent updates/deletes append nothing. This invariant is what keeps API
 /// versions, runtime recall/extraction, and mounted content on one source of truth.
+/// Read path-addressed current heads without taking mutation authority.
+///
+/// ```compile_fail
+/// use awaken_resource_contract::MemoryQueries;
+/// async fn query_cannot_purge(queries: &dyn MemoryQueries) {
+///     queries.purge_store("store").await;
+/// }
+/// ```
 #[async_trait]
-pub trait MemoryRepository: Send + Sync {
-    /// Durably retain a losing copy proposal without changing live heads or
-    /// successful version history. Exact retries must be idempotent. Failure
-    /// MUST block source disposal. Unsupported adapters fail closed.
-    async fn preserve_copy_conflict(
-        &self,
-        store: &str,
-        candidate: &MemoryCopyConflict,
-    ) -> Result<(), MemErr>;
-    /// Read retained proposals under the store's ordinary read authorization.
-    async fn list_copy_conflicts(&self, store: &str) -> Result<Vec<MemoryCopyConflict>, MemErr>;
-    /// Atomically read every current file head, including content, from one
-    /// store. The returned vector is path-ordered. This is the canonical frozen
-    /// input primitive for operations such as Dream; callers must
-    /// not emulate it with `list` followed by per-path reads because concurrent
-    /// writes could create a mixed-generation snapshot.
-    async fn snapshot_heads(&self, store: &str) -> Result<Vec<Memory>, MemErr>;
-    /// Memories whose path is at or under `prefix` (`"/"` or `""` = all).
+pub trait MemoryQueries: Send + Sync {
     async fn list(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr>;
-    /// The memory at `path`, or `None`.
     async fn get_by_path(&self, store: &str, path: &str) -> Result<Option<Memory>, MemErr>;
-    /// The canonical create mutation. `PathConflict` if the path already
-    /// exists. `actor` is the authenticated author, `None` when the caller has
-    /// none to state.
-    ///
-    /// Attribution is part of the operation, not an enhancement of it, so this
-    /// is the method an implementation provides. A decorator that forwarded
-    /// only the unattributed spelling used to strip the author from a backend
-    /// that would have recorded it; requiring this method makes that a compile
-    /// error instead of a silent loss.
+}
+
+/// Read one atomic, path-ordered store snapshot including content. Never emulate with list plus reads.
+///
+/// ```compile_fail
+/// use awaken_resource_contract::MemorySnapshotSource;
+/// async fn snapshot_cannot_write(source: &dyn MemorySnapshotSource) {
+///     source.create("store", "/path", "content").await;
+/// }
+/// ```
+#[async_trait]
+pub trait MemorySnapshotSource: Send + Sync {
+    async fn snapshot_heads(&self, store: &str) -> Result<Vec<Memory>, MemErr>;
+}
+
+/// Author current heads with complete-generation CAS and authenticated attribution. History commits in the same transaction.
+#[async_trait]
+pub trait MemoryWriter: Send + Sync {
     async fn create_as(
         &self,
         store: &str,
@@ -1017,18 +1017,6 @@ pub trait MemoryRepository: Send + Sync {
         content: &str,
         actor: Option<&MemoryActor>,
     ) -> Result<Memory, MemErr>;
-    /// Create a memory at `path` with no stated author.
-    async fn create(&self, store: &str, path: &str, content: &str) -> Result<Memory, MemErr> {
-        self.create_as(store, path, content, None).await
-    }
-    /// Atomically compare-and-swap the head of memory `id`, optionally moving it to
-    /// `target_path` in the same repository operation. Content, path, displaced-target
-    /// deletion, and history either all commit or all roll back. Only the complete
-    /// observed generation may apply or report an already-current retry; every stale
-    /// identity, version, or digest returns [`MemErr::Conflict`] with the live head.
-    /// The canonical CAS mutation, with the authenticated author when the
-    /// caller has one. See [`MemoryRepository::create_as`] for why attribution
-    /// is required rather than defaulted.
     async fn update_head_as(
         &self,
         store: &str,
@@ -1037,7 +1025,22 @@ pub trait MemoryRepository: Send + Sync {
         target_path: Option<&str>,
         actor: Option<&MemoryActor>,
     ) -> Result<Memory, MemErr>;
-    /// The same CAS mutation with no stated author.
+    async fn delete_by_path_as(
+        &self,
+        store: &str,
+        path: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<(), MemErr>;
+    async fn delete_if_match_as(
+        &self,
+        store: &str,
+        path: &str,
+        base: &MemoryGeneration,
+        actor: Option<&MemoryActor>,
+    ) -> Result<bool, MemErr>;
+    async fn create(&self, store: &str, path: &str, content: &str) -> Result<Memory, MemErr> {
+        self.create_as(store, path, content, None).await
+    }
     async fn update_head(
         &self,
         store: &str,
@@ -1048,7 +1051,6 @@ pub trait MemoryRepository: Send + Sync {
         self.update_head_as(store, base, content, target_path, None)
             .await
     }
-    /// Content-only convenience over [`MemoryRepository::update_head`].
     async fn update(
         &self,
         store: &str,
@@ -1057,54 +1059,9 @@ pub trait MemoryRepository: Send + Sync {
     ) -> Result<Memory, MemErr> {
         self.update_head(store, base, content, None).await
     }
-    /// Update a materialized head only at its original logical path. The path,
-    /// id and content CAS must be checked in the SAME repository transaction;
-    /// a preliminary `get_by_path` followed by `update` is not equivalent.
-    /// A concurrent rename must conflict even if it preserves the content hash
-    /// or has already installed the candidate bytes at the new path. This is
-    /// distinct from an open FUSE fd, which intentionally follows its memory id.
-    /// An adapter without atomic location checking must fail closed.
-    async fn update_materialized(
-        &self,
-        store: &str,
-        path: &str,
-        base: &MemoryGeneration,
-        content: &str,
-    ) -> Result<Memory, MemErr>;
-    /// Move `from` → `to` atomically, **replacing** `to` if it exists (POSIX rename
-    /// semantics). The memory keeps its id (so an open FUSE fd stays valid) and bumps
-    /// its version.
-    async fn rename(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr>;
-    /// Delete the memory at `path` (idempotent — deleting an absent path is `Ok`).
-    /// The canonical path delete, with the authenticated author when the
-    /// caller has one. Idempotent: deleting an absent path is `Ok`. See
-    /// [`MemoryRepository::create_as`] for why attribution is required.
-    async fn delete_by_path_as(
-        &self,
-        store: &str,
-        path: &str,
-        actor: Option<&MemoryActor>,
-    ) -> Result<(), MemErr>;
-    /// The same delete with no stated author.
     async fn delete_by_path(&self, store: &str, path: &str) -> Result<(), MemErr> {
         self.delete_by_path_as(store, path, None).await
     }
-    /// Delete `path` only while it is still the exact head observed by a caller.
-    /// Returns `false` when the path is already absent (the requested outcome is
-    /// already true). A different id or sha returns [`MemErr::Conflict`] carrying
-    /// the live head and never deletes it. This closes the create/delete ABA window
-    /// for materialized-copy reconciliation.
-    /// The canonical conditional delete, with the authenticated author when
-    /// the caller has one. See [`MemoryRepository::create_as`] for why
-    /// attribution is required.
-    async fn delete_if_match_as(
-        &self,
-        store: &str,
-        path: &str,
-        base: &MemoryGeneration,
-        actor: Option<&MemoryActor>,
-    ) -> Result<bool, MemErr>;
-    /// The same conditional delete with no stated author.
     async fn delete_if_match(
         &self,
         store: &str,
@@ -1113,21 +1070,132 @@ pub trait MemoryRepository: Send + Sync {
     ) -> Result<bool, MemErr> {
         self.delete_if_match_as(store, path, base, None).await
     }
-    /// Ordered version history for this store.
+}
+
+/// Live path operations used by mounted filesystems. Rename replaces atomically and open files follow stable ids.
+#[async_trait]
+pub trait MemoryFilesystem: Send + Sync {
+    async fn list(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr>;
+    async fn get_by_path(&self, store: &str, path: &str) -> Result<Option<Memory>, MemErr>;
+    async fn create_as(
+        &self,
+        store: &str,
+        path: &str,
+        content: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr>;
+    async fn update_head_as(
+        &self,
+        store: &str,
+        base: &MemoryGeneration,
+        content: &str,
+        target_path: Option<&str>,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr>;
+    async fn rename(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr>;
+    async fn delete_by_path_as(
+        &self,
+        store: &str,
+        path: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<(), MemErr>;
+}
+
+/// Reconcile a materialized copy using atomic original-path admission and complete-generation CAS.
+#[async_trait]
+pub trait MemoryCopyWriteback: Send + Sync {
+    async fn create_as(
+        &self,
+        store: &str,
+        path: &str,
+        content: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr>;
+    async fn update_materialized(
+        &self,
+        store: &str,
+        path: &str,
+        base: &MemoryGeneration,
+        content: &str,
+    ) -> Result<Memory, MemErr>;
+    async fn delete_if_match_as(
+        &self,
+        store: &str,
+        path: &str,
+        base: &MemoryGeneration,
+        actor: Option<&MemoryActor>,
+    ) -> Result<bool, MemErr>;
+}
+
+/// Read preserved losing copy proposals without granting preservation authority.
+///
+/// The query port compiles independently of preservation:
+/// ```
+/// use awaken_resource_contract::{MemErr, MemoryCopyConflict, MemoryCopyConflictQueries};
+/// async fn read(port: &dyn MemoryCopyConflictQueries) -> Result<Vec<MemoryCopyConflict>, MemErr> {
+///     port.list_copy_conflicts("store").await
+/// }
+/// ```
+/// A reader cannot acknowledge a copy proposal:
+/// ```compile_fail
+/// use awaken_resource_contract::{MemoryCopyConflict, MemoryCopyConflictQueries};
+/// async fn cannot_preserve(port: &dyn MemoryCopyConflictQueries, candidate: &MemoryCopyConflict) {
+///     port.preserve_copy_conflict("store", candidate).await;
+/// }
+/// ```
+#[async_trait]
+pub trait MemoryCopyConflictQueries: Send + Sync {
+    async fn list_copy_conflicts(&self, store: &str) -> Result<Vec<MemoryCopyConflict>, MemErr>;
+}
+
+/// Preserve a losing copy proposal before its source may be disposed.
+///
+/// This operation does not manage a retention policy or TTL. `Ok(())` confirms
+/// that the configured Memory authority has acknowledged the proposal under
+/// its storage durability contract. An error leaves preservation unconfirmed:
+/// the caller must keep the original source and must not dispose it. Preserving
+/// a losing proposal never changes the successful head or its version history.
+///
+/// The preservation port compiles independently of listing:
+/// ```
+/// use awaken_resource_contract::{MemErr, MemoryCopyConflict, MemoryCopyConflictPreservation};
+/// async fn preserve(port: &dyn MemoryCopyConflictPreservation, candidate: &MemoryCopyConflict)
+///     -> Result<(), MemErr>
+/// {
+///     port.preserve_copy_conflict("store", candidate).await
+/// }
+/// ```
+/// A preservation consumer receives no conflict inventory:
+/// ```compile_fail
+/// use awaken_resource_contract::MemoryCopyConflictPreservation;
+/// async fn cannot_list(port: &dyn MemoryCopyConflictPreservation) {
+///     port.list_copy_conflicts("store").await;
+/// }
+/// ```
+#[async_trait]
+pub trait MemoryCopyConflictPreservation: Send + Sync {
+    async fn preserve_copy_conflict(
+        &self,
+        store: &str,
+        candidate: &MemoryCopyConflict,
+    ) -> Result<(), MemErr>;
+}
+
+/// Read immutable successful version history.
+#[async_trait]
+pub trait MemoryVersionQueries: Send + Sync {
     async fn list_versions(&self, store: &str) -> Result<Vec<MemoryVersion>, MemErr>;
-    /// Redact one historical version's content. Returns `None` when the version
-    /// does not belong to this store. Repeated redaction is idempotent.
-    /// The canonical redaction, with the authenticated author when the caller
-    /// has one. Returns `None` when the version does not belong to this store;
-    /// repeated redaction is idempotent. See [`MemoryRepository::create_as`]
-    /// for why attribution is required.
+}
+
+/// Redact version content with attribution without changing current heads.
+#[async_trait]
+pub trait MemoryVersionRedaction: Send + Sync {
     async fn redact_version_as(
         &self,
         store: &str,
         version_id: &str,
         actor: Option<&MemoryActor>,
     ) -> Result<Option<MemoryVersion>, MemErr>;
-    /// The same redaction with no stated author.
     async fn redact_version(
         &self,
         store: &str,
@@ -1135,10 +1203,207 @@ pub trait MemoryRepository: Send + Sync {
     ) -> Result<Option<MemoryVersion>, MemErr> {
         self.redact_version_as(store, version_id, None).await
     }
-    /// Physically remove every live head and immutable history row in `store`.
-    /// The lifecycle reclaimer calls this only after tombstone, retention,
-    /// activation and extraction guards pass. Repeated calls return zero counts.
+}
+
+/// Physically purge content only after the resource lifecycle owner authorizes reclamation.
+#[async_trait]
+pub trait MemoryContentPurge: Send + Sync {
     async fn purge_store(&self, store: &str) -> Result<MemoryPurgeSummary, MemErr>;
+}
+
+/// Announce committed head changes to mounted caches. A composition root injects
+/// the same sink into every role of the one backend decorator. It owns no data.
+pub trait MemoryInvalidator: Send + Sync {
+    /// `"/"` invalidates all cached paths in this store. Failed mutations publish nothing.
+    fn publish(&self, store: &str, path: &str);
+}
+
+/// Required identity of the invalidator already selected by the write decorator.
+/// This does not discover optional capabilities or create an invalidation owner.
+pub trait MemoryInvalidationIdentity: Send + Sync {
+    fn invalidator_identity(&self) -> Arc<dyn MemoryInvalidator>;
+}
+
+/// The four execution content views derived from one physical backend/client.
+/// Fields are private so callers cannot pair A's reads with B's writes.
+///
+/// ```compile_fail
+/// use std::sync::Arc;
+/// use awaken_resource_contract::{MemoryExecutionContent, MemoryQueries,
+///     MemorySnapshotSource, MemoryWriter, MemoryCopyWriteback};
+/// fn cannot_mix(queries: Arc<dyn MemoryQueries>, snapshots: Arc<dyn MemorySnapshotSource>,
+///     writer: Arc<dyn MemoryWriter>, copy_writeback: Arc<dyn MemoryCopyWriteback>) {
+///     let _ = MemoryExecutionContent { queries, snapshots, writer, copy_writeback };
+/// }
+/// ```
+#[derive(Clone)]
+pub struct MemoryExecutionContent {
+    queries: Arc<dyn MemoryQueries>,
+    snapshots: Arc<dyn MemorySnapshotSource>,
+    writer: Arc<dyn MemoryWriter>,
+    copy_writeback: Arc<dyn MemoryCopyWriteback>,
+}
+impl MemoryExecutionContent {
+    #[must_use]
+    pub fn new<T>(backend: Arc<T>) -> Self
+    where
+        T: MemoryQueries + MemorySnapshotSource + MemoryWriter + MemoryCopyWriteback + 'static,
+    {
+        Self {
+            queries: backend.clone(),
+            snapshots: backend.clone(),
+            writer: backend.clone(),
+            copy_writeback: backend,
+        }
+    }
+    #[must_use]
+    pub fn queries(&self) -> Arc<dyn MemoryQueries> {
+        self.queries.clone()
+    }
+    #[must_use]
+    pub fn snapshots(&self) -> Arc<dyn MemorySnapshotSource> {
+        self.snapshots.clone()
+    }
+    #[must_use]
+    pub fn writer(&self) -> Arc<dyn MemoryWriter> {
+        self.writer.clone()
+    }
+    #[must_use]
+    pub fn copy_writeback(&self) -> Arc<dyn MemoryCopyWriteback> {
+        self.copy_writeback.clone()
+    }
+}
+
+/// Copy/FUSE views and the original invalidator identity of one decorated source.
+/// A root derives this once from its actual backend; mounts cannot mix views.
+///
+/// ```compile_fail
+/// use std::sync::Arc;
+/// use awaken_resource_contract::{MemoryMountSource, MemoryQueries, MemorySnapshotSource,
+///     MemoryCopyWriteback, MemoryCopyConflictPreservation, MemoryFilesystem, MemoryInvalidator};
+/// fn cannot_mix(queries: Arc<dyn MemoryQueries>, snapshots: Arc<dyn MemorySnapshotSource>,
+///     writeback: Arc<dyn MemoryCopyWriteback>, conflict_preservation: Arc<dyn MemoryCopyConflictPreservation>,
+///     filesystem: Arc<dyn MemoryFilesystem>, invalidator: Arc<dyn MemoryInvalidator>) {
+///     let _ = MemoryMountSource { queries, snapshots, writeback, conflict_preservation, filesystem, invalidator };
+/// }
+/// ```
+#[derive(Clone)]
+pub struct MemoryMountSource {
+    queries: Arc<dyn MemoryQueries>,
+    snapshots: Arc<dyn MemorySnapshotSource>,
+    writeback: Arc<dyn MemoryCopyWriteback>,
+    conflict_preservation: Arc<dyn MemoryCopyConflictPreservation>,
+    filesystem: Arc<dyn MemoryFilesystem>,
+    invalidator: Arc<dyn MemoryInvalidator>,
+}
+impl MemoryMountSource {
+    #[must_use]
+    pub fn new<T>(backend: Arc<T>) -> Self
+    where
+        T: MemoryQueries
+            + MemorySnapshotSource
+            + MemoryCopyWriteback
+            + MemoryCopyConflictPreservation
+            + MemoryFilesystem
+            + MemoryInvalidationIdentity
+            + 'static,
+    {
+        let invalidator = backend.invalidator_identity();
+        Self {
+            queries: backend.clone(),
+            snapshots: backend.clone(),
+            writeback: backend.clone(),
+            conflict_preservation: backend.clone(),
+            filesystem: backend,
+            invalidator,
+        }
+    }
+    #[must_use]
+    pub fn queries(&self) -> Arc<dyn MemoryQueries> {
+        self.queries.clone()
+    }
+    #[must_use]
+    pub fn snapshots(&self) -> Arc<dyn MemorySnapshotSource> {
+        self.snapshots.clone()
+    }
+    #[must_use]
+    pub fn writeback(&self) -> Arc<dyn MemoryCopyWriteback> {
+        self.writeback.clone()
+    }
+    #[must_use]
+    pub fn conflict_preservation(&self) -> Arc<dyn MemoryCopyConflictPreservation> {
+        self.conflict_preservation.clone()
+    }
+    #[must_use]
+    pub fn filesystem(&self) -> Arc<dyn MemoryFilesystem> {
+        self.filesystem.clone()
+    }
+    #[must_use]
+    pub fn uses_invalidator(&self, candidate: &Arc<dyn MemoryInvalidator>) -> bool {
+        Arc::ptr_eq(&self.invalidator, candidate)
+    }
+}
+
+/// Managed content operations derived from the same concrete Memory authority.
+/// Store metadata/lifecycle remains an independent application authority.
+///
+/// ```compile_fail
+/// use std::sync::Arc;
+/// use awaken_resource_contract::{MemoryManagementContent, MemorySnapshotSource,
+///     MemoryWriter, MemoryVersionQueries, MemoryVersionRedaction, MemoryCopyConflictQueries};
+/// fn cannot_mix(snapshots: Arc<dyn MemorySnapshotSource>, writer: Arc<dyn MemoryWriter>,
+///     versions: Arc<dyn MemoryVersionQueries>, redaction: Arc<dyn MemoryVersionRedaction>,
+///     conflict_queries: Arc<dyn MemoryCopyConflictQueries>) {
+///     let _ = MemoryManagementContent { snapshots, writer, versions, redaction, conflict_queries };
+/// }
+/// ```
+#[derive(Clone)]
+pub struct MemoryManagementContent {
+    snapshots: Arc<dyn MemorySnapshotSource>,
+    writer: Arc<dyn MemoryWriter>,
+    versions: Arc<dyn MemoryVersionQueries>,
+    redaction: Arc<dyn MemoryVersionRedaction>,
+    conflict_queries: Arc<dyn MemoryCopyConflictQueries>,
+}
+impl MemoryManagementContent {
+    #[must_use]
+    pub fn new<T>(backend: Arc<T>) -> Self
+    where
+        T: MemorySnapshotSource
+            + MemoryWriter
+            + MemoryVersionQueries
+            + MemoryVersionRedaction
+            + MemoryCopyConflictQueries
+            + 'static,
+    {
+        Self {
+            snapshots: backend.clone(),
+            writer: backend.clone(),
+            versions: backend.clone(),
+            redaction: backend.clone(),
+            conflict_queries: backend,
+        }
+    }
+    #[must_use]
+    pub fn snapshots(&self) -> Arc<dyn MemorySnapshotSource> {
+        self.snapshots.clone()
+    }
+    #[must_use]
+    pub fn writer(&self) -> Arc<dyn MemoryWriter> {
+        self.writer.clone()
+    }
+    #[must_use]
+    pub fn versions(&self) -> Arc<dyn MemoryVersionQueries> {
+        self.versions.clone()
+    }
+    #[must_use]
+    pub fn redaction(&self) -> Arc<dyn MemoryVersionRedaction> {
+        self.redaction.clone()
+    }
+    #[must_use]
+    pub fn conflict_queries(&self) -> Arc<dyn MemoryCopyConflictQueries> {
+        self.conflict_queries.clone()
+    }
 }
 
 #[cfg(test)]

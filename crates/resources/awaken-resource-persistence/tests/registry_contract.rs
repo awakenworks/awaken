@@ -9,6 +9,16 @@ use awaken_resource_contract::{
 };
 use awaken_resource_persistence::{SchemaMode, open_embedded, open_postgres};
 
+#[derive(Default)]
+struct RegistryMemoryEvents(std::sync::Mutex<Vec<(String, String)>>);
+
+#[cfg(test)]
+impl awaken_resource_contract::MemoryInvalidator for RegistryMemoryEvents {
+    fn publish(&self, store: &str, path: &str) {
+        self.0.lock().unwrap().push((store.into(), path.into()));
+    }
+}
+
 struct Fixture {
     workspace: String,
     memory_id: String,
@@ -367,15 +377,20 @@ fn replay_request(workspace: &str) -> RegisterMemoryStore {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn embedded_memory_creation_receipt_is_atomic_and_survives_edits_and_reopen() {
+    let memory_events = std::sync::Arc::new(RegistryMemoryEvents::default());
     // Lost response + concurrent retry must converge on one identity. The
     // retained receipt, not today's editable profile, decides payload equality.
     let root = tempfile::tempdir().unwrap();
     let request = replay_request("workspace-replay");
     let first;
     {
-        let application = open_embedded(root.path(), awaken_time::system_clock())
-            .await
-            .unwrap();
+        let application = open_embedded(
+            root.path(),
+            awaken_time::system_clock(),
+            memory_events.clone(),
+        )
+        .await
+        .unwrap();
         let registry = application.authorities().resource_registry();
         let start = std::sync::Arc::new(tokio::sync::Barrier::new(8));
         let handles = (0..8)
@@ -448,9 +463,13 @@ async fn embedded_memory_creation_receipt_is_atomic_and_survives_edits_and_reope
             .await
             .unwrap();
     }
-    let reopened = open_embedded(root.path(), awaken_time::system_clock())
-        .await
-        .unwrap();
+    let reopened = open_embedded(
+        root.path(),
+        awaken_time::system_clock(),
+        memory_events.clone(),
+    )
+    .await
+    .unwrap();
     let registry = reopened.authorities().resource_registry();
     let mut retry = request.clone();
     retry.definition.timestamps = awaken_resource_contract::ResourceTimestamps::created(12345);
@@ -497,6 +516,7 @@ async fn embedded_memory_creation_receipt_is_atomic_and_survives_edits_and_reope
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn repository_creation_receipt_is_atomic_durable_and_does_not_adopt_legacy_rows() {
+    let memory_events = std::sync::Arc::new(RegistryMemoryEvents::default());
     let root = tempfile::tempdir().unwrap();
     let fixture = fixture();
     let request = RegisterRepository {
@@ -521,9 +541,13 @@ async fn repository_creation_receipt_is_atomic_durable_and_does_not_adopt_legacy
         },
     };
     {
-        let application = open_embedded(root.path(), awaken_time::system_clock())
-            .await
-            .unwrap();
+        let application = open_embedded(
+            root.path(),
+            awaken_time::system_clock(),
+            memory_events.clone(),
+        )
+        .await
+        .unwrap();
         let registry = application.authorities().resource_registry();
         let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(8));
         let workers: Vec<_> = (0..8)
@@ -571,9 +595,13 @@ async fn repository_creation_receipt_is_atomic_durable_and_does_not_adopt_legacy
             .await
             .unwrap();
     }
-    let reopened = open_embedded(root.path(), awaken_time::system_clock())
-        .await
-        .unwrap();
+    let reopened = open_embedded(
+        root.path(),
+        awaken_time::system_clock(),
+        memory_events.clone(),
+    )
+    .await
+    .unwrap();
     let registry = reopened.authorities().resource_registry();
     let mut retry = request.clone();
     retry.definition.timestamps = awaken_resource_contract::ResourceTimestamps::created(1234);
@@ -622,21 +650,30 @@ async fn repository_creation_receipt_is_atomic_durable_and_does_not_adopt_legacy
 
 #[tokio::test]
 async fn embedded_registry_satisfies_the_shared_contract_and_survives_reopen() {
+    let memory_events = std::sync::Arc::new(RegistryMemoryEvents::default());
     let root = tempfile::tempdir().expect("embedded Registry root");
     let fixture = fixture();
     {
-        let application = open_embedded(root.path(), awaken_time::system_clock())
-            .await
-            .expect("open embedded Resources");
+        let application = open_embedded(
+            root.path(),
+            awaken_time::system_clock(),
+            memory_events.clone(),
+        )
+        .await
+        .expect("open embedded Resources");
         exercise_registry(
             application.authorities().resource_registry().as_ref(),
             &fixture,
         )
         .await;
     }
-    let reopened = open_embedded(root.path(), awaken_time::system_clock())
-        .await
-        .expect("reopen embedded Resources");
+    let reopened = open_embedded(
+        root.path(),
+        awaken_time::system_clock(),
+        memory_events.clone(),
+    )
+    .await
+    .expect("reopen embedded Resources");
     verify_reopen(
         reopened.authorities().resource_registry().as_ref(),
         &fixture,
@@ -646,23 +683,34 @@ async fn embedded_registry_satisfies_the_shared_contract_and_survives_reopen() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn postgres_registry_satisfies_the_same_contract_and_survives_reconnect() {
+    let memory_events = std::sync::Arc::new(RegistryMemoryEvents::default());
     let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
         return;
     };
     let fixture = fixture();
     {
-        let application = open_postgres(&url, SchemaMode::Migrate, awaken_time::system_clock())
-            .await
-            .expect("open PostgreSQL Resources");
+        let application = open_postgres(
+            &url,
+            SchemaMode::Migrate,
+            awaken_time::system_clock(),
+            memory_events.clone(),
+        )
+        .await
+        .expect("open PostgreSQL Resources");
         exercise_registry(
             application.authorities().resource_registry().as_ref(),
             &fixture,
         )
         .await;
     }
-    let reopened = open_postgres(&url, SchemaMode::Verify, awaken_time::system_clock())
-        .await
-        .expect("reconnect PostgreSQL Resources");
+    let reopened = open_postgres(
+        &url,
+        SchemaMode::Verify,
+        awaken_time::system_clock(),
+        memory_events.clone(),
+    )
+    .await
+    .expect("reconnect PostgreSQL Resources");
     verify_reopen(
         reopened.authorities().resource_registry().as_ref(),
         &fixture,

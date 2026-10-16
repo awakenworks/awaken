@@ -472,9 +472,25 @@ pub async fn build_unmounted_dependencies_with_agent_publications(
     model_ref: impl Into<String>,
     publications: Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
 ) -> HostDependencies {
-    build_unmounted_dependencies(llm, model_ref)
+    build_unmounted_platform_with_agent_publications(llm, model_ref, publications)
         .await
-        .with_agent_publications(publications)
+        .0
+}
+
+/// Unmounted Runtime dependencies and the exact Resources application selected
+/// with them. Callers composing Managed routes retain both original owners.
+pub async fn build_unmounted_platform_with_agent_publications(
+    llm: Arc<dyn LlmExecutor>,
+    model_ref: impl Into<String>,
+    publications: Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
+) -> (
+    HostDependencies,
+    awaken_resource_application::ResourcesApplication,
+) {
+    resource_host(llm, model_ref)
+        .await
+        .map_dependencies(|dependencies| dependencies.with_agent_publications(publications))
+        .into_dependencies()
 }
 
 async fn build_router_and_host_from(

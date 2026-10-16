@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_resource_contract::{
-    FileStore, MemoryRepository, ResourceKind, ResourcePhysicalReclaimer, ResourcePurgeError,
+    FileStore, MemoryContentPurge, ResourceKind, ResourcePhysicalReclaimer, ResourcePurgeError,
     ResourcePurgeEvidence, ResourcePurgeGuard, ResourceReference, ResourceReferenceKind,
     ResourceRegistry, ResourceRegistryError, ResourceState, ResourceTarget, SkillStore,
     SkillStoreError,
@@ -73,7 +73,7 @@ impl ResourcePurgeGuard for ResourceLifecycleGuard {
 
 pub struct ResourcePhysicalCleanup {
     files: Arc<dyn FileStore>,
-    memories: Arc<dyn MemoryRepository>,
+    memories: Arc<dyn MemoryContentPurge>,
     skills: Arc<dyn SkillStore>,
 }
 
@@ -81,7 +81,7 @@ impl ResourcePhysicalCleanup {
     #[must_use]
     pub fn new(
         files: Arc<dyn FileStore>,
-        memories: Arc<dyn MemoryRepository>,
+        memories: Arc<dyn MemoryContentPurge>,
         skills: Arc<dyn SkillStore>,
     ) -> Self {
         Self {

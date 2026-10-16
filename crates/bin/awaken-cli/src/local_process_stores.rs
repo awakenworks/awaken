@@ -49,7 +49,7 @@ pub(super) async fn in_memory_process_stores() -> ProcessStores {
             ),
         }),
         coordinator: Some(CoordinatorStores {
-            resources: ephemeral_resources_application(clock.clone()).await,
+            resources: crate::process_stores::ProcessResources::ephemeral(clock.clone()).await,
             sessions: sessions.clone(),
             application_access: Arc::new(
                 awaken_coordinator::application_access_store::ApplicationAccessStore::open_in_memory(
@@ -179,7 +179,7 @@ pub(super) async fn open_local_process_stores(
     // The local process's one wall clock, shared by Resources and every store.
     let clock = awaken_time::system_clock();
     let mut postgres_pools = crate::postgres_pools::ProcessPostgresPools::new(1);
-    let resources = open_resources_application(
+    let resources = crate::process_stores::ProcessResources::open(
         config::ResourceStoreBackend::Embedded(dir.to_path_buf()),
         PostgresSchemaMode::Migrate,
         clock.clone(),

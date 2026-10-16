@@ -187,7 +187,7 @@ mod tests {
         let mut pools = ProcessPostgresPools::new(2);
         pools.seed(&url, pool.clone()).unwrap();
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(1_000));
-        let resources = crate::resources::open_resources_application(
+        let resources = crate::process_stores::ProcessResources::open(
             crate::config::ResourceStoreBackend::Postgres(url.clone()),
             crate::PostgresSchemaMode::Migrate,
             clock.clone(),
@@ -297,7 +297,8 @@ mod tests {
                 pool.clone(),
                 awaken_resource_persistence::SchemaMode::Verify,
                 None,
-                awaken_time::system_clock()
+                awaken_time::system_clock(),
+                std::sync::Arc::new(awaken_sandbox_memoryd::LocalInvalidator::default()),
             )
             .await
             .is_err()

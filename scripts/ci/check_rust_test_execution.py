@@ -28,7 +28,7 @@ INPUT_GLOBS = ("scripts/ci/**",)
 LISTED = re.compile(r"^(\S+): test$", re.MULTILINE)
 EXECUTED = re.compile(r"^test (\S+)(?: - should panic)? \.\.\. (ok|FAILED|ignored)(?:,.*)?$", re.MULTILINE)
 SUMMARY = re.compile(r"^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;", re.MULTILINE)
-SKIP = re.compile(r"^(?:skip(?:ped|ping)\b|\[skip\])", re.MULTILINE | re.IGNORECASE)
+SKIP = re.compile(r"^(?:skip(?:ped|ping)?\b|\[skip\])", re.MULTILINE | re.IGNORECASE)
 
 
 def _listed_selection(inventory: str, required: list[str] | tuple[str, ...]) -> tuple[Counter, list[str]]:
@@ -732,6 +732,40 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
         for listed, result, status in variants:
             with self.subTest(listed=listed, result=result, status=status):
                 self.assertTrue(execution_evidence(listed, result, status)["errors"])
+
+    def test_fixture_skip_markers_are_exact_line_start_tokens(self) -> None:
+        # A fixture-return marker must reject an otherwise passing selected
+        # test. Plain SKIP is the actual kernel FUSE fixture's spelling.
+        # Ordinary words/status descriptions must not become skip events.
+        inventory = "critical: test\n"
+        output = "test critical ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored;\n"
+        for marker in (
+            "SKIP actual kernel cache wiring: fixture absent",
+            "skip PostgreSQL fixture: absent",
+            "SKIPPED PostgreSQL fixture: absent",
+            "SKIPPING live Worker identity: not configured",
+            "[skip] no NATS reachable",
+            "[SKIP] FUSE unavailable",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(
+                    "a selected test skipped its fixture or behavior",
+                    execution_evidence(inventory, output + marker + "\n", 0)["errors"],
+                )
+        for ordinary in (
+            "skipper owns the connection",
+            "SKIPPER is a fixture name",
+            "skippingly is an ordinary word",
+            "skipped_count=0",
+            "skip_count=0",
+            "skipValidation=false",
+            "diagnostic: SKIP is a status label",
+            "all selected tests ran without skips",
+        ):
+            with self.subTest(ordinary=ordinary):
+                self.assertEqual(
+                    execution_evidence(inventory, output + ordinary + "\n", 0)["errors"], [],
+                )
 
     def test_same_name_in_two_binaries_retains_occurrence_count(self) -> None:
         inventory = "same: test\nsame: test\n"

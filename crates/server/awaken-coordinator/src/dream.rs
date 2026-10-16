@@ -12,8 +12,8 @@ use awaken_dream_application::{
 use awaken_provisioning_contract::{MountAccess, MountLifetime, MountRequirement, MountSource};
 use awaken_resource_contract::{
     BindingId, CreateMemoryStoreCommand, ExecutionResourceResolver, FileApplicationService,
-    InputBinding, InputResourceId, Memory, MemoryRepository, MemoryStoreApplicationService,
-    MemoryStoreId, ResourceAccess, ResourceState,
+    InputBinding, InputResourceId, Memory, MemoryContentPurge, MemorySnapshotSource,
+    MemoryStoreApplicationService, MemoryStoreId, MemoryWriter, ResourceAccess, ResourceState,
 };
 use awaken_session_application::{CreateProfiledSessionCommand, SessionApplication};
 use awaken_session_configuration_contract::SessionToolConfiguration;
@@ -101,7 +101,9 @@ struct MemoryStoreContentSnapshot {
 
 pub(crate) struct BuiltInDreamAgent {
     sessions: Arc<SessionApplication>,
-    memory: Arc<dyn MemoryRepository>,
+    snapshots: Arc<dyn MemorySnapshotSource>,
+    writer: Arc<dyn MemoryWriter>,
+    content_purge: Arc<dyn MemoryContentPurge>,
     catalog: Arc<dyn ExecutionResourceResolver>,
     stores: Arc<dyn MemoryStoreApplicationService>,
     files: Arc<dyn FileApplicationService>,
@@ -110,14 +112,16 @@ pub(crate) struct BuiltInDreamAgent {
 impl BuiltInDreamAgent {
     pub(crate) fn new(
         sessions: Arc<SessionApplication>,
-        memory: Arc<dyn MemoryRepository>,
+        memory: &awaken_resource_application::ResourceAuthorities,
         catalog: Arc<dyn ExecutionResourceResolver>,
         stores: Arc<dyn MemoryStoreApplicationService>,
         files: Arc<dyn FileApplicationService>,
     ) -> Self {
         Self {
             sessions,
-            memory,
+            snapshots: memory.memory_snapshot_source(),
+            writer: memory.memory_writer(),
+            content_purge: memory.memory_content_purge(),
             catalog,
             stores,
             files,
@@ -267,7 +271,7 @@ impl BuiltInDreamAgent {
                 .stores
                 .set_state(&request.workspace_id, &result_id, ResourceState::Deleted)
                 .await;
-            let _ = self.memory.purge_store(&result_id).await;
+            let _ = self.content_purge.purge_store(&result_id).await;
         }
         let _ = self
             .stores
@@ -278,7 +282,7 @@ impl BuiltInDreamAgent {
             )
             .await;
         let _ = self
-            .memory
+            .content_purge
             .purge_store(&format!("mem_snapshot_{}", request.job_id))
             .await;
     }
@@ -378,9 +382,9 @@ impl DreamExecutor for BuiltInDreamAgent {
         // A crash before the result catalog record commits may leave a partial
         // deterministic clone. No Agent could have received it yet, so reclaim it
         // and rebuild from one fresh atomic source snapshot.
-        let _ = self.memory.purge_store(&snapshot_id).await;
+        let _ = self.content_purge.purge_store(&snapshot_id).await;
         if matches!(request.output_behavior, DreamOutputBehavior::CreateNew) {
-            let _ = self.memory.purge_store(&result_id).await;
+            let _ = self.content_purge.purge_store(&result_id).await;
         }
         if self
             .stores
@@ -408,7 +412,7 @@ impl DreamExecutor for BuiltInDreamAgent {
         let snapshot = MemoryStoreContentSnapshot {
             snapshot_memory_store_id: snapshot_id.clone(),
             files: self
-                .memory
+                .snapshots
                 .snapshot_heads(&request.source_memory_store_id)
                 .await
                 .map_err(|error| {
@@ -423,12 +427,12 @@ impl DreamExecutor for BuiltInDreamAgent {
                     format!("snapshot content for `{}` is unavailable", head.path),
                 )
             })?;
-            self.memory
+            self.writer
                 .create(&snapshot.snapshot_memory_store_id, &head.path, content)
                 .await
                 .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
             if matches!(request.output_behavior, DreamOutputBehavior::CreateNew) {
-                self.memory
+                self.writer
                     .create(&result_id, &head.path, content)
                     .await
                     .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;

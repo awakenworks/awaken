@@ -88,6 +88,7 @@ rustix = { version = "1", features = ["stdio"], optional = true }
 awaken-sandbox-local.workspace = true
 
 [dev-dependencies]
+awaken-resource-application.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-lease-testkit.workspace = true
 async-trait.workspace = true
@@ -104,6 +105,7 @@ awaken-sandbox-local = { workspace = true, features = ["test-support"] }
 tempfile = "3"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
+awaken-resource-contract.workspace = true
 # Strict substrate qualification composes the real scoped owner with durable
 # Memory and FUSE. These are test adapters, not new binary runtime dependencies.
 awaken-memory-store = { workspace = true, features = ["sqlite"] }

@@ -185,7 +185,7 @@ pub async fn build_model_route_router() -> Router {
     awaken_coordinator::mount_with_managed_and_resource_registry(
         managed.host.clone(),
         managed,
-        catalog,
+        resources.clone(),
     )
     .await
 }

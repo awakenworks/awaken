@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use awaken_memory_store::{MemoryRepository, VolatileMemoryRepository};
+use awaken_memory_store::{MemoryWriter, VolatileMemoryRepository};
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_sandbox_container::docker::DockerRuntime;
@@ -384,24 +384,30 @@ async fn multiple_memory_stores_enforce_exact_access_and_seal_the_parent_in_real
         "real Docker must enforce both child access modes and the sealed parent",
     );
     assert_eq!(
-        memory
-            .get_by_path("rw-store", "/note.md")
-            .await
-            .unwrap()
-            .unwrap()
-            .content
-            .as_deref(),
+        awaken_resource_contract::MemoryQueries::get_by_path(
+            memory.as_ref(),
+            "rw-store",
+            "/note.md"
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .content
+        .as_deref(),
         Some("rw-updated"),
         "RW copy is harvested through the canonical mounter",
     );
     assert_eq!(
-        memory
-            .get_by_path("ro-store", "/note.md")
-            .await
-            .unwrap()
-            .unwrap()
-            .content
-            .as_deref(),
+        awaken_resource_contract::MemoryQueries::get_by_path(
+            memory.as_ref(),
+            "ro-store",
+            "/note.md"
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .content
+        .as_deref(),
         Some("ro-seed"),
         "RO copy cannot mutate the durable head",
     );

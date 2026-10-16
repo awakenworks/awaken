@@ -1,10 +1,10 @@
 //! Write-through memory-store FUSE server (ADR-0053).
 //!
-//! A [`MemoryFuse`](fuse::MemoryFuse) projects a path-addressed [`MemoryRepository`] store as
+//! A [`MemoryFuse`](fuse::MemoryFuse) projects a path-addressed [`awaken_resource_contract::MemoryFilesystem`] store as
 //! a filesystem: reads are lazy through a short-TTL LRU cache, writes buffer per-fd
 //! and flush on `flush`/`release` as a **CAS `update`** (keeping the buffer and
 //! returning `EAGAIN` on conflict, never clobbering). Ported from awaken-next's
-//! `awaken-sandbox-memoryd`, adapted to call an **in-process** `MemoryRepository` (not HTTP)
+//! `awaken-sandbox-memoryd`, adapted to call an **in-process** Memory content roles
 //! and to report **faithful `getattr` timestamps** from the store's record.
 //!
 //! On Linux, the `fuse` feature (default) gates the fuser-backed mount ([`fuse`]);
@@ -24,9 +24,9 @@ pub use copy::{
     CopySnapshot, HarvestConflict, HarvestReport, fuse_available, harvest, materialize,
 };
 #[cfg(all(feature = "fuse", target_os = "linux"))]
-pub use fuse::{spawn_mount, spawn_mount_with_invalidations};
-pub use invalidate::{InvalidatingMemoryRepository, Invalidation, Invalidator, LocalInvalidator};
-pub use mounter::MemoryStoreMounter;
+pub use fuse::spawn_mount;
+pub use invalidate::{Invalidation, LocalInvalidator};
+pub use mounter::{MemoryMounterConstructionError, MemoryStoreMounter};
 
 /// A memoryd operation failure — the store's [`MemErr`] plus FUSE-local faults
 /// (a full dirty-fd budget, a missing handle, or an internal encoding fault).

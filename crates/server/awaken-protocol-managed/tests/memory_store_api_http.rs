@@ -24,7 +24,7 @@ mod support;
 async fn router() -> Router {
     let resources = support::resources::ephemeral_resources().await;
     memory_stores_router(
-        resources.authorities().memory_repository(),
+        resources.authorities().memory_management_content(),
         resources.memory_stores(),
         awaken_time::system_clock(),
     )
@@ -103,9 +103,10 @@ async fn retained_copy_candidates_use_store_visibility_and_explicit_content_view
     // is 404. Invalid view/page is 400; reads never mutate heads or history.
     // This is an Awaken extension, not an assertion about the Anthropic schema.
     let resources = support::resources::ephemeral_resources().await;
-    let memories = resources.authorities().memory_repository();
+    let preservation = resources.authorities().memory_copy_conflict_preservation();
+    let content = resources.authorities().memory_management_content();
     let router = memory_stores_router(
-        memories.clone(),
+        content.clone(),
         resources.memory_stores(),
         awaken_time::system_clock(),
     );
@@ -128,7 +129,7 @@ async fn retained_copy_candidates_use_store_visibility_and_explicit_content_view
         },
     ];
     for candidate in &candidates {
-        memories
+        preservation
             .preserve_copy_conflict(&store, candidate)
             .await
             .unwrap();
@@ -207,8 +208,22 @@ async fn retained_copy_candidates_use_store_visibility_and_explicit_content_view
             StatusCode::BAD_REQUEST
         );
     }
-    assert!(memories.snapshot_heads(&store).await.unwrap().is_empty());
-    assert!(memories.list_versions(&store).await.unwrap().is_empty());
+    assert!(
+        content
+            .snapshots()
+            .snapshot_heads(&store)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        content
+            .versions()
+            .list_versions(&store)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         call(
             &router,
@@ -456,7 +471,7 @@ async fn unknown_store_is_fail_closed_on_every_verb() {
 async fn workspace_and_lifecycle_are_intrinsic_resource_guards() {
     let resources = support::resources::ephemeral_resources().await;
     let router = memory_stores_router(
-        resources.authorities().memory_repository(),
+        resources.authorities().memory_management_content(),
         resources.memory_stores(),
         awaken_time::system_clock(),
     );
@@ -1161,7 +1176,7 @@ async fn store_time_filters_match_wire_precision_before_pagination_and_lifecycle
         }
     }
     let router = memory_stores_router(
-        resources.authorities().memory_repository(),
+        resources.authorities().memory_management_content(),
         resources.memory_stores(),
         awaken_time::system_clock(),
     );
@@ -1223,7 +1238,7 @@ async fn store_time_filters_match_wire_precision_before_pagination_and_lifecycle
 // The winner is committed by a decorator inside `update_head_as`, so the store
 // produces a genuine stale-generation Conflict rather than a fabricated error.
 struct RaceLosingRepository {
-    inner: std::sync::Arc<dyn awaken_resource_contract::MemoryRepository>,
+    inner: awaken_resource_contract::MemoryManagementContent,
     interposed: std::sync::atomic::AtomicBool,
     /// What the winning caller commits. `None` means it requested the same
     /// content as the loser, which is the already-current row.
@@ -1231,7 +1246,20 @@ struct RaceLosingRepository {
 }
 
 #[async_trait::async_trait]
-impl awaken_resource_contract::MemoryRepository for RaceLosingRepository {
+#[cfg(test)]
+impl awaken_resource_contract::MemoryWriter for RaceLosingRepository {
+    async fn create_as(
+        &self,
+        store: &str,
+        path: &str,
+        content: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr> {
+        self.inner
+            .writer()
+            .create_as(store, path, content, actor)
+            .await
+    }
     async fn update_head_as(
         &self,
         store: &str,
@@ -1248,75 +1276,14 @@ impl awaken_resource_contract::MemoryRepository for RaceLosingRepository {
             // generation this call still holds, at the original path.
             let winner = self.winner_content.as_deref().unwrap_or(content);
             self.inner
+                .writer()
                 .update_head_as(store, base, winner, None, actor)
                 .await?;
         }
         self.inner
+            .writer()
             .update_head_as(store, base, content, target_path, actor)
             .await
-    }
-
-    async fn preserve_copy_conflict(
-        &self,
-        store: &str,
-        candidate: &awaken_resource_contract::MemoryCopyConflict,
-    ) -> Result<(), awaken_resource_contract::MemErr> {
-        self.inner.preserve_copy_conflict(store, candidate).await
-    }
-    async fn list_copy_conflicts(
-        &self,
-        store: &str,
-    ) -> Result<Vec<awaken_resource_contract::MemoryCopyConflict>, awaken_resource_contract::MemErr>
-    {
-        self.inner.list_copy_conflicts(store).await
-    }
-    async fn snapshot_heads(
-        &self,
-        store: &str,
-    ) -> Result<Vec<awaken_resource_contract::Memory>, awaken_resource_contract::MemErr> {
-        self.inner.snapshot_heads(store).await
-    }
-    async fn list(
-        &self,
-        store: &str,
-        prefix: &str,
-    ) -> Result<Vec<awaken_resource_contract::MemoryEntry>, awaken_resource_contract::MemErr> {
-        self.inner.list(store, prefix).await
-    }
-    async fn get_by_path(
-        &self,
-        store: &str,
-        path: &str,
-    ) -> Result<Option<awaken_resource_contract::Memory>, awaken_resource_contract::MemErr> {
-        self.inner.get_by_path(store, path).await
-    }
-    async fn create_as(
-        &self,
-        store: &str,
-        path: &str,
-        content: &str,
-        actor: Option<&MemoryActor>,
-    ) -> Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr> {
-        self.inner.create_as(store, path, content, actor).await
-    }
-    async fn update_materialized(
-        &self,
-        store: &str,
-        path: &str,
-        base: &awaken_resource_contract::MemoryGeneration,
-        content: &str,
-    ) -> Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr> {
-        self.inner
-            .update_materialized(store, path, base, content)
-            .await
-    }
-    async fn rename(
-        &self,
-        store: &str,
-        from: &str,
-        to: &str,
-    ) -> Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr> {
-        self.inner.rename(store, from, to).await
     }
     async fn delete_by_path_as(
         &self,
@@ -1324,7 +1291,10 @@ impl awaken_resource_contract::MemoryRepository for RaceLosingRepository {
         path: &str,
         actor: Option<&MemoryActor>,
     ) -> Result<(), awaken_resource_contract::MemErr> {
-        self.inner.delete_by_path_as(store, path, actor).await
+        self.inner
+            .writer()
+            .delete_by_path_as(store, path, actor)
+            .await
     }
     async fn delete_if_match_as(
         &self,
@@ -1334,31 +1304,64 @@ impl awaken_resource_contract::MemoryRepository for RaceLosingRepository {
         actor: Option<&MemoryActor>,
     ) -> Result<bool, awaken_resource_contract::MemErr> {
         self.inner
+            .writer()
             .delete_if_match_as(store, path, base, actor)
             .await
     }
+}
+
+#[async_trait::async_trait]
+#[cfg(test)]
+impl awaken_resource_contract::MemorySnapshotSource for RaceLosingRepository {
+    async fn snapshot_heads(
+        &self,
+        store: &str,
+    ) -> Result<Vec<awaken_resource_contract::Memory>, awaken_resource_contract::MemErr> {
+        self.inner.snapshots().snapshot_heads(store).await
+    }
+}
+
+#[async_trait::async_trait]
+#[cfg(test)]
+impl awaken_resource_contract::MemoryVersionQueries for RaceLosingRepository {
     async fn list_versions(
         &self,
         store: &str,
     ) -> Result<Vec<awaken_resource_contract::MemoryVersion>, awaken_resource_contract::MemErr>
     {
-        self.inner.list_versions(store).await
+        self.inner.versions().list_versions(store).await
     }
+}
+
+#[async_trait::async_trait]
+#[cfg(test)]
+impl awaken_resource_contract::MemoryVersionRedaction for RaceLosingRepository {
     async fn redact_version_as(
         &self,
         store: &str,
-        version_id: &str,
+        version: &str,
         actor: Option<&MemoryActor>,
     ) -> Result<Option<awaken_resource_contract::MemoryVersion>, awaken_resource_contract::MemErr>
     {
-        self.inner.redact_version_as(store, version_id, actor).await
+        self.inner
+            .redaction()
+            .redact_version_as(store, version, actor)
+            .await
     }
-    async fn purge_store(
+}
+
+#[async_trait::async_trait]
+#[cfg(test)]
+impl awaken_resource_contract::MemoryCopyConflictQueries for RaceLosingRepository {
+    async fn list_copy_conflicts(
         &self,
         store: &str,
-    ) -> Result<awaken_resource_contract::MemoryPurgeSummary, awaken_resource_contract::MemErr>
+    ) -> Result<Vec<awaken_resource_contract::MemoryCopyConflict>, awaken_resource_contract::MemErr>
     {
-        self.inner.purge_store(store).await
+        self.inner
+            .conflict_queries()
+            .list_copy_conflicts(store)
+            .await
     }
 }
 
@@ -1391,11 +1394,13 @@ async fn store_found_conflicts_answer_the_contract_only_when_already_at_the_requ
     ] {
         let resources = support::resources::ephemeral_resources().await;
         let router = memory_stores_router(
-            std::sync::Arc::new(RaceLosingRepository {
-                inner: resources.authorities().memory_repository(),
-                interposed: std::sync::atomic::AtomicBool::new(false),
-                winner_content: winner_content.map(str::to_string),
-            }),
+            awaken_resource_contract::MemoryManagementContent::new(std::sync::Arc::new(
+                RaceLosingRepository {
+                    inner: resources.authorities().memory_management_content(),
+                    interposed: std::sync::atomic::AtomicBool::new(false),
+                    winner_content: winner_content.map(str::to_string),
+                },
+            )),
             resources.memory_stores(),
             awaken_time::system_clock(),
         );

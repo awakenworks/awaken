@@ -2729,9 +2729,24 @@ mod time_assurance;
 /// one these Session tests register Repositories and Memory stores against.
 pub(super) async fn ephemeral_resource_registry()
 -> Arc<dyn awaken_resource_contract::ResourceRegistry> {
-    awaken_resource_persistence::ephemeral(awaken_time::system_clock())
-        .await
-        .expect("Resource authorities")
-        .authorities()
-        .resource_registry()
+    awaken_resource_persistence::ephemeral(
+        awaken_time::system_clock(),
+        Arc::new(RecordingMemoryInvalidator::default()),
+    )
+    .await
+    .expect("Resource authorities")
+    .authorities()
+    .resource_registry()
+}
+
+#[derive(Default)]
+pub(super) struct RecordingMemoryInvalidator(std::sync::Mutex<Vec<(String, String)>>);
+#[cfg(test)]
+impl awaken_resource_contract::MemoryInvalidator for RecordingMemoryInvalidator {
+    fn publish(&self, store: &str, path: &str) {
+        self.0
+            .lock()
+            .expect("test Memory invalidations")
+            .push((store.into(), path.into()));
+    }
 }

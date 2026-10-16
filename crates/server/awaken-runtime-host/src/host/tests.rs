@@ -830,8 +830,8 @@ pub(crate) fn bind_test_memory(host: &SharedHost, thread: &str, store_id: &str, 
         version: awaken_resource_contract::ConfigVersion::INITIAL,
         retention_policy: Default::default(),
     };
-    let handle = Arc::new(crate::memory_binding::PlatformMemoryHandle::new(
-        host.resources.memory_stores.fs_handle(),
+    let handle = Arc::new(crate::memory_binding::PlatformMemoryHandle::from_roles(
+        host.resources.memory_stores.clone(),
         store_id.to_string(),
         writable,
     ));

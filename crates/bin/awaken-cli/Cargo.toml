@@ -38,6 +38,7 @@ awaken-data-governance-contract.workspace = true
 awaken-execution-composition.workspace = true
 # Deployment-file PVC policy is owned by the existing container substrate.
 awaken-sandbox-container.workspace = true
+awaken-sandbox-memoryd.workspace = true
 kube = { version = "1", default-features = false, features = ["client", "rustls-tls", "http-proxy"], optional = true }
 awaken-protocol-mcp.workspace = true
 awaken-service-lifecycle.workspace = true
