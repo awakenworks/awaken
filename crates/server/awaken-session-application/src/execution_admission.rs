@@ -6,19 +6,35 @@
 
 use awaken_dispatch_contract::DispatchOperationalFeed;
 use awaken_session_realization_contract::SessionPreparationPlacement;
-use awaken_worker_contract::WorkerObservationSource;
+use awaken_worker_contract::WorkerIncarnationSource;
 use std::sync::{Arc, OnceLock};
 
-/// The dispatch feed, Worker roster and placement compiler used by one process.
+/// The dispatch feed, exact Registry reads and placement compiler used by one process.
 /// Every production construction supplies the complete value.
 ///
 /// ```compile_fail,E0061
 /// use std::sync::Arc;
 /// use awaken_session_application::SessionExecutionAdmission;
 /// use awaken_dispatch_contract::DispatchOperationalFeed;
-/// use awaken_worker_contract::WorkerObservationSource;
-/// fn incomplete(dispatch: Arc<dyn DispatchOperationalFeed>, workers: Arc<dyn WorkerObservationSource>) {
+/// use awaken_worker_contract::WorkerIncarnationSource;
+/// fn incomplete(dispatch: Arc<dyn DispatchOperationalFeed>, workers: Arc<dyn WorkerIncarnationSource>) {
 ///     let _ = SessionExecutionAdmission::new(dispatch, workers);
+/// }
+/// ```
+///
+/// Roster-only access cannot supply historical predecessor exit evidence:
+///
+/// ```compile_fail,E0308
+/// use std::sync::Arc;
+/// use awaken_session_application::SessionExecutionAdmission;
+/// use awaken_dispatch_contract::DispatchOperationalFeed;
+/// use awaken_worker_contract::WorkerObservationSource;
+/// use awaken_session_realization_contract::SessionPreparationPlacement;
+/// fn roster_only(
+///     dispatch: Arc<dyn DispatchOperationalFeed>, workers: Arc<dyn WorkerObservationSource>,
+///     placement: Arc<dyn SessionPreparationPlacement>,
+/// ) {
+///     let _ = SessionExecutionAdmission::new(dispatch, workers, placement);
 /// }
 /// ```
 ///
@@ -26,10 +42,10 @@ use std::sync::{Arc, OnceLock};
 /// use std::sync::Arc;
 /// use awaken_session_application::SessionExecutionAdmission;
 /// use awaken_dispatch_contract::DispatchOperationalFeed;
-/// use awaken_worker_contract::WorkerObservationSource;
+/// use awaken_worker_contract::WorkerIncarnationSource;
 /// use awaken_session_realization_contract::SessionPreparationPlacement;
 /// fn complete(
-///     dispatch: Arc<dyn DispatchOperationalFeed>, workers: Arc<dyn WorkerObservationSource>,
+///     dispatch: Arc<dyn DispatchOperationalFeed>, workers: Arc<dyn WorkerIncarnationSource>,
 ///     placement: Arc<dyn SessionPreparationPlacement>,
 /// ) -> SessionExecutionAdmission {
 ///     SessionExecutionAdmission::new(dispatch, workers, placement)
@@ -38,7 +54,7 @@ use std::sync::{Arc, OnceLock};
 #[cfg_attr(not(feature = "test-support"), doc = include_str!("execution_admission_production.md"))]
 pub struct SessionExecutionAdmission {
     pub(super) dispatch: OnceLock<Arc<dyn DispatchOperationalFeed>>,
-    pub(super) workers: OnceLock<Arc<dyn WorkerObservationSource>>,
+    pub(super) workers: OnceLock<Arc<dyn WorkerIncarnationSource>>,
     pub(super) placement: OnceLock<Arc<dyn SessionPreparationPlacement>>,
 }
 
@@ -46,7 +62,7 @@ impl SessionExecutionAdmission {
     #[must_use]
     pub fn new(
         dispatch: Arc<dyn DispatchOperationalFeed>,
-        workers: Arc<dyn WorkerObservationSource>,
+        workers: Arc<dyn WorkerIncarnationSource>,
         placement: Arc<dyn SessionPreparationPlacement>,
     ) -> Self {
         Self {
@@ -78,7 +94,7 @@ impl SessionExecutionAdmission {
     #[cfg(test)]
     pub fn set_worker_observation_source(
         &self,
-        source: Arc<dyn WorkerObservationSource>,
+        source: Arc<dyn WorkerIncarnationSource>,
     ) -> Result<(), &'static str> {
         self.workers
             .set(source)
@@ -116,7 +132,7 @@ impl SessionExecutionAdmission {
 
     pub fn verify_worker_admission(
         &self,
-        workers: &Arc<dyn WorkerObservationSource>,
+        workers: &Arc<dyn WorkerIncarnationSource>,
         placement: &Arc<dyn SessionPreparationPlacement>,
     ) -> Result<(), &'static str> {
         require_same(
@@ -134,7 +150,7 @@ impl SessionExecutionAdmission {
     #[cfg(any(test, feature = "test-support"))]
     pub fn complete_fixture_worker_admission(
         &self,
-        workers: Arc<dyn WorkerObservationSource>,
+        workers: Arc<dyn WorkerIncarnationSource>,
         placement: Arc<dyn SessionPreparationPlacement>,
     ) -> Result<(), &'static str> {
         // Refuse an existing mismatch before filling either missing slot.

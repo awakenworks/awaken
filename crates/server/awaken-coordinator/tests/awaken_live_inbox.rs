@@ -451,6 +451,13 @@ impl awaken_session_execution_contract::CoordinationRuntime for QueueFake {
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::SessionCoordinationReads for QueueFake {
+    async fn source_dispatch_observation(
+        &self,
+        _session: &awaken_session_state_contract::PersistedSession,
+    ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
+        Default::default()
+    }
+
     async fn coordinated_admission_receipt(
         &self,
         command: awaken_session_execution_contract::CoordinatedAdmissionRef<'_>,
@@ -1164,6 +1171,13 @@ async fn app_with_session_application(
 
     #[async_trait::async_trait]
     impl awaken_session_execution_contract::SessionCoordinationReads for Shared {
+        async fn source_dispatch_observation(
+            &self,
+            _session: &awaken_session_state_contract::PersistedSession,
+        ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
+            Default::default()
+        }
+
         async fn coordinated_admission_receipt(
             &self,
             command: awaken_session_execution_contract::CoordinatedAdmissionRef<'_>,

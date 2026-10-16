@@ -617,6 +617,16 @@ impl awaken_session_execution_contract::CoordinationRuntime for ManagedHost {
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::SessionCoordinationReads for ManagedHost {
+    async fn source_dispatch_observation(
+        &self,
+        session: &awaken_session_state_contract::PersistedSession,
+    ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
+        let Ok(source) = self.host.coordinator_dispatch() else {
+            return Default::default();
+        };
+        awaken_dispatch_execution::read_source_dispatch_observation(source.as_ref(), session).await
+    }
+
     async fn execution_recovery_observation(
         &self,
         session: &awaken_session_state_contract::PersistedSession,

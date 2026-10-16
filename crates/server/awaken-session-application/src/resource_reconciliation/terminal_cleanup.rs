@@ -1,3 +1,4 @@
+// @formal entrypoint session_resources.external_io_requires_durable_prepared_state
 // @formal evidence session.delete_retry_never_reopens_duplicates_fact_or_changes_cleanup_identity
 //! Terminal resource reclamation through the Session aggregate's one durable
 //! cleanup operation.
@@ -14,7 +15,7 @@ use awaken_session_state_contract::{
 };
 use awaken_session_types::RunError;
 
-use super::{internal, mutation_failure, repository_preparation};
+use super::{internal, mutation_failure, repository_control, repository_preparation};
 use crate::SessionAggregate;
 use crate::{SessionApplication, SessionPreparationError, SessionTerminalCleanupDriveOutcome};
 
@@ -166,6 +167,58 @@ pub(super) fn terminal_cleanup_authorization_failure(
 use awaken_session_realization_driver::supervise_session_terminal_cleanup_lease as supervise_local_terminal_cleanup_lease;
 
 impl SessionApplication {
+    pub(crate) async fn authorize_terminal_cleanup_effect_from_root(
+        &self,
+        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+    ) -> Result<
+        awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
+        SessionRealizationControlFailure,
+    > {
+        let session = self
+            .session_repository()
+            .get(&effect.command.session_id)
+            .await
+            .map_err(repository_control)?;
+        // Terminal generation lifetime lets an already-admitted effect finish
+        // after its asserted expiry. Starting a new physical effect is narrower:
+        // the one current Session-root lease must still be live, while the
+        // domain check below proves the old assertion is that same generation.
+        // Worker Registry authentication remains the independent transport
+        // identity edge; no second lease record or timer authority is created.
+        self.require_current_live_terminal_generation(&session)?;
+        let workspace_id = self
+            .session_repository()
+            .owner(&effect.command.session_id)
+            .await
+            .map_err(repository_control)?;
+        if effect.command.restore_target
+            != terminal_restore_target_for_thread(
+                &workspace_id,
+                &session,
+                &effect.command.thread_id,
+            )
+        {
+            return Err(SessionRealizationControlFailure::Invalid(
+                "terminal cleanup restore target differs from durable Environment authority".into(),
+            ));
+        }
+        let inherited_provider_disposal = session
+            .authorize_terminal_cleanup_effect(effect)
+            .map_err(terminal_cleanup_authorization_failure)?;
+        let source_dispatch = self
+            .runtime()
+            .coordination_reads()
+            .source_dispatch_observation(&session)
+            .await
+            .terminal_source_dispatch()?;
+        awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
+            effect.clone(),
+            workspace_id,
+            inherited_provider_disposal,
+        )
+        .map(|authorization| authorization.with_source_dispatch(source_dispatch))
+    }
+
     async fn drive_local_terminal_cleanup(
         &self,
         assignment: &SessionTerminalCleanupAssignment,
@@ -290,9 +343,9 @@ impl SessionApplication {
                 // second retirement attempt through this or any other reconciler.
                 self.retire_terminal_work(&session).await?;
 
-                // Phase 2 interrupts and waits for the parent to settle, then freezes the
-                // complete durable delegated-Run set and its committed watermark. A retry
-                // after this commit reuses exactly these targets.
+                // Phase 2 joins cancellation and the committed logical Run fence,
+                // then freezes its complete prefix. Source I/O still requires
+                // physical closure; retries reuse exactly these targets.
                 let mut intent_changed = false;
                 if session.terminal_cleanup.is_fenced() {
                     let snapshot = coordination_runtime

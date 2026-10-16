@@ -13,72 +13,109 @@ struct PendingCoordinationCall {
     args: SendMessageArgs,
 }
 
-pub(super) fn project_committed_coordination_links(
+pub(in crate::host) struct CommittedCoordinationProjection {
+    pub(in crate::host) links: Vec<CoordinatedThreadLink>,
+    pub(in crate::host) cleanup_thread_ids: Vec<ThreadId>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(in crate::host) enum CoordinationReadPurpose {
+    Relationships,
+    TerminalScope,
+}
+
+fn coordination_call(
+    run_id: &RunId,
+    operation_id: String,
+    call_id: &str,
+    input: &serde_json::Value,
+) -> Result<PendingCoordinationCall, HostError> {
+    let args = serde_json::from_value::<SendMessageArgs>(input.clone()).map_err(|error| {
+        HostError::internal(format!(
+            "committed send_message arguments are invalid: {error}"
+        ))
+    })?;
+    Ok(PendingCoordinationCall {
+        run_id: run_id.clone(),
+        operation_id,
+        call_id: call_id.to_owned(),
+        args,
+    })
+}
+
+fn include_spawn_cleanup_target(
+    session_id: &awaken_session_types::SessionId,
+    call: &PendingCoordinationCall,
+    targets: &mut std::collections::BTreeSet<String>,
+) {
+    // Only Spawn creates a new identity. An unaccepted ExistingThread payload
+    // may name a foreign Thread and must never become cleanup authority.
+    if matches!(
+        call.args.normalized_target(),
+        Ok(awaken_ext_builtin_tools::AgentMessageTarget::Spawn { .. })
+    ) {
+        targets.insert(
+            awaken_session_execution_contract::coordinated_thread_id(
+                session_id,
+                &call.run_id,
+                &call.operation_id,
+            )
+            .0,
+        );
+    }
+}
+
+pub(in crate::host) fn project_committed_coordination(
     session_id: &awaken_session_types::SessionId,
     advisor_model: Option<&str>,
     committed: &RunRecoverySnapshot,
-) -> Result<Vec<CoordinatedThreadLink>, HostError> {
+    purpose: CoordinationReadPurpose,
+) -> Result<CommittedCoordinationProjection, HostError> {
     let mut active = Vec::<PendingCoordinationCall>::new();
     let mut links = Vec::<CoordinatedThreadLink>::new();
-    let mut runs = std::collections::HashMap::<_, Option<&RunId>>::new();
-    for run in &committed.runs {
-        runs.entry(run.id.0.as_str())
-            .and_modify(|selected| *selected = None)
-            .or_insert(Some(&run.id));
-    }
+    let mut cleanup = std::collections::BTreeSet::new();
     for message in &committed.messages {
         if message.role == Role::Assistant {
             active.clear();
             let Some((owner, _step, None)) = message.id.assistant_coordinates() else {
                 continue;
             };
-            let run_id = match runs.get(owner).copied().flatten() {
-                Some(run_id) => run_id,
-                None if runs.contains_key(owner) => {
-                    return Err(HostError::internal(
-                        "committed assistant message has ambiguous Run coordinates",
-                    ));
-                }
-                None => continue,
+            let Some(run) = committed.run_record(&RunId(owner.into())).map_err(|_| {
+                HostError::internal("committed assistant message has ambiguous Run coordinates")
+            })?
+            else {
+                continue;
             };
+            let run_id = &run.id;
             for block in &message.content {
-                if let ContentBlock::ToolUse { id, name, input } = block
-                    && name == awaken_ext_builtin_tools::SEND_MESSAGE
-                {
-                    let args = serde_json::from_value::<SendMessageArgs>(input.clone()).map_err(
-                        |error| {
-                            HostError::internal(format!(
-                                "committed send_message arguments are invalid: {error}"
-                            ))
-                        },
-                    )?;
-                    active.push(PendingCoordinationCall {
-                        run_id: run_id.clone(),
-                        operation_id: awaken_tool_contract::ActiveToolBatch::operation_for_message(
-                            committed, message, id,
-                        )
-                        .map_err(|error| HostError::internal(error.to_string()))?
-                        .ok_or_else(|| {
-                            HostError::internal(
-                                "committed coordination call has no operation identity",
-                            )
-                        })?,
-                        call_id: id.clone(),
-                        args,
-                    });
-                } else if let ContentBlock::ToolUse { id, name, .. } = block
-                    && name == awaken_runtime_contract::resolved::ADVISOR_TOOL_ID
-                {
+                let ContentBlock::ToolUse { id, name, input } = block else {
+                    continue;
+                };
+                let call_kind = if name == awaken_ext_builtin_tools::SEND_MESSAGE {
+                    "coordination"
+                } else if name == awaken_runtime_contract::resolved::ADVISOR_TOOL_ID {
+                    "advisor"
+                } else {
+                    continue;
+                };
+                let operation = awaken_tool_contract::ActiveToolBatch::operation_for_message(
+                    committed, message, id,
+                )
+                .map_err(|error| HostError::internal(error.to_string()))?
+                .ok_or_else(|| {
+                    HostError::internal(format!(
+                        "committed {call_kind} call has no operation identity"
+                    ))
+                })?;
+                if name == awaken_ext_builtin_tools::SEND_MESSAGE {
+                    let call = coordination_call(run_id, operation, id, input)?;
+                    include_spawn_cleanup_target(session_id, &call, &mut cleanup);
+                    active.push(call);
+                } else {
                     apply_advisor_call(
                         session_id,
                         run_id,
-                        awaken_tool_contract::ActiveToolBatch::operation_for_message(
-                            committed, message, id,
-                        )
-                        .map_err(|error| HostError::internal(error.to_string()))?
-                        .ok_or_else(|| {
-                            HostError::internal("committed advisor call has no operation identity")
-                        })?,
+                        operation,
                         id,
                         advisor_model.unwrap_or_default(),
                         &mut links,
@@ -123,7 +160,51 @@ pub(super) fn project_committed_coordination_links(
         active_batch.as_ref(),
         &mut links,
     )?;
-    Ok(links)
+    // The original journal precedes dispatch, including a source whose model
+    // message or result has not reached the transcript yet. Retain every
+    // possible root-owned Spawn rather than converting a missing reply into
+    // absence. Logical clears do not erase previously observed candidates.
+    for run in committed
+        .runs
+        .iter()
+        .filter(|_| purpose == CoordinationReadPurpose::TerminalScope)
+    {
+        if committed.run_record(&run.id).is_err() {
+            return Err(HostError::internal(
+                "coordination source has ambiguous Run identity",
+            ));
+        }
+        for recorded in
+            awaken_tool_contract::ActiveToolBatch::recorded_batches(&committed.state, &run.id)
+        {
+            let (_, batch) = recorded.map_err(|error| HostError::internal(error.to_string()))?;
+            let Some(batch) = batch else {
+                continue;
+            };
+            for entry in batch.calls() {
+                if entry.call.tool_id == awaken_ext_builtin_tools::SEND_MESSAGE {
+                    let call = coordination_call(
+                        &run.id,
+                        batch.operation_id(&entry.call.call_id),
+                        &entry.call.call_id,
+                        &entry.call.arguments,
+                    )?;
+                    include_spawn_cleanup_target(session_id, &call, &mut cleanup);
+                } else if entry.call.tool_id == awaken_runtime_contract::resolved::ADVISOR_TOOL_ID {
+                    cleanup.insert(
+                        DelegationId::for_parent_call(&run.id, &entry.call.call_id)
+                            .child_run_id()
+                            .0,
+                    );
+                }
+            }
+        }
+    }
+    cleanup.extend(links.iter().map(|link| link.thread_id.0.clone()));
+    Ok(CommittedCoordinationProjection {
+        links,
+        cleanup_thread_ids: cleanup.into_iter().map(ThreadId).collect(),
+    })
 }
 
 pub(super) fn apply_lifecycle_latest_runs(
@@ -200,19 +281,8 @@ fn apply_coordination_result(
     }
     let thread_id = ThreadId(receipt.session_thread_id);
     let operation_id = call.operation_id.clone();
-    match (
-        call.args
-            .agent_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty()),
-        call.args
-            .session_thread_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty()),
-    ) {
-        (Some(agent_id), None) => {
+    match call.args.normalized_target() {
+        Ok(awaken_ext_builtin_tools::AgentMessageTarget::Spawn { agent_id }) => {
             let expected = awaken_session_execution_contract::coordinated_thread_id(
                 session_id,
                 &call.run_id,
@@ -224,7 +294,7 @@ fn apply_coordination_result(
                 ));
             }
             if let Some(existing) = links.iter().find(|link| link.thread_id == thread_id) {
-                if existing.target.agent_id() != Some(agent_id) {
+                if existing.target.agent_id() != Some(agent_id.as_str()) {
                     return Err(HostError::internal(
                         "one coordinated Thread is attributed to multiple Agents",
                     ));
@@ -234,14 +304,14 @@ fn apply_coordination_result(
             links.push(CoordinatedThreadLink {
                 session_id: session_id.clone(),
                 thread_id,
-                target: CoordinatedThreadTarget::Agent {
-                    agent_id: agent_id.to_string(),
-                },
+                target: CoordinatedThreadTarget::Agent { agent_id },
                 created_by_operation_id: operation_id,
                 latest_run_id: None,
             });
         }
-        (None, Some(target)) => {
+        Ok(awaken_ext_builtin_tools::AgentMessageTarget::ExistingThread {
+            session_thread_id: target,
+        }) => {
             if thread_id.0 != target || !links.iter().any(|link| link.thread_id == thread_id) {
                 return Err(HostError::internal(
                     "committed follow-up receipt names an unknown coordinated Thread",
@@ -375,11 +445,13 @@ mod tests {
             store_cursor: 5,
             next_commit_ordinal: 1,
         };
-        let links = project_committed_coordination_links(
+        let links = project_committed_coordination(
             &awaken_session_types::SessionId::from("session"),
             Some("advisor-model"),
             &snapshot,
+            CoordinationReadPurpose::Relationships,
         )
+        .map(|projection| projection.links)
         .unwrap();
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].target.advisor_model(), Some("advisor-model"));
@@ -399,11 +471,13 @@ mod tests {
                 thread_id: ThreadId("session".into()),
                 state: RunState::Running,
             });
-        let error = project_committed_coordination_links(
+        let error = project_committed_coordination(
             &awaken_session_types::SessionId::from("session"),
             Some("advisor-model"),
             &ambiguous,
+            CoordinationReadPurpose::Relationships,
         )
+        .map(|projection| projection.links)
         .unwrap_err();
         assert!(error.message.contains("ambiguous Run coordinates"));
     }
@@ -684,11 +758,13 @@ mod tests {
             },
         ];
 
-        let mut warm = project_committed_coordination_links(
+        let mut warm = project_committed_coordination(
             &awaken_session_types::SessionId::from(session),
             Some("advisor-model"),
             &snapshot,
+            CoordinationReadPurpose::Relationships,
         )
+        .map(|projection| projection.links)
         .expect("P1 one committed root prefix");
         assert!(
             apply_lifecycle_latest_runs(&mut warm, &lifecycle, snapshot.store_cursor),
@@ -721,11 +797,13 @@ mod tests {
             let mut forged = snapshot.clone();
             forged.messages[1].role = role;
             forged.messages[1].id = id;
-            let links = project_committed_coordination_links(
+            let links = project_committed_coordination(
                 &awaken_session_types::SessionId::from(session),
                 Some("advisor-model"),
                 &forged,
+                CoordinationReadPurpose::Relationships,
             )
+            .map(|projection| projection.links)
             .unwrap();
             assert_eq!(links.len(), 2, "P5/E6 only batch gap and advisor remain");
             assert!(
@@ -737,11 +815,13 @@ mod tests {
         batch_scoped.messages[1].id =
             MessageId::tool_result_for_batch("tool-batch:parent-run:2", published_call);
         assert_eq!(
-            project_committed_coordination_links(
+            project_committed_coordination(
                 &awaken_session_types::SessionId::from(session),
                 Some("advisor-model"),
                 &batch_scoped,
+                CoordinationReadPurpose::Relationships
             )
+            .map(|projection| projection.links)
             .unwrap()
             .len(),
             3,
@@ -783,11 +863,13 @@ mod tests {
             command.bind_run(&run_id);
             let mut changed = snapshot.clone();
             changed.state = vec![command];
-            let links = project_committed_coordination_links(
+            let links = project_committed_coordination(
                 &awaken_session_types::SessionId::from(session),
                 Some("advisor-model"),
                 &changed,
+                CoordinationReadPurpose::Relationships,
             )
+            .map(|projection| projection.links)
             .unwrap();
             assert_eq!(
                 links.iter().any(|link| link.thread_id == gap_child),
@@ -798,11 +880,13 @@ mod tests {
 
         let mut without_batch = snapshot.clone();
         without_batch.state.clear();
-        let without_batch = project_committed_coordination_links(
+        let without_batch = project_committed_coordination(
             &awaken_session_types::SessionId::from(session),
             Some("advisor-model"),
             &without_batch,
+            CoordinationReadPurpose::Relationships,
         )
+        .map(|projection| projection.links)
         .expect("P2 snapshot without the publication-gap authority");
         assert_eq!(without_batch.len(), 2, "P2/E1,E2,E3");
         assert!(
@@ -812,11 +896,13 @@ mod tests {
 
         let cold_snapshot: RunRecoverySnapshot =
             serde_json::from_value(serde_json::to_value(&snapshot).unwrap()).unwrap();
-        let mut cold = project_committed_coordination_links(
+        let mut cold = project_committed_coordination(
             &awaken_session_types::SessionId::from(session),
             Some("advisor-model"),
             &cold_snapshot,
+            CoordinationReadPurpose::Relationships,
         )
+        .map(|projection| projection.links)
         .expect("P4 cold recovery projection");
         assert!(apply_lifecycle_latest_runs(
             &mut cold,
@@ -833,7 +919,13 @@ mod tests {
         // is published or still in the active batch; L3 cold serde recovery;
         // L4 a receipt names another child. Effects L1+L2 => one original link,
         // L3 => same link, L4 => error. This models the real failing Session's
-        // two commit coordinates; the Runtime integration test separately
+        // two commit coordinates. L5 an original Spawn exists only in the
+        // pre-dispatch journal -> retain its cleanup candidate without claiming
+        // an accepted relationship. L6 an unaccepted ExistingThread request
+        // names a foreign id -> no cleanup candidate. L7 an overwritten bad
+        // historical journal write -> terminal scope fails closed while the
+        // existing relationship read keeps its original projection semantics.
+        // The Runtime integration test separately
         // ensures newly resumed executions can no longer produce the mismatch.
         let session = awaken_session_types::SessionId::from("resumed-session");
         let run = RunId("resumed-run".into());
@@ -908,13 +1000,94 @@ mod tests {
             store_cursor: 8,
             next_commit_ordinal: 2,
         };
+        let declared = RunRecoverySnapshot {
+            messages: Vec::new(),
+            message_commit_cursors: Vec::new(),
+            state: vec![base.state[0].clone()],
+            state_commit_cursors: vec![7],
+            ..base.clone()
+        };
+        let scope = project_committed_coordination(
+            &session,
+            None,
+            &declared,
+            CoordinationReadPurpose::TerminalScope,
+        )
+        .unwrap();
+        assert!(scope.links.is_empty(), "L5 declaration is not acceptance");
+        assert_eq!(
+            scope.cleanup_thread_ids.as_slice(),
+            std::slice::from_ref(&child),
+            "L5 original operation owns the possible child"
+        );
+        let mut foreign_batch = awaken_tool_contract::ActiveToolBatch::write(&Some(
+            ToolBatch::for_step(base.claimed_run_id.clone(), 0, [(
+                ToolCall {
+                    call_id: "unaccepted-followup".into(),
+                    tool_id: awaken_ext_builtin_tools::SEND_MESSAGE.into(),
+                    arguments: serde_json::json!({"session_thread_id":"foreign-thread","message":"follow up"}),
+                },
+                ToolRecoveryPolicy::durable_request(),
+            )]).unwrap()
+        ));
+        foreign_batch.bind_run(&base.claimed_run_id);
+        let foreign = RunRecoverySnapshot {
+            state: vec![foreign_batch],
+            ..declared.clone()
+        };
+        assert!(
+            project_committed_coordination(
+                &session,
+                None,
+                &foreign,
+                CoordinationReadPurpose::TerminalScope
+            )
+            .unwrap()
+            .cleanup_thread_ids
+            .is_empty(),
+            "L6 source input cannot select a foreign cleanup target"
+        );
+        let mut damaged = declared.clone();
+        let mut old = damaged.state[0].clone();
+        old.merge = awaken_agent_contract::agent::state::MergePolicy::Commutative;
+        damaged.state.insert(0, old);
+        damaged.state_commit_cursors.insert(0, 6);
+        assert!(
+            project_committed_coordination(
+                &session,
+                None,
+                &damaged,
+                CoordinationReadPurpose::TerminalScope
+            )
+            .is_err(),
+            "L7 incomplete original scope is refused"
+        );
+        assert!(
+            project_committed_coordination(
+                &session,
+                None,
+                &damaged,
+                CoordinationReadPurpose::Relationships
+            )
+            .map(|projection| projection.links)
+            .unwrap()
+            .is_empty(),
+            "L7 ordinary relationships retain their original read purpose"
+        );
         for published in [true, false] {
             let mut snapshot = base.clone();
             if !published {
                 snapshot.messages.pop();
                 snapshot.message_commit_cursors.pop();
             }
-            let links = project_committed_coordination_links(&session, None, &snapshot).unwrap();
+            let links = project_committed_coordination(
+                &session,
+                None,
+                &snapshot,
+                CoordinationReadPurpose::Relationships,
+            )
+            .map(|projection| projection.links)
+            .unwrap();
             assert_eq!(links.len(), 1, "L1/L2");
             assert_eq!(links[0].thread_id, child, "L1 original child");
             assert_eq!(
@@ -924,7 +1097,14 @@ mod tests {
             let cold: RunRecoverySnapshot =
                 serde_json::from_slice(&serde_json::to_vec(&snapshot).unwrap()).unwrap();
             assert_eq!(
-                project_committed_coordination_links(&session, None, &cold).unwrap(),
+                project_committed_coordination(
+                    &session,
+                    None,
+                    &cold,
+                    CoordinationReadPurpose::Relationships
+                )
+                .map(|projection| projection.links)
+                .unwrap(),
                 links,
                 "L3"
             );
@@ -936,7 +1116,14 @@ mod tests {
             )];
         }
         assert!(
-            project_committed_coordination_links(&session, None, &corrupt).is_err(),
+            project_committed_coordination(
+                &session,
+                None,
+                &corrupt,
+                CoordinationReadPurpose::Relationships
+            )
+            .map(|projection| projection.links)
+            .is_err(),
             "L4 still rejects a foreign receipt"
         );
     }

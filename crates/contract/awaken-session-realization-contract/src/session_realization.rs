@@ -49,8 +49,8 @@ pub use lease_receipt::{ObservedSessionRealizationLease, SessionRealizationLease
 mod terminal_cleanup_authorization;
 pub use terminal_cleanup_authorization::{
     SessionTerminalCleanupAssignment, SessionTerminalCleanupPreparationAuthorization,
-    SessionTerminalCleanupWork, terminal_cleanup_worker_requirements,
-    validate_terminal_no_create_witness,
+    SessionTerminalCleanupWork, SessionTerminalSourceDispatch,
+    terminal_cleanup_worker_requirements, validate_terminal_no_create_witness,
 };
 
 pub use awaken_session_configuration_contract::resource::{
@@ -520,7 +520,7 @@ mod tests {
         SessionTerminalRepositoryPublicationControl, realization_lease_authorizes,
         realization_lease_is_live_at,
     };
-    use crate::SessionRealizationLease;
+    use crate::{SessionRealizationLease, SessionTerminalSourceDispatch};
 
     struct MinimalControl;
 
@@ -632,6 +632,84 @@ mod tests {
             Some(&inherited),
             "R1/E1 predecessor"
         );
+        // Source-access table: R8 exact Settled -> live-source permission;
+        // R9 Pending/Unavailable -> closed-source recovery only; R10 omitted
+        // old wire field -> Unavailable, never implicit Settled; R11 an unknown
+        // status -> reject. Effect, Workspace and inherited evidence stay bound
+        // by R1..R7; none of these observations is a physical exit receipt.
+        for observation in [
+            SessionTerminalSourceDispatch::Settled {},
+            SessionTerminalSourceDispatch::Pending {},
+            SessionTerminalSourceDispatch::Unavailable {
+                detail: "fixture transport outage".into(),
+            },
+        ] {
+            let observed = root_authorization
+                .clone()
+                .with_source_dispatch(observation.clone());
+            assert_eq!(
+                observed.permits_live_source(),
+                observation == SessionTerminalSourceDispatch::Settled {},
+                "R8/R9"
+            );
+            let round_trip: SessionTerminalCleanupPreparationAuthorization =
+                serde_json::from_value(serde_json::to_value(&observed).unwrap()).unwrap();
+            assert_eq!(
+                round_trip, observed,
+                "R8/R9 exact observation survives transport"
+            );
+            round_trip.verify_for(&root).unwrap();
+            // R13 a provider-validated receipt-only source needs no live-I/O
+            // permission; a live source requires Settled for every wire class.
+            for reads_live in [false, true] {
+                assert_eq!(
+                    round_trip
+                        .verify_runtime_source(root.command.restore_target.as_ref(), reads_live)
+                        .is_ok(),
+                    !reads_live || round_trip.permits_live_source(),
+                    "R13 source mode {reads_live}"
+                );
+            }
+        }
+        let mut omitted = encoded.clone();
+        omitted.as_object_mut().unwrap().remove("source_dispatch");
+        let omitted: SessionTerminalCleanupPreparationAuthorization =
+            serde_json::from_value(omitted).unwrap();
+        assert!(
+            !omitted.permits_live_source(),
+            "R10 missing is not permission"
+        );
+        assert!(
+            matches!(
+                omitted.source_dispatch(),
+                SessionTerminalSourceDispatch::Unavailable { .. }
+            ),
+            "R10 preserve unknown"
+        );
+        let mut unknown_source = encoded.clone();
+        unknown_source["source_dispatch"] = serde_json::json!({"status":"assume_stopped"});
+        assert!(
+            serde_json::from_value::<SessionTerminalCleanupPreparationAuthorization>(
+                unknown_source
+            )
+            .is_err(),
+            "R11 closed wire vocabulary"
+        );
+        // R12 known positive/pending tags with an undeclared sibling must also
+        // reject. Empty struct variants keep deny_unknown_fields effective;
+        // bare unit variants would silently discard the supplied sibling.
+        for status in ["settled", "pending"] {
+            let mut extra_source = encoded.clone();
+            extra_source["source_dispatch"] =
+                serde_json::json!({"status": status, "invented_proof": true});
+            assert!(
+                serde_json::from_value::<SessionTerminalCleanupPreparationAuthorization>(
+                    extra_source
+                )
+                .is_err(),
+                "R12 {status} rejects undeclared proof"
+            );
+        }
 
         let child_authorization = SessionTerminalCleanupPreparationAuthorization::try_new(
             child.clone(),

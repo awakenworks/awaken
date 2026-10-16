@@ -3,8 +3,8 @@ The shared production application cannot change its selected sources:
 ```compile_fail,E0599
 use std::sync::Arc;
 use awaken_session_application::SessionApplication;
-use awaken_worker_contract::WorkerObservationSource;
-fn change(app: &SessionApplication, other: Arc<dyn WorkerObservationSource>) {
+use awaken_worker_contract::WorkerIncarnationSource;
+fn change(app: &SessionApplication, other: Arc<dyn WorkerIncarnationSource>) {
     app.set_worker_observation_source(other);
 }
 ```

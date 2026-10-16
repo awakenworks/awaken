@@ -251,6 +251,8 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
         .unwrap_or_else(|| inputs.deployment.sandbox_support());
     let mut capabilities = BTreeSet::from([NATIVE_RUNTIME_CAPABILITY.to_string()]);
     capabilities
+        .insert(awaken_worker_contract::SESSION_TERMINAL_SOURCE_ADMISSION_CAPABILITY.to_owned());
+    capabilities
         .insert(awaken_runtime_contract::activation::INHERITED_TOOLSETS_CAPABILITY.to_string());
     capabilities.extend(inputs.inference_schemes.iter().cloned());
     match inputs.resource_support {

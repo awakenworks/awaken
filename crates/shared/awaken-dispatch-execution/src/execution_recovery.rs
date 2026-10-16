@@ -16,6 +16,116 @@ use std::collections::{BTreeMap, BTreeSet};
 const PAGE_SIZE: usize = 256;
 const MAX_PAGES: usize = 256;
 
+fn frozen_terminal_scope(session: &PersistedSession) -> Result<(BTreeSet<String>, u64), Gap> {
+    if !session.is_terminal() {
+        return Err(Gap::NotTerminal);
+    }
+    let cleanup = session
+        .verified_terminal_cleanup()
+        .map_err(|_| Gap::IdentityMismatch)?;
+    if cleanup.is_not_requested() {
+        return Err(Gap::AdmissionFenceMissing);
+    }
+    let (Some(threads), Some(cursor)) = (cleanup.thread_ids(), cleanup.runtime_commit_cursor())
+    else {
+        return Err(Gap::ScopeNotFrozen);
+    };
+    if !threads.contains(session.session_id.as_str()) {
+        return Err(Gap::IdentityMismatch);
+    }
+    Ok((threads.clone(), cursor))
+}
+
+fn scope_member(
+    session: &PersistedSession,
+    threads: &BTreeSet<String>,
+    thread: Option<&awaken_agent_contract::agent::thread::Id>,
+    parent: Option<&awaken_agent_contract::agent::thread::Id>,
+) -> Result<bool, Gap> {
+    let member = thread.is_some_and(|thread| threads.contains(&thread.0));
+    if (parent.is_some_and(|parent| parent.0 == session.session_id.as_str()) && !member)
+        || (member && parent.is_some_and(|parent| parent.0 != session.session_id.as_str()))
+    {
+        return Err(Gap::IdentityMismatch);
+    }
+    Ok(member)
+}
+
+/// Preserve the source-I/O prerequisite over current original Dispatch rows.
+/// Unlike whole-execution recovery, this does not require independent closure
+/// history after an ordinary, fully returned attempt has removed its row.
+pub async fn read_source_dispatch_observation<
+    S: awaken_dispatch_contract::DispatchReads + ?Sized,
+>(
+    source: &S,
+    session: &PersistedSession,
+) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
+    use awaken_session_execution_contract::SessionSourceDispatchObservation as Source;
+    let (threads, _) = match frozen_terminal_scope(session) {
+        Ok(scope) => scope,
+        Err(reason) => return Source::NotProven { reason },
+    };
+    let Ok(rows) = source.list_dispatches().await else {
+        return Source::default();
+    };
+    let mut pending = false;
+    for row in rows {
+        let member = match scope_member(
+            session,
+            &threads,
+            Some(&row.thread_id),
+            row.session_thread_id.as_ref(),
+        ) {
+            Ok(member) => member,
+            Err(reason) => return Source::NotProven { reason },
+        };
+        pending |= member && (row.state.remains_unsettled() || row.physical_attempt_active);
+    }
+    if pending {
+        Source::Pending
+    } else {
+        Source::Settled
+    }
+}
+
+fn expired_claim_for_fast_pending(
+    claim: awaken_dispatch_contract::RunClaim,
+    was_current: Option<bool>,
+) -> Option<awaken_dispatch_contract::RunClaim> {
+    (was_current == Some(false)).then_some(claim)
+}
+
+/// An expiry observation may skip waiting only while the same claim still
+/// occupies the physical slot. This comparison grants no retirement receipt.
+#[must_use]
+pub fn exact_expired_slot_remains(
+    expected: &awaken_dispatch_contract::RunClaim,
+    observed: Option<&awaken_dispatch_contract::dispatch::PhysicalAttempt>,
+) -> bool {
+    observed.is_some_and(|physical| physical.claim == *expected)
+}
+
+/// Observe expiry before cancellation revokes a live claim. Failure is an
+/// optimization miss for callers; this read never acknowledges the old slot.
+pub async fn read_expired_physical_attempt<S>(
+    source: &S,
+    run_id: &awaken_agent_contract::agent::run::Id,
+) -> Result<Option<awaken_dispatch_contract::RunClaim>, awaken_dispatch_contract::DispatchError>
+where
+    S: awaken_dispatch_contract::DispatchControlReads
+        + awaken_dispatch_contract::DispatchClaimOwnership
+        + ?Sized,
+{
+    let Some(physical) = source.load_physical_attempt(run_id).await? else {
+        return Ok(None);
+    };
+    let current = source.claim_is_current(&physical.claim).await?;
+    Ok(expired_claim_for_fast_pending(
+        physical.claim,
+        Some(current),
+    ))
+}
+
 fn original_preparation(
     session: &PersistedSession,
 ) -> Option<awaken_session_execution_contract::SessionRecoveryPreparationReference> {
@@ -120,23 +230,10 @@ where
         + ?Sized,
     R: awaken_session_execution_contract::SessionProjectionSource + ?Sized,
 {
-    if !session.is_terminal() {
-        return unknown(Gap::NotTerminal);
-    }
-    let Ok(cleanup) = session.verified_terminal_cleanup() else {
-        return unknown(Gap::IdentityMismatch);
+    let (threads, runtime_commit_cursor) = match frozen_terminal_scope(session) {
+        Ok(scope) => scope,
+        Err(reason) => return unknown(reason),
     };
-    if cleanup.is_not_requested() {
-        return unknown(Gap::AdmissionFenceMissing);
-    }
-    let (Some(threads), Some(runtime_commit_cursor)) =
-        (cleanup.thread_ids(), cleanup.runtime_commit_cursor())
-    else {
-        return unknown(Gap::ScopeNotFrozen);
-    };
-    if !threads.contains(session.session_id.as_str()) {
-        return unknown(Gap::IdentityMismatch);
-    }
 
     let mut entries = Vec::new();
     let mut cursor = DispatchCursor::default();
@@ -154,25 +251,15 @@ where
         }
         for event in page.events {
             if let DispatchOperation::AttemptAdmitted { attempt } = event.operation {
-                let member = attempt
-                    .thread_id
-                    .as_ref()
-                    .is_some_and(|thread| threads.contains(&thread.0));
-                let parent = attempt
-                    .session_thread_id
-                    .as_ref()
-                    .is_some_and(|thread| thread.0 == session.session_id.as_str());
-                if parent && !member {
-                    return unknown(Gap::IdentityMismatch);
-                }
-                if member
-                    && attempt
-                        .session_thread_id
-                        .as_ref()
-                        .is_some_and(|parent| parent.0 != session.session_id.as_str())
-                {
-                    return unknown(Gap::IdentityMismatch);
-                }
+                let member = match scope_member(
+                    session,
+                    &threads,
+                    attempt.thread_id.as_ref(),
+                    attempt.session_thread_id.as_ref(),
+                ) {
+                    Ok(member) => member,
+                    Err(reason) => return unknown(reason),
+                };
                 if member {
                     entries.push(attempt);
                 }
@@ -188,7 +275,7 @@ where
         return unknown(Gap::InventoryIncomplete);
     }
     let mut response_only = true;
-    for thread in threads {
+    for thread in &threads {
         let snapshot = match reads
             .projection_thread_snapshot(&session.session_id, thread, None)
             .await
@@ -893,5 +980,53 @@ mod tests {
                 assert_eq!(observed, Observation::NotProven { reason }, "R{rule}");
             }
         }
+    }
+}
+#[cfg(test)]
+mod fast_pending_tests {
+    use super::*;
+    use awaken_agent_contract::agent::run::Id as RunId;
+
+    #[test]
+    fn only_a_pre_cancel_expired_and_still_exact_slot_can_skip_the_normal_wait() {
+        // C1 the pre-cancel Claim is current/expired/unavailable; C2 the
+        // post-cancel slot is exact/missing/replaced or its read is unavailable.
+        // E1 only expired+exact permits prompt pending; E2 all other cases
+        // retain the ordinary bounded wait. Rules P1=(expired,exact)=>E1;
+        // P2=(current|unknown,any)|(expired,missing|replaced|unknown)=>E2.
+        // Probe failure is an optimization miss, never a reason to skip
+        // durable cancellation or to accept physical quiescence.
+        let claim = awaken_dispatch_contract::RunClaim {
+            run_id: RunId("fast-pending-run".into()),
+            owner: "worker-a".into(),
+            epoch: 1,
+        };
+        for (current, expected) in [(Some(false), true), (Some(true), false), (None, false)] {
+            assert_eq!(
+                expired_claim_for_fast_pending(claim.clone(), current).is_some(),
+                expected,
+                "P1/P2 pre-cancel {current:?}"
+            );
+        }
+        let exact = awaken_dispatch_contract::dispatch::PhysicalAttempt {
+            closing: false,
+            claim: claim.clone(),
+            binding: None,
+            thread_id: None,
+            session_thread_id: None,
+        };
+        let replacement = awaken_dispatch_contract::dispatch::PhysicalAttempt {
+            claim: awaken_dispatch_contract::RunClaim {
+                epoch: 2,
+                ..claim.clone()
+            },
+            ..exact.clone()
+        };
+        assert!(exact_expired_slot_remains(&claim, Some(&exact)), "P1/E1");
+        assert!(!exact_expired_slot_remains(&claim, None), "P2/E2");
+        assert!(
+            !exact_expired_slot_remains(&claim, Some(&replacement)),
+            "P2/E2"
+        );
     }
 }

@@ -2412,6 +2412,9 @@ fn terminal_preparation_authorization(
         inherited_provider_disposal,
     )
     .expect("close the aggregate-derived terminal preparation authorization")
+    .with_source_dispatch(
+        awaken_session_realization_contract::SessionTerminalSourceDispatch::Settled {},
+    )
 }
 
 fn terminal_disposal_effect(

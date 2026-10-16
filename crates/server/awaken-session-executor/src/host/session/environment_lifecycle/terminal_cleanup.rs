@@ -70,21 +70,19 @@ impl SharedHost {
         } else {
             None
         };
-        if let Some(prepared) = root_environment.as_ref() {
-            let expected_restore = prepared
+        let expected_restore = root_environment.as_ref().and_then(|prepared| {
+            prepared
                 .state
-                .restoring_request(&workspace_id, &effect.command.session_id);
-            if expected_restore.as_ref() != effect.command.restore_target.as_ref() {
-                return Err(HostError::unavailable_classified(
-                    "session_terminal_restore_target_mismatch",
-                    "terminal preparation does not carry the aggregate's exact restore target",
-                ));
-            }
-        } else if effect.command.restore_target.is_some() {
-            return Err(HostError::internal(
-                "a child terminal cleanup command cannot own a restore target",
-            ));
-        }
+                .restoring_request(&workspace_id, &effect.command.session_id)
+        });
+        authorization
+            .verify_runtime_source(
+                expected_restore.as_ref(),
+                root_environment.as_ref().is_none_or(|root| {
+                    root.environment.permits_live_io() && root.environment.environment.is_some()
+                }),
+            )
+            .map_err(crate::managed_adapter_error::from_run_error)?;
         let memory_plan = root_environment
             .as_ref()
             .map(|root| cleanup.memory_plan(&effect, &root.environment))

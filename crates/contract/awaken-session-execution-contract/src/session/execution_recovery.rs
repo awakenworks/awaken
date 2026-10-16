@@ -41,6 +41,56 @@ pub enum SessionExecutionRecoveryObservation {
     },
 }
 
+/// Read-only source-I/O boundary, independent of business-effect closure.
+/// This value is rebuilt from the original current Dispatch scope; it is not
+/// serialized, persisted or accepted as an attempt/cleanup acknowledgement.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SessionSourceDispatchObservation {
+    Settled,
+    Pending,
+    NotProven { reason: SessionExecutionRecoveryGap },
+}
+
+impl Default for SessionSourceDispatchObservation {
+    fn default() -> Self {
+        Self::NotProven {
+            reason: SessionExecutionRecoveryGap::HistoryUnavailable,
+        }
+    }
+}
+
+impl SessionSourceDispatchObservation {
+    /// Carry the current source boundary into preparation authorization without
+    /// promoting it to complete execution or business-effect closure.
+    pub fn terminal_source_dispatch(
+        self,
+    ) -> Result<
+        awaken_session_realization_contract::SessionTerminalSourceDispatch,
+        awaken_session_realization_contract::SessionRealizationControlFailure,
+    > {
+        use crate::SessionExecutionRecoveryGap as Gap;
+        use awaken_session_realization_contract::{
+            SessionRealizationControlFailure, SessionTerminalSourceDispatch as Source,
+        };
+        match self {
+            Self::Settled => Ok(Source::Settled {}),
+            Self::Pending => Ok(Source::Pending {}),
+            Self::NotProven {
+                reason:
+                    reason @ (Gap::IdentityMismatch
+                    | Gap::NotTerminal
+                    | Gap::AdmissionFenceMissing
+                    | Gap::ScopeNotFrozen),
+            } => Err(SessionRealizationControlFailure::Invalid(format!(
+                "terminal source recovery projection is invalid: {reason:?}"
+            ))),
+            Self::NotProven { reason } => Ok(Source::Unavailable {
+                detail: format!("current source dispatch boundary is unproven: {reason:?}"),
+            }),
+        }
+    }
+}
+
 /// Scope-wide facts from original entry journals, independent of backend names.
 /// Absence is unknown, never a no-effects declaration for legacy execution.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,8 +124,72 @@ impl PartialEq for SessionRecoveryPreparationReference {
 }
 
 #[cfg(test)]
-mod preparation_identity_tests {
+mod recovery_observation_tests {
     use super::*;
+    #[test]
+    fn terminal_source_authorization_keeps_current_dispatch_distinct_from_global_closure() {
+        // Cause/effect table over the source reader's closed vocabulary:
+        // S1 current scope settled -> live source I/O; S2 an occupied/runnable
+        // member -> Pending; S3 unproven observations -> Unavailable;
+        // S4 nonterminal, missing admission/scope or foreign identity -> Invalid.
+        // No unproven source observation grants access. This conversion cannot
+        // close a slot, certify business closure or create cleanup evidence.
+        use crate::{
+            SessionExecutionRecoveryGap as Gap, SessionSourceDispatchObservation as Observation,
+        };
+        use awaken_session_realization_contract::{
+            SessionRealizationControlFailure, SessionTerminalSourceDispatch as Source,
+        };
+        let closed = Observation::Settled;
+        assert_eq!(
+            closed.terminal_source_dispatch().unwrap(),
+            Source::Settled {},
+            "S1"
+        );
+        assert_eq!(
+            Observation::Pending.terminal_source_dispatch().unwrap(),
+            Source::Pending {},
+            "S2"
+        );
+        assert!(
+            matches!(
+                Observation::default().terminal_source_dispatch(),
+                Ok(Source::Unavailable { .. })
+            ),
+            "S3 an unimplemented fixture/read cannot grant source access"
+        );
+        for reason in [
+            Gap::HistoryUnavailable,
+            Gap::HistoryMissing,
+            Gap::InventoryIncomplete,
+            Gap::AttemptStillOpen,
+            Gap::OrdinaryReturnOnly,
+            Gap::ReadBudgetExceeded,
+        ] {
+            assert!(
+                matches!(
+                    (Observation::NotProven { reason }).terminal_source_dispatch(),
+                    Ok(Source::Unavailable { .. })
+                ),
+                "S3"
+            );
+        }
+        for reason in [
+            Gap::NotTerminal,
+            Gap::AdmissionFenceMissing,
+            Gap::ScopeNotFrozen,
+            Gap::IdentityMismatch,
+        ] {
+            assert!(
+                matches!(
+                    (Observation::NotProven { reason }).terminal_source_dispatch(),
+                    Err(SessionRealizationControlFailure::Invalid(_))
+                ),
+                "S4"
+            );
+        }
+    }
+
     #[test]
     fn preparation_reference_compares_every_original_coordinate() {
         // I1 all original coordinates equal -> same reference; I2 any one

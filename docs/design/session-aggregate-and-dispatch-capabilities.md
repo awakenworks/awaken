@@ -118,6 +118,52 @@ failed seal cannot suppress persistence of an independently observed exit.
 Already-retained exits still retry the seal. Either failure retains physical
 obligations and provider evidence under the unchanged release admission.
 
+## Terminal scope and source access (implementation in progress)
+
+The Session root's existing terminal fence and the committed Run's absorbing
+terminal transition own logical scope closure. Scope discovery must retain every
+possible primary-declared child, including a committed coordination request
+whose admission response has not returned. The existing coordination projector
+reads that request from the same original ToolBatch/transcript prefix; accepted
+relationship projections remain distinct from possible cleanup targets.
+
+Dispatch physical retirement is a separate prerequisite. The existing Runtime
+preparation still owns Hand/background/MCP, Artifact, Memory, checkpoint and
+provider work. Freezing targets cannot grant live source reads while a retained
+execution may still write them. Control therefore carries an exact, transient
+Settled/Pending/Unavailable observation with preparation authorization. The
+existing Dispatch execution module reads the current frozen scope; ordinary
+returned attempts may settle this source prerequisite without claiming complete
+historical/business-effect closure. Both reads share one frozen-scope and
+affinity validator; there is no additional history or state authority.
+Runtime requires Settled before live source I/O; provider-validated terminal or
+already-prepared sources retain their existing receipt-only recovery. Missing
+wire observations are Unavailable. No observation closes an attempt or disposes
+the original resources.
+
+The existing preparation authorization validates the Runtime's observed restore
+target and whether its provider-derived mode requires live source I/O. Runtime
+supplies these observations under its existing lifecycle lock; the transported
+authorization cannot derive permission from provider absence or a missing child
+Environment projection. This is value validation, not another recovery owner.
+The pre-cancel expiry probe and exact-slot comparison live with the existing
+Dispatch execution reads; Host retains only cancellation and cleanup orchestration.
+Session execution admission retains one canonical Registry Arc through the
+existing `WorkerIncarnationSource` read role. Its inherited roster still serves
+placement, while exact historical observations cannot be synthesized from a
+newer manifest or an empty roster. Composition keeps the existing instance-
+identity checks and does not install a second Registry source.
+
+Statically, Session retains the one durable cleanup operation and queue;
+Coordination reads use the original Dispatch owner, and Runtime consumes the
+Control authorization under its existing realization fence. Dynamically,
+terminal Run truth permits scope freeze despite retained physical execution,
+Control observes source dispatch state for preparation, and Runtime admits only
+the matching safe I/O mode. Preparation and disposal receipts retain their
+existing CAS and replay boundaries. Work remains responsible for original
+business-effect reconciliation and successor admission; this Native slice
+does not certify an indeterminate tool result as successful.
+
 Local composition constructs `AnyCoordinatorDispatch` from an owner implementing
 `DurableDispatch`, then uses `DispatchBinding::local`. Its cached Worker view
 retains the exact queue owner. Remote composition uses

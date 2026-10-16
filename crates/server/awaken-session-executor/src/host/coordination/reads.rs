@@ -60,11 +60,13 @@ impl SharedHost {
                 std::borrow::Cow::Owned(snapshot)
             }
         };
-        let mut links = project_committed_coordination_links(
+        let mut links = project_committed_coordination(
             &awaken_session_types::SessionId::from(session_id),
             advisor_model.as_deref(),
             &committed,
-        )?;
+            CoordinationReadPurpose::Relationships,
+        )
+        .map(|projection| projection.links)?;
         if links.is_empty() {
             return Ok(links);
         }

@@ -3,6 +3,242 @@
 use super::*;
 
 #[tokio::test]
+async fn source_dispatch_observation_preserves_current_scope_and_rejects_affinity_drift() {
+    // Source-access cause/effect table: C1 terminal root; C2 frozen scope;
+    // C3 runnable member; C4 a parent-affined row outside that scope; C5 a
+    // member with a foreign parent. R1=C1+C2+!C3+!C4+!C5 -> Settled;
+    // R2=!C1 or !C2 -> unproven; R3=C3 -> Pending; R4=C4|C5 -> invalid
+    // identity, even after observing C3. Unrelated rows do not block this root.
+    // The reader has only Dispatch read capabilities and changes no row.
+    use crate::host::worker_resolver::test_support::test_activation;
+    use awaken_dispatch_contract::{
+        DispatchEnqueue as _, DispatchReads as _, SessionRunReservations as _,
+    };
+    use awaken_session_execution_contract::{
+        SessionExecutionRecoveryGap as Gap, SessionSourceDispatchObservation as Source,
+    };
+    for (terminal, frozen, rows, expected) in [
+        (true, true, vec![], Source::Settled),
+        (
+            false,
+            true,
+            vec![],
+            Source::NotProven {
+                reason: Gap::NotTerminal,
+            },
+        ),
+        (
+            true,
+            false,
+            vec![],
+            Source::NotProven {
+                reason: Gap::ScopeNotFrozen,
+            },
+        ),
+        (
+            true,
+            true,
+            vec![("source-root", "source-root")],
+            Source::Pending,
+        ),
+        (
+            true,
+            true,
+            vec![("source-child", "source-root")],
+            Source::Pending,
+        ),
+        (
+            true,
+            true,
+            vec![("source-escaped", "source-root")],
+            Source::NotProven {
+                reason: Gap::IdentityMismatch,
+            },
+        ),
+        (
+            true,
+            true,
+            vec![("source-child", "foreign-root")],
+            Source::NotProven {
+                reason: Gap::IdentityMismatch,
+            },
+        ),
+        (
+            true,
+            true,
+            vec![("foreign-child", "foreign-root")],
+            Source::Settled,
+        ),
+        (
+            true,
+            true,
+            vec![
+                ("source-root", "source-root"),
+                ("source-child", "foreign-root"),
+            ],
+            Source::NotProven {
+                reason: Gap::IdentityMismatch,
+            },
+        ),
+    ] {
+        let store = awaken_dispatch::open_sqlite_dispatch_store_in_memory(Arc::new(
+            awaken_lease_testkit::ManualClock::new(100),
+        ))
+        .await
+        .unwrap();
+        let projection = remote_terminal_cleanup_projection();
+        let lease = crate::session_resource::SessionRealizationLease {
+            owner: "source-worker".into(),
+            runtime_incarnation: "source-incarnation".into(),
+            epoch: 1,
+            expires_at_unix_ms: 1_000,
+        };
+        let mut root = terminal_test_session(
+            "source-root",
+            &projection,
+            lease,
+            ["source-child".into()],
+            None,
+        );
+        if terminal {
+            root.archive("source-observation", 100).unwrap();
+        }
+        if !frozen {
+            root.terminal_cleanup = Default::default();
+            assert!(root.ensure_terminal_cleanup_fence());
+        }
+        for (index, (thread, parent)) in rows.into_iter().enumerate() {
+            // Observe already-admitted activities; do not bypass fresh-root
+            // reservation or the canonical child-admission command.
+            let request = awaken_dispatch_contract::RunDispatch::new(test_activation(
+                thread,
+                &format!("source-run-{index}"),
+            ))
+            .for_session(ThreadId(parent.into()))
+            .with_session_activity_epoch(1);
+            if thread == parent {
+                store.enqueue(request).await.unwrap();
+            } else {
+                store
+                    .enqueue_session_child(
+                        request,
+                        awaken_dispatch_contract::SessionChildAdmission::new(25, Vec::new()),
+                    )
+                    .await
+                    .unwrap();
+            }
+        }
+        let before = store.list_dispatches().await.unwrap();
+        assert_eq!(
+            awaken_dispatch_execution::read_source_dispatch_observation(&store, &root).await,
+            expected
+        );
+        assert_eq!(store.list_dispatches().await.unwrap(), before, "read only");
+    }
+}
+
+#[tokio::test]
+async fn ordinary_attempt_acknowledgement_releases_source_without_claiming_global_closure() {
+    // Regression O1: an ordinary attempt really returns and its guarded Done
+    // removes the current row -> terminal source access is Settled. The same
+    // original journal retains only an Acknowledgement, never independent
+    // closure. A full-history/independent-closure gate here would regress every
+    // normal cleanup. O2 before that return -> Pending, with its slot retained.
+    use crate::host::worker_resolver::test_support::test_activation;
+    use awaken_dispatch_contract::{
+        DispatchAttemptRecordReads as _, DispatchClaims as _, DispatchEnqueue as _,
+        DispatchExecution as _, DispatchSettlement as _,
+    };
+    use awaken_session_execution_contract::SessionSourceDispatchObservation as Source;
+    let store = awaken_dispatch::open_sqlite_dispatch_store_in_memory(Arc::new(
+        awaken_lease_testkit::ManualClock::new(100),
+    ))
+    .await
+    .unwrap();
+    let projection = remote_terminal_cleanup_projection();
+    let lease = crate::session_resource::SessionRealizationLease {
+        owner: "source-worker".into(),
+        runtime_incarnation: "source-incarnation".into(),
+        epoch: 1,
+        expires_at_unix_ms: 1_000,
+    };
+    let mut root = terminal_test_session(
+        "source-ordinary",
+        &projection,
+        lease,
+        std::iter::empty(),
+        None,
+    );
+    let run = RunId("source-ordinary-run".into());
+    store
+        .enqueue(
+            awaken_dispatch_contract::RunDispatch::new(test_activation(
+                "source-ordinary",
+                &run.0,
+            ))
+            .for_session(ThreadId("source-ordinary".into()))
+            .with_session_activity_epoch(1),
+        )
+        .await
+        .unwrap();
+    let claimed = store
+        .claim_run(&run, "source-worker", 1000, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
+    let claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
+    assert_eq!(
+        store.begin_attempt(&claim, None).await.unwrap(),
+        awaken_dispatch_contract::AttemptAdmission::Applied
+    );
+    root.archive("source-observation", 100).unwrap();
+    assert_eq!(
+        awaken_dispatch_execution::read_source_dispatch_observation(&store, &root).await,
+        Source::Pending,
+        "O2"
+    );
+    assert_eq!(
+        store
+            .finish_attempt(
+                &claim,
+                Some(awaken_dispatch_contract::AttemptReturnCause::StructuredReturnObserved)
+            )
+            .await
+            .unwrap(),
+        awaken_dispatch_contract::SettleOutcome::Applied
+    );
+    assert_eq!(
+        store
+            .settle(
+                &run,
+                claim.epoch,
+                awaken_dispatch_contract::DispatchOutcome::Done,
+                &[]
+            )
+            .await
+            .unwrap(),
+        awaken_dispatch_contract::SettleOutcome::Applied
+    );
+    assert_eq!(
+        awaken_dispatch_execution::read_source_dispatch_observation(&store, &root).await,
+        Source::Settled,
+        "O1"
+    );
+    let facts = store
+        .attempt_closure_records_after(Default::default(), 10, Some(&run))
+        .await
+        .unwrap();
+    assert_eq!(facts.events.len(), 1);
+    assert!(
+        matches!(
+            &facts.events[0].record,
+            awaken_dispatch_contract::AttemptPhysicalFact::Acknowledgement { .. }
+        ),
+        "O1 remains ordinary return, not independent closure"
+    );
+}
+
+#[tokio::test]
 async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally() {
     // Constraint/Invariant: the authoritative inputs and ownership boundaries
     // documented here remain the only decision source; no parallel path is admitted.
