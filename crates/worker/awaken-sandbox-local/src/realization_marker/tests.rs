@@ -493,7 +493,7 @@ fn fenced_marker_phase_root_fence_and_incarnation_table_is_total() {
             Some(&rebuild),
         )
         .unwrap(),
-        pc::SandboxObservation::Provisioning,
+        pc::SandboxObservation::Provisioning { deadline: None },
         "M4"
     );
     recreating

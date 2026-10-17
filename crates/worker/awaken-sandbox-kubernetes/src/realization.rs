@@ -402,6 +402,39 @@ pub(super) fn pod_readiness(pod: &Pod) -> PodReadiness {
     PodReadiness::Waiting(format!("Pod phase is {phase}"))
 }
 
+/// The Pod's creation instant as the API server recorded it: durable
+/// evidence that outlives the creating process, so a later observer measures
+/// the same wait the creator did.
+pub(super) fn pod_created_ms(pod: &Pod) -> Option<u64> {
+    let created = pod
+        .metadata
+        .creation_timestamp
+        .as_ref()
+        .and_then(|time| serde_json::to_value(time).ok())?;
+    awaken_time::utc::rfc3339_to_epoch_millis(created.as_str()?)
+}
+
+/// The provider's deadline over a Pod it still observes provisioning, read
+/// on the composed clock: the bound the creating attempt's own readiness wait
+/// applies. A Pod without a creation instant or a runtime composed without a
+/// clock has no deadline, so the wait fails closed to a bounded retry.
+pub(super) fn pod_provisioning_deadline(
+    pod: &Pod,
+    unschedulable_wait: Duration,
+    clock: Option<&std::sync::Arc<dyn awaken_time::WallClock>>,
+) -> Option<awaken_provisioning_contract::ProvisioningDeadline> {
+    let created = pod_created_ms(pod)?;
+    let observed_at = awaken_time::WallClockExt::now_ms(clock?.as_ref());
+    Some(awaken_provisioning_contract::ProvisioningDeadline::new(
+        awaken_container_contract::k8s_pod_provisioning_deadline_ms(
+            created,
+            unschedulable_wait,
+            POD_READY_TIMEOUT,
+        ),
+        observed_at,
+    ))
+}
+
 /// Await readiness of Pod `name`. While the scheduler refuses to place it the
 /// wait is bounded by `unschedulable_wait` measured from Pod creation (on the
 /// composed clock, never shorter than this wait) and ends in
@@ -439,15 +472,7 @@ pub(super) async fn await_pod_ready(
         if unschedulable.is_some() {
             startup = awaken_time::mono::Stopwatch::start();
         }
-        let created = pod
-            .metadata
-            .creation_timestamp
-            .as_ref()
-            .and_then(|time| serde_json::to_value(time).ok());
-        let created = created
-            .as_ref()
-            .and_then(|value| awaken_time::utc::rfc3339_to_epoch_millis(value.as_str()?));
-        let age = created.zip(clock).map(|(created, clock)| {
+        let age = pod_created_ms(&pod).zip(clock).map(|(created, clock)| {
             awaken_container_contract::k8s_pod_age(
                 created,
                 awaken_time::WallClockExt::now_ms(clock.as_ref()),
@@ -495,6 +520,47 @@ mod tests {
     };
 
     use super::*;
+
+    struct FrozenClock(u64);
+
+    impl awaken_time::WallClock for FrozenClock {
+        fn now(&self) -> awaken_time::UtcTime {
+            awaken_time::UtcTime::from_epoch_ms(self.0)
+        }
+    }
+
+    #[test]
+    fn a_provisioning_pod_carries_the_creators_deadline_only_with_durable_evidence() {
+        // Decision table: C1 the Pod records its creation instant; C2 the
+        // runtime was composed with a clock. Effect: the observation's
+        // deadline = creation + scheduler bound + start-up timeout, read at
+        // the clock; without either fact no deadline (bounded retry).
+        let created = 1_709_164_800_000;
+        let mut pod = Pod::default();
+        pod.metadata.creation_timestamp =
+            Some(serde_json::from_value(serde_json::json!("2024-02-29T00:00:00Z")).unwrap());
+        let clock: std::sync::Arc<dyn awaken_time::WallClock> =
+            std::sync::Arc::new(FrozenClock(created + 5_000));
+        let wait = Duration::from_secs(300);
+        assert_eq!(
+            pod_provisioning_deadline(&pod, wait, Some(&clock)),
+            Some(awaken_provisioning_contract::ProvisioningDeadline::new(
+                created + 300_000 + POD_READY_TIMEOUT.as_millis() as u64,
+                created + 5_000,
+            )),
+            "D1 creation instant and clock"
+        );
+        assert_eq!(
+            pod_provisioning_deadline(&pod, wait, None),
+            None,
+            "D2 no clock"
+        );
+        assert_eq!(
+            pod_provisioning_deadline(&Pod::default(), wait, Some(&clock)),
+            None,
+            "D3 no creation instant"
+        );
+    }
 
     #[test]
     fn pod_api_default_normalization_preserves_semantic_differences() {

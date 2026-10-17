@@ -135,11 +135,11 @@ fn observe_adoption_inner(
     // Cold adoption must not race a surviving participant from the old Worker.
     // Live means retry, unknown means error; neither is physical absence.
     if !execution_participant::is_quiescent(&marker)? {
-        return Ok(pc::SandboxObservation::Provisioning);
+        return Ok(pc::SandboxObservation::Provisioning { deadline: None });
     }
     match marker.phase {
         RealizationPhase::Creating | RealizationPhase::Recreating => {
-            Ok(pc::SandboxObservation::Provisioning)
+            Ok(pc::SandboxObservation::Provisioning { deadline: None })
         }
         RealizationPhase::Ready => match owned {
             OwnedRealizationPath::Exact { path, .. } if path == root => {
@@ -207,7 +207,7 @@ pub(crate) fn verify_adoption(
             }
             None => Ok(None),
         },
-        pc::SandboxObservation::Provisioning => Err(pc::SandboxError::not_ready(
+        pc::SandboxObservation::Provisioning { .. } => Err(pc::SandboxError::not_ready(
             "sandbox realization did not reach Ready",
         )),
         pc::SandboxObservation::DefinitivelyUnavailable { .. }

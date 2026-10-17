@@ -17,11 +17,13 @@ use super::restore_contract::{SandboxRestoreRequest, SandboxRestoreResult, Sandb
 
 mod disposal;
 mod memory_reconciliation;
+mod provisioning_deadline;
 
 use crate::with_current_sandbox_effect;
 pub use disposal::{SandboxDisposalAuthorization, SandboxDisposalPreparation};
 pub use memory_reconciliation::MemoryReconciliationAck;
 use memory_reconciliation::default_memory_reconciliation_ack;
+pub use provisioning_deadline::ProvisioningDeadline;
 
 /// The lifecycle state of a sandbox, queryable idempotently (survives reconnect).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,8 +44,15 @@ pub enum SandboxStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SandboxObservation {
-    /// The exact physical realization is still converging.
-    Provisioning,
+    /// The exact physical realization is still converging. `deadline` is the
+    /// provider's bound on that convergence, read at this observation; only a
+    /// provider whose backend progresses provisioning on its own and records
+    /// when it began can give one. Without it the wait has no owner, so a
+    /// consumer must treat it as a failed attempt rather than wait.
+    Provisioning {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        deadline: Option<ProvisioningDeadline>,
+    },
     /// The exact physical realization is ready to be adopted.
     Ready,
     /// The provider proved that the exact durable realization is gone. A

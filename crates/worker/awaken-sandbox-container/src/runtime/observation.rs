@@ -121,7 +121,9 @@ pub fn sandbox_observation(
         });
     }
     match observed.phase {
-        ExistingRealizationPhase::Creating => Ok(pc::SandboxObservation::Provisioning),
+        ExistingRealizationPhase::Creating => {
+            Ok(pc::SandboxObservation::Provisioning { deadline: None })
+        }
         ExistingRealizationPhase::Ready => Ok(pc::SandboxObservation::Ready),
         ExistingRealizationPhase::Terminal if expected_incarnation.is_some() => {
             Ok(pc::SandboxObservation::Terminal {

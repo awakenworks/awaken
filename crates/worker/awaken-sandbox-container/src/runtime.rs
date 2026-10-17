@@ -478,7 +478,7 @@ fn exact_removal_decision(
     observation: pc::SandboxObservation,
 ) -> Result<ExactRemovalDecision, RuntimeError> {
     match observation {
-        pc::SandboxObservation::Provisioning
+        pc::SandboxObservation::Provisioning { .. }
         | pc::SandboxObservation::Ready
         | pc::SandboxObservation::Terminal { .. }
         | pc::SandboxObservation::Disposing { .. } => Ok(ExactRemovalDecision::Remove),
@@ -1023,7 +1023,7 @@ mod realization_tests {
                             if phase == ExistingRealizationPhase::Ready {
                                 pc::SandboxObservation::Ready
                             } else {
-                                pc::SandboxObservation::Provisioning
+                                pc::SandboxObservation::Provisioning { deadline: None }
                             },
                             "R1"
                         );
@@ -1087,7 +1087,7 @@ mod realization_tests {
                 None
             )
             .unwrap(),
-            pc::SandboxObservation::Provisioning,
+            pc::SandboxObservation::Provisioning { deadline: None },
             "R2 creating"
         );
         assert_eq!(
@@ -1327,7 +1327,7 @@ mod realization_tests {
         // remove; R2 exact absence requests auxiliary-only convergence; R3 a
         // deterministic incompatibility rejects with no destructive effect.
         for observation in [
-            pc::SandboxObservation::Provisioning,
+            pc::SandboxObservation::Provisioning { deadline: None },
             pc::SandboxObservation::Ready,
             pc::SandboxObservation::Terminal {
                 physical_incarnation: "incarnation-1".into(),

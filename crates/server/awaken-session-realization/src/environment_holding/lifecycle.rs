@@ -290,7 +290,7 @@ impl crate::environment_holding::EnvironmentHolding {
                     .await?;
                 Ok(())
             }
-            awaken_provisioning_contract::SandboxObservation::Provisioning => {
+            awaken_provisioning_contract::SandboxObservation::Provisioning { .. } => {
                 Err(RealizationError::pending(
                     PendingState::Provisioning,
                     format!(
@@ -1055,7 +1055,7 @@ impl crate::environment_holding::EnvironmentHolding {
                 })?;
                 Ok(SessionEnvironmentAdoptionDisposition::Ready)
             }
-            awaken_provisioning_contract::SandboxObservation::Provisioning => {
+            awaken_provisioning_contract::SandboxObservation::Provisioning { .. } => {
                 Err(RealizationError::pending(
                     PendingState::Provisioning,
                     format!(

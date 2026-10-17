@@ -1002,7 +1002,7 @@ mod tests {
                 false,
             ),
             (O::Ready, false),
-            (O::Provisioning, false),
+            (O::Provisioning { deadline: None }, false),
             (
                 O::Disposing {
                     physical_incarnation: "pod-a".into(),

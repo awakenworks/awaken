@@ -102,6 +102,24 @@ pub fn k8s_pod_wait(
     }
 }
 
+/// The provisioning deadline of a Sandbox Pod created at `created_ms`: the
+/// last instant the creating attempt's own readiness wait ([`k8s_pod_wait`])
+/// could still be waiting. The scheduler bound runs from creation and the
+/// start-up timeout from the last unschedulable observation, so the latest
+/// give-up is creation + scheduler bound + start-up timeout. A recovering
+/// observer therefore never waits longer than the creator would have.
+#[must_use]
+pub fn k8s_pod_provisioning_deadline_ms(
+    created_ms: u64,
+    unschedulable_bound: Duration,
+    startup_timeout: Duration,
+) -> u64 {
+    let bound = unschedulable_bound
+        .saturating_add(startup_timeout)
+        .as_millis();
+    created_ms.saturating_add(u64::try_from(bound).unwrap_or(u64::MAX))
+}
+
 /// Time since `created_ms` at `now_ms`; a reading before creation (clock
 /// skew) is zero.
 #[must_use]
@@ -112,6 +130,25 @@ pub fn k8s_pod_age(created_ms: u64, now_ms: u64) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pod_provisioning_deadline_is_the_creators_latest_give_up() {
+        // Decision table: C1 creation instant; C2 scheduler bound; C3 start-up
+        // timeout. Effect: creation + C2 + C3, saturating at the end of time.
+        let secs = Duration::from_secs;
+        for (rule, created, bound, startup, deadline) in [
+            ("P1 defaults", 1_000, secs(300), secs(120), 421_000),
+            ("P2 no scheduler wait", 1_000, secs(0), secs(120), 121_000),
+            ("P3 saturates", u64::MAX - 5, secs(300), secs(120), u64::MAX),
+            ("P3 saturates", 0, Duration::MAX, secs(120), u64::MAX),
+        ] {
+            assert_eq!(
+                k8s_pod_provisioning_deadline_ms(created, bound, startup),
+                deadline,
+                "{rule}"
+            );
+        }
+    }
 
     #[test]
     fn only_a_quota_exhaustion_refusal_is_capacity() {
