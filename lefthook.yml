@@ -1,3 +1,8 @@
+# Hooks print nothing when every check passes; a failing check prints its own
+# output and name. (The reference-transaction hook runs on every ref update.)
+output:
+  - failure
+
 # Repository guardrails for the runtime design corpus and future Rust/frontend
 # engineering workspace.
 #
