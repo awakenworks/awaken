@@ -135,6 +135,15 @@ pub struct SessionEnvironmentFacts {
     pub(crate) generation_live: bool,
     /// Hibernated only: the checkpoint is unexpired at `now`.
     pub(crate) checkpoint_live: bool,
+    /// The frozen topology has a continuation transport: false only for an
+    /// external Worker placement with checkpoint-and-release retention
+    /// ([`crate::SessionPlacementClass::supports_idle_retention`]); true
+    /// without a frozen baseline.
+    pub(crate) continuation_topology_supported: bool,
+    /// Resident only: the binding's Memory evidence admits a suspend (no
+    /// pending Memory generation, and the active Memory inputs join the
+    /// handle's evidence without a writable legacy copy).
+    pub(crate) suspend_memory_admitted: bool,
 }
 
 /// How a materialization effect relates the environment to its binding.
@@ -269,6 +278,12 @@ pub enum SessionEnvironmentRejection {
     InconsistentEvidence,
     #[error("the materialization remains pending its original effect and source closure")]
     MaterializationPending,
+    #[error(
+        "checkpoint-and-release retention has no continuation transport for an external Worker"
+    )]
+    UnsupportedContinuationTopology,
+    #[error("the Memory evidence of the resident binding does not admit a suspend")]
+    MemoryEvidenceUnproven,
 }
 
 type Outcome = Result<SessionEnvironmentDecision, SessionEnvironmentRejection>;
@@ -452,17 +467,23 @@ const fn legacy_binding_delivered(facts: SessionEnvironmentFacts) -> Outcome {
 }
 
 /// continuation.rs `advance_environment_continuation` arm selection, with the
+/// frozen-topology guard, the suspend Memory preflight and the
 /// `begin_suspend_at` preconditions of the aggregate wrapper.
 const fn advance_continuation(facts: SessionEnvironmentFacts) -> Outcome {
     if !is_active(facts) {
         return Err(SessionEnvironmentRejection::Terminal);
+    }
+    if !facts.continuation_topology_supported {
+        return Err(SessionEnvironmentRejection::UnsupportedContinuationTopology);
     }
     if is_stale(facts) {
         return Err(SessionEnvironmentRejection::LeaseNotCurrent);
     }
     match facts.step {
         SessionEnvironmentStep::Resident if facts.suspend_due && facts.execution_idle => {
-            if facts.activities_open {
+            if !facts.suspend_memory_admitted {
+                Err(SessionEnvironmentRejection::MemoryEvidenceUnproven)
+            } else if facts.activities_open {
                 Err(SessionEnvironmentRejection::ActivitiesOpen)
             } else if !facts.resident_generated {
                 Err(SessionEnvironmentRejection::NotGenerated)
@@ -503,10 +524,14 @@ const fn suspend_work(facts: SessionEnvironmentFacts, phase: SuspendPhase) -> Ou
     }
 }
 
-/// continuation.rs `ensure_environment_resident` state dispatch.
+/// continuation.rs `ensure_environment_resident` state dispatch, after the
+/// frozen-topology guard.
 const fn require_resident(facts: SessionEnvironmentFacts) -> Outcome {
     if !is_active(facts) {
         return Err(SessionEnvironmentRejection::Terminal);
+    }
+    if !facts.continuation_topology_supported {
+        return Err(SessionEnvironmentRejection::UnsupportedContinuationTopology);
     }
     if is_stale(facts) {
         return Err(SessionEnvironmentRejection::LeaseNotCurrent);
@@ -730,8 +755,83 @@ impl SessionEnvironmentFacts {
                 .environment
                 .checkpoint()
                 .is_some_and(|checkpoint| checkpoint.expired_at(now_unix_ms)),
+            continuation_topology_supported: session.frozen_baseline().is_none_or(|baseline| {
+                crate::SessionPlacementClass::new(
+                    baseline.runtime_placement,
+                    baseline.environment.self_hosted,
+                )
+                .supports_idle_retention(&baseline.environment.idle_retention)
+            }),
+            suspend_memory_admitted: matches!(
+                session.environment,
+                SessionEnvironmentState::Resident { .. }
+            ) && suspend_memory_preflight(session).is_ok(),
         }
     }
+
+    /// Project the facts for a continuation command (advance or require
+    /// resident). The asserted lease is the one whose fence the step's next
+    /// effect presents: a committed quiesce, checkpoint or restore operation
+    /// presents the lease it captured, so a root that no longer authorizes it
+    /// refuses the effect before provider I/O. Every other step acts under the
+    /// root's current lease: source release and disposal lower it (a
+    /// higher-epoch successor may finish them), and Resident and Hibernated
+    /// commit a new operation under it.
+    #[must_use]
+    pub fn project_continuation(session: &crate::PersistedSession, now_unix_ms: u64) -> Self {
+        let asserted = match &session.environment {
+            SessionEnvironmentState::Suspending {
+                operation,
+                suspend_phase: SuspendPhase::Quiescing | SuspendPhase::Uploading,
+                ..
+            }
+            | SessionEnvironmentState::Restoring { operation, .. } => {
+                operation.realization.as_ref()
+            }
+            _ => None,
+        };
+        Self::project(session, now_unix_ms, asserted)
+    }
+}
+
+/// The suspend Memory preflight over the aggregate's current source binding.
+/// A pending Memory generation has no single physical input/evidence join and
+/// therefore remains resident; active Memory reuses the neutral None/Some
+/// validator that source disposal invokes on historical rows.
+fn suspend_memory_preflight(
+    session: &crate::PersistedSession,
+) -> Result<(), crate::SessionMemoryReconciliationError> {
+    let is_memory = |input: &crate::ResolvedInput| {
+        matches!(
+            &input.source,
+            crate::ResolvedInputSource::MemoryStore { .. }
+        )
+    };
+    if session
+        .resources
+        .pending
+        .as_ref()
+        .is_some_and(|pending| pending.inputs().iter().any(is_memory))
+    {
+        return Err(crate::SessionMemoryReconciliationError::ResourceMismatch);
+    }
+    let active_inputs = session.resources.active.inputs();
+    if !active_inputs.iter().any(is_memory) {
+        return Ok(());
+    }
+    let binding = session
+        .environment
+        .binding()
+        .ok_or(crate::SessionMemoryReconciliationError::EnvironmentMismatch)?;
+    let handle = serde_json::from_str::<awaken_provisioning_contract::SandboxHandle>(binding)
+        .map_err(|error| {
+            crate::SessionMemoryReconciliationError::InvalidIntent(error.to_string())
+        })?;
+    let materializations = handle.memory_materializations().map_err(|error| {
+        crate::SessionMemoryReconciliationError::InvalidIntent(error.to_string())
+    })?;
+    crate::validate_continuation_memory_materializations(active_inputs, materializations)?;
+    Ok(())
 }
 
 /// The safety laws the decision table and the Kani harnesses both check, so

@@ -28,6 +28,8 @@ fn any_facts() -> SessionEnvironmentFacts {
         suspend_evidence_consistent: kani::any(),
         generation_live: kani::any(),
         checkpoint_live: kani::any(),
+        continuation_topology_supported: kani::any(),
+        suspend_memory_admitted: kani::any(),
     }
 }
 
