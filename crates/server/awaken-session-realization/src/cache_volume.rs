@@ -749,7 +749,7 @@ mod tests {
         assert!(apply.wait().unwrap().success(), "create test PVC");
 
         let runtime = Arc::new(
-            awaken_sandbox_container::k8s::K8sRuntime::connect(
+            awaken_sandbox_kubernetes::K8sRuntime::connect(
                 namespace.clone(),
                 "127.0.0.1:1".parse().unwrap(),
             )

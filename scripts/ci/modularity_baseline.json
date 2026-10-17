@@ -65,7 +65,7 @@
     "awaken-dispatch-http": 2,
     "awaken-runtime": 10,
     "awaken-session-executor": 27,
-    "awaken-sandbox-container": 15,
+    "awaken-sandbox-container": 6,
     "awaken-sandbox-fs": 6,
     "awaken-sandbox-local": 13,
     "awaken-scenario-host": 1,
@@ -93,7 +93,7 @@
     "awaken-runtime": 2,
     "awaken-runtime-contract": 3,
     "awaken-session-executor": 15,
-    "awaken-sandbox-container": 3,
+    "awaken-sandbox-container": 2,
     "awaken-sandbox-local": 3,
     "awaken-session-application": 2,
     "awaken-session-mcp": 3,
@@ -324,14 +324,14 @@
     "awaken-runtime::engine/run_loop.rs::drive": 509,
     "awaken-runtime::engine/run_loop.rs::infer_step": 240,
     "awaken-runtime::engine/run_loop.rs::run_agent_loop": 204,
-    "awaken-sandbox-container::k8s.rs::build_pod_with_continuation": 309,
-    "awaken-sandbox-container::k8s.rs::remove_bound": 189,
-    "awaken-sandbox-container::k8s_package_image.rs::build_objects": 229,
-    "awaken-sandbox-container::k8s_package_realization.rs::verify_k8s_package_realization": 194,
     "awaken-sandbox-container::lib.rs::resolve_and_stage": 164,
     "awaken-sandbox-container::provider.rs::create_container_for_effect": 492,
     "awaken-sandbox-container::provider_realization.rs::realize_restore_container": 206,
     "awaken-sandbox-container::staged_mounts.rs::materialize_memory_binds": 161,
+    "awaken-sandbox-kubernetes::lib.rs::build_pod_with_continuation": 309,
+    "awaken-sandbox-kubernetes::lib.rs::remove_bound": 189,
+    "awaken-sandbox-kubernetes::package_image.rs::build_objects": 229,
+    "awaken-sandbox-kubernetes::package_realization.rs::verify_k8s_package_realization": 194,
     "awaken-sandbox-local::namespace.rs::adopt_sandbox_inner": 173,
     "awaken-sandbox-local::namespace.rs::create_sandbox_inner": 325,
     "awaken-sandbox-local::provider.rs::create_sandbox_inner": 213,
@@ -389,11 +389,6 @@
       "reason": "runtime-host split (plan 10.4 slices R, E, H): lines hold host plus the realizer being extracted in place (+142 approved 2026-10-10 for the SessionRealizations view, leaves with the realization crate; +24 approved 2026-10-10 for k8s_unschedulable_wait_secs settings, leaves with the deployment configuration to the composition root); host_lines may only fall; target < 20000 lines, about 26-28 dependencies",
       "host_lines": 23154
     },
-    "awaken-sandbox-container": {
-      "deps": 11,
-      "lines": 25898,
-      "reason": "ADR-0092 quota/unschedulable/probe handling plus reviewed single-ledger finite capture policy (+383 required lines after duplicate byte-count/collector consolidation): canonical full ConfigMap/future-result/guard projection and original Limited response adaptation; no new store or resource budget. Removed when W34 moves the Kubernetes backend into its own crate."
-    },
     "awaken-session-application": {
       "deps": 23,
       "lines": 18374,
@@ -424,7 +419,6 @@
     "crate-budget": {
       "awaken-protocol-managed": "ADR-0093 adds six wire-projection lines for the optional immutable Session origin; no lifecycle, signer or permission authority is added; then: Web boundary ownership: the existing protocol tools module now owns the versioned Managed AgentTool DTO and fallible mapping removed from neutral Session configuration; pure Web semantics live in the existing Web SDK. This is the same protocol translation boundary, with no new crate or application authority; W20 remains the extraction target.",
       "awaken-session-executor": "P0 original-effect provenance after duplication review: Root adds one read-only getter for private history; existing App binding sink admits first intent with the same single 3-attempt CAS/readback protocol, no new public domain selector; Host retains full candidate intent and rejects missing Managed authority before I/O; existing keys/Resident matcher/ProviderEffect kernels shared. Preserve host part, dependency budgets, admission/formal/physical requirements and R/W21 extraction targets.; then: R extraction onto main822 (ADR-0089/plan10.4): original long-function key identities migrate to the new crate; borrowed component/MCP callback signatures add plumbing only. Record inherited R module cycle6 and correct Host measurement including existing E/H Run/dispatch glue. Whole Host and internal deps shrink; final Host<20k/26-28deps, cycles and remaining persistence-port debt are not claimed complete. Current main MemoryExecutionContent replaces the removed broad repository throughout the extracted source; no compatibility implementation.; then: Session foreground record: Run identity and interrupt signal under one lock, poison refused; exact-original close selection; home is the not-yet-extracted Session executor",
-      "awaken-sandbox-container": "ADR-0091 D2: the existing Kubernetes adapter owns exact-incarnation absence. Consolidating Pod/PVC polling removes the second algorithm; 23 production lines add valid-UID rejection and current-effect checks before and after polling sleep while retaining typed adapters, 60s/30s deadlines, 100ms pacing, existing ports and dependencies. This is mandatory Native cleanup proof in its existing final owner, not new product behavior or a new cleanup service.; then: P0 Native original-participant closure: one schema3 Container carrier and immutable exact Create-result UID set replace selector cleanup; creation, restore, observation, and disposal share that sole projection and existing deletion waiter. No new service, registry, ledger, dependencies, impl spread, glob, or SCC; legacy partial evidence remains Unknown. Required reviewed adapter/codec production growth is bound to Container365 and broker5 actual passes; removed duplication and shorter functions tighten simultaneously.; then: Keep the sole pure Container codec feature-neutral while gating its private K8s-only physical attempt accessor to its actual consumer graph; one cfg production line closes default-graph dead-code rejection without an allow, artificial call or second wire definition.; then: Consolidate original Kubernetes request metadata checks in the existing Create ledger. Raw broker and typed original/reservation callers retain their exact UID, nonce and isolation purpose guards; one borrowed field law, no new dependencies, lifecycle, DTO or endpoint.; then: ADR-0078: complete original Inline handoff recovery belongs to the existing Kubernetes participant projection and Container Provider; shared stamping and mount-path collection remove duplicate logic. Exact ticket UID, original nonce/digest, full Pod and immutable content checks add 204 production lines without another authority, dependency or API. The original create function shrinks from 506 to 492; complete execution/request closure and target access remain pending.; then: ADR-0078: recover only exact Created V3 Pod Control identity from the existing full Pod verifier and frozen supported topology. Reuse the original publication slot absorbing close for TerminalCleanup; preserve legacy codecs and ordinary Ready binding, and keep cold live sources pending. Existing recovery lowering and one mount-path collector replace duplicated handle assembly. Required 59 adapter lines add no fields, service, store, endpoint, dependency, SCC or parallel control state.; then: ADR-0078 pure observation in the existing Create ledger: one sealed Worker/group query reuses load_exact and canonical join; shared seal predicate and borrowed membership iterator remove duplicate rules. The adapter adds seven required functional lines, no state, store, endpoint, trait, dependency, grant, or side effect. Retain original group-only behavior, UID and read errors; remove this temporary Container review budget when W34 extracts Kubernetes. Host admission, formal gates, deadlines, stack and reserve budgets are unchanged.; then: ADR-0078 published V2 compatibility in the existing Container codec and Kubernetes adapter: 226 required production lines for terminal-only frozen-plan empty evidence, original envelope/UID validation and a default-no-evidence port. Reuse one effective-plan builder and member classifier; factor the existing self-contained inline input closure for BOTH bound normalization and handle-free recovery, rejecting all unresolved File/Resource/Secret, Memory and cache inputs. Preserve full original metadata and JoinedEmpty replay; split normalization and member observation from orchestration. No dependency, service, store, queue or cleanup authority added. Actual negative regressions and the 57-test owner suite plus K8s all-target Clippy and default-feature checks qualify this bounded change. Source-retained Actor retirement, deleting-Pod recovery and W34 extraction remain pending.; then: ADR-0078 original Create-guard succession stays in the existing Kubernetes continuation interlock. Reuse aggregate preparation/current-successor validation, exact Pod/PVC/member UIDs, one finalizer CAS and one selected-retainer release. Add only typed original-guard provenance and a distinct retained-source observation, never a second cleanup state or deletion path; already-deleting Pods receive annotation-only CAS. Consolidate already-released disposal completion and guard release so remove_bound shrinks 195 to 189. Actual source/physical red cases, 117 focused regressions, full V3+Control case, one successful 46-check Kani harness and fresh/replayed isolated live K3d API cases bound the change; full deployment/Actor retirement/automatic coding acceptance remain pending. No new workspace dependency or permission authority; W34 backend extraction remains pending.",
       "awaken-session-application": "P0 original-effect provenance after duplication review: Root adds one read-only getter for private history; existing App binding sink admits first intent with the same single 3-attempt CAS/readback protocol, no new public domain selector; Host retains full candidate intent and rejects missing Managed authority before I/O; existing keys/Resident matcher/ProviderEffect kernels shared. Preserve host part, dependency budgets, admission/formal/physical requirements and R/W21 extraction targets.; then: Native terminal-cleanup P0: retain original operation/epoch/Thread/Run in the existing activity CAS, expose one read-only history and one replay identity law; migrate exact root/coordinated/reply/budget consumers, consolidate resident recovery, preserve legacy Unknown; remaining application split belongs to W21; then: Native P0 anonymous-only helper and its counter now share their actual test-support consumer cfg; three declaration lines, no new behavior or resource/gate budget change; then: Web boundary ownership: required ToolConfigurationCompiler construction adds the existing SDK tool-contract dependency and effective opaque configuration compilation before create/update persistence and effects. Session names no Web fields or Managed DTOs; the existing use-case authority and W21 extraction target remain unchanged."
     }
   }

@@ -54,8 +54,7 @@ pub(crate) const EXEC_PID_FILE_ENV: &str = "AWAKEN_EXEC_PID_FILE";
 /// minted. Attempt ids carry the starting process identity, so two Worker
 /// incarnations exec'ing into the same adopted container cannot collide on a
 /// name and cannot delete each other's record.
-#[cfg(any(test, feature = "docker", feature = "podman", feature = "k8s"))]
-pub(crate) fn exec_pid_file(attempt_id: &str) -> String {
+pub fn exec_pid_file(attempt_id: &str) -> String {
     format!("{EXEC_PID_DIR}/{attempt_id}.pid")
 }
 
@@ -64,8 +63,7 @@ pub(crate) fn exec_pid_file(attempt_id: &str) -> String {
 /// container), publish the pid file's own path, and record PID plus `/proc`
 /// start time before executing the workload. Shared so the three wrappers
 /// cannot drift from the identity the reaper checks.
-#[cfg(any(test, feature = "docker", feature = "podman", feature = "k8s"))]
-pub(crate) fn exec_pid_file_prelude() -> String {
+pub fn exec_pid_file_prelude() -> String {
     format!(
         "mkdir -p {EXEC_PID_DIR}; export {EXEC_PID_FILE_ENV}=\"$pid_file\"; \
          record_exec_identity() {{ \

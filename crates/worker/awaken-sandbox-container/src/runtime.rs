@@ -10,25 +10,23 @@ use awaken_sandbox_control::SandboxControlServiceKind;
 use crate::ContainerPlan;
 use crate::egress::EgressRealizationIdentity;
 use crate::podman_plan::RootfsPlan;
-#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
 use crate::provider_contract::ContainerEffectFence;
 use crate::provider_contract::{PreparedContainer, PreparedContainerDisposition};
 use crate::resident_hand::ResidentHandConfig;
 pub use crate::runtime_error::RuntimeError;
-#[cfg(any(feature = "docker", feature = "k8s"))]
+#[cfg(feature = "docker")]
 pub(crate) use crate::runtime_error::RuntimeFailure;
 
 /// Stable label every managed Sandbox container/pod carries. The wire value is
 /// retained for compatibility with existing resources; it is discovery evidence,
 /// never disposal authorization.
-pub(crate) const MANAGED_SANDBOX_LABEL: &str = "awaken.sandbox";
+pub const MANAGED_SANDBOX_LABEL: &str = "awaken.sandbox";
 /// Immutable execution-floor revision included in backend realization evidence.
 /// A pre-hardening object cannot be silently adopted under the new floor.
-#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
-pub(crate) const CONTAINER_HARDENING_REVISION: &str = "linux-workload-hardening-v1";
+pub const CONTAINER_HARDENING_REVISION: &str = "linux-workload-hardening-v1";
 /// Numeric execution identity of the existing production Sandbox image; every
 /// runtime and the writable-volume group consume this one value.
-pub(crate) const SANDBOX_EXECUTION_ID: i64 = 10001;
+pub const SANDBOX_EXECUTION_ID: i64 = 10001;
 /// Stable, non-secret logical scope selector used to discover a provider effect
 /// across Worker-process owner changes.
 #[cfg(any(feature = "docker", feature = "podman"))]
@@ -51,8 +49,7 @@ pub(crate) const SANDBOX_EFFECT_RUNTIME_LABEL: &str = "awaken.sandbox.effect-run
 pub(crate) const SANDBOX_EFFECT_EPOCH_LABEL: &str = "awaken.sandbox.effect-epoch";
 #[cfg(any(feature = "docker", feature = "podman"))]
 pub(crate) const SANDBOX_EFFECT_EXPIRY_LABEL: &str = "awaken.sandbox.effect-expiry";
-#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
-pub(crate) const SANDBOX_ATTEMPT_LABEL: &str = "awaken.sandbox.attempt";
+pub const SANDBOX_ATTEMPT_LABEL: &str = "awaken.sandbox.attempt";
 
 #[cfg(any(feature = "docker", feature = "podman"))]
 pub(crate) fn container_effect_label_values(
@@ -75,8 +72,7 @@ pub(crate) fn container_effect_label_values(
     })
 }
 
-#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
-pub(crate) fn container_effect_fence_from_values(
+pub fn container_effect_fence_from_values(
     operation_id: Option<&str>,
     owner: Option<&str>,
     runtime_incarnation: Option<&str>,
@@ -132,13 +128,12 @@ pub(crate) fn effect_clock_reading_ms(
 }
 /// Identifies the runtime incarnation that currently owns a container. It fences
 /// realization/adoption only and cannot authorize garbage collection.
-#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
-pub(crate) const RUNTIME_OWNER_LABEL: &str = "awaken.sandbox.owner";
+pub const RUNTIME_OWNER_LABEL: &str = "awaken.sandbox.owner";
 
 /// A process-incarnation identity. It needs uniqueness, not time: a random
 /// nonce tells two incarnations with the same pid apart, and the sequence tells
 /// this incarnation's owners apart.
-pub(crate) fn runtime_owner_id() -> String {
+pub fn runtime_owner_id() -> String {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     static INCARNATION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     let incarnation = INCARNATION.get_or_init(|| uuid::Uuid::new_v4().simple().to_string());
@@ -146,8 +141,7 @@ pub(crate) fn runtime_owner_id() -> String {
     format!("{}-{incarnation}-{sequence}", std::process::id())
 }
 
-#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
-pub(crate) fn sandbox_scope_identity(
+pub fn sandbox_scope_identity(
     realization_namespace: &str,
     scope: &str,
 ) -> Result<String, RuntimeError> {
@@ -185,7 +179,7 @@ struct ContainerRealizationProjection<'a> {
 /// Bind the complete effective request to every stable, non-secret provider
 /// configuration fact needed to reopen it. This value is pure and can therefore
 /// be recomputed before adoption or package/resource I/O.
-pub(crate) fn container_adoption_fingerprint(
+pub fn container_adoption_fingerprint(
     spec: &pc::SandboxSpec,
     plan: &ContainerPlan,
     resident_hand: Option<&ResidentHandConfig>,
@@ -207,7 +201,7 @@ pub(crate) fn container_adoption_fingerprint(
 /// Extend the pure adoption identity with the one immutable fact resolved during
 /// creation: the exact package/base image. Backend labels/annotations carry this
 /// physical fingerprint, while the durable handle carries both layers.
-pub(crate) fn container_realization_fingerprint(
+pub fn container_realization_fingerprint(
     spec: &pc::SandboxSpec,
     adoption: &pc::SandboxRealizationFingerprint,
     resolved_image: &str,
@@ -353,8 +347,7 @@ pub struct MemoryMount {
 
 pub use awaken_container_contract::K8sContinuationVolume;
 
-#[cfg(feature = "k8s")]
-pub(crate) fn validate_runtime_effect_fence(
+pub fn validate_runtime_effect_fence(
     effect_fence: &pc::SandboxEffectFence,
     clock: Option<&std::sync::Arc<dyn awaken_time::WallClock>>,
 ) -> Result<(), RuntimeError> {
@@ -405,9 +398,8 @@ impl SandboxControlBindingRequest<'_> {
 }
 
 /// Provider-neutral phase observed for one physical container realization.
-#[cfg(any(test, feature = "docker", feature = "podman", feature = "k8s"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ExistingRealizationPhase {
+pub enum ExistingRealizationPhase {
     /// The object exists but has not reached its runnable state.
     Creating,
     /// The object is runnable and can be returned after response loss.
@@ -420,9 +412,8 @@ pub(crate) enum ExistingRealizationPhase {
 }
 
 /// Adapter observation after selecting the one stable Session-scope identity.
-#[cfg(any(test, feature = "docker", feature = "podman", feature = "k8s"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ExistingRealization {
+pub struct ExistingRealization {
     pub locator: String,
     /// Immutable backend incarnation used by the adapter's compare-and-delete
     /// effect. Docker and Podman use the container id. Kubernetes uses the Pod
@@ -443,9 +434,8 @@ pub(crate) struct ExistingRealization {
     pub phase: ExistingRealizationPhase,
 }
 
-#[cfg(any(test, feature = "docker", feature = "podman", feature = "k8s"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PhysicalIncarnation {
+pub struct PhysicalIncarnation {
     pub identity: String,
     pub version: Option<String>,
 }
@@ -453,17 +443,15 @@ pub(crate) struct PhysicalIncarnation {
 /// Whether the provider can reconstruct the lifecycle evidence attached to an
 /// existing exact physical object. This is an observed capability fact, not an
 /// adapter-specific retry policy.
-#[cfg(any(test, feature = "docker", feature = "podman", feature = "k8s"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ExistingRealizationRecovery {
+pub enum ExistingRealizationRecovery {
     Reconstructible,
     CurrentAttemptOnly,
 }
 
 /// The sole create/retry decision shared by Docker, Podman, and Kubernetes.
-#[cfg(any(test, feature = "docker", feature = "podman", feature = "k8s"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ExistingRealizationDecision {
+pub enum ExistingRealizationDecision {
     Create,
     ValidateExisting(ExistingRealization),
     ConvergeCreating(ExistingRealization),
@@ -474,9 +462,8 @@ pub(crate) enum ExistingRealizationDecision {
 /// Adapter-collected evidence for rebuilding when the primary runtime object is
 /// absent. Only an exact durable continuation participant (currently a
 /// Kubernetes PVC UID) can preserve a retained filesystem in that row.
-#[cfg(any(test, feature = "docker", feature = "podman", feature = "k8s"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RebuildContinuityEvidence {
+pub enum RebuildContinuityEvidence {
     Unavailable,
     ExactContinuation,
 }
@@ -502,14 +489,10 @@ fn exact_removal_decision(
     }
 }
 
-#[cfg(any(test, feature = "docker", feature = "podman", feature = "k8s"))]
 mod observation;
-#[cfg(any(test, feature = "docker", feature = "podman", feature = "k8s"))]
 mod realization;
-#[cfg(any(test, feature = "docker", feature = "podman", feature = "k8s"))]
-pub(crate) use observation::sandbox_observation;
-#[cfg(any(test, feature = "docker", feature = "podman", feature = "k8s"))]
-pub(crate) use realization::existing_realization_decision;
+pub use observation::sandbox_observation;
+pub use realization::existing_realization_decision;
 
 /// The scan a container creation claim names: the decision that reads the
 /// labels a created container carries back off the runtime and says what the
@@ -556,8 +539,7 @@ pub(crate) fn container_state_observation(
 /// canonical adapter implementation while the shared decision kernel rejects
 /// every existing object because no durable effect fence exists. It is never
 /// persisted as Session realization truth.
-#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
-pub(crate) fn legacy_unfenced_fingerprint(scope: &str) -> pc::SandboxRealizationFingerprint {
+pub fn legacy_unfenced_fingerprint(scope: &str) -> pc::SandboxRealizationFingerprint {
     pc::SandboxRealizationFingerprint::from_spec(&pc::SandboxSpec {
         process_tree_supervision: false,
         scope: scope.to_owned(),

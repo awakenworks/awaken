@@ -26,7 +26,7 @@ pub enum PreparedContainerDisposition {
 }
 
 impl PreparedContainer {
-    pub(crate) fn fresh(locator: String, authority_attempt_id: String) -> Self {
+    pub fn fresh(locator: String, authority_attempt_id: String) -> Self {
         Self {
             locator,
             authority_attempt_id,
@@ -34,8 +34,7 @@ impl PreparedContainer {
         }
     }
 
-    #[cfg(any(test, feature = "docker", feature = "podman", feature = "k8s"))]
-    pub(crate) fn recovering(locator: String, authority_attempt_id: String) -> Self {
+    pub fn recovering(locator: String, authority_attempt_id: String) -> Self {
         Self {
             locator,
             authority_attempt_id,
@@ -43,8 +42,7 @@ impl PreparedContainer {
         }
     }
 
-    #[cfg(any(test, feature = "docker", feature = "podman", feature = "k8s"))]
-    pub(crate) fn already_active(locator: String, authority_attempt_id: String) -> Self {
+    pub fn already_active(locator: String, authority_attempt_id: String) -> Self {
         Self {
             locator,
             authority_attempt_id,
@@ -231,13 +229,12 @@ impl<'a> ContainerRealizationContext<'a> {
         }
     }
 
-    pub(crate) fn with_effect(mut self, effect: ContainerEffect<'a>) -> Self {
+    pub fn with_effect(mut self, effect: ContainerEffect<'a>) -> Self {
         self.effect = effect;
         self
     }
 
-    #[cfg(any(feature = "k8s", test))]
-    pub(crate) fn admit_current_effect(&self) -> Result<(), pc::SandboxError> {
+    pub fn admit_current_effect(&self) -> Result<(), pc::SandboxError> {
         // Renewal may change the copied expiry; the original captured effect
         // still owns admission. Reconcile cannot attach another operation,
         // owner, incarnation or epoch to this static physical projection.

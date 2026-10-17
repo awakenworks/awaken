@@ -4,7 +4,7 @@ mod fixture;
 use super::*;
 use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{WorkerHeartbeat, WorkerManifest, WorkerRegistration};
-use awaken_sandbox_container::k8s::K8S_CREATE_CAPTURE_HEADER;
+use awaken_sandbox_kubernetes::K8S_CREATE_CAPTURE_HEADER;
 use awaken_worker_contract::WorkerIncarnationSource as _;
 use awaken_worker_registry::MemoryWorkerDirectory;
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WORKER_ID_HEADER};

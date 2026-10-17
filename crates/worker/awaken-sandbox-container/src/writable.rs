@@ -10,8 +10,7 @@ use super::ContainerPlan;
 /// one independent writable volume per root. Keeping this relation outside the
 /// Kubernetes adapter makes the no-aliasing rule directly model-checkable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg(any(feature = "k8s", test, kani))]
-pub(crate) enum WritableRootTopology {
+pub enum WritableRootTopology {
     Retained {
         claim_slot: usize,
         subpath_slot: usize,
@@ -22,8 +21,7 @@ pub(crate) enum WritableRootTopology {
 }
 
 #[must_use]
-#[cfg(any(feature = "k8s", test, kani))]
-pub(crate) const fn writable_root_topology(
+pub const fn writable_root_topology(
     retained_claim: bool,
     root_index: usize,
 ) -> WritableRootTopology {

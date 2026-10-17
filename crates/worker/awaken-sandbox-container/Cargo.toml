@@ -14,7 +14,7 @@ bounded_context = "sandbox"
 layer = "infrastructure"
 authority = "sandbox-container"
 separation = "isolation"
-isolates = ["bollard", "k8s-openapi", "kube", "tar"]
+isolates = ["bollard", "tar"]
 
 [dependencies]
 awaken-environment-contract.workspace = true
@@ -22,7 +22,6 @@ awaken-environment-contract.workspace = true
 awaken-container-contract.workspace = true
 awaken-time.workspace = true
 awaken-provisioning-contract.workspace = true
-awaken-outbound-http = { workspace = true, optional = true }
 awaken-local-process.workspace = true
 awaken-resource-contract.workspace = true
 awaken-agent-channel.workspace = true
@@ -46,12 +45,6 @@ tokio-util.workspace = true
 bollard = { version = "0.18", optional = true }
 futures-util = { version = "0.3", optional = true }
 base64 = "0.22"
-# Real Kubernetes backend (kube-apiserver via the SDK, not kubectl). Optional.
-kube = { workspace = true, features = ["client", "http-proxy", "rustls-tls", "ws"], optional = true }
-k8s-openapi = { workspace = true, optional = true }
-http = { version = "1", optional = true }
-http-body-util = { version = "0.1", optional = true }
-tower = { version = "0.5", features = ["util"], optional = true }
 # A process-incarnation nonce: uniqueness, not time.
 uuid = { version = "1", features = ["v4"] }
 
@@ -62,13 +55,13 @@ connection = ["dep:awaken-connection-plan", "tokio/net", "tokio/io-util", "tokio
 # Real Docker ContainerRuntime (bollard). Dials the published agent port via the
 # `connection` transport. Compile-verified; running needs a Docker daemon.
 docker = ["dep:bollard", "dep:futures-util", "connection"]
-# Real Kubernetes ContainerRuntime (kube). Process-as-container Pod + native-GC.
-# Compile-verified; running needs a cluster.
-k8s = ["dep:kube", "dep:k8s-openapi", "dep:awaken-outbound-http", "dep:http", "dep:http-body-util", "dep:tower", "connection"]
 # Lets a caller outside this crate admit an exec that no environment ledger
 # records. Only a harness driving the runtime port directly needs it — a
 # Session environment always has a ledger — so it stays off for dependants.
 unrecorded-exec = []
+# Shared Session fixtures for the tests of the engine crates building on this
+# provider (awaken-sandbox-kubernetes). Never enabled by a production dependant.
+test-support = []
 # Rootless Podman ContainerRuntime (daemonless CLI fork-exec). Honors the rootfs
 # plan (Image / IsolatedRoot). Compile-verified; running needs the `podman` binary.
 podman = ["connection", "tokio/process"]
@@ -88,4 +81,3 @@ awaken-tool-relay.workspace = true
 awaken-memory-store = { workspace = true, features = ["test-support"] }
 awaken-sandbox-memoryd.workspace = true
 tempfile = "3"
-serde-saphyr.workspace = true

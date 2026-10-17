@@ -1,5 +1,5 @@
 use super::*;
-use awaken_sandbox_container::k8s::{CreateReplyProfile, K8S_CREATE_CAPTURE_HEADER};
+use awaken_sandbox_kubernetes::{CreateReplyProfile, K8S_CREATE_CAPTURE_HEADER};
 
 #[tokio::test]
 async fn current_private_wire_refuses_missing_or_wrong_version_before_provider_effects() {
@@ -143,8 +143,8 @@ async fn fresh_api_or_complete_reply_or_result_overflow_never_finishes_or_repost
                 .is_err()
         );
         let original = fixture.stored.lock().unwrap().clone().unwrap();
-        let state: awaken_sandbox_container::k8s::WorkerCreateLedgerState =
-            awaken_sandbox_container::k8s::WorkerCreateLedgerState::decode(
+        let state: awaken_sandbox_kubernetes::WorkerCreateLedgerState =
+            awaken_sandbox_kubernetes::WorkerCreateLedgerState::decode(
                 original["data"]["ledger"].as_str().unwrap(),
             )
             .unwrap();
@@ -153,7 +153,7 @@ async fn fresh_api_or_complete_reply_or_result_overflow_never_finishes_or_repost
             .ticket;
         assert_eq!(
             state.ticket(&ticket).unwrap().status,
-            awaken_sandbox_container::k8s::TicketStatus::InFlight
+            awaken_sandbox_container::TicketStatus::InFlight
         );
         assert!(
             fixture

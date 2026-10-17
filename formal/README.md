@@ -144,6 +144,7 @@ The named harnesses in the strict gate invoke production pure functions directly
   - every retained writable root shares exactly one claim slot while receiving
     a distinct subpath slot; the ephemeral fallback assigns distinct volume
     slots instead.
+- `awaken-sandbox-kubernetes`
   - PVC allocation and final Pod projection share one exact selector, so an
     ephemeral filesystem never allocates or references a continuation claim.
 - `awaken-worker-contract`
