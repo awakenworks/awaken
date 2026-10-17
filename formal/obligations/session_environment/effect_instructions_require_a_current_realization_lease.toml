@@ -1,0 +1,9 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = []
+production_entrypoints = []
+
+[[bounds]]
+text = '''Over the complete closed domain, the production transition_environment kernel issues no effect instruction under a stale lease, and Create, source-release preparation and disposal, terminal retirement, and the observations that advance source release or terminal disposal all require the Fenced lease standing. Whether the standing was projected correctly from the aggregate lease (realization_lease_authorizes) is covered by the projection decision table and the existing renewal proof; legacy unfenced Environments may still quiesce, checkpoint and restore.'''
