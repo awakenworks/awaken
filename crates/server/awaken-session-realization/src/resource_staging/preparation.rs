@@ -156,3 +156,6 @@ impl Drop for ResourcePreparation<'_> {
         });
     }
 }
+
+#[cfg(test)]
+mod tests;

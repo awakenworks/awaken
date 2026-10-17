@@ -169,6 +169,16 @@ impl SessionRealization {
         }
     }
 
+    /// The installed Session was removed: its Resource preparation can no
+    /// longer publish, and every waiter on its authority re-reads and finds it
+    /// gone. Run after releasing the installed Sessions' lock.
+    pub fn end_on_removal(&self) {
+        if let Some(preparation) = &self.staging.preparation {
+            preparation.cancel();
+        }
+        self.execution.changed.notify_waiters();
+    }
+
     pub fn close_authority(
         &mut self,
         expected: Option<&session_resource::SessionRealizationLease>,

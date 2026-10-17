@@ -1,6 +1,9 @@
-//! Canonical Resource I/O scope tests without constructing a Host.
+//! Resource I/O preparation scope: its lease introduction, removal on drop,
+//! and fail-closed waits, over the in-memory installed Sessions.
 use super::*;
-use crate::installed_session::InstalledSessions;
+use crate::execution_authority::ExecutionAuthority;
+use crate::session_realizations::SessionRealizationSource as _;
+use crate::test_support::InMemorySessionRealizations;
 use awaken_lease_contract::fence::Epoch;
 use awaken_provisioning_contract::CurrentExecutionAuthority;
 use awaken_session_configuration_contract::resource::SessionRealizationLease;
@@ -24,10 +27,10 @@ fn proof(epoch: Epoch) -> ObservedSessionRealizationLease {
         .observed(awaken_authority_clock::authority_proof_started().unwrap())
 }
 
-fn authority() -> (Arc<InstalledSessions>, ExecutionAuthority) {
-    let source = Arc::new(InstalledSessions::default());
+fn authority() -> (Arc<InMemorySessionRealizations>, ExecutionAuthority) {
+    let source = Arc::new(InMemorySessionRealizations::default());
     // Projection installation installs the Session before any preparation.
-    source.install("session");
+    source.install("session").unwrap();
     let authority = ExecutionAuthority::new(source.realizations(), None);
     (source, authority)
 }
@@ -132,10 +135,10 @@ async fn resource_scope_cancellation_and_slot_replacement_cannot_erase_a_success
                     })
                     .expect("installed Sessions"),
                 "remove" => {
-                    source.remove("session");
+                    source.remove_session("session").unwrap();
                 }
                 "slot_aba" => {
-                    source.remove("session");
+                    source.remove_session("session").unwrap();
                     source.install_realization("session", |r| {
                         assert!(r.install_lease(proof(Epoch::FIRST)));
                         r.staging.preparation = Some(successor.clone());
@@ -203,7 +206,7 @@ impl CurrentExecutionAuthority for DeniedWorker {
 #[test]
 fn resource_scope_denied_worker_never_installs_or_reopens_a_session() {
     let (source, _) = authority();
-    source.remove("session");
+    source.remove_session("session").unwrap();
     let mut authority =
         ExecutionAuthority::new(source.realizations(), Some(Arc::new(DeniedWorker)));
     assert!(ResourcePreparation::begin(&authority, "session", proof(Epoch::FIRST)).is_err());
@@ -217,7 +220,7 @@ fn resource_scope_denied_worker_never_installs_or_reopens_a_session() {
         "an allowed preparation still never installs the Session"
     );
     assert!(!source.contains("session"));
-    source.install("session");
+    source.install("session").unwrap();
     authority
         .sessions()
         .update_realization("session", |r| {

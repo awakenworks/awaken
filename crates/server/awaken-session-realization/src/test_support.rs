@@ -150,6 +150,29 @@ impl InMemorySessionRealizations {
             .map_err(|_| crate::realization_error::RealizationLock::InstalledSessions)
     }
 
+    /// The realization executor's view of this registry.
+    pub fn realizations(
+        self: &std::sync::Arc<Self>,
+    ) -> crate::session_realizations::SessionRealizations {
+        crate::session_realizations::SessionRealizations::new(self.clone())
+    }
+
+    /// Whether `session` is installed.
+    pub fn contains(&self, session: &str) -> bool {
+        self.registry()
+            .is_ok_and(|registry| registry.contains_key(session))
+    }
+
+    /// Install `session` and edit its realization state, as a fixture does.
+    pub fn install_realization(
+        &self,
+        session: &str,
+        edit: impl FnOnce(&mut crate::realization_state::SessionRealization),
+    ) {
+        let mut registry = self.registry().expect("fixture registry is healthy");
+        edit(&mut registry.entry(session.to_owned()).or_default().realization);
+    }
+
     /// Panic while holding the registry lock, exactly as a failed writer does.
     pub fn poison(&self) {
         let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -171,7 +194,11 @@ impl crate::session_realizations::SessionRealizationSource for InMemorySessionRe
         &self,
         session: &str,
     ) -> Result<bool, crate::realization_error::RealizationLock> {
-        Ok(self.registry()?.remove(session).is_some())
+        let removed = self.registry()?.remove(session);
+        if let Some(removed) = &removed {
+            removed.realization.end_on_removal();
+        }
+        Ok(removed.is_some())
     }
 
     fn acquire_realization<'a>(

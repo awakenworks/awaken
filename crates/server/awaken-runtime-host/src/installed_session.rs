@@ -56,10 +56,7 @@ impl InstalledSession {
     // Run after releasing the original slot mutex, before destroying a removed
     // slot. Ordinary removal and exact retirement share these same effects.
     fn cancel_preparation_and_notify_removal(&self) {
-        if let Some(preparation) = &self.realization.staging.preparation {
-            preparation.cancel();
-        }
-        self.realization.execution.changed.notify_waiters();
+        self.realization.end_on_removal();
     }
 }
 
