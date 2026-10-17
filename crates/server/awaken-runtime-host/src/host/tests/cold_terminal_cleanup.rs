@@ -102,6 +102,8 @@ async fn source_dispatch_observation_preserves_current_scope_and_rejects_affinit
         );
         if terminal {
             root.archive("source-observation", 100).unwrap();
+        } else {
+            root.execution = awaken_session_state_contract::SessionExecutionState::Idle;
         }
         if !frozen {
             root.terminal_cleanup = Default::default();

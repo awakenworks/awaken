@@ -815,6 +815,15 @@ impl SessionEnvironmentFacts {
         Self::project(session, now_unix_ms, asserted)
     }
 
+    /// Project the facts of a terminal cleanup event (`RetireForCleanup`,
+    /// `CleanedUp`). Terminal cleanup acts under the root's own lease
+    /// generation, so the event asserts no lease, and both rows read only the
+    /// terminality and the lease standing: no time-dependent fact can change
+    /// their decision (table T11), so the projection needs no clock.
+    pub(crate) fn project_terminal_cleanup(session: &crate::PersistedSession) -> Self {
+        Self::project(session, 0, None)
+    }
+
     /// Project the facts of a realization directive's frozen Environment
     /// state, for the one event a directive's projection receives
     /// (`LegacyBindingDelivered`). Session-application issues a directive only

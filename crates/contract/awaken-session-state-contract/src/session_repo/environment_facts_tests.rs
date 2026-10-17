@@ -638,3 +638,64 @@ fn aggregate_laws_apply_only_what_the_environment_decision_admits() {
     );
     assert_eq!(root_, before, "W10 unchanged");
 }
+
+#[test]
+fn terminal_cleanup_laws_decide_retirement_through_the_environment_transition() {
+    // W11: the cleanup laws decide `RetireForCleanup` / `CleanedUp` before
+    // their exact-evidence checks.
+    // | Rule | Session  | asserted generation | authorize preparation / disposal |
+    // | W11a | active   | current             | EnvironmentRejected(NotTerminal), no effect |
+    // | W11b | terminal | current             | admitted (the command is pending)  |
+    // | W11c | terminal | superseded          | RealizationMismatch                |
+    // W12: one mapping of a refusal: LeaseNotCurrent keeps the cleanup name
+    // RealizationMismatch; every other refusal is carried unchanged.
+    let current = lease(NOW + 1);
+    let mut session = root(None);
+    session.realization = Some(current.clone());
+    session.environment.set_resident("binding");
+    assert!(session.ensure_terminal_cleanup_fence());
+    session.freeze_terminal_cleanup_targets([], 0, 0).unwrap();
+    let command = session
+        .terminal_cleanup
+        .pending_preparation_commands(&session.session_id)
+        .unwrap()
+        .pop()
+        .unwrap();
+    let effect = crate::SessionTerminalCleanupEffect::new(command.clone(), current.clone());
+    assert_eq!(
+        session.authorize_terminal_cleanup_effect(&effect),
+        Err(crate::SessionCleanupError::EnvironmentRejected(
+            SessionEnvironmentRejection::NotTerminal
+        )),
+        "W11a"
+    );
+
+    session.execution = SessionExecutionState::Terminated;
+    assert!(
+        session.authorize_terminal_cleanup_effect(&effect).is_ok(),
+        "W11b"
+    );
+    let stale = crate::SessionTerminalCleanupEffect::new(command, superseded_lease());
+    assert_eq!(
+        session.authorize_terminal_cleanup_effect(&stale),
+        Err(crate::SessionCleanupError::RealizationMismatch),
+        "W11c"
+    );
+
+    assert_eq!(
+        crate::SessionCleanupError::from(SessionEnvironmentRejection::LeaseNotCurrent),
+        crate::SessionCleanupError::RealizationMismatch,
+        "W12 lease"
+    );
+    for rejection in [
+        SessionEnvironmentRejection::NotTerminal,
+        SessionEnvironmentRejection::Terminal,
+        SessionEnvironmentRejection::WrongStep,
+    ] {
+        assert_eq!(
+            crate::SessionCleanupError::from(rejection),
+            crate::SessionCleanupError::EnvironmentRejected(rejection),
+            "W12 {rejection:?}"
+        );
+    }
+}

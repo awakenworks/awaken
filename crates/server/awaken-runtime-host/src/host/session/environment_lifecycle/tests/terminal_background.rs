@@ -369,6 +369,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
         );
         aggregate.environment = projection.environment.clone();
         aggregate.realization = Some(lease.clone());
+        aggregate.execution = awaken_session_state_contract::SessionExecutionState::Terminated;
         assert!(aggregate.ensure_terminal_cleanup_fence());
         aggregate
             .freeze_terminal_cleanup_targets(std::iter::empty(), 0, 0)
@@ -708,6 +709,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         .join("unpublished.txt");
     std::fs::create_dir_all(output.parent().unwrap()).unwrap();
     std::fs::write(&output, b"unpublished source must not become an Artifact").unwrap();
+    aggregate.execution = awaken_session_state_contract::SessionExecutionState::Terminated;
     assert!(aggregate.ensure_terminal_cleanup_fence());
     aggregate
         .freeze_terminal_cleanup_targets(std::iter::empty(), 0, 0)

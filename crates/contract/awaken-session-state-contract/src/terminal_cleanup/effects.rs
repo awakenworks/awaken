@@ -685,6 +685,21 @@ pub enum SessionCleanupError {
     FrozenTargetsMismatch,
     #[error("Session cleanup operation attempted an invalid phase advance")]
     InvalidPhaseAdvance,
+    /// The Environment transition function refused the cleanup event.
+    #[error(transparent)]
+    EnvironmentRejected(crate::SessionEnvironmentRejection),
+}
+
+/// The one mapping of an Environment refusal of a cleanup event. A lease the
+/// aggregate no longer authorizes keeps the cleanup name its boundary reads as
+/// lost ownership.
+impl From<crate::SessionEnvironmentRejection> for SessionCleanupError {
+    fn from(rejection: crate::SessionEnvironmentRejection) -> Self {
+        match rejection {
+            crate::SessionEnvironmentRejection::LeaseNotCurrent => Self::RealizationMismatch,
+            rejection => Self::EnvironmentRejected(rejection),
+        }
+    }
 }
 
 pub(super) fn cleanup_effect_id(session_id: &SessionId) -> String {

@@ -456,6 +456,8 @@ mod mutation_tests {
             .environment
             .set_resident(serde_json::to_string(&handle).unwrap());
         aggregate.realization = Some(lease.clone());
+        // Terminal cleanup retires only a terminal Session (`RetireForCleanup`).
+        aggregate.execution = SessionExecutionState::Terminated;
         aggregate.ensure_terminal_cleanup_fence();
         aggregate.freeze_terminal_cleanup_targets([], 0, 0).unwrap();
         let command = aggregate
@@ -608,6 +610,8 @@ mod mutation_tests {
         );
         aggregate.realization = Some(lease.clone());
         aggregate.environment.set_resident("sandbox-binding");
+        // Terminal cleanup retires only a terminal Session (`RetireForCleanup`).
+        aggregate.execution = SessionExecutionState::Terminated;
         assert!(aggregate.ensure_terminal_cleanup_fence());
         assert!(aggregate.freeze_terminal_cleanup_targets([], 3, 5).unwrap());
         assert!(terminal_disposal_command(&aggregate).is_none(), "A1/E1");

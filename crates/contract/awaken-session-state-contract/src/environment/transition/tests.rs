@@ -874,3 +874,64 @@ fn t10_the_count_phase_is_the_steps_projection() {
         assert_eq!(step.phase(), phase, "G2 {step:?}");
     }
 }
+
+#[test]
+fn t11_terminal_cleanup_events_read_only_terminality_and_lease() {
+    // T11 justifies `SessionEnvironmentFacts::project_terminal_cleanup`, which
+    // projects without a clock. Causes: every step, terminality and lease
+    // standing (the facts the two rows read) × every value of the remaining
+    // facts (time, execution, activity, evidence, placement and Memory).
+    // Effect: `RetireForCleanup` and `CleanedUp` decide the same outcome for
+    // every value of the remaining facts, so no clock reading can change a
+    // terminal cleanup decision.
+    let events = [
+        E::RetireForCleanup,
+        E::CleanedUp {
+            already_recorded: false,
+        },
+        E::CleanedUp {
+            already_recorded: true,
+        },
+    ];
+    for step in STEPS {
+        for terminality in [
+            SessionTerminality::Active,
+            SessionTerminality::CleanupJoining,
+            SessionTerminality::Terminal,
+        ] {
+            for lease in [
+                RealizationLeaseStanding::Fenced,
+                RealizationLeaseStanding::Unfenced,
+                RealizationLeaseStanding::Stale,
+            ] {
+                let base = SessionEnvironmentFacts {
+                    terminality,
+                    lease,
+                    ..ready(step)
+                };
+                for bits in 0_u16..(1 << 9) {
+                    let bit = |index: u16| bits & (1 << index) != 0;
+                    let varied = SessionEnvironmentFacts {
+                        execution_idle: bit(0),
+                        activities_open: bit(1),
+                        resident_generated: bit(2),
+                        suspend_due: bit(3),
+                        suspend_evidence_consistent: bit(4),
+                        generation_live: bit(5),
+                        checkpoint_live: bit(6),
+                        continuation_topology_supported: bit(7),
+                        suspend_memory_admitted: bit(8),
+                        ..base
+                    };
+                    for event in events {
+                        assert_eq!(
+                            transition_environment(varied, event),
+                            transition_environment(base, event),
+                            "T11 {event:?} on {varied:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
