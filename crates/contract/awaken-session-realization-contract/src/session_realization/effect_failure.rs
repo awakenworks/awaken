@@ -89,24 +89,25 @@ pub enum RealizationFailureOutcome {
     Absorb,
 }
 
-/// A capacity refusal never consumes budget and so never exhausts it; a
-/// capacity flag on a non-retryable report is malformed and fails closed.
+/// A not-ready report (a capacity refusal or a provision within its deadline)
+/// never consumes budget and so never exhausts it; a not-ready flag on a
+/// non-retryable report is malformed and fails closed.
 const fn realization_failure_outcome(
     retryable: bool,
-    capacity_unavailable: bool,
+    not_ready: bool,
     execution: SessionExecutionState,
     attempts: u32,
     budget: u32,
 ) -> Result<RealizationFailureOutcome, &'static str> {
-    if capacity_unavailable && !retryable {
-        return Err("a capacity failure must be retryable");
+    if not_ready && !retryable {
+        return Err("a not-ready failure must be retryable");
     }
     // Only an assignment in Preparing or Activating counted an attempt.
     let assignment_counted = matches!(
         execution,
         SessionExecutionState::Preparing | SessionExecutionState::Activating
     );
-    Ok(if capacity_unavailable {
+    Ok(if not_ready {
         RealizationFailureOutcome::Retry {
             refund_attempt: assignment_counted && attempts > 0,
         }
@@ -121,7 +122,7 @@ const fn realization_failure_outcome(
 
 impl FailSessionRealization {
     /// The report for one failed effect: its retry class and whether it was a
-    /// capacity refusal, from [`effect_failure_disposition`].
+    /// request-local "not yet", from [`effect_failure_disposition`].
     #[must_use]
     pub fn for_effect(
         session_id: crate::SessionId,
@@ -136,7 +137,7 @@ impl FailSessionRealization {
             lease,
             prepared_resource_revision,
             retryable: disposition != SessionRealizationControlDisposition::Terminal,
-            capacity_unavailable: disposition == SessionRealizationControlDisposition::NotReady,
+            not_ready: disposition == SessionRealizationControlDisposition::NotReady,
             source_run_id,
             reason: error.to_string(),
         }
@@ -151,7 +152,7 @@ impl FailSessionRealization {
     ) -> Result<RealizationFailureOutcome, crate::SessionRealizationControlFailure> {
         let outcome = realization_failure_outcome(
             self.retryable,
-            self.capacity_unavailable,
+            self.not_ready,
             session.execution,
             session.realization_progress.attempts,
             budget,
@@ -164,8 +165,8 @@ impl FailSessionRealization {
     }
 
     /// Whether this failure retries the Session's initial realization (Idle
-    /// Sessions answer `false` and keep their existing path). A capacity
-    /// refusal retries and refunds the attempt its lease's assignment counted
+    /// Sessions answer `false` and keep their existing path). A not-ready
+    /// report retries and refunds the attempt its lease's assignment counted
     /// (Preparing or Activating), so it never spends the persisted budget.
     pub fn retries_initial_realization(
         &self,
@@ -234,7 +235,7 @@ mod tests {
         // Causes: C1 the effect's fault (Unavailable / Conflict / Internal /
         // BadRequest); C2 its code is the capacity code; C3 an Internal code is
         // the unclassified one. Effects: E1 the Worker disposition; E2 the
-        // FailSessionRealization (retryable, capacity_unavailable).
+        // FailSessionRealization (retryable, not_ready).
         // | Rule | C1 | C2 | E1 | E2 |
         // | F1 | Unavailable | yes | NotReady | (true, true) |
         // | F2 | Unavailable | no | Retryable | (true, false) |
@@ -303,11 +304,7 @@ mod tests {
             assert_eq!(effect_failure_disposition(&error), disposition, "{rule}");
             let command =
                 FailSessionRealization::for_effect("s".into(), lease.clone(), None, None, &error);
-            assert_eq!(
-                (command.retryable, command.capacity_unavailable),
-                report,
-                "{rule}"
-            );
+            assert_eq!((command.retryable, command.not_ready), report, "{rule}");
             assert_eq!(command.reason, error.to_string(), "{rule}");
             assert!(
                 is_environment_effect_code(&error.code)
@@ -414,7 +411,7 @@ mod tests {
         for (rule, error, attempts, expected) in rows {
             let report =
                 FailSessionRealization::for_effect("s".into(), lease.clone(), None, None, &error);
-            assert!(!report.capacity_unavailable, "{rule}");
+            assert!(!report.not_ready, "{rule}");
             for execution in [
                 SessionExecutionState::Preparing,
                 SessionExecutionState::Running,
@@ -422,7 +419,7 @@ mod tests {
                 assert_eq!(
                     realization_failure_outcome(
                         report.retryable,
-                        report.capacity_unavailable,
+                        report.not_ready,
                         execution,
                         attempts,
                         budget,
@@ -453,7 +450,7 @@ mod tests {
         let budget = 3;
         let retry = |refund_attempt| Ok(RealizationFailureOutcome::Retry { refund_attempt });
         let absorb = Ok(RealizationFailureOutcome::Absorb);
-        let malformed = Err("a capacity failure must be retryable");
+        let malformed = Err("a not-ready failure must be retryable");
         let rows = [
             ("B1", true, false, Preparing, 2, retry(false)),
             ("B1", true, false, Running, 0, retry(false)),
