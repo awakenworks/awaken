@@ -4,11 +4,62 @@
 // @formal reason: and late receipt use the same materialization law. Original request closure and domain
 // @formal reason: access remain physical evidence, so unknown Managed Rebuild stays pending, not proved.
 use super::{
-    CheckpointReceipt, QuiescenceReceipt, RestoreReceipt, SessionEnvironmentOperation,
-    SessionEnvironmentOperations, SessionEnvironmentTransitionError, SourceDisposedReceipt,
+    CheckpointReceipt, QuiescenceReceipt, RestoreReceipt, SessionEnvironmentDecision,
+    SessionEnvironmentEvent, SessionEnvironmentFacts, SessionEnvironmentOperation,
+    SessionEnvironmentOperations, SessionEnvironmentRejection, SessionEnvironmentStep,
+    SessionEnvironmentTransitionError, SourceDisposedReceipt, SuspendPhase, transition_environment,
 };
 
 impl SessionEnvironmentOperations<'_> {
+    /// Decide one Environment event over this candidate's projected facts.
+    /// Every law below applies state only after this decision admitted it, so
+    /// the terminality, lease and evidence rules hold on every path.
+    fn decide(
+        &self,
+        event: SessionEnvironmentEvent,
+        now_unix_ms: u64,
+        asserted_lease: Option<&crate::SessionRealizationLease>,
+    ) -> Result<SessionEnvironmentDecision, SessionEnvironmentRejection> {
+        transition_environment(
+            SessionEnvironmentFacts::project(&self.aggregate.state, now_unix_ms, asserted_lease),
+            event,
+        )
+    }
+
+    /// Decide a continuation command whose intent commits `intent`, the step
+    /// after the current one. A replay of the committed intent returns its
+    /// operation; any other decision refuses the intent.
+    fn decide_intent(
+        &self,
+        event: SessionEnvironmentEvent,
+        now_unix_ms: u64,
+        intent: SessionEnvironmentStep,
+    ) -> Result<(), SessionEnvironmentTransitionError> {
+        if self.aggregate.state.environment.step() == intent {
+            return Ok(());
+        }
+        let decision = transition_environment(
+            SessionEnvironmentFacts::project_continuation(&self.aggregate.state, now_unix_ms),
+            event,
+        )?;
+        match decision.instruction() {
+            _ if decision.next() == intent => Ok(()),
+            Some(crate::SessionEnvironmentInstruction::DeleteExpiredCheckpoint) => {
+                Err(SessionEnvironmentTransitionError::CheckpointExpired)
+            }
+            _ => Err(SessionEnvironmentRejection::WrongStep.into()),
+        }
+    }
+
+    /// The decided step must be the state the data law built.
+    fn settled(&self, decision: SessionEnvironmentDecision) {
+        debug_assert_eq!(
+            self.aggregate.state.environment.step(),
+            decision.next(),
+            "an Environment law diverged from its decision"
+        );
+    }
+
     /// Admit the exact first value before provider I/O through the same root CAS.
     pub fn admit_environment_effect(
         &mut self,
@@ -19,20 +70,35 @@ impl SessionEnvironmentOperations<'_> {
         (bool, crate::SessionEnvironmentEffectAuthorization),
         crate::SessionEnvironmentReceiptError,
     > {
-        let session = &mut self.aggregate.state;
-        if session.is_terminal() {
-            return Err(crate::SessionEnvironmentReceiptError::WrongPhase);
-        }
-        if let Some(facts) = session.environment_materialization.as_deref() {
+        let decided = self.decide(
+            SessionEnvironmentEvent::AdmitMaterialization {
+                kind: intent.kind().materialization_kind(),
+                already_applied: self
+                    .aggregate
+                    .state
+                    .environment
+                    .records_effect(intent.effect_id()),
+            },
+            now_unix_ms,
+            intent.realization(),
+        );
+        // A terminal Session refuses first. An unfinished original
+        // materialization is retryable evidence that precedes every other
+        // step refusal: the step may still become admissible.
+        if decided != Err(SessionEnvironmentRejection::Terminal)
+            && let Some(facts) = self.aggregate.state.environment_materialization.as_deref()
+        {
             facts.validate_existing_origin_effect(intent)?;
         }
+        decided?;
+        let session = &mut self.aggregate.state;
         let authorization =
             session.authorize_environment_effect(owner_scope, intent, now_unix_ms)?;
         match intent.kind() {
             crate::SessionEnvironmentEffectKind::Rebuild { .. } => {
                 // Source closure/access is not available in this slice. A
                 // target receipt or current lease cannot supply it.
-                Err(crate::SessionEnvironmentReceiptError::MaterializationPending)
+                Err(SessionEnvironmentRejection::MaterializationPending.into())
             }
             crate::SessionEnvironmentEffectKind::Create => {
                 if session.realization.is_none() || intent.realization().is_none() {
@@ -44,7 +110,7 @@ impl SessionEnvironmentOperations<'_> {
                     .ok_or(crate::SessionEnvironmentReceiptError::MaterializationUnknown)?;
                 if let Some(first) = facts.pending().or_else(|| facts.origin()) {
                     if first.effect_id() != intent.effect_id() {
-                        return Err(crate::SessionEnvironmentReceiptError::MaterializationPending);
+                        return Err(SessionEnvironmentRejection::MaterializationPending.into());
                     }
                     // Checking the saved assertion also prevents a shortened
                     // candidate expiry from borrowing a grant below first.
@@ -56,7 +122,7 @@ impl SessionEnvironmentOperations<'_> {
                     authorization,
                     crate::SessionEnvironmentEffectAuthorization::Authorized { .. }
                 ) {
-                    return Err(crate::SessionEnvironmentReceiptError::InvalidTransition);
+                    return Err(SessionEnvironmentRejection::InvalidTransition.into());
                 }
                 session
                     .environment_materialization
@@ -76,8 +142,11 @@ impl SessionEnvironmentOperations<'_> {
     pub fn record_source_release_prepared(
         &mut self,
         receipt: &crate::SourceReleasePreparedReceipt,
+        now_unix_ms: u64,
     ) -> Result<bool, crate::SessionEnvironmentReceiptError> {
-        self.aggregate.state.record_source_release_prepared(receipt)
+        self.aggregate
+            .state
+            .record_source_release_prepared(receipt, now_unix_ms)
     }
 
     /// Apply the canonical PersistedSession::try_apply_environment_receipt law.
@@ -98,15 +167,18 @@ impl SessionEnvironmentOperations<'_> {
         Ok(changed)
     }
 
-    /// Apply the canonical SessionEnvironmentState::begin_suspend_at law.
+    /// Commit the suspend intent the advance decision demands (Resident to
+    /// Quiescing), then apply the canonical begin_suspend_at law.
     pub fn begin_suspend_at(
         &mut self,
         workspace_id: &str,
         started_at_unix_ms: u64,
     ) -> Result<&SessionEnvironmentOperation, SessionEnvironmentTransitionError> {
-        if self.aggregate.state.is_terminal() || self.aggregate.state.has_active_activities() {
-            return Err(SessionEnvironmentTransitionError::WrongPhase);
-        }
+        self.decide_intent(
+            SessionEnvironmentEvent::AdvanceContinuation,
+            started_at_unix_ms,
+            SessionEnvironmentStep::Suspending(SuspendPhase::Quiescing),
+        )?;
         let activity_epoch = self.aggregate.state.activity_epoch;
         self.aggregate.state.environment.begin_suspend_at(
             workspace_id,
@@ -122,44 +194,64 @@ impl SessionEnvironmentOperations<'_> {
         &mut self,
         receipt: &QuiescenceReceipt,
         expected_mcp_generations: &[crate::McpGenerationRef],
+        now_unix_ms: u64,
     ) -> Result<bool, SessionEnvironmentTransitionError> {
-        self.aggregate
+        let decision = self.decide(SessionEnvironmentEvent::Quiesced, now_unix_ms, None)?;
+        let changed = self
+            .aggregate
             .state
             .environment
-            .record_quiescence(receipt, expected_mcp_generations)
+            .record_quiescence(receipt, expected_mcp_generations)?;
+        self.settled(decision);
+        Ok(changed)
     }
 
     /// Apply the canonical SessionEnvironmentState::record_checkpoint law.
     pub fn record_checkpoint(
         &mut self,
         receipt: &CheckpointReceipt,
+        now_unix_ms: u64,
     ) -> Result<bool, SessionEnvironmentTransitionError> {
-        self.aggregate.state.environment.record_checkpoint(receipt)
+        let decision = self.decide(SessionEnvironmentEvent::Checkpointed, now_unix_ms, None)?;
+        let changed = self
+            .aggregate
+            .state
+            .environment
+            .record_checkpoint(receipt)?;
+        self.settled(decision);
+        Ok(changed)
     }
 
     /// Apply the canonical SessionEnvironmentState::complete_suspend law.
     pub fn complete_suspend(
         &mut self,
         receipt: &SourceDisposedReceipt,
+        now_unix_ms: u64,
     ) -> Result<bool, SessionEnvironmentTransitionError> {
-        self.aggregate.state.environment.complete_suspend(receipt)
+        let decision = self.decide(SessionEnvironmentEvent::SourceReleased, now_unix_ms, None)?;
+        let changed = self.aggregate.state.environment.complete_suspend(receipt)?;
+        self.settled(decision);
+        Ok(changed)
     }
 
-    /// Apply the canonical SessionEnvironmentState::begin_restore law.
+    /// Commit the restore intent the require-resident decision demands
+    /// (Hibernated to Restoring), then apply the canonical begin_restore law.
     pub fn begin_restore(
         &mut self,
         workspace_id: &str,
         now_unix_ms: u64,
     ) -> Result<&SessionEnvironmentOperation, SessionEnvironmentTransitionError> {
-        if self.aggregate.state.is_terminal() || self.aggregate.state.has_active_activities() {
-            return Err(SessionEnvironmentTransitionError::WrongPhase);
-        }
+        self.decide_intent(
+            SessionEnvironmentEvent::RequireResident,
+            now_unix_ms,
+            SessionEnvironmentStep::Restoring,
+        )?;
         let activity_epoch = self
             .aggregate
             .state
             .activity_epoch
             .checked_add(1)
-            .ok_or(SessionEnvironmentTransitionError::WrongPhase)?;
+            .ok_or(SessionEnvironmentRejection::InvalidTransition)?;
         self.aggregate.state.environment.begin_restore(
             workspace_id,
             &self.aggregate.state.session_id,
@@ -173,7 +265,11 @@ impl SessionEnvironmentOperations<'_> {
     pub fn complete_restore(
         &mut self,
         receipt: &RestoreReceipt,
+        now_unix_ms: u64,
     ) -> Result<bool, SessionEnvironmentTransitionError> {
-        self.aggregate.state.environment.complete_restore(receipt)
+        let decision = self.decide(SessionEnvironmentEvent::Restored, now_unix_ms, None)?;
+        let changed = self.aggregate.state.environment.complete_restore(receipt)?;
+        self.settled(decision);
+        Ok(changed)
     }
 }

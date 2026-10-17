@@ -81,8 +81,9 @@ pub struct SandboxCheckpointRequest {
 }
 
 /// Typed selector for a global count over the canonical Session environment
-/// state. This is a read projection only; [`SessionEnvironmentState`] remains
-/// the sole durable lifecycle authority.
+/// state: the phase of [`SessionEnvironmentState::step`] (see
+/// [`SessionEnvironmentStep::phase`]). A read projection only;
+/// [`SessionEnvironmentState`] remains the sole durable lifecycle authority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionEnvironmentPhase {
     Unmaterialized,
@@ -155,12 +156,33 @@ impl SessionEnvironmentState {
             ..
         } = self
         else {
-            return Err(SessionEnvironmentReceiptError::RequiresResident);
+            return Err(SessionEnvironmentReceiptError::Rejected(
+                SessionEnvironmentRejection::RequiresResident,
+            ));
         };
         if binding != &receipt.binding || effect_id != &receipt.effect_id {
             return Err(SessionEnvironmentReceiptError::Mismatch);
         }
         Ok(generation)
+    }
+
+    /// The committed suspend operation with the exact physical source it
+    /// releases (source effect, source binding, generation); `None` outside
+    /// Suspending.
+    #[must_use]
+    pub fn suspend_source(
+        &self,
+    ) -> Option<(&SessionEnvironmentOperation, &str, &str, &SandboxGeneration)> {
+        match self {
+            Self::Suspending {
+                operation,
+                source_effect_id,
+                source_binding,
+                generation,
+                ..
+            } => Some((operation, source_effect_id, source_binding, generation)),
+            _ => None,
+        }
     }
 
     #[must_use]
@@ -277,7 +299,11 @@ impl SessionEnvironmentState {
                 suspend_phase: SuspendPhase::Uploading,
                 checkpoint: Some(_),
                 ..
-            } => return Err(SessionEnvironmentTransitionError::WrongPhase),
+            } => {
+                return Err(SessionEnvironmentTransitionError::Rejected(
+                    SessionEnvironmentRejection::InconsistentEvidence,
+                ));
+            }
             _ => return Ok(None),
         };
         if policy.mode != crate::EnvironmentIdleRetentionMode::CheckpointAndRelease {
@@ -339,7 +365,9 @@ impl SessionEnvironmentState {
             self,
             Self::Suspending { .. } | Self::Hibernated { .. } | Self::Restoring { .. }
         ) {
-            return Err(SessionEnvironmentReceiptError::WrongPhase);
+            return Err(SessionEnvironmentReceiptError::Rejected(
+                SessionEnvironmentRejection::ContinuationInProgress,
+            ));
         }
 
         if let SessionEnvironmentEffectKind::ResourceProjectionReservation {
@@ -403,10 +431,14 @@ impl SessionEnvironmentState {
                 SessionEnvironmentEffectKind::ResourceProjectionReservation { .. },
             ) if intent.source_binding() == Some(binding.as_str()) => {}
             (Self::Unmaterialized, _) => {
-                return Err(SessionEnvironmentReceiptError::RequiresResident);
+                return Err(SessionEnvironmentReceiptError::Rejected(
+                    SessionEnvironmentRejection::RequiresResident,
+                ));
             }
             (Self::Resident { .. }, _) => {
-                return Err(SessionEnvironmentReceiptError::InvalidTransition);
+                return Err(SessionEnvironmentReceiptError::Rejected(
+                    SessionEnvironmentRejection::InvalidTransition,
+                ));
             }
             (Self::Suspending { .. } | Self::Hibernated { .. } | Self::Restoring { .. }, _) => {
                 unreachable!("continuation phases were rejected above")
@@ -454,7 +486,9 @@ impl SessionEnvironmentState {
                     ) {
                         SessionEnvironmentReceiptError::InvalidReservation
                     } else {
-                        SessionEnvironmentReceiptError::InvalidTransition
+                        SessionEnvironmentReceiptError::Rejected(
+                            SessionEnvironmentRejection::InvalidTransition,
+                        )
                     },
                 );
             }
@@ -476,7 +510,9 @@ impl SessionEnvironmentState {
             authorization,
             SessionEnvironmentEffectAuthorization::Unowned { .. }
         ) {
-            return Err(SessionEnvironmentReceiptError::InvalidTransition);
+            return Err(SessionEnvironmentReceiptError::Rejected(
+                SessionEnvironmentRejection::InvalidTransition,
+            ));
         }
 
         let idle_since_unix_ms = self.idle_since_unix_ms();
@@ -486,7 +522,9 @@ impl SessionEnvironmentState {
             (Self::Unmaterialized, SessionEnvironmentEffectKind::Adopt)
                 if receipt.source_binding.as_deref() == Some(receipt.binding.as_str()) => {}
             (Self::Unmaterialized, SessionEnvironmentEffectKind::Adopt) => {
-                return Err(SessionEnvironmentReceiptError::InvalidTransition);
+                return Err(SessionEnvironmentReceiptError::Rejected(
+                    SessionEnvironmentRejection::InvalidTransition,
+                ));
             }
             (Self::Resident { .. }, SessionEnvironmentEffectKind::Rebuild { .. }) => {}
             (Self::Resident { binding, .. }, SessionEnvironmentEffectKind::Adopt)
@@ -505,10 +543,14 @@ impl SessionEnvironmentState {
                 }
             }
             (Self::Unmaterialized, _) => {
-                return Err(SessionEnvironmentReceiptError::RequiresResident);
+                return Err(SessionEnvironmentReceiptError::Rejected(
+                    SessionEnvironmentRejection::RequiresResident,
+                ));
             }
             (Self::Resident { .. }, _) => {
-                return Err(SessionEnvironmentReceiptError::InvalidTransition);
+                return Err(SessionEnvironmentReceiptError::Rejected(
+                    SessionEnvironmentRejection::InvalidTransition,
+                ));
             }
             (Self::Suspending { .. } | Self::Hibernated { .. } | Self::Restoring { .. }, _) => {
                 unreachable!("continuation phases were rejected above")
@@ -1294,7 +1336,9 @@ mod tests {
         }
         assert_eq!(
             inconsistent.checkpoint_request("workspace-a", &crate::SessionId::from("s1"), &policy),
-            Err(SessionEnvironmentTransitionError::WrongPhase),
+            Err(SessionEnvironmentTransitionError::Rejected(
+                SessionEnvironmentRejection::InconsistentEvidence
+            )),
             "R4"
         );
 
@@ -1345,7 +1389,9 @@ mod tests {
         let before = created.clone();
         assert_eq!(
             created.try_apply_receipt(&blind, "env", None),
-            Err(SessionEnvironmentReceiptError::InvalidTransition),
+            Err(SessionEnvironmentReceiptError::Rejected(
+                SessionEnvironmentRejection::InvalidTransition
+            )),
             "R6 blind Create"
         );
         assert_eq!(created, before, "R6 atomic");
@@ -1388,7 +1434,9 @@ mod tests {
         let mut unmaterialized = SessionEnvironmentState::Unmaterialized;
         assert_eq!(
             unmaterialized.try_apply_receipt(&invalid_adopt, "env", None),
-            Err(SessionEnvironmentReceiptError::InvalidTransition),
+            Err(SessionEnvironmentReceiptError::Rejected(
+                SessionEnvironmentRejection::InvalidTransition
+            )),
             "R6 Adopt result must equal its claim source"
         );
         assert_eq!(
@@ -1491,7 +1539,9 @@ mod tests {
         let hibernated_before = hibernated.clone();
         assert_eq!(
             hibernated.try_apply_receipt(&create, "env", None),
-            Err(SessionEnvironmentReceiptError::WrongPhase),
+            Err(SessionEnvironmentReceiptError::Rejected(
+                SessionEnvironmentRejection::ContinuationInProgress
+            )),
             "R6 continuation phase"
         );
         assert_eq!(hibernated, hibernated_before, "R6 atomic");
@@ -1507,20 +1557,24 @@ mod tests {
         use SessionEnvironmentReceiptError as Error;
         use SessionEnvironmentReceiptRecoveryAction as Action;
 
+        use SessionEnvironmentRejection as Rejection;
+
         for error in [
             Error::RealizationStale,
-            Error::WrongPhase,
+            Error::Rejected(Rejection::Terminal),
+            Error::Rejected(Rejection::ContinuationInProgress),
+            Error::Rejected(Rejection::WrongStep),
             Error::ResourceTransitionMismatch,
             Error::MaterializationUnknown,
-            Error::MaterializationPending,
+            Error::Rejected(Rejection::MaterializationPending),
         ] {
             assert_eq!(error.recovery_action(), Action::Retry, "{error}");
         }
         for error in [
             Error::Mismatch,
             Error::EnvironmentMismatch,
-            Error::RequiresResident,
-            Error::InvalidTransition,
+            Error::Rejected(Rejection::RequiresResident),
+            Error::Rejected(Rejection::InvalidTransition),
             Error::InvalidReservation,
         ] {
             assert_eq!(error.recovery_action(), Action::Reject, "{error}");
@@ -1586,7 +1640,9 @@ mod tests {
         };
         assert_eq!(
             state.complete_suspend(&disposed),
-            Err(SessionEnvironmentTransitionError::WrongPhase),
+            Err(SessionEnvironmentTransitionError::Rejected(
+                SessionEnvironmentRejection::WrongStep
+            )),
             "R1 physical disposal is not yet authorized",
         );
         let prepared = source_release_prepared(&operation, &lease);
@@ -1638,7 +1694,9 @@ mod tests {
                 source_binding: "source".into(),
                 terminated: true,
             }),
-            Err(SessionEnvironmentTransitionError::WrongPhase)
+            Err(SessionEnvironmentTransitionError::Rejected(
+                SessionEnvironmentRejection::WrongStep
+            ))
         );
         assert_eq!(state.binding(), Some("source"));
     }
@@ -1868,7 +1926,9 @@ mod tests {
         }
         assert_eq!(
             ready.source_release_disposal(&renewed),
-            Err(SessionEnvironmentReceiptError::WrongPhase),
+            Err(SessionEnvironmentReceiptError::Rejected(
+                SessionEnvironmentRejection::WrongStep
+            )),
             "F4",
         );
     }

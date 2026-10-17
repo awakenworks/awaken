@@ -464,7 +464,9 @@ fn first_materialization_is_write_ahead_immutable_and_never_backfilled() {
                 subject
                     .environment()
                     .admit_environment_effect("workspace", &late, 1),
-                Err(crate::SessionEnvironmentReceiptError::MaterializationPending),
+                Err(crate::SessionEnvironmentReceiptError::Rejected(
+                    crate::SessionEnvironmentRejection::MaterializationPending
+                )),
                 "N1/N2 admission pending={pending}"
             );
             assert_eq!(
@@ -473,7 +475,9 @@ fn first_materialization_is_write_ahead_immutable_and_never_backfilled() {
                     &crate::SessionEnvironmentReceipt::from_intent(&late, "binding").unwrap(),
                     1
                 ),
-                Err(crate::SessionEnvironmentReceiptError::MaterializationPending),
+                Err(crate::SessionEnvironmentReceiptError::Rejected(
+                    crate::SessionEnvironmentRejection::MaterializationPending
+                )),
                 "N1/N2 receipt pending={pending}"
             );
             assert_eq!(subject, before, "N1/N2 zero root mutation");
@@ -613,7 +617,9 @@ fn first_materialization_is_write_ahead_immutable_and_never_backfilled() {
         fresh
             .environment()
             .admit_environment_effect("workspace", &rebuild, 700),
-        Err(crate::SessionEnvironmentReceiptError::MaterializationPending),
+        Err(crate::SessionEnvironmentReceiptError::Rejected(
+            crate::SessionEnvironmentRejection::MaterializationPending
+        )),
         "R7 full Rebuild remains closed"
     );
     assert_eq!(fresh, before);
@@ -732,7 +738,9 @@ fn admitted_materialization_cannot_project_unattempted_archive_or_start_after_te
             terminal
                 .environment()
                 .admit_environment_effect("workspace", &proposed, 1),
-            Err(crate::SessionEnvironmentReceiptError::WrongPhase),
+            Err(crate::SessionEnvironmentReceiptError::Rejected(
+                crate::SessionEnvironmentRejection::Terminal
+            )),
             "A3 all kinds"
         );
         assert_eq!(terminal, before);

@@ -53,6 +53,21 @@ impl SessionPlacementClass {
     pub const fn realized_by_coordinator(self) -> bool {
         matches!(self.runtime, SessionRuntimePlacement::Local) && !self.self_hosted_environment
     }
+
+    /// Whether this placement can honour an idle-retention policy. An
+    /// external Worker has one realization/terminal-cleanup claim path but no
+    /// claim-fenced nonterminal quiesce, checkpoint, disposal or restore
+    /// transport, so checkpoint-and-release retention would require
+    /// Coordinator-local continuation effects against a Worker-owned
+    /// Environment.
+    #[must_use]
+    pub fn supports_idle_retention(
+        self,
+        idle_retention: &crate::EnvironmentIdleRetentionPolicy,
+    ) -> bool {
+        !(self.requires_external_environment_owner()
+            && idle_retention.mode == crate::EnvironmentIdleRetentionMode::CheckpointAndRelease)
+    }
 }
 
 /// Neutral public execution status of one Session root. Protocol adapters map

@@ -4,22 +4,22 @@
 // @formal entrypoint session_environment.source_disposal_requires_a_verified_checkpoint
 //! Recovery-driven Session Environment suspend/restore saga.
 //!
-//! Every phase transition commits through the Session root CAS before the next
-//! external effect. The Runtime owns quiescence and provider I/O; this module
-//! owns only durable orchestration and retries.
+//! The Session aggregate decides every step (`transition_environment` over the
+//! projected continuation facts); this module only orchestrates: load the
+//! root, ask the aggregate for its decision, commit a decided intent or carry
+//! out the decided effect through the Runtime, and commit the observation
+//! through the Session root CAS before the next external effect.
 
-use awaken_session_configuration_contract::EnvironmentIdleRetentionMode;
+use awaken_session_execution_contract::EnvironmentRuntime;
 use awaken_session_state_contract::{
-    PersistedSession, SessionAggregate, SessionEnvironmentState, SessionEnvironmentTransitionError,
-    SessionExecutionState, SuspendPhase,
+    PersistedSession, SessionAggregate, SessionEnvironmentEvent, SessionEnvironmentFacts,
+    SessionEnvironmentInstruction, SessionEnvironmentRejection, SessionEnvironmentStep,
+    SessionEnvironmentTransitionError, transition_environment,
 };
 use awaken_session_types::RunError;
 
 use super::realization::repository_control;
-use super::{
-    SessionApplication, SessionMutationError, SessionRecoveryCandidates,
-    validate_environment_continuation_topology,
-};
+use super::{SessionApplication, SessionMutationError, SessionRecoveryCandidates};
 
 fn expected_mcp_generations(
     session: &PersistedSession,
@@ -41,67 +41,57 @@ pub enum SessionContinuationError {
     #[error("Session continuation Runtime failed: {0}")]
     Runtime(#[from] RunError),
     #[error("Session continuation transition failed: {0}")]
-    Transition(#[from] SessionEnvironmentTransitionError),
-    #[error("Session continuation Memory reconciliation failed: {0}")]
-    Memory(#[from] awaken_session_state_contract::SessionMemoryReconciliationError),
+    Transition(SessionEnvironmentTransitionError),
     #[error("Session continuation is not available for a terminal Session")]
     Terminal,
     #[error("Session continuation did not converge")]
     DidNotConverge,
 }
 
-fn input_is_memory(input: &crate::session_resource::ResolvedInput) -> bool {
-    matches!(
-        &input.source,
-        crate::session_resource::ResolvedInputSource::MemoryStore { .. }
-    )
-}
-
-/// Validate the aggregate's current source binding before committing a suspend
-/// intent. A pending Memory generation has no single physical input/evidence
-/// join and therefore remains resident. Active Memory reuses the same neutral
-/// None/Some validator that source disposal invokes on historical rows.
-fn validate_suspend_memory_preflight(
-    session: &PersistedSession,
-) -> Result<(), awaken_session_state_contract::SessionMemoryReconciliationError> {
-    if session
-        .resources
-        .pending
-        .as_ref()
-        .is_some_and(|pending| pending.inputs().iter().any(input_is_memory))
-    {
-        return Err(
-            awaken_session_state_contract::SessionMemoryReconciliationError::ResourceMismatch,
-        );
-    }
-    let active_inputs = session.resources.active.inputs();
-    if !active_inputs.iter().any(input_is_memory) {
-        return Ok(());
-    }
-    let binding = session.environment.binding().ok_or(
-        awaken_session_state_contract::SessionMemoryReconciliationError::EnvironmentMismatch,
-    )?;
-    let handle = serde_json::from_str::<awaken_provisioning_contract::SandboxHandle>(binding)
-        .map_err(|error| {
-            awaken_session_state_contract::SessionMemoryReconciliationError::InvalidIntent(
-                error.to_string(),
-            )
-        })?;
-    let materializations = handle.memory_materializations().map_err(|error| {
-        awaken_session_state_contract::SessionMemoryReconciliationError::InvalidIntent(
-            error.to_string(),
-        )
-    })?;
-    awaken_session_state_contract::validate_continuation_memory_materializations(
-        active_inputs,
-        materializations,
-    )?;
-    Ok(())
-}
-
 impl SessionContinuationError {
     fn mutation(error: SessionMutationError) -> Self {
         Self::Repository(error.to_string())
+    }
+
+    /// The one continuation projection of an Environment decision's refusal:
+    /// a terminal Session is terminal, an expired generation and an
+    /// unsupported topology keep their classified Runtime errors, and every
+    /// other refusal is a transition error.
+    fn rejected(rejection: SessionEnvironmentRejection) -> Self {
+        match rejection {
+            SessionEnvironmentRejection::Terminal => Self::Terminal,
+            SessionEnvironmentRejection::GenerationExpired => {
+                Self::Runtime(RunError::unavailable_classified(
+                    "session_environment_generation_expired",
+                    "Resident environment reached its fixed expiry before checkpoint",
+                ))
+            }
+            SessionEnvironmentRejection::UnsupportedContinuationTopology => {
+                Self::Runtime(RunError::bad_request(rejection.to_string()))
+            }
+            rejection => Self::Transition(rejection.into()),
+        }
+    }
+
+    /// A continuation command never decides materialization or retirement.
+    fn not_a_continuation(instruction: SessionEnvironmentInstruction) -> Self {
+        Self::Runtime(RunError::internal(format!(
+            "a continuation decision instructed {instruction:?}"
+        )))
+    }
+
+    /// The committed step no longer carries the data its decided effect reads.
+    fn step_moved() -> Self {
+        Self::rejected(SessionEnvironmentRejection::WrongStep)
+    }
+}
+
+impl From<SessionEnvironmentTransitionError> for SessionContinuationError {
+    fn from(error: SessionEnvironmentTransitionError) -> Self {
+        match error {
+            SessionEnvironmentTransitionError::Rejected(rejection) => Self::rejected(rejection),
+            error => Self::Transition(error),
+        }
     }
 }
 
@@ -118,17 +108,12 @@ impl SessionApplication {
         session
             .authorize_checkpoint_release_artifact_effect(operation)
             .map_err(|error| match error {
+                awaken_session_state_contract::SessionEnvironmentReceiptError::Rejected(
+                    rejection,
+                ) => rejection.into(),
                 awaken_session_state_contract::SessionEnvironmentReceiptError::RealizationStale
                 | awaken_session_state_contract::SessionEnvironmentReceiptError::Mismatch => {
                     awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership
-                }
-                awaken_session_state_contract::SessionEnvironmentReceiptError::WrongPhase
-                    if session.is_terminal() =>
-                {
-                    awaken_session_realization_contract::SessionRealizationControlFailure::Terminal
-                }
-                awaken_session_state_contract::SessionEnvironmentReceiptError::WrongPhase => {
-                    awaken_session_realization_contract::SessionRealizationControlFailure::NotReady
                 }
                 error => awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(
                     error.to_string(),
@@ -165,27 +150,17 @@ impl SessionApplication {
         failures
     }
 
-    async fn commit_continuation(
-        &self,
-        owner_scope: &str,
-        session: SessionAggregate,
-        reason: &str,
-    ) -> Result<PersistedSession, SessionContinuationError> {
-        self.commit_session_snapshot_with_outcome(owner_scope, session, reason, Vec::new())
-            .await
-            .map(crate::SnapshotCommit::into_session)
-            .map_err(SessionContinuationError::mutation)
-    }
-
-    /// Drive at most one durable phase/effect. `Ok(false)` means no continuation
-    /// work is currently due; a caller may safely back off.
-    async fn advance_environment_continuation(
+    /// Load the root, let the aggregate decide one continuation command, and
+    /// carry out its instruction. A decision that moves the step is an intent
+    /// the aggregate records before its effect runs; one that keeps the step
+    /// instructs the effect, whose observation the aggregate applies. Either
+    /// commits through the root CAS; without an instruction nothing changes.
+    async fn continue_environment(
         &self,
         session_id: &awaken_session_types::SessionId,
+        event: SessionEnvironmentEvent,
         now_unix_ms: u64,
-    ) -> Result<bool, SessionContinuationError> {
-        let environment_runtime = self.runtime().environment();
-
+    ) -> Result<ContinuationStep, SessionContinuationError> {
         let owner_scope = self
             .owner(session_id)
             .await
@@ -194,178 +169,55 @@ impl SessionApplication {
             .session_aggregate(session_id)
             .await
             .map_err(|error| SessionContinuationError::Repository(error.to_string()))?;
-        if session.is_terminal() {
-            return Err(SessionContinuationError::Terminal);
-        }
-        let baseline = session
-            .frozen_baseline()
-            .ok_or_else(|| SessionContinuationError::Repository("baseline is not frozen".into()))?
-            .clone();
-        validate_environment_continuation_topology(
-            awaken_session_state_contract::SessionPlacementClass::new(
-                baseline.runtime_placement,
-                baseline.environment.self_hosted,
-            ),
-            &baseline.environment.idle_retention,
-        )?;
-
-        match session.environment.clone() {
-            SessionEnvironmentState::Resident {
-                generation: Some(_),
-                idle_since_unix_ms: Some(idle_since),
-                ..
-            } if session.execution == SessionExecutionState::Idle
-                && baseline.environment.idle_retention.mode
-                    == EnvironmentIdleRetentionMode::CheckpointAndRelease
-                && now_unix_ms
-                    >= idle_since.saturating_add(
-                        baseline
-                            .environment
-                            .idle_retention
-                            .checkpoint_after_secs
-                            .saturating_mul(1_000),
-                    ) =>
-            {
-                validate_suspend_memory_preflight(&session)?;
+        let decision = transition_environment(
+            SessionEnvironmentFacts::project_continuation(session.snapshot(), now_unix_ms),
+            event,
+        )
+        .map_err(SessionContinuationError::rejected)?;
+        let Some(instruction) = decision.instruction() else {
+            let root = session.into_snapshot();
+            return Ok(ContinuationStep {
+                owner_scope,
+                root,
+                advanced: false,
+            });
+        };
+        let environment = self.runtime().environment();
+        let reason = match instruction {
+            _ if decision.next() == session.environment.step() => {
+                carry_out_effect(
+                    environment,
+                    &owner_scope,
+                    &mut session,
+                    instruction,
+                    now_unix_ms,
+                )
+                .await?
+            }
+            SessionEnvironmentInstruction::Quiesce => {
                 session
                     .environment()
                     .begin_suspend_at(&owner_scope, now_unix_ms)?;
-                self.commit_continuation(&owner_scope, session, "environment-suspend-intent")
-                    .await?;
-                Ok(true)
+                "environment-suspend-intent"
             }
-            SessionEnvironmentState::Suspending {
-                operation,
-                source_effect_id,
-                source_binding,
-                generation,
-                suspend_phase: SuspendPhase::Quiescing,
-                ..
-            } => {
-                let expected_mcp_generations = expected_mcp_generations(&session)?;
-                let receipt = environment_runtime
-                    .quiesce_session_environment(
-                        session_id.as_str(),
-                        &operation,
-                        &source_effect_id,
-                        &source_binding,
-                        &generation,
-                        &expected_mcp_generations,
-                    )
-                    .await?;
+            SessionEnvironmentInstruction::Restore => {
                 session
                     .environment()
-                    .record_quiescence(&receipt, &expected_mcp_generations)?;
-                session
-                    .mcp()
-                    .require_reprojection_after_quiescence(&receipt.mcp_generations)
-                    .map_err(|error| {
-                        SessionContinuationError::Repository(format!(
-                            "MCP quiescence transition failed: {error}"
-                        ))
-                    })?;
-                self.commit_continuation(&owner_scope, session, "environment-quiesced")
-                    .await?;
-                Ok(true)
+                    .begin_restore(&owner_scope, now_unix_ms)?;
+                "environment-restore-intent"
             }
-            SessionEnvironmentState::Suspending {
-                generation,
-                suspend_phase: SuspendPhase::Uploading,
-                ..
-            } => {
-                if generation.expired_at(now_unix_ms) {
-                    return Err(SessionContinuationError::Runtime(
-                        RunError::unavailable_classified(
-                            "session_environment_generation_expired",
-                            "Resident environment reached its fixed expiry before checkpoint",
-                        ),
-                    ));
-                }
-                let policy = &baseline.environment.idle_retention;
-                let request = session
-                    .environment
-                    .checkpoint_request(&owner_scope, session_id, policy)?
-                    .ok_or(SessionEnvironmentTransitionError::WrongPhase)?;
-                let receipt = tokio::time::timeout(
-                    std::time::Duration::from_secs(policy.max_checkpoint_duration_secs),
-                    environment_runtime
-                        .checkpoint_session_environment(session_id.as_str(), request),
-                )
-                .await
-                .map_err(|_| {
-                    SessionContinuationError::Runtime(RunError::unavailable_classified(
-                        "session_environment_checkpoint_timeout",
-                        "Session environment checkpoint exceeded its frozen duration bound",
-                    ))
-                })??;
-                session.environment().record_checkpoint(&receipt)?;
-                self.commit_continuation(&owner_scope, session, "environment-checkpointed")
-                    .await?;
-                Ok(true)
-            }
-            SessionEnvironmentState::Suspending {
-                source_binding,
-                generation,
-                suspend_phase: SuspendPhase::ReadyToDispose,
-                checkpoint: Some(_),
-                source_release_preparation: None,
-                ..
-            } => {
-                let preparation = session
-                    .source_release_preparation_effect()
-                    .map_err(|error| {
-                        SessionContinuationError::Runtime(RunError::unavailable_classified(
-                            "session_environment_source_preparation_unauthorized",
-                            error.to_string(),
-                        ))
-                    })?;
-                let receipt = environment_runtime
-                    .prepare_checkpoint_source_disposal(
-                        session_id.as_str(),
-                        &preparation,
-                        &generation,
-                        &source_binding,
-                    )
-                    .await?;
-                session
-                    .environment()
-                    .record_source_release_prepared(&receipt)
-                    .map_err(|error| {
-                        SessionContinuationError::Runtime(RunError::unavailable_classified(
-                            "session_environment_source_preparation_stale",
-                            error.to_string(),
-                        ))
-                    })?;
-                self.commit_continuation(
-                    &owner_scope,
-                    session,
-                    "environment-source-release-prepared",
-                )
-                .await?;
-                Ok(true)
-            }
-            SessionEnvironmentState::Suspending {
-                suspend_phase: SuspendPhase::Disposing,
-                checkpoint: Some(_),
-                source_release_preparation: Some(_),
-                ..
-            } => {
-                let disposal = session.source_release_disposal().map_err(|error| {
-                    SessionContinuationError::Runtime(RunError::unavailable_classified(
-                        "session_environment_source_disposal_unauthorized",
-                        error.to_string(),
-                    ))
-                })?;
-                let receipt = environment_runtime
-                    .dispose_prepared_checkpoint_source(session_id.as_str(), &disposal)
-                    .await?;
-                session.environment().complete_suspend(&receipt)?;
-                self.commit_continuation(&owner_scope, session, "environment-hibernated")
-                    .await?;
-                Ok(true)
-            }
-            _ => Ok(false),
-        }
+            instruction => return Err(SessionContinuationError::not_a_continuation(instruction)),
+        };
+        let root = self
+            .commit_session_snapshot_with_outcome(&owner_scope, session, reason, Vec::new())
+            .await
+            .map(crate::SnapshotCommit::into_session)
+            .map_err(SessionContinuationError::mutation)?;
+        Ok(ContinuationStep {
+            owner_scope,
+            root,
+            advanced: true,
+        })
     }
 
     /// Reconcile a due/unfinished suspend operation through its terminal durable
@@ -377,10 +229,14 @@ impl SessionApplication {
         now_unix_ms: u64,
     ) -> Result<(), SessionContinuationError> {
         for _ in 0..8 {
-            if !self
-                .advance_environment_continuation(session_id, now_unix_ms)
-                .await?
-            {
+            let step = self
+                .continue_environment(
+                    session_id,
+                    SessionEnvironmentEvent::AdvanceContinuation,
+                    now_unix_ms,
+                )
+                .await?;
+            if !step.advanced {
                 return Ok(());
             }
         }
@@ -389,95 +245,192 @@ impl SessionApplication {
 
     /// Driving ingress joins the one committed suspend/restore operation. It
     /// never creates a resume queue and never cancels an ambiguous upload.
+    /// A Resident root installs its complete committed projection through
+    /// Realization unless an external Worker owns the Environment.
     pub async fn ensure_environment_resident(
         &self,
         session_id: &awaken_session_types::SessionId,
         now_unix_ms: u64,
     ) -> Result<PersistedSession, SessionContinuationError> {
-        let environment_runtime = self.runtime().environment();
-
         for _ in 0..12 {
-            let owner_scope = self
-                .owner(session_id)
-                .await
-                .map_err(SessionContinuationError::mutation)?;
-            let mut session = self
-                .session_aggregate(session_id)
-                .await
-                .map_err(|error| SessionContinuationError::Repository(error.to_string()))?;
-            if session.is_terminal() {
-                return Err(SessionContinuationError::Terminal);
+            let ContinuationStep {
+                owner_scope,
+                root,
+                advanced,
+            } = self
+                .continue_environment(
+                    session_id,
+                    SessionEnvironmentEvent::RequireResident,
+                    now_unix_ms,
+                )
+                .await?;
+            let resident = root.environment.step() == SessionEnvironmentStep::Resident;
+            if advanced && !resident {
+                continue;
             }
-            if let Some(baseline) = session.frozen_baseline() {
-                validate_environment_continuation_topology(
-                    awaken_session_state_contract::SessionPlacementClass::new(
-                        baseline.runtime_placement,
-                        baseline.environment.self_hosted,
-                    ),
-                    &baseline.environment.idle_retention,
-                )?;
-            }
-            match session.environment.clone() {
-                SessionEnvironmentState::Unmaterialized => return Ok(session.into_snapshot()),
-                SessionEnvironmentState::Resident { .. } => {
-                    if !session.requires_external_environment_owner() {
-                        self.synchronize_resident_environment_projection(&owner_scope, &session)
-                            .await?;
-                    }
-                    return Ok(session.into_snapshot());
-                }
-                SessionEnvironmentState::Suspending { .. } => {
-                    self.reconcile_environment_continuation(session_id, now_unix_ms)
-                        .await?;
-                }
-                SessionEnvironmentState::Hibernated {
-                    checkpoint,
-                    generation,
-                } if checkpoint.expired_at(now_unix_ms) || generation.expired_at(now_unix_ms) => {
-                    // Expiry authorizes a fresh Sandbox from the already-frozen
-                    // Environment. Delete is idempotent and happens first so a
-                    // failed delete retains the reference for retry; a crash after
-                    // delete replays the same delete before the CAS.
-                    environment_runtime
-                        .delete_session_checkpoint(session_id.as_str(), &checkpoint)
-                        .await?;
-                    session
-                        .environment()
-                        .discard_expired_checkpoint(now_unix_ms)?;
-                    self.commit_continuation(
-                        &owner_scope,
-                        session,
-                        "environment-checkpoint-expired",
-                    )
+            if resident && !root.requires_external_environment_owner() {
+                self.synchronize_resident_environment_projection(&owner_scope, &root)
                     .await?;
-                }
-                SessionEnvironmentState::Hibernated { .. } => {
-                    session
-                        .environment()
-                        .begin_restore(&owner_scope, now_unix_ms)?;
-                    self.commit_continuation(&owner_scope, session, "environment-restore-intent")
-                        .await?;
-                }
-                SessionEnvironmentState::Restoring { .. } => {
-                    let request = session
-                        .environment
-                        .restoring_request(&owner_scope, session_id)
-                        .ok_or(SessionEnvironmentTransitionError::NotRestoring)?;
-                    let receipt = environment_runtime
-                        .restore_checkpointed_session_environment(request)
-                        .await?;
-                    session.environment().complete_restore(&receipt)?;
-                    let committed = self
-                        .commit_continuation(&owner_scope, session, "environment-restored")
-                        .await?;
-                    if !committed.requires_external_environment_owner() {
-                        self.synchronize_resident_environment_projection(&owner_scope, &committed)
-                            .await?;
-                    }
-                    return Ok(committed);
-                }
             }
+            return Ok(root);
         }
         Err(SessionContinuationError::DidNotConverge)
     }
+}
+
+/// One continuation command's outcome: the committed root when an
+/// instruction ran (`advanced`), otherwise the unchanged root.
+struct ContinuationStep {
+    owner_scope: String,
+    root: PersistedSession,
+    advanced: bool,
+}
+
+/// Carry out one decided effect through the Runtime and apply its observation
+/// to the candidate; returns the commit reason.
+async fn carry_out_effect(
+    runtime: &dyn EnvironmentRuntime,
+    owner_scope: &str,
+    session: &mut SessionAggregate,
+    instruction: SessionEnvironmentInstruction,
+    now: u64,
+) -> Result<&'static str, SessionContinuationError> {
+    let session_id = session.session_id.clone();
+    let thread = session_id.as_str();
+    let suspend_source = || {
+        session
+            .environment
+            .suspend_source()
+            .map(|(operation, effect, binding, generation)| {
+                (
+                    operation.clone(),
+                    effect.to_owned(),
+                    binding.to_owned(),
+                    generation.clone(),
+                )
+            })
+            .ok_or_else(SessionContinuationError::step_moved)
+    };
+    match instruction {
+        SessionEnvironmentInstruction::Quiesce => {
+            let (operation, source_effect_id, source_binding, generation) = suspend_source()?;
+            let expected = expected_mcp_generations(session)?;
+            let receipt = runtime
+                .quiesce_session_environment(
+                    thread,
+                    &operation,
+                    &source_effect_id,
+                    &source_binding,
+                    &generation,
+                    &expected,
+                )
+                .await?;
+            session
+                .environment()
+                .record_quiescence(&receipt, &expected, now)?;
+            session
+                .mcp()
+                .require_reprojection_after_quiescence(&receipt.mcp_generations)
+                .map_err(|error| {
+                    SessionContinuationError::Repository(format!(
+                        "MCP quiescence transition failed: {error}"
+                    ))
+                })?;
+            Ok("environment-quiesced")
+        }
+        SessionEnvironmentInstruction::Checkpoint => {
+            let policy = session
+                .frozen_baseline()
+                .ok_or_else(|| {
+                    SessionContinuationError::Repository("baseline is not frozen".into())
+                })?
+                .environment
+                .idle_retention
+                .clone();
+            let request = session
+                .environment
+                .checkpoint_request(owner_scope, &session_id, &policy)?
+                .ok_or_else(SessionContinuationError::step_moved)?;
+            let bound = std::time::Duration::from_secs(policy.max_checkpoint_duration_secs);
+            let receipt = tokio::time::timeout(
+                bound,
+                runtime.checkpoint_session_environment(thread, request),
+            )
+            .await
+            .map_err(|_| {
+                SessionContinuationError::Runtime(RunError::unavailable_classified(
+                    "session_environment_checkpoint_timeout",
+                    "Session environment checkpoint exceeded its frozen duration bound",
+                ))
+            })??;
+            session.environment().record_checkpoint(&receipt, now)?;
+            Ok("environment-checkpointed")
+        }
+        SessionEnvironmentInstruction::PrepareSourceRelease => {
+            let (_, _, source_binding, generation) = suspend_source()?;
+            let preparation = session
+                .source_release_preparation_effect()
+                .map_err(|error| {
+                    unavailable("session_environment_source_preparation_unauthorized", error)
+                })?;
+            let receipt = runtime
+                .prepare_checkpoint_source_disposal(
+                    thread,
+                    &preparation,
+                    &generation,
+                    &source_binding,
+                )
+                .await?;
+            session
+                .environment()
+                .record_source_release_prepared(&receipt, now)
+                .map_err(|error| {
+                    unavailable("session_environment_source_preparation_stale", error)
+                })?;
+            Ok("environment-source-release-prepared")
+        }
+        SessionEnvironmentInstruction::DisposeSource => {
+            let disposal = session.source_release_disposal().map_err(|error| {
+                unavailable("session_environment_source_disposal_unauthorized", error)
+            })?;
+            let receipt = runtime
+                .dispose_prepared_checkpoint_source(thread, &disposal)
+                .await?;
+            session.environment().complete_suspend(&receipt, now)?;
+            Ok("environment-hibernated")
+        }
+        SessionEnvironmentInstruction::Restore => {
+            let request = session
+                .environment
+                .restoring_request(owner_scope, &session_id)
+                .ok_or_else(SessionContinuationError::step_moved)?;
+            let receipt = runtime
+                .restore_checkpointed_session_environment(request)
+                .await?;
+            session.environment().complete_restore(&receipt, now)?;
+            Ok("environment-restored")
+        }
+        // Expiry authorizes a fresh Sandbox from the frozen Environment. The
+        // idempotent delete precedes the CAS, so a failed delete keeps the
+        // reference for retry and a crash after it replays the same delete.
+        SessionEnvironmentInstruction::DeleteExpiredCheckpoint => {
+            let checkpoint = session
+                .environment
+                .checkpoint()
+                .cloned()
+                .ok_or_else(SessionContinuationError::step_moved)?;
+            runtime
+                .delete_session_checkpoint(thread, &checkpoint)
+                .await?;
+            session.environment().discard_expired_checkpoint(now)?;
+            Ok("environment-checkpoint-expired")
+        }
+        SessionEnvironmentInstruction::Materialize(_) | SessionEnvironmentInstruction::Retire => {
+            Err(SessionContinuationError::not_a_continuation(instruction))
+        }
+    }
+}
+
+fn unavailable(code: &'static str, error: impl std::fmt::Display) -> SessionContinuationError {
+    SessionContinuationError::Runtime(RunError::unavailable_classified(code, error.to_string()))
 }
