@@ -58,22 +58,28 @@ mod tests {
                 expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
                     + 60_000,
             };
-            let authority = slots.realizations().update_realization("session", |r| {
-                r.execution.authority = SessionRealizationAuthority::Live(
-                    awaken_session_realization::test_support::test_observed_lease(asserted.clone()),
-                );
-                r.environment.owner = Self::candidate(environment.clone());
-                Arc::new(SessionExecutionAuthority::for_test(
-                    &ExecutionAuthority {
-                        sessions: slots.realizations(),
-                        worker: Some(worker.clone()),
-                    },
-                    "session",
-                    r,
-                    asserted,
-                    &environment,
-                ))
-            });
+            slots.install("session");
+            let authority = slots
+                .realizations()
+                .update_realization("session", |r| {
+                    r.execution.authority = SessionRealizationAuthority::Live(
+                        awaken_session_realization::test_support::test_observed_lease(
+                            asserted.clone(),
+                        ),
+                    );
+                    r.environment.owner = Self::candidate(environment.clone());
+                    Arc::new(SessionExecutionAuthority::for_test(
+                        &ExecutionAuthority {
+                            sessions: slots.realizations(),
+                            worker: Some(worker.clone()),
+                        },
+                        "session",
+                        r,
+                        asserted,
+                        &environment,
+                    ))
+                })
+                .expect("installed Sessions");
             Self {
                 slots,
                 environment,
@@ -159,7 +165,7 @@ mod tests {
                 }
                 "slot_aba" => {
                     let old = f.slots.remove("session").unwrap();
-                    f.slots.realizations().update_realization("session", |r| {
+                    f.slots.install_realization("session", |r| {
                         r.execution.authority = old.realization.execution.authority;
                         r.environment.owner = old.realization.environment.owner;
                     });
@@ -244,7 +250,7 @@ mod tests {
                         } else {
                             awaken_session_realization::test_support::test_observed_lease(lease)
                         });
-                }),
+                }).expect("installed Sessions"),
             }
             let mut calls = 0;
             let result = f.authority.with_current(&mut |remaining| {
@@ -371,9 +377,12 @@ mod tests {
         });
         assert_eq!(failure.unwrap_err().to_string(), "provider effect failed");
         assert_eq!(calls, 1);
-        f.slots.realizations().update_realization("session", |r| {
-            r.environment.owner = SessionEnvironmentOwner::Vacant
-        });
+        f.slots
+            .realizations()
+            .update_realization("session", |r| {
+                r.environment.owner = SessionEnvironmentOwner::Vacant
+            })
+            .expect("installed Sessions");
         assert!(f.current().is_err());
         assert_eq!(provider.current_effect_fence(&initial).unwrap(), initial);
         provider
@@ -425,7 +434,16 @@ mod tests {
                 .provider_effect_authority("missing", &initial)
                 .err()
                 .expect("E2 genuinely absent slot");
-            assert_eq!(absent.message, "Session realization slot is absent");
+            assert!(
+                matches!(
+                    absent,
+                    crate::realization_error::RealizationError::AuthorityLost {
+                        cause: crate::realization_error::AuthorityLoss::SessionAbsent,
+                        ..
+                    }
+                ),
+                "E2 absence is a typed authority loss: {absent}"
+            );
             assert!(!f.slots.contains("missing"), "E2 no slot creation");
             let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 if callback {
@@ -453,10 +471,23 @@ mod tests {
             }))
             .expect("E3 fresh capture must not unwind");
             let error = fresh.err().expect("E3 poisoned capture must reject");
-            assert_eq!(error.kind, crate::host_error::HostErrorKind::Internal);
-            assert_eq!(error.code, "internal");
-            assert_eq!(error.message, "installed sessions mutex poisoned");
-            assert_ne!(error.message, absent.message, "E3 poison is not absence");
+            assert!(matches!(
+                error,
+                crate::realization_error::RealizationError::Poisoned(
+                    crate::realization_error::RealizationLock::InstalledSessions
+                )
+            ));
+            assert_eq!(
+                error.disposition(),
+                crate::realization_error::Disposition::Retry,
+                "E3 poison denies this process's effect; a healthy owner may retry"
+            );
+            assert_eq!(error.code(), crate::realization_error::POISONED_CODE);
+            assert_ne!(
+                error.to_string(),
+                absent.to_string(),
+                "E3 poison is not absence"
+            );
         }
     }
 

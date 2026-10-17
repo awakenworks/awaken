@@ -16,12 +16,12 @@
 //! the Session lifecycle guard.
 
 use super::{SessionEnvironmentOwner, SessionEnvironmentRetirementCause};
+use crate::realization_error::{AuthorityLoss, PendingState, RealizationError, RealizationLock};
 use std::sync::Arc;
 
 use crate::environment_owner::{
     BoundSessionEnvironmentIdentity, LegacyDirectEnvironmentProvenance, UnboundSessionEnvironment,
 };
-use crate::host_error::HostError;
 use crate::session_environment::{
     AuthorizedSessionEnvironmentEffect, EnvironmentBindingPersistenceError,
     SessionEnvironmentProvider,
@@ -37,7 +37,7 @@ impl crate::environment_holding::EnvironmentHolding {
         thread: &str,
         environment: Arc<crate::session_environment::SessionEnvironment>,
         intent: Option<&awaken_session_state_contract::SessionEnvironmentEffectIntent>,
-    ) -> Result<UnboundSessionEnvironment, HostError> {
+    ) -> Result<UnboundSessionEnvironment, RealizationError> {
         self.begin_session_environment_candidate(
             thread,
             environment,
@@ -52,9 +52,9 @@ impl crate::environment_holding::EnvironmentHolding {
         environment: Arc<crate::session_environment::SessionEnvironment>,
         kind: awaken_session_state_contract::SessionEnvironmentEffectKind,
         intent: Option<&awaken_session_state_contract::SessionEnvironmentEffectIntent>,
-    ) -> Result<UnboundSessionEnvironment, HostError> {
+    ) -> Result<UnboundSessionEnvironment, RealizationError> {
         if intent.is_some_and(|intent| intent.session_id().as_str() != thread) {
-            return Err(HostError::internal(
+            return Err(RealizationError::invariant(
                 "candidate intent names another Session",
             ));
         }
@@ -68,7 +68,7 @@ impl crate::environment_holding::EnvironmentHolding {
             self.execution
                 .bind(thread, slot.realization, &candidate.environment)?;
             Ok(candidate)
-        })
+        })?
     }
 
     pub fn begin_session_environment_preparation(
@@ -76,7 +76,7 @@ impl crate::environment_holding::EnvironmentHolding {
         thread: &str,
         environment: Arc<crate::session_environment::SessionEnvironment>,
         intent: Option<&awaken_session_state_contract::SessionEnvironmentEffectIntent>,
-    ) -> Result<UnboundSessionEnvironment, HostError> {
+    ) -> Result<UnboundSessionEnvironment, RealizationError> {
         self.begin_session_environment_candidate(
             thread,
             environment,
@@ -93,10 +93,10 @@ impl crate::environment_holding::EnvironmentHolding {
         thread: &str,
         candidate: &UnboundSessionEnvironment,
         identity: BoundSessionEnvironmentIdentity,
-    ) -> Result<Arc<crate::session_environment::SessionEnvironment>, HostError> {
+    ) -> Result<Arc<crate::session_environment::SessionEnvironment>, RealizationError> {
         self.sessions.update_realization(thread, |r| {
             r.environment.owner.publish_prepared(candidate, identity)
-        })
+        })?
     }
 
     pub fn retain_committed_session_environment_candidate(
@@ -104,12 +104,12 @@ impl crate::environment_holding::EnvironmentHolding {
         thread: &str,
         candidate: &UnboundSessionEnvironment,
         identity: BoundSessionEnvironmentIdentity,
-    ) -> Result<UnboundSessionEnvironment, HostError> {
+    ) -> Result<UnboundSessionEnvironment, RealizationError> {
         self.sessions.update_realization(thread, |r| {
             r.environment
                 .owner
                 .retain_committed_candidate(candidate, identity)
-        })
+        })?
     }
 
     /// Finish a previously interrupted unpublished cleanup before any caller
@@ -118,7 +118,7 @@ impl crate::environment_holding::EnvironmentHolding {
     pub async fn retry_unpublished_session_environment_cleanup(
         &self,
         thread: &str,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), RealizationError> {
         let retirement = self
             .sessions
             .read_realization(thread, |r| match &r.environment.owner {
@@ -129,7 +129,7 @@ impl crate::environment_holding::EnvironmentHolding {
                     Some(retiring.clone())
                 }
                 _ => None,
-            })
+            })?
             .flatten();
         if let Some(retirement) = retirement {
             self.dispose_and_confirm_retirement(thread, &retirement)
@@ -148,7 +148,7 @@ impl crate::environment_holding::EnvironmentHolding {
         &self,
         thread: &str,
         agent: Option<&str>,
-    ) -> Result<&SessionEnvironmentProvider, HostError> {
+    ) -> Result<&SessionEnvironmentProvider, RealizationError> {
         let provisioning = self
             .publication
             .projected_session_model_provisioning(thread, agent)?;
@@ -158,13 +158,11 @@ impl crate::environment_holding::EnvironmentHolding {
         &self,
         thread: &str,
         intent: &SessionEnvironmentEffectIntent,
-    ) -> Result<AuthorizedSessionEnvironmentEffect, HostError> {
+    ) -> Result<AuthorizedSessionEnvironmentEffect, RealizationError> {
         let realizations = &self.sessions;
-        intent
-            .verify()
-            .map_err(|error| HostError::internal(error.to_string()))?;
+        intent.verify().map_err(RealizationError::from)?;
         if intent.session_id().as_str() != thread {
-            return Err(HostError::internal(
+            return Err(RealizationError::invariant(
                 "Environment request names another Session",
             ));
         }
@@ -179,18 +177,18 @@ impl crate::environment_holding::EnvironmentHolding {
                     managed,
                     slot.realization.execution.authority.is_closed(),
                 )
-            })
+            })?
             .unwrap_or_default();
         if closed {
-            return Err(HostError::unavailable_classified(
-                "session_environment_realization_closed",
+            return Err(RealizationError::authority_lost(
+                AuthorityLoss::RealizationClosed,
                 "closed Session realization cannot authorize an Environment effect",
             ));
         }
         let sink = self
             .environment_binding_sink
             .read()
-            .expect("environment binding sink lock poisoned")
+            .map_err(|_| RealizationError::Poisoned(RealizationLock::EnvironmentBindingSink))?
             .clone();
         // A claimed ordinary Run and a Managed Session already have distinct
         // durable owners. The former fences its local Environment through the
@@ -205,30 +203,30 @@ impl crate::environment_holding::EnvironmentHolding {
             Some(sink) => sink
                 .authorize(intent)
                 .await
-                .map_err(crate::host_error::from_run_error)?,
+                .map_err(RealizationError::Run)?,
             None if !managed_projection && intent.realization().is_none() => {
                 SessionEnvironmentEffectAuthorization::Unowned {
                     intent: Box::new(intent.clone()),
                 }
             }
             None => {
-                return Err(HostError::unavailable_classified(
-                    "session_environment_binding_authority_missing",
+                return Err(RealizationError::authority_lost(
+                    AuthorityLoss::BindingAuthorityMissing,
                     "durable Session Environment effect has no binding authority",
                 ));
             }
         };
         authorization
             .verify_for(intent)
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(RealizationError::from)?;
         let original = authorization.intent();
         if matches!(
             authorization,
             SessionEnvironmentEffectAuthorization::Unowned { .. }
         ) && (managed_projection || original.realization().is_some())
         {
-            return Err(HostError::unavailable_classified(
-                "session_environment_owned_root_missing",
+            return Err(RealizationError::pending(
+                PendingState::OwnedRootMissing,
                 "a Managed Session cannot fall back to an unowned Environment effect",
             ));
         }
@@ -241,7 +239,7 @@ impl crate::environment_holding::EnvironmentHolding {
                 .map(|realization| {
                     realization
                         .sandbox_effect_fence(original.effect_id())
-                        .map_err(|error| HostError::internal(error.to_string()))
+                        .map_err(RealizationError::from)
                 })
                 .transpose()?
         } else {
@@ -273,7 +271,7 @@ impl crate::environment_holding::EnvironmentHolding {
     ) -> Result<BoundSessionEnvironmentIdentity, EnvironmentBindingPersistenceError> {
         let captured = candidate.ordinary_intent()?;
         if captured != effect.authorization.intent() {
-            return Err(HostError::internal(
+            return Err(RealizationError::invariant(
                 "candidate changed its original Environment effect intent",
             )
             .into());
@@ -322,7 +320,7 @@ impl crate::environment_holding::EnvironmentHolding {
                 binding: committed, ..
             } => {
                 if committed != &binding {
-                    return Err(HostError::internal(
+                    return Err(RealizationError::invariant(
                         "Session Environment effect already committed another binding",
                     )
                     .into());
@@ -333,10 +331,10 @@ impl crate::environment_holding::EnvironmentHolding {
         let sink = self
             .environment_binding_sink
             .read()
-            .expect("environment binding sink lock poisoned")
+            .map_err(|_| RealizationError::Poisoned(RealizationLock::EnvironmentBindingSink))?
             .clone()
             .ok_or_else(|| {
-                HostError::internal(
+                RealizationError::invariant(
                     "authorized Session Environment effect has no durable binding sink",
                 )
             })?;
@@ -347,7 +345,7 @@ impl crate::environment_holding::EnvironmentHolding {
         let committed = sink
             .persist(receipt.clone())
             .await
-            .map_err(crate::host_error::from_run_error)?;
+            .map_err(RealizationError::Run)?;
         let committed_identity =
             BoundSessionEnvironmentIdentity::from_committed_receipt(&receipt, committed)?;
         if binds_deferred_dispatch {
@@ -365,10 +363,10 @@ impl crate::environment_holding::EnvironmentHolding {
         &self,
         thread: &str,
         binding: &str,
-    ) -> Result<bool, HostError> {
+    ) -> Result<bool, RealizationError> {
         let claim = self
             .sessions
-            .modify_session(thread, |slot| slot.run.dispatch_claim().cloned())
+            .modify_session(thread, |slot| slot.run.dispatch_claim().cloned())?
             .flatten();
         let Some(claim) = claim else {
             return Ok(false);
@@ -377,19 +375,21 @@ impl crate::environment_holding::EnvironmentHolding {
             .dispatch_execution
             .as_ref()
             .ok_or_else(|| {
-                HostError::internal("database-less Worker requires an injected dispatch binding")
+                RealizationError::invariant(
+                    "database-less Worker requires an injected dispatch binding",
+                )
             })?
             .bind_sandbox(&claim, binding)
             .await
             .map_err(|error| {
-                HostError::unavailable_classified(
-                    "dispatch_sandbox_binding_unavailable",
+                RealizationError::pending(
+                    PendingState::DispatchSandboxBindingUnavailable,
                     error.to_string(),
                 )
             })?;
         if !outcome.applied() {
-            return Err(HostError::unavailable_classified(
-                "dispatch_claim_stale",
+            return Err(RealizationError::authority_lost(
+                AuthorityLoss::ClaimStale,
                 "deferred sandbox binding was fenced by a replacement claim",
             ));
         }

@@ -52,12 +52,72 @@ impl CacheVolumeWarmup {
     }
 }
 
+/// Why one CacheVolume could not be prepared. Failed preparations are never
+/// cached, so every class except a wrong location may succeed on a later try.
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum CacheVolumeError {
+    /// The declared location cannot be prepared by the installed initializer.
+    #[error("{0}")]
+    UnsupportedLocation(&'static str),
+    /// The blocking directory preparation task did not complete.
+    #[error("directory preparation task failed: {0}")]
+    Task(Arc<tokio::task::JoinError>),
+    /// The host directory could not be created.
+    #[error("create cache directory: {0}")]
+    Directory(Arc<std::io::Error>),
+    /// The sandbox provider failed one initializer step.
+    #[error("{operation}: {source}")]
+    Environment {
+        operation: &'static str,
+        source: pc::SandboxError,
+    },
+    /// The initializer process ran but did not succeed.
+    #[error("CacheVolume initializer exited with {0:?}")]
+    InitializerExited(pc::ExitStatus),
+    /// A product initializer failed with its own error.
+    #[error("{0}")]
+    Initializer(Arc<dyn std::error::Error + Send + Sync>),
+    /// Preparing the named volume failed.
+    #[error("prepare cache volume `{key}` at {location}: {source}")]
+    Volume {
+        key: String,
+        location: String,
+        source: Box<CacheVolumeError>,
+    },
+}
+
+impl CacheVolumeError {
+    /// A product initializer's own failure.
+    pub fn initializer(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Self {
+        Self::Initializer(Arc::from(error.into()))
+    }
+
+    /// A wrong location is a deployment fault no retry repairs; a provider step
+    /// keeps the provider's class; every other failure may succeed later.
+    #[must_use]
+    pub fn disposition(&self) -> crate::realization_error::Disposition {
+        use crate::realization_error::Disposition;
+        match self {
+            Self::UnsupportedLocation(_) => Disposition::Terminal,
+            Self::Environment { source, .. } => {
+                crate::realization_error::RealizationError::Environment(source.clone())
+                    .disposition()
+            }
+            Self::Task(_)
+            | Self::Directory(_)
+            | Self::InitializerExited(_)
+            | Self::Initializer(_) => Disposition::Retry,
+            Self::Volume { source, .. } => source.disposition(),
+        }
+    }
+}
+
 /// Product-specific population of a rebuildable cache directory. Implementations
 /// may clone a repository, restore a package cache, or prepare derived artifacts.
 /// They must publish the directory contents before returning success.
 #[async_trait]
 pub trait CacheVolumeInitializer: Send + Sync {
-    async fn initialize(&self, volume: &CacheVolumeWarmup) -> Result<(), String>;
+    async fn initialize(&self, volume: &CacheVolumeWarmup) -> Result<(), CacheVolumeError>;
 }
 
 /// Default preparation: make the caller-declared directory mountable. Product
@@ -66,20 +126,22 @@ struct FilesystemCacheVolumeInitializer;
 
 #[async_trait]
 impl CacheVolumeInitializer for FilesystemCacheVolumeInitializer {
-    async fn initialize(&self, volume: &CacheVolumeWarmup) -> Result<(), String> {
+    async fn initialize(&self, volume: &CacheVolumeWarmup) -> Result<(), CacheVolumeError> {
         match &volume.location {
             pc::CacheVolumeLocation::HostPath { path } => {
                 if path.trim().is_empty() {
-                    return Err("host path is empty".into());
+                    return Err(CacheVolumeError::UnsupportedLocation("host path is empty"));
                 }
                 let path = std::path::PathBuf::from(path);
                 tokio::task::spawn_blocking(move || std::fs::create_dir_all(&path))
                     .await
-                    .map_err(|error| format!("directory preparation task failed: {error}"))?
-                    .map_err(|error| format!("create cache directory: {error}"))
+                    .map_err(|error| CacheVolumeError::Task(Arc::new(error)))?
+                    .map_err(|error| CacheVolumeError::Directory(Arc::new(error)))
             }
             pc::CacheVolumeLocation::PersistentVolumeClaim { .. } => {
-                Err("Kubernetes CacheVolume requires an installed PVC initializer".into())
+                Err(CacheVolumeError::UnsupportedLocation(
+                    "Kubernetes CacheVolume requires an installed PVC initializer",
+                ))
             }
         }
     }
@@ -105,12 +167,14 @@ impl SandboxCacheVolumeInitializer {
 
 #[async_trait]
 impl CacheVolumeInitializer for SandboxCacheVolumeInitializer {
-    async fn initialize(&self, volume: &CacheVolumeWarmup) -> Result<(), String> {
+    async fn initialize(&self, volume: &CacheVolumeWarmup) -> Result<(), CacheVolumeError> {
         if !matches!(
             volume.location,
             pc::CacheVolumeLocation::PersistentVolumeClaim { .. }
         ) {
-            return Err("sandbox CacheVolume initializer requires a Kubernetes PVC".into());
+            return Err(CacheVolumeError::UnsupportedLocation(
+                "sandbox CacheVolume initializer requires a Kubernetes PVC",
+            ));
         }
         let fingerprint =
             awaken_agent_contract::stable_fingerprint(&(volume.key.as_str(), &volume.location));
@@ -149,7 +213,10 @@ impl CacheVolumeInitializer for SandboxCacheVolumeInitializer {
             .provider
             .create_unattached_environment(&spec)
             .await
-            .map_err(|error| format!("create CacheVolume initializer Pod: {error}"))?;
+            .map_err(|source| CacheVolumeError::Environment {
+                operation: "create CacheVolume initializer Pod",
+                source,
+            })?;
         let script = format!(
             "set -eu; mkdir -p /cache/.awaken; if [ ! -f {marker} ]; then \
              tmp={marker}.tmp.$$; printf ready > \"$tmp\"; mv \"$tmp\" {marker}; fi"
@@ -168,24 +235,33 @@ impl CacheVolumeInitializer for SandboxCacheVolumeInitializer {
             Ok(process) => process
                 .wait()
                 .await
-                .map_err(|error| format!("wait for CacheVolume initializer: {error}"))
+                .map_err(|source| CacheVolumeError::Environment {
+                    operation: "wait for CacheVolume initializer",
+                    source,
+                })
                 .and_then(|status| {
                     (status.code == Some(0) && !status.signaled)
                         .then_some(())
-                        .ok_or_else(|| format!("CacheVolume initializer exited with {status:?}"))
+                        .ok_or(CacheVolumeError::InitializerExited(status))
                 }),
-            Err(error) => Err(format!("spawn CacheVolume initializer: {error}")),
+            Err(source) => Err(CacheVolumeError::Environment {
+                operation: "spawn CacheVolume initializer",
+                source,
+            }),
         };
         let disposed = environment
             .as_ref()
             .dispose_unattached()
             .await
-            .map_err(|error| format!("dispose CacheVolume initializer Pod: {error}"));
+            .map_err(|source| CacheVolumeError::Environment {
+                operation: "dispose CacheVolume initializer Pod",
+                source,
+            });
         outcome.and(disposed)
     }
 }
 
-type Preparation = tokio::sync::OnceCell<Result<(), String>>;
+type Preparation = tokio::sync::OnceCell<Result<(), CacheVolumeError>>;
 
 struct CacheVolumePrewarmerInner {
     initializer: Arc<dyn CacheVolumeInitializer>,
@@ -219,7 +295,7 @@ impl CacheVolumePrewarmer {
     }
 
     /// Prepare one cache volume, joining an identical concurrent request.
-    pub async fn prewarm(&self, volume: CacheVolumeWarmup) -> Result<(), String> {
+    pub async fn prewarm(&self, volume: CacheVolumeWarmup) -> Result<(), CacheVolumeError> {
         let identity = volume.identity();
         let preparation = {
             let mut preparations = self.inner.preparations.lock().await;
@@ -241,23 +317,24 @@ impl CacheVolumePrewarmer {
                 preparations.remove(&identity);
             }
         }
-        result.map_err(|error| {
-            let location = match &volume.location {
+        result.map_err(|error| CacheVolumeError::Volume {
+            key: volume.key.clone(),
+            location: match &volume.location {
                 pc::CacheVolumeLocation::HostPath { path } => format!("host path `{path}`"),
                 pc::CacheVolumeLocation::PersistentVolumeClaim { claim_name } => {
                     format!("PVC `{claim_name}`")
                 }
-            };
-            format!(
-                "prepare cache volume `{}` at {location}: {error}",
-                volume.key
-            )
+            },
+            source: Box::new(error),
         })
     }
 
     /// Prepare every CacheVolume in a Session spec before the provider binds it.
     /// Repeated mounts of one identity share the same single-flight cell.
-    pub async fn prepare_mounts(&self, mounts: &[pc::MountRequirement]) -> Result<(), String> {
+    pub async fn prepare_mounts(
+        &self,
+        mounts: &[pc::MountRequirement],
+    ) -> Result<(), CacheVolumeError> {
         for mount in mounts {
             if let pc::MountSource::CacheVolume { location, key } = &mount.source {
                 self.prewarm(CacheVolumeWarmup::new(key, location.clone()))
@@ -282,7 +359,7 @@ mod tests {
 
     #[async_trait]
     impl CacheVolumeInitializer for CountingInitializer {
-        async fn initialize(&self, _volume: &CacheVolumeWarmup) -> Result<(), String> {
+        async fn initialize(&self, _volume: &CacheVolumeWarmup) -> Result<(), CacheVolumeError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             tokio::task::yield_now().await;
             if self
@@ -292,7 +369,7 @@ mod tests {
                 })
                 .is_ok()
             {
-                Err("injected cold-build failure".into())
+                Err(CacheVolumeError::initializer("injected cold-build failure"))
             } else {
                 Ok(())
             }

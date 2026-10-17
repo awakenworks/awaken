@@ -8,11 +8,12 @@
 //! checkpoint work into the existing two-stage terminal protocol.
 
 use super::{
-    Arc, BoundEnvironmentPreparationMode, HostError, PreparedBoundEnvironment,
+    Arc, BoundEnvironmentPreparationMode, PreparedBoundEnvironment, RealizationError,
     RetiringEnvironmentOwner, RetiringSessionEnvironment, SessionEnvironmentOwner,
     SessionEnvironmentPreparation, SessionEnvironmentRetirementCause, TerminalEffectMode,
     TerminalEnvironmentInstallation, TerminalEnvironmentPreparation, TerminalMemoryPlan,
 };
+use crate::realization_error::{AuthorityLoss, PendingState, ProjectionConflict};
 use awaken_session_configuration_contract::resource as session_resource;
 use awaken_session_state_contract::{SessionEnvironmentState, SuspendPhase};
 
@@ -24,33 +25,33 @@ impl crate::terminal_cleanup::TerminalCleanup {
         &self,
         session_id: &awaken_session_types::SessionId,
         lease: &session_resource::SessionRealizationLease,
-    ) -> Result<session_resource::SessionRealizationLease, HostError> {
+    ) -> Result<session_resource::SessionRealizationLease, RealizationError> {
         self
             .sessions
             .read_realization(session_id.as_str(), |r| {
                 let current = r.execution.authority.lease().ok_or_else(|| {
-                    HostError::unavailable_classified(
-                        "session_terminal_cleanup_projection_missing",
+                    RealizationError::pending(
+                        PendingState::TerminalCleanupProjectionMissing,
                         "terminal cleanup has no installed realization generation",
                     )
                 })?;
                 if !awaken_session_realization_contract::realization_lease_generation_authorizes(current, lease) {
-                    return Err(HostError::unavailable_classified(
-                        "session_terminal_cleanup_generation_stale",
+                    return Err(RealizationError::authority_lost(
+                        AuthorityLoss::CleanupGenerationStale,
                         "terminal cleanup realization generation was replaced",
                     ));
                 }
                 if r.execution.authority.remaining_for(lease).is_none() {
-                    return Err(HostError::unavailable_classified(
-                        "session_terminal_cleanup_effect_expired",
+                    return Err(RealizationError::authority_lost(
+                        AuthorityLoss::CleanupEffectExpired,
                         "terminal cleanup generation has no current live renewal at its physical boundary",
                     ));
                 }
                 Ok(current.clone())
-            })
+            })?
             .unwrap_or_else(|| Err(
-                HostError::unavailable_classified(
-                    "session_terminal_cleanup_projection_missing",
+                RealizationError::pending(
+                    PendingState::TerminalCleanupProjectionMissing,
                     "terminal cleanup has no installed realization generation",
                 )
             ))
@@ -63,8 +64,9 @@ impl crate::terminal_cleanup::TerminalCleanup {
         &self,
         thread: &str,
         environment: &Arc<crate::session_environment::SessionEnvironment>,
-    ) -> bool {
-        self.sessions
+    ) -> Result<bool, RealizationError> {
+        Ok(self
+            .sessions
             .read_realization(thread, |r| match &r.environment.owner {
                 SessionEnvironmentOwner::Retiring(retirement)
                     if matches!(
@@ -77,8 +79,8 @@ impl crate::terminal_cleanup::TerminalCleanup {
                         && current.lifecycle().handle() == environment.lifecycle().handle()
                 }
                 _ => false,
-            })
-            .unwrap_or(false)
+            })?
+            .unwrap_or(false))
     }
 
     /// Lower the aggregate's durable preparation predecessor and current
@@ -86,7 +88,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
     pub fn disposal_authorization(
         &self,
         effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
-    ) -> Result<awaken_provisioning_contract::SandboxDisposalAuthorization, HostError> {
+    ) -> Result<awaken_provisioning_contract::SandboxDisposalAuthorization, RealizationError> {
         let current = self.authorize_lease(&effect.command.session_id, &effect.lease)?;
         // The same slot proof already authorized preparation and disposal.
         // Lowering preserves its Control-clock fence bytes; comparing them to
@@ -95,8 +97,8 @@ impl crate::terminal_cleanup::TerminalCleanup {
         effect
             .sandbox_disposal_authorization_for_current_generation(&current)
             .map_err(|error| {
-                HostError::unavailable_classified(
-                    "session_terminal_cleanup_disposal_unauthorized",
+                RealizationError::authority_lost(
+                    AuthorityLoss::CleanupDisposalUnauthorized,
                     error.to_string(),
                 )
             })
@@ -108,10 +110,10 @@ impl crate::terminal_cleanup::TerminalCleanup {
     pub fn effect_fence(
         &self,
         effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
-    ) -> Result<awaken_provisioning_contract::SandboxEffectFence, HostError> {
+    ) -> Result<awaken_provisioning_contract::SandboxEffectFence, RealizationError> {
         self.authorize_lease(&effect.command.session_id, &effect.lease)?
             .sandbox_effect_fence(effect.operation_id())
-            .map_err(|error| HostError::internal(error.to_string()))
+            .map_err(RealizationError::from)
     }
 
     /// Join frozen inputs with the durable handle's optional evidence before
@@ -122,17 +124,19 @@ impl crate::terminal_cleanup::TerminalCleanup {
         &self,
         effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
         prepared: &PreparedBoundEnvironment,
-    ) -> Result<TerminalMemoryPlan, HostError> {
+    ) -> Result<TerminalMemoryPlan, RealizationError> {
         let transition = self
             .sessions
-            .read_realization(&effect.command.thread_id, |r| r.staging.transition.clone())
+            .read_realization(&effect.command.thread_id, |r| r.staging.transition.clone())?
             .flatten()
             .ok_or_else(|| {
-                HostError::internal("terminal Memory validation has no frozen Resource transition")
+                RealizationError::invariant(
+                    "terminal Memory validation has no frozen Resource transition",
+                )
             })?;
         let materializations = prepared
             .memory_materializations()
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(RealizationError::from)?;
         let (intents, acknowledged_materializations) =
             awaken_session_state_contract::terminal_memory_reconciliation_intents_from_materializations(
                 transition.previous().resources.inputs(),
@@ -140,8 +144,8 @@ impl crate::terminal_cleanup::TerminalCleanup {
                 effect,
             )
             .map_err(|error| {
-                HostError::unavailable_classified(
-                    "session_terminal_memory_evidence_unreconciled",
+                RealizationError::pending(
+                    PendingState::TerminalMemoryEvidenceUnreconciled,
                     error.to_string(),
                 )
             })?;
@@ -149,8 +153,8 @@ impl crate::terminal_cleanup::TerminalCleanup {
             && !prepared.source_effects_are_already_prepared()
             && (prepared.environment.is_none() || !prepared.permits_live_io())
         {
-            return Err(HostError::unavailable_classified(
-                "session_terminal_memory_source_absent",
+            return Err(RealizationError::pending(
+                PendingState::TerminalMemorySourceAbsent,
                 "writable terminal Memory has no readable source or durable provider preparation",
             ));
         }
@@ -180,7 +184,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
         thread: &str,
         effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
         mode: BoundEnvironmentPreparationMode,
-    ) -> Result<TerminalEnvironmentPreparation, HostError> {
+    ) -> Result<TerminalEnvironmentPreparation, RealizationError> {
         let realizer = environments;
         let (assignment, owner, previous_resources, workspace_id, checkpoint_policy) = self
             .sessions
@@ -194,16 +198,16 @@ impl crate::terminal_cleanup::TerminalCleanup {
                     slot.inputs.workspace.clone(),
                     baseline.map(|baseline| baseline.environment.idle_retention.clone()),
                 )
-            })
+            })?
             .ok_or_else(|| {
-                HostError::unavailable_classified(
-                    "session_terminal_cleanup_projection_missing",
+                RealizationError::pending(
+                    PendingState::TerminalCleanupProjectionMissing,
                     "terminal cleanup root projection is not installed",
                 )
             })?;
         let assignment = assignment.ok_or_else(|| {
-            HostError::unavailable_classified(
-                "session_terminal_environment_state_missing",
+            RealizationError::pending(
+                PendingState::TerminalEnvironmentStateMissing,
                 "terminal cleanup has no frozen aggregate Environment state",
             )
         })?;
@@ -216,14 +220,14 @@ impl crate::terminal_cleanup::TerminalCleanup {
             }
         ) {
             let workspace_id = workspace_id.as_deref().ok_or_else(|| {
-                HostError::unavailable_classified(
-                    "session_terminal_checkpoint_workspace_missing",
+                RealizationError::pending(
+                    PendingState::TerminalCheckpointWorkspaceMissing,
                     "terminal checkpoint takeover has no frozen Workspace projection",
                 )
             })?;
             let checkpoint_policy = checkpoint_policy.ok_or_else(|| {
-                HostError::unavailable_classified(
-                    "session_terminal_checkpoint_policy_missing",
+                RealizationError::pending(
+                    PendingState::TerminalCheckpointPolicyMissing,
                     "terminal checkpoint takeover has no frozen retention policy",
                 )
             })?;
@@ -234,9 +238,9 @@ impl crate::terminal_cleanup::TerminalCleanup {
                         &awaken_session_types::SessionId::from(thread),
                         &checkpoint_policy,
                     )
-                    .map_err(|error| HostError::internal(error.to_string()))?
+                    .map_err(RealizationError::from)?
                     .ok_or_else(|| {
-                        HostError::internal(
+                        RealizationError::invariant(
                             "Uploading Environment did not project its checkpoint request",
                         )
                     })?,
@@ -256,7 +260,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
                     awaken_session_state_contract::SessionEnvironmentMaterialization::has_admitted,
                 ),
         )
-        .map_err(crate::host_error::from_run_error)?;
+        .map_err(RealizationError::Run)?;
         // An Adoption Candidate knows a durable binding even when the new effect
         // response is absent. Unknown Create commitment remains protected.
         let unacknowledged = owner.durable_binding().is_none()
@@ -278,27 +282,27 @@ impl crate::terminal_cleanup::TerminalCleanup {
                 crate::environment_owner::SessionEnvironmentRestoration::Awaiting { request },
             ) = owner
             else {
-                return Err(HostError::classified(
-                    "session_terminal_restore_owner_conflict",
+                return Err(RealizationError::conflict(
+                    ProjectionConflict::TerminalRestoreOwnerConflict,
                     "Restoring aggregate state has no exact process-local restore request",
                 ));
             };
             let expected = state
                 .restoring_request(
                     workspace_id.as_deref().ok_or_else(|| {
-                        HostError::unavailable_classified(
-                            "session_terminal_restore_workspace_missing",
+                        RealizationError::pending(
+                            PendingState::TerminalRestoreWorkspaceMissing,
                             "Restoring terminal projection has no frozen Workspace",
                         )
                     })?,
                     &awaken_session_types::SessionId::from(thread),
                 )
                 .ok_or_else(|| {
-                    HostError::internal("Restoring state did not project an exact request")
+                    RealizationError::invariant("Restoring state did not project an exact request")
                 })?;
             if request != expected {
-                return Err(HostError::classified(
-                    "session_terminal_restore_request_conflict",
+                return Err(RealizationError::conflict(
+                    ProjectionConflict::TerminalRestoreRequestConflict,
                     "Restoring Runtime request differs from aggregate truth",
                 ));
             }
@@ -314,8 +318,8 @@ impl crate::terminal_cleanup::TerminalCleanup {
         }
         let Some(binding) = binding else {
             if owner.has_local_environment() || owner.durable_binding().is_some() {
-                return Err(HostError::classified(
-                    "session_terminal_environment_projection_conflict",
+                return Err(RealizationError::conflict(
+                    ProjectionConflict::TerminalProjectionConflict,
                     "terminal aggregate has no binding but Runtime retains an Environment",
                 ));
             }
@@ -336,13 +340,13 @@ impl crate::terminal_cleanup::TerminalCleanup {
             let expected_effect_fence = assignment
                 .projection
                 .original_create_fence(thread)
-                .map_err(crate::host_error::from_run_error)?;
+                .map_err(RealizationError::Run)?;
             let provider = realizer.projected_session_environment_provider(thread, None)?;
             let spec = realizer.session_environment_adoption_spec(
                 thread,
                 provider,
                 previous_resources.as_ref(),
-            );
+            )?;
             let environment = realizer
                 .install_bound_environment_under_lifecycle(
                     self,
@@ -382,8 +386,8 @@ impl crate::terminal_cleanup::TerminalCleanup {
         if owner.durable_binding() != Some(binding)
             && !(unacknowledged && owner.physical_binding() == Some(binding))
         {
-            return Err(HostError::classified(
-                "session_terminal_environment_binding_mismatch",
+            return Err(RealizationError::conflict(
+                ProjectionConflict::TerminalBindingMismatch,
                 "terminal Runtime owner conflicts with the frozen aggregate binding",
             ));
         }
@@ -418,22 +422,21 @@ impl crate::terminal_cleanup::TerminalCleanup {
         environment: &crate::session_environment::SessionEnvironment,
         effect_mode: TerminalEffectMode,
         plan: &TerminalMemoryPlan,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), RealizationError> {
         if effect_mode == TerminalEffectMode::LiveUnprepared && !plan.intents.is_empty() {
             let workspace_id = plan.workspace_id.as_deref().ok_or_else(|| {
-                HostError::internal("terminal Memory plan has no frozen Workspace")
+                RealizationError::invariant("terminal Memory plan has no frozen Workspace")
             })?;
-            let mounter =
-                environments.env.memory_mounter.clone().ok_or_else(|| {
-                    HostError::internal("terminal Memory copy has no MemoryMounter")
-                })?;
+            let mounter = environments.env.memory_mounter.clone().ok_or_else(|| {
+                RealizationError::invariant("terminal Memory copy has no MemoryMounter")
+            })?;
             for intent in &plan.intents {
                 self.effect_fence(effect)?;
                 let files = environment
                     .harvest()
                     .list_frozen_mount_files(intent.mount_path())
                     .await
-                    .map_err(|error| HostError::unavailable(error.to_string()))?;
+                    .map_err(RealizationError::terminal_effect_pending)?;
                 self.effect_fence(effect)?;
                 let operation_reference = if environments.staging.fetches_resources_upstream {
                     awaken_resource_contract::MemoryMaterializationReferenceEncoder::<
@@ -444,7 +447,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
                             .memory_reference_encoder
                             .as_deref()
                             .ok_or_else(|| {
-                                HostError::internal(
+                                RealizationError::invariant(
                                     "remote terminal Memory encoder is not configured",
                                 )
                             })?,
@@ -454,7 +457,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
                         intent.access(),
                         intent,
                     )
-                    .map_err(|error| HostError::internal(error.to_string()))?
+                    .map_err(RealizationError::from)?
                 } else {
                     intent.memory_store_id().to_owned()
                 };
@@ -467,7 +470,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
                         crate::managed_input_layout::managed_mount_access(intent.access()),
                     )
                     .await
-                    .map_err(|error| HostError::unavailable(error.to_string()))?;
+                    .map_err(RealizationError::terminal_effect_pending)?;
                 self.effect_fence(effect)?;
             }
         }
@@ -482,7 +485,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
             .lifecycle()
             .acknowledge_memory_reconciliation(&effect_fence, materializations, &authority)
             .await
-            .map_err(|error| HostError::unavailable(error.to_string()))
+            .map_err(RealizationError::terminal_effect_pending)
     }
 
     /// Complete the checkpoint participant owned by the frozen Environment
@@ -498,10 +501,10 @@ impl crate::terminal_cleanup::TerminalCleanup {
         state: &awaken_session_state_contract::SessionEnvironmentState,
         pending_checkpoint: Option<&awaken_session_state_contract::SandboxCheckpointRequest>,
         environment: Option<&crate::session_environment::SessionEnvironment>,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), RealizationError> {
         let checkpoint = state.checkpoint();
         if checkpoint.is_some() && pending_checkpoint.is_some() {
-            return Err(HostError::internal(
+            return Err(RealizationError::invariant(
                 "terminal Environment cannot own both a pending and committed checkpoint",
             ));
         }
@@ -513,8 +516,8 @@ impl crate::terminal_cleanup::TerminalCleanup {
             .environment_checkpoint_store
             .as_ref()
             .ok_or_else(|| {
-                HostError::unavailable_classified(
-                    "session_environment_checkpoint_store_unavailable",
+                RealizationError::pending(
+                    PendingState::CheckpointStoreUnavailable,
                     "No Session environment checkpoint store is installed",
                 )
             })?;
@@ -528,28 +531,28 @@ impl crate::terminal_cleanup::TerminalCleanup {
             &authority,
             |_| Ok(()),
         )
-        .map_err(|error| HostError::unavailable(error.to_string()))?;
+        .map_err(RealizationError::terminal_effect_pending)?;
         match (checkpoint, pending_checkpoint) {
             (Some(checkpoint), None) => {
                 store
                     .delete(&checkpoint.id)
                     .await
-                    .map_err(|error| HostError::unavailable(error.to_string()))?;
+                    .map_err(RealizationError::terminal_effect_pending)?;
             }
             (None, Some(request)) => {
                 let environment = environment.ok_or_else(|| {
-                    HostError::unavailable_classified(
-                        "session_terminal_checkpoint_source_missing",
+                    RealizationError::pending(
+                        PendingState::TerminalCheckpointSourceMissing,
                         "Uploading terminal checkpoint has no exact source Environment",
                     )
                 })?;
                 let expected_effect_fence = request
                     .operation
                     .sandbox_effect_fence()
-                    .map_err(|error| HostError::internal(error.to_string()))?
+                    .map_err(RealizationError::from)?
                     .ok_or_else(|| {
-                        HostError::unavailable_classified(
-                            "session_terminal_checkpoint_legacy_unfenced",
+                        RealizationError::pending(
+                            PendingState::TerminalCheckpointLegacyUnfenced,
                             "legacy checkpoint operation cannot be taken over after response loss",
                         )
                     })?;
@@ -565,7 +568,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
                         &authority,
                     )
                     .await
-                    .map_err(|error| HostError::unavailable(error.to_string()))?;
+                    .map_err(RealizationError::terminal_effect_pending)?;
             }
             (Some(_), Some(_)) | (None, None) => {
                 unreachable!("checkpoint shape was classified above")
@@ -576,6 +579,6 @@ impl crate::terminal_cleanup::TerminalCleanup {
             &authority,
             |_| Ok(()),
         )
-        .map_err(|error| HostError::unavailable(error.to_string()))
+        .map_err(RealizationError::terminal_effect_pending)
     }
 }

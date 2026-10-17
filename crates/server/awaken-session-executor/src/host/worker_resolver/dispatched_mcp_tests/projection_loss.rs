@@ -5,9 +5,7 @@
 use super::*;
 use crate::host::tests::ManagedSessionRootFixture;
 use crate::installed_session::InstalledSessions;
-use crate::session_realizations::{
-    InstalledSessionsPoisoned, SessionRealizationAccess, SessionRealizationSource,
-};
+use crate::session_realizations::{SessionRealizationAccess, SessionRealizationSource};
 use std::sync::{
     Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -22,10 +20,13 @@ struct RemoveAfterReadyRead {
 }
 
 impl SessionRealizationSource for RemoveAfterReadyRead {
-    fn session_ids(&self) -> Vec<String> {
-        self.original.realizations().session_ids()
+    fn session_ids(&self) -> Result<Vec<String>, crate::realization_error::RealizationLock> {
+        SessionRealizationSource::session_ids(self.original.as_ref())
     }
-    fn remove_session(&self, session: &str) -> bool {
+    fn remove_session(
+        &self,
+        session: &str,
+    ) -> Result<bool, crate::realization_error::RealizationLock> {
         SessionRealizationSource::remove_session(self.original.as_ref(), session)
     }
     fn acquire_realization<'a>(
@@ -49,27 +50,25 @@ impl SessionRealizationSource for RemoveAfterReadyRead {
             permit
         })
     }
+    fn install(&self, session: &str) -> Result<(), crate::realization_error::RealizationLock> {
+        SessionRealizationSource::install(self.original.as_ref(), session)
+    }
+
     fn visit(
         &self,
         session: &str,
-        create: bool,
         visit: &mut dyn FnMut(SessionRealizationAccess<'_>),
-    ) -> Result<(), InstalledSessionsPoisoned> {
+    ) -> Result<bool, crate::realization_error::RealizationLock> {
         let mut was_ready = false;
-        let result = SessionRealizationSource::visit(
-            self.original.as_ref(),
-            session,
-            create,
-            &mut |access| {
+        let result =
+            SessionRealizationSource::visit(self.original.as_ref(), session, &mut |access| {
                 was_ready = access.inputs.baseline.is_some() && access.run.session_dispatch();
                 visit(access);
-            },
-        );
+            });
         // The original lookup, callback and mutex release really completed.
         // The original public removal then destroys that exact installed slot.
         // Never alter the returned ready result or fabricate an absent callback.
         if result.is_ok()
-            && !create
             && session == self.session
             && was_ready
             && self.admitted.load(Ordering::SeqCst)
@@ -87,7 +86,7 @@ impl SessionRealizationSource for RemoveAfterReadyRead {
         &self,
         session: &str,
         update: &mut dyn FnMut(&mut awaken_session_realization::frozen_inputs::FrozenSessionInputs),
-    ) {
+    ) -> Result<(), crate::realization_error::RealizationLock> {
         SessionRealizationSource::replace_frozen(self.original.as_ref(), session, update)
     }
     fn finish_realization_revocation(
@@ -109,7 +108,7 @@ impl SessionRealizationSource for RemoveAfterReadyRead {
         &self,
         session: &str,
         publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
-    ) -> Result<(), crate::HostError> {
+    ) -> Result<(), crate::realization_error::RealizationError> {
         SessionRealizationSource::retain_publication(self.original.as_ref(), session, publication)
     }
     fn publish_resource_requirements(
@@ -120,7 +119,7 @@ impl SessionRealizationSource for RemoveAfterReadyRead {
         compiled: crate::staged_resources::CompiledEffectiveInputs,
         versions: Vec<awaken_resource_contract::SkillVersion>,
         effect_key: String,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), crate::realization_error::RealizationError> {
         SessionRealizationSource::publish_resource_requirements(
             self.original.as_ref(),
             session,

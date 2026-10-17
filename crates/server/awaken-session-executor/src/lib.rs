@@ -45,6 +45,7 @@ mod coordination;
 mod delegate;
 mod deployment_config;
 mod durable_operations;
+mod host_error;
 mod session_effects;
 
 #[cfg(test)]
@@ -285,9 +286,11 @@ impl awaken_session_execution_contract::RealizationRuntime for ManagedHost {
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
     ) -> Result<(), RunError> {
         let realizations = self.host.installed_sessions.realizations();
-        // Every Environment-owner projection, including lease-only recovery,
-        // crosses the same lifecycle guard as physical publication/retirement.
-        let _lifecycle = realizations.lock_lifecycle(thread).await;
+        // Installing the frozen projection is the install path. Every
+        // Environment-owner projection, including lease-only recovery, crosses
+        // the same lifecycle guard as physical publication/retirement.
+        self.host.installed_sessions.install(thread);
+        let _lifecycle = realizations.lock_lifecycle(thread).await?;
         if mode.prepares_session() {
             // Cause/effect rule P2: an unprotected active Runtime rejects before
             // any frozen coordinate is published. The same lifecycle mutex also
@@ -327,7 +330,7 @@ impl awaken_session_execution_contract::RealizationRuntime for ManagedHost {
         };
         self.host.realizer.execution
             .authorize_worker_effect(|| {
-                Ok(realizations
+                Ok::<_, crate::realization_error::RealizationError>(realizations
             .modify_realization(thread, |r| {
                 let current = r.execution.authority.lease().cloned().ok_or_else(missing)?;
                 if !r.renew_lease(&current, lease) {
@@ -337,12 +340,10 @@ impl awaken_session_execution_contract::RealizationRuntime for ManagedHost {
                     ));
                 }
                 Ok(())
-            })
+            })?
             .unwrap_or_else(|| Err(missing())))
             })
-            .map_err(|error| {
-                RunError::classified("worker_execution_authority_denied", error.to_string())
-            })?
+            .map_err(|error: crate::realization_error::RealizationError| RunError::from(error))?
     }
 
     async fn invalidate_session_realization_lease(
@@ -378,6 +379,11 @@ impl awaken_session_execution_contract::CoordinationRuntime for ManagedHost {
         // projection can change the delivery payload reconstructed by a retry.
         let command_fingerprint = command.command_fingerprint();
         let input = command.messages.clone();
+        // The Session application's Run reservation enters this host for the
+        // Session: its install path, so the Session-dispatch mark has a slot.
+        self.host
+            .installed_sessions
+            .install(command.session_id.as_str());
         self.host
             .realizer
             .staging
@@ -421,7 +427,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for ManagedHost {
                 .host
                 .prepare_dispatch(activation)
                 .with_traceparent(command.traceparent)
-                .map_err(to_run_error)?
+                .map_err(|error| to_run_error(error.into()))?
                 .with_session_command_fingerprint(command_fingerprint)
                 .with_session_run_replacement(command.replacement);
             if !command
@@ -483,7 +489,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for ManagedHost {
             self.host
                 .realizer
                 .evict_session_for_rebuild(session_id.as_str())
-                .await;
+                .await?;
         }
         reservation
     }
@@ -867,7 +873,7 @@ impl awaken_session_execution_contract::StreamingRunRuntime for ManagedHost {
         // Run rebuilds with the newly resolved executor (native switch is O(1); an
         // ACP thread's cached context relaunches its CLI on rebuild).
         self.host.register_thread_model(thread, model);
-        self.host.realizer.evict_session_for_rebuild(thread).await;
+        self.host.realizer.evict_session_for_rebuild(thread).await?;
         Ok(())
     }
 
@@ -892,7 +898,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ManagedHost {
         self.host
             .installed_sessions
             .replace_frozen_with(thread, |next| next.tools = Some(tools));
-        self.host.realizer.evict_session_for_rebuild(thread).await;
+        self.host.realizer.evict_session_for_rebuild(thread).await?;
         Ok(())
     }
 
@@ -911,13 +917,13 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ManagedHost {
             .host
             .realizer
             .projected_session_environment_provider(thread, Some(agent))
-            .map_err(to_run_error)?;
+            .map_err(RunError::from)?;
         let disposition = self
             .host
             .realizer
             .adopt_bound_session_environment(thread, Some(binding), provider, None, false)
             .await
-            .map_err(to_run_error)?;
+            .map_err(RunError::from)?;
         if disposition != crate::session_environment::SessionEnvironmentAdoptionDisposition::Ready {
             return Err(RunError::internal(
                 "durable Session Environment adoption did not publish a ready binding",
@@ -1160,7 +1166,11 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ManagedHost {
                 authorization,
                 |thread| {
                     let host = &self.host;
-                    async move { host.delegated_runs_under_lifecycle(&thread).await }
+                    async move {
+                        host.delegated_runs_under_lifecycle(&thread)
+                            .await
+                            .map_err(crate::realization_error::RealizationError::from)
+                    }
                 },
                 |thread, generation| {
                     let background = self.host.resources.memory.background();
@@ -1177,7 +1187,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ManagedHost {
                 (&self.host.mcp, self.host.installed_sessions.as_ref()),
             )
             .await
-            .map_err(to_run_error)
+            .map_err(RunError::from)
     }
 
     async fn acknowledge_terminal_cleanup_preparation(
@@ -1200,7 +1210,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ManagedHost {
             .cleanup
             .dispose_terminal_cleanup_effect(&self.host.realizer, effect)
             .await
-            .map_err(to_run_error)
+            .map_err(RunError::from)
     }
 
     async fn acknowledge_terminal_cleanup_disposal(
@@ -1219,7 +1229,10 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ManagedHost {
         session_id: &awaken_session_types::SessionId,
         lease: &crate::session_resource::SessionRealizationLease,
     ) {
-        self.host
+        // Forgetting a settled local projection is best effort: a denied
+        // retirement leaves it for the next completed-cleanup readback.
+        if let Err(error) = self
+            .host
             .realizer
             .cleanup
             .retire_completed_terminal_cleanup_projection(
@@ -1227,7 +1240,10 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ManagedHost {
                 session_id.as_str(),
                 lease,
             )
-            .await;
+            .await
+        {
+            tracing::warn!(%error, "completed terminal cleanup projection retained");
+        }
     }
 
     async fn install_terminal_cleanup_assignment(
@@ -1394,8 +1410,8 @@ pub(crate) use awaken_session_configuration_contract::resource as session_resour
 #[cfg(test)]
 use awaken_session_realization::environment_owner;
 use awaken_session_realization::{
-    cache_volume, environment_holding, environment_providers, frozen_inputs, host_error,
-    managed_input_layout, memory_binding, provisioning, realization_executor, resource_staging,
+    cache_volume, environment_holding, environment_providers, frozen_inputs, managed_input_layout,
+    memory_binding, provisioning, realization_error, realization_executor, resource_staging,
     session_environment, session_publication, session_realizations, skill_delivery,
     staged_resources, terminal_cleanup,
 };

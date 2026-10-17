@@ -3,7 +3,7 @@ use awaken_resource_contract::RepositoryBindingVerifierError;
 use awaken_session_types::RunError;
 
 pub(super) fn repository_binding_run_error(error: RepositoryBindingVerifierError) -> RunError {
-    crate::host_error::to_run_error(crate::provisioning::repository_binding_host_error(error))
+    RunError::from(crate::realization_error::RealizationError::RepositoryBinding(error))
 }
 
 #[cfg(test)]
@@ -13,7 +13,7 @@ fn repository_binding_failure_controls_run_retry_semantics() {
     // authority outage or unknown read -> Unavailable; corrupt authority ->
     // Internal. RunError has no conflict kind, so a stale selection remains a
     // caller-correctable request failure rather than a retryable outage.
-    // R1..R6 below cover every verifier cause through the sole Host classifier
+    // R1..R6 below cover every verifier cause through the sole realization classifier
     // and existing Run projection. Effects include the literal public code,
     // message and Display, so consolidation cannot erase retry or text semantics.
     // This pure mapping has no IO, lock, state mutation or poison precondition.

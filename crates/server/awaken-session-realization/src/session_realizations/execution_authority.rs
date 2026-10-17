@@ -3,6 +3,7 @@
 //! owners, never another lease or lifecycle. Lock order: Worker -> installed
 //! Sessions -> GO. A poisoned lock denies the effect.
 
+use crate::realization_error::{AuthorityLoss, RealizationError};
 use std::sync::{Arc, Weak};
 use std::{io, time::Duration};
 
@@ -10,7 +11,6 @@ use awaken_provisioning_contract::{CurrentExecutionAuthority, SandboxEffectFence
 use awaken_session_configuration_contract::resource::SessionRealizationLease;
 
 use super::{SessionRealization, SessionRealizationSource, SessionRealizations};
-use crate::host_error::HostError;
 use crate::session_environment::AuthorizedSessionEnvironmentEffect;
 #[cfg(target_os = "linux")]
 use crate::session_environment::SessionEnvironment;
@@ -154,7 +154,7 @@ impl SessionExecutionAuthority {
         let sessions = self.sessions.upgrade().ok_or_else(denied)?;
         let mut outcome = Err(denied());
         sessions
-            .visit(&self.session, false, &mut |access| {
+            .visit(&self.session, &mut |access| {
                 outcome = self.effect_under_lock(access.realization, effect, worker_remaining);
             })
             .map_err(|_| denied())?;
@@ -215,10 +215,11 @@ impl SessionExecutionAuthority {
 impl ExecutionAuthority {
     /// Lock order: Worker proof -> Session slots -> synchronous provider grant.
     /// No async owner lock or external I/O may be held by this callback.
-    pub fn authorize_worker_effect<T>(
+    /// A denial is a [`RealizationError`]; the effect keeps its own error type.
+    pub fn authorize_worker_effect<T, E: From<RealizationError>>(
         &self,
-        effect: impl FnOnce() -> Result<T, HostError>,
-    ) -> Result<T, HostError> {
+        effect: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, E> {
         let Some(authority) = &self.worker else {
             return effect();
         };
@@ -236,9 +237,12 @@ impl ExecutionAuthority {
                 Ok(())
             })
             .map_err(|error| {
-                HostError::internal(format!("Worker execution authority denied: {error}"))
+                RealizationError::authority_lost(
+                    AuthorityLoss::WorkerDenied,
+                    format!("Worker execution authority denied: {error}"),
+                )
             })?;
-        result.ok_or_else(|| HostError::internal("Worker authority omitted the effect"))?
+        result.ok_or_else(|| RealizationError::invariant("Worker authority omitted the effect"))?
     }
 
     fn capture(
@@ -266,18 +270,22 @@ impl ExecutionAuthority {
         &self,
         session: &str,
         initial: &SandboxEffectFence,
-    ) -> Result<impl CurrentExecutionAuthority + use<>, HostError> {
+    ) -> Result<impl CurrentExecutionAuthority + use<>, RealizationError> {
         let mut capture = Some(|realization: &SessionRealization| {
             let lease = realization.execution.authority.lease().ok_or_else(|| {
-                HostError::internal("Session realization proof is no longer live")
+                RealizationError::authority_lost(
+                    AuthorityLoss::Closed,
+                    "Session realization proof is no longer live",
+                )
             })?;
             let current = lease
                 .sandbox_effect_fence(initial.operation_id())
-                .map_err(|error| HostError::internal(error.to_string()))?;
+                .map_err(RealizationError::from)?;
             if !initial.same_effect_identity(&current)
                 || current.expires_at_unix_ms() < initial.expires_at_unix_ms()
             {
-                return Err(HostError::internal(
+                return Err(RealizationError::authority_lost(
+                    AuthorityLoss::GenerationChanged,
                     "Session realization generation changed",
                 ));
             }
@@ -289,13 +297,10 @@ impl ExecutionAuthority {
             ))
         });
         let mut outcome = None;
-        self.sessions
-            .0
-            .visit(session, false, &mut |access| {
-                outcome = capture.take().map(|capture| capture(access.realization));
-            })
-            .map_err(|_| HostError::internal("installed sessions mutex poisoned"))?;
-        outcome.ok_or_else(|| HostError::internal("Session realization slot is absent"))?
+        self.sessions.0.visit(session, &mut |access| {
+            outcome = capture.take().map(|capture| capture(access.realization));
+        })?;
+        outcome.ok_or_else(|| RealizationError::session_absent(session))?
     }
 
     /// Called while the caller holds the installed Sessions' lock and has
@@ -307,7 +312,7 @@ impl ExecutionAuthority {
         session: &str,
         realization: &SessionRealization,
         environment: &Arc<SessionEnvironment>,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), RealizationError> {
         let Some(scoped) = environment.scoped_execution() else {
             return Ok(());
         };
@@ -324,7 +329,7 @@ impl ExecutionAuthority {
                 asserted,
                 SessionEffectTarget::Execution(Arc::downgrade(environment)),
             )))
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(RealizationError::from)?;
         Ok(())
     }
 }
@@ -356,7 +361,8 @@ impl ExecutionAuthority {
         thread: &str,
         kind: awaken_session_state_contract::SessionEnvironmentEffectKind,
         source_binding: Option<&str>,
-    ) -> awaken_session_state_contract::SessionEnvironmentEffectIntent {
+    ) -> Result<awaken_session_state_contract::SessionEnvironmentEffectIntent, RealizationError>
+    {
         let (realization, environment_fingerprint) = self
             .sessions
             .modify_session(thread, |slot| {
@@ -367,14 +373,16 @@ impl ExecutionAuthority {
                         .as_ref()
                         .map(|baseline| baseline.environment.config_fingerprint.0.clone()),
                 )
-            })
+            })?
             .unwrap_or_default();
-        awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
-            thread,
-            kind,
-            realization,
+        Ok(
+            awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+                thread,
+                kind,
+                realization,
+            )
+            .for_frozen_coordinates(source_binding.map(str::to_owned), environment_fingerprint),
         )
-        .for_frozen_coordinates(source_binding.map(str::to_owned), environment_fingerprint)
     }
 
     /// Re-enter current authority after I/O while preserving the Root's exact
@@ -383,7 +391,7 @@ impl ExecutionAuthority {
         &self,
         binding: String,
         effect: &AuthorizedSessionEnvironmentEffect,
-    ) -> Result<awaken_session_state_contract::SessionEnvironmentReceipt, HostError> {
+    ) -> Result<awaken_session_state_contract::SessionEnvironmentReceipt, RealizationError> {
         match (&effect.provider_fence, &effect.provider_authority) {
             (Some(initial), Some(authority)) => {
                 awaken_provisioning_contract::with_current_sandbox_effect(
@@ -391,11 +399,11 @@ impl ExecutionAuthority {
                     authority.as_ref(),
                     |_| Ok(()),
                 )
-                .map_err(|error| HostError::internal(error.to_string()))?;
+                .map_err(RealizationError::from)?;
             }
             (None, None) => {}
             _ => {
-                return Err(HostError::internal(
+                return Err(RealizationError::invariant(
                     "Environment effect lacks its captured authority",
                 ));
             }
@@ -404,6 +412,6 @@ impl ExecutionAuthority {
             effect.authorization.intent(),
             binding,
         )
-        .map_err(|error| HostError::internal(error.to_string()))
+        .map_err(RealizationError::from)
     }
 }

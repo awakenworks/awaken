@@ -1,12 +1,13 @@
 // @formal surface exclude=test_only
 // @formal owner crates/server/awaken-session-executor/src/host/session/environment_realization/fence_source_tests.rs
 // @formal owner crates/server/awaken-session-executor/src/realization_composed_tests/session_realizations/execution_authority.rs
-// @formal reason: Original lease and direct provider-boundary fixtures, reachable only through cfg(test) or explicit test-support. The provider entry returns the original private kernel Future; it introduces no execution grant, registry or alternate effect implementation.
+// @formal reason: Original lease and direct provider-boundary fixtures, reachable only through cfg(test) or explicit test-support. The provider entry returns the original private kernel Future; it introduces no execution grant or alternate effect implementation. The in-memory installed-Session registry implements the same SessionRealizationSource port for the realization crate's absence and poison decision tables and grants no authority.
 //! Original lease observation fixtures, never execution authority.
 
 /// Host fixtures use the actual Control-clock coordinate for live replies.
 /// Deliberately rejects expired input: an expiry test must construct and age
 /// its request observation explicitly, never silently manufacture fresh TTL.
+use crate::realization_error::RealizationError;
 pub fn test_lease_receipt(
     lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
 ) -> awaken_session_realization_contract::SessionRealizationLeaseReceipt {
@@ -57,7 +58,7 @@ pub fn create_session_environment<'a>(
     source_handle: Option<&'a awaken_provisioning_contract::SandboxHandle>,
     intent: awaken_session_environment_contract::EnvironmentRealizationKind,
 ) -> impl std::future::Future<
-    Output = Result<crate::session_environment::SessionEnvironment, crate::host_error::HostError>,
+    Output = Result<crate::session_environment::SessionEnvironment, RealizationError>,
 > + Send
 + 'a {
     environments.create_session_environment_with_provider_effect(
@@ -76,4 +77,231 @@ pub fn runtime_unix_now_ms() -> u64 {
     use awaken_time::WallClockExt as _;
     let clock = awaken_time::system_clock();
     clock.now_ms()
+}
+
+/// An in-memory installed-Session registry for the realization crate's own
+/// decision tests. It implements the same [`SessionRealizationSource`] port
+/// the host implements: frozen-input writes and the realization permit are the
+/// install path, every other operation leaves an absent Session absent, and a
+/// poisoned registry denies.
+///
+/// [`SessionRealizationSource`]: crate::session_realizations::SessionRealizationSource
+#[derive(Default)]
+pub struct InMemorySessionRealizations {
+    sessions: std::sync::Mutex<std::collections::HashMap<String, InMemorySession>>,
+}
+
+#[derive(Default)]
+struct InMemorySession {
+    inputs: std::sync::Arc<crate::frozen_inputs::FrozenSessionInputs>,
+    realization: crate::session_realizations::SessionRealization,
+    run: InMemoryRun,
+}
+
+#[derive(Default)]
+struct InMemoryRun {
+    context: bool,
+    session_dispatch: bool,
+    claim: Option<awaken_dispatch_contract::RunClaim>,
+}
+
+impl crate::session_realizations::SessionRunQuery for InMemoryRun {
+    fn holds_context(&self) -> bool {
+        self.context
+    }
+
+    fn has_active_run(&self) -> bool {
+        false
+    }
+
+    fn session_dispatch(&self) -> bool {
+        self.session_dispatch
+    }
+
+    fn dispatch_claim(&self) -> Option<&awaken_dispatch_contract::RunClaim> {
+        self.claim.as_ref()
+    }
+
+    fn drop_context(&mut self) {
+        self.context = false;
+    }
+
+    fn enter_session_dispatch(&mut self) {
+        self.session_dispatch = true;
+    }
+
+    fn install_dispatch_claim(&mut self, claim: awaken_dispatch_contract::RunClaim) {
+        self.claim = Some(claim);
+    }
+}
+
+type Registry = std::collections::HashMap<String, InMemorySession>;
+
+impl InMemorySessionRealizations {
+    fn registry(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, Registry>, crate::realization_error::RealizationLock>
+    {
+        self.sessions
+            .lock()
+            .map_err(|_| crate::realization_error::RealizationLock::InstalledSessions)
+    }
+
+    /// Panic while holding the registry lock, exactly as a failed writer does.
+    pub fn poison(&self) {
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _held = self.sessions.lock();
+            panic!("a registry writer failed");
+        }));
+        assert!(poisoned.is_err() && self.sessions.is_poisoned());
+    }
+}
+
+impl crate::session_realizations::SessionRealizationSource for InMemorySessionRealizations {
+    fn session_ids(&self) -> Result<Vec<String>, crate::realization_error::RealizationLock> {
+        let mut ids = self.registry()?.keys().cloned().collect::<Vec<_>>();
+        ids.sort();
+        Ok(ids)
+    }
+
+    fn remove_session(
+        &self,
+        session: &str,
+    ) -> Result<bool, crate::realization_error::RealizationLock> {
+        Ok(self.registry()?.remove(session).is_some())
+    }
+
+    fn acquire_realization<'a>(
+        &'a self,
+        session: &'a str,
+        admit: &'a mut (
+                    dyn FnMut(crate::session_realizations::SessionRealizationAccess<'_>) + Send
+                ),
+    ) -> futures_util::future::BoxFuture<
+        'a,
+        awaken_session_realization_contract::SessionRealizationPermit,
+    > {
+        Box::pin(async move {
+            awaken_session_realization_contract::SessionRealizationPermit::acquire(
+                &awaken_session_types::SessionId::from(session),
+                || {
+                    let mut registry = self.registry().expect("permit fixture registry is healthy");
+                    let slot = registry.entry(session.to_owned()).or_default();
+                    let phase = slot.realization.execution.phase.clone();
+                    async move {
+                        let owner = phase.clone().lock_owned().await;
+                        (phase, owner)
+                    }
+                },
+                |identity| {
+                    let mut registry = self.registry().expect("permit fixture registry is healthy");
+                    let slot = registry.get_mut(session)?;
+                    std::sync::Arc::ptr_eq(&slot.realization.execution.phase, identity).then(|| {
+                        admit(crate::session_realizations::SessionRealizationAccess {
+                            inputs: &slot.inputs,
+                            realization: &mut slot.realization,
+                            run: &mut slot.run,
+                        })
+                    })
+                },
+            )
+            .await
+            .0
+        })
+    }
+
+    fn install(&self, session: &str) -> Result<(), crate::realization_error::RealizationLock> {
+        self.registry()?.entry(session.to_owned()).or_default();
+        Ok(())
+    }
+
+    fn visit(
+        &self,
+        session: &str,
+        visit: &mut dyn FnMut(crate::session_realizations::SessionRealizationAccess<'_>),
+    ) -> Result<bool, crate::realization_error::RealizationLock> {
+        let mut registry = self.registry()?;
+        let Some(slot) = registry.get_mut(session) else {
+            return Ok(false);
+        };
+        visit(crate::session_realizations::SessionRealizationAccess {
+            inputs: &slot.inputs,
+            realization: &mut slot.realization,
+            run: &mut slot.run,
+        });
+        Ok(true)
+    }
+
+    fn finish_realization_revocation(
+        &self,
+        session: &str,
+        selected: &crate::session_realizations::SessionRealizationRevocationSelection,
+        expected_owner: &crate::environment_owner::SessionEnvironmentOwner,
+        disposed: bool,
+    ) -> bool {
+        let Ok(mut registry) = self.registry() else {
+            return false;
+        };
+        let completed = registry.get(session).is_some_and(|slot| {
+            selected.matches_completion(&slot.realization, expected_owner, disposed)
+        });
+        if completed {
+            registry.remove(session);
+        }
+        completed
+    }
+
+    fn replace_frozen(
+        &self,
+        session: &str,
+        update: &mut dyn FnMut(&mut crate::frozen_inputs::FrozenSessionInputs),
+    ) -> Result<(), crate::realization_error::RealizationLock> {
+        let mut registry = self.registry()?;
+        let slot = registry.entry(session.to_owned()).or_default();
+        let mut next = slot.inputs.as_ref().clone();
+        update(&mut next);
+        slot.inputs = std::sync::Arc::new(next);
+        Ok(())
+    }
+
+    fn retain_publication(
+        &self,
+        session: &str,
+        publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
+    ) -> Result<(), crate::realization_error::RealizationError> {
+        let mut registry = self.registry()?;
+        let slot = registry.entry(session.to_owned()).or_default();
+        slot.inputs.validate_publication(publication)?;
+        if let Some(publication) = publication {
+            let mut next = slot.inputs.as_ref().clone();
+            next.published_snapshot = Some(publication.clone());
+            slot.inputs = std::sync::Arc::new(next);
+        }
+        Ok(())
+    }
+
+    fn publish_resource_requirements(
+        &self,
+        session: &str,
+        workspace: &str,
+        asserted: Option<&awaken_session_configuration_contract::resource::SessionRealizationLease>,
+        compiled: crate::staged_resources::CompiledEffectiveInputs,
+        versions: Vec<awaken_resource_contract::SkillVersion>,
+        effect_key: String,
+    ) -> Result<(), crate::realization_error::RealizationError> {
+        let mut registry = self.registry()?;
+        let slot = registry
+            .get_mut(session)
+            .ok_or_else(|| crate::realization_error::RealizationError::session_absent(session))?;
+        slot.realization
+            .validate_preparation_publication(asserted)?;
+        let mut next = slot.inputs.as_ref().clone();
+        next.workspace = Some(workspace.to_owned());
+        slot.inputs = std::sync::Arc::new(next);
+        slot.realization.staging.resources = compiled.staged;
+        slot.realization.staging.memory_bindings = compiled.memory_bindings;
+        slot.realization.staging.skills = Some(versions);
+        slot.realization.staging.effect_key = Some(effect_key);
+        Ok(())
+    }
 }

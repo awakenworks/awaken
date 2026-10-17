@@ -6,6 +6,7 @@
 /// One Session-wide delivery decision for resources that can be represented
 /// either as files or as semantic tools. The frozen Resource/Skill identities
 /// remain authoritative; this value selects only their runtime projection.
+use crate::realization_error::RealizationError;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ManagedContentDelivery {
     /// Anthropic Managed Agents compatible filesystem projection. Memory stores
@@ -77,13 +78,13 @@ impl FrozenSessionInputs {
     pub fn validate_publication(
         &self,
         publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
-    ) -> Result<(), crate::host_error::HostError> {
+    ) -> Result<(), RealizationError> {
         if publication.is_some_and(|publication| {
             self.published_snapshot
                 .as_ref()
                 .is_some_and(|retained| retained != publication)
         }) {
-            return Err(crate::host_error::HostError::internal(
+            return Err(RealizationError::invariant(
                 "Session cannot replace its immutable Agent publication",
             ));
         }
@@ -146,13 +147,13 @@ impl FrozenSessionInputs {
         &self,
         thread: &str,
         projection: &crate::frozen_inputs::FrozenEnvironmentInputs,
-    ) -> Result<(), crate::host_error::HostError> {
+    ) -> Result<(), RealizationError> {
         if self
             .environment_projection
             .as_ref()
             .is_some_and(|existing| existing.fingerprint != projection.fingerprint)
         {
-            return Err(crate::host_error::HostError::internal(format!(
+            return Err(RealizationError::invariant(format!(
                 "thread {thread} is already bound to a different frozen Environment"
             )));
         }

@@ -12,23 +12,25 @@ impl crate::resource_staging::ResourceStaging {
         claim: Option<&awaken_dispatch_contract::RunClaim>,
     ) -> Result<(), RunError> {
         let realization_view = self.sessions.clone();
+        // Installing a claim's dispatched Resources is the install path.
+        realization_view.install_session(thread)?;
         // Resource generation is the innermost Session transition. A complete
         // projection may already hold `lifecycle`, while claimed realization
         // also holds `realization`; this dedicated suffix lock avoids re-entry
         // and keeps compare/realize/publish atomic for every caller.
         let resource_projection =
-            realization_view.update_realization(thread, |r| r.staging.projection.clone());
+            realization_view.update_realization(thread, |r| r.staging.projection.clone())?;
         let _resource_projection = resource_projection.lock().await;
         let staging = self;
-        let active = staging.thread_resource_manifest(thread);
-        let live_environment = executor.session_environment(thread).await;
+        let active = staging.thread_resource_manifest(thread)?;
+        let live_environment = executor.session_environment(thread).await?;
         let (expected_binding, projected_transition) = realization_view
             .read_realization(thread, |r| {
                 (
                     r.environment.owner.durable_binding().is_some(),
                     r.staging.transition.clone(),
                 )
-            })
+            })?
             .unwrap_or_default();
         if let Some(projected_transition) = projected_transition {
             if projected_transition.desired() != manifest {
@@ -112,7 +114,7 @@ impl crate::resource_staging::ResourceStaging {
             if r.staging.transition.is_none() {
                 r.staging.transition = Some(proven_transition);
             }
-        });
+        })?;
         Ok(())
     }
 }

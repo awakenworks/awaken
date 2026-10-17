@@ -169,7 +169,8 @@ impl ManagedSessionRootFixture {
             .host
             .installed_sessions
             .realizations()
-            .frozen(thread);
+            .frozen(thread)
+            .expect("installed Sessions");
         let projection = awaken_session_realization_contract::FrozenSessionProjection {
             workspace_id: owner,
             revision: root.revision,
@@ -233,7 +234,7 @@ impl ManagedSessionRootFixture {
         })?;
         let closed = source.host.installed_sessions.realizations().read_realization(thread, |r| {
             matches!(&r.execution.authority, crate::session_realizations::SessionRealizationAuthority::Closed(Some(old)) if old == current)
-        }).unwrap_or(false);
+        }).expect("installed Sessions").unwrap_or(false);
         if !closed {
             return Err(awaken_session_types::RunError::unavailable(
                 "fixture advance requires the explicitly revoked exact generation",
@@ -428,6 +429,7 @@ impl ManagedSessionRootFixture {
                     && r.execution.authority.lease() == Some(lease)
                     && r.execution.authority.remaining_for(lease).is_some()
             })
+            .expect("installed Sessions")
             .unwrap_or(false);
         if !exact_stage {
             return Err(awaken_session_types::RunError::unavailable(

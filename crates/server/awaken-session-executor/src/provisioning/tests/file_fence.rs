@@ -56,7 +56,7 @@ async fn file_staging_passes_one_exact_prepared_fence_to_one_source_read() {
     // with None; R2 local/remote Run reads once with the same claim; R3 remote
     // realization supersedes a claim and reads once with the exact Session,
     // revision, input, owner and epoch; R4 stale claim or foreign Session reads
-    // once, rejects, and returns no mount; R5 zero revision rejects before any
+    // once, rejects with the source's retryable class, and returns no mount; R5 zero revision rejects before any
     // source read. No second File-specific fence may be constructed downstream.
     use crate::ResourceOperationFence as Fence;
     use awaken_dispatch_contract::RunClaim;
@@ -197,9 +197,11 @@ async fn file_staging_passes_one_exact_prepared_fence_to_one_source_read() {
                 awaken_session_types::RunErrorKind::BadRequest,
                 "{rule} rejects at the outer intent admission"
             ),
+            // The File source's own indeterminate (retryable) class survives
+            // the realization boundary instead of flattening to Internal.
             (Err(error), false) => assert_eq!(
                 error.kind,
-                awaken_session_types::RunErrorKind::Internal,
+                awaken_session_types::RunErrorKind::Unavailable,
                 "{rule} fails at the exact File source",
             ),
             (Ok(_), false) => panic!("{rule} unexpectedly accepted a foreign fence"),

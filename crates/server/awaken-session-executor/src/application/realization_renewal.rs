@@ -99,12 +99,12 @@ impl crate::SharedHost {
                 // to recreate a slot or overwrite a later installed lease.
                 self.realizer
                     .execution
-                    .authorize_worker_effect(|| {
+                    .authorize_worker_effect::<_, crate::HostError>(|| {
                         Ok(realizations
                             .modify_realization(&session_id, |state| {
                                 Arc::ptr_eq(&state.execution.phase, &realization)
                                     && state.renew_lease(&lease, renewed_lease)
-                            })
+                            })?
                             .unwrap_or(false))
                     })
                     .map_err(|error| (error, true))
@@ -118,7 +118,7 @@ impl crate::SharedHost {
                         Arc::ptr_eq(&state.execution.phase, &realization)
                             && state.execution.authority.lease() == Some(&lease)
                             && state.execution.authority.remaining().is_none()
-                    })
+                    })?
                     .unwrap_or(false) =>
             {
                 self.revoke_session_realization(&session_id, Some((&lease, &realization)))
@@ -131,7 +131,7 @@ impl crate::SharedHost {
                     .read_realization(&session_id, |state| {
                         Arc::ptr_eq(&state.execution.phase, &realization)
                             && state.execution.authority.lease() == Some(&lease)
-                    })
+                    })?
                     .unwrap_or(false) =>
             {
                 Ok(false)
@@ -139,7 +139,7 @@ impl crate::SharedHost {
             Err((error, revoke_immediately))
                 if !revoke_immediately
                     && realizations
-                        .read_realization(&session_id, |r| r.execution.authority.remaining())
+                        .read_realization(&session_id, |r| r.execution.authority.remaining())?
                         .flatten()
                         .is_some() =>
             {

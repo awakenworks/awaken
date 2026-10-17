@@ -39,12 +39,10 @@ async fn captured_environment_intent_survives_renewal_without_rebuilding_adopt()
     )
     .unwrap()
     .observed(awaken_authority_clock::authority_proof_started().unwrap());
-    host.installed_sessions
-        .realizations()
-        .update_realization(thread, |r| {
-            r.execution.authority =
-                crate::session_realizations::SessionRealizationAuthority::Live(proof);
-        });
+    host.installed_sessions.install_realization(thread, |r| {
+        r.execution.authority =
+            crate::session_realizations::SessionRealizationAuthority::Live(proof);
+    });
     *sink.original_intent.lock().unwrap() = Some(original.clone());
     for request_expiry in [60_000, 120_000] {
         let requested = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
@@ -122,11 +120,15 @@ async fn managed_projection_without_a_lease_never_falls_back_to_unowned() {
                     crate::session_realizations::SessionRealizationAuthority::Closed(None);
             }
         });
-        let intent = host.realizer.execution.new_environment_effect_intent(
-            thread,
-            awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
-            None,
-        );
+        let intent = host
+            .realizer
+            .execution
+            .new_environment_effect_intent(
+                thread,
+                awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+                None,
+            )
+            .expect("installed Sessions");
         let missing = host
             .realizer
             .authorize_environment_effect_before_io(thread, &intent)
@@ -162,7 +164,7 @@ async fn managed_projection_without_a_lease_never_falls_back_to_unowned() {
             Ok(_) => panic!("M1/M3 lost Managed Root became Unowned"),
         };
         assert_eq!(
-            error.code,
+            error.code(),
             if closed {
                 "session_environment_realization_closed"
             } else {
@@ -177,7 +179,11 @@ async fn managed_projection_without_a_lease_never_falls_back_to_unowned() {
             "M3 closes before any sink query"
         );
         assert!(
-            host.realizer.session_environment(thread).await.is_none(),
+            host.realizer
+                .session_environment(thread)
+                .await
+                .expect("installed Sessions")
+                .is_none(),
             "M1/M3 zero provider I/O"
         );
     }
@@ -349,11 +355,15 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
         .realizer
         .authorize_environment_effect_before_io(
             thread,
-            &host.realizer.execution.new_environment_effect_intent(
-                thread,
-                awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
-                None,
-            ),
+            &host
+                .realizer
+                .execution
+                .new_environment_effect_intent(
+                    thread,
+                    awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+                    None,
+                )
+                .expect("installed Sessions"),
         )
         .await
         .expect("R1 ordinary authorization");
@@ -372,11 +382,15 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
         .realizer
         .authorize_environment_effect_before_io(
             thread,
-            &host.realizer.execution.new_environment_effect_intent(
-                thread,
-                awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
-                None,
-            ),
+            &host
+                .realizer
+                .execution
+                .new_environment_effect_intent(
+                    thread,
+                    awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+                    None,
+                )
+                .expect("installed Sessions"),
         )
         .await
         .expect("R2 Managed authorization");
@@ -420,6 +434,7 @@ async fn new_environment_binding_commits_once_before_concurrent_contexts_can_use
         host.realizer
             .session_environment("binding-order")
             .await
+            .expect("installed Sessions")
             .is_some()
     );
 }
@@ -447,6 +462,7 @@ async fn root_response_loss_is_read_back_without_recreating_the_environment() {
         host.realizer
             .session_environment("binding-response-loss")
             .await
+            .expect("installed Sessions")
             .is_none(),
         "R1 hidden Candidate is not published"
     );
@@ -790,6 +806,7 @@ async fn recovered_environment_waits_for_replacement_realization_before_publish(
         host.realizer
             .session_environment("binding-restart")
             .await
+            .expect("installed Sessions")
             .is_none(),
         "R1"
     );
@@ -810,6 +827,7 @@ async fn recovered_environment_waits_for_replacement_realization_before_publish(
         host.realizer
             .session_environment("binding-restart")
             .await
+            .expect("installed Sessions")
             .is_some()
     );
 }
@@ -864,6 +882,7 @@ async fn environment_binding_catches_up_across_multiple_realization_fences() {
         host.realizer
             .session_environment("binding-moving-fence")
             .await
+            .expect("installed Sessions")
             .is_some()
     );
 }
@@ -903,6 +922,7 @@ async fn missing_durable_environment_adoption_is_deferred_only_for_coordination(
         host.realizer
             .session_environment("binding-corrupt")
             .await
+            .expect("installed Sessions")
             .is_none(),
         "B1"
     );
@@ -915,6 +935,7 @@ async fn missing_durable_environment_adoption_is_deferred_only_for_coordination(
     assert_eq!(
         host.realizer
             .durable_environment_binding("binding-corrupt")
+            .expect("installed Sessions")
             .as_deref(),
         Some("opaque"),
         "B2/B3 durable identity is retained",
@@ -923,6 +944,7 @@ async fn missing_durable_environment_adoption_is_deferred_only_for_coordination(
         host.realizer
             .session_environment("binding-corrupt")
             .await
+            .expect("installed Sessions")
             .is_none(),
         "B2/B3 no substitute or local adoption",
     );
@@ -973,6 +995,7 @@ async fn binding_commit_failure_is_retryable_and_never_publishes_the_environment
         host.realizer
             .session_environment("binding-failure")
             .await
+            .expect("installed Sessions")
             .is_none()
     );
 }
@@ -1047,6 +1070,7 @@ async fn on_tool_use_concurrent_hand_calls_create_and_persist_one_environment() 
         host.realizer
             .session_environment("deferred-hand")
             .await
+            .expect("installed Sessions")
             .is_some()
     );
 }
@@ -1125,6 +1149,7 @@ async fn on_tool_use_binding_failure_never_publishes_the_environment() {
         host.realizer
             .session_environment("deferred-failure")
             .await
+            .expect("installed Sessions")
             .is_none()
     );
 }

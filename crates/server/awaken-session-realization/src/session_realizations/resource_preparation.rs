@@ -8,7 +8,7 @@
 use super::{
     ExecutionAuthority, SessionRealization, SessionRealizationAuthority, SessionRealizations,
 };
-use crate::host_error::HostError;
+use crate::realization_error::RealizationError;
 use awaken_session_configuration_contract::resource::SessionRealizationLease;
 use awaken_session_realization_contract::ObservedSessionRealizationLease;
 use std::sync::Arc;
@@ -29,14 +29,14 @@ impl<'a> ResourcePreparation<'a> {
         authority: &ExecutionAuthority,
         session: &'a str,
         proof: ObservedSessionRealizationLease,
-    ) -> Result<Self, HostError> {
+    ) -> Result<Self, RealizationError> {
         let asserted = proof.lease.clone();
         let cancellation = Arc::new(awaken_runtime_contract::CancellationToken::new());
         let sessions = authority.sessions.clone();
         let (introduced_lease, changed) = authority.authorize_worker_effect(|| {
             sessions.update_realization(session, |r| {
                 if r.staging.preparation.is_some() {
-                    return Err(HostError::internal(
+                    return Err(RealizationError::invariant(
                         "Resource preparation already holds its projection lock",
                     ));
                 }
@@ -46,7 +46,7 @@ impl<'a> ResourcePreparation<'a> {
                 }
                 r.staging.preparation = Some(cancellation.clone());
                 Ok((introduced, r.execution.changed.clone()))
-            })
+            })?
         })?;
         changed.notify_waiters();
         let preparation = Self {
@@ -69,8 +69,11 @@ impl<'a> ResourcePreparation<'a> {
             && realization.resource_preparation_authorized(&self.asserted)
     }
 
-    fn ended() -> HostError {
-        HostError::internal("Session realization authority ended during Resource preparation")
+    fn ended() -> RealizationError {
+        RealizationError::authority_lost(
+            crate::realization_error::AuthorityLoss::Closed,
+            "Session realization authority ended during Resource preparation",
+        )
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -78,15 +81,15 @@ impl<'a> ResourcePreparation<'a> {
         &self.cancellation
     }
 
-    pub fn validate(&self) -> Result<(), HostError> {
+    pub fn validate(&self) -> Result<(), RealizationError> {
         self.sessions
-            .read_realization(self.session, |realization| self.authorized(realization))
+            .read_realization(self.session, |realization| self.authorized(realization))?
             .filter(|authorized| *authorized)
             .map(|_| ())
             .ok_or_else(Self::ended)
     }
 
-    pub fn finish(&self, realization: &mut SessionRealization) -> Result<(), HostError> {
+    pub fn finish(&self, realization: &mut SessionRealization) -> Result<(), RealizationError> {
         if !self.authorized(realization) {
             return Err(Self::ended());
         }
@@ -94,25 +97,28 @@ impl<'a> ResourcePreparation<'a> {
         Ok(())
     }
 
-    pub async fn authority_ended(&self) -> HostError {
+    pub async fn authority_ended(&self) -> RealizationError {
         let realizations = &self.sessions;
         loop {
-            let Some(changed) =
-                realizations.read_realization(self.session, |r| r.execution.changed.clone())
-            else {
-                return Self::ended();
+            let changed = match realizations
+                .read_realization(self.session, |r| r.execution.changed.clone())
+            {
+                Ok(Some(changed)) => changed,
+                Ok(None) => return Self::ended(),
+                Err(denied) => return denied,
             };
             // Register before reading the lease to avoid a lost renewal wakeup.
             let notified = changed.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            let remaining = realizations
-                .read_realization(self.session, |realization| {
-                    self.authorized(realization)
-                        .then(|| realization.execution.authority.remaining())
-                        .flatten()
-                })
-                .flatten();
+            let remaining = match realizations.read_realization(self.session, |realization| {
+                self.authorized(realization)
+                    .then(|| realization.execution.authority.remaining())
+                    .flatten()
+            }) {
+                Ok(remaining) => remaining.flatten(),
+                Err(denied) => return denied,
+            };
             let Some(remaining) = remaining else {
                 return Self::ended();
             };
@@ -128,7 +134,9 @@ impl<'a> ResourcePreparation<'a> {
 impl Drop for ResourcePreparation<'_> {
     fn drop(&mut self) {
         let realizations = &self.sessions;
-        realizations.modify_realization(self.session, |r| {
+        // Drop cannot report: a poisoned or retired registry holds no
+        // preparation of this scope left to release.
+        let _ = realizations.modify_realization(self.session, |r| {
             if r.staging
                 .preparation
                 .as_ref()

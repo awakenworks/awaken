@@ -2,7 +2,7 @@
 // @formal reason: Original frozen projection and MCP effects use the canonical realization driver and existing slots.
 //! Realizes an already-authorized frozen Session projection. Dispatch and Run execution supply the same projection effect role.
 use crate::{
-    host_error::HostError, realization_executor::RealizationExecutor,
+    realization_error::RealizationError, realization_executor::RealizationExecutor,
     session_realizations::SessionRealizations,
 };
 use awaken_dispatch_contract::RunClaim;
@@ -21,7 +21,7 @@ pub trait SessionProjectionExecution: Send + Sync {
         &self,
         thread: &str,
         publication: Option<&ExecutableAgentSnapshot>,
-    ) -> Result<(), HostError>;
+    ) -> Result<(), RealizationError>;
     async fn install_frozen_projection(
         &self,
         session: &str,
@@ -29,7 +29,7 @@ pub trait SessionProjectionExecution: Send + Sync {
         claim: Option<&RunClaim>,
         synchronize_resources: bool,
         lease: Option<ObservedSessionRealizationLease>,
-    ) -> Result<(), HostError>;
+    ) -> Result<(), RealizationError>;
     fn invalidate_realization_lease(&self, session: &str, lease: &SessionRealizationLease);
     fn mcp_effects(&self) -> &dyn McpAttachmentRealizer;
 }

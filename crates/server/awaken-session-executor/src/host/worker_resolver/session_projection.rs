@@ -184,6 +184,7 @@ mod tests {
             host.realizer
                 .session_environment("cold-legacy")
                 .await
+                .expect("installed Sessions")
                 .is_some(),
             "C1"
         );
@@ -221,6 +222,7 @@ mod tests {
             host.realizer
                 .session_environment("cold-deferred")
                 .await
+                .expect("installed Sessions")
                 .is_none(),
             "C2"
         );
@@ -295,6 +297,7 @@ mod tests {
                         host.installed_sessions
                             .realizations()
                             .read_realization(thread, |r| r.environment.owner.is_resident())
+                            .expect("installed Sessions")
                             .unwrap_or(false)
                     })
                 });
@@ -938,6 +941,7 @@ mod tests {
             host.realizer
                 .staging
                 .thread_resource_manifest(thread)
+                .expect("installed Sessions")
                 .is_none(),
             "M1"
         );
@@ -945,6 +949,7 @@ mod tests {
             host.installed_sessions
                 .realizations()
                 .read_realization(thread, |r| r.execution.authority.lease().cloned())
+                .expect("installed Sessions")
                 .flatten(),
             Some(lease.clone()),
             "M1 lease still advances"
@@ -1056,7 +1061,8 @@ mod tests {
         let retained = host
             .installed_sessions
             .realizations()
-            .published_snapshot(thread);
+            .published_snapshot(thread)
+            .expect("installed Sessions");
         assert_eq!(retained.as_ref(), Some(&snapshot), "P1/P2");
 
         let mut effective = snapshot.clone();
@@ -1092,6 +1098,7 @@ mod tests {
             host.installed_sessions
                 .realizations()
                 .published_snapshot(thread)
+                .expect("installed Sessions")
                 .as_ref(),
             Some(&snapshot),
             "P3"
@@ -1298,6 +1305,7 @@ mod tests {
                     .authority
                     .lease()
                     .map(|lease| lease.expires_at_unix_ms))
+                .expect("installed Sessions")
                 .flatten(),
             Some(renewed_expiry),
             "R1/E3"
@@ -1463,6 +1471,7 @@ mod tests {
             .installed_sessions
             .realizations()
             .read_realization(thread, |r| r.execution.authority.lease().cloned())
+            .expect("installed Sessions")
             .flatten()
             .expect("C1 actual original assignment");
         awaken_session_execution_contract::RealizationRuntime::install_session_projection(
@@ -1516,6 +1525,7 @@ mod tests {
             .installed_sessions
             .realizations()
             .read_realization(thread, |r| r.execution.authority.lease().cloned())
+            .expect("installed Sessions")
             .flatten()
             .expect("C4 Store-installed consumer lease");
         assert_eq!(
@@ -1717,7 +1727,10 @@ mod tests {
         // Publication deliberately evicts the rebuildable SessionCtx before the
         // final claimed resolve. A heartbeat may enter this exact gap; the
         // retained Environment remains the publication-authorized effect owner.
-        host.realizer.evict_session_for_rebuild(thread).await;
+        host.realizer
+            .evict_session_for_rebuild(thread)
+            .await
+            .expect("installed Sessions");
         assert!(
             host.installed_sessions
                 .read(thread, |slot| slot.run.context.is_none()
@@ -1766,7 +1779,10 @@ mod tests {
                     .await
                     .expect("R9 warm Runtime");
             } else {
-                host.realizer.evict_session_for_rebuild(thread).await;
+                host.realizer
+                    .evict_session_for_rebuild(thread)
+                    .await
+                    .expect("installed Sessions");
             }
             assert_eq!(
                 host.installed_sessions
@@ -1779,6 +1795,7 @@ mod tests {
                 .realizer
                 .session_environment(thread)
                 .await
+                .expect("installed Sessions")
                 .expect("R9 resident Arc");
             let old_handle = retained.lifecycle().handle();
             crate::host::worker_resolver::test_support::remove_local_environment_root(
@@ -1810,7 +1827,12 @@ mod tests {
             assert!(
                 Arc::ptr_eq(
                     &retained,
-                    &host.realizer.session_environment(thread).await.unwrap()
+                    &host
+                        .realizer
+                        .session_environment(thread)
+                        .await
+                        .expect("installed Sessions")
+                        .unwrap()
                 ),
                 "R9 retains exact owner"
             );
@@ -1821,7 +1843,7 @@ mod tests {
             );
             assert!(
                 matches!(
-                    host.installed_sessions.realizations().read_realization(thread, |r| r.execution.authority.clone()),
+                    host.installed_sessions.realizations().read_realization(thread, |r| r.execution.authority.clone()).expect("installed Sessions"),
                     Some(crate::session_realizations::SessionRealizationAuthority::Closed(Some(ref closed)))
                         if closed == &recovery_authority.lease
                 ),
@@ -1845,7 +1867,12 @@ mod tests {
             );
             assert!(Arc::ptr_eq(
                 &retained,
-                &host.realizer.session_environment(thread).await.unwrap()
+                &host
+                    .realizer
+                    .session_environment(thread)
+                    .await
+                    .expect("installed Sessions")
+                    .unwrap()
             ));
             assert_eq!(
                 control.current_projection().environment.binding(),
@@ -1875,6 +1902,7 @@ mod tests {
                 .realizer
                 .session_environment(thread)
                 .await
+                .expect("installed Sessions")
                 .expect("R10 replacement");
             assert_ne!(
                 replacement.lifecycle().handle(),
@@ -1900,7 +1928,12 @@ mod tests {
             assert!(
                 Arc::ptr_eq(
                     &replacement,
-                    &host.realizer.session_environment(thread).await.unwrap()
+                    &host
+                        .realizer
+                        .session_environment(thread)
+                        .await
+                        .expect("installed Sessions")
+                        .unwrap()
                 ),
                 "R10 no duplicate ready owner"
             );
@@ -1980,6 +2013,7 @@ mod tests {
                 .installed_sessions
                 .realizations()
                 .read_realization(first_use_thread, |r| r.environment.owner.is_resident())
+                .expect("installed Sessions")
                 .unwrap_or(false),
             "R7 Store-read identity remains Resident"
         );
@@ -2029,6 +2063,7 @@ mod tests {
                 .realizer
                 .session_environment(first_use_thread)
                 .await
+                .expect("installed Sessions")
                 .is_none(),
             "R8/E6: no unpinned Runtime may be installed"
         );
@@ -2183,6 +2218,7 @@ mod tests {
                 .realizer
                 .session_environment(continuity_thread)
                 .await
+                .expect("installed Sessions")
                 .is_none(),
             "R6 continuity failure publishes no replacement Environment"
         );

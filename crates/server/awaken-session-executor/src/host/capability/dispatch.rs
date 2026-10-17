@@ -238,6 +238,7 @@ impl SharedHost {
         self.dispatch
             .terminal_reconciliation
             .bind_worker_evidence(directory, source)
+            .map_err(HostError::from)
     }
 
     /// Start the one coordinator-side reconciliation loop when this Host owns

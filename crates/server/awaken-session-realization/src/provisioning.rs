@@ -5,39 +5,26 @@
 //! artifact harvesting through the selected Resource authority. The staged
 //! resource mounts retain ADR-0038's one physical projection.
 
+use crate::realization_error::{PendingState, RealizationError};
 use crate::staged_resources::{RepositoryActivation, ResourceBindingCheck, StagedResources};
 use awaken_session_configuration_contract::resource as session_resource;
 use awaken_session_realization_contract::ResourceOperationFence;
 use std::sync::Arc;
 
 use awaken_provisioning_contract as pc;
-use awaken_resource_contract::{ArtifactPublicationError, RepositoryBindingVerifierError};
+use awaken_resource_contract::ArtifactPublicationError;
 
 #[derive(Debug)]
 pub enum RepositoryPublicationActivationError {
     Rejected(pc::RepositoryPublicationRejection),
-    Failed(crate::host_error::HostError),
+    Failed(RealizationError),
 }
 
-pub fn repository_binding_host_error(
-    error: RepositoryBindingVerifierError,
-) -> crate::host_error::HostError {
-    let message = error.to_string();
-    match error {
-        RepositoryBindingVerifierError::InvalidRequest { .. }
-        | RepositoryBindingVerifierError::Denied { .. } => {
-            crate::host_error::HostError::bad_request(message)
-        }
-        RepositoryBindingVerifierError::Conflict { .. } => {
-            crate::host_error::HostError::conflict(message)
-        }
-        RepositoryBindingVerifierError::AuthorityUnavailable { .. }
-        | RepositoryBindingVerifierError::Indeterminate { .. } => {
-            crate::host_error::HostError::unavailable(message)
-        }
-        RepositoryBindingVerifierError::CorruptAuthority { .. } => {
-            crate::host_error::HostError::internal(message)
-        }
+/// A denied installed-Session read leaves the Artifact authority unknown; the
+/// publication retries once a healthy owner can read it.
+fn artifact_registry_denied(error: RealizationError) -> ArtifactPublicationError {
+    ArtifactPublicationError::AuthorityUnavailable {
+        detail: error.to_string(),
     }
 }
 
@@ -421,7 +408,10 @@ impl ArtifactHarvester {
         self.publisher.clone()
     }
 
-    pub fn current_claim(&self, thread: &str) -> Option<awaken_dispatch_contract::RunClaim> {
+    pub fn current_claim(
+        &self,
+        thread: &str,
+    ) -> Result<Option<awaken_dispatch_contract::RunClaim>, RealizationError> {
         self.sessions.dispatch_claim(thread)
     }
 
@@ -429,7 +419,10 @@ impl ArtifactHarvester {
         &self,
         thread: &str,
     ) -> Result<HarvestedArtifacts, ArtifactPublicationError> {
-        let fence = self.current_claim(thread).map(ResourceOperationFence::Run);
+        let fence = self
+            .current_claim(thread)
+            .map_err(artifact_registry_denied)?
+            .map(ResourceOperationFence::Run);
         self.harvest_with_fence(thread, fence).await
     }
 
@@ -503,7 +496,12 @@ impl ArtifactHarvester {
         let workspace_owner = terminal_effect
             .map(|effect| effect.command.session_id.as_str())
             .unwrap_or(thread);
-        let workspace = self.sessions.frozen(workspace_owner).workspace.clone();
+        let workspace = self
+            .sessions
+            .frozen(workspace_owner)
+            .map_err(artifact_registry_denied)?
+            .workspace
+            .clone();
         let workspace = match (workspace, terminal_effect) {
             (Some(workspace), _) => workspace,
             (None, Some(_)) => {
@@ -523,11 +521,14 @@ impl ArtifactHarvester {
                 )
                 .await;
         }
-        let projected_environment = exact_environment.cloned().or_else(|| {
-            self.sessions
+        let projected_environment = match exact_environment {
+            Some(environment) => Some(environment.clone()),
+            None => self
+                .sessions
                 .read_realization(thread, |r| r.environment.owner.resident())
-                .flatten()
-        });
+                .map_err(artifact_registry_denied)?
+                .flatten(),
+        };
         let Some(env) = projected_environment else {
             if let Some(effect) = terminal_effect {
                 return self
@@ -657,7 +658,9 @@ pub fn project_session_mounts(
     resources
 }
 
-/// Test-only spec helpers over the default Session provider.
+/// Test-only spec helpers over the default Session provider. A fixture with a
+/// poisoned registry is a broken test, so these helpers panic instead of
+/// reporting the realization denial production paths return.
 #[cfg(any(test, feature = "test-support"))]
 impl crate::environment_holding::EnvironmentHolding {
     /// The provisioning request for a thread. Skills are not a sandbox mount
@@ -665,7 +668,10 @@ impl crate::environment_holding::EnvironmentHolding {
     /// staged resource mounts (ADR-0038), each realized read-only under `.mnt/`.
     #[cfg(any(test, feature = "test-support"))]
     pub fn sandbox_spec(&self, thread: &str) -> pc::SandboxSpec {
-        let resources = self.staging.thread_resources_snapshot(thread);
+        let resources = self
+            .staging
+            .thread_resources_snapshot(thread)
+            .expect("test fixture registry is healthy");
         self.sandbox_spec_for_resources(thread, &resources)
     }
 
@@ -689,16 +695,18 @@ impl crate::environment_holding::EnvironmentHolding {
         resource_mounts: Vec<pc::MountRequirement>,
         has_repositories: bool,
     ) -> pc::SandboxSpec {
-        self.staging.sandbox_spec_for_mount_layout_with_network(
-            thread,
-            resource_mounts,
-            has_repositories,
-            self.env
-                .session_provider
-                .realizer()
-                .capabilities()
-                .network_isolation,
-        )
+        self.staging
+            .sandbox_spec_for_mount_layout_with_network(
+                thread,
+                resource_mounts,
+                has_repositories,
+                self.env
+                    .session_provider
+                    .realizer()
+                    .capabilities()
+                    .network_isolation,
+            )
+            .expect("test fixture registry is healthy")
     }
 }
 
@@ -713,8 +721,8 @@ impl crate::resource_staging::ResourceStaging {
         thread: &str,
         fallback_workspace: &str,
         realizer: &dyn pc::RepositoryRealizer,
-    ) -> Result<(), crate::host_error::HostError> {
-        let resources = self.thread_resources_snapshot(thread);
+    ) -> Result<(), RealizationError> {
+        let resources = self.thread_resources_snapshot(thread)?;
         for repository in &resources.repositories {
             self.realize_repository_activation(
                 thread,
@@ -739,11 +747,11 @@ impl crate::resource_staging::ResourceStaging {
         binding_checks: &[ResourceBindingCheck],
         realizer: &dyn pc::RepositoryRealizer,
         intent: pc::RepositoryRealizationIntent,
-    ) -> Result<(), crate::host_error::HostError> {
+    ) -> Result<(), RealizationError> {
         repository
             .plan
             .validate_mount_path()
-            .map_err(|error| crate::host_error::HostError::internal(error.to_string()))?;
+            .map_err(RealizationError::from)?;
         let credential = self
             .repository_operation_credential(
                 thread,
@@ -756,7 +764,7 @@ impl crate::resource_staging::ResourceStaging {
         realizer
             .realize_repository(&repository.plan, credential.as_ref(), intent)
             .await
-            .map_err(|error| crate::host_error::HostError::internal(error.to_string()))
+            .map_err(RealizationError::from)
     }
 
     /// Materialize only the credential required by this Git effect. A direct
@@ -775,7 +783,7 @@ impl crate::resource_staging::ResourceStaging {
             awaken_session_state_contract::SessionRepositoryPublicationCommand,
             session_resource::SessionRealizationLease,
         )>,
-    ) -> Result<Option<pc::RepositoryHttpBasicCredential>, crate::host_error::HostError> {
+    ) -> Result<Option<pc::RepositoryHttpBasicCredential>, RealizationError> {
         let pin = repository.credential_pin.as_ref();
         if pin.is_none() && publication_fence.is_none() {
             return Ok(None);
@@ -797,26 +805,26 @@ impl crate::resource_staging::ResourceStaging {
         });
         let Some((config_version, remote_url, credential_binding, authority)) = matching.next()
         else {
-            return Err(crate::host_error::HostError::internal(
+            return Err(RealizationError::invariant(
                 "protected Repository has no exact binding check",
             ));
         };
         if matching.next().is_some() {
-            return Err(crate::host_error::HostError::internal(
+            return Err(RealizationError::invariant(
                 "protected Repository has ambiguous binding checks",
             ));
         }
         if let Some(pin) = pin {
             let credential_binding = credential_binding.ok_or_else(|| {
-                crate::host_error::HostError::internal(
+                RealizationError::invariant(
                     "protected Repository credential pin has no authored binding",
                 )
             })?;
             pin.validate_for_repository(credential_binding, remote_url)
-                .map_err(|error| crate::host_error::HostError::internal(error.to_string()))?;
+                .map_err(RealizationError::from)?;
         }
         if repository.plan.source_remote_url != remote_url {
-            return Err(crate::host_error::HostError::internal(
+            return Err(RealizationError::invariant(
                 "Repository changed its frozen source URL",
             ));
         }
@@ -832,20 +840,20 @@ impl crate::resource_staging::ResourceStaging {
         ) {
             (Some(fence), true) => {
                 let verifier = self.repository_binding_verifier.clone().ok_or_else(|| {
-                    crate::host_error::HostError::internal(
+                    RealizationError::invariant(
                         "terminal Repository publication has no binding verifier",
                     )
                 })?;
                 Some(
                     verifier
                         .verify(
-                            &self.sessions.workspace(thread, fallback_workspace),
+                            &self.sessions.workspace(thread, fallback_workspace)?,
                             &repository.plan.repository_id,
                             config_version,
                             Some(fence),
                         )
                         .await
-                        .map_err(repository_binding_host_error)?,
+                        .map_err(RealizationError::RepositoryBinding)?,
                 )
             }
             // Local topology already compiled this exact command through the
@@ -862,12 +870,12 @@ impl crate::resource_staging::ResourceStaging {
                     Ok(None)
                 }
                 Some(awaken_resource_contract::RepositoryTransport::Direct) => {
-                    Err(crate::host_error::HostError::internal(
+                    Err(RealizationError::invariant(
                         "direct Repository changed its frozen transport URL",
                     ))
                 }
                 Some(awaken_resource_contract::RepositoryTransport::GatewayMediated { .. }) => {
-                    Err(crate::host_error::HostError::internal(
+                    Err(RealizationError::invariant(
                         "Repository has a mediated transport without a credential pin",
                     ))
                 }
@@ -875,11 +883,9 @@ impl crate::resource_staging::ResourceStaging {
             };
         };
         match pin.selected_plaintext_holder.boundary {
-            awaken_runtime_contract::PlaintextBoundary::Worker => {
-                Err(crate::host_error::HostError::internal(
-                    "Runtime Host or Worker cannot hold a Repository transport credential",
-                ))
-            }
+            awaken_runtime_contract::PlaintextBoundary::Worker => Err(RealizationError::invariant(
+                "Runtime Host or Worker cannot hold a Repository transport credential",
+            )),
             awaken_runtime_contract::PlaintextBoundary::Workload => {
                 if publication_transport.as_ref().is_some_and(|transport| {
                     !matches!(
@@ -887,21 +893,21 @@ impl crate::resource_staging::ResourceStaging {
                         awaken_resource_contract::RepositoryTransport::Direct
                     )
                 }) {
-                    return Err(crate::host_error::HostError::internal(
+                    return Err(RealizationError::invariant(
                         "Sandbox-held Repository credential cannot use a mediated transport",
                     ));
                 }
                 if repository.plan.transport_url != remote_url {
-                    return Err(crate::host_error::HostError::internal(
+                    return Err(RealizationError::invariant(
                         "direct Repository changed its frozen transport URL",
                     ));
                 }
                 let materializer = self.credential_materializer.as_ref().ok_or_else(|| {
-                    crate::host_error::HostError::internal(
+                    RealizationError::invariant(
                         "repository credential requires a configured credential materializer",
                     )
                 })?;
-                let workspace = self.sessions.workspace(thread, fallback_workspace);
+                let workspace = self.sessions.workspace(thread, fallback_workspace)?;
                 let material = materializer
                     .resolve_for_workspace(
                         &pin.access,
@@ -911,20 +917,20 @@ impl crate::resource_staging::ResourceStaging {
                         &(&repository.plan.repository_id, config_version),
                     )
                     .await
-                    .map_err(|error| crate::host_error::HostError::internal(error.to_string()))?
+                    .map_err(RealizationError::from)?
                     .material;
                 repository_http_basic_credential(material)
                     .map(Some)
-                    .map_err(crate::host_error::HostError::internal)
+                    .map_err(RealizationError::invariant)
             }
             awaken_runtime_contract::PlaintextBoundary::Platform => {
-                let workspace = self.sessions.workspace(thread, fallback_workspace);
+                let workspace = self.sessions.workspace(thread, fallback_workspace)?;
                 let transport = match publication_transport {
                     Some(transport) => transport,
                     None => {
                         let verifier =
                             self.repository_binding_verifier.clone().ok_or_else(|| {
-                                crate::host_error::HostError::internal(
+                                RealizationError::invariant(
                                     "Gateway-mediated Repository has no binding verifier",
                                 )
                             })?;
@@ -936,7 +942,7 @@ impl crate::resource_staging::ResourceStaging {
                                 authority,
                             )
                             .await
-                            .map_err(repository_binding_host_error)?
+                            .map_err(RealizationError::RepositoryBinding)?
                     }
                 };
                 match transport {
@@ -950,12 +956,12 @@ impl crate::resource_staging::ResourceStaging {
                         )))
                     }
                     awaken_resource_contract::RepositoryTransport::GatewayMediated { .. } => {
-                        Err(crate::host_error::HostError::internal(
+                        Err(RealizationError::invariant(
                             "Gateway-mediated Repository changed its frozen remote URL",
                         ))
                     }
                     awaken_resource_contract::RepositoryTransport::Direct => {
-                        Err(crate::host_error::HostError::internal(
+                        Err(RealizationError::invariant(
                             "Gateway-mediated Repository cannot fall back to direct credentials",
                         ))
                     }
@@ -984,19 +990,16 @@ impl crate::resource_staging::ResourceStaging {
             session_resource::SessionRealizationLease,
         )>,
     ) -> Result<pc::RepositoryPublicationReceipt, RepositoryPublicationActivationError> {
-        repository.plan.validate_mount_path().map_err(|error| {
-            RepositoryPublicationActivationError::Failed(crate::host_error::HostError::internal(
-                error.to_string(),
-            ))
-        })?;
-        expectation.validate().map_err(|error| {
-            RepositoryPublicationActivationError::Failed(crate::host_error::HostError::internal(
-                error.to_string(),
-            ))
-        })?;
+        repository
+            .plan
+            .validate_mount_path()
+            .map_err(|error| RepositoryPublicationActivationError::Failed(error.into()))?;
+        expectation
+            .validate()
+            .map_err(|error| RepositoryPublicationActivationError::Failed(error.into()))?;
         if repository.plan.access == pc::MountAccess::ReadOnly {
             return Err(RepositoryPublicationActivationError::Failed(
-                crate::host_error::HostError::internal("read-only repository cannot be published"),
+                RealizationError::invariant("read-only repository cannot be published"),
             ));
         }
         let credential = self
@@ -1017,20 +1020,16 @@ impl crate::resource_staging::ResourceStaging {
                     RepositoryPublicationActivationError::Rejected(rejection)
                 }
                 pc::RepositoryPublicationError::Unavailable(error) => {
-                    RepositoryPublicationActivationError::Failed(
-                        crate::host_error::HostError::unavailable_classified(
-                            "repository_publication_transport_unavailable",
-                            error.to_string(),
-                        ),
-                    )
+                    RepositoryPublicationActivationError::Failed(RealizationError::pending(
+                        PendingState::RepositoryPublicationTransportUnavailable,
+                        error.to_string(),
+                    ))
                 }
             })?;
         receipt
             .verify(&repository.plan, expectation)
             .map_err(|error| {
-                RepositoryPublicationActivationError::Failed(
-                    crate::host_error::HostError::internal(error.to_string()),
-                )
+                RepositoryPublicationActivationError::Failed(RealizationError::from(error))
             })?;
         Ok(receipt)
     }
@@ -1043,8 +1042,8 @@ impl crate::resource_staging::ResourceStaging {
         &self,
         thread: &str,
         provider: &crate::session_environment::SessionEnvironmentProvider,
-    ) -> pc::SandboxSpec {
-        let resources = self.thread_resources_snapshot(thread);
+    ) -> Result<pc::SandboxSpec, RealizationError> {
+        let resources = self.thread_resources_snapshot(thread)?;
         self.sandbox_spec_for_resources_and_provider(thread, &resources, provider)
     }
 
@@ -1056,7 +1055,7 @@ impl crate::resource_staging::ResourceStaging {
         &self,
         thread: &str,
         provider: &crate::session_environment::SessionEnvironmentProvider,
-    ) -> pc::SandboxSpec {
+    ) -> Result<pc::SandboxSpec, RealizationError> {
         let (create_time_mounts, has_repositories) = self
             .sessions
             .read_realization(thread, |r| {
@@ -1077,7 +1076,7 @@ impl crate::resource_staging::ResourceStaging {
                     })
                 });
                 (create_time_mounts, has_repositories)
-            })
+            })?
             .unwrap_or_default();
         self.sandbox_spec_for_mount_layout_with_network(
             thread,
@@ -1092,7 +1091,7 @@ impl crate::resource_staging::ResourceStaging {
         thread: &str,
         resources: &StagedResources,
         provider: &crate::session_environment::SessionEnvironmentProvider,
-    ) -> pc::SandboxSpec {
+    ) -> Result<pc::SandboxSpec, RealizationError> {
         self.sandbox_spec_for_mount_layout_with_network(
             thread,
             resources.mounts.clone(),
@@ -1110,8 +1109,8 @@ impl crate::resource_staging::ResourceStaging {
         thread: &str,
         resources: &session_resource::ResolvedSessionResources,
         provider: &crate::session_environment::SessionEnvironmentProvider,
-    ) -> pc::SandboxSpec {
-        let environment = self.sessions.frozen(thread).environment_projection.clone();
+    ) -> Result<pc::SandboxSpec, RealizationError> {
+        let environment = self.sessions.frozen(thread)?.environment_projection.clone();
         let mounts = resources
             .inputs()
             .iter()
@@ -1143,7 +1142,7 @@ impl crate::resource_staging::ResourceStaging {
         resource_mounts: Vec<pc::MountRequirement>,
         has_repositories: bool,
         network_isolation: bool,
-    ) -> pc::SandboxSpec {
+    ) -> Result<pc::SandboxSpec, RealizationError> {
         let (baseline, content_delivery, environment) = self
             .sessions
             .modify_session(thread, |slot| {
@@ -1152,7 +1151,7 @@ impl crate::resource_staging::ResourceStaging {
                     slot.realization.staging.content_delivery,
                     slot.inputs.environment_projection.clone(),
                 )
-            })
+            })?
             .unwrap_or_default();
         self.sandbox_spec_for_projected_layout(
             thread,
@@ -1172,7 +1171,7 @@ impl crate::resource_staging::ResourceStaging {
         &self,
         thread: &str,
         projection: ProjectedSandboxLayout<'_>,
-    ) -> pc::SandboxSpec {
+    ) -> Result<pc::SandboxSpec, RealizationError> {
         let mounts = project_session_mounts(
             projection.resource_mounts,
             projection.baseline_mounts,
@@ -1181,7 +1180,7 @@ impl crate::resource_staging::ResourceStaging {
         let env = projection
             .baseline_env
             .map(<[pc::EnvVar]>::to_vec)
-            .unwrap_or_else(|| self.thread_session_env(thread));
+            .map_or_else(|| self.thread_session_env(thread), Ok)?;
         let spec = sandbox_spec_from_projection(
             thread,
             mounts,
@@ -1189,20 +1188,22 @@ impl crate::resource_staging::ResourceStaging {
             projection.environment,
             projection.network_isolation,
         );
-        if projection.environment.is_some_and(|environment| {
-            environment
-                .sandbox
-                .as_ref()
-                .is_some_and(|sandbox| sandbox.host_access == pc::HostAccessPolicy::TrustedHost)
-        }) {
-            // Preserve the frozen exact trust decision, just as placement does.
-            // TrustedHost clients consume AgentFilesystemView, not an asserted
-            // sandbox-absolute process namespace. Provider admission still checks
-            // every requested capability against the exact Workdir provider.
-            spec
-        } else {
-            session_sandbox_projection(&spec, projection.has_repositories, false).0
-        }
+        Ok(
+            if projection.environment.is_some_and(|environment| {
+                environment
+                    .sandbox
+                    .as_ref()
+                    .is_some_and(|sandbox| sandbox.host_access == pc::HostAccessPolicy::TrustedHost)
+            }) {
+                // Preserve the frozen exact trust decision, just as placement does.
+                // TrustedHost clients consume AgentFilesystemView, not an asserted
+                // sandbox-absolute process namespace. Provider admission still checks
+                // every requested capability against the exact Workdir provider.
+                spec
+            } else {
+                session_sandbox_projection(&spec, projection.has_repositories, false).0
+            },
+        )
     }
 
     pub fn validate_repository_environment_adoption_paths(
@@ -1211,17 +1212,17 @@ impl crate::resource_staging::ResourceStaging {
         spec: &pc::SandboxSpec,
         repository_paths: &[&str],
         historical_owned_paths: &[&str],
-    ) -> Result<pc::SandboxSpec, crate::host_error::HostError> {
+    ) -> Result<pc::SandboxSpec, RealizationError> {
         let effective = provider
             .realizer()
             .effective_spec(spec)
-            .map_err(|error| crate::host_error::HostError::internal(error.to_string()))?;
+            .map_err(RealizationError::from)?;
         pc::validate_repository_sandbox_adoption_layout(
             repository_paths,
             &effective,
             historical_owned_paths,
         )
-        .map_err(|error| crate::host_error::HostError::internal(error.to_string()))?;
+        .map_err(RealizationError::from)?;
         Ok(effective)
     }
 
@@ -1230,32 +1231,44 @@ impl crate::resource_staging::ResourceStaging {
     /// REPLACES the Thread's set (correct at create time, before its first Run).
     #[cfg(any(test, feature = "test-support"))]
     pub fn register_thread_resources(&self, thread: &str, staged: StagedResources) {
+        // A create-time fixture installs the Session it registers.
         self.sessions
-            .update_realization(thread, |r| r.staging.resources = staged);
+            .install_session(thread)
+            .and_then(|()| {
+                self.sessions
+                    .update_realization(thread, |r| r.staging.resources = staged)
+            })
+            .expect("test fixture registry is healthy");
     }
 
     pub fn register_thread_resource_manifest(
         &self,
         thread: &str,
         manifest: session_resource::SessionResourceManifest,
-    ) {
+    ) -> Result<(), RealizationError> {
         self.sessions
-            .update_realization(thread, |r| r.staging.manifest = Some(manifest));
+            .update_realization(thread, |r| r.staging.manifest = Some(manifest))?;
+        Ok(())
     }
 
     pub fn thread_resource_manifest(
         &self,
         thread: &str,
-    ) -> Option<session_resource::SessionResourceManifest> {
-        self.sessions
-            .read_realization(thread, |r| r.staging.manifest.clone())
-            .flatten()
+    ) -> Result<Option<session_resource::SessionResourceManifest>, RealizationError> {
+        Ok(self
+            .sessions
+            .read_realization(thread, |r| r.staging.manifest.clone())?
+            .flatten())
     }
 
-    pub fn thread_resources_snapshot(&self, thread: &str) -> StagedResources {
-        self.sessions
-            .read_realization(thread, |r| r.staging.resources.clone())
-            .unwrap_or_default()
+    pub fn thread_resources_snapshot(
+        &self,
+        thread: &str,
+    ) -> Result<StagedResources, RealizationError> {
+        Ok(self
+            .sessions
+            .read_realization(thread, |r| r.staging.resources.clone())?
+            .unwrap_or_default())
     }
 
     /// The Repository activations queued for `thread` (test-only observability: a
@@ -1265,18 +1278,23 @@ impl crate::resource_staging::ResourceStaging {
     pub fn thread_repository_activations(&self, thread: &str) -> Vec<RepositoryActivation> {
         self.sessions
             .read_realization(thread, |r| r.staging.resources.repositories.clone())
+            .expect("test fixture registry is healthy")
             .unwrap_or_default()
     }
 
-    pub fn thread_session_env(&self, thread: &str) -> Vec<awaken_provisioning_contract::EnvVar> {
-        self.sessions
+    pub fn thread_session_env(
+        &self,
+        thread: &str,
+    ) -> Result<Vec<awaken_provisioning_contract::EnvVar>, RealizationError> {
+        Ok(self
+            .sessions
             .modify_session(thread, |slot| {
                 slot.inputs
                     .baseline
                     .as_ref()
                     .map(|baseline| baseline.env.clone())
                     .unwrap_or_default()
-            })
-            .unwrap_or_default()
+            })?
+            .unwrap_or_default())
     }
 }

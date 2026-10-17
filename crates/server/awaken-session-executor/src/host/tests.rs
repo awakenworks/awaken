@@ -836,17 +836,21 @@ pub(crate) fn bind_test_memory(host: &SharedHost, thread: &str, store_id: &str, 
         store_id.to_string(),
         writable,
     ));
-    host.realizer.staging.register_thread_memory(
-        thread,
-        Some(Arc::new(crate::memory_binding::MemoryBinding::new(
+    host.installed_sessions.install(thread);
+    host.realizer
+        .staging
+        .register_thread_memory(
             thread,
-            "default",
-            handle,
-            Some(test_resource_validator()),
-            &config,
-            writable,
-        ))),
-    );
+            Some(Arc::new(crate::memory_binding::MemoryBinding::new(
+                thread,
+                "default",
+                handle,
+                Some(test_resource_validator()),
+                &config,
+                writable,
+            ))),
+        )
+        .expect("installed Sessions");
 }
 
 fn managed_with_resource_source(host: Arc<SharedHost>) -> crate::ManagedHost {
@@ -1404,6 +1408,7 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Bindin
             host.realizer
                 .session_environment(receipt.session_id.as_str())
                 .await
+                .expect("installed Sessions")
                 .is_none(),
             Ordering::SeqCst,
         );

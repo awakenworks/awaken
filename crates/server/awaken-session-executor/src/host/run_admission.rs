@@ -11,8 +11,9 @@ impl SharedHost {
         activation: &RunActivation,
     ) -> Result<Option<awaken_runtime_contract::PlaintextHolder>, HostError> {
         awaken_dispatch_execution::session_dispatch::inference_plaintext_holder(activation, || {
-            self.thread_credential_realization(&activation.thread_id.0)
+            Ok(self.thread_credential_realization(&activation.thread_id.0))
         })
+        .map_err(HostError::from)
     }
 
     /// Bind the same fresh-root format before direct execution can commit an
@@ -58,13 +59,14 @@ mod tests {
         // Cause/effect graph: C1 the immutable activation selects a configured
         // model; C2 the original installed-slot mutex is poisoned. E1 a missing
         // model returns the existing guidance before any slot read; E2 an
-        // admitted model uses the original slot owner, including its fail-closed
-        // poison behavior. No alternate registry or fallback snapshot is allowed.
+        // admitted model uses the original slot owner, whose poisoned lock denies
+        // admission with the typed realization error instead of unwinding. No
+        // alternate registry or fallback snapshot is allowed.
         // | Rule | C1 configured | C2 poisoned | Effect |
         // | R1 | no  | no  | E1 BadRequest |
         // | R2 | no  | yes | E1 BadRequest, no slot access |
         // | R3 | yes | no  | E2 compiled dispatch |
-        // | R4 | yes | yes | E2 original poison panic |
+        // | R4 | yes | yes | E2 typed poison denial, no panic |
         for configured in [false, true] {
             for poisoned in [false, true] {
                 let host = crate::HostDependencies::ephemeral(
@@ -101,12 +103,23 @@ mod tests {
                     let error = admitted
                         .expect("R1/R2 model admission precedes slot access")
                         .expect_err("R1/R2 reject an unconfigured model");
-                    assert_eq!(error.kind, crate::HostErrorKind::BadRequest);
-                    assert!(error.message.starts_with("No model is configured."));
+                    assert!(matches!(
+                        error,
+                        awaken_dispatch_execution::AdmissionError::Rejected(_)
+                    ));
+                    assert!(error.to_string().starts_with("No model is configured."));
                 } else if poisoned {
+                    let denied = admitted
+                        .expect("R4 a poisoned slot owner denies without unwinding")
+                        .expect_err("R4 retains the original fail-closed slot owner");
                     assert!(
-                        admitted.is_err(),
-                        "R4 retains the original fail-closed slot owner"
+                        matches!(
+                            denied,
+                            awaken_dispatch_execution::AdmissionError::Realization(
+                                crate::realization_error::RealizationError::Poisoned(_)
+                            )
+                        ),
+                        "R4 {denied}"
                     );
                 } else {
                     assert!(admitted.expect("R3 healthy slot").is_ok());

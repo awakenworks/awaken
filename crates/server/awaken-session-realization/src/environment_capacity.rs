@@ -24,7 +24,7 @@ impl EnvironmentProviders {
     pub async fn prewarm_cache_volume(
         &self,
         volume: crate::cache_volume::CacheVolumeWarmup,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::cache_volume::CacheVolumeError> {
         self.cache_volume_prewarmer.prewarm(volume).await
     }
 

@@ -843,8 +843,7 @@ async fn durable_deferred_sandbox_publication_decision_table() {
     );
     assert!(
         loss_host
-            .realizer
-            .session_environment("durable-loss")
+            .resident_session_environment("durable-loss")
             .await
             .is_none(),
         "D4 hidden Candidate is not exposed"
@@ -868,8 +867,7 @@ async fn durable_deferred_sandbox_publication_decision_table() {
     );
     assert!(
         loss_host
-            .realizer
-            .session_environment("durable-loss")
+            .resident_session_environment("durable-loss")
             .await
             .is_some(),
         "D5 exact Candidate published"
@@ -1694,9 +1692,11 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
         );
     }
     let active_thread = "active-previous-transition";
+    host.installed_sessions.install(active_thread);
     host.realizer
         .staging
-        .register_thread_resource_manifest(active_thread, revision_one.clone());
+        .register_thread_resource_manifest(active_thread, revision_one.clone())
+        .unwrap();
     let mut active_projection =
         frozen_projection_for_manifest(deferred_environment(), &revision_two);
     active_projection.previous_resource_manifest = Some(revision_one.clone());
@@ -1713,6 +1713,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
         .installed_sessions
         .realizations()
         .read_realization("exact-cold-transition", |r| r.staging.transition.clone())
+        .unwrap()
         .flatten()
         .expect("R1 exact transition projection");
     assert_eq!(exact_before.previous(), &revision_one, "R1/C1 previous");
@@ -1726,6 +1727,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
         host.installed_sessions
             .realizations()
             .read_realization("exact-cold-transition", |r| r.staging.transition.clone())
+            .unwrap()
             .flatten(),
         Some(exact_before),
         "R1/E1 retains the exact producer transition"
@@ -1739,6 +1741,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
         .installed_sessions
         .realizations()
         .read_realization(active_thread, |r| r.staging.transition.clone())
+        .unwrap()
         .flatten()
         .expect("R2 exact transition projection");
     assert_eq!(
@@ -1756,6 +1759,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
         host.installed_sessions
             .realizations()
             .read_realization(active_thread, |r| r.staging.transition.clone())
+            .unwrap()
             .flatten(),
         Some(active_transition),
         "R2/E1 retains the exact producer transition"
@@ -1817,11 +1821,13 @@ async fn complete_projection_resource_guard_excludes_desired_only_staging() {
         host.local_workspace(),
         crate::session_resource::ResolvedSessionResources::default(),
     );
+    host.installed_sessions.install(thread);
     let guard = host
         .installed_sessions
         .realizations()
         .lock_resource_projection(thread)
-        .await;
+        .await
+        .unwrap();
     let mut staging = tokio::spawn({
         let host = host.clone();
         let manifest = manifest.clone();
@@ -1847,6 +1853,7 @@ async fn complete_projection_resource_guard_excludes_desired_only_staging() {
                     && r.staging.effect_key.is_none()
                     && r.staging.manifest.is_none()
             })
+            .unwrap()
             .unwrap_or(false),
         "L1 no correlated Resource fact is published while the guard is held"
     );
@@ -1864,6 +1871,7 @@ async fn complete_projection_resource_guard_excludes_desired_only_staging() {
                     && r.staging.effect_key.is_some()
                     && r.staging.manifest.is_none()
             })
+            .unwrap()
             .unwrap_or(false),
         "L2 cold requirements and command stage without active completion"
     );
@@ -1955,9 +1963,11 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
         9,
         Default::default(),
     );
+    host.installed_sessions.install(foreign_thread);
     host.realizer
         .staging
-        .register_thread_resource_manifest(foreign_thread, foreign.clone());
+        .register_thread_resource_manifest(foreign_thread, foreign.clone())
+        .unwrap();
     host.installed_sessions.update(foreign_thread, |slot| {
         slot.replace_frozen_with(|next| next.workspace = Some("sentinel-workspace".into()));
         slot.realization.staging.effect_key = Some("sentinel-key".into());
@@ -1966,7 +1976,8 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
         .installed_sessions
         .realizations()
         .lock_resource_projection(foreign_thread)
-        .await;
+        .await
+        .unwrap();
     let error = host
         .realizer
         .staging
@@ -1995,11 +2006,13 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
     drop(_guard);
 
     let bound_thread = "prospective-bound-resource";
+    host.installed_sessions.install(bound_thread);
     let _guard = host
         .installed_sessions
         .realizations()
         .lock_resource_projection(bound_thread)
-        .await;
+        .await
+        .unwrap();
     host.realizer
         .staging
         .stage_prevalidated_resource_transition_under_resource_projection(
@@ -2024,6 +2037,7 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
                         skills.len() == 1 && skills[0].skill_id.as_str() == "cold-recovery"
                     })
             })
+            .unwrap()
             .unwrap_or(false),
         "P2/E2-E3 only exact semantic Skill bytes precede adoption"
     );
@@ -2297,16 +2311,17 @@ async fn recovery_mode_controls_the_production_adoption_seam() {
         .await
         .expect_err("A2 missing UID cannot substitute for original source closure/access");
     assert_eq!(
-        refusal.kind,
-        crate::HostErrorKind::Unavailable,
+        refusal.disposition(),
+        crate::realization_error::Disposition::Retry,
         "A2 retryable source wait"
     );
     assert_eq!(
-        refusal.code, "session_environment_materialization_pending",
+        refusal.code(),
+        "session_environment_materialization_pending",
         "A2 canonical Root fence before source consumption"
     );
     assert_eq!(
-        refusal.message,
+        refusal.to_string(),
         "Session materialization remains pending its exact original effect and source closure",
         "A2 exact original-source refusal"
     );
@@ -2566,7 +2581,7 @@ async fn a_dead_resident_environment_fails_continuity_and_is_fenced_before_rebui
         adopted,
         awaken_session_realization::session_environment::SessionEnvironmentAdoptionDisposition::RebuildRequired
     );
-    assert!(host.realizer.session_environment(thread).await.is_none());
+    assert!(host.resident_session_environment(thread).await.is_none());
     assert!(
         !host
             .installed_sessions
@@ -2660,8 +2675,7 @@ async fn an_aba_replacement_with_the_same_handle_survives_stale_discard() {
     .await
     .expect("C1 publish first exact owner");
     let observed = host
-        .realizer
-        .session_environment(thread)
+        .resident_session_environment(thread)
         .await
         .expect("observed owner");
     let spec = host
@@ -2671,7 +2685,8 @@ async fn an_aba_replacement_with_the_same_handle_survives_stale_discard() {
             thread,
             &projection.resources,
             &host.realizer.env.session_provider,
-        );
+        )
+        .unwrap();
     let spec = host
         .realizer
         .validate_session_environment_capabilities(&host.realizer.env.session_provider, &spec)
@@ -2699,6 +2714,7 @@ async fn an_aba_replacement_with_the_same_handle_survives_stale_discard() {
             }
             _ => panic!("C1 exact original Resident owner"),
         })
+        .unwrap()
         .expect("C1 original Root identity");
     assert!(
         matches!(
@@ -2718,7 +2734,8 @@ async fn an_aba_replacement_with_the_same_handle_survives_stale_discard() {
                     }
                     _ => panic!("C4 replacement remains Resident"),
                 }
-            }),
+            })
+            .unwrap(),
         Some(original_identity),
         "C4 same-handle Arc replacement preserves original Root identity"
     );
@@ -2728,8 +2745,7 @@ async fn an_aba_replacement_with_the_same_handle_survives_stale_discard() {
         "object identity fences a stale observer even when the handle is reused"
     );
     let current = host
-        .realizer
-        .session_environment(thread)
+        .resident_session_environment(thread)
         .await
         .expect("replacement kept");
     assert!(Arc::ptr_eq(&current, &replacement));
@@ -2795,7 +2811,7 @@ async fn cancellation_resolution_does_not_touch_an_invalid_sandbox_binding() {
         .worker_for_claimed(&claimed)
         .await
         .expect("terminal control bypasses sandbox decoding/adoption");
-    assert!(host.realizer.session_environment(&thread.0).await.is_none());
+    assert!(host.resident_session_environment(&thread.0).await.is_none());
     assert!(
         !host
             .installed_sessions
@@ -2873,7 +2889,7 @@ async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session
         .await;
         if invalid_receipt {
             assert!(result.is_err());
-            assert!(host.realizer.session_environment(&thread).await.is_none());
+            assert!(host.resident_session_environment(&thread).await.is_none());
             continue;
         }
         result.expect("Outcome Work receipt realizes exact baseline");
@@ -2884,7 +2900,7 @@ async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session
                     && slot.run.context.is_some())
                 .unwrap_or(false)
         );
-        assert!(host.realizer.session_environment(&thread).await.is_some());
+        assert!(host.resident_session_environment(&thread).await.is_some());
         assert_eq!(
             claimed.request.admission_shape(),
             ingress::DispatchAdmissionShape::OrdinaryRoot
@@ -2939,12 +2955,12 @@ async fn outcome_projection_read_does_not_adopt_worker_owned_environment() {
             .expect("read remote-owned outcome")
             .is_none()
     );
-    assert!(host.realizer.session_environment(thread).await.is_none());
+    assert!(host.resident_session_environment(thread).await.is_none());
 }
 
 /// Whether the realizer holds a live Environment for `thread`.
 async fn has_environment(host: &SharedHost, thread: &str) -> bool {
-    host.realizer.session_environment(thread).await.is_some()
+    host.resident_session_environment(thread).await.is_some()
 }
 
 /// The Session's active Resource manifest as Resource staging recorded it.
@@ -2952,7 +2968,10 @@ fn active_manifest(
     host: &SharedHost,
     thread: &str,
 ) -> Option<crate::session_resource::SessionResourceManifest> {
-    host.realizer.staging.thread_resource_manifest(thread)
+    host.realizer
+        .staging
+        .thread_resource_manifest(thread)
+        .unwrap()
 }
 
 use awaken_dispatch_contract::{

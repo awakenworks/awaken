@@ -68,7 +68,12 @@ impl InferenceRouting {
     /// uses its agent's published binding. Stamped onto the run's activation at
     /// delivery so the resolve seam sees it without consulting this map.
     pub(crate) fn override_for(&self, thread: &str) -> Option<String> {
-        self.slots.realizations().frozen(thread).model_ref.clone()
+        self.slots
+            .realizations()
+            .frozen(thread)
+            .expect("session runtime slots mutex poisoned")
+            .model_ref
+            .clone()
     }
 
     pub(crate) fn executor_for_activation(

@@ -179,7 +179,12 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
     )
     .await
     .unwrap();
-    let environment = host.realizer.session_environment(thread).await.unwrap();
+    let environment = host
+        .realizer
+        .session_environment(thread)
+        .await
+        .expect("installed Sessions")
+        .unwrap();
     assert!(
         environment
             .lifecycle()
@@ -209,7 +214,8 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
         .update_realization(thread, |state| {
             state.staging.reconciliation =
                 crate::staged_resources::EnvironmentResourceReconciliation::Adopted;
-        });
+        })
+        .expect("installed Sessions");
     let transition =
         crate::session_resource::SessionResourceTransition::new(manifest.clone(), manifest.clone())
             .unwrap();
@@ -235,7 +241,10 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
     ])).await.unwrap();
     assert_eq!(status.code, Some(0), "R1 branch/commit/WIP preserved");
     assert_eq!(
-        host.realizer.staging.thread_resource_manifest(thread),
+        host.realizer
+            .staging
+            .thread_resource_manifest(thread)
+            .expect("installed Sessions"),
         Some(manifest)
     );
     // Retention provider rules: R2 an exact owned writable tree preserves

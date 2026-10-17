@@ -79,20 +79,18 @@ fn environment_only_session_lease_remains_supervised() {
     // E1 C1+C2 must still expose the lease for renewal, otherwise C3 lets
     // the durable fence expire before the Environment receipt can commit.
     let slots = Arc::new(InstalledSessions::default());
-    slots
-        .realizations()
-        .update_realization("environment-only", |r| {
-            assert!(!r.staging.mcp.has_frozen_attachment(), "C2");
-            r.execution.authority = crate::session_realizations::SessionRealizationAuthority::Live(
-                test_observed_lease(crate::session_resource::SessionRealizationLease {
-                    owner: "worker".into(),
-                    runtime_incarnation: "worker/incarnation".into(),
-                    epoch: 1,
-                    expires_at_unix_ms:
-                        awaken_session_realization::test_support::runtime_unix_now_ms() + 30_000,
-                }),
-            );
-        });
+    slots.install_realization("environment-only", |r| {
+        assert!(!r.staging.mcp.has_frozen_attachment(), "C2");
+        r.execution.authority = crate::session_realizations::SessionRealizationAuthority::Live(
+            test_observed_lease(crate::session_resource::SessionRealizationLease {
+                owner: "worker".into(),
+                runtime_incarnation: "worker/incarnation".into(),
+                epoch: 1,
+                expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
+                    + 30_000,
+            }),
+        );
+    });
 
     let leases = slots.realization_leases();
     assert_eq!(leases.len(), 1, "E1");
@@ -234,6 +232,7 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
         "source-binding",
         &generation,
     );
+    slots.install("mcp-admission");
     assert!(
         slots
             .realizations()
@@ -341,7 +340,8 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
     assert!(
         slots
             .realizations()
-            .mcp_realization_admitted("mcp-admission"),
+            .mcp_realization_admitted("mcp-admission")
+            .expect("installed Sessions"),
         "F4/E4"
     );
 
@@ -382,7 +382,8 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
     assert!(
         slots
             .realizations()
-            .mcp_realization_admitted("mcp-admission"),
+            .mcp_realization_admitted("mcp-admission")
+            .expect("installed Sessions"),
         "F6/E4"
     );
 }
@@ -413,7 +414,11 @@ fn frozen_inputs_keep_their_agent_publication() {
     assert!(frozen.validate_publication(None).is_ok(), "P3");
     assert!(frozen.validate_publication(Some(&retained)).is_ok(), "P4");
     let refused = frozen.validate_publication(Some(&other)).unwrap_err();
-    assert_eq!(refused.kind, crate::HostErrorKind::Internal, "P5");
+    assert_eq!(
+        refused.disposition(),
+        crate::realization_error::Disposition::Terminal,
+        "P5"
+    );
 }
 
 #[tokio::test]
@@ -421,12 +426,13 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
     // Cause/effect graph S4: C1 the actual Slot mutex is poisoned by a caught
     // callback panic; C2 target is present/absent; C3 entry is Source.visit
     // (create=false/true), named publication, or legacy read/modify/update.
-    // E1 Source returns the original InstalledSessionsPoisoned; E2 named action
-    // returns typed Internal/code internal without panic; E3 legacy retains
-    // its exact panic prefix and actual std PoisonError Debug; E4 callback0;
-    // E5 creation0 and all Frozen/Resource/Memory/Skill/key/Run fields unchanged;
-    // E6 poison persists. The healthy S1-S3 rows live in the original view case.
-    // | S4a | C1 + either C2 + visit/both create modes | E1+E4+E5+E6 |
+    // E1 Source denies with the typed poisoned registry lock; E2 named action
+    // returns the typed Poisoned realization error (retryable) without panic;
+    // E3 legacy retains its exact panic prefix and actual std PoisonError Debug;
+    // E4 callback0; E5 creation0 and all Frozen/Resource/Memory/Skill/key/Run
+    // fields unchanged; E6 poison persists. The healthy S1-S3 rows live in the
+    // original view case.
+    // | S4a | C1 + either C2 + visit                  | E1+E4+E5+E6 |
     // | S4b | C1 + either C2 + named action           | E2+E5+E6 |
     // | S4c | C1 + either C2 + read/modify            | E3+E4+E5+E6 |
     // | S4d | C1 + either C2 + update/create          | E3+E4+E5+E6 |
@@ -566,38 +572,43 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
                     target,
                     |id| {
                         if legacy {
-                            slots
+                            Ok(slots
                                 .read_run(id, |run| {
                                     run.context
                                         .as_ref()
                                         .is_some_and(|runtime| runtime.has_active_run())
                                 })
-                                .unwrap_or(false)
+                                .unwrap_or(false))
                         } else {
-                            host.realizer
+                            Ok(host
+                                .realizer
                                 .sessions
-                                .modify_session(id, |slot| slot.run.has_active_run())
-                                .unwrap_or(false)
+                                .modify_session(id, |slot| slot.run.has_active_run())?
+                                .unwrap_or(false))
                         }
                     },
                     async {
                         polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                        Ok(Vec::new())
+                        Ok::<_, crate::HostError>(Vec::new())
                     },
                 ),
             )
             .catch_unwind()
-            .await
-            .expect_err("Q8 actual Slot poison must propagate");
-            let message = refused
-                .downcast_ref::<String>()
-                .expect("Q8 original expect panic");
+            .await;
             if legacy {
+                let message = refused.expect_err("Q8 legacy Slot poison panics");
+                let message = message
+                    .downcast_ref::<String>()
+                    .expect("Q8 original expect panic");
                 assert_eq!(message, &expected_panic, "Q8 legacy std Debug unchanged");
             } else {
+                let denied = refused
+                    .expect("Q8 the view denies instead of panicking")
+                    .expect_err("Q8 actual Slot poison must deny");
                 assert_eq!(
-                    message, "installed sessions mutex poisoned: InstalledSessionsPoisoned",
-                    "Q8 original view diagnostic"
+                    denied.code,
+                    crate::realization_error::POISONED_CODE,
+                    "Q8 typed view denial"
                 );
             }
             assert_eq!(
@@ -606,13 +617,14 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
                 "Q8 delegated read never polled"
             );
         }
-        for create in [false, true] {
-            let refused = slots.visit(target, create, &mut |_| callbacks += 1);
-            assert!(
-                matches!(refused, Err(InstalledSessionsPoisoned)),
-                "S4a {target}/{create}"
-            );
-        }
+        let refused = slots.visit(target, &mut |_| callbacks += 1);
+        assert!(
+            matches!(
+                refused,
+                Err(crate::realization_error::RealizationLock::InstalledSessions)
+            ),
+            "S4a {target}"
+        );
         let publication = catch_unwind(AssertUnwindSafe(|| {
             slots.publish_resource_requirements(
                 target,
@@ -631,12 +643,15 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
         }))
         .expect("S4b named Source action returns rather than panics")
         .unwrap_err();
-        assert_eq!(
-            publication.kind,
-            awaken_session_types::RunErrorKind::Internal,
+        assert!(
+            matches!(
+                publication,
+                crate::realization_error::RealizationError::Poisoned(
+                    crate::realization_error::RealizationLock::InstalledSessions
+                )
+            ),
             "S4b {target}"
         );
-        assert_eq!(publication.code, "internal", "S4b {target}");
         let panics = [
             catch_unwind(AssertUnwindSafe(|| slots.read(target, |_| callbacks += 1))).unwrap_err(),
             catch_unwind(AssertUnwindSafe(|| {
@@ -730,7 +745,8 @@ async fn local_activity_combination_keeps_real_poison_fault_order() {
     // fresh actual Hosts because neither global Slot nor active-marker poison
     // may be cleared/recovered. No fake Source/view, registry or bool adapter.
     // Q9 two adapters + Primary active + awaiting reader poisons Slot + Open
-    // child -> exact original child panic (true Primary never skips it).
+    // child -> the legacy adapter's original panic, the view's typed Poisoned
+    // denial (true Primary never skips either).
     // Q10 two adapters + Primary inactive + same awaited poison + Completed
     // child -> false without a child query. Q11 root marker poison precedes
     // reader; occupied child marker poison follows reader even if Primary true;
@@ -795,16 +811,18 @@ async fn local_activity_combination_keeps_real_poison_fault_order() {
                 &root_id,
                 |id| {
                     if legacy {
-                        host.installed_sessions
+                        Ok(host
+                            .installed_sessions
                             .read_run(id, |run| {
                                 run.context
                                     .as_ref()
                                     .is_some_and(|runtime| runtime.has_active_run())
                             })
-                            .unwrap_or(false)
+                            .unwrap_or(false))
                     } else {
-                        view.modify_session(id, |slot| slot.run.has_active_run())
-                            .unwrap_or(false)
+                        Ok(view
+                            .modify_session(id, |slot| slot.run.has_active_run())?
+                            .unwrap_or(false))
                     }
                 },
                 async {
@@ -814,7 +832,7 @@ async fn local_activity_combination_keeps_real_poison_fault_order() {
                         (&mut writer).await.expect("Q9 writer joined within reader"),
                         "Q9 actual caught callback poisoned Slot"
                     );
-                    Ok(vec![relationship(&child_id, status)])
+                    Ok::<_, crate::HostError>(vec![relationship(&child_id, status)])
                 },
             ))
             .catch_unwind()
@@ -834,11 +852,12 @@ async fn local_activity_combination_keeps_real_poison_fault_order() {
                 "Q9/Q10 actual Slot poison"
             );
             if primary_active {
-                let panic = observed.expect_err("Q9 active Primary must not suppress child poison");
-                let message = panic
-                    .downcast_ref::<String>()
-                    .expect("Q9 original expect panic");
                 if legacy {
+                    let panic =
+                        observed.expect_err("Q9 active Primary must not suppress child poison");
+                    let message = panic
+                        .downcast_ref::<String>()
+                        .expect("Q9 original expect panic");
                     assert_eq!(
                         message,
                         &format!(
@@ -848,9 +867,13 @@ async fn local_activity_combination_keeps_real_poison_fault_order() {
                         "Q9 legacy diagnostic"
                     );
                 } else {
+                    let denied = observed
+                        .expect("Q9 the view denies instead of unwinding")
+                        .expect_err("Q9 active Primary must not suppress child poison");
                     assert_eq!(
-                        message, "installed sessions mutex poisoned: InstalledSessionsPoisoned",
-                        "Q9 view diagnostic"
+                        denied.code,
+                        crate::realization_error::POISONED_CODE,
+                        "Q9 view denial"
                     );
                 }
             } else {
@@ -905,21 +928,24 @@ async fn local_activity_combination_keeps_real_poison_fault_order() {
                 &root_id,
                 |id| {
                     if legacy {
-                        host.installed_sessions
+                        Ok(host
+                            .installed_sessions
                             .read_run(id, |run| {
                                 run.context
                                     .as_ref()
                                     .is_some_and(|runtime| runtime.has_active_run())
                             })
-                            .unwrap_or(false)
+                            .unwrap_or(false))
                     } else {
-                        view.modify_session(id, |slot| slot.run.has_active_run())
-                            .unwrap_or(false)
+                        Ok(view
+                            .modify_session(id, |slot| slot.run.has_active_run())
+                            .expect("installed Sessions")
+                            .unwrap_or(false))
                     }
                 },
                 async {
                     polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    Ok(vec![relationship(&child_id, status)])
+                    Ok::<_, crate::HostError>(vec![relationship(&child_id, status)])
                 },
             ))
             .catch_unwind()

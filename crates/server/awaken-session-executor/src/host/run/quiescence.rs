@@ -397,7 +397,13 @@ mod terminal_scope_tests {
                 original,
                 "L1 scope discovery cannot acknowledge or retire physical execution"
             );
-            assert!(host.realizer.session_environment(&thread.0).await.is_none());
+            assert!(
+                host.realizer
+                    .session_environment(&thread.0)
+                    .await
+                    .expect("installed Sessions")
+                    .is_none()
+            );
         }
     }
 }

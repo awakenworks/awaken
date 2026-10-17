@@ -3,6 +3,7 @@
 // @formal reason: transitions; it adds no durable state, registry, cache, or parallel owner.
 //! Strong process-local ownership state for one Session Environment.
 
+use crate::realization_error::{PendingState, RealizationError};
 use awaken_tool_contract::tool_batch::ResourceOriginRef;
 use std::sync::Arc;
 
@@ -37,10 +38,10 @@ impl BoundSessionEnvironmentIdentity {
     pub fn from_committed_receipt(
         receipt: &awaken_session_state_contract::SessionEnvironmentReceipt,
         committed: awaken_session_state_contract::SessionEnvironmentState,
-    ) -> Result<Self, crate::host_error::HostError> {
+    ) -> Result<Self, RealizationError> {
         let generation = committed
             .committed_receipt_generation(receipt)
-            .map_err(|error| crate::host_error::HostError::internal(error.to_string()))?
+            .map_err(RealizationError::from)?
             .clone();
         Ok(BoundSessionEnvironmentIdentity::Durable {
             effect_id: receipt.effect_id.clone(),
@@ -71,13 +72,11 @@ impl UnboundSessionEnvironment {
 
     pub fn ordinary_intent(
         &self,
-    ) -> Result<
-        &awaken_session_state_contract::SessionEnvironmentEffectIntent,
-        crate::host_error::HostError,
-    > {
+    ) -> Result<&awaken_session_state_contract::SessionEnvironmentEffectIntent, RealizationError>
+    {
         self.intent.as_deref().ok_or_else(|| {
-            crate::host_error::HostError::unavailable_classified(
-                "session_environment_candidate_intent_unknown",
+            RealizationError::pending(
+                PendingState::CandidateIntentUnknown,
                 "retained Environment has no original ordinary effect intent",
             )
         })

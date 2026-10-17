@@ -16,7 +16,7 @@ fn observation(host: &SharedHost) -> serde_json::Value {
             _ => "none",
         };
         serde_json::json!({"exists": receipt.is_some(), "revision": receipt.map_or(0, |r| r.revision.0), "fingerprint": receipt.map_or("none", |r| r.fingerprint.as_str()), "binding": binding})
-    }).unwrap_or_else(|| serde_json::json!({"exists": false, "revision": 0, "fingerprint": "none", "binding": "none"}))
+    }).expect("installed Sessions").unwrap_or_else(|| serde_json::json!({"exists": false, "revision": 0, "fingerprint": "none", "binding": "none"}))
 }
 
 async fn deliver(
