@@ -1129,6 +1129,16 @@ impl awaken_run_ingress_contract::DispatchExecution for FlakyDispatchStore {
     ) -> Result<awaken_run_ingress::SettleOutcome, awaken_run_ingress::DispatchError> {
         self.inner.defer_claim(claim, retry_after_ms).await
     }
+    async fn retry_claim(
+        &self,
+        claim: &awaken_run_ingress::RunClaim,
+        retry_after_ms: u64,
+        max_attempts: u64,
+    ) -> Result<awaken_run_ingress::SettleOutcome, awaken_run_ingress::DispatchError> {
+        self.inner
+            .retry_claim(claim, retry_after_ms, max_attempts)
+            .await
+    }
 }
 
 #[cfg(feature = "test-support")]

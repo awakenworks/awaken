@@ -66,6 +66,11 @@ struct RelinquishReq {
     claim: RunClaim,
     #[serde(default)]
     retry_after_ms: Option<u64>,
+    /// The claim ended a failed attempt: spend one attempt of this
+    /// Coordinator's retry budget. Absent from older Workers, which keep the
+    /// budget-free deferral.
+    #[serde(default)]
+    attempt_failed: bool,
     #[serde(default)]
     identity: Option<WorkerIdentity>,
 }

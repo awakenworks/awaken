@@ -1109,6 +1109,15 @@ mod tests {
         ) -> Result<SettleOutcome, DispatchError> {
             Self::unsupported()
         }
+
+        async fn retry_claim(
+            &self,
+            _claim: &RunClaim,
+            _retry_after_ms: u64,
+            _max_attempts: u64,
+        ) -> Result<SettleOutcome, DispatchError> {
+            Self::unsupported()
+        }
         async fn renew_lease(
             &self,
             _claim: &RunClaim,

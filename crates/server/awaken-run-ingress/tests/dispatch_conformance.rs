@@ -4,6 +4,7 @@
 // @formal evidence ingress.settle_fence
 // @formal evidence ingress.single_owner
 // @formal evidence run_ingress.dispatch_transition_is_claim_fenced_exact_terminal_and_cancel_absorbing
+// @formal evidence run_ingress.failed_attempt_release_spends_one_attempt_and_exhausts_through_retry_exhaustion
 // @formal evidence session_run.recovery_claim_is_admission_only
 // @formal evidence session_run.reservation_precedes_activity
 // @formal evidence session_run.reservation_ttl_uses_store_clock

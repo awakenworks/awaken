@@ -5,6 +5,7 @@
 // @formal entrypoint remote_worker.execution_requires_claimed_snapshot
 // @formal entrypoint remote_worker.single_live_claim_owner
 // @formal entrypoint run_ingress.dispatch_transition_is_claim_fenced_exact_terminal_and_cancel_absorbing
+// @formal entrypoint run_ingress.failed_attempt_release_spends_one_attempt_and_exhausts_through_retry_exhaustion
 // @formal entrypoint run_ingress.relinquish_requires_exact_current_claim_and_preserves_retry_budget
 // @formal entrypoint session_event_batch.processed_requires_commit_observation_activity_and_dispatch_settlement
 // @formal entrypoint session_execution.initial_event_path_reaches_idle_only_after_full_settlement
@@ -136,15 +137,29 @@ pub enum PhysicalAttemptTransition {
     Corrupt,
 }
 
+/// How a released claim's attempt is accounted against the dispatch retry
+/// budget (ADR-0015 D1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleasedAttempt {
+    /// The attempt did not fail (a busy subordinate authority, a capacity
+    /// refusal): the release keeps the budget.
+    Unspent,
+    /// A classified failed attempt: the release spends one attempt of
+    /// `max_attempts`, and the attempt that reaches it exhausts the budget.
+    Failed { max_attempts: u64 },
+}
+
 /// Result of relinquishing an exact mutation claim while accounting for the
 /// physical-attempt slot in the same dispatch aggregate.
 ///
 /// `Pending` is ordinary pre-execution rollback. `Recovering` deliberately
 /// retains the existing Leased state and asks the adapter to expire its lease:
 /// that is the canonical crash-recovery representation and preserves the
-/// `Claimed::recovered` fact without adding a parallel recovery state. Both
-/// applied variants return the exact locked-row attempt count so an adapter
-/// cannot silently spend or reset crash retry budget while applying the state.
+/// `Claimed::recovered` fact without adding a parallel recovery state. A failed
+/// attempt that exhausts the budget also returns `Recovering`, so the one
+/// retry-exhaustion claim commits its terminal outcome exactly as it does for a
+/// crashed attempt. Both applied variants return the attempt count the adapter
+/// writes, so an adapter cannot spend or reset retry budget on its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelinquishTransition {
     Pending {
@@ -479,14 +494,22 @@ impl DispatchTransition {
     /// Release an exact current mutation claim under the aggregate's physical
     /// attempt evidence. Owner equality is supplied by the adapter because
     /// owner representation is deliberately not in this storage-neutral
-    /// kernel. `attempt_count` comes from the same locked aggregate snapshot;
-    /// successful results return it unchanged for the adapter's write.
+    /// kernel. `attempt_count` comes from the same locked aggregate snapshot.
+    ///
+    /// An [`Unspent`](ReleasedAttempt::Unspent) release returns it unchanged.
+    /// A [`Failed`](ReleasedAttempt::Failed) release from an empty slot spends
+    /// one attempt: below `max_attempts` the row returns to Pending, and the
+    /// attempt that reaches it keeps the row Leased for the adapter to expire,
+    /// so retry exhaustion claims it as it claims a crashed attempt. A failed
+    /// release behind a predecessor's slot already stays in recovery, whose
+    /// re-claim spends that attempt, so it is not counted twice.
     pub fn relinquish(
         self,
         claim_epoch: u64,
         owner_matches: bool,
         slot: PhysicalAttemptSlot,
         attempt_count: u64,
+        attempt: ReleasedAttempt,
     ) -> RelinquishTransition {
         if self.state != crate::DispatchState::Leased
             || self.lease_epoch != claim_epoch
@@ -495,12 +518,31 @@ impl DispatchTransition {
             return RelinquishTransition::Fenced;
         }
         match slot {
-            PhysicalAttemptSlot::Empty => RelinquishTransition::Pending {
-                state: Self {
-                    state: crate::DispatchState::Pending,
-                    ..self
+            PhysicalAttemptSlot::Empty => match attempt {
+                ReleasedAttempt::Unspent => RelinquishTransition::Pending {
+                    state: Self {
+                        state: crate::DispatchState::Pending,
+                        ..self
+                    },
+                    attempt_count,
                 },
-                attempt_count,
+                ReleasedAttempt::Failed { max_attempts } => {
+                    let spent = attempt_count.saturating_add(1);
+                    if spent >= max_attempts {
+                        RelinquishTransition::Recovering {
+                            state: self,
+                            attempt_count: spent,
+                        }
+                    } else {
+                        RelinquishTransition::Pending {
+                            state: Self {
+                                state: crate::DispatchState::Pending,
+                                ..self
+                            },
+                            attempt_count: spent,
+                        }
+                    }
+                }
             },
             PhysicalAttemptSlot::ExactClaim => RelinquishTransition::Fenced,
             PhysicalAttemptSlot::OtherClaim => RelinquishTransition::Recovering {
@@ -759,11 +801,23 @@ mod tests {
             GuardedTransition::Fenced
         );
         assert_eq!(
-            current.relinquish(8, false, PhysicalAttemptSlot::Empty, 13),
+            current.relinquish(
+                8,
+                false,
+                PhysicalAttemptSlot::Empty,
+                13,
+                ReleasedAttempt::Unspent
+            ),
             RelinquishTransition::Fenced
         );
         assert_eq!(
-            current.relinquish(7, true, PhysicalAttemptSlot::Empty, 13),
+            current.relinquish(
+                7,
+                true,
+                PhysicalAttemptSlot::Empty,
+                13,
+                ReleasedAttempt::Unspent
+            ),
             RelinquishTransition::Fenced
         );
     }
@@ -790,7 +844,13 @@ mod tests {
         let current = leased(8);
         for attempt_count in [0, 7, u64::MAX] {
             assert_eq!(
-                current.relinquish(8, true, PhysicalAttemptSlot::Empty, attempt_count),
+                current.relinquish(
+                    8,
+                    true,
+                    PhysicalAttemptSlot::Empty,
+                    attempt_count,
+                    ReleasedAttempt::Unspent
+                ),
                 RelinquishTransition::Pending {
                     state: DispatchTransition {
                         state: crate::DispatchState::Pending,
@@ -801,7 +861,13 @@ mod tests {
                 "R1/E1+E5"
             );
             assert_eq!(
-                current.relinquish(8, true, PhysicalAttemptSlot::OtherClaim, attempt_count),
+                current.relinquish(
+                    8,
+                    true,
+                    PhysicalAttemptSlot::OtherClaim,
+                    attempt_count,
+                    ReleasedAttempt::Unspent
+                ),
                 RelinquishTransition::Recovering {
                     state: current,
                     attempt_count,
@@ -810,14 +876,131 @@ mod tests {
             );
         }
         assert_eq!(
-            current.relinquish(8, true, PhysicalAttemptSlot::ExactClaim, 7),
+            current.relinquish(
+                8,
+                true,
+                PhysicalAttemptSlot::ExactClaim,
+                7,
+                ReleasedAttempt::Unspent
+            ),
             RelinquishTransition::Fenced,
             "R2/E2"
         );
         assert_eq!(
-            current.relinquish(8, true, PhysicalAttemptSlot::Corrupt, 7),
+            current.relinquish(
+                8,
+                true,
+                PhysicalAttemptSlot::Corrupt,
+                7,
+                ReleasedAttempt::Unspent
+            ),
             RelinquishTransition::Corrupt,
             "R4/E4"
+        );
+    }
+
+    #[test]
+    fn a_failed_attempt_spends_one_attempt_and_exhausts_into_retry_exhaustion() {
+        // Cause/effect graph: C1 exact / stale claim; C2 physical slot empty,
+        // exact, other or torn; C3 the attempt count before the release against
+        // max_attempts (remaining / last / already exhausted). Effects: E1
+        // Pending with one attempt spent; E2 Leased, left for the adapter to
+        // expire, with one attempt spent, so the retry-exhaustion claim
+        // terminalizes it; E3 Recovering with the count unchanged (the
+        // recovery re-claim spends it); E4 fence; E5 reject corrupt persistence.
+        //
+        // | Rule | C1 | C2 | C3 | Effect |
+        // |---|---|---|---|---|
+        // | F1 | exact | empty | count + 1 < max (remaining) | E1 |
+        // | F2 | exact | empty | count + 1 == max (last) | E2 |
+        // | F3 | exact | empty | count >= max (exhausted), incl. u64::MAX | E2, saturating |
+        // | F4 | exact | other | any | E3 |
+        // | F5 | exact | exact | any | E4 |
+        // | F6 | exact | corrupt | any | E5 |
+        // | F7 | stale epoch or owner | any | any | E4 |
+        let current = leased(8);
+        let failed = ReleasedAttempt::Failed { max_attempts: 5 };
+        let pending = DispatchTransition {
+            state: crate::DispatchState::Pending,
+            ..current
+        };
+        for (rule, count, expected) in [
+            (
+                "F1",
+                0,
+                RelinquishTransition::Pending {
+                    state: pending,
+                    attempt_count: 1,
+                },
+            ),
+            (
+                "F1",
+                3,
+                RelinquishTransition::Pending {
+                    state: pending,
+                    attempt_count: 4,
+                },
+            ),
+            (
+                "F2",
+                4,
+                RelinquishTransition::Recovering {
+                    state: current,
+                    attempt_count: 5,
+                },
+            ),
+            (
+                "F3",
+                9,
+                RelinquishTransition::Recovering {
+                    state: current,
+                    attempt_count: 10,
+                },
+            ),
+            (
+                "F3",
+                u64::MAX,
+                RelinquishTransition::Recovering {
+                    state: current,
+                    attempt_count: u64::MAX,
+                },
+            ),
+        ] {
+            assert_eq!(
+                current.relinquish(8, true, PhysicalAttemptSlot::Empty, count, failed),
+                expected,
+                "{rule} count {count}"
+            );
+        }
+        for count in [0, 4, u64::MAX] {
+            assert_eq!(
+                current.relinquish(8, true, PhysicalAttemptSlot::OtherClaim, count, failed),
+                RelinquishTransition::Recovering {
+                    state: current,
+                    attempt_count: count,
+                },
+                "F4"
+            );
+        }
+        assert_eq!(
+            current.relinquish(8, true, PhysicalAttemptSlot::ExactClaim, 0, failed),
+            RelinquishTransition::Fenced,
+            "F5"
+        );
+        assert_eq!(
+            current.relinquish(8, true, PhysicalAttemptSlot::Corrupt, 0, failed),
+            RelinquishTransition::Corrupt,
+            "F6"
+        );
+        assert_eq!(
+            current.relinquish(7, true, PhysicalAttemptSlot::Empty, 0, failed),
+            RelinquishTransition::Fenced,
+            "F7 stale epoch"
+        );
+        assert_eq!(
+            current.relinquish(8, false, PhysicalAttemptSlot::Empty, 0, failed),
+            RelinquishTransition::Fenced,
+            "F7 stale owner"
         );
     }
 
@@ -1081,6 +1264,16 @@ mod proofs {
         }
     }
 
+    fn arbitrary_released_attempt() -> ReleasedAttempt {
+        if kani::any() {
+            ReleasedAttempt::Unspent
+        } else {
+            ReleasedAttempt::Failed {
+                max_attempts: kani::any(),
+            }
+        }
+    }
+
     fn arbitrary_physical_slot() -> PhysicalAttemptSlot {
         match kani::any::<u8>() % 4 {
             0 => PhysicalAttemptSlot::Empty,
@@ -1338,7 +1531,13 @@ mod proofs {
                 GuardedTransition::Fenced
             );
             assert_eq!(
-                state.relinquish(candidate_epoch, kani::any(), slot, kani::any()),
+                state.relinquish(
+                    candidate_epoch,
+                    kani::any(),
+                    slot,
+                    kani::any(),
+                    arbitrary_released_attempt()
+                ),
                 RelinquishTransition::Fenced
             );
             assert_eq!(
@@ -1356,7 +1555,13 @@ mod proofs {
         let owner_matches: bool = kani::any();
         let slot = arbitrary_physical_slot();
         let attempt_count: u64 = kani::any();
-        let result = state.relinquish(claim_epoch, owner_matches, slot, attempt_count);
+        let result = state.relinquish(
+            claim_epoch,
+            owner_matches,
+            slot,
+            attempt_count,
+            ReleasedAttempt::Unspent,
+        );
 
         let exact = state.state == crate::DispatchState::Leased
             && state.lease_epoch == claim_epoch
@@ -1380,6 +1585,69 @@ mod proofs {
             PhysicalAttemptSlot::ExactClaim => {
                 assert_eq!(result, RelinquishTransition::Fenced);
             }
+            PhysicalAttemptSlot::OtherClaim => assert_eq!(
+                result,
+                RelinquishTransition::Recovering {
+                    state,
+                    attempt_count,
+                }
+            ),
+            PhysicalAttemptSlot::Corrupt => {
+                assert_eq!(result, RelinquishTransition::Corrupt);
+            }
+        }
+    }
+
+    /// @obligation run_ingress.failed_attempt_release_spends_one_attempt_and_exhausts_through_retry_exhaustion
+    #[kani::proof]
+    fn failed_attempt_release_spends_one_attempt_and_exhausts_through_retry_exhaustion() {
+        let state = arbitrary_transition();
+        let claim_epoch = kani::any();
+        let owner_matches: bool = kani::any();
+        let slot = arbitrary_physical_slot();
+        let attempt_count: u64 = kani::any();
+        let max_attempts: u64 = kani::any();
+        let result = state.relinquish(
+            claim_epoch,
+            owner_matches,
+            slot,
+            attempt_count,
+            ReleasedAttempt::Failed { max_attempts },
+        );
+
+        let exact = state.state == crate::DispatchState::Leased
+            && state.lease_epoch == claim_epoch
+            && owner_matches;
+        if !exact {
+            assert_eq!(result, RelinquishTransition::Fenced);
+            return;
+        }
+
+        let spent = attempt_count.saturating_add(1);
+        match slot {
+            // One attempt spent; reaching the limit keeps the Leased row for
+            // the retry-exhaustion claim instead of returning it to Pending.
+            PhysicalAttemptSlot::Empty if spent >= max_attempts => assert_eq!(
+                result,
+                RelinquishTransition::Recovering {
+                    state,
+                    attempt_count: spent,
+                }
+            ),
+            PhysicalAttemptSlot::Empty => assert_eq!(
+                result,
+                RelinquishTransition::Pending {
+                    state: DispatchTransition {
+                        state: crate::DispatchState::Pending,
+                        ..state
+                    },
+                    attempt_count: spent,
+                }
+            ),
+            PhysicalAttemptSlot::ExactClaim => {
+                assert_eq!(result, RelinquishTransition::Fenced);
+            }
+            // The recovery re-claim spends this attempt; never twice.
             PhysicalAttemptSlot::OtherClaim => assert_eq!(
                 result,
                 RelinquishTransition::Recovering {
@@ -1477,6 +1745,7 @@ mod proofs {
                             true,
                             PhysicalAttemptSlot::Empty,
                             kani::any(),
+                            arbitrary_released_attempt(),
                         ),
                         RelinquishTransition::Fenced
                     );
