@@ -27,7 +27,7 @@
     },
     "awaken-runtime::Runtime": {
       "files": 4,
-      "methods": 61,
+      "methods": 60,
       "reason": "Inject the existing shared WallClock at Runtime and Host composition; fail before approval or Fresh child effects; retain one approval loop and no ambient clock"
     },
     "awaken-session-application::SessionApplication": {
