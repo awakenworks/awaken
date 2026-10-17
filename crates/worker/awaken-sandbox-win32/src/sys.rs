@@ -3,7 +3,7 @@ use std::io;
 use std::mem::MaybeUninit;
 use std::os::windows::ffi::OsStrExt as _;
 use std::os::windows::io::AsRawHandle as _;
-use std::path::Path;
+use std::path::{Component, Path, Prefix};
 
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::Storage::FileSystem::{
@@ -104,7 +104,7 @@ pub fn rename_open_replace(source: &File, destination: &Path) -> io::Result<()> 
     rename_open(source, destination, true)
 }
 
-fn rename_open(source: &File, destination: &Path, replace: bool) -> io::Result<()> {
+fn rename_path(destination: &Path) -> io::Result<Vec<u16>> {
     if !destination.is_absolute() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -118,6 +118,26 @@ fn rename_open(source: &File, destination: &Path, replace: bool) -> io::Result<(
             "invalid Windows rename path",
         ));
     }
+    // Extended paths bypass Win32 separator/dot normalization. Normalize only
+    // lexically first; never resolve filesystem names outside the pinned parent.
+    let absolute = std::path::absolute(destination)?;
+    let wide = absolute.as_os_str().encode_wide().collect::<Vec<_>>();
+    let extended = match absolute.components().next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::Disk(_) => r"\\?\".encode_utf16().chain(wide).collect(),
+            Prefix::UNC(_, _) => r"\\?\UNC\"
+                .encode_utf16()
+                .chain(wide.into_iter().skip(2))
+                .collect(),
+            _ => wide,
+        },
+        _ => wide,
+    };
+    Ok(extended)
+}
+
+fn rename_open(source: &File, destination: &Path, replace: bool) -> io::Result<()> {
+    let wide = rename_path(destination)?;
     let bytes = wide.len().checked_mul(2).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
