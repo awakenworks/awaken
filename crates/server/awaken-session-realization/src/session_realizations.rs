@@ -45,6 +45,33 @@ impl SessionRealizationRevocationSelection {
             .then(|| Self::from_realization(realization))
     }
 
+    /// Terminal absence closes this original physical root's generation,
+    /// accepting only its monotonic lease renewal; ordinary exact-lease
+    /// revocation keeps the strict [`Self::close`] policy. The slot owner calls
+    /// this inside its canonical mutation, so the check, the closure and any
+    /// Run controls it captures beside it observe one root.
+    pub fn close_generation(
+        realization: &mut SessionRealization,
+        expected: &awaken_session_configuration_contract::resource::SessionRealizationLease,
+        phase: &Arc<tokio::sync::Mutex<()>>,
+    ) -> Option<Self> {
+        if !Arc::ptr_eq(phase, &realization.execution.phase) {
+            return None;
+        }
+        let current = match &realization.execution.authority {
+            SessionRealizationAuthority::Live(proof) => &proof.lease,
+            SessionRealizationAuthority::Closed(Some(lease)) => lease,
+            SessionRealizationAuthority::Uninstalled
+            | SessionRealizationAuthority::Closed(None) => return None,
+        };
+        if !awaken_session_realization_contract::realization_lease_generation_authorizes(
+            current, expected,
+        ) {
+            return None;
+        }
+        SessionRealizationRevocationSelection::close(realization, None)
+    }
+
     /// Capture this original allocation during an already-held mutation.
     /// The selection is cleanup identity, not proof of process death.
     pub fn from_realization(realization: &SessionRealization) -> Self {

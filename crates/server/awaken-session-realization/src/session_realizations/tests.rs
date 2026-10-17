@@ -81,3 +81,84 @@ fn realization_authority_close_and_renewal_have_one_projection() {
         "fresh Control generation"
     );
 }
+
+#[test]
+fn generation_close_accepts_only_the_original_phase_and_its_monotonic_renewal() {
+    // Causes: C1 authority uninstalled/live/closed-with-lease/closed-without;
+    // C2 expected lease relative to the current one (exact, older expiry of
+    // the same generation, later expiry, foreign owner, other incarnation,
+    // older or newer epoch); C3 the caller's phase is the original allocation.
+    // Effects: E1 close and select the root; E2 leave it unchanged, no selection.
+    // R1 live+exact+phase => E1; R2 live+renewed (expected expiry older)+phase
+    // => E1; R3 closed(lease)+exact+phase => E1 (retry); every other row => E2:
+    // future expiry, owner, incarnation, older epoch, newer epoch, replaced
+    // phase, uninstalled, closed without a lease.
+    let current = session_resource::SessionRealizationLease {
+        owner: "local".into(),
+        runtime_incarnation: "boot".into(),
+        epoch: 2,
+        expires_at_unix_ms: crate::test_support::runtime_unix_now_ms() + 300_000,
+    };
+    for rule in [
+        "exact",
+        "renewed",
+        "closed-retry",
+        "future-expiry",
+        "owner",
+        "incarnation",
+        "older-epoch",
+        "newer-epoch",
+        "phase",
+        "uninstalled",
+        "closed-without-lease",
+    ] {
+        let mut realization = SessionRealization::default();
+        match rule {
+            "uninstalled" => {}
+            "closed-without-lease" => assert!(realization.close_authority(None)),
+            _ => assert!(realization.install_lease(test_observed_lease(current.clone()))),
+        }
+        if rule == "closed-retry" {
+            assert!(realization.close_authority(Some(&current)));
+        }
+        let mut expected = current.clone();
+        match rule {
+            "renewed" => expected.expires_at_unix_ms -= 1,
+            "future-expiry" => expected.expires_at_unix_ms += 1,
+            "owner" => expected.owner = "foreign".into(),
+            "incarnation" => expected.runtime_incarnation = "other-boot".into(),
+            "older-epoch" => expected.epoch -= 1,
+            "newer-epoch" => {
+                expected.epoch = awaken_lease_contract::fence::Epoch::try_from(expected.epoch)
+                    .expect("positive fixture epoch")
+                    .next()
+                    .expect("fixture epoch has a successor")
+                    .get();
+            }
+            _ => {}
+        }
+        let phase = if rule == "phase" {
+            Arc::new(tokio::sync::Mutex::new(()))
+        } else {
+            realization.execution.phase.clone()
+        };
+        let before = SessionRealizationRevocationSelection::from_realization(&realization);
+        let selected = SessionRealizationRevocationSelection::close_generation(
+            &mut realization,
+            &expected,
+            &phase,
+        );
+        let should_close = matches!(rule, "exact" | "renewed" | "closed-retry");
+        assert_eq!(selected.is_some(), should_close, "decision row {rule}");
+        match selected {
+            Some(selected) => assert!(
+                selected.matches(&realization) && realization.execution.authority.is_closed(),
+                "{rule}: the selection names the root it closed"
+            ),
+            None => assert!(
+                before.matches(&realization),
+                "{rule}: a rejected input leaves the root unchanged"
+            ),
+        }
+    }
+}

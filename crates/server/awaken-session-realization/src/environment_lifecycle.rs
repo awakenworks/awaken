@@ -1345,6 +1345,30 @@ impl crate::environment_holding::EnvironmentHolding {
         Ok(())
     }
 
+    /// Join the exact selected local root, verify it after its owner locks,
+    /// signal its captured local controls, and retire it through the original
+    /// physical owner. The callback grants no durable cancellation authority.
+    pub async fn retire_selected_session_environment<S: awaken_session_mcp::McpSessionSlots>(
+        &self,
+        thread: &str,
+        mcp: (&awaken_session_mcp::McpSessions, &S),
+        selected: &crate::session_realizations::SessionRealizationRevocationSelection,
+        before_retirement: impl FnOnce() + Send,
+    ) -> Result<bool, HostError> {
+        let _realization = selected.realization.lock().await;
+        let _lifecycle = selected.lifecycle.lock().await;
+        if !self
+            .sessions
+            .read_realization(thread, |r| selected.matches(r))
+            .unwrap_or(false)
+        {
+            return Ok(false);
+        }
+        before_retirement();
+        self.retire_session_environment_for_revocation(thread, mcp, Some(selected))
+            .await
+    }
+
     /// Revoke process-local authority without dropping the physical owner. The
     /// wrapper enters Retiring before stop/status and stays there while the
     /// Sandbox is live or its outcome is unknown; a later authorized adoption
