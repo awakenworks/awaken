@@ -68,6 +68,34 @@ impl SessionRealizationControlFailure {
     }
 }
 
+/// The one Control projection of an Environment decision's refusal: a terminal
+/// Session is terminal, a lost lease is stale ownership, movement the Session
+/// may still make is not ready, and every causal refusal is invalid.
+impl From<awaken_session_state_contract::SessionEnvironmentRejection>
+    for SessionRealizationControlFailure
+{
+    fn from(rejection: awaken_session_state_contract::SessionEnvironmentRejection) -> Self {
+        use awaken_session_state_contract::SessionEnvironmentRejection as Rejection;
+        match rejection {
+            Rejection::Terminal => Self::Terminal,
+            Rejection::LeaseNotCurrent => Self::StaleOwnership,
+            Rejection::NotTerminal
+            | Rejection::ContinuationInProgress
+            | Rejection::ActivitiesOpen
+            | Rejection::WrongStep
+            | Rejection::CheckpointLive
+            | Rejection::MaterializationPending
+            | Rejection::MemoryEvidenceUnproven => Self::NotReady,
+            Rejection::NotGenerated
+            | Rejection::RequiresResident
+            | Rejection::InvalidTransition
+            | Rejection::GenerationExpired
+            | Rejection::InconsistentEvidence
+            | Rejection::UnsupportedContinuationTopology => Self::Invalid(rejection.to_string()),
+        }
+    }
+}
+
 #[cfg(kani)]
 /// @obligation session_realization.control_failure_disposition_and_current_owner_loss_are_total_exact_and_terminal_absorbing
 #[kani::proof]
@@ -192,6 +220,83 @@ mod tests {
                 decoded.proves_current_realization_cannot_continue(),
                 owner_disproved,
                 "{rule}"
+            );
+        }
+    }
+
+    #[test]
+    fn environment_rejections_project_onto_one_control_failure() {
+        // Decision table R1-R4: R1 a terminal Session => Terminal; R2 a lost
+        // realization lease => StaleOwnership; R3 movement the Session may
+        // still make (another step, open activities, a live checkpoint, a
+        // pending materialization or Memory evidence) => NotReady; R4 a causal
+        // refusal => Invalid carrying the rejection.
+        use awaken_session_state_contract::SessionEnvironmentRejection as X;
+        for (rule, rejection, expected) in [
+            (
+                "R1",
+                X::Terminal,
+                SessionRealizationControlFailure::Terminal,
+            ),
+            (
+                "R2",
+                X::LeaseNotCurrent,
+                SessionRealizationControlFailure::StaleOwnership,
+            ),
+            (
+                "R3",
+                X::NotTerminal,
+                SessionRealizationControlFailure::NotReady,
+            ),
+            (
+                "R3",
+                X::ContinuationInProgress,
+                SessionRealizationControlFailure::NotReady,
+            ),
+            (
+                "R3",
+                X::ActivitiesOpen,
+                SessionRealizationControlFailure::NotReady,
+            ),
+            (
+                "R3",
+                X::WrongStep,
+                SessionRealizationControlFailure::NotReady,
+            ),
+            (
+                "R3",
+                X::CheckpointLive,
+                SessionRealizationControlFailure::NotReady,
+            ),
+            (
+                "R3",
+                X::MaterializationPending,
+                SessionRealizationControlFailure::NotReady,
+            ),
+            (
+                "R3",
+                X::MemoryEvidenceUnproven,
+                SessionRealizationControlFailure::NotReady,
+            ),
+        ] {
+            assert_eq!(
+                SessionRealizationControlFailure::from(rejection),
+                expected,
+                "{rule}"
+            );
+        }
+        for rejection in [
+            X::NotGenerated,
+            X::RequiresResident,
+            X::InvalidTransition,
+            X::GenerationExpired,
+            X::InconsistentEvidence,
+            X::UnsupportedContinuationTopology,
+        ] {
+            assert_eq!(
+                SessionRealizationControlFailure::from(rejection),
+                SessionRealizationControlFailure::Invalid(rejection.to_string()),
+                "R4 {rejection:?}"
             );
         }
     }

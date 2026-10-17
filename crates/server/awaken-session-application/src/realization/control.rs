@@ -268,22 +268,21 @@ impl SessionApplication {
                 .await?;
             let mut session =
                 crate::mutation::aggregate_from_snapshot(session).map_err(repository_control)?;
-            if session.frozen_baseline().is_none()
-                || (!session.is_terminal() && !session.environment.admits_realization_effects())
-            {
+            if session.frozen_baseline().is_none() {
                 return Err(SessionRealizationControlFailure::NotReady);
             }
+            transition_environment(
+                SessionEnvironmentFacts::project(
+                    session.snapshot(),
+                    self.clock.now_ms(),
+                    Some(&command.asserted_lease),
+                ),
+                SessionEnvironmentEvent::RenewRealization,
+            )?;
             let current = session
                 .realization
                 .clone()
                 .ok_or(SessionRealizationControlFailure::StaleOwnership)?;
-            if !awaken_session_realization_contract::realization_lease_authorizes(
-                &current,
-                &command.asserted_lease,
-                self.clock.now_ms(),
-            ) {
-                return Err(SessionRealizationControlFailure::StaleOwnership);
-            }
             if command.requested_expires_at_unix_ms <= current.expires_at_unix_ms {
                 return Ok(current);
             }
