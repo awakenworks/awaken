@@ -116,13 +116,13 @@ impl From<HostError> for awaken_session_realization::realization_error::Realizat
     }
 }
 
-/// Dispatch admission failures keep their realization or Run classification.
+/// Dispatch admission failures keep their Run classification; a realization
+/// failure reaches dispatch as its one Run projection.
 impl From<awaken_dispatch_execution::AdmissionError> for HostError {
     fn from(error: awaken_dispatch_execution::AdmissionError) -> Self {
         use awaken_dispatch_execution::AdmissionError;
         match error {
             AdmissionError::Rejected(message) => Self::bad_request(message),
-            AdmissionError::Realization(error) => Self::from(error),
             AdmissionError::Run(error) => from_run_error(error),
             AdmissionError::LiveControl(
                 error @ (awaken_dispatch_execution::LiveRunControlError::NotFound(_)

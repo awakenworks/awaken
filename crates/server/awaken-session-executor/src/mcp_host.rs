@@ -62,7 +62,7 @@ impl McpSessionSlots for InstalledSessions {
     /// then reports the Run active, so the drain refuses with its timeout
     /// instead of manufacturing quiescence.
     fn cancel_runtime(runtime: &Self::Runtime) {
-        if let Ok(awaken_dispatch_execution::ForegroundRun {
+        if let Ok(crate::host::ForegroundRun {
             cancellation: Some(token),
             ..
         }) = runtime.foreground.observe()

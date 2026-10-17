@@ -1852,12 +1852,9 @@ async fn claimed_inference_only_context_keeps_scope_without_a_resource_transitio
     let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("judge")
         .model(test_model_binding())
         .build();
-    let publication = awaken_dispatch_execution::run_publications::exact_run_publication_source(
-        &snapshot,
-        &[],
-        "workspace-inference",
-    )
-    .unwrap();
+    let publication = crate::agent_catalog::RUN_PUBLICATIONS
+        .exact_source(&snapshot, &[], "workspace-inference")
+        .unwrap();
     let attempt = crate::host::session_ctx::ClaimedRuntimeInput {
         identity: crate::host::session_ctx::RuntimePublicationIdentity::from_publications(
             &snapshot,

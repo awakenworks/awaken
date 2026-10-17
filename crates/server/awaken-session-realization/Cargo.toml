@@ -21,14 +21,12 @@ awaken-authority-clock.workspace = true
 awaken-container-contract.workspace = true
 awaken-credential-contract.workspace = true
 awaken-credential-materializer.workspace = true
-awaken-environment-contract.workspace = true
 awaken-ext-memory.workspace = true
 awaken-ext-skills.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-resource-contract.workspace = true
 awaken-dispatch-contract.workspace = true
 awaken-runtime-contract.workspace = true
-awaken-sandbox-control.workspace = true
 awaken-session-application-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
 awaken-session-environment-contract.workspace = true
@@ -54,6 +52,7 @@ k8s-tests = []
 
 [dev-dependencies]
 awaken-agent-channel.workspace = true
+awaken-sandbox-control.workspace = true
 awaken-sandbox-container.workspace = true
 awaken-sandbox-kubernetes.workspace = true
 awaken-session-environment = { workspace = true, features = ["test-support"] }

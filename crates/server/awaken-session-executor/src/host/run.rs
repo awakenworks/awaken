@@ -371,7 +371,8 @@ impl SharedHost {
                 // The process pool is the sole durable claim driver. This edge
                 // accepts the cancellation intent and returns; its drainer owns
                 // the claim-fenced Runtime commit and settlement.
-                self.persist_dispatch_cancellation(run_id, Some(ctx.runtime.as_ref()))
+                self.durable_run_control()?
+                    .persist_cancellation(run_id, Some(ctx.live_control()))
                     .await?;
             } else {
                 // A standalone Host has no autonomous pool. Preserve its direct
@@ -410,11 +411,19 @@ impl SharedHost {
                 .executable_session_dispatch_runs(thread, &logical_thread_id, &commit)
                 .await?;
             for run_id in executable {
-                self.persist_recoverable_dispatch_cancellation(
-                    &run_id,
-                    resident.as_ref().map(|ctx| ctx.runtime.as_ref()),
-                )
-                .await?;
+                self.durable_run_control()?
+                    .persist_recoverable_cancellation(
+                        &run_id,
+                        resident.as_ref().map(|ctx| {
+                            ctx.runtime.as_ref()
+                                as &(
+                                     dyn awaken_runtime_contract::control::LiveRunControl
+                                         + Send
+                                         + Sync
+                                 )
+                        }),
+                    )
+                    .await?;
             }
         }
         // The selected control owns both original registration and direct/ACP
@@ -946,7 +955,8 @@ impl SharedHost {
             .executable_session_dispatch_runs(session_id, child_thread_id, &commit)
             .await?;
         for run_id in child_runs {
-            self.persist_recoverable_dispatch_cancellation(&run_id, None)
+            self.durable_run_control()?
+                .persist_recoverable_cancellation(&run_id, None)
                 .await?;
         }
         Ok(())

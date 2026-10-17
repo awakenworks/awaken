@@ -621,12 +621,11 @@ mod tests {
             .await
             .expect("claim D1")
             .expect("D1 dispatch available");
-        crate::host::SessionWorkerResolver {
-            host: Arc::downgrade(&host),
-        }
-        .worker_for_claimed(&claimed)
-        .await
-        .expect("D1 construct cold durable context");
+        crate::host::session_worker_resolver(&host)
+            .expect("Host dispatch resolver")
+            .worker_for_claimed(&claimed)
+            .await
+            .expect("D1 construct cold durable context");
         let ctx = host
             .installed_sessions
             .read_run(thread, |run| run.context.clone())

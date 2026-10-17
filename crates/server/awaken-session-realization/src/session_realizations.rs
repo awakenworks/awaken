@@ -16,6 +16,10 @@ use std::sync::Arc;
 use crate::frozen_inputs::FrozenSessionInputs;
 use awaken_session_application_contract::DelegatedRun;
 
+pub mod dispatch_operations;
+pub use dispatch_operations::{
+    InstalledDispatchInputs, InstalledProjection, claimed_realization_continuation,
+};
 pub mod execution_authority;
 pub mod projection_receipt;
 pub mod resource_preparation;

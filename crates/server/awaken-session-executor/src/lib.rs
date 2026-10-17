@@ -300,7 +300,7 @@ impl awaken_session_execution_contract::RealizationRuntime for ManagedHost {
             self.install_projection_facts(thread, &projection, &mode)
                 .await?;
             if preparation_needed {
-                self.complete_session_preparation(thread, &projection.baseline.environment);
+                self.complete_session_preparation(thread);
             }
         } else {
             self.install_projection_facts(thread, &projection, &mode)

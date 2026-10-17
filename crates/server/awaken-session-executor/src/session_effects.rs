@@ -42,8 +42,8 @@ impl SharedHost {
             .execution_scope
             .as_ref()
             .map_or_else(|| self.local_workspace(), |scope| scope.0.0.as_str());
-        let frozen_publications =
-            awaken_dispatch_execution::run_publications::exact_run_publication_source(
+        let frozen_publications = crate::agent_catalog::RUN_PUBLICATIONS
+            .exact_source(
                 &dispatch.activation.snapshot,
                 &dispatch.agent_publications,
                 workspace,
@@ -118,6 +118,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for SessionEffects
 
 /// Ordinary Run compatibility effects borrow the same configured MCP owner.
 /// Only this role selects the SDK's Direct admission; it never installs a root.
+#[derive(Clone)]
 pub(crate) struct RunMcpEffects {
     pub(super) host: Weak<SharedHost>,
 }

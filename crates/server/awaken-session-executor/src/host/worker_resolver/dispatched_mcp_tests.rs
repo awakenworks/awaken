@@ -70,16 +70,16 @@ async fn dispatched_mcp_effect_projection_decision_table() {
         };
     let exact = request("mcp-dispatch", "docs", u64::MAX);
 
-    SessionWorkerResolver::reconcile_dispatched_mcp(
-        host.as_ref(),
+    awaken_dispatch_execution::session_worker_resolver::claimed_dispatch::reconcile_dispatched_mcp(
+        &host.dispatch.run_mcp_effects,
         "mcp-dispatch",
         vec![exact.clone()],
     )
     .await
     .expect("R2");
     assert_eq!(host.active_mcp_projections("mcp-dispatch").len(), 1, "R2");
-    SessionWorkerResolver::reconcile_dispatched_mcp(
-        host.as_ref(),
+    awaken_dispatch_execution::session_worker_resolver::claimed_dispatch::reconcile_dispatched_mcp(
+        &host.dispatch.run_mcp_effects,
         "mcp-dispatch",
         vec![exact.clone()],
     )
@@ -87,19 +87,26 @@ async fn dispatched_mcp_effect_projection_decision_table() {
     .expect("R3");
     assert_eq!(host.active_mcp_projections("mcp-dispatch").len(), 1, "R3");
 
-    SessionWorkerResolver::reconcile_dispatched_mcp(host.as_ref(), "mcp-dispatch", Vec::new())
-        .await
-        .expect("R4");
+    awaken_dispatch_execution::session_worker_resolver::claimed_dispatch::reconcile_dispatched_mcp(
+        &host.dispatch.run_mcp_effects,
+        "mcp-dispatch",
+        Vec::new(),
+    )
+    .await
+    .expect("R4");
     assert!(host.active_mcp_projections("mcp-dispatch").is_empty(), "R4");
 
     let retained = request("mcp-dispatch", "retained", u64::MAX);
-    SessionWorkerResolver::reconcile_dispatched_mcp(host.as_ref(), "mcp-dispatch", vec![retained])
-        .await
-        .expect("R5 setup");
+    awaken_dispatch_execution::session_worker_resolver::claimed_dispatch::reconcile_dispatched_mcp(
+        &host.dispatch.run_mcp_effects,
+        "mcp-dispatch",
+        vec![retained],
+    )
+    .await
+    .expect("R5 setup");
     let foreign = request("foreign-session", "replacement", u64::MAX);
     assert!(
-        SessionWorkerResolver::reconcile_dispatched_mcp(
-            host.as_ref(),
+        awaken_dispatch_execution::session_worker_resolver::claimed_dispatch::reconcile_dispatched_mcp(&host.dispatch.run_mcp_effects,
             "mcp-dispatch",
             vec![foreign],
         )
@@ -110,8 +117,7 @@ async fn dispatched_mcp_effect_projection_decision_table() {
     assert_eq!(host.active_mcp_projections("mcp-dispatch").len(), 1, "R5");
     let expired = request("mcp-dispatch", "replacement", 0);
     assert!(
-        SessionWorkerResolver::reconcile_dispatched_mcp(
-            host.as_ref(),
+        awaken_dispatch_execution::session_worker_resolver::claimed_dispatch::reconcile_dispatched_mcp(&host.dispatch.run_mcp_effects,
             "mcp-dispatch",
             vec![expired],
         )
@@ -160,11 +166,9 @@ async fn undecodable_dispatched_runtime_projection_is_an_absorbing_resolution_fa
         .await
         .expect("claim")
         .expect("C1 the published requirements admit the claim");
-    let error = match (SessionWorkerResolver {
-        host: Arc::downgrade(&host),
-    })
-    .worker_for_claimed(&claimed)
-    .await
+    let error = match (crate::host::session_worker_resolver(&host).expect("Host dispatch resolver"))
+        .worker_for_claimed(&claimed)
+        .await
     {
         Ok(_) => panic!("C2 an undecodable projection must not execute"),
         Err(error) => error,

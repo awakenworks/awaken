@@ -88,6 +88,46 @@ impl MemoryConfig {
 /// `plugin_ids` to contribute, G30).
 pub const MEMORY_PLUGIN_ID: &str = "memory";
 
+/// The auxiliary Agents the Memory plugin runs for the Agent that enables it:
+/// the extractor while extraction is enabled and the selector while recall is.
+pub struct MemoryAuxiliaryAgents;
+
+impl awaken_runtime_contract::auxiliary_agents::AuxiliaryAgentDeclaration
+    for MemoryAuxiliaryAgents
+{
+    fn plugin_id(&self) -> &'static str {
+        MEMORY_PLUGIN_ID
+    }
+
+    fn auxiliary_agents(
+        &self,
+        config: Option<&serde_json::Value>,
+    ) -> Result<Vec<awaken_runtime_contract::auxiliary_agents::AuxiliaryAgentSelection>, String>
+    {
+        use awaken_runtime_contract::auxiliary_agents::AuxiliaryAgentSelection;
+        let config = MemoryConfig::from_value(config)
+            .map_err(|error| format!("invalid Memory configuration: {error}"))?;
+        let mut selected = Vec::new();
+        if config.extraction_enabled {
+            selected.push(AuxiliaryAgentSelection {
+                agent_id: config
+                    .agent_id
+                    .unwrap_or_else(|| crate::agent::MEMORY_AGENT_ID.to_string()),
+                default_agent_id: crate::agent::MEMORY_AGENT_ID,
+            });
+        }
+        if config.recall_enabled {
+            selected.push(AuxiliaryAgentSelection {
+                agent_id: config
+                    .selector_agent_id
+                    .unwrap_or_else(|| crate::agent::SELECTOR_AGENT_ID.to_string()),
+                default_agent_id: crate::agent::SELECTOR_AGENT_ID,
+            });
+        }
+        Ok(selected)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RecallContributionDecision {
     Active,
@@ -663,5 +703,50 @@ mod tests {
         let hook = &plugin.resolve().phase_hooks[0];
         let reaction = hook.on_phase(&phase_ctx(), &[], &Store::new()).await;
         assert!(injected(&reaction).is_empty());
+    }
+
+    #[test]
+    fn memory_declares_the_extractor_and_selector_its_configuration_enables() {
+        // Causes: C1 extraction enabled; C2 recall enabled; C3 an explicit id;
+        // C4 the configuration is malformed. Effects: E1 one selection per
+        // enabled role, defaulting to the built-in id; E2 a malformed
+        // configuration is rejected naming the plugin.
+        use awaken_runtime_contract::auxiliary_agents::AuxiliaryAgentDeclaration as _;
+        let ids = |config: serde_json::Value| {
+            MemoryAuxiliaryAgents
+                .auxiliary_agents(Some(&config))
+                .unwrap()
+                .into_iter()
+                .map(|selection| (selection.agent_id, selection.default_agent_id))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            ids(serde_json::json!({})),
+            vec![
+                (crate::MEMORY_AGENT_ID.to_owned(), crate::MEMORY_AGENT_ID),
+                (
+                    crate::SELECTOR_AGENT_ID.to_owned(),
+                    crate::SELECTOR_AGENT_ID
+                ),
+            ],
+            "C1+C2 defaults"
+        );
+        assert_eq!(
+            ids(serde_json::json!({"recall_enabled": false, "agent_id": "x"})),
+            vec![("x".to_owned(), crate::MEMORY_AGENT_ID)],
+            "C1+C3"
+        );
+        assert!(
+            ids(serde_json::json!({"recall_enabled": false, "extraction_enabled": false}))
+                .is_empty(),
+            "neither role"
+        );
+        let error = MemoryAuxiliaryAgents
+            .auxiliary_agents(Some(&serde_json::json!({"recall_enabled": "no"})))
+            .unwrap_err();
+        assert!(
+            error.starts_with("invalid Memory configuration: "),
+            "C4 {error}"
+        );
     }
 }

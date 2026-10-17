@@ -2,14 +2,14 @@
 //! Why dispatch could not admit, place, control or resolve a request.
 //!
 //! Dispatch reports every failure of its public operations as an
-//! [`AdmissionError`]. A Session realization failure keeps its typed
-//! [`RealizationError`] and therefore its one disposition; the claim resolver
-//! projects that disposition and never reads a kind or code string.
+//! [`AdmissionError`]. A Session realization failure reaches dispatch through
+//! the realization's one Run projection, which carries the class its
+//! disposition implies; the claim resolver projects that class and never reads
+//! a message.
 
 use std::borrow::Cow;
 
 use awaken_dispatch_contract::DispatchError;
-use awaken_session_realization::realization_error::RealizationError;
 use awaken_session_realization_contract::SessionRealizationControlDisposition;
 use awaken_session_types::RunError;
 
@@ -25,10 +25,8 @@ pub enum AdmissionError {
     /// A live Run control command found no target or failed to deliver.
     #[error(transparent)]
     LiveControl(#[from] crate::LiveRunControlError),
-    /// Session realization failed with its own classified fault.
-    #[error(transparent)]
-    Realization(#[from] RealizationError),
-    /// The Run assembly over the Session failed with a neutral Run error.
+    /// The Session realization or the Run assembly over it failed with a
+    /// neutral, classified Run error.
     #[error("{}", .0.message)]
     Run(#[from] RunError),
     /// The Session resource manifest could not be encoded into its envelope.
@@ -47,8 +45,8 @@ impl AdmissionError {
         Self::Rejected(message.into())
     }
 
-    /// The Worker effect class a claim takes for this failure. A realization
-    /// failure uses its own disposition and a Run failure the contract's
+    /// The Worker effect class a claim takes for this failure. A Run failure
+    /// (including a realization failure's Run projection) uses the contract's
     /// classification, so the claim resolver and the realization driver reach
     /// the same outcome for the same failure.
     #[must_use]
@@ -67,7 +65,6 @@ impl AdmissionError {
             | Self::LiveControl(crate::LiveRunControlError::Dispatch(_)) => {
                 SessionRealizationControlDisposition::Retryable
             }
-            Self::Realization(error) => error.disposition().contract_class(),
             Self::Run(error) => {
                 awaken_session_realization_contract::effect_failure_disposition(error)
             }
@@ -78,13 +75,13 @@ impl AdmissionError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_session_realization::realization_error::{AuthorityLoss, PendingState};
 
     #[test]
     fn admission_failures_project_one_claim_class() {
         // Decision table: cause = the admission failure; effect = the claim
-        // class. A realization failure keeps its disposition; dispatch-local
-        // refusals absorb; store and delivery faults relinquish.
+        // class. A Run failure keeps the contract's class; dispatch-local
+        // refusals absorb; store and delivery faults relinquish. The
+        // realization's projection into this class is the realization's table.
         use SessionRealizationControlDisposition::{NotReady, Retryable, Terminal};
         let rows = [
             (
@@ -123,32 +120,12 @@ mod tests {
                 Retryable,
             ),
             (
-                "A7 realization authority lost",
-                AdmissionError::from(RealizationError::authority_lost(
-                    AuthorityLoss::ClaimStale,
-                    "stale",
-                )),
-                Retryable,
-            ),
-            (
-                "A7 realization pending",
-                AdmissionError::from(RealizationError::pending(
-                    PendingState::TerminalHandNotQuiescent,
-                    "busy",
-                )),
-                Retryable,
-            ),
-            (
-                "A7 realization capacity",
-                AdmissionError::from(RealizationError::Environment(
-                    awaken_provisioning_contract::SandboxError::capacity_unavailable("quota"),
+                "A8 Run capacity unavailable",
+                AdmissionError::from(RunError::unavailable_classified(
+                    awaken_session_realization_contract::ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE,
+                    "quota",
                 )),
                 NotReady,
-            ),
-            (
-                "A7 realization invariant",
-                AdmissionError::from(RealizationError::invariant("broken")),
-                Terminal,
             ),
             (
                 "A8 Run unavailable",

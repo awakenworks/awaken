@@ -41,6 +41,37 @@ fn estimate_tokens(messages: &[Message]) -> u64 {
 /// The plugin id under which compaction is activated (G30).
 pub const COMPACT_PLUGIN_ID: &str = "compact";
 
+/// The auxiliary Agent the Compact plugin runs for the Agent that enables it:
+/// its configured compactor.
+pub struct CompactAuxiliaryAgents;
+
+impl awaken_runtime_contract::auxiliary_agents::AuxiliaryAgentDeclaration
+    for CompactAuxiliaryAgents
+{
+    fn plugin_id(&self) -> &'static str {
+        COMPACT_PLUGIN_ID
+    }
+
+    fn auxiliary_agents(
+        &self,
+        config: Option<&serde_json::Value>,
+    ) -> Result<Vec<awaken_runtime_contract::auxiliary_agents::AuxiliaryAgentSelection>, String>
+    {
+        let config = config
+            .map_or_else(
+                || Ok(CompactConfig::default()),
+                |value| serde_json::from_value::<CompactConfig>(value.clone()),
+            )
+            .map_err(|error| format!("invalid Compact configuration: {error}"))?;
+        Ok(vec![
+            awaken_runtime_contract::auxiliary_agents::AuxiliaryAgentSelection {
+                agent_id: config.agent_id,
+                default_agent_id: crate::agent::COMPACT_AGENT_ID,
+            },
+        ])
+    }
+}
+
 /// Contributes the compaction hook. The host-backed [`CompactBackend`] is the
 /// single labor boundary; without one the hook is inert.
 pub struct CompactPlugin {
@@ -981,6 +1012,30 @@ mod tests {
         assert!(
             !RunCompactionMarker::is_recorded(&commands, "run-c"),
             "R1/E2"
+        );
+    }
+
+    #[test]
+    fn compact_declares_its_configured_compactor() {
+        // Causes: C1 configuration absent; C2 an explicit id; C3 malformed.
+        // Effects: E1 the built-in compactor; E2 the explicit id; E3 rejected
+        // naming the plugin.
+        use awaken_runtime_contract::auxiliary_agents::AuxiliaryAgentDeclaration as _;
+        let selected = CompactAuxiliaryAgents.auxiliary_agents(None).unwrap();
+        assert_eq!(selected.len(), 1, "C1");
+        assert_eq!(selected[0].agent_id, crate::COMPACT_AGENT_ID, "C1/E1");
+        assert!(!selected[0].is_custom(), "C1/E1");
+        let custom = CompactAuxiliaryAgents
+            .auxiliary_agents(Some(&serde_json::json!({"agent_id": "summarizer"})))
+            .unwrap();
+        assert_eq!(custom[0].agent_id, "summarizer", "C2/E2");
+        assert!(custom[0].is_custom(), "C2/E2");
+        let error = CompactAuxiliaryAgents
+            .auxiliary_agents(Some(&serde_json::json!({"keep_last": "many"})))
+            .unwrap_err();
+        assert!(
+            error.starts_with("invalid Compact configuration: "),
+            "C3 {error}"
         );
     }
 }

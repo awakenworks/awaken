@@ -12,8 +12,18 @@
 //! consume the observed value; none of them keeps the lock across an await.
 
 use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_dispatch_execution::ForegroundRun;
 use awaken_runtime_contract::CancellationToken;
+
+/// One observation of the foreground Run a Session drives and the signal that
+/// interrupts it. Both fields come from the same write of the observer's
+/// record, so the signal always belongs to the attempt that installed it: to
+/// `run` when present, or to an auxiliary attempt that has no Run of this
+/// Session. Holding the value grants no lock and is never re-read.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ForegroundRun {
+    pub(crate) run: Option<RunId>,
+    pub(crate) cancellation: Option<CancellationToken>,
+}
 
 /// A writer panicked while holding the foreground record. The record is then
 /// unreadable: every operation that needs it is refused, none guesses idle.

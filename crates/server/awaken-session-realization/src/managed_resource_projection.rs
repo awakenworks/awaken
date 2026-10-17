@@ -6,6 +6,7 @@
 //! from being reimplemented by individual Sandbox adapters.
 use crate::realization_error::RealizationError;
 use awaken_provisioning_contract as pc;
+use awaken_session_configuration_contract::environment_projection;
 use awaken_session_configuration_contract::resource as session_resource;
 use awaken_session_realization_contract::ResourceOperationFence;
 use std::sync::Arc;
@@ -892,7 +893,7 @@ impl crate::resource_staging::ResourceStaging {
         input: &session_resource::ResolvedInput,
         claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization: Option<(&str, u64, &session_resource::SessionRealizationLease)>,
-        environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
+        environment: Option<&environment_projection::FrozenEnvironmentInputs>,
     ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError> {
         let authority = if let (Some((session_id, resource_revision, lease)), true) =
             (realization, self.fetches_resources_upstream)
@@ -966,7 +967,7 @@ impl crate::resource_staging::ResourceStaging {
         input: &session_resource::ResolvedInput,
         resource_authority: Option<&ResourceOperationFence>,
         realization: Option<(&str, u64, &session_resource::SessionRealizationLease)>,
-        environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
+        environment: Option<&environment_projection::FrozenEnvironmentInputs>,
     ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError> {
         use awaken_session_configuration_contract::resource::ResolvedInputSource;
         use awaken_session_types::RunError;
@@ -1102,7 +1103,7 @@ impl crate::resource_staging::ResourceStaging {
                             store_id: memory_store_id.to_string(),
                             materialization_reference,
                             write_consistency:
-                                crate::managed_input_layout::projected_memory_write_consistency(
+                                awaken_provisioning_contract::projected_memory_write_consistency(
                                     managed_mount_access(input.access),
                                     environment.map(|projection| &projection.idle_retention),
                                 ),
@@ -1284,7 +1285,7 @@ impl crate::resource_staging::ResourceStaging {
         scope: ManagedLayoutValidationScope<'_>,
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
-        environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
+        environment: Option<&environment_projection::FrozenEnvironmentInputs>,
     ) -> Result<(), RealizationError> {
         let (resident_baseline, content_delivery, resident_environment, live_environment) = self
             .sessions
@@ -1382,7 +1383,7 @@ impl crate::resource_staging::ResourceStaging {
         provider: &crate::session_environment::SessionEnvironmentProvider,
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
-        environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
+        environment: Option<&environment_projection::FrozenEnvironmentInputs>,
     ) -> Result<(), RealizationError> {
         self.validate_managed_layout_inputs(
             thread,
@@ -1403,7 +1404,7 @@ impl crate::resource_staging::ResourceStaging {
         resources: &session_resource::ResolvedSessionResources,
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
-        environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
+        environment: Option<&environment_projection::FrozenEnvironmentInputs>,
     ) -> Result<(), RealizationError> {
         self.validate_managed_layout_inputs(
             thread,
@@ -1425,7 +1426,7 @@ impl crate::resource_staging::ResourceStaging {
         provider: &crate::session_environment::SessionEnvironmentProvider,
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
-        environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
+        environment: Option<&environment_projection::FrozenEnvironmentInputs>,
     ) -> Result<(), RealizationError> {
         self.validate_managed_layout_inputs(
             thread,
@@ -1443,7 +1444,7 @@ impl crate::resource_staging::ResourceStaging {
         resources: &[awaken_resource_contract::InputBinding],
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
-        environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
+        environment: Option<&environment_projection::FrozenEnvironmentInputs>,
     ) -> Result<(), RealizationError> {
         self.validate_managed_layout_inputs(
             thread,
@@ -1464,7 +1465,7 @@ impl crate::resource_staging::ResourceStaging {
         layout: &awaken_session_configuration_contract::SessionSandboxLayout,
     ) -> Result<(), awaken_session_types::RunError> {
         let staging = self;
-        let environment = crate::provisioning::project_environment(&layout.environment);
+        let environment = environment_projection::project_environment(&layout.environment);
         let (_, candidate) = environments
             .publication
             .resolve_canonical_session_projection(

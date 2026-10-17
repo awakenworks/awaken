@@ -7,6 +7,7 @@
 /// either as files or as semantic tools. The frozen Resource/Skill identities
 /// remain authoritative; this value selects only their runtime projection.
 use crate::realization_error::RealizationError;
+use awaken_session_configuration_contract::environment_projection::FrozenEnvironmentInputs;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ManagedContentDelivery {
     /// Anthropic Managed Agents compatible filesystem projection. Memory stores
@@ -24,19 +25,6 @@ pub enum ManagedContentDelivery {
 /// context, provider selection, cold replay, and cleanup all consume the same
 /// immutable coordinates.
 pub type FrozenBaselineInputs = awaken_session_configuration_contract::SessionBaseline;
-
-/// The sole process-local projection of the frozen Environment snapshot.
-/// Native and ACP provisioning both consume this value; no late network or
-/// Sandbox override is stored beside it.
-#[derive(Clone)]
-pub struct FrozenEnvironmentInputs {
-    pub fingerprint: awaken_session_configuration_contract::EnvironmentFingerprint,
-    pub network: awaken_provisioning_contract::NetworkPolicy,
-    pub packages: awaken_environment_contract::PackageRequirements,
-    pub sandbox: Option<awaken_provisioning_contract::SandboxOverride>,
-    pub provisioning: awaken_session_configuration_contract::SandboxProvisioning,
-    pub idle_retention: awaken_session_configuration_contract::EnvironmentIdleRetentionPolicy,
-}
 
 /// One Session's frozen inputs as this process holds them. The Session slot
 /// keeps one `Arc` of it and every change publishes a complete replacement, so
@@ -146,7 +134,7 @@ impl FrozenSessionInputs {
     pub fn validate_environment(
         &self,
         thread: &str,
-        projection: &crate::frozen_inputs::FrozenEnvironmentInputs,
+        projection: &FrozenEnvironmentInputs,
     ) -> Result<(), RealizationError> {
         if self
             .environment_projection

@@ -1,6 +1,5 @@
 //! Integration tests for the canonical dispatch terminal reconciler.
 use super::*;
-use awaken_dispatch_execution::session_reconciliation::reconcile_committed_terminals;
 use awaken_dispatch_contract::{DispatchControlClaims as _, DispatchSettlement as _};
 #[cfg(test)]
 mod tests {
@@ -162,7 +161,9 @@ mod tests {
             )),
         )
         .unwrap();
-        awaken_dispatch_execution::session_reconciliation::reconcile_worker_evidence(host.as_ref())
+        crate::host::session_worker_resolver(&host)
+            .expect("Host dispatch resolver")
+            .reconcile_worker_evidence()
             .await
             .unwrap();
         assert!(
@@ -175,10 +176,14 @@ mod tests {
                 .is_some(),
             "M1 exit was committed before failed release"
         );
-        awaken_dispatch_execution::session_reconciliation::reconcile_worker_evidence(host.as_ref())
+        crate::host::session_worker_resolver(&host)
+            .expect("Host dispatch resolver")
+            .reconcile_worker_evidence()
             .await
             .unwrap();
-        awaken_dispatch_execution::session_reconciliation::reconcile_worker_evidence(host.as_ref())
+        crate::host::session_worker_resolver(&host)
+            .expect("Host dispatch resolver")
+            .reconcile_worker_evidence()
             .await
             .unwrap();
         assert_eq!(
@@ -418,7 +423,9 @@ mod tests {
             )),
         )
         .unwrap();
-        awaken_dispatch_execution::session_reconciliation::reconcile_worker_evidence(host.as_ref())
+        crate::host::session_worker_resolver(&host)
+            .expect("Host dispatch resolver")
+            .reconcile_worker_evidence()
             .await
             .unwrap();
         let record = directory.incarnation(&identity).await.unwrap().unwrap();
@@ -534,11 +541,11 @@ mod tests {
         )
         .unwrap();
         for _ in 0..2 {
-            awaken_dispatch_execution::session_reconciliation::reconcile_worker_evidence(
-                host.as_ref(),
-            )
-            .await
-            .unwrap();
+            crate::host::session_worker_resolver(&host)
+                .expect("Host dispatch resolver")
+                .reconcile_worker_evidence()
+                .await
+                .unwrap();
         }
         let expired = directory
             .incarnation(&identities[0])
@@ -816,10 +823,9 @@ mod tests {
                     )
                     .unwrap();
                 }
-                let resolver = SessionWorkerResolver {
-                    host: Arc::downgrade(&host),
-                };
-                let completed = reconcile_committed_terminals(&resolver, 8).await.unwrap();
+                let resolver =
+                    crate::host::session_worker_resolver(&host).expect("Host dispatch resolver");
+                let completed = resolver.reconcile_committed_terminals(8).await.unwrap();
                 if ["nonterminal", "live", "unbound-source"].contains(&rule) {
                     assert!(completed.is_empty(), "{rule}");
                     assert_eq!(
@@ -854,7 +860,8 @@ mod tests {
                         );
                         source.complete.store(true, Ordering::SeqCst);
                         assert_eq!(
-                            reconcile_committed_terminals(&resolver, 8)
+                            resolver
+                                .reconcile_committed_terminals(8)
                                 .await
                                 .unwrap()
                                 .len(),
@@ -1137,9 +1144,7 @@ mod tests {
         coordinator.execution.local = crate::LocalExecution::RemoteWorkersOnly;
         let coordinator = (coordinator).build().expect("validated Host dependencies");
         let host = coordinator;
-        let resolver = SessionWorkerResolver {
-            host: Arc::downgrade(&host),
-        };
+        let resolver = crate::host::session_worker_resolver(&host).expect("Host dispatch resolver");
 
         let parked = claim(
             &store,
@@ -1174,7 +1179,8 @@ mod tests {
         let recovery_now = leased.lease.expires_ms().saturating_add(1);
 
         assert!(
-            reconcile_committed_terminals(&resolver, 8,)
+            resolver
+                .reconcile_committed_terminals(8)
                 .await
                 .expect("scan non-terminal rows")
                 .is_empty(),
@@ -1289,9 +1295,7 @@ mod tests {
             .await
             .expect("special claim")
             .expect("exhausted row claims");
-        let resolver = SessionWorkerResolver {
-            host: Arc::downgrade(&host),
-        };
+        let resolver = crate::host::session_worker_resolver(&host).expect("Host dispatch resolver");
         assert_eq!(
             resolver
                 .worker_for_retry_exhausted(&claimed)
@@ -1400,10 +1404,9 @@ mod tests {
         .await
         .expect("commit logical child in parent partition");
 
-        let resolver = SessionWorkerResolver {
-            host: Arc::downgrade(&host),
-        };
-        let reconciled = reconcile_committed_terminals(&resolver, 8)
+        let resolver = crate::host::session_worker_resolver(&host).expect("Host dispatch resolver");
+        let reconciled = resolver
+            .reconcile_committed_terminals(8)
             .await
             .expect("reconcile child");
         assert_eq!(reconciled.len(), 1, "P1/E2");

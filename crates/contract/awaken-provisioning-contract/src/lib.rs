@@ -36,6 +36,7 @@ mod execution_policy;
 mod lease;
 mod prepare;
 mod sandbox;
+mod session_projection;
 mod spec;
 mod vocab;
 
@@ -86,6 +87,7 @@ pub use sandbox::{
     validate_repository_mount_path, validate_repository_mount_paths,
     validate_repository_sandbox_adoption_layout, validate_repository_sandbox_layout,
 };
+pub use session_projection::{projected_memory_write_consistency, session_sandbox_projection};
 pub use spec::{
     Command, EnvironmentKind, FilesystemContinuity, HostAccessPolicy, MaterializedCommand,
     MaterializedEnvValue, MaterializedEnvVar, RootfsSource, SandboxCapacityShapeId,
