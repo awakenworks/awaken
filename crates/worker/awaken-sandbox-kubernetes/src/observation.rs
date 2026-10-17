@@ -132,7 +132,7 @@ pub(super) async fn observe(
     if !current_handle
         && matches!(
             observation,
-            pc::SandboxObservation::Provisioning | pc::SandboxObservation::Ready
+            pc::SandboxObservation::Provisioning { .. } | pc::SandboxObservation::Ready
         )
     {
         let pod = pod.as_ref().expect("live observation has one Pod");
@@ -154,12 +154,41 @@ pub(super) async fn observe(
             });
         }
     }
-    participants::terminal_observation(
+    let observation = participants::terminal_observation(
         runtime,
         expectation,
         expected_pod_uid,
         pod.as_ref(),
         observation,
     )
-    .await
+    .await?;
+    Ok(with_provisioning_deadline(
+        runtime,
+        pod.as_ref(),
+        observation,
+    ))
+}
+
+/// The cluster, not this process, progresses a created Pod, so this provider
+/// owns the provisioning wait and gives a Provisioning observation its
+/// deadline.
+fn with_provisioning_deadline(
+    runtime: &K8sRuntime,
+    pod: Option<&k8s_openapi::api::core::v1::Pod>,
+    observation: pc::SandboxObservation,
+) -> pc::SandboxObservation {
+    match observation {
+        pc::SandboxObservation::Provisioning { deadline: None } => {
+            pc::SandboxObservation::Provisioning {
+                deadline: pod.and_then(|pod| {
+                    super::realization::pod_provisioning_deadline(
+                        pod,
+                        runtime.unschedulable_wait,
+                        runtime.clock.as_ref(),
+                    )
+                }),
+            }
+        }
+        observation => observation,
+    }
 }

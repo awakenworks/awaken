@@ -278,7 +278,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             && !spec.control_services.is_empty()
             && matches!(
                 observed,
-                pc::SandboxObservation::Ready | pc::SandboxObservation::Provisioning
+                pc::SandboxObservation::Ready | pc::SandboxObservation::Provisioning { .. }
             )
         {
             return Err(pc::SandboxError::not_ready(
@@ -314,7 +314,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 )
                 .await
                 .map(Some),
-            pc::SandboxObservation::Provisioning if reconstructed => self
+            pc::SandboxObservation::Provisioning { .. } if reconstructed => self
                 .adopt_observed_container_with_spec(
                     adoption.handle,
                     adoption.spec,
@@ -323,7 +323,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 )
                 .await
                 .map(Some),
-            pc::SandboxObservation::Provisioning => Err(pc::SandboxError::not_ready(
+            pc::SandboxObservation::Provisioning { .. } => Err(pc::SandboxError::not_ready(
                 "terminal preparation observed a provisioning container realization",
             )),
             pc::SandboxObservation::DefinitivelyUnavailable { .. } => Ok(None),

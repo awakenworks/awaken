@@ -32,7 +32,8 @@ pub use environment::{
 pub use host::{AllowlistCapability, normalize_allowlist_host};
 pub use k8s_capacity::{
     DEFAULT_K8S_UNSCHEDULABLE_WAIT, K8sPodReadiness, K8sPodScheduledCondition, K8sPodWait,
-    k8s_pod_age, k8s_pod_unschedulable, k8s_pod_wait, kubernetes_refusal_is_capacity,
+    k8s_pod_age, k8s_pod_provisioning_deadline_ms, k8s_pod_unschedulable, k8s_pod_wait,
+    kubernetes_refusal_is_capacity,
 };
 pub use policy::{
     K8sContinuationVolume, K8sImagePrewarm, LIVE_INPUTS_ROOT, REPOSITORY_GATEWAY_CA_PATH,

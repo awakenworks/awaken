@@ -632,7 +632,7 @@ impl SandboxEnvironmentProvider {
                 }
             }
             pc::SandboxObservation::Ready
-            | pc::SandboxObservation::Provisioning
+            | pc::SandboxObservation::Provisioning { .. }
             | pc::SandboxObservation::Incompatible { .. } => Err(pc::SandboxError::invalid(
                 "sandbox observation does not carry closed physical evidence",
             )),
