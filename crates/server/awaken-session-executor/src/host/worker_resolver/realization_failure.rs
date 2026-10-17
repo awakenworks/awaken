@@ -298,6 +298,48 @@ mod tests {
     }
 
     #[test]
+    fn a_deferred_adoption_carries_the_providers_wait_to_the_claim() {
+        // Decision table: cause = a failed claim adoption; effect = the claim
+        // outcome and the retry-after it hands the pool.
+        // | A1 | provisioning before its deadline | defer, hint = wait left |
+        // | A2 | capacity refusal | defer, no hint (pool backoff) |
+        // | A3 | provisioning past its deadline | relinquish |
+        use awaken_session_realization::realization_error::RealizationError;
+        let run = awaken_agent_contract::agent::run::Id("run-1".into());
+        let deadline = |observed| {
+            Some(awaken_provisioning_contract::ProvisioningDeadline::new(
+                10_000, observed,
+            ))
+        };
+        for (rule, error, outcome, hint) in [
+            (
+                "A1",
+                RealizationError::provisioning(deadline(4_000), "pulling"),
+                "defer",
+                Some(std::time::Duration::from_millis(6_000)),
+            ),
+            (
+                "A2",
+                awaken_provisioning_contract::SandboxError::capacity_unavailable("q").into(),
+                "defer",
+                None,
+            ),
+            (
+                "A3",
+                RealizationError::provisioning(deadline(10_000), "pulling"),
+                "relinquish",
+                None,
+            ),
+        ] {
+            let claim = crate::host::dispatch_execution::adoption_claim_outcome(&run, &error);
+            assert_eq!(claim_outcome(&claim), outcome, "{rule}");
+            if let awaken_dispatch_execution::Error::ResolutionNotReady(not_ready) = &claim {
+                assert_eq!(not_ready.retry_after(), hint, "{rule}");
+            }
+        }
+    }
+
+    #[test]
     fn one_realization_failure_reaches_one_outcome_on_every_path() {
         // Decision table: cause = the realization failure class; paths = P1
         // the claim resolver (RealizationError -> AdmissionError -> claim),

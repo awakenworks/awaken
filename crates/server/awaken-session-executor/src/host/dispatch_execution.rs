@@ -106,12 +106,13 @@ pub(crate) async fn adopt_bound_sandbox(
             recovery == awaken_dispatch_contract::WorkerRecoveryMode::RebuildFromCommittedTruth,
         )
         .await
-        .map_err(|error| {
-            claim_outcome(
-                error.disposition().contract_class(),
-                format!("run {}: {error}", run_id.0),
-            )
-        })
+        .map_err(|error| adoption_claim_outcome(run_id, &error))
+}
+
+/// The claim outcome of a failed adoption, with the provider's wait for a deferral.
+pub(crate) fn adoption_claim_outcome(run_id: &RunId, error: &RealizationError) -> Error {
+    let (class, hint) = (error.disposition().contract_class(), error.retry_after());
+    claim_outcome(class, format!("run {}: {error}", run_id.0), hint)
 }
 
 /// The executor's part of claimed-Run resolution over one Host: the installed
