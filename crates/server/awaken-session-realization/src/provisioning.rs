@@ -5,40 +5,19 @@
 //! artifact harvesting through the selected Resource authority. The staged
 //! resource mounts retain ADR-0038's one physical projection.
 
+use crate::realization_error::{PendingState, RealizationError};
 use crate::staged_resources::{RepositoryActivation, ResourceBindingCheck, StagedResources};
 use awaken_session_configuration_contract::resource as session_resource;
 use awaken_session_realization_contract::ResourceOperationFence;
 use std::sync::Arc;
 
 use awaken_provisioning_contract as pc;
-use awaken_resource_contract::{ArtifactPublicationError, RepositoryBindingVerifierError};
+use awaken_resource_contract::ArtifactPublicationError;
 
 #[derive(Debug)]
 pub enum RepositoryPublicationActivationError {
     Rejected(pc::RepositoryPublicationRejection),
-    Failed(crate::host_error::HostError),
-}
-
-pub fn repository_binding_host_error(
-    error: RepositoryBindingVerifierError,
-) -> crate::host_error::HostError {
-    let message = error.to_string();
-    match error {
-        RepositoryBindingVerifierError::InvalidRequest { .. }
-        | RepositoryBindingVerifierError::Denied { .. } => {
-            crate::host_error::HostError::bad_request(message)
-        }
-        RepositoryBindingVerifierError::Conflict { .. } => {
-            crate::host_error::HostError::conflict(message)
-        }
-        RepositoryBindingVerifierError::AuthorityUnavailable { .. }
-        | RepositoryBindingVerifierError::Indeterminate { .. } => {
-            crate::host_error::HostError::unavailable(message)
-        }
-        RepositoryBindingVerifierError::CorruptAuthority { .. } => {
-            crate::host_error::HostError::internal(message)
-        }
-    }
+    Failed(RealizationError),
 }
 
 /// One physical-mount classifier shared by fresh-spec construction and live
@@ -713,7 +692,7 @@ impl crate::resource_staging::ResourceStaging {
         thread: &str,
         fallback_workspace: &str,
         realizer: &dyn pc::RepositoryRealizer,
-    ) -> Result<(), crate::host_error::HostError> {
+    ) -> Result<(), RealizationError> {
         let resources = self.thread_resources_snapshot(thread);
         for repository in &resources.repositories {
             self.realize_repository_activation(
@@ -739,11 +718,11 @@ impl crate::resource_staging::ResourceStaging {
         binding_checks: &[ResourceBindingCheck],
         realizer: &dyn pc::RepositoryRealizer,
         intent: pc::RepositoryRealizationIntent,
-    ) -> Result<(), crate::host_error::HostError> {
+    ) -> Result<(), RealizationError> {
         repository
             .plan
             .validate_mount_path()
-            .map_err(|error| crate::host_error::HostError::internal(error.to_string()))?;
+            .map_err(RealizationError::from)?;
         let credential = self
             .repository_operation_credential(
                 thread,
@@ -756,7 +735,7 @@ impl crate::resource_staging::ResourceStaging {
         realizer
             .realize_repository(&repository.plan, credential.as_ref(), intent)
             .await
-            .map_err(|error| crate::host_error::HostError::internal(error.to_string()))
+            .map_err(RealizationError::from)
     }
 
     /// Materialize only the credential required by this Git effect. A direct
@@ -775,7 +754,7 @@ impl crate::resource_staging::ResourceStaging {
             awaken_session_state_contract::SessionRepositoryPublicationCommand,
             session_resource::SessionRealizationLease,
         )>,
-    ) -> Result<Option<pc::RepositoryHttpBasicCredential>, crate::host_error::HostError> {
+    ) -> Result<Option<pc::RepositoryHttpBasicCredential>, RealizationError> {
         let pin = repository.credential_pin.as_ref();
         if pin.is_none() && publication_fence.is_none() {
             return Ok(None);
@@ -797,26 +776,26 @@ impl crate::resource_staging::ResourceStaging {
         });
         let Some((config_version, remote_url, credential_binding, authority)) = matching.next()
         else {
-            return Err(crate::host_error::HostError::internal(
+            return Err(RealizationError::invariant(
                 "protected Repository has no exact binding check",
             ));
         };
         if matching.next().is_some() {
-            return Err(crate::host_error::HostError::internal(
+            return Err(RealizationError::invariant(
                 "protected Repository has ambiguous binding checks",
             ));
         }
         if let Some(pin) = pin {
             let credential_binding = credential_binding.ok_or_else(|| {
-                crate::host_error::HostError::internal(
+                RealizationError::invariant(
                     "protected Repository credential pin has no authored binding",
                 )
             })?;
             pin.validate_for_repository(credential_binding, remote_url)
-                .map_err(|error| crate::host_error::HostError::internal(error.to_string()))?;
+                .map_err(RealizationError::from)?;
         }
         if repository.plan.source_remote_url != remote_url {
-            return Err(crate::host_error::HostError::internal(
+            return Err(RealizationError::invariant(
                 "Repository changed its frozen source URL",
             ));
         }
@@ -832,7 +811,7 @@ impl crate::resource_staging::ResourceStaging {
         ) {
             (Some(fence), true) => {
                 let verifier = self.repository_binding_verifier.clone().ok_or_else(|| {
-                    crate::host_error::HostError::internal(
+                    RealizationError::invariant(
                         "terminal Repository publication has no binding verifier",
                     )
                 })?;
@@ -845,7 +824,7 @@ impl crate::resource_staging::ResourceStaging {
                             Some(fence),
                         )
                         .await
-                        .map_err(repository_binding_host_error)?,
+                        .map_err(RealizationError::RepositoryBinding)?,
                 )
             }
             // Local topology already compiled this exact command through the
@@ -862,12 +841,12 @@ impl crate::resource_staging::ResourceStaging {
                     Ok(None)
                 }
                 Some(awaken_resource_contract::RepositoryTransport::Direct) => {
-                    Err(crate::host_error::HostError::internal(
+                    Err(RealizationError::invariant(
                         "direct Repository changed its frozen transport URL",
                     ))
                 }
                 Some(awaken_resource_contract::RepositoryTransport::GatewayMediated { .. }) => {
-                    Err(crate::host_error::HostError::internal(
+                    Err(RealizationError::invariant(
                         "Repository has a mediated transport without a credential pin",
                     ))
                 }
@@ -875,11 +854,9 @@ impl crate::resource_staging::ResourceStaging {
             };
         };
         match pin.selected_plaintext_holder.boundary {
-            awaken_runtime_contract::PlaintextBoundary::Worker => {
-                Err(crate::host_error::HostError::internal(
-                    "Runtime Host or Worker cannot hold a Repository transport credential",
-                ))
-            }
+            awaken_runtime_contract::PlaintextBoundary::Worker => Err(RealizationError::invariant(
+                "Runtime Host or Worker cannot hold a Repository transport credential",
+            )),
             awaken_runtime_contract::PlaintextBoundary::Workload => {
                 if publication_transport.as_ref().is_some_and(|transport| {
                     !matches!(
@@ -887,17 +864,17 @@ impl crate::resource_staging::ResourceStaging {
                         awaken_resource_contract::RepositoryTransport::Direct
                     )
                 }) {
-                    return Err(crate::host_error::HostError::internal(
+                    return Err(RealizationError::invariant(
                         "Sandbox-held Repository credential cannot use a mediated transport",
                     ));
                 }
                 if repository.plan.transport_url != remote_url {
-                    return Err(crate::host_error::HostError::internal(
+                    return Err(RealizationError::invariant(
                         "direct Repository changed its frozen transport URL",
                     ));
                 }
                 let materializer = self.credential_materializer.as_ref().ok_or_else(|| {
-                    crate::host_error::HostError::internal(
+                    RealizationError::invariant(
                         "repository credential requires a configured credential materializer",
                     )
                 })?;
@@ -911,11 +888,11 @@ impl crate::resource_staging::ResourceStaging {
                         &(&repository.plan.repository_id, config_version),
                     )
                     .await
-                    .map_err(|error| crate::host_error::HostError::internal(error.to_string()))?
+                    .map_err(RealizationError::from)?
                     .material;
                 repository_http_basic_credential(material)
                     .map(Some)
-                    .map_err(crate::host_error::HostError::internal)
+                    .map_err(RealizationError::invariant)
             }
             awaken_runtime_contract::PlaintextBoundary::Platform => {
                 let workspace = self.sessions.workspace(thread, fallback_workspace);
@@ -924,7 +901,7 @@ impl crate::resource_staging::ResourceStaging {
                     None => {
                         let verifier =
                             self.repository_binding_verifier.clone().ok_or_else(|| {
-                                crate::host_error::HostError::internal(
+                                RealizationError::invariant(
                                     "Gateway-mediated Repository has no binding verifier",
                                 )
                             })?;
@@ -936,7 +913,7 @@ impl crate::resource_staging::ResourceStaging {
                                 authority,
                             )
                             .await
-                            .map_err(repository_binding_host_error)?
+                            .map_err(RealizationError::RepositoryBinding)?
                     }
                 };
                 match transport {
@@ -950,12 +927,12 @@ impl crate::resource_staging::ResourceStaging {
                         )))
                     }
                     awaken_resource_contract::RepositoryTransport::GatewayMediated { .. } => {
-                        Err(crate::host_error::HostError::internal(
+                        Err(RealizationError::invariant(
                             "Gateway-mediated Repository changed its frozen remote URL",
                         ))
                     }
                     awaken_resource_contract::RepositoryTransport::Direct => {
-                        Err(crate::host_error::HostError::internal(
+                        Err(RealizationError::invariant(
                             "Gateway-mediated Repository cannot fall back to direct credentials",
                         ))
                     }
@@ -985,18 +962,18 @@ impl crate::resource_staging::ResourceStaging {
         )>,
     ) -> Result<pc::RepositoryPublicationReceipt, RepositoryPublicationActivationError> {
         repository.plan.validate_mount_path().map_err(|error| {
-            RepositoryPublicationActivationError::Failed(crate::host_error::HostError::internal(
+            RepositoryPublicationActivationError::Failed(RealizationError::invariant(
                 error.to_string(),
             ))
         })?;
         expectation.validate().map_err(|error| {
-            RepositoryPublicationActivationError::Failed(crate::host_error::HostError::internal(
+            RepositoryPublicationActivationError::Failed(RealizationError::invariant(
                 error.to_string(),
             ))
         })?;
         if repository.plan.access == pc::MountAccess::ReadOnly {
             return Err(RepositoryPublicationActivationError::Failed(
-                crate::host_error::HostError::internal("read-only repository cannot be published"),
+                RealizationError::invariant("read-only repository cannot be published"),
             ));
         }
         let credential = self
@@ -1017,20 +994,16 @@ impl crate::resource_staging::ResourceStaging {
                     RepositoryPublicationActivationError::Rejected(rejection)
                 }
                 pc::RepositoryPublicationError::Unavailable(error) => {
-                    RepositoryPublicationActivationError::Failed(
-                        crate::host_error::HostError::unavailable_classified(
-                            "repository_publication_transport_unavailable",
-                            error.to_string(),
-                        ),
-                    )
+                    RepositoryPublicationActivationError::Failed(RealizationError::pending(
+                        PendingState::RepositoryPublicationTransportUnavailable,
+                        error.to_string(),
+                    ))
                 }
             })?;
         receipt
             .verify(&repository.plan, expectation)
             .map_err(|error| {
-                RepositoryPublicationActivationError::Failed(
-                    crate::host_error::HostError::internal(error.to_string()),
-                )
+                RepositoryPublicationActivationError::Failed(RealizationError::from(error))
             })?;
         Ok(receipt)
     }
@@ -1211,17 +1184,17 @@ impl crate::resource_staging::ResourceStaging {
         spec: &pc::SandboxSpec,
         repository_paths: &[&str],
         historical_owned_paths: &[&str],
-    ) -> Result<pc::SandboxSpec, crate::host_error::HostError> {
+    ) -> Result<pc::SandboxSpec, RealizationError> {
         let effective = provider
             .realizer()
             .effective_spec(spec)
-            .map_err(|error| crate::host_error::HostError::internal(error.to_string()))?;
+            .map_err(RealizationError::from)?;
         pc::validate_repository_sandbox_adoption_layout(
             repository_paths,
             &effective,
             historical_owned_paths,
         )
-        .map_err(|error| crate::host_error::HostError::internal(error.to_string()))?;
+        .map_err(RealizationError::from)?;
         Ok(effective)
     }
 

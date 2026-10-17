@@ -1794,7 +1794,10 @@ async fn session_creation_and_explicit_cache_warmup_share_one_preparation_path()
 
     #[async_trait::async_trait]
     impl crate::CacheVolumeInitializer for RecordingInitializer {
-        async fn initialize(&self, _volume: &crate::CacheVolumeWarmup) -> Result<(), String> {
+        async fn initialize(
+            &self,
+            _volume: &crate::CacheVolumeWarmup,
+        ) -> Result<(), crate::cache_volume::CacheVolumeError> {
             self.0.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
@@ -1858,7 +1861,10 @@ async fn repository_layout_conflict_fails_before_cache_prewarm() {
 
     #[async_trait::async_trait]
     impl crate::CacheVolumeInitializer for CountingInitializer {
-        async fn initialize(&self, _volume: &crate::CacheVolumeWarmup) -> Result<(), String> {
+        async fn initialize(
+            &self,
+            _volume: &crate::CacheVolumeWarmup,
+        ) -> Result<(), crate::cache_volume::CacheVolumeError> {
             self.0.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }

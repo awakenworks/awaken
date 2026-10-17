@@ -4,6 +4,7 @@
 //! Durable control over the canonical Dispatch owner, without Session creation.
 use std::sync::Arc;
 
+use crate::AdmissionError;
 use crate::{DispatchPool, LiveAttemptControl, LiveRunControlError};
 use awaken_agent_contract::agent::{
     awaiting::{AwaitReason, ResumeTicket},
@@ -17,16 +18,6 @@ use awaken_runtime_contract::{
     control::{LiveCommand, LiveRunControl},
     resume::ResumeResult,
 };
-use awaken_session_realization::host_error::HostError;
-
-pub fn map_live_control_error(error: LiveRunControlError) -> HostError {
-    match error {
-        LiveRunControlError::NotFound(_) | LiveRunControlError::NoSubscriber(_) => {
-            HostError::bad_request(error.to_string())
-        }
-        LiveRunControlError::Dispatch(_) => HostError::internal(error.to_string()),
-    }
-}
 
 /// The existing durable cancellation ordering, shared by all control callers.
 pub struct DurableRunControl {
@@ -45,12 +36,12 @@ impl DurableRunControl {
         &self,
         run: &RunId,
         live: Option<&Runtime>,
-    ) -> Result<bool, HostError> {
+    ) -> Result<bool, AdmissionError> {
         let accepted = self
             .owner
             .cancel(run)
             .await
-            .map_err(|e| HostError::internal(e.to_string()))?
+            .map_err(AdmissionError::from)?
             .is_some();
         if accepted && let Some(pool) = &self.pool {
             pool.notify().await;
@@ -66,30 +57,33 @@ impl DurableRunControl {
         &self,
         run: &RunId,
         live: Option<&Runtime>,
-    ) -> Result<bool, HostError> {
+    ) -> Result<bool, AdmissionError> {
         self.owner
             .requeue(run)
             .await
-            .map_err(|e| HostError::internal(e.to_string()))?;
+            .map_err(AdmissionError::from)?;
         self.persist_cancellation(run, live).await
     }
-    pub async fn cancel(&self, run: &RunId, live: Option<&Runtime>) -> Result<(), HostError> {
+    pub async fn cancel(&self, run: &RunId, live: Option<&Runtime>) -> Result<(), AdmissionError> {
         if self.persist_cancellation(run, live).await? {
             Ok(())
         } else {
-            Err(HostError::bad_request(format!("run not found: {}", run.0)))
+            Err(AdmissionError::rejected(format!(
+                "run not found: {}",
+                run.0
+            )))
         }
     }
-    pub async fn stage_input(&self, input: PendingInput) -> Result<String, HostError> {
+    pub async fn stage_input(&self, input: PendingInput) -> Result<String, AdmissionError> {
         let run = input.run_id.0.clone();
         self.stage(input).await?;
         Ok(run)
     }
-    async fn stage(&self, input: PendingInput) -> Result<(), HostError> {
+    async fn stage(&self, input: PendingInput) -> Result<(), AdmissionError> {
         self.owner
             .stage(input)
             .await
-            .map_err(|e| HostError::internal(e.to_string()))?;
+            .map_err(AdmissionError::from)?;
         if let Some(pool) = &self.pool {
             pool.notify().await;
         }
@@ -97,13 +91,13 @@ impl DurableRunControl {
     }
 }
 
-pub async fn wake_resident(runtime: Option<Arc<Runtime>>, run: &str) -> Result<(), HostError> {
+pub async fn wake_resident(runtime: Option<Arc<Runtime>>, run: &str) -> Result<(), AdmissionError> {
     let runtime = runtime
-        .ok_or_else(|| map_live_control_error(LiveRunControlError::NoSubscriber(run.to_owned())))?;
+        .ok_or_else(|| AdmissionError::from(LiveRunControlError::NoSubscriber(run.to_owned())))?;
     LiveAttemptControl::new(runtime)
         .wake(run)
         .await
-        .map_err(map_live_control_error)
+        .map_err(AdmissionError::from)
 }
 
 pub async fn pause_resident(
@@ -112,11 +106,11 @@ pub async fn pause_resident(
     thread: &ThreadId,
     durable: bool,
     requested: Option<&str>,
-) -> Result<String, HostError> {
-    let no_active = || HostError::bad_request("thread has no locally owned active run");
+) -> Result<String, AdmissionError> {
+    let no_active = || AdmissionError::rejected("thread has no locally owned active run");
     let runtime = runtime.ok_or_else(|| {
         requested.map_or_else(no_active, |run| {
-            map_live_control_error(LiveRunControlError::NoSubscriber(run.to_owned()))
+            AdmissionError::from(LiveRunControlError::NoSubscriber(run.to_owned()))
         })
     })?;
     let run = match requested {
@@ -128,14 +122,15 @@ pub async fn pause_resident(
             .ok_or_else(no_active)?,
     };
     if !durable {
-        return Err(HostError::bad_request("pause requires durable delivery"));
+        return Err(AdmissionError::rejected("pause requires durable delivery"));
     }
     LiveAttemptControl::new(
-        worker_runtime.ok_or_else(|| HostError::bad_request("pause requires durable delivery"))?,
+        worker_runtime
+            .ok_or_else(|| AdmissionError::rejected("pause requires durable delivery"))?,
     )
     .pause(&run)
     .await
-    .map_err(map_live_control_error)?;
+    .map_err(AdmissionError::from)?;
     Ok(run)
 }
 
@@ -143,9 +138,9 @@ pub fn decision_input(
     thread: ThreadId,
     awaiting: Option<(RunId, ResumeTicket)>,
     allow: bool,
-) -> Result<PendingInput, HostError> {
+) -> Result<PendingInput, AdmissionError> {
     let (run_id, ticket) = awaiting
-        .ok_or_else(|| HostError::bad_request("no awaiting run on this thread to deliver to"))?;
+        .ok_or_else(|| AdmissionError::rejected("no awaiting run on this thread to deliver to"))?;
     Ok(PendingInput {
         message_id: awaken_runtime::fresh_process_id("xthread"),
         run_id,
@@ -164,11 +159,11 @@ pub fn manual_resume_input(
     thread: ThreadId,
     awaiting: Option<(RunId, ResumeTicket)>,
     text: String,
-) -> Result<PendingInput, HostError> {
+) -> Result<PendingInput, AdmissionError> {
     let (run_id, ticket) = awaiting
-        .ok_or_else(|| HostError::bad_request("no awaiting run on this thread to resume"))?;
+        .ok_or_else(|| AdmissionError::rejected("no awaiting run on this thread to resume"))?;
     if ticket.reason() != AwaitReason::ManualPause {
-        return Err(HostError::bad_request(
+        return Err(AdmissionError::rejected(
             "durable text resume requires a manual-pause ticket",
         ));
     }

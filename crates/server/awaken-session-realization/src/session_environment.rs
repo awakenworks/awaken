@@ -15,20 +15,19 @@ pub use awaken_session_environment_contract::{
     ProviderEffect, SessionEnvironment, SessionEnvironmentProvider,
 };
 
+use crate::realization_error::RealizationError;
 use std::sync::Arc;
 
-use crate::host_error::HostError;
-
 pub struct EnvironmentBindingPersistenceError {
-    pub error: HostError,
+    pub error: RealizationError,
     /// Store-read proof that the root binding committed before a later
     /// derivative dispatch-cache edge failed. The lifecycle owner consumes
     /// this only to retain the same hidden Candidate under durable identity.
     pub committed_identity: Option<crate::environment_owner::BoundSessionEnvironmentIdentity>,
 }
 
-impl From<HostError> for EnvironmentBindingPersistenceError {
-    fn from(error: HostError) -> Self {
+impl From<RealizationError> for EnvironmentBindingPersistenceError {
+    fn from(error: RealizationError) -> Self {
         Self {
             error,
             committed_identity: None,

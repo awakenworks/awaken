@@ -5,7 +5,7 @@
 use super::{
     AnyDispatchStore, Arc, DispatchWorker, Error, RunId, RunState, RunWorkerFactory,
     SessionDispatch, SessionProjectionExecution, SessionWorkerResolver, TerminalRecovery,
-    WorkerResolver, execution_error, install_claimed_session_projection, map_host_resolution_error,
+    WorkerResolver, execution_error, install_claimed_session_projection, map_admission_error,
     terminal_resolution_error,
 };
 
@@ -36,7 +36,7 @@ pub async fn adopt_bound_sandbox<T: SessionProjectionExecution>(
     let provider = host
         .realizer()
         .session_environment_provider_for_thread(expected_sandbox_id, provisioning)
-        .map_err(map_host_resolution_error)?;
+        .map_err(map_admission_error)?;
     host.realizer()
         .adopt_bound_session_environment(
             expected_sandbox_id,
@@ -46,9 +46,11 @@ pub async fn adopt_bound_sandbox<T: SessionProjectionExecution>(
             recovery == awaken_run_ingress_contract::WorkerRecoveryMode::RebuildFromCommittedTruth,
         )
         .await
-        .map_err(|mut error| {
-            error.message = format!("run {}: {}", run_id.0, error.message);
-            map_host_resolution_error(error)
+        .map_err(|error| {
+            super::claim_outcome(
+                error.disposition().contract_class(),
+                format!("run {}: {error}", run_id.0),
+            )
         })
 }
 
@@ -171,7 +173,7 @@ where
             let projection = decode_dispatched_projection(envelope, claimed.lease.run_id())?;
             let stages = projection.mcp_stages.clone();
             host.install_runtime_projection(&thread_id.0, projection)
-                .map_err(map_host_resolution_error)?;
+                .map_err(map_admission_error)?;
             stages
         } else {
             None
@@ -303,7 +305,7 @@ where
                 (run_thread_id == thread_id).then_some(&claimed.request.activation.snapshot);
             host.ensure_session_substrate(&thread_id.0, frozen_parent)
                 .await
-                .map_err(map_host_resolution_error)?;
+                .map_err(map_admission_error)?;
         }
         Ok(())
     }

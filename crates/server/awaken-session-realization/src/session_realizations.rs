@@ -10,10 +10,10 @@
 //! named operations, each applied under the same lock as the realization edit
 //! it accompanies.
 
+use crate::realization_error::RealizationError;
 use std::sync::Arc;
 
 use crate::frozen_inputs::FrozenSessionInputs;
-use crate::host_error::HostError;
 use awaken_session_application_contract::DelegatedRun;
 
 pub mod execution_authority;
@@ -130,11 +130,11 @@ impl SessionRealizationRevocationSelection {
 /// original Slot query adapter and already-held lifecycle scope; the delegated
 /// future is polled only after Primary, even when Primary was active. This is
 /// local activity, never a physical-stop proof or Environment authorization.
-pub async fn primary_or_delegated_run_active(
+pub async fn primary_or_delegated_run_active<E>(
     thread: &str,
     mut active: impl FnMut(&str) -> bool,
-    delegated: impl std::future::Future<Output = Result<Vec<DelegatedRun>, HostError>>,
-) -> Result<bool, HostError> {
+    delegated: impl std::future::Future<Output = Result<Vec<DelegatedRun>, E>>,
+) -> Result<bool, E> {
     let primary_active = active(thread);
     let delegated = delegated.await?;
     // Evaluate children even when Primary was active: read errors/poison and
@@ -219,7 +219,7 @@ pub trait SessionRealizationSource: Send + Sync {
         &self,
         session: &str,
         publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
-    ) -> Result<(), HostError>;
+    ) -> Result<(), RealizationError>;
 
     /// Publish one completed requirements compilation under the original slot
     /// lock. Frozen inputs remain readonly to ordinary visit callbacks.
@@ -307,7 +307,7 @@ impl SessionRealizations {
         &self,
         session: &str,
         publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), RealizationError> {
         self.0.retain_publication(session, publication)
     }
 
@@ -367,7 +367,7 @@ impl SessionRealizations {
         &self,
         session: &str,
         fence: awaken_session_mcp::McpQuiescenceAdmissionFence,
-    ) -> Result<bool, crate::host_error::HostError> {
+    ) -> Result<bool, RealizationError> {
         Ok(self.update_session(session, |slot| {
             slot.realization.staging.mcp.close_admission(fence)
         })?)

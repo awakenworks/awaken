@@ -2407,7 +2407,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                 .await
                 .err()
                 .expect("H7/H8 retired Candidate cannot become a live source");
-            assert_eq!(error.code, "session_terminal_unpublished_candidate");
+            assert_eq!(error.code(), "session_terminal_unpublished_candidate");
             let error = host
                 .realizer
                 .adopt_bound_session_environment(
@@ -2419,7 +2419,11 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                 )
                 .await
                 .expect_err("H7/H8 terminal Candidate cannot ordinarily adopt");
-            assert!(error.message.contains("cannot resume ordinary adoption"));
+            assert!(
+                error
+                    .to_string()
+                    .contains("cannot resume ordinary adoption")
+            );
             assert_eq!(
                 *events.lock().unwrap(),
                 before,

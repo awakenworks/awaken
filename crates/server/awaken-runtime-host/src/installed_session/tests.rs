@@ -413,7 +413,11 @@ fn frozen_inputs_keep_their_agent_publication() {
     assert!(frozen.validate_publication(None).is_ok(), "P3");
     assert!(frozen.validate_publication(Some(&retained)).is_ok(), "P4");
     let refused = frozen.validate_publication(Some(&other)).unwrap_err();
-    assert_eq!(refused.kind, crate::HostErrorKind::Internal, "P5");
+    assert_eq!(
+        refused.disposition(),
+        crate::realization_error::Disposition::Terminal,
+        "P5"
+    );
 }
 
 #[tokio::test]
@@ -582,7 +586,7 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
                     },
                     async {
                         polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                        Ok(Vec::new())
+                        Ok::<_, crate::HostError>(Vec::new())
                     },
                 ),
             )
@@ -814,7 +818,7 @@ async fn local_activity_combination_keeps_real_poison_fault_order() {
                         (&mut writer).await.expect("Q9 writer joined within reader"),
                         "Q9 actual caught callback poisoned Slot"
                     );
-                    Ok(vec![relationship(&child_id, status)])
+                    Ok::<_, crate::HostError>(vec![relationship(&child_id, status)])
                 },
             ))
             .catch_unwind()
@@ -919,7 +923,7 @@ async fn local_activity_combination_keeps_real_poison_fault_order() {
                 },
                 async {
                     polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    Ok(vec![relationship(&child_id, status)])
+                    Ok::<_, crate::HostError>(vec![relationship(&child_id, status)])
                 },
             ))
             .catch_unwind()

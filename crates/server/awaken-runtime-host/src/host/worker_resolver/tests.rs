@@ -2297,16 +2297,17 @@ async fn recovery_mode_controls_the_production_adoption_seam() {
         .await
         .expect_err("A2 missing UID cannot substitute for original source closure/access");
     assert_eq!(
-        refusal.kind,
-        crate::HostErrorKind::Unavailable,
+        refusal.disposition(),
+        crate::realization_error::Disposition::Retry,
         "A2 retryable source wait"
     );
     assert_eq!(
-        refusal.code, "session_environment_materialization_pending",
+        refusal.code(),
+        "session_environment_materialization_pending",
         "A2 canonical Root fence before source consumption"
     );
     assert_eq!(
-        refusal.message,
+        refusal.to_string(),
         "Session materialization remains pending its exact original effect and source closure",
         "A2 exact original-source refusal"
     );

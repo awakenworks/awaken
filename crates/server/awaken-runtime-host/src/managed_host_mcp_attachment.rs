@@ -72,7 +72,7 @@ impl awaken_session_mcp::McpStagingSession for ManagedHost {
             .host
             .realizer
             .projected_session_environment_provider(session, None)
-            .map_err(to_run_error)?;
+            .map_err(RunError::from)?;
         Ok(provider
             .realizer()
             .capabilities()

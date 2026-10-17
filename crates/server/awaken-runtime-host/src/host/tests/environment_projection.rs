@@ -1536,7 +1536,10 @@ async fn frozen_environment_selects_trusted_host_exactly() {
         Ok(_) => panic!("T2/E2"),
         Err(error) => error,
     };
-    assert!(error.message.contains("local Workdir provider"), "T2/E2");
+    assert!(
+        error.to_string().contains("local Workdir provider"),
+        "T2/E2"
+    );
 
     let mut isolated = session_environment(
         awaken_session_configuration_contract::SessionNetworkPolicy::None,
@@ -1565,7 +1568,7 @@ async fn frozen_environment_selects_trusted_host_exactly() {
         Ok(_) => panic!("I1/E3"),
         Err(error) => error,
     };
-    assert!(error.message.contains("trusted_host Workdir"), "I1/E3");
+    assert!(error.to_string().contains("trusted_host Workdir"), "I1/E3");
 }
 
 /// L1: `on_tool_use` means inference alone must not allocate a Sandbox.

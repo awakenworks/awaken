@@ -1123,9 +1123,12 @@ async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         Ok(_) => panic!("a resident session must reject a different sandbox"),
         Err(error) => error,
     };
-    assert_eq!(error.kind, HostErrorKind::Internal);
     assert_eq!(
-        error.message,
+        error.disposition(),
+        crate::realization_error::Disposition::Terminal
+    );
+    assert_eq!(
+        error.to_string(),
         "sandbox t-foreign-resident does not belong to Session t-resident-adoption"
     );
     assert_eq!(
@@ -1195,9 +1198,12 @@ async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         Ok(_) => panic!("a retained session must reject a different sandbox"),
         Err(error) => error,
     };
-    assert_eq!(error.kind, HostErrorKind::Internal);
     assert_eq!(
-        error.message,
+        error.disposition(),
+        crate::realization_error::Disposition::Terminal
+    );
+    assert_eq!(
+        error.to_string(),
         "sandbox t-foreign-retained does not belong to Session t-retained-adoption"
     );
 

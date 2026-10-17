@@ -162,7 +162,7 @@ async fn managed_projection_without_a_lease_never_falls_back_to_unowned() {
             Ok(_) => panic!("M1/M3 lost Managed Root became Unowned"),
         };
         assert_eq!(
-            error.code,
+            error.code(),
             if closed {
                 "session_environment_realization_closed"
             } else {

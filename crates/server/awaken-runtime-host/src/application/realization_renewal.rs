@@ -99,7 +99,7 @@ impl crate::SharedHost {
                 // to recreate a slot or overwrite a later installed lease.
                 self.realizer
                     .execution
-                    .authorize_worker_effect(|| {
+                    .authorize_worker_effect::<_, crate::HostError>(|| {
                         Ok(realizations
                             .modify_realization(&session_id, |state| {
                                 Arc::ptr_eq(&state.execution.phase, &realization)

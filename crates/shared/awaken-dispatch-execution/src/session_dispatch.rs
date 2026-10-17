@@ -1,5 +1,6 @@
 // @formal entrypoint model_route.fallback_preserves_the_complete_publication_pin
 //! Compiles one dispatch envelope from a correlated snapshot of installed inputs.
+use crate::AdmissionError;
 use crate::placement::{
     InferencePlaintextHolderDecision, inference_plaintext_holder_decision, remote_worker_placement,
     self_hosted_holder_for_boundary, worker_local_credentials,
@@ -7,7 +8,6 @@ use crate::placement::{
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_run_ingress_contract::RunDispatch;
 use awaken_runtime_contract::RunActivation;
-use awaken_session_realization::host_error::HostError;
 
 /// Values read from the existing Session slot, never another registry or authority.
 pub struct DispatchPreparation<'a> {
@@ -22,7 +22,7 @@ pub struct DispatchPreparation<'a> {
 pub fn inference_plaintext_holder(
     activation: &RunActivation,
     profile: impl FnOnce() -> Option<awaken_credential_contract::CredentialRealizationProfile>,
-) -> Result<Option<awaken_runtime_contract::PlaintextHolder>, HostError> {
+) -> Result<Option<awaken_runtime_contract::PlaintextHolder>, AdmissionError> {
     Ok(match inference_plaintext_holder_decision(activation)? {
         InferencePlaintextHolderDecision::NotRequired => None,
         InferencePlaintextHolderDecision::Exact(holder) => Some(holder),
@@ -32,7 +32,7 @@ pub fn inference_plaintext_holder(
                 |p| p.inference_holder,
             );
             if holder.boundary != boundary {
-                return Err(HostError::bad_request(
+                return Err(AdmissionError::rejected(
                     "the Session Environment credential holder conflicts with the selected model backend",
                 ));
             }
@@ -89,16 +89,19 @@ impl<'a> DispatchPreparation<'a> {
             .unwrap_or_default()
     }
 
-    pub fn fresh(self) -> Result<RunDispatch, HostError> {
+    pub fn fresh(self) -> Result<RunDispatch, AdmissionError> {
         self.resolve(awaken_observability::current_traceparent(), true, true)
     }
-    pub fn resume(self) -> Result<RunDispatch, HostError> {
+    pub fn resume(self) -> Result<RunDispatch, AdmissionError> {
         self.resolve(awaken_observability::current_traceparent(), true, false)
     }
-    pub fn extension(self) -> Result<RunDispatch, HostError> {
+    pub fn extension(self) -> Result<RunDispatch, AdmissionError> {
         self.resolve(awaken_observability::current_traceparent(), false, true)
     }
-    pub fn with_traceparent(self, traceparent: Option<String>) -> Result<RunDispatch, HostError> {
+    pub fn with_traceparent(
+        self,
+        traceparent: Option<String>,
+    ) -> Result<RunDispatch, AdmissionError> {
         self.resolve(traceparent, true, true)
     }
     fn resolve(
@@ -106,7 +109,7 @@ impl<'a> DispatchPreparation<'a> {
         traceparent: Option<String>,
         associate_prepared_session: bool,
         fresh_activation: bool,
-    ) -> Result<RunDispatch, HostError> {
+    ) -> Result<RunDispatch, AdmissionError> {
         // `UNCONFIGURED_MODEL_REF` is a Coordinator-owned guidance executor, not a
         // remotely materializable model.  In a coordinator-only/all-in-one
         // deployment the registered Worker deliberately does not advertise the
@@ -115,7 +118,7 @@ impl<'a> DispatchPreparation<'a> {
         // leaving a permanently pending run and reporting a misleading 60-second
         // dispatch-pool timeout.
         if !self.model_configured {
-            return Err(HostError::bad_request(
+            return Err(AdmissionError::rejected(
                 "No model is configured. Connect a provider and select a model in Author > Quickstart before running this Agent.",
             ));
         }
@@ -127,7 +130,7 @@ impl<'a> DispatchPreparation<'a> {
             &workspace,
         )
         .map_err(|error| {
-            HostError::bad_request(format!(
+            AdmissionError::rejected(format!(
                 "cannot freeze Agent execution publications: {error}"
             ))
         })?;
@@ -179,7 +182,7 @@ impl<'a> DispatchPreparation<'a> {
                 .as_ref()
                 .is_some_and(|resources| resources.workspace_id != scope)
             {
-                return Err(HostError::bad_request(
+                return Err(AdmissionError::rejected(
                     "Dispatch resource Workspace conflicts with its Thread",
                 ));
             }
@@ -192,10 +195,8 @@ impl<'a> DispatchPreparation<'a> {
             request = request.with_inference_plaintext_holder(holder);
         }
         if let Some(resources) = resources {
-            let envelope =
-                crate::session_envelope::resource_envelope(&resources).map_err(|error| {
-                    HostError::internal(format!("serialize Session resource manifest: {error}"))
-                })?;
+            let envelope = crate::session_envelope::resource_envelope(&resources)
+                .map_err(AdmissionError::ResourceEnvelope)?;
             request = request.with_session_resources(envelope);
         }
         let mut session_mcp_credentials = None;
@@ -212,9 +213,8 @@ impl<'a> DispatchPreparation<'a> {
             // The Session validates its projection before the Run is durable and
             // publishes the MCP credentials a claim must satisfy; claim admission
             // compares them and never decodes the envelope.
-            let (projection_json, requirements) = projection
-                .dispatch()
-                .map_err(|error| HostError::internal(error.to_string()))?;
+            let (projection_json, requirements) =
+                projection.dispatch().map_err(AdmissionError::from)?;
             session_mcp_credentials = Some(requirements);
             request = request
                 .with_session_runtime(awaken_run_ingress_contract::SessionRuntimeEnvelope::new(

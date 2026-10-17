@@ -251,10 +251,14 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
             let error = effect
                 .expect("D4 missing dependency precedes poison")
                 .expect_err("D4 no materializer cannot reach Git");
-            assert_eq!(error.kind, crate::HostErrorKind::Internal, "D4");
-            assert_eq!(error.code, "internal", "D4");
             assert_eq!(
-                error.message,
+                error.disposition(),
+                crate::realization_error::Disposition::Terminal,
+                "D4"
+            );
+            assert_eq!(error.code(), "internal", "D4");
+            assert_eq!(
+                error.to_string(),
                 "repository credential requires a configured credential materializer",
                 "D4"
             );
@@ -420,7 +424,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         )
         .await
         .expect_err("P5 target mismatch rejects before Gateway refresh");
-    assert!(invalid.message.contains("another HTTPS origin"), "P5");
+    assert!(invalid.to_string().contains("another HTTPS origin"), "P5");
     assert_eq!(sequenced.calls.load(Ordering::SeqCst), 1, "P5");
     assert!(invalid_realizer.0.lock().unwrap().is_empty(), "P5");
 
@@ -446,7 +450,9 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         .await
         .expect_err("P5 source mismatch rejects against the authored binding");
     assert!(
-        invalid_source.message.contains("selects another source"),
+        invalid_source
+            .to_string()
+            .contains("selects another source"),
         "P5"
     );
     assert_eq!(sequenced.calls.load(Ordering::SeqCst), 1, "P5");
@@ -559,7 +565,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         .expect_err("P6 refreshed Direct transport must not fall back");
     assert!(
         downgrade_error
-            .message
+            .to_string()
             .contains("cannot fall back to direct credentials"),
         "P6"
     );
@@ -695,9 +701,9 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         ).await.expect_err("C13 unknown authority must not grant publication");
         match refused {
             crate::provisioning::RepositoryPublicationActivationError::Failed(error) => {
-                assert_eq!(error.kind, crate::HostErrorKind::Unavailable, "C13 unknown typed kind");
-                assert_eq!(error.code, "unavailable", "C13 original code");
-                assert_eq!(error.message, "Repository binding decision is indeterminate: injected unknown authority", "C13 original reason");
+                assert_eq!(error.disposition(), crate::realization_error::Disposition::Retry, "C13 unknown typed kind");
+                assert_eq!(error.code(), "unavailable", "C13 original code");
+                assert_eq!(error.to_string(), "Repository binding decision is indeterminate: injected unknown authority", "C13 original reason");
             }
             _ => panic!("C13 verifier failure is not a physical publication rejection"),
         }
@@ -711,7 +717,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
             published.as_ref(), &expectation, Some(&fence),
         ).await.expect_err("C13 pin rejects before verifier");
         assert!(matches!(refused, crate::provisioning::RepositoryPublicationActivationError::Failed(error)
-            if error.kind == crate::HostErrorKind::Internal && error.message == "invalid Repository credential execution pin: Repository credential pin selects another source"));
+            if error.disposition() == crate::realization_error::Disposition::Terminal && error.to_string() == "invalid Repository credential execution pin: Repository credential pin selects another source"));
         assert_eq!(remote_verifier.calls.load(Ordering::SeqCst), 3, "C13 malformed no refresh");
         assert_eq!(published.1.lock().unwrap().len(), 1, "C13 malformed zero effect");
         *remote_verifier.next_transport.lock().unwrap() = Some(awaken_resource_contract::RepositoryTransport::Direct);
@@ -720,7 +726,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
             published.as_ref(), &expectation, Some(&fence),
         ).await.expect_err("C13 upstream direct downgrade rejects");
         assert!(matches!(refused, crate::provisioning::RepositoryPublicationActivationError::Failed(error)
-            if error.kind == crate::HostErrorKind::Internal && error.message == "Gateway-mediated Repository cannot fall back to direct credentials"));
+            if error.disposition() == crate::realization_error::Disposition::Terminal && error.to_string() == "Gateway-mediated Repository cannot fall back to direct credentials"));
         assert_eq!(remote_verifier.calls.load(Ordering::SeqCst), 4, "C13 one downgrade decision");
         assert_eq!(published.1.lock().unwrap().len(), 1, "C13 downgrade zero effect");
 
@@ -738,7 +744,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
             published.as_ref(), &expectation, Some(&fence),
         )).catch_unwind().await.expect("C12 missing verifier precedes poison").expect_err("C12 refused");
         assert!(matches!(refused, crate::provisioning::RepositoryPublicationActivationError::Failed(error)
-            if error.kind == crate::HostErrorKind::Internal && error.message == "terminal Repository publication has no binding verifier"));
+            if error.disposition() == crate::realization_error::Disposition::Terminal && error.to_string() == "terminal Repository publication has no binding verifier"));
         assert!(std::panic::AssertUnwindSafe(missing.realizer.staging.realize_repository_activation(
             session, missing.local_workspace(), repository, &staged.binding_checks,
             published.as_ref(), awaken_provisioning_contract::RepositoryRealizationIntent::Initialize,
@@ -1082,7 +1088,9 @@ async fn repository_credential_realization_follows_the_decision_table() {
                             .await
                             .expect_err("H14 second Git effect revalidates liveness");
                         assert!(
-                            retry.message.contains("credential material unavailable"),
+                            retry
+                                .to_string()
+                                .contains("credential material unavailable"),
                             "H14"
                         );
                         assert_eq!(realizer.0.lock().unwrap().len(), 1, "H14");

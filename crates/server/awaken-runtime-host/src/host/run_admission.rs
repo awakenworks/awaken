@@ -13,6 +13,7 @@ impl SharedHost {
         awaken_dispatch_execution::session_dispatch::inference_plaintext_holder(activation, || {
             self.thread_credential_realization(&activation.thread_id.0)
         })
+        .map_err(HostError::from)
     }
 
     /// Bind the same fresh-root format before direct execution can commit an
@@ -101,8 +102,11 @@ mod tests {
                     let error = admitted
                         .expect("R1/R2 model admission precedes slot access")
                         .expect_err("R1/R2 reject an unconfigured model");
-                    assert_eq!(error.kind, crate::HostErrorKind::BadRequest);
-                    assert!(error.message.starts_with("No model is configured."));
+                    assert!(matches!(
+                        error,
+                        awaken_dispatch_execution::AdmissionError::Rejected(_)
+                    ));
+                    assert!(error.to_string().starts_with("No model is configured."));
                 } else if poisoned {
                     assert!(
                         admitted.is_err(),

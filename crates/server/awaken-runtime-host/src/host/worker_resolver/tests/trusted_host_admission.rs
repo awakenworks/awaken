@@ -22,8 +22,8 @@ async fn trusted_host_admission_rejection_preserves_permanent_class_without_effe
         .validate_session_environment_capabilities(&provider, &spec)
         .expect_err("T1 incompatible exact tier");
     assert_eq!(
-        rejected.kind,
-        crate::HostErrorKind::BadRequest,
+        rejected.disposition(),
+        crate::realization_error::Disposition::Rejected,
         "T1 absorbing admission"
     );
     spec.isolation = awaken_provisioning_contract::IsolationClass::Workdir;

@@ -167,7 +167,7 @@ impl SessionRealizationSource for GateAfterCanonicalFinish {
         &self,
         session: &str,
         publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
-    ) -> Result<(), crate::HostError> {
+    ) -> Result<(), crate::realization_error::RealizationError> {
         SessionRealizationSource::retain_publication(self.inner.as_ref(), session, publication)
     }
 
@@ -264,7 +264,7 @@ async fn original_relay(host: &Arc<crate::SharedHost>) -> awaken_session_mcp::Mc
 async fn retire_component_current(
     host: &crate::SharedHost,
     session: &str,
-) -> Result<bool, crate::HostError> {
+) -> Result<bool, crate::realization_error::RealizationError> {
     host.realizer
         .environments
         .retire_session_environment_for_revocation(

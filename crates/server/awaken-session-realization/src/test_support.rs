@@ -7,6 +7,7 @@
 /// Host fixtures use the actual Control-clock coordinate for live replies.
 /// Deliberately rejects expired input: an expiry test must construct and age
 /// its request observation explicitly, never silently manufacture fresh TTL.
+use crate::realization_error::RealizationError;
 pub fn test_lease_receipt(
     lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
 ) -> awaken_session_realization_contract::SessionRealizationLeaseReceipt {
@@ -57,7 +58,7 @@ pub fn create_session_environment<'a>(
     source_handle: Option<&'a awaken_provisioning_contract::SandboxHandle>,
     intent: awaken_session_environment_contract::EnvironmentRealizationKind,
 ) -> impl std::future::Future<
-    Output = Result<crate::session_environment::SessionEnvironment, crate::host_error::HostError>,
+    Output = Result<crate::session_environment::SessionEnvironment, RealizationError>,
 > + Send
 + 'a {
     environments.create_session_environment_with_provider_effect(

@@ -11,7 +11,7 @@ use crate::environment_owner::{
     BoundSessionEnvironmentIdentity, RetiringEnvironmentOwner, RetiringSessionEnvironment,
     SessionEnvironmentOwner, SessionEnvironmentPreparation, SessionEnvironmentRetirementCause,
 };
-use crate::host_error::HostError;
+use crate::realization_error::{AuthorityLoss, PendingState, ProjectionConflict, RealizationError};
 use crate::session_environment::{
     BoundEnvironmentPreparationMode, PreparedBoundEnvironment, TerminalEffectMode,
     TerminalEnvironmentInstallation,
@@ -29,7 +29,7 @@ impl EnvironmentHolding {
         installation: TerminalEnvironmentInstallation<'_>,
         resident: Option<Arc<crate::session_environment::SessionEnvironment>>,
         mode: BoundEnvironmentPreparationMode,
-    ) -> Result<Option<(Arc<crate::session_environment::SessionEnvironment>, bool)>, HostError>
+    ) -> Result<Option<(Arc<crate::session_environment::SessionEnvironment>, bool)>, RealizationError>
     {
         let sessions = &self.sessions;
         let exec = self;
@@ -57,7 +57,7 @@ impl EnvironmentHolding {
                         .adopt_effective_for_effect(
                             spec,
                             handle.ok_or_else(|| {
-                                HostError::internal(
+                                RealizationError::invariant(
                                     "live bound Environment recovery has no durable handle",
                                 )
                             })?,
@@ -68,8 +68,8 @@ impl EnvironmentHolding {
                         )
                         .await
                         .map_err(|error| {
-                            HostError::unavailable_classified(
-                                "session_live_environment_adoption_indeterminate",
+                            RealizationError::pending(
+                                PendingState::LiveAdoptionIndeterminate,
                                 error.to_string(),
                             )
                         })?,
@@ -87,8 +87,8 @@ impl EnvironmentHolding {
                         )
                         .await
                         .map_err(|error| {
-                            HostError::unavailable_classified(
-                                "session_terminal_environment_preparation_indeterminate",
+                            RealizationError::pending(
+                                PendingState::TerminalPreparationIndeterminate,
                                 error.to_string(),
                             )
                         })?
@@ -131,8 +131,8 @@ impl EnvironmentHolding {
                     |_| Ok(()),
                 )
                 .map_err(|error| {
-                    HostError::unavailable_classified(
-                        "session_terminal_repository_rebind_authority_lost",
+                    RealizationError::authority_lost(
+                        AuthorityLoss::RepositoryRebindAuthorityLost,
                         error.to_string(),
                     )
                 })
@@ -152,8 +152,8 @@ impl EnvironmentHolding {
                     )
                     .await
                     .map_err(|error| {
-                        HostError::unavailable_classified(
-                            "session_terminal_repository_source_rebind_indeterminate",
+                        RealizationError::pending(
+                            PendingState::TerminalRepositorySourceRebindIndeterminate,
                             error.to_string(),
                         )
                     })?,
@@ -166,7 +166,7 @@ impl EnvironmentHolding {
                     candidate,
                 )) = &*owner
                 else {
-                    return Err(HostError::internal(
+                    return Err(RealizationError::invariant(
                         "terminal source rebind lost its Candidate",
                     ));
                 };
@@ -177,7 +177,7 @@ impl EnvironmentHolding {
                         effect_id: effect_fence.operation_id().to_owned(),
                     },
                 )?;
-                Ok::<_, HostError>(())
+                Ok::<_, RealizationError>(())
             })?;
             environment = fresh;
             adopted = false;
@@ -202,8 +202,8 @@ impl EnvironmentHolding {
                 || environment.lifecycle().handle()
                     != retiring.owned.environment().lifecycle().handle()
             {
-                return Err(HostError::unavailable_classified(
-                    "session_terminal_environment_owner_changed",
+                return Err(RealizationError::authority_lost(
+                    AuthorityLoss::TerminalOwnerChanged,
                     "terminal reconstruction conflicts with the exact retained owner",
                 ));
             }
@@ -220,7 +220,7 @@ impl EnvironmentHolding {
                         identity,
                     ) = &candidate.origin
                     else {
-                        return Err(HostError::internal(
+                        return Err(RealizationError::invariant(
                             "live source adoption has no durable Environment identity",
                         ));
                     };
@@ -247,8 +247,8 @@ impl EnvironmentHolding {
                         == BoundEnvironmentPreparationMode::TerminalRepositoryPublication
                         && cleanup.retained_preparation_owner(thread, &environment);
                     if !still_resident && !retained_terminal {
-                        return Err(HostError::unavailable_classified(
-                            "session_live_environment_owner_not_resident",
+                        return Err(RealizationError::pending(
+                            PendingState::LiveOwnerNotResident,
                             "live source recovery found a non-resident Environment owner",
                         ));
                     }
@@ -264,7 +264,7 @@ impl EnvironmentHolding {
                         || candidate.environment.lifecycle().handle()
                             != environment.lifecycle().handle()
                     {
-                        return Err(HostError::internal(
+                        return Err(RealizationError::invariant(
                             "terminal committed Candidate changed its exact Environment",
                         ));
                     }
@@ -276,12 +276,12 @@ impl EnvironmentHolding {
                     if let Some(binding) = binding {
                         let (identity, pending_binding) =
                             exec.pending_environment_adoption(thread).ok_or_else(|| {
-                                HostError::internal(
+                                RealizationError::invariant(
                                     "terminal bound Environment has no pending durable owner",
                                 )
                             })?;
                         if pending_binding != binding {
-                            return Err(HostError::internal(
+                            return Err(RealizationError::invariant(
                                 "terminal bound Environment changed its durable binding",
                             ));
                         }
@@ -308,7 +308,7 @@ impl EnvironmentHolding {
                             thread,
                             cause,
                             &environment,
-                            "session_terminal_environment_owner_changed",
+                            AuthorityLoss::TerminalOwnerChanged,
                             "terminal unbound Environment lost its exact owner fence",
                         )?;
                     }
@@ -321,7 +321,7 @@ impl EnvironmentHolding {
                             thread,
                             cause,
                             &environment,
-                            "session_terminal_environment_owner_changed",
+                            AuthorityLoss::TerminalOwnerChanged,
                             "terminal Environment lost its exact owner fence",
                         )?;
                     }
@@ -347,7 +347,7 @@ impl EnvironmentHolding {
         effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
         resolved_resources: Option<&session_resource::ResolvedSessionResources>,
         mode: BoundEnvironmentPreparationMode,
-    ) -> Result<PreparedBoundEnvironment, HostError> {
+    ) -> Result<PreparedBoundEnvironment, RealizationError> {
         let realizations = self.sessions.clone();
         let exec = self;
         if mode.requires_live_source()
@@ -365,8 +365,8 @@ impl EnvironmentHolding {
                 })
                 .unwrap_or(false)
         {
-            return Err(HostError::unavailable_classified(
-                "session_terminal_unpublished_candidate",
+            return Err(RealizationError::pending(
+                PendingState::TerminalUnpublishedCandidate,
                 "live source preparation cannot consume an unpublished Environment Candidate",
             ));
         }
@@ -403,8 +403,8 @@ impl EnvironmentHolding {
             )
             .await
             .map_err(|error| {
-                HostError::unavailable_classified(
-                    "session_environment_effect_observation_indeterminate",
+                RealizationError::pending(
+                    PendingState::EffectObservationIndeterminate,
                     error.to_string(),
                 )
             })?;
@@ -412,8 +412,8 @@ impl EnvironmentHolding {
             match &observation {
                 awaken_provisioning_contract::SandboxObservation::Ready => {}
                 awaken_provisioning_contract::SandboxObservation::Provisioning => {
-                    return Err(HostError::unavailable_classified(
-                        "session_environment_live_source_provisioning",
+                    return Err(RealizationError::pending(
+                        PendingState::LiveSourceProvisioning,
                         "Session Environment live source is still provisioning",
                     ));
                 }
@@ -425,7 +425,7 @@ impl EnvironmentHolding {
                 | awaken_provisioning_contract::SandboxObservation::Disposing { .. }) => {
                     provider
                         .adoption().validate_closed_observation(&handle, observation)
-                        .map_err(|error| HostError::internal(error.to_string()))?;
+                        .map_err(RealizationError::from)?;
                     if mode == BoundEnvironmentPreparationMode::TerminalRepositoryPublication
                         && matches!(
                             observation,
@@ -438,15 +438,15 @@ impl EnvironmentHolding {
                             observation.clone(),
                         ));
                     }
-                    return Err(HostError::unavailable_classified(
-                        "session_environment_live_source_not_ready",
+                    return Err(RealizationError::pending(
+                        PendingState::LiveSourceNotReady,
                         "Session Environment live source is already closed",
                     ));
                 }
                 awaken_provisioning_contract::SandboxObservation::Incompatible { reason } => {
-                    return Err(HostError::classified(
-                        "session_environment_effect_incompatible",
-                        reason,
+                    return Err(RealizationError::conflict(
+                        ProjectionConflict::EffectIncompatible,
+                        reason.clone(),
                     ));
                 }
             }
@@ -460,8 +460,8 @@ impl EnvironmentHolding {
                 )
             }
             awaken_provisioning_contract::SandboxObservation::Provisioning => {
-                return Err(HostError::unavailable_classified(
-                    "session_environment_effect_provisioning",
+                return Err(RealizationError::pending(
+                    PendingState::EffectProvisioning,
                     "Session Environment is still provisioning",
                 ));
             }
@@ -471,7 +471,7 @@ impl EnvironmentHolding {
             } => {
                 provider
                     .adoption().validate_closed_observation(&handle, &observation)
-                    .map_err(|error| HostError::internal(error.to_string()))?;
+                    .map_err(RealizationError::from)?;
                 if let Some(environment) = resident {
                     let cause = SessionEnvironmentRetirementCause::Terminal {
                         effect_id: effect_fence.operation_id().to_owned(),
@@ -486,7 +486,7 @@ impl EnvironmentHolding {
                             == BoundEnvironmentPreparationMode::TerminalDisposal
                             && cleanup.retained_preparation_owner(thread, &environment);
                         if !retained_terminal_preparation {
-                            exec.retire_exact_environment(thread, cause, &environment, "session_environment_effect_fence_lost", "lost the exact unavailable Environment owner")?;
+                            exec.retire_exact_environment(thread, cause, &environment, AuthorityLoss::EffectFenceLost, "lost the exact unavailable Environment owner")?;
                         }
                     }
                     // Provider-proved absence closes physical I/O, but the
@@ -506,7 +506,7 @@ impl EnvironmentHolding {
             observation @ awaken_provisioning_contract::SandboxObservation::Terminal { .. } => {
                 provider
                     .adoption().validate_closed_observation(&handle, &observation)
-                    .map_err(|error| HostError::internal(error.to_string()))?;
+                    .map_err(RealizationError::from)?;
                 (
                     resident,
                     TerminalEffectMode::for_terminal_source(
@@ -518,7 +518,7 @@ impl EnvironmentHolding {
             observation @ awaken_provisioning_contract::SandboxObservation::Disposing { .. } => {
                 provider
                     .adoption().validate_closed_observation(&handle, &observation)
-                    .map_err(|error| HostError::internal(error.to_string()))?;
+                    .map_err(RealizationError::from)?;
                 // Disposing is durable proof that every source-durability
                 // participant required by the preceding operation crossed the
                 // provider cleanup gate. It does not fabricate a terminal-scoped
@@ -532,8 +532,8 @@ impl EnvironmentHolding {
                 )
             }
             awaken_provisioning_contract::SandboxObservation::Incompatible { reason } => {
-                return Err(HostError::classified(
-                    "session_environment_effect_incompatible",
+                return Err(RealizationError::conflict(
+                    ProjectionConflict::EffectIncompatible,
                     reason,
                 ));
             }

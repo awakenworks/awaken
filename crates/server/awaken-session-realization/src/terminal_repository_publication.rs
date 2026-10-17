@@ -15,7 +15,6 @@ use awaken_session_state_contract::{
 };
 use awaken_session_types::RunError;
 
-use crate::host_error::to_run_error;
 use crate::terminal_cleanup::TerminalCleanup;
 
 impl TerminalCleanup {
@@ -53,14 +52,14 @@ impl TerminalCleanup {
             .await;
         let mut current_lease = cleanup
             .authorize_lease(&command.session_id, lease)
-            .map_err(to_run_error)?;
+            .map_err(awaken_session_types::RunError::from)?;
         let staged = staging
             .stage_terminal_repository_publication_input(&workspace, &command, &current_lease)
             .await?;
 
         current_lease = cleanup
             .authorize_lease(&command.session_id, lease)
-            .map_err(to_run_error)?;
+            .map_err(awaken_session_types::RunError::from)?;
         let (assignment, resolved_resources) = staging
             .sessions
             .read_realization(command.session_id.as_str(), |r| {
@@ -98,11 +97,11 @@ impl TerminalCleanup {
                 crate::session_environment::BoundEnvironmentPreparationMode::TerminalRepositoryPublication,
             )
             .await
-            .map_err(to_run_error)?;
+            .map_err(awaken_session_types::RunError::from)?;
         if let Some(observation) = prepared.publication_source_closure() {
             cleanup
                 .authorize_lease(&command.session_id, lease)
-                .map_err(to_run_error)?;
+                .map_err(awaken_session_types::RunError::from)?;
             let rejection = SessionRepositoryPublicationRejection::source_closed(
                 &command,
                 binding,
@@ -119,7 +118,7 @@ impl TerminalCleanup {
         }
         current_lease = cleanup
             .authorize_lease(&command.session_id, lease)
-            .map_err(to_run_error)?;
+            .map_err(awaken_session_types::RunError::from)?;
         let environment = prepared
             .environment
             .map(|(environment, _)| environment)
@@ -143,7 +142,7 @@ impl TerminalCleanup {
             .await;
         cleanup
             .authorize_lease(&command.session_id, lease)
-            .map_err(to_run_error)?;
+            .map_err(awaken_session_types::RunError::from)?;
         match effect {
             Ok(effect_receipt) => Ok(SessionRepositoryPublicationEffect::Published(
                 SessionRepositoryPublicationReceipt::new(&command, effect_receipt),
@@ -160,7 +159,7 @@ impl TerminalCleanup {
                 )?,
             )),
             Err(crate::provisioning::RepositoryPublicationActivationError::Failed(error)) => {
-                Err(to_run_error(error))
+                Err(awaken_session_types::RunError::from(error))
             }
         }
     }

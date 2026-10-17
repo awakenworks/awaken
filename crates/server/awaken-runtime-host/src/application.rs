@@ -560,6 +560,7 @@ impl crate::SharedHost {
                 },
             )
             .await
+            .map_err(crate::HostError::from)
     }
 
     #[cfg(test)]
@@ -906,7 +907,7 @@ impl crate::SharedHost {
                         Some(preparation) => preparation.authority_ended().await,
                         None => std::future::pending().await,
                     }
-                } => return Err(error),
+                } => return Err(error.into()),
                 result = stage => result.map_err(|error| crate::HostError::internal(error.to_string()))?,
             }
         }

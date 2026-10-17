@@ -174,9 +174,9 @@ async fn detached_realizer_binds_only_the_original_claim_and_preserves_failure_c
         match row {
             "direct" => assert!(!result.unwrap()),
             "applied" => assert!(result.unwrap()),
-            "fenced" => assert_eq!(result.unwrap_err().code, "dispatch_claim_stale"),
+            "fenced" => assert_eq!(result.unwrap_err().code(), "dispatch_claim_stale"),
             "unavailable" => assert_eq!(
-                result.unwrap_err().code,
+                result.unwrap_err().code(),
                 "dispatch_sandbox_binding_unavailable"
             ),
             "missing_role" => assert!(
@@ -255,7 +255,7 @@ async fn detached_realizer_keeps_committed_identity_and_never_rebinds_resource_r
         match row {
             "committed_then_fenced" => {
                 let failure = result.expect_err("stale dispatch cannot publish");
-                assert_eq!(failure.error.code, "dispatch_claim_stale");
+                assert_eq!(failure.error.code(), "dispatch_claim_stale");
                 assert_eq!(failure.committed_identity, Some(expected));
                 assert_eq!(
                     selected.bindings.lock().unwrap().as_slice(),

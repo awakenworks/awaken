@@ -7,7 +7,6 @@
 //! `WorkerProjectionSynchronizer` and the existing Host MCP effects.
 
 use super::SessionProjectionExecution;
-use crate::host_error::to_run_error;
 use crate::session_environment::SessionEnvironmentAdoptionDisposition;
 use awaken_session_configuration_contract::mcp as session_mcp;
 use awaken_session_configuration_contract::resource as session_resource;
@@ -184,7 +183,7 @@ where
                     published_snapshot.cloned(),
                     Some(projection.resources.skills()),
                 )
-                .map_err(to_run_error)?;
+                .map_err(awaken_session_types::RunError::from)?;
             let a2a_only = canonical_publication
                 .as_ref()
                 .is_some_and(|publication| !requires_local_environment(&publication.resolved_spec));
@@ -213,13 +212,13 @@ where
                         &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
                     )
                 }
-                .map_err(to_run_error)?;
+                .map_err(awaken_session_types::RunError::from)?;
                 exec.rebuild_claimed_legacy_environment_after_revocation(
                     session_id.as_str(),
                     provider,
                 )
                 .await
-                .map_err(to_run_error)?;
+                .map_err(awaken_session_types::RunError::from)?;
             }
         }
         // A claim authorizes live Resource revalidation. A preparation Stage
@@ -251,7 +250,7 @@ where
                 Some(lease.clone()),
             )
             .await
-            .map_err(to_run_error)?;
+            .map_err(awaken_session_types::RunError::from)?;
         // A Control-synchronized projection is the same complete Managed
         // Session authority as a co-located SessionRuntime installation. Mark
         // that existing ownership only after every frozen fact is installed;
@@ -287,7 +286,7 @@ where
         let adoption = if let Some(binding) = projection.environment.binding() {
             let provider = exec
                 .projected_session_environment_provider(session_id.as_str(), None)
-                .map_err(to_run_error)?;
+                .map_err(awaken_session_types::RunError::from)?;
             self.host
                 .realizer()
                 .adopt_bound_session_environment(
@@ -298,7 +297,7 @@ where
                     self.rebuild_unavailable_environment,
                 )
                 .await
-                .map_err(to_run_error)?
+                .map_err(awaken_session_types::RunError::from)?
         } else {
             SessionEnvironmentAdoptionDisposition::NoBinding
         };
@@ -329,7 +328,7 @@ where
             self.host
                 .ensure_session_substrate(session_id.as_str(), published_snapshot.as_ref())
                 .await
-                .map_err(to_run_error)?;
+                .map_err(awaken_session_types::RunError::from)?;
             true
         } else {
             false

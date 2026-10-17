@@ -19,7 +19,7 @@ pub(super) async fn construct_claimed_child(
     let substrate = host
         .session_child_execution_substrate(&session_thread_id.0, None)
         .await
-        .map_err(awaken_dispatch_execution::session_worker_resolver::map_host_resolution_error)?;
+        .map_err(awaken_dispatch_execution::session_worker_resolver::map_admission_error)?;
     let environment = substrate.environment;
     let snapshot = &claimed.request.activation.snapshot;
     let authorization = crate::config::effective_tool_authorization(
@@ -57,7 +57,7 @@ pub(super) async fn construct_claimed_child(
                 inherited: claimed.request.activation.inherited_toolsets().cloned(),
             },
         )
-        .map_err(awaken_dispatch_execution::session_worker_resolver::map_host_resolution_error)?
+        .map_err(awaken_dispatch_execution::session_worker_resolver::map_admission_error)?
     {
         runtime = runtime.with_run_delegation(delegation);
     }

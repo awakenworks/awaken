@@ -163,6 +163,6 @@ impl crate::host::SharedHost {
         self.realizer
             .persist_authorized_environment_before_publish(thread, candidate, &effect)
             .await
-            .map_err(|failure| failure.error)
+            .map_err(|failure| failure.error.into())
     }
 }

@@ -23,13 +23,13 @@ fn denies(spec: &pc::SandboxSpec) -> bool {
 
 #[test]
 fn repository_binding_failure_controls_host_retry_semantics() {
-    // Cause/effect table: malformed/denied binding -> caller BadRequest;
-    // concurrent authority -> Conflict; authority outage or unknown read ->
-    // Unavailable; corrupt authority response -> Internal. This is the final
-    // Host boundary, so the typed cause must survive without message parsing.
+    // Cause/effect table: malformed/denied binding or a concurrently changed
+    // authority (a stale selection) -> caller BadRequest; authority outage or
+    // unknown read -> Unavailable; corrupt authority response -> Internal. The
+    // Host boundary enters through the one realization classifier, so it now
+    // agrees with the Run boundary's table, which pins Conflict -> BadRequest.
     // R1..R6 cover the complete verifier enum through the sole classifier;
-    // kind, literal code/message and Display are observable effects. The Run
-    // boundary's original table separately pins Conflict -> BadRequest.
+    // kind, literal code/message and Display are observable effects.
     // There is no lock, IO, state or poison precondition in this pure mapping.
     use crate::host::HostErrorKind as K;
     use awaken_resource_contract::RepositoryBindingVerifierError as E;
@@ -48,8 +48,8 @@ fn repository_binding_failure_controls_host_retry_semantics() {
         ),
         (
             E::Conflict { detail: "x".into() },
-            K::Conflict,
-            "conflict",
+            K::BadRequest,
+            "invalid_request",
             "Repository binding authority changed concurrently: x",
         ),
         (
@@ -72,7 +72,8 @@ fn repository_binding_failure_controls_host_retry_semantics() {
         ),
     ];
     for (error, expected, code, message) in cases {
-        let actual = repository_binding_host_error(error);
+        let actual =
+            crate::HostError::from(crate::realization_error::RealizationError::from(error));
         assert_eq!(actual.kind, expected);
         assert_eq!(actual.code, code);
         assert_eq!(actual.message, message);
@@ -861,10 +862,10 @@ async fn repository_workspace_rejects_a_provider_with_split_tool_and_process_pat
     };
     assert!(
         error
-            .message
+            .to_string()
             .contains("backend isolation is weaker than requested"),
         "W1/E2: {}",
-        error.message
+        error
     );
 }
 
@@ -967,10 +968,10 @@ async fn projected_acp_rejects_a_provider_with_split_tool_and_process_paths() {
     };
     assert!(
         error
-            .message
+            .to_string()
             .contains("one sandbox-absolute workspace path"),
         "A1/E2: {}",
-        error.message
+        error
     );
 }
 
@@ -1052,10 +1053,10 @@ async fn model_override_only_acp_candidate_rejects_split_process_paths() {
     };
     assert!(
         error
-            .message
+            .to_string()
             .contains("one sandbox-absolute workspace path"),
         "M1/E3: {}",
-        error.message
+        error
     );
 }
 
@@ -1149,7 +1150,10 @@ async fn realize_thread_repositories_fails_closed_on_an_unsafe_path() {
         )
         .await
         .expect_err("R9b clone failure must abort Session start");
-    assert!(error.message.contains("clone failed"), "R9b/E1: {error:?}");
+    assert!(
+        error.to_string().contains("clone failed"),
+        "R9b/E1: {error:?}"
+    );
 }
 
 #[tokio::test]
@@ -1213,7 +1217,7 @@ async fn explicit_repository_publication_uses_one_frozen_activation_and_verifies
         matches!(
             error,
             RepositoryPublicationActivationError::Failed(error)
-                if error.message.contains("read-only")
+                if error.to_string().contains("read-only")
         ),
         "H2/E3"
     );
@@ -1261,7 +1265,7 @@ async fn explicit_repository_publication_uses_one_frozen_activation_and_verifies
         matches!(
             error,
             RepositoryPublicationActivationError::Failed(error)
-                if error.message.contains("does not match")
+                if error.to_string().contains("does not match")
         ),
         "H4/E4"
     );

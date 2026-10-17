@@ -208,7 +208,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                             },
                             async {
                                 trace.lock().unwrap().push("delegate".into());
-                                Ok(vec![delegated(status)])
+                                Ok::<_, crate::HostError>(vec![delegated(status)])
                             },
                         )
                         .await
@@ -293,7 +293,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                                 .unwrap_or(false)
                         }
                     },
-                    async { Ok(vec![missing]) },
+                    async { Ok::<_, crate::HostError>(vec![missing]) },
                 )
                 .await
                 .unwrap();
@@ -328,7 +328,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                     },
                     async {
                         trace.lock().unwrap().push("delegate".into());
-                        Ok(vec![delegated(Status::Open), second])
+                        Ok::<_, crate::HostError>(vec![delegated(Status::Open), second])
                     }
                 )
                 .await
@@ -415,7 +415,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                     async {
                         entered.send(()).expect("Q12 start real marker writer");
                         change.await.expect("Q12 observe joined change");
-                        Ok(vec![delegated(Status::Open)])
+                        Ok::<_, crate::HostError>(vec![delegated(Status::Open)])
                     },
                 ))
                 .catch_unwind()

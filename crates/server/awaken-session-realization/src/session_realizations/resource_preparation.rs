@@ -8,7 +8,7 @@
 use super::{
     ExecutionAuthority, SessionRealization, SessionRealizationAuthority, SessionRealizations,
 };
-use crate::host_error::HostError;
+use crate::realization_error::RealizationError;
 use awaken_session_configuration_contract::resource::SessionRealizationLease;
 use awaken_session_realization_contract::ObservedSessionRealizationLease;
 use std::sync::Arc;
@@ -29,14 +29,14 @@ impl<'a> ResourcePreparation<'a> {
         authority: &ExecutionAuthority,
         session: &'a str,
         proof: ObservedSessionRealizationLease,
-    ) -> Result<Self, HostError> {
+    ) -> Result<Self, RealizationError> {
         let asserted = proof.lease.clone();
         let cancellation = Arc::new(awaken_runtime_contract::CancellationToken::new());
         let sessions = authority.sessions.clone();
         let (introduced_lease, changed) = authority.authorize_worker_effect(|| {
             sessions.update_realization(session, |r| {
                 if r.staging.preparation.is_some() {
-                    return Err(HostError::internal(
+                    return Err(RealizationError::invariant(
                         "Resource preparation already holds its projection lock",
                     ));
                 }
@@ -69,8 +69,11 @@ impl<'a> ResourcePreparation<'a> {
             && realization.resource_preparation_authorized(&self.asserted)
     }
 
-    fn ended() -> HostError {
-        HostError::internal("Session realization authority ended during Resource preparation")
+    fn ended() -> RealizationError {
+        RealizationError::authority_lost(
+            crate::realization_error::AuthorityLoss::Closed,
+            "Session realization authority ended during Resource preparation",
+        )
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -78,7 +81,7 @@ impl<'a> ResourcePreparation<'a> {
         &self.cancellation
     }
 
-    pub fn validate(&self) -> Result<(), HostError> {
+    pub fn validate(&self) -> Result<(), RealizationError> {
         self.sessions
             .read_realization(self.session, |realization| self.authorized(realization))
             .filter(|authorized| *authorized)
@@ -86,7 +89,7 @@ impl<'a> ResourcePreparation<'a> {
             .ok_or_else(Self::ended)
     }
 
-    pub fn finish(&self, realization: &mut SessionRealization) -> Result<(), HostError> {
+    pub fn finish(&self, realization: &mut SessionRealization) -> Result<(), RealizationError> {
         if !self.authorized(realization) {
             return Err(Self::ended());
         }
@@ -94,7 +97,7 @@ impl<'a> ResourcePreparation<'a> {
         Ok(())
     }
 
-    pub async fn authority_ended(&self) -> HostError {
+    pub async fn authority_ended(&self) -> RealizationError {
         let realizations = &self.sessions;
         loop {
             let Some(changed) =

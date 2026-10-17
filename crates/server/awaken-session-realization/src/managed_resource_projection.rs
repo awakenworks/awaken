@@ -4,6 +4,7 @@
 //! Pure projection from frozen Managed resource inputs to Agent-visible paths and
 //! prompt fragments. Keeping this boundary separate prevents protocol path rules
 //! from being reimplemented by individual Sandbox adapters.
+use crate::realization_error::RealizationError;
 use awaken_provisioning_contract as pc;
 use awaken_session_configuration_contract::resource as session_resource;
 use awaken_session_realization_contract::ResourceOperationFence;
@@ -130,7 +131,7 @@ impl crate::resource_staging::ResourceStaging {
             realizations.update_realization(thread, |r| {
                 r.validate_preparation_publication(realization_lease)?;
                 r.staging.skills = Some(versions);
-                Ok(())
+                Ok::<_, awaken_session_types::RunError>(())
             })?;
             return Ok(());
         }
@@ -469,7 +470,7 @@ impl crate::resource_staging::ResourceStaging {
                         Some(&source_binding)),
                     )
                     .await
-                    .map_err(crate::host_error::to_run_error)?;
+                    .map_err(awaken_session_types::RunError::from)?;
                 match &effect.authorization {
                     awaken_session_state_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
                         binding,
@@ -494,7 +495,7 @@ impl crate::resource_staging::ResourceStaging {
                         environments.persist_authorized_environment_binding(thread, binding, &effect)
                             .await
                             .map_err(|failure| {
-                                crate::host_error::to_run_error(failure.error)
+                                awaken_session_types::RunError::from(failure.error)
                             })?;
                     }
                 }
@@ -1285,7 +1286,7 @@ impl crate::resource_staging::ResourceStaging {
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
         environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
-    ) -> Result<(), crate::host_error::HostError> {
+    ) -> Result<(), RealizationError> {
         let (resident_baseline, content_delivery, resident_environment, live_environment) = self
             .sessions
             .modify_session(thread, |slot| {
@@ -1341,7 +1342,7 @@ impl crate::resource_staging::ResourceStaging {
             && !repository_paths.is_empty()
             && historical_owned_paths.is_none()
         {
-            return Err(crate::host_error::HostError::internal(
+            return Err(RealizationError::invariant(
                 "legacy Session sandbox handle lacks complete owned-path evidence required for live Repository replacement",
             ));
         }
@@ -1362,7 +1363,7 @@ impl crate::resource_staging::ResourceStaging {
                     &spec,
                     &historical_owned_paths,
                 )
-                .map_err(|error| crate::host_error::HostError::internal(error.to_string()))
+                .map_err(RealizationError::from)
             }
             ManagedLayoutValidationScope::Exact(provider) => self
                 .validate_repository_environment_adoption_paths(
@@ -1383,7 +1384,7 @@ impl crate::resource_staging::ResourceStaging {
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
         environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
-    ) -> Result<(), crate::host_error::HostError> {
+    ) -> Result<(), RealizationError> {
         self.validate_managed_layout_inputs(
             thread,
             resources
@@ -1404,7 +1405,7 @@ impl crate::resource_staging::ResourceStaging {
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
         environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
-    ) -> Result<(), crate::host_error::HostError> {
+    ) -> Result<(), RealizationError> {
         self.validate_managed_layout_inputs(
             thread,
             resources
@@ -1426,7 +1427,7 @@ impl crate::resource_staging::ResourceStaging {
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
         environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
-    ) -> Result<(), crate::host_error::HostError> {
+    ) -> Result<(), RealizationError> {
         self.validate_managed_layout_inputs(
             thread,
             resources.iter().map(binding_layout_projection),
@@ -1444,7 +1445,7 @@ impl crate::resource_staging::ResourceStaging {
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
         environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
-    ) -> Result<(), crate::host_error::HostError> {
+    ) -> Result<(), RealizationError> {
         self.validate_managed_layout_inputs(
             thread,
             resources.iter().map(binding_layout_projection),

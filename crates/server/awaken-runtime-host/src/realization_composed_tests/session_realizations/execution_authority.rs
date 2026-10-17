@@ -425,7 +425,16 @@ mod tests {
                 .provider_effect_authority("missing", &initial)
                 .err()
                 .expect("E2 genuinely absent slot");
-            assert_eq!(absent.message, "Session realization slot is absent");
+            assert!(
+                matches!(
+                    absent,
+                    crate::realization_error::RealizationError::AuthorityLost {
+                        cause: crate::realization_error::AuthorityLoss::SessionAbsent,
+                        ..
+                    }
+                ),
+                "E2 absence is a typed authority loss: {absent}"
+            );
             assert!(!f.slots.contains("missing"), "E2 no slot creation");
             let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 if callback {
@@ -453,10 +462,23 @@ mod tests {
             }))
             .expect("E3 fresh capture must not unwind");
             let error = fresh.err().expect("E3 poisoned capture must reject");
-            assert_eq!(error.kind, crate::host_error::HostErrorKind::Internal);
-            assert_eq!(error.code, "internal");
-            assert_eq!(error.message, "installed sessions mutex poisoned");
-            assert_ne!(error.message, absent.message, "E3 poison is not absence");
+            assert!(matches!(
+                error,
+                crate::realization_error::RealizationError::Poisoned(
+                    crate::realization_error::RealizationLock::InstalledSessions
+                )
+            ));
+            assert_eq!(
+                error.disposition(),
+                crate::realization_error::Disposition::Retry,
+                "E3 poison denies this process's effect; a healthy owner may retry"
+            );
+            assert_eq!(error.code(), crate::realization_error::POISONED_CODE);
+            assert_ne!(
+                error.to_string(),
+                absent.to_string(),
+                "E3 poison is not absence"
+            );
         }
     }
 

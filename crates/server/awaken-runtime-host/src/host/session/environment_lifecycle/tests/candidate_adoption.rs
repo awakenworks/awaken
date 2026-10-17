@@ -663,7 +663,7 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
             .await;
         if fenced {
             let error = result.err().expect("B1 derivative fence");
-            assert_eq!(error.code, "dispatch_claim_stale");
+            assert_eq!(error.code(), "dispatch_claim_stale");
             let candidate = host.prepared_session_environment(thread).unwrap();
             let expected = candidate.durable_identity().cloned().unwrap();
             assert!(
@@ -676,7 +676,7 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
                     .await
                     .err()
                     .expect("B2 repeated fence");
-                assert_eq!(error.code, "dispatch_claim_stale");
+                assert_eq!(error.code(), "dispatch_claim_stale");
                 assert!(
                     host.prepared_session_environment(thread)
                         .unwrap()

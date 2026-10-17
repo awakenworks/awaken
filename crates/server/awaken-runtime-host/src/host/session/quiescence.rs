@@ -38,7 +38,7 @@ impl ManagedHost {
                 source_binding,
                 generation,
             )
-            .map_err(to_run_error)?;
+            .map_err(RunError::from)?;
         realization_view
             .close_mcp_realization_admission(
                 thread,
@@ -49,7 +49,7 @@ impl ManagedHost {
                     generation,
                 ),
             )
-            .map_err(to_run_error)?;
+            .map_err(RunError::from)?;
         if crate::session_realizations::primary_or_delegated_run_active(
             thread,
             |session| {

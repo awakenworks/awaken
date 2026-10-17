@@ -191,7 +191,7 @@ impl crate::session_realizations::SessionRealizationSource for InstalledSessions
         &self,
         session: &str,
         publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
-    ) -> Result<(), crate::host_error::HostError> {
+    ) -> Result<(), awaken_session_realization::realization_error::RealizationError> {
         self.update(session, |slot| {
             slot.inputs.validate_publication(publication)?;
             if let Some(publication) = publication {

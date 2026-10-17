@@ -109,7 +109,7 @@ impl SessionRealizationSource for RemoveAfterReadyRead {
         &self,
         session: &str,
         publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
-    ) -> Result<(), crate::HostError> {
+    ) -> Result<(), crate::realization_error::RealizationError> {
         SessionRealizationSource::retain_publication(self.original.as_ref(), session, publication)
     }
     fn publish_resource_requirements(

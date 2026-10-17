@@ -12,7 +12,7 @@ use crate::environment_owner::{
     RetiringEnvironmentOwner, RetiringSessionEnvironment, SessionEnvironmentOwner,
     SessionEnvironmentPreparation, SessionEnvironmentRetirementCause, UnboundSessionEnvironment,
 };
-use crate::host_error::HostError;
+use crate::realization_error::{AuthorityLoss, PendingState, ProjectionConflict, RealizationError};
 use crate::session_environment::{
     AuthorizedSessionEnvironmentEffect, BoundEnvironmentPreparationMode,
     SessionEnvironmentAdoptionDisposition, SessionEnvironmentUnavailablePolicy,
@@ -181,12 +181,12 @@ impl crate::environment_holding::EnvironmentHolding {
         thread: &str,
         cause: SessionEnvironmentRetirementCause,
         environment: &Arc<crate::session_environment::SessionEnvironment>,
-        code: &'static str,
+        lost: crate::realization_error::AuthorityLoss,
         message: &'static str,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), RealizationError> {
         self.retire_current_environment(thread, cause, RetirementSelection::Exact(environment))?
             .map(|_| ())
-            .ok_or_else(|| HostError::unavailable_classified(code, message))
+            .ok_or_else(|| RealizationError::authority_lost(lost, message))
     }
 
     /// An unpublished terminal or cleanup retirement holds the Environment;
@@ -208,7 +208,7 @@ impl crate::environment_holding::EnvironmentHolding {
         &self,
         thread: &str,
         request: &awaken_session_state_contract::SandboxRestoreRequest,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), RealizationError> {
         self.sessions
             .update_realization(thread, |r| r.environment.owner.begin_restore(request))
     }
@@ -349,15 +349,15 @@ impl crate::environment_holding::EnvironmentHolding {
         &self,
         thread: &str,
         retirement: &RetiringSessionEnvironment,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), RealizationError> {
         let environment = retirement.owned.environment();
         environment
             .lifecycle()
             .dispose()
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(RealizationError::from)?;
         if !self.confirm_terminated_retirement(thread, retirement) {
-            return Err(HostError::internal(
+            return Err(RealizationError::invariant(
                 "retired Session Environment owner changed after physical disposal",
             ));
         }
@@ -395,7 +395,7 @@ impl crate::environment_holding::EnvironmentHolding {
         &self,
         thread: &str,
         provider: &crate::session_environment::SessionEnvironmentProvider,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), RealizationError> {
         let retiring = self
             .sessions
             .read_realization(thread, |r| match &r.environment.owner {
@@ -428,8 +428,8 @@ impl crate::environment_holding::EnvironmentHolding {
             .adoption()
             .effective_adoption_layout(&neutral_spec, &handle)
             .map_err(|error| {
-                HostError::classified(
-                    "session_environment_observation_incompatible",
+                RealizationError::conflict(
+                    ProjectionConflict::ObservationIncompatible,
                     error.to_string(),
                 )
             })?
@@ -445,8 +445,8 @@ impl crate::environment_holding::EnvironmentHolding {
             )
             .await
             .map_err(|error| {
-                HostError::unavailable_classified(
-                    "session_environment_observation_indeterminate",
+                RealizationError::pending(
+                    PendingState::ObservationIndeterminate,
                     format!(
                         "could not inspect Session sandbox {}: {error}",
                         handle.sandbox_id
@@ -466,13 +466,13 @@ impl crate::environment_holding::EnvironmentHolding {
                 provider
                     .adoption().validate_closed_observation(&handle, &observation)
                     .map_err(|error| {
-                        HostError::classified(
-                            "session_environment_observation_incompatible",
+                        RealizationError::conflict(
+                            ProjectionConflict::ObservationIncompatible,
                             error.to_string(),
                         )
                     })?;
                 if !self.confirm_terminated_retirement(thread, &retiring) {
-                    return Err(HostError::internal(
+                    return Err(RealizationError::invariant(
                         "terminated legacy recovery owner lost its exact Retiring fence",
                     ));
                 }
@@ -484,8 +484,8 @@ impl crate::environment_holding::EnvironmentHolding {
                 provider
                     .adoption().validate_closed_observation(&handle, &observation)
                     .map_err(|error| {
-                        HostError::classified(
-                            "session_environment_observation_incompatible",
+                        RealizationError::conflict(
+                            ProjectionConflict::ObservationIncompatible,
                             error.to_string(),
                         )
                     })?;
@@ -494,8 +494,8 @@ impl crate::environment_holding::EnvironmentHolding {
                 Ok(())
             }
             awaken_provisioning_contract::SandboxObservation::Provisioning => {
-                Err(HostError::unavailable_classified(
-                    "session_environment_provisioning",
+                Err(RealizationError::pending(
+                    PendingState::Provisioning,
                     format!(
                         "Session sandbox {} is still provisioning",
                         handle.sandbox_id
@@ -503,7 +503,7 @@ impl crate::environment_holding::EnvironmentHolding {
                 ))
             }
             awaken_provisioning_contract::SandboxObservation::Incompatible { reason } => Err(
-                HostError::classified("session_environment_observation_incompatible", reason),
+                RealizationError::conflict(ProjectionConflict::ObservationIncompatible, reason),
             ),
         }
     }
@@ -516,7 +516,7 @@ impl crate::environment_holding::EnvironmentHolding {
         &self,
         recovery: UnavailableEnvironmentRecovery<'_>,
         resident: Option<&Arc<crate::session_environment::SessionEnvironment>>,
-    ) -> Result<SessionEnvironmentAdoptionDisposition, HostError> {
+    ) -> Result<SessionEnvironmentAdoptionDisposition, RealizationError> {
         let UnavailableEnvironmentRecovery {
             thread,
             binding,
@@ -531,7 +531,7 @@ impl crate::environment_holding::EnvironmentHolding {
         provider
             .adoption()
             .validate_closed_observation(handle, observation)
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(RealizationError::from)?;
         // Cause/effect decision table: C1 exact provider evidence is closed;
         // C2 policy is Reject/Rebuild; C3 the current owner is the captured
         // Revocation, Resident, pending adoption, Vacant, or protected/stale.
@@ -547,7 +547,7 @@ impl crate::environment_holding::EnvironmentHolding {
             pending_adoption.as_ref(),
         );
         match plan {
-            ClosedEnvironmentRecoveryPlan::Retain => Err(HostError::internal(format!(
+            ClosedEnvironmentRecoveryPlan::Retain => Err(RealizationError::invariant(format!(
                 "Session sandbox {} is unavailable or terminal, or its exact recovery owner is protected",
                 handle.sandbox_id
             ))),
@@ -571,7 +571,7 @@ impl crate::environment_holding::EnvironmentHolding {
                     ClosedEnvironmentRecoveryOwner::Vacant => true,
                 };
                 if !consumed {
-                    return Err(HostError::internal(format!(
+                    return Err(RealizationError::invariant(format!(
                         "lost the exact sandbox recovery fence for Session {thread}"
                     )));
                 }
@@ -593,7 +593,7 @@ impl crate::environment_holding::EnvironmentHolding {
         source_effect_id: &str,
         source_binding: &str,
         generation: &awaken_session_state_contract::SandboxGeneration,
-    ) -> Result<Arc<crate::session_environment::SessionEnvironment>, HostError> {
+    ) -> Result<Arc<crate::session_environment::SessionEnvironment>, RealizationError> {
         self.validate_suspend_operation(thread, operation, generation)?;
         let expected_identity =
             checkpoint_source_identity(source_effect_id, source_binding, generation);
@@ -611,7 +611,7 @@ impl crate::environment_holding::EnvironmentHolding {
             })
             .flatten()
             .ok_or_else(|| {
-                HostError::internal(
+                RealizationError::invariant(
                     "checkpoint continuation does not own its exact resident source",
                 )
             })
@@ -624,14 +624,14 @@ impl crate::environment_holding::EnvironmentHolding {
         &self,
         thread: &str,
         environment: &Arc<crate::session_environment::SessionEnvironment>,
-    ) -> Result<(String, Option<ResourceOriginRef>), HostError> {
+    ) -> Result<(String, Option<ResourceOriginRef>), RealizationError> {
         self.sessions
             .read_realization(thread, |r| {
                 r.environment.owner.resident_activity_identity(environment)
             })
             .flatten()
             .ok_or_else(|| {
-                HostError::internal(
+                RealizationError::invariant(
                     "Runtime Environment does not match its exact Resident activity owner",
                 )
             })
@@ -647,7 +647,7 @@ impl crate::environment_holding::EnvironmentHolding {
         generation: &awaken_session_state_contract::SandboxGeneration,
         source_binding: &str,
         environment: &Arc<crate::session_environment::SessionEnvironment>,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), RealizationError> {
         self.validate_suspend_operation(thread, operation, generation)?;
         let cause = SessionEnvironmentRetirementCause::CheckpointSource {
             operation: operation.clone(),
@@ -660,13 +660,13 @@ impl crate::environment_holding::EnvironmentHolding {
                 RetirementSelection::Exact(environment),
             )?
             .ok_or_else(|| {
-                HostError::unavailable_classified(
-                    "session_checkpoint_source_owner_changed",
+                RealizationError::authority_lost(
+                    AuthorityLoss::CheckpointSourceOwnerChanged,
                     "checkpoint source lost its exact Resident owner before Preparation completed",
                 )
             })?;
         let RetiringEnvironmentOwner::Bound(owned) = &retirement.owner.owned else {
-            return Err(HostError::internal(
+            return Err(RealizationError::invariant(
                 "checkpoint source Preparation retained an unpublished owner",
             ));
         };
@@ -680,8 +680,8 @@ impl crate::environment_holding::EnvironmentHolding {
             )
             || owned.binding != source_binding
         {
-            return Err(HostError::unavailable_classified(
-                "session_checkpoint_source_owner_changed",
+            return Err(RealizationError::authority_lost(
+                AuthorityLoss::CheckpointSourceOwnerChanged,
                 "checkpoint source Preparation retained different durable authority",
             ));
         }
@@ -693,7 +693,7 @@ impl crate::environment_holding::EnvironmentHolding {
         thread: &str,
         cause: SessionEnvironmentRetirementCause,
         selection: RetirementSelection<'_>,
-    ) -> Result<Option<LocalRetirementTransition>, HostError> {
+    ) -> Result<Option<LocalRetirementTransition>, RealizationError> {
         self.sessions
             .modify_session(thread, |slot| {
                 let retirement = slot
@@ -812,7 +812,7 @@ impl crate::environment_holding::EnvironmentHolding {
         thread: &str,
         operation: &awaken_session_state_contract::SessionEnvironmentOperation,
         _generation: &awaken_session_state_contract::SandboxGeneration,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), RealizationError> {
         // The Session aggregate is the sole operation writer. Existing durable
         // operations, including legacy fingerprints, replay opaquely; Runtime
         // validates the current realization fence and exact source owner rather
@@ -828,7 +828,7 @@ impl crate::environment_holding::EnvironmentHolding {
             })
             .unwrap_or(operation.realization.is_none());
         if !authorized {
-            return Err(HostError::internal(
+            return Err(RealizationError::invariant(
                 "checkpoint continuation operation lost its exact realization lease",
             ));
         }
@@ -842,13 +842,11 @@ impl crate::environment_holding::EnvironmentHolding {
         provider: &crate::session_environment::SessionEnvironmentProvider,
         resolved_resources: Option<&session_resource::ResolvedSessionResources>,
         source_generation_id: Option<&str>,
-    ) -> Result<ValidatedSessionEnvironmentAdoption, HostError> {
+    ) -> Result<ValidatedSessionEnvironmentAdoption, RealizationError> {
         let handle: awaken_provisioning_contract::SandboxHandle = serde_json::from_str(encoded)
-            .map_err(|error| {
-                HostError::internal(format!("invalid Session sandbox binding: {error}"))
-            })?;
+            .map_err(crate::realization_error::EvidenceFault::InvalidBinding)?;
         if handle.sandbox_id != thread {
-            return Err(HostError::internal(format!(
+            return Err(RealizationError::invariant(format!(
                 "sandbox {} does not belong to Session {thread}",
                 handle.sandbox_id
             )));
@@ -887,7 +885,7 @@ impl crate::environment_holding::EnvironmentHolding {
                     if successor {
                         return Ok(None);
                     }
-                    return Err(HostError::internal(
+                    return Err(RealizationError::invariant(
                         "Session Environment retry conflicts with its retained binding",
                     ));
                 }
@@ -899,14 +897,14 @@ impl crate::environment_holding::EnvironmentHolding {
             && (candidate.binding != encoded
                 || candidate.environment.lifecycle().handle() != handle)
         {
-            return Err(HostError::internal(
+            return Err(RealizationError::invariant(
                 "Session Environment retry conflicts with its hidden Candidate binding",
             ));
         }
         if let Some(environment) = resident.as_ref() {
             let resident_handle = environment.lifecycle().handle();
             if resident_handle != handle {
-                return Err(HostError::internal(format!(
+                return Err(RealizationError::invariant(format!(
                     "Session {thread} is already bound to sandbox {}, not {}",
                     resident_handle.sandbox_id, handle.sandbox_id
                 )));
@@ -927,7 +925,7 @@ impl crate::environment_holding::EnvironmentHolding {
         generation: &awaken_session_state_contract::SandboxGeneration,
         source_binding: &str,
         authorization: &awaken_provisioning_contract::SandboxDisposalAuthorization,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), RealizationError> {
         // Preparation A remains the exact retained source identity. Disposal
         // may be driven by an aggregate-authorized higher-epoch successor B;
         // requiring A to remain current here would make failover unrecoverable.
@@ -935,7 +933,7 @@ impl crate::environment_holding::EnvironmentHolding {
         // authority captured below checks B against the current Session slot.
         authorization
             .validate()
-            .map_err(|error| HostError::unavailable(error.to_string()))?;
+            .map_err(RealizationError::terminal_effect_pending)?;
         let expected_cause = SessionEnvironmentRetirementCause::CheckpointSource {
             operation: operation.clone(),
             generation: generation.clone(),
@@ -948,13 +946,13 @@ impl crate::environment_holding::EnvironmentHolding {
             })
             .flatten()
             .ok_or_else(|| {
-                HostError::unavailable_classified(
-                    "session_checkpoint_source_not_prepared",
+                RealizationError::pending(
+                    PendingState::CheckpointSourceNotPrepared,
                     "checkpoint source Disposal has no retained Preparation owner",
                 )
             })?;
         let RetiringEnvironmentOwner::Bound(owned) = &retirement.owned else {
-            return Err(HostError::internal(
+            return Err(RealizationError::invariant(
                 "checkpoint source Disposal cannot consume an unpublished owner",
             ));
         };
@@ -968,8 +966,8 @@ impl crate::environment_holding::EnvironmentHolding {
             )
             || owned.binding != source_binding
         {
-            return Err(HostError::unavailable_classified(
-                "session_checkpoint_source_owner_changed",
+            return Err(RealizationError::authority_lost(
+                AuthorityLoss::CheckpointSourceOwnerChanged,
                 "checkpoint source Disposal does not match its retained Preparation owner",
             ));
         }
@@ -981,10 +979,10 @@ impl crate::environment_holding::EnvironmentHolding {
             .lifecycle()
             .dispose_for_effect(authorization, &authority)
             .await
-            .map_err(|error| HostError::unavailable(error.to_string()))?;
+            .map_err(RealizationError::terminal_effect_pending)?;
         if !self.confirm_terminated_retirement(thread, &retirement) {
-            return Err(HostError::unavailable_classified(
-                "session_checkpoint_source_owner_changed",
+            return Err(RealizationError::authority_lost(
+                AuthorityLoss::CheckpointSourceOwnerChanged,
                 "checkpoint source owner changed after exact physical Disposal",
             ));
         }
@@ -1007,7 +1005,7 @@ impl crate::environment_holding::EnvironmentHolding {
         provider: &crate::session_environment::SessionEnvironmentProvider,
         source_generation_id: Option<&str>,
         rebuild_unavailable: bool,
-    ) -> Result<SessionEnvironmentAdoptionDisposition, HostError> {
+    ) -> Result<SessionEnvironmentAdoptionDisposition, RealizationError> {
         let realizations = self.sessions.clone();
         let Some(encoded) = encoded else {
             return Ok(SessionEnvironmentAdoptionDisposition::NoBinding);
@@ -1036,11 +1034,11 @@ impl crate::environment_holding::EnvironmentHolding {
         source_generation_id: Option<&str>,
         unavailable_policy: SessionEnvironmentUnavailablePolicy,
         preauthorized: Option<&AuthorizedSessionEnvironmentEffect>,
-    ) -> Result<SessionEnvironmentAdoptionDisposition, HostError> {
+    ) -> Result<SessionEnvironmentAdoptionDisposition, RealizationError> {
         let realizer = self;
         let exec = realizer;
         if exec.holds_unpublished_retirement(thread) {
-            return Err(HostError::internal(
+            return Err(RealizationError::invariant(
                 "unpublished terminal or cleanup ownership cannot resume ordinary adoption",
             ));
         }
@@ -1085,7 +1083,7 @@ impl crate::environment_holding::EnvironmentHolding {
             .is_some_and(|retiring| matches!(&retiring.owned, RetiringEnvironmentOwner::Unbound(_)))
             && effect.provider_fence.is_none()
         {
-            return Err(HostError::internal(
+            return Err(RealizationError::invariant(
                 "unacknowledged Candidate recovery requires current aggregate adoption authority",
             ));
         }
@@ -1095,7 +1093,7 @@ impl crate::environment_holding::EnvironmentHolding {
         } = &effect.authorization
             && binding != encoded
         {
-            return Err(HostError::internal(
+            return Err(RealizationError::invariant(
                 "Session Environment adoption effect already committed another binding",
             ));
         }
@@ -1125,15 +1123,15 @@ impl crate::environment_holding::EnvironmentHolding {
             }),
         )
         .map_err(|error| {
-            HostError::unavailable_classified(
-                "session_environment_adoption_authority_lost",
+            RealizationError::authority_lost(
+                AuthorityLoss::AdoptionAuthorityLost,
                 error.to_string(),
             )
         })?;
         let admit_original = || {
             provider_effect.admit().map_err(|error| {
-                HostError::unavailable_classified(
-                    "session_environment_adoption_authority_lost",
+                RealizationError::authority_lost(
+                    AuthorityLoss::AdoptionAuthorityLost,
                     error.to_string(),
                 )
             })
@@ -1149,8 +1147,8 @@ impl crate::environment_holding::EnvironmentHolding {
             )
             .await
             .map_err(|error| {
-                HostError::unavailable_classified(
-                    "session_environment_observation_indeterminate",
+                RealizationError::pending(
+                    PendingState::ObservationIndeterminate,
                     format!(
                         "could not inspect Session sandbox {}: {error}",
                         handle.sandbox_id
@@ -1200,8 +1198,7 @@ impl crate::environment_holding::EnvironmentHolding {
                         };
                         admit_original()?;
                         let environment = Arc::new(rebound.map_err(|error| {
-                            HostError::unavailable_classified(
-                                "session_environment_adoption_indeterminate", error.to_string(),
+                            RealizationError::pending(PendingState::AdoptionIndeterminate, error.to_string(),
                             )
                         })?);
                         if let Some(retiring) = revoked_owner.as_ref() {
@@ -1221,7 +1218,7 @@ impl crate::environment_holding::EnvironmentHolding {
                         .await?
                     }
                     (Some(_), Some(_)) => {
-                        return Err(HostError::internal(
+                        return Err(RealizationError::invariant(
                             "Session Environment cannot be both retained and unpublished",
                         ));
                     }
@@ -1234,8 +1231,8 @@ impl crate::environment_holding::EnvironmentHolding {
                 Ok(SessionEnvironmentAdoptionDisposition::Ready)
             }
             awaken_provisioning_contract::SandboxObservation::Provisioning => {
-                Err(HostError::unavailable_classified(
-                    "session_environment_provisioning",
+                Err(RealizationError::pending(
+                    PendingState::Provisioning,
                     format!(
                         "Session sandbox {} is still provisioning",
                         handle.sandbox_id
@@ -1249,8 +1246,8 @@ impl crate::environment_holding::EnvironmentHolding {
             | awaken_provisioning_contract::SandboxObservation::Terminal { .. }
             | awaken_provisioning_contract::SandboxObservation::Disposing { .. }) => {
                 if candidate.is_some() {
-                    return Err(HostError::unavailable_classified(
-                        "session_environment_candidate_observation_closed",
+                    return Err(RealizationError::pending(
+                        PendingState::CandidateObservationClosed,
                         "retained Session Environment Candidate is no longer Ready",
                     ));
                 }
@@ -1283,7 +1280,7 @@ impl crate::environment_holding::EnvironmentHolding {
                 .await
             }
             awaken_provisioning_contract::SandboxObservation::Incompatible { reason } => Err(
-                HostError::classified("session_environment_observation_incompatible", reason),
+                RealizationError::conflict(ProjectionConflict::ObservationIncompatible, reason),
             ),
         }
     }
@@ -1299,13 +1296,20 @@ impl crate::environment_holding::EnvironmentHolding {
         thread: &str,
         incoming: &awaken_session_realization_contract::ObservedSessionRealizationLease,
         mcp: (&awaken_session_mcp::McpSessions, &S),
-    ) -> Result<(), HostError> {
+    ) -> Result<(), RealizationError> {
         let realizations = self.sessions.clone();
         let retirement = self.execution.authorize_worker_effect(|| {
-            let now = awaken_authority_clock::authority_proof_started()
-                .map_err(|error| HostError::internal(error.to_string()))?;
+            let now = awaken_authority_clock::authority_proof_started().map_err(|error| {
+                RealizationError::authority_lost(
+                    AuthorityLoss::ProofClockUnavailable,
+                    format!("authority clock: {error}"),
+                )
+            })?;
             if incoming.remaining_at(now).is_none() {
-                return Err(HostError::internal("replacement Session authority time proof is exhausted"));
+                return Err(RealizationError::authority_lost(
+                    crate::realization_error::AuthorityLoss::Closed,
+                    "replacement Session authority time proof is exhausted",
+                ));
             }
             let selected = realizations.read_realization(thread, |r| {
                 let environment = match &r.environment.owner {
@@ -1340,7 +1344,7 @@ impl crate::environment_holding::EnvironmentHolding {
                 environment.lifecycle().stop_bound_processes(),
             );
             mcp?;
-            execution.map_err(|error| HostError::internal(error.to_string()))?;
+            execution.map_err(RealizationError::from)?;
         }
         Ok(())
     }
@@ -1354,7 +1358,7 @@ impl crate::environment_holding::EnvironmentHolding {
         mcp: (&awaken_session_mcp::McpSessions, &S),
         selected: &crate::session_realizations::SessionRealizationRevocationSelection,
         before_retirement: impl FnOnce() + Send,
-    ) -> Result<bool, HostError> {
+    ) -> Result<bool, RealizationError> {
         let _realization = selected.realization.lock().await;
         let _lifecycle = selected.lifecycle.lock().await;
         if !self
@@ -1382,13 +1386,13 @@ impl crate::environment_holding::EnvironmentHolding {
         expected_selection: Option<
             &crate::session_realizations::SessionRealizationRevocationSelection,
         >,
-    ) -> Result<bool, HostError> {
+    ) -> Result<bool, RealizationError> {
         let (mcp, mcp_slots) = mcp;
         let realizations = &self.sessions;
         let projected = realizations.modify_session(thread, |slot| {
             let r = slot.realization;
             if expected_selection.is_some_and(|selected| !selected.matches(r)) {
-                return Ok::<_, HostError>(None);
+                return Ok::<_, RealizationError>(None);
             }
             // Preserve the original Managed-vs-legacy retirement policy, while
             // binding physical transition and MCP selection to this same slot.
@@ -1411,8 +1415,8 @@ impl crate::environment_holding::EnvironmentHolding {
             } else if matches!(&original_owner,
                 SessionEnvironmentOwner::Preparing(crate::environment_owner::SessionEnvironmentPreparation::AwaitingAdoption { .. })
             ) {
-                return Err(HostError::unavailable_classified(
-                    "session_environment_revocation_pending_adoption",
+                return Err(RealizationError::pending(
+                    PendingState::RevocationPendingAdoption,
                     "Session Environment revocation cannot retire a durable binding without its exact local owner",
                 ));
             }
@@ -1466,7 +1470,7 @@ impl crate::environment_holding::EnvironmentHolding {
                     .stop_bound_processes()
                     .await
                     .map(|_| ())
-                    .map_err(|error| HostError::internal(error.to_string())),
+                    .map_err(RealizationError::from),
             },
             None => Ok(()),
         };

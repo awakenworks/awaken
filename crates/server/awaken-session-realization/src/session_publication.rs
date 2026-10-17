@@ -7,9 +7,9 @@
 //! the process Workspace fallback and the canonical realization slots. It
 //! neither owns inference executors nor reaches back into the Host.
 
+use crate::realization_error::RealizationError;
 use std::sync::Arc;
 
-use crate::host_error::HostError;
 use crate::session_realizations::SessionRealizations;
 use awaken_runtime_contract::{ExecutableAgentSnapshot, resolved::ResolvedModelCandidate};
 use awaken_session_configuration_contract::resource as session_resource;
@@ -68,7 +68,7 @@ impl SessionPublicationSelection {
             Option<ExecutableAgentSnapshot>,
             Option<ResolvedModelCandidate>,
         ),
-        HostError,
+        RealizationError,
     > {
         let agent = coordinates.agent();
         let frozen_revision = coordinates.agent_revision();
@@ -87,18 +87,14 @@ impl SessionPublicationSelection {
         {
             publication
                 .validate_for_workspace(workspace)
-                .map_err(|error| {
-                    HostError::internal(format!(
-                        "frozen Session model override publication is invalid: {error}"
-                    ))
-                })?;
+                .map_err(crate::realization_error::EvidenceFault::ModelOverridePublication)?;
         }
         match coordinates.publication_decision(installed.as_ref()) {
             PublicationDecision::Unpinned
             | PublicationDecision::OptionalMissing
             | PublicationDecision::Exact => {}
             PublicationDecision::MissingRequired => {
-                return Err(HostError::internal(
+                return Err(RealizationError::invariant(
                     "frozen Session Agent publication is unavailable",
                 ));
             }
@@ -111,7 +107,7 @@ impl SessionPublicationSelection {
                         publication.resolved_spec.model_binding.identity().2,
                     )
                 });
-                return Err(HostError::internal(format!(
+                return Err(RealizationError::invariant(format!(
                     "Session Agent/model publication does not match its frozen coordinates \
                      (expected agent={}, revision={:?}; actual={})",
                     coordinates.agent(),
@@ -139,7 +135,7 @@ impl SessionPublicationSelection {
                     workspace,
                     snapshot,
                 )
-                .map_err(|error| HostError::internal(error.to_string()))
+                .map_err(RealizationError::from)
             })
             .transpose()?;
         let candidate = model_override
@@ -169,7 +165,7 @@ impl SessionPublicationSelection {
             Option<ExecutableAgentSnapshot>,
             Option<ResolvedModelCandidate>,
         ),
-        HostError,
+        RealizationError,
     > {
         let realizations = &self.sessions;
         let frozen = realizations.frozen(thread);
@@ -178,7 +174,7 @@ impl SessionPublicationSelection {
         if let (Some(asserted), Some(projected)) = (agent, projected_agent)
             && asserted != projected
         {
-            return Err(HostError::internal(format!(
+            return Err(RealizationError::invariant(format!(
                 "session Agent projection `{projected}` does not match requested Agent `{asserted}`"
             )));
         }
@@ -219,12 +215,12 @@ impl SessionPublicationSelection {
         if let (Some(published), Some(projected)) = (&published_backend_ref, projected_backend_ref)
             && published != projected
         {
-            return Err(HostError::internal(format!(
+            return Err(RealizationError::invariant(format!(
                 "session backend projection `{projected}` does not match publication `{published}`"
             )));
         }
         if model_candidate.is_none() && projected_backend_ref.is_some() {
-            return Err(HostError::internal(
+            return Err(RealizationError::invariant(
                 "session backend projection has no immutable model publication",
             ));
         }
@@ -244,7 +240,7 @@ impl SessionPublicationSelection {
         &self,
         thread: &str,
         publication: Option<&ExecutableAgentSnapshot>,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), RealizationError> {
         self.sessions.retain_publication(thread, publication)
     }
 
@@ -252,7 +248,7 @@ impl SessionPublicationSelection {
         &self,
         thread: &str,
         agent: Option<&str>,
-    ) -> Result<awaken_runtime_contract::resolved::ModelProvisioning, HostError> {
+    ) -> Result<awaken_runtime_contract::resolved::ModelProvisioning, RealizationError> {
         let realizations = &self.sessions;
         let delivered = realizations.published_snapshot(thread);
         let (_, _, _, model_candidate) =

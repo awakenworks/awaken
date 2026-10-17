@@ -431,7 +431,10 @@ impl Boundary {
 
 #[async_trait::async_trait]
 impl crate::cache_volume::CacheVolumeInitializer for Boundary {
-    async fn initialize(&self, _: &crate::cache_volume::CacheVolumeWarmup) -> Result<(), String> {
+    async fn initialize(
+        &self,
+        _: &crate::cache_volume::CacheVolumeWarmup,
+    ) -> Result<(), crate::cache_volume::CacheVolumeError> {
         self.pause().await;
         Ok(())
     }
