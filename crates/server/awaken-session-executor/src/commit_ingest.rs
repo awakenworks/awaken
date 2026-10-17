@@ -374,10 +374,12 @@ mod tests {
                 .with_agent_publications(Arc::new(publications)))
             .build()
             .expect("validated Host dependencies");
+        admission.installed_sessions.install(thread);
         admission
             .realizer
             .staging
-            .register_thread_resource_manifest(thread, manifest);
+            .register_thread_resource_manifest(thread, manifest)
+            .expect("installed Sessions");
         let dispatch = admission
             .prepare_dispatch(activation)
             .fresh()
@@ -578,10 +580,12 @@ mod tests {
                 committed.resource_revision,
                 committed.resources.clone(),
             );
+        admission.installed_sessions.install(thread);
         admission
             .realizer
             .staging
-            .register_thread_resource_manifest(thread, manifest);
+            .register_thread_resource_manifest(thread, manifest)
+            .expect("installed Sessions");
         let dispatch = admission
             .prepare_dispatch(activation)
             .fresh()

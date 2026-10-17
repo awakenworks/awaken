@@ -5,7 +5,7 @@
 use super::{
     AnyDispatchStore, Arc, DispatchWorker, Error, RunId, RunState, RunWorkerFactory,
     SessionDispatch, SessionProjectionExecution, SessionWorkerResolver, TerminalRecovery,
-    WorkerResolver, execution_error, install_claimed_session_projection, map_host_resolution_error,
+    WorkerResolver, execution_error, install_claimed_session_projection, map_admission_error,
     terminal_resolution_error,
 };
 
@@ -36,7 +36,7 @@ pub async fn adopt_bound_sandbox<T: SessionProjectionExecution>(
     let provider = host
         .realizer()
         .session_environment_provider_for_thread(expected_sandbox_id, provisioning)
-        .map_err(map_host_resolution_error)?;
+        .map_err(map_admission_error)?;
     host.realizer()
         .adopt_bound_session_environment(
             expected_sandbox_id,
@@ -46,9 +46,11 @@ pub async fn adopt_bound_sandbox<T: SessionProjectionExecution>(
             recovery == awaken_dispatch_contract::WorkerRecoveryMode::RebuildFromCommittedTruth,
         )
         .await
-        .map_err(|mut error| {
-            error.message = format!("run {}: {}", run_id.0, error.message);
-            map_host_resolution_error(error)
+        .map_err(|error| {
+            super::claim_outcome(
+                error.disposition().contract_class(),
+                format!("run {}: {error}", run_id.0),
+            )
         })
 }
 
@@ -171,15 +173,15 @@ where
             let projection = decode_dispatched_projection(envelope, claimed.lease.run_id())?;
             let stages = projection.mcp_stages.clone();
             host.install_runtime_projection(&thread_id.0, projection)
-                .map_err(map_host_resolution_error)?;
+                .map_err(map_admission_error)?;
             stages
         } else {
             None
         };
         install_claimed_session_projection(host, claimed, thread_id, dispatched_resources.as_ref())
             .await?;
-        let Some((canonical_session_realization, selected_phase)) =
-            sessions.modify_session(&thread_id.0, |slot| {
+        let Some((canonical_session_realization, selected_phase)) = sessions
+            .modify_session(&thread_id.0, |slot| {
                 (
                     canonical_session_projection_is_installed(
                         super::claimed_session::has_session_projection_authority(claimed),
@@ -189,6 +191,7 @@ where
                     slot.realization.execution.phase.clone(),
                 )
             })
+            .map_err(map_admission_error)?
         else {
             return Err(Error::ResolutionNotReady(format!(
                 "run {} lost its installed Session before claim binding",
@@ -211,7 +214,10 @@ where
         // into the queue's existing delivery cache under this exact claim.
         if canonical_session_realization
             && run_thread_id == thread_id
-            && let Some(binding) = host.realizer().durable_environment_binding(&thread_id.0)
+            && let Some(binding) = host
+                .realizer()
+                .durable_environment_binding(&thread_id.0)
+                .map_err(map_admission_error)?
         {
             let outcome = host
                 .dispatch_binding()
@@ -243,6 +249,7 @@ where
                 slot.run.install_dispatch_claim(claim.clone());
                 true
             })
+            .map_err(map_admission_error)?
             .unwrap_or(false);
         if !bound {
             return Err(Error::ResolutionNotReady(format!(
@@ -303,7 +310,7 @@ where
                 (run_thread_id == thread_id).then_some(&claimed.request.activation.snapshot);
             host.ensure_session_substrate(&thread_id.0, frozen_parent)
                 .await
-                .map_err(map_host_resolution_error)?;
+                .map_err(map_admission_error)?;
         }
         Ok(())
     }
@@ -379,6 +386,7 @@ where
         if let Some(scope) = &claimed.request.execution_scope {
             if sessions
                 .frozen(&thread_id.0)
+                .map_err(map_admission_error)?
                 .workspace
                 .clone()
                 .is_some_and(|existing| existing != scope.0.as_str())
@@ -387,9 +395,11 @@ where
                     "claimed Thread Workspace conflicts with its dispatch",
                 ));
             }
-            sessions.replace_frozen_with(&thread_id.0, |next| {
-                next.workspace = Some(scope.0.as_str().to_owned())
-            });
+            sessions
+                .replace_frozen_with(&thread_id.0, |next| {
+                    next.workspace = Some(scope.0.as_str().to_owned())
+                })
+                .map_err(map_admission_error)?;
         }
         let claimed_source = crate::run_publications::exact_run_publication_source(
             &claimed.request.activation.snapshot,
@@ -415,9 +425,11 @@ where
             dispatched_mcp_stages
         };
         if let Some(stages) = dispatched_mcp_stages.as_ref() {
-            sessions.replace_frozen_with(&thread_id.0, |next| {
-                next.agent_id = Some(agent_id.unwrap_or("assistant").to_owned())
-            });
+            sessions
+                .replace_frozen_with(&thread_id.0, |next| {
+                    next.agent_id = Some(agent_id.unwrap_or("assistant").to_owned())
+                })
+                .map_err(map_admission_error)?;
             sessions.replace_frozen_with(&thread_id.0, |next| {
                 next.backend_ref = awaken_session_realization::frozen_inputs::backend_projection(
                     claimed
@@ -429,11 +441,13 @@ where
                         .identity()
                         .2,
                 )
-            });
+            }).map_err(map_admission_error)?;
             if let Some(workspace) = stages.first().map(|stage| stage.workspace_id.as_str()) {
-                sessions.replace_frozen_with(&thread_id.0, |next| {
-                    next.workspace = Some(workspace.to_owned())
-                });
+                sessions
+                    .replace_frozen_with(&thread_id.0, |next| {
+                        next.workspace = Some(workspace.to_owned())
+                    })
+                    .map_err(map_admission_error)?;
             }
         }
         Self::prepare_claimed_environment(
@@ -463,6 +477,7 @@ where
         let immutable_publication = if canonical_session_realization {
             sessions
                 .published_snapshot(&thread_id.0)
+                .map_err(map_admission_error)?
                 .unwrap_or_else(|| claimed.request.activation.snapshot.clone())
         } else {
             claimed.request.activation.snapshot.clone()

@@ -62,6 +62,7 @@ impl awaken_session_mcp::McpStagingSession for ManagedHost {
         let realizations = self.host.installed_sessions.realizations();
         realizations
             .frozen(session)
+            .expect("session runtime slots mutex poisoned")
             .backend_ref
             .clone()
             .map(|backend_ref| awaken_runtime_contract::resolved::Backend::from_ref(&backend_ref))
@@ -72,7 +73,7 @@ impl awaken_session_mcp::McpStagingSession for ManagedHost {
             .host
             .realizer
             .projected_session_environment_provider(session, None)
-            .map_err(to_run_error)?;
+            .map_err(RunError::from)?;
         Ok(provider
             .realizer()
             .capabilities()
@@ -83,6 +84,7 @@ impl awaken_session_mcp::McpStagingSession for ManagedHost {
         let realizations = self.host.installed_sessions.realizations();
         realizations
             .frozen(session)
+            .expect("session runtime slots mutex poisoned")
             .environment_projection
             .as_ref()
             .map(|projection| projection.network.clone())
@@ -107,7 +109,11 @@ impl awaken_session_mcp::McpStagingSession for ManagedHost {
         &self,
         session: &str,
     ) -> Option<Arc<crate::session_environment::SessionEnvironment>> {
-        self.host.realizer.session_environment(session).await
+        self.host
+            .realizer
+            .session_environment(session)
+            .await
+            .expect("session runtime slots mutex poisoned")
     }
 
     fn frozen_agent(&self, session: &str) -> Option<String> {

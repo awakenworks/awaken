@@ -90,6 +90,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         .realizer
         .session_environment("t-attach")
         .await
+        .expect("installed Sessions")
         .expect("session environment");
     let handle_before = environment_before.lifecycle().handle();
     assert!(
@@ -198,6 +199,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         .realizer
         .session_environment("t-attach")
         .await
+        .expect("installed Sessions")
         .expect("retained environment");
     assert!(Arc::ptr_eq(&environment_before, &environment_after));
 
@@ -304,12 +306,14 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
         .realizer
         .session_environment("invalid-live-repository")
         .await
+        .expect("installed Sessions")
         .expect("resident environment");
     let before_handle = environment.lifecycle().handle();
     let before_manifest = host
         .realizer
         .staging
         .thread_resource_manifest("invalid-live-repository")
+        .expect("installed Sessions")
         .expect("installed manifest");
     let before_spec = host.realizer.sandbox_spec("invalid-live-repository");
     let before_files = environment
@@ -351,7 +355,8 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
     assert_eq!(
         host.realizer
             .staging
-            .thread_resource_manifest("invalid-live-repository"),
+            .thread_resource_manifest("invalid-live-repository")
+            .expect("installed Sessions"),
         Some(before_manifest),
         "L1/L2 manifest"
     );
@@ -498,6 +503,7 @@ async fn applying_repository_detach_removes_the_resident_namespace_checkout() {
             host.realizer
                 .session_environment("t-repo-detach")
                 .await
+                .expect("installed Sessions")
                 .is_none(),
             "RD0 rejection happens before a resident environment or checkout is exposed"
         );
@@ -508,11 +514,13 @@ async fn applying_repository_detach_removes_the_resident_namespace_checkout() {
         .realizer
         .session_environment("t-repo-detach")
         .await
+        .expect("installed Sessions")
         .expect("resident environment");
     let before_manifest = host
         .realizer
         .staging
         .thread_resource_manifest("t-repo-detach")
+        .expect("installed Sessions")
         .expect("installed manifest");
     let handle = environment.lifecycle().handle();
     let checkout = fixture
@@ -577,6 +585,7 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
         .realizer
         .session_environment("t-local-attach")
         .await
+        .expect("installed Sessions")
         .expect("live Workdir environment");
     let file_id = host
         .file_application()
@@ -594,6 +603,7 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
         .realizer
         .staging
         .thread_resource_manifest("t-local-attach")
+        .expect("installed Sessions")
         .unwrap_or_else(|| {
             crate::session_resource::SessionResourceManifest::at_revision(
                 host.local_workspace(),
@@ -742,6 +752,7 @@ async fn committed_queries_do_not_provision_a_failed_session_environment() {
         host.realizer
             .session_environment("t-query-after-provisioning-denial")
             .await
+            .expect("installed Sessions")
             .is_none(),
         "Q1 reservation preflight has no physical effect"
     );
@@ -771,6 +782,7 @@ async fn committed_queries_do_not_provision_a_failed_session_environment() {
         host.realizer
             .session_environment("t-query-after-provisioning-denial")
             .await
+            .expect("installed Sessions")
             .is_none(),
         "Q2 failed provisioning must not publish an environment"
     );
@@ -791,6 +803,7 @@ async fn committed_queries_do_not_provision_a_failed_session_environment() {
         host.realizer
             .session_environment("t-query-after-provisioning-denial")
             .await
+            .expect("installed Sessions")
             .is_none(),
         "Q3 committed query remains free of environment side effects"
     );
@@ -1036,6 +1049,7 @@ async fn install_test_session_init_is_lazy_and_first_run_materializes_the_enviro
         host.realizer
             .session_environment("lazy-environment")
             .await
+            .expect("installed Sessions")
             .is_none(),
         "preparation must not create a Hand/Sandbox"
     );
@@ -1055,6 +1069,7 @@ async fn install_test_session_init_is_lazy_and_first_run_materializes_the_enviro
         host.realizer
             .session_environment("lazy-environment")
             .await
+            .expect("installed Sessions")
             .is_some()
     );
 }
@@ -1132,7 +1147,8 @@ async fn coordinator_dispatch_context_never_materializes_an_eager_environment() 
                 files,
                 created_unix_nanos: 0,
             }]);
-        });
+        })
+        .expect("installed Sessions");
 
     let context = host
         .ctx_for("coordinator-dispatch-only", Some("assistant"))
@@ -1143,6 +1159,7 @@ async fn coordinator_dispatch_context_never_materializes_an_eager_environment() 
         host.realizer
             .session_environment("coordinator-dispatch-only")
             .await
+            .expect("installed Sessions")
             .is_none(),
         "D1/E3"
     );
@@ -1222,6 +1239,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
         host.realizer
             .session_environment("coordinator-backend-owned")
             .await
+            .expect("installed Sessions")
             .is_none(),
         "B1/E2"
     );
@@ -1359,6 +1377,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
         host.realizer
             .session_environment("worker-dispatch-valid")
             .await
+            .expect("installed Sessions")
             .is_none(),
         "P4/E5"
     );
@@ -1461,6 +1480,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
             .realizer
             .session_environment("local-backend-owned")
             .await
+            .expect("installed Sessions")
             .is_none(),
         "B2 environment"
     );
@@ -1536,7 +1556,10 @@ async fn frozen_environment_selects_trusted_host_exactly() {
         Ok(_) => panic!("T2/E2"),
         Err(error) => error,
     };
-    assert!(error.message.contains("local Workdir provider"), "T2/E2");
+    assert!(
+        error.to_string().contains("local Workdir provider"),
+        "T2/E2"
+    );
 
     let mut isolated = session_environment(
         awaken_session_configuration_contract::SessionNetworkPolicy::None,
@@ -1565,7 +1588,7 @@ async fn frozen_environment_selects_trusted_host_exactly() {
         Ok(_) => panic!("I1/E3"),
         Err(error) => error,
     };
-    assert!(error.message.contains("trusted_host Workdir"), "I1/E3");
+    assert!(error.to_string().contains("trusted_host Workdir"), "I1/E3");
 }
 
 /// L1: `on_tool_use` means inference alone must not allocate a Sandbox.
@@ -1611,6 +1634,7 @@ async fn on_tool_use_text_only_run_keeps_the_environment_absent() {
         host.realizer
             .session_environment("deferred-text")
             .await
+            .expect("installed Sessions")
             .is_none()
     );
 }
@@ -1698,6 +1722,7 @@ async fn on_tool_use_published_delegate_forces_one_eager_environment() {
         host.realizer
             .session_environment("deferred-delegate")
             .await
+            .expect("installed Sessions")
             .is_none(),
         "L9/E4 no environment side effect"
     );
@@ -1727,6 +1752,7 @@ async fn on_tool_use_published_delegate_forces_one_eager_environment() {
         host.realizer
             .session_environment("deferred-delegate")
             .await
+            .expect("installed Sessions")
             .is_some(),
         "L9/E2 single Session owner"
     );

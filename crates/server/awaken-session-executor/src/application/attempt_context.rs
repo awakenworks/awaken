@@ -111,7 +111,9 @@ impl SessionContextAttemptExecutor {
                 filesystem.has_acp,
                 filesystem.has_native,
             )
-            .map_err(awaken_runtime_contract::execution::Error::Resolution)?;
+            .map_err(|error| {
+                awaken_runtime_contract::execution::Error::Resolution(error.to_string())
+            })?;
         if prompts.is_empty() {
             return Ok(activation);
         }
@@ -522,7 +524,7 @@ mod acp_context_tests {
         );
         // Construction happens before the claim-fenced frozen projection is
         // accepted; realization installs the one authoritative slot later.
-        slots.realizations().update_realization("session-1", |r| {
+        slots.install_realization("session-1", |r| {
             r.staging.resources.prompts = vec!["frozen session prompt".into()];
         });
         let durable = activation("genai");
@@ -587,7 +589,7 @@ mod acp_context_tests {
             "session-1",
             awaken_time::system_clock(),
         );
-        slots.realizations().update_realization("session-1", |r| {
+        slots.install_realization("session-1", |r| {
             r.staging.resources.prompts = vec!["resource revision one".into()]
         });
         let durable = activation("genai");
@@ -602,9 +604,12 @@ mod acp_context_tests {
             "C1"
         );
 
-        slots.realizations().update_realization("session-1", |r| {
-            r.staging.resources.prompts = vec!["resource revision two".into()]
-        });
+        slots
+            .realizations()
+            .update_realization("session-1", |r| {
+                r.staging.resources.prompts = vec!["resource revision two".into()]
+            })
+            .expect("installed Sessions");
         let mut second = awaken_runtime_contract::RuntimeRunContext::default();
         let projected = executor
             .project(&slots, durable.clone(), &mut second)
@@ -635,7 +640,7 @@ mod acp_context_tests {
         // never a mixed R1/R2 vector. The barrier makes the interleaving exact:
         // the reader starts only after the writer owns the publication lock.
         let slots = Arc::new(crate::installed_session::InstalledSessions::default());
-        slots.realizations().update_realization("session-1", |r| {
+        slots.install_realization("session-1", |r| {
             r.staging.resources.prompts = vec!["r1-a".into(), "r1-b".into()]
         });
         let executor = Arc::new(SessionContextAttemptExecutor::new(

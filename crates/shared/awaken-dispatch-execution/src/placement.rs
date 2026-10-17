@@ -2,11 +2,11 @@
 //! Canonical projection from immutable execution candidates to holder and
 //! Worker-placement requirements.
 
+use crate::AdmissionError;
 use crate::model_capability::model_realization_capability;
 use awaken_dispatch_contract::PlacementRequirements;
 use awaken_runtime_contract::CredentialMaterialSource;
 use awaken_runtime_contract::RunActivation;
-use awaken_session_realization::host_error::HostError;
 use awaken_session_realization_contract::requires_local_environment;
 use std::collections::BTreeSet;
 
@@ -76,7 +76,7 @@ pub enum InferencePlaintextHolderDecision {
 
 pub fn inference_plaintext_holder_decision(
     activation: &RunActivation,
-) -> Result<InferencePlaintextHolderDecision, HostError> {
+) -> Result<InferencePlaintextHolderDecision, AdmissionError> {
     let mut boundary = None;
     let mut common_holders = None;
     for candidate in activation
@@ -112,14 +112,14 @@ pub fn inference_plaintext_holder_decision(
                 awaken_runtime_contract::PlaintextBoundary::Worker
             }
             awaken_runtime_contract::resolved::Backend::Invalid(invalid) => {
-                return Err(HostError::bad_request(format!(
+                return Err(AdmissionError::rejected(format!(
                     "invalid backend_ref {}",
                     invalid.as_str()
                 )));
             }
         };
         if boundary.is_some_and(|existing| existing != candidate_boundary) {
-            return Err(HostError::bad_request(
+            return Err(AdmissionError::rejected(
                 "one execution candidate set cannot require multiple credential plaintext holders",
             ));
         }
@@ -127,7 +127,7 @@ pub fn inference_plaintext_holder_decision(
     }
     if let Some(common_holders) = common_holders {
         if common_holders.is_empty() {
-            return Err(HostError::bad_request(
+            return Err(AdmissionError::rejected(
                 "one execution candidate set has no common credential plaintext holder",
             ));
         }
@@ -161,7 +161,7 @@ pub fn self_hosted_holder_for_boundary(
 
 pub fn self_hosted_inference_holder(
     activation: &RunActivation,
-) -> Result<Option<awaken_runtime_contract::PlaintextHolder>, HostError> {
+) -> Result<Option<awaken_runtime_contract::PlaintextHolder>, AdmissionError> {
     Ok(match inference_plaintext_holder_decision(activation)? {
         InferencePlaintextHolderDecision::NotRequired => None,
         InferencePlaintextHolderDecision::Exact(holder) => Some(holder),

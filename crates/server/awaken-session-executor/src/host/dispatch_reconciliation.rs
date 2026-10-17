@@ -945,6 +945,7 @@ mod tests {
                     host.realizer
                         .session_environment("orphan-thread")
                         .await
+                        .expect("installed Sessions")
                         .is_none(),
                     "environment-free {rule}"
                 );
@@ -1075,12 +1076,14 @@ mod tests {
             host.realizer
                 .session_environment("thread-control")
                 .await
+                .expect("installed Sessions")
                 .is_none()
         );
         assert!(
             host.realizer
                 .session_environment("thread-terminal")
                 .await
+                .expect("installed Sessions")
                 .is_none(),
             "R3"
         );
@@ -1307,6 +1310,7 @@ mod tests {
             host.realizer
                 .session_environment("thread-exhausted")
                 .await
+                .expect("installed Sessions")
                 .is_none(),
             "H2"
         );
@@ -1406,7 +1410,11 @@ mod tests {
         assert_eq!(reconciled[0].0, run, "P1/E2");
         assert!(store.list_dispatches().await.unwrap().is_empty(), "P1/E2");
         assert!(
-            host.realizer.session_environment(&child.0).await.is_none(),
+            host.realizer
+                .session_environment(&child.0)
+                .await
+                .expect("installed Sessions")
+                .is_none(),
             "P1/E3"
         );
     }

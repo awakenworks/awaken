@@ -25,6 +25,7 @@ impl SharedHost {
         self.durable_run_control()?
             .persist_cancellation(run, live)
             .await
+            .map_err(HostError::from)
     }
     pub(crate) async fn persist_recoverable_dispatch_cancellation(
         &self,
@@ -34,6 +35,7 @@ impl SharedHost {
         self.durable_run_control()?
             .persist_recoverable_cancellation(run, live)
             .await
+            .map_err(HostError::from)
     }
     pub async fn cancel_durable(&self, thread: &str, run: &str) -> Result<(), HostError> {
         let resident = self.resident_context(thread);
@@ -44,6 +46,7 @@ impl SharedHost {
                 resident.as_ref().map(|ctx| ctx.runtime.as_ref()),
             )
             .await
+            .map_err(HostError::from)
     }
     pub async fn wake_durable(&self, thread: &str, run: &str) -> Result<(), HostError> {
         self.require_durable_delivery()?;
@@ -51,7 +54,7 @@ impl SharedHost {
             .resident_context(thread)
             .filter(|ctx| ctx.delivery.is_durable())
             .map(|ctx| ctx.claimed_worker.runtime().clone());
-        wake_resident(runtime, run).await
+        wake_resident(runtime, run).await.map_err(HostError::from)
     }
     pub async fn pause_durable(
         &self,
@@ -72,6 +75,7 @@ impl SharedHost {
             run,
         )
         .await
+        .map_err(HostError::from)
     }
     pub async fn stage_decision(&self, thread: &str, allow: bool) -> Result<String, HostError> {
         let ctx = self.ctx_for(thread, None).await?;
@@ -83,7 +87,10 @@ impl SharedHost {
             .await
             .map_err(HostError::internal)?;
         let input = decision_input(thread, awaiting, allow)?;
-        self.durable_run_control()?.stage_input(input).await
+        self.durable_run_control()?
+            .stage_input(input)
+            .await
+            .map_err(HostError::from)
     }
     pub async fn stage_manual_resume(
         &self,
@@ -99,6 +106,9 @@ impl SharedHost {
             .await
             .map_err(HostError::internal)?;
         let input = manual_resume_input(thread, awaiting, text)?;
-        self.durable_run_control()?.stage_input(input).await
+        self.durable_run_control()?
+            .stage_input(input)
+            .await
+            .map_err(HostError::from)
     }
 }

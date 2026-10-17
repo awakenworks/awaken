@@ -15,7 +15,6 @@ use awaken_runtime_contract::{
     ExecutableAgentSnapshot, RuntimeRunContext, StaticPublishedAgentSnapshots,
 };
 use awaken_session_configuration_contract::SessionRuntimeProjection;
-use awaken_session_realization::host_error::HostError;
 use awaken_session_realization_contract::ClaimedSessionRealizationControl;
 
 use crate::session_reconciliation::TerminalReconciliationState;
@@ -37,7 +36,7 @@ pub trait SessionDispatch: Send + Sync + 'static {
         &self,
         thread: &str,
         projection: SessionRuntimeProjection,
-    ) -> Result<(), HostError>;
+    ) -> Result<(), crate::AdmissionError>;
     fn dispatch_binding(&self) -> Option<DispatchBinding>;
     fn runs_local_dispatch_pool(&self) -> bool;
     fn credential_capabilities(

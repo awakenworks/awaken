@@ -105,7 +105,7 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                 }
                 let host = (raw).build().expect("validated Host dependencies");
                 let install = || {
-                    host.installed_sessions.realizations().update_realization(thread, |r| {
+                    host.installed_sessions.install_realization(thread, |r| {
                         r.environment.owner = resident(thread, environment.clone());
                         r.execution.authority = Authority::Live(
                             awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
@@ -135,6 +135,7 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                     .installed_sessions
                     .realizations()
                     .read_realization(thread, |r| r.environment.lifecycle.clone())
+                    .expect("installed Sessions")
                     .unwrap();
                 let held = if wait == "lifecycle" {
                     Some(lifecycle.lock().await)
@@ -161,7 +162,8 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                         .realizations()
                         .update_realization(thread, |r| {
                             r.execution.authority = Authority::Closed(Some(lease.clone()))
-                        }),
+                        })
+                        .expect("installed Sessions"),
                     "slot-replace" => {
                         host.installed_sessions.remove(thread);
                         install();
@@ -181,7 +183,7 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                                 .unwrap()
                                 .observed(awaken_authority_clock::authority_proof_started().unwrap()),
                             )
-                        });
+                        }).expect("installed Sessions");
                         {
                             let mut guard = worker.current.lock().unwrap();
                             guard.as_mut().unwrap().0.renew();
@@ -276,16 +278,11 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
         .with_execution_authority(worker.clone()))
         .build()
         .expect("validated Host dependencies");
-        host.installed_sessions
-            .realizations()
-            .update_realization(thread, |r| {
-                r.execution.authority =
-                    crate::session_realizations::SessionRealizationAuthority::Live(
-                        awaken_session_realization::test_support::test_observed_lease(
-                            lease.clone(),
-                        ),
-                    );
-            });
+        host.installed_sessions.install_realization(thread, |r| {
+            r.execution.authority = crate::session_realizations::SessionRealizationAuthority::Live(
+                awaken_session_realization::test_support::test_observed_lease(lease.clone()),
+            );
+        });
         let handle = terminal_fixture_container_handle(thread, &host.realizer.sandbox_spec(thread));
         let (state, _, _) =
             disposing_terminal_environment(thread, &lease, &handle, "exact-checkpoint");
@@ -316,31 +313,31 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
         match change {
             "worker-revoke" => *worker.current.lock().unwrap() = None,
             "worker-expire" => worker.current.lock().unwrap().as_mut().unwrap().1 = Duration::ZERO,
-            "session-revoke" => {
-                host.installed_sessions
-                    .realizations()
-                    .update_realization(thread, |r| {
-                        r.execution.authority =
-                            crate::session_realizations::SessionRealizationAuthority::Closed(Some(
-                                lease.clone(),
-                            ));
-                    })
-            }
-            "replace" | "renew" => {
-                host.installed_sessions
-                    .realizations()
-                    .update_realization(thread, |r| {
-                        let mut next = lease.clone();
-                        if change == "replace" {
-                            next.epoch += 1;
-                        }
-                        next.expires_at_unix_ms += 10_000;
-                        r.execution.authority =
-                            crate::session_realizations::SessionRealizationAuthority::Live(
-                                awaken_session_realization::test_support::test_observed_lease(next),
-                            );
-                    })
-            }
+            "session-revoke" => host
+                .installed_sessions
+                .realizations()
+                .update_realization(thread, |r| {
+                    r.execution.authority =
+                        crate::session_realizations::SessionRealizationAuthority::Closed(Some(
+                            lease.clone(),
+                        ));
+                })
+                .expect("installed Sessions"),
+            "replace" | "renew" => host
+                .installed_sessions
+                .realizations()
+                .update_realization(thread, |r| {
+                    let mut next = lease.clone();
+                    if change == "replace" {
+                        next.epoch += 1;
+                    }
+                    next.expires_at_unix_ms += 10_000;
+                    r.execution.authority =
+                        crate::session_realizations::SessionRealizationAuthority::Live(
+                            awaken_session_realization::test_support::test_observed_lease(next),
+                        );
+                })
+                .expect("installed Sessions"),
             "cancel" => {}
             _ => unreachable!(),
         }
@@ -368,7 +365,8 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
                             lease.clone(),
                         ),
                     );
-            });
+            })
+            .expect("installed Sessions");
         host.realizer
             .cleanup
             .cleanup_terminal_checkpoint(&host.realizer, &effect, &state, None, None)
@@ -444,8 +442,7 @@ async fn suspension_and_terminal_admission_use_live_observation_and_never_reopen
         };
         if state != "absent" {
             host.installed_sessions
-                .realizations()
-                .update_realization(rule, |r| r.execution.authority = root.clone());
+                .install_realization(rule, |r| r.execution.authority = root.clone());
         }
         let mut asserted = current.clone();
         match assertion {
@@ -485,7 +482,8 @@ async fn suspension_and_terminal_admission_use_live_observation_and_never_reopen
         assert_eq!(
             host.installed_sessions
                 .realizations()
-                .read_realization(rule, |r| r.execution.authority.clone()),
+                .read_realization(rule, |r| r.execution.authority.clone())
+                .expect("installed Sessions"),
             (state != "absent").then_some(root),
             "{rule}/no root mutation"
         );

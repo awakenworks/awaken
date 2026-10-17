@@ -100,7 +100,8 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
             r.execution.authority = crate::session_realizations::SessionRealizationAuthority::Live(
                 awaken_session_realization::test_support::test_expired_observed_lease(expired),
             );
-        });
+        })
+        .expect("installed Sessions");
     assert_eq!(
         invoke(url.clone()).await.unwrap().status(),
         reqwest::StatusCode::NOT_FOUND,

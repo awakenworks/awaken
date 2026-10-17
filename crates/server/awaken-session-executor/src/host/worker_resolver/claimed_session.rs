@@ -373,6 +373,7 @@ mod tests {
                 host.installed_sessions
                     .realizations()
                     .realization_lock("shared-session")
+                    .expect("installed Sessions")
                     .try_lock()
                     .is_err(),
                 "R3 waiter owns the current Arc"

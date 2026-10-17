@@ -150,11 +150,12 @@ impl ManagedHost {
         init: awaken_session_configuration_contract::SessionInit,
     ) -> Result<(), RunError> {
         let realizations = self.host.installed_sessions.realizations();
-        let _lifecycle = realizations.lock_lifecycle(thread).await;
+        self.host.installed_sessions.install(thread);
+        let _lifecycle = realizations.lock_lifecycle(thread).await?;
         if !self.session_preparation_needed(thread)? {
             return Ok(());
         }
-        let _resource_projection = realizations.lock_resource_projection(thread).await;
+        let _resource_projection = realizations.lock_resource_projection(thread).await?;
         self.host
             .project_session_init(thread, &init)
             .map_err(to_run_error)?;

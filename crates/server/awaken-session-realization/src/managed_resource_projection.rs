@@ -4,6 +4,7 @@
 //! Pure projection from frozen Managed resource inputs to Agent-visible paths and
 //! prompt fragments. Keeping this boundary separate prevents protocol path rules
 //! from being reimplemented by individual Sandbox adapters.
+use crate::realization_error::RealizationError;
 use awaken_provisioning_contract as pc;
 use awaken_session_configuration_contract::resource as session_resource;
 use awaken_session_realization_contract::ResourceOperationFence;
@@ -93,7 +94,7 @@ impl crate::resource_staging::ResourceStaging {
     ) -> Result<(), RunError> {
         let staging = self;
         let realizations = &staging.sessions;
-        let installed = staging.thread_resource_manifest(thread);
+        let installed = staging.thread_resource_manifest(thread)?;
         if installed.as_ref().is_some_and(|installed| {
             installed != transition.previous() && installed != transition.desired()
         }) {
@@ -102,11 +103,11 @@ impl crate::resource_staging::ResourceStaging {
                 "the resident active Resource generation is outside the aggregate transition",
             ));
         }
-        let live_environment = environments.session_environment(thread).await;
+        let live_environment = environments.session_environment(thread).await?;
         let awaiting_adoption = live_environment.is_none()
             && (prospective_environment_binding
                 || realizations
-                    .read_realization(thread, |r| r.environment.owner.durable_binding().is_some())
+                    .read_realization(thread, |r| r.environment.owner.durable_binding().is_some())?
                     .unwrap_or(false));
         if awaiting_adoption {
             // The bound provider substrate is the only physical prior
@@ -130,8 +131,8 @@ impl crate::resource_staging::ResourceStaging {
             realizations.update_realization(thread, |r| {
                 r.validate_preparation_publication(realization_lease)?;
                 r.staging.skills = Some(versions);
-                Ok(())
-            })?;
+                Ok::<_, awaken_session_types::RunError>(())
+            })??;
             return Ok(());
         }
         let effect_key = resource_requirement_effect_key(transition, claim, realization_lease);
@@ -157,14 +158,14 @@ impl crate::resource_staging::ResourceStaging {
         // This method is entered only through the SessionRuntime application
         // port. Preserve that neutral identity before dispatch so a claiming
         // Worker enters the frozen Session realization path.
-        realizations.enter_session_dispatch(thread);
+        realizations.enter_session_dispatch(thread)?;
         let checks = realizations
-            .read_realization(thread, |r| r.staging.resources.binding_checks.clone())
+            .read_realization(thread, |r| r.staging.resources.binding_checks.clone())?
             .unwrap_or_default();
         if checks.is_empty() {
             return Ok(());
         }
-        let workspace = environments.publication.workspace(thread);
+        let workspace = environments.publication.workspace(thread)?;
         for check in checks {
             match check {
                 ResourceBindingCheck::MemoryStore {
@@ -210,7 +211,7 @@ impl crate::resource_staging::ResourceStaging {
         realization_lease: Option<&session_resource::SessionRealizationLease>,
     ) -> Result<(), RunError> {
         let realizations = self.sessions.clone();
-        let _lifecycle = realizations.lock_lifecycle(thread).await;
+        let _lifecycle = realizations.lock_lifecycle(thread).await?;
         self.apply_session_inputs_under_lifecycle(
             environments,
             thread,
@@ -235,7 +236,7 @@ impl crate::resource_staging::ResourceStaging {
         realization_lease: Option<&session_resource::SessionRealizationLease>,
     ) -> Result<(), RunError> {
         let realizations = self.sessions.clone();
-        let _resource_projection = realizations.lock_resource_projection(thread).await;
+        let _resource_projection = realizations.lock_resource_projection(thread).await?;
         self.apply_session_inputs_body(environments, thread, transition, claim, realization_lease)
             .await
     }
@@ -267,11 +268,11 @@ impl crate::resource_staging::ResourceStaging {
         self.validate_effective_resource_layout(environments, thread, inputs)?;
         sessions.update_realization(thread, |r| {
             r.staging.transition = Some(transition.clone());
-        });
-        let live_environment = environments.session_environment(thread).await;
+        })?;
+        let live_environment = environments.session_environment(thread).await?;
         let awaiting_adoption = live_environment.is_none()
             && sessions
-                .read_realization(thread, |r| r.environment.owner.durable_binding().is_some())
+                .read_realization(thread, |r| r.environment.owner.durable_binding().is_some())?
                 .unwrap_or(false);
         let (baseline_is_staged, session_dispatch, reconciliation, environment_projection) =
             sessions
@@ -282,7 +283,7 @@ impl crate::resource_staging::ResourceStaging {
                         slot.realization.staging.reconciliation,
                         slot.inputs.environment_projection.clone(),
                     )
-                })
+                })?
                 .unwrap_or_default();
         // Direct protocol Sessions do not own a frozen Managed baseline, but
         // their Environment still enters through this one aggregate transition
@@ -327,7 +328,7 @@ impl crate::resource_staging::ResourceStaging {
         // requirements cache. A lost aggregate acknowledgement may resend A→B
         // after this process completed B. Memory must compare against B while
         // the remaining Resource effects still replay the authored A→B command.
-        let installed_manifest = staging.thread_resource_manifest(thread);
+        let installed_manifest = staging.thread_resource_manifest(thread)?;
         let old_memory: Vec<_> = installed_manifest
             .as_ref()
             .unwrap_or(previous_manifest)
@@ -391,7 +392,7 @@ impl crate::resource_staging::ResourceStaging {
             // same-generation adoption is continuity, not a replacement: the
             // provider adoption hook reattaches Namespace mounts and no Resource
             // path may be removed before terminal publication/cleanup.
-            staging.register_thread_resource_manifest(thread, desired_manifest);
+            staging.register_thread_resource_manifest(thread, desired_manifest)?;
             return Ok(());
         }
         let mut previous_mounts = previous_manifest
@@ -442,7 +443,7 @@ impl crate::resource_staging::ResourceStaging {
             // conservative reservation first, under the exact aggregate
             // transition identity; every later effect is therefore replayable.
             let source_binding = serde_json::to_string(&environment.lifecycle().handle())
-                .map_err(|error| RunError::internal(error.to_string()))?;
+                .map_err(crate::realization_error::RealizationError::from)?;
             let reserved_paths = if transition.previous() != transition.desired() {
                 desired_manifest
                     .resources
@@ -466,10 +467,10 @@ impl crate::resource_staging::ResourceStaging {
                         &environments.execution.new_environment_effect_intent(thread, awaken_session_state_contract::SessionEnvironmentEffectKind::ResourceProjectionReservation {
                             transition_fingerprint: transition.operation_fingerprint(),
                         },
-                        Some(&source_binding)),
+                        Some(&source_binding))?,
                     )
                     .await
-                    .map_err(crate::host_error::to_run_error)?;
+                    .map_err(awaken_session_types::RunError::from)?;
                 match &effect.authorization {
                     awaken_session_state_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
                         binding,
@@ -487,14 +488,14 @@ impl crate::resource_staging::ResourceStaging {
                         for path in reserved_paths {
                             environment
                                 .projection().reserve_owned_path(&path)
-                                .map_err(|error| RunError::internal(error.to_string()))?;
+                                .map_err(crate::realization_error::RealizationError::from)?;
                         }
                         let binding = serde_json::to_string(&environment.lifecycle().handle())
-                            .map_err(|error| RunError::internal(error.to_string()))?;
+                            .map_err(crate::realization_error::RealizationError::from)?;
                         environments.persist_authorized_environment_binding(thread, binding, &effect)
                             .await
                             .map_err(|failure| {
-                                crate::host_error::to_run_error(failure.error)
+                                awaken_session_types::RunError::from(failure.error)
                             })?;
                     }
                 }
@@ -523,7 +524,7 @@ impl crate::resource_staging::ResourceStaging {
                 .projection()
                 .begin_live_projection_update()
                 .await
-                .map_err(|error| RunError::internal(error.to_string()))?,
+                .map_err(crate::realization_error::RealizationError::from)?,
             None => None,
         };
         if let Some(environment) = &live_environment {
@@ -553,7 +554,7 @@ impl crate::resource_staging::ResourceStaging {
                     .projection()
                     .remove_projection_path(crate::skill_delivery::DELIVERED_SKILLS_SUBDIR)
                     .await
-                    .map_err(|error| RunError::internal(error.to_string()))?;
+                    .map_err(crate::realization_error::RealizationError::from)?;
             }
             if projection_change.removes_previous() {
                 for input in previous_manifest.resources.inputs() {
@@ -568,16 +569,16 @@ impl crate::resource_staging::ResourceStaging {
                             .projection()
                             .remove_projection_path(&path)
                             .await
-                            .map_err(|error| RunError::internal(error.to_string()))?;
+                            .map_err(crate::realization_error::RealizationError::from)?;
                     }
                 }
             }
             if reconciliation == EnvironmentResourceReconciliation::Adopted {
                 environment
                     .projection()
-                    .reconcile_adopted_mounts(&self.thread_session_mounts(thread))
+                    .reconcile_adopted_mounts(&self.thread_session_mounts(thread)?)
                     .await
-                    .map_err(|error| RunError::internal(error.to_string()))?;
+                    .map_err(crate::realization_error::RealizationError::from)?;
             }
             if projection_change.installs_desired()
                 || reconciliation != EnvironmentResourceReconciliation::None
@@ -588,7 +589,7 @@ impl crate::resource_staging::ResourceStaging {
                 // must not reinstall a second projection after publication.
                 if reconcile_skills {
                     let versions = sessions
-                        .read_realization(thread, |r| r.staging.skills.clone())
+                        .read_realization(thread, |r| r.staging.skills.clone())?
                         .flatten()
                         .ok_or_else(|| {
                             RunError::internal("compiled pinned Skill bytes are missing")
@@ -641,7 +642,7 @@ impl crate::resource_staging::ResourceStaging {
                                 .projection()
                                 .attach_mount(mount.clone())
                                 .await
-                                .map_err(|error| RunError::internal(error.to_string()))?;
+                                .map_err(crate::realization_error::RealizationError::from)?;
                         }
                         session_resource::ResolvedInputSource::Repository { .. } => {
                             let retain = reconciliation
@@ -653,7 +654,7 @@ impl crate::resource_staging::ResourceStaging {
                                     .any(|previous| previous == input);
                             let repository = new
                                 .repository_at_path(&path)
-                                .map_err(|error| RunError::internal(error.to_string()))?;
+                                .map_err(crate::realization_error::RealizationError::from)?;
                             staging
                                 .realize_repository_activation(
                                     thread,
@@ -667,21 +668,20 @@ impl crate::resource_staging::ResourceStaging {
                                         pc::RepositoryRealizationIntent::Initialize
                                     },
                                 )
-                                .await
-                                .map_err(|error| RunError::internal(error.to_string()))?;
+                                .await?;
                         }
                     }
                 }
             }
         }
-        staging.register_thread_resource_manifest(thread, desired_manifest);
+        staging.register_thread_resource_manifest(thread, desired_manifest)?;
         if let Some(update) = projection_update {
             update.commit();
         }
         sessions.update_realization(thread, |r| {
             r.staging.reconciliation = EnvironmentResourceReconciliation::None;
-        });
-        environments.evict_session_for_rebuild(thread).await;
+        })?;
+        environments.evict_session_for_rebuild(thread).await?;
         Ok(())
     }
 }
@@ -699,7 +699,7 @@ impl crate::resource_staging::ResourceStaging {
         let cache_matches = sessions
             .read_realization(thread, |r| {
                 r.staging.effect_key.as_deref() == Some(effect_key)
-            })
+            })?
             .unwrap_or(false);
         if !cache_matches {
             // Cache misses converge on the same cold-requirements compiler used
@@ -723,7 +723,7 @@ impl crate::resource_staging::ResourceStaging {
                         memory_bindings: r.staging.memory_bindings.clone(),
                     }
                 })
-            })
+            })?
             .flatten()
             .ok_or_else(|| {
                 RunError::internal(
@@ -811,7 +811,7 @@ impl crate::resource_staging::ResourceStaging {
             && realizations
                 .read_realization(thread, |r| {
                     r.staging.effect_key.as_deref() == Some(effect_key.as_str())
-                })
+                })?
                 .unwrap_or(false)
         {
             return Ok(());
@@ -830,7 +830,7 @@ impl crate::resource_staging::ResourceStaging {
 
         let mut all = crate::staged_resources::StagedResources::default();
         let mut memory_bindings = std::collections::HashMap::new();
-        let environment = realizations.frozen(thread).environment_projection.clone();
+        let environment = realizations.frozen(thread)?.environment_projection.clone();
         for input in resources.inputs() {
             let one = self
                 .stage_resolved_input(workspace, input, claim, realization, environment.as_ref())
@@ -998,7 +998,7 @@ impl crate::resource_staging::ResourceStaging {
                         resource_authority,
                     )
                     .await
-                    .map_err(|error| RunError::internal(error.to_string()))?
+                    .map_err(crate::realization_error::RealizationError::from)?
                     .ok_or_else(|| {
                         RunError::bad_request(format!(
                             "file resource `{file_id}` not found in this workspace"
@@ -1053,7 +1053,7 @@ impl crate::resource_staging::ResourceStaging {
                                 input.access,
                                 intent,
                             )
-                            .map_err(|error| RunError::internal(error.to_string()))?,
+                            .map_err(crate::realization_error::RealizationError::from)?,
                         )
                     }
                     (true, Some(claim), None) => Some(
@@ -1071,7 +1071,7 @@ impl crate::resource_staging::ResourceStaging {
                             input.access,
                             claim,
                         )
-                        .map_err(|error| RunError::internal(error.to_string()))?,
+                        .map_err(crate::realization_error::RealizationError::from)?,
                     ),
                     (true, None, None) => {
                         return Err(RunError::bad_request(
@@ -1285,7 +1285,7 @@ impl crate::resource_staging::ResourceStaging {
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
         environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
-    ) -> Result<(), crate::host_error::HostError> {
+    ) -> Result<(), RealizationError> {
         let (resident_baseline, content_delivery, resident_environment, live_environment) = self
             .sessions
             .modify_session(thread, |slot| {
@@ -1295,7 +1295,7 @@ impl crate::resource_staging::ResourceStaging {
                     slot.inputs.environment_projection.clone(),
                     slot.realization.environment.owner.resident(),
                 )
-            })
+            })?
             .unwrap_or_default();
         let environment = environment.or(resident_environment.as_ref());
         let mut mounts = Vec::new();
@@ -1329,7 +1329,7 @@ impl crate::resource_staging::ResourceStaging {
                 environment,
                 network_isolation: scope.network_isolation(),
             },
-        );
+        )?;
         let historical_owned_paths = live_environment.as_ref().and_then(|environment| {
             environment
                 .lifecycle()
@@ -1341,7 +1341,7 @@ impl crate::resource_staging::ResourceStaging {
             && !repository_paths.is_empty()
             && historical_owned_paths.is_none()
         {
-            return Err(crate::host_error::HostError::internal(
+            return Err(RealizationError::invariant(
                 "legacy Session sandbox handle lacks complete owned-path evidence required for live Repository replacement",
             ));
         }
@@ -1362,7 +1362,7 @@ impl crate::resource_staging::ResourceStaging {
                     &spec,
                     &historical_owned_paths,
                 )
-                .map_err(|error| crate::host_error::HostError::internal(error.to_string()))
+                .map_err(RealizationError::from)
             }
             ManagedLayoutValidationScope::Exact(provider) => self
                 .validate_repository_environment_adoption_paths(
@@ -1383,7 +1383,7 @@ impl crate::resource_staging::ResourceStaging {
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
         environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
-    ) -> Result<(), crate::host_error::HostError> {
+    ) -> Result<(), RealizationError> {
         self.validate_managed_layout_inputs(
             thread,
             resources
@@ -1404,7 +1404,7 @@ impl crate::resource_staging::ResourceStaging {
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
         environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
-    ) -> Result<(), crate::host_error::HostError> {
+    ) -> Result<(), RealizationError> {
         self.validate_managed_layout_inputs(
             thread,
             resources
@@ -1426,7 +1426,7 @@ impl crate::resource_staging::ResourceStaging {
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
         environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
-    ) -> Result<(), crate::host_error::HostError> {
+    ) -> Result<(), RealizationError> {
         self.validate_managed_layout_inputs(
             thread,
             resources.iter().map(binding_layout_projection),
@@ -1444,7 +1444,7 @@ impl crate::resource_staging::ResourceStaging {
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
         environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
-    ) -> Result<(), crate::host_error::HostError> {
+    ) -> Result<(), RealizationError> {
         self.validate_managed_layout_inputs(
             thread,
             resources.iter().map(binding_layout_projection),

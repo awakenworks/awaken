@@ -69,7 +69,13 @@ async fn claimed_inference_only_grader_keeps_execution_authority_without_a_sandb
         context.runtime_publication_identity.as_ref(),
         Some(&identity)
     );
-    assert!(host.realizer.session_environment(thread).await.is_none());
+    assert!(
+        host.realizer
+            .session_environment(thread)
+            .await
+            .expect("installed Sessions")
+            .is_none()
+    );
     assert_eq!(
         context
             .context(&RunId("judge-attempt".into()))
@@ -194,6 +200,7 @@ async fn background_task_fails_closed_on_a_database_less_worker() {
             .realizer
             .session_environment("background-worker")
             .await
+            .expect("installed Sessions")
             .is_none(),
         "R2 no Environment side effect"
     );
@@ -249,6 +256,7 @@ async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
         host.realizer
             .session_environment("a2a-io-only")
             .await
+            .expect("installed Sessions")
             .is_none(),
         "R1 owner"
     );
@@ -296,6 +304,7 @@ async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
         host.realizer
             .session_environment("a2a-with-mount")
             .await
+            .expect("installed Sessions")
             .is_none(),
         "R2"
     );
@@ -551,7 +560,10 @@ async fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope
             "{rule}/E6 exact Session affinity",
         );
         assert_eq!(
-            host.realizer.staging.thread_resource_manifest(&thread),
+            host.realizer
+                .staging
+                .thread_resource_manifest(&thread)
+                .expect("installed Sessions"),
             active,
             "{rule}/E5 dispatch staging must not publish active",
         );
@@ -1123,9 +1135,12 @@ async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         Ok(_) => panic!("a resident session must reject a different sandbox"),
         Err(error) => error,
     };
-    assert_eq!(error.kind, HostErrorKind::Internal);
     assert_eq!(
-        error.message,
+        error.disposition(),
+        crate::realization_error::Disposition::Terminal
+    );
+    assert_eq!(
+        error.to_string(),
         "sandbox t-foreign-resident does not belong to Session t-resident-adoption"
     );
     assert_eq!(
@@ -1170,7 +1185,8 @@ async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         .handle();
     host.realizer
         .evict_session_for_rebuild("t-retained-adoption")
-        .await;
+        .await
+        .expect("installed Sessions");
     drop(original);
 
     let foreign = host
@@ -1195,9 +1211,12 @@ async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         Ok(_) => panic!("a retained session must reject a different sandbox"),
         Err(error) => error,
     };
-    assert_eq!(error.kind, HostErrorKind::Internal);
     assert_eq!(
-        error.message,
+        error.disposition(),
+        crate::realization_error::Disposition::Terminal
+    );
+    assert_eq!(
+        error.to_string(),
         "sandbox t-foreign-retained does not belong to Session t-retained-adoption"
     );
 

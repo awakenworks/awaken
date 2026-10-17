@@ -165,6 +165,7 @@ async fn missing_projection_admits_only_the_direct_empty_revision_zero_noop() {
             rule.id
         );
 
+        host.installed_sessions.install(&thread);
         let result = host
             .realizer
             .staging
@@ -703,6 +704,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                                 == crate::session_resource::ResolvedSessionResources::default()
                         })
                 })
+                .expect("installed Sessions")
                 .unwrap_or(false),
             "A1/E2 rejection is side-effect free"
         );
@@ -729,6 +731,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                                 )
                         })
                 })
+                .expect("installed Sessions")
                 .unwrap_or(false),
             "A2/E1 exact same-generation content replaces only the staged projection"
         );
@@ -766,6 +769,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             host.realizer
                 .staging
                 .thread_resource_manifest("prospective-layout-conflict")
+                .expect("installed Sessions")
                 .is_none(),
             "F1 no Resource projection"
         );
@@ -896,6 +900,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                                     == crate::session_resource::ResolvedSessionResources::default()
                         })
                 })
+                .expect("installed Sessions")
                 .unwrap_or(false),
             "R1 stages the exact SessionResourceState generation without forging completion"
         );
@@ -1244,7 +1249,11 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         "R1/E1 remains unclaimable before activity activation"
     );
     assert!(
-        host.realizer.session_environment(thread).await.is_none(),
+        host.realizer
+            .session_environment(thread)
+            .await
+            .expect("installed Sessions")
+            .is_none(),
         "R1/E2"
     );
     assert!(
@@ -1680,7 +1689,11 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
         .expect("R1 reservation does not require local adoption");
     assert!(reserved.env.is_none(), "R1/E1 no physical Environment");
     assert!(
-        host.realizer.session_environment(thread).await.is_none(),
+        host.realizer
+            .session_environment(thread)
+            .await
+            .expect("installed Sessions")
+            .is_none(),
         "R1/E1"
     );
 
@@ -1694,7 +1707,11 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
             .is_none()
     );
     assert!(
-        host.realizer.session_environment(thread).await.is_none(),
+        host.realizer
+            .session_environment(thread)
+            .await
+            .expect("installed Sessions")
+            .is_none(),
         "R3/E1"
     );
 
@@ -1712,7 +1729,10 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
     };
     // Eviction also exercises cold Coordinator reconstruction, rather than
     // accidentally succeeding through a previously cached envelope.
-    host.realizer.evict_session_for_rebuild(thread).await;
+    host.realizer
+        .evict_session_for_rebuild(thread)
+        .await
+        .expect("installed Sessions");
     for _ in 0..2 {
         host.continue_session_agent_report(report.clone())
             .await
@@ -1724,7 +1744,11 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
     assert_eq!(queued[0].session_thread_id, Some(ThreadId(thread.into())));
     assert_eq!(queued[0].session_activity_epoch, Some(7));
     assert!(
-        host.realizer.session_environment(thread).await.is_none(),
+        host.realizer
+            .session_environment(thread)
+            .await
+            .expect("installed Sessions")
+            .is_none(),
         "R4/E1"
     );
     let mut invalid = report;
@@ -1732,7 +1756,10 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
     assert!(host.continue_session_agent_report(invalid).await.is_err());
     assert_eq!(dispatch.list_dispatches().await.unwrap().len(), 1, "R5");
 
-    host.realizer.evict_session_for_rebuild(thread).await;
+    host.realizer
+        .evict_session_for_rebuild(thread)
+        .await
+        .expect("installed Sessions");
     let error = match host
         .ctx_for_snapshot(thread, Some("assistant"), Some(reserved.config.clone()))
         .await
@@ -1770,7 +1797,10 @@ async fn rebuilt_coordination_context_never_borrows_a_retained_environment() {
         .await
         .expect("C1 create executable context");
     let retained = executable.env.clone().expect("C1 resident Environment");
-    host.realizer.evict_session_for_rebuild(thread).await;
+    host.realizer
+        .evict_session_for_rebuild(thread)
+        .await
+        .expect("installed Sessions");
 
     let coordination = host
         .ctx_for_session_coordination(thread, None)
@@ -1785,6 +1815,7 @@ async fn rebuilt_coordination_context_never_borrows_a_retained_environment() {
                 .realizer
                 .session_environment(thread)
                 .await
+                .expect("installed Sessions")
                 .expect("R1/E1 physical owner survives"),
         ),
         "R1/E1 exact owner is retained independently"
@@ -1846,7 +1877,13 @@ async fn claimed_inference_only_context_keeps_scope_without_a_resource_transitio
         "R1 omitting a Sandbox must not downgrade the claim to coordination"
     );
     assert!(ctx.env.is_none(), "R1 no physical environment");
-    assert!(host.realizer.session_environment(thread).await.is_none());
+    assert!(
+        host.realizer
+            .session_environment(thread)
+            .await
+            .expect("installed Sessions")
+            .is_none()
+    );
     let dispatch = host
         .prepare_dispatch(awaken_runtime_contract::RunActivation::new(
             RunId("inference-only-run".into()),

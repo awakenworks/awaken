@@ -6,10 +6,10 @@
 //! of these phases is performed under the same Session lifecycle guard.
 
 use super::{
-    Arc, BoundSessionEnvironment, BoundSessionEnvironmentIdentity, HostError,
-    LegacyDirectEnvironmentProvenance, RetiringEnvironmentOwner, RetiringSessionEnvironment,
-    SessionEnvironmentOwner, SessionEnvironmentPreparation, SessionEnvironmentRetirementCause,
-    UnboundSessionEnvironment,
+    Arc, BoundSessionEnvironment, BoundSessionEnvironmentIdentity,
+    LegacyDirectEnvironmentProvenance, RealizationError, RetiringEnvironmentOwner,
+    RetiringSessionEnvironment, SessionEnvironmentOwner, SessionEnvironmentPreparation,
+    SessionEnvironmentRetirementCause, UnboundSessionEnvironment,
 };
 use crate::environment_owner::{
     LegacyEnvironmentEffect, SessionEnvironmentRestoration, UnboundSessionEnvironmentOrigin,
@@ -62,7 +62,7 @@ fn projected_environment_owner(
     state: &awaken_session_state_contract::SessionEnvironmentState,
     workspace_id: &str,
     session_id: &str,
-) -> Result<ProjectedEnvironmentOwner, HostError> {
+) -> Result<ProjectedEnvironmentOwner, RealizationError> {
     use awaken_session_state_contract::SessionEnvironmentState;
     match state {
         SessionEnvironmentState::Unmaterialized | SessionEnvironmentState::Hibernated { .. } => {
@@ -86,7 +86,7 @@ fn projected_environment_owner(
                     },
                 ),
                 (None, Some(_)) => {
-                    return Err(HostError::internal(
+                    return Err(RealizationError::invariant(
                         "durable Session Environment generation has no effect identity",
                     ));
                 }
@@ -286,7 +286,7 @@ impl SessionEnvironmentOwner {
         state: &awaken_session_state_contract::SessionEnvironmentState,
         newer: bool,
         pending_resource_reservation: bool,
-    ) -> Result<SessionEnvironmentOwner, HostError> {
+    ) -> Result<SessionEnvironmentOwner, RealizationError> {
         let projected = projected_environment_owner(state, workspace_id, thread)?;
         let mut owner = self.clone();
         owner.install_projection_with_resource_reservation(
@@ -305,14 +305,14 @@ impl SessionEnvironmentOwner {
         &mut self,
         expected: &UnboundSessionEnvironment,
         identity: BoundSessionEnvironmentIdentity,
-    ) -> Result<UnboundSessionEnvironment, HostError> {
+    ) -> Result<UnboundSessionEnvironment, RealizationError> {
         let Self::Preparing(SessionEnvironmentPreparation::Candidate(current)) = self else {
-            return Err(HostError::internal(
+            return Err(RealizationError::invariant(
                 "committed Session Environment Candidate lost its Preparing owner",
             ));
         };
         if !current.exact_matches(expected) {
-            return Err(HostError::internal(
+            return Err(RealizationError::invariant(
                 "committed Session Environment Candidate lost its exact fence",
             ));
         }
@@ -325,7 +325,7 @@ impl SessionEnvironmentOwner {
             }
             CandidateCommitDecision::Replay => {}
             CandidateCommitDecision::Conflict => {
-                return Err(HostError::internal(
+                return Err(RealizationError::invariant(
                     "committed Session Environment Candidate changed durable identity",
                 ));
             }
@@ -338,7 +338,7 @@ impl SessionEnvironmentOwner {
         projected: ProjectedEnvironmentOwner,
         newer: bool,
         pending_resource_reservation: bool,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), RealizationError> {
         // A pending adoption is only a cached descriptor, never a physical Arc.
         // A newer complete root snapshot may replace it; all actual owners still
         // pass through the exact observation/retirement protocol below.
@@ -424,7 +424,7 @@ impl SessionEnvironmentOwner {
                 if let Some(existing) = self.physical_binding()
                     && existing != binding
                 {
-                    return Err(HostError::internal(
+                    return Err(RealizationError::invariant(
                         "durable Session Environment projection changed its physical binding",
                     ));
                 }
@@ -445,7 +445,7 @@ impl SessionEnvironmentOwner {
                                 && generation.id() == request.generation_id
                         );
                         if !exact_restore {
-                            return Err(HostError::internal(
+                            return Err(RealizationError::invariant(
                                 "Resident restore projection does not match its exact durable request",
                             ));
                         }
@@ -469,7 +469,7 @@ impl SessionEnvironmentOwner {
                                 same_durable_generation(committed, &identity),
                             ) == DurableProjectionIdentityDecision::Conflict
                         {
-                            return Err(HostError::internal(
+                            return Err(RealizationError::invariant(
                                 "committed Candidate projection changed its durable identity",
                             ));
                         }
@@ -483,7 +483,7 @@ impl SessionEnvironmentOwner {
                             DurableProjectionIdentityDecision::Exact
                             | DurableProjectionIdentityDecision::SamePhysicalOwnerStutter => {}
                             DurableProjectionIdentityDecision::Conflict => {
-                                return Err(HostError::internal(
+                                return Err(RealizationError::invariant(
                                     "resident Session Environment projection changed its durable identity",
                                 ));
                             }
@@ -499,7 +499,7 @@ impl SessionEnvironmentOwner {
                                 DurableProjectionIdentityDecision::Exact
                                 | DurableProjectionIdentityDecision::SamePhysicalOwnerStutter => {}
                                 DurableProjectionIdentityDecision::Conflict => {
-                                    return Err(HostError::internal(
+                                    return Err(RealizationError::invariant(
                                         "retiring Session Environment projection changed its durable identity",
                                     ));
                                 }
@@ -514,7 +514,7 @@ impl SessionEnvironmentOwner {
                             // sink readback, not projection, supplies identity.
                         }
                         RetiringEnvironmentOwner::Unbound(_) => {
-                            return Err(HostError::internal(
+                            return Err(RealizationError::invariant(
                                 "durable projection cannot promote an unpublished retirement",
                             ));
                         }
@@ -536,7 +536,7 @@ impl SessionEnvironmentOwner {
                 Self::Preparing(SessionEnvironmentPreparation::Candidate(_))
                 | Self::Restoring(_)
                 | Self::Resident(_)
-                | Self::Retiring(_) => Err(HostError::internal(
+                | Self::Retiring(_) => Err(RealizationError::invariant(
                     "restore projection conflicts with the current local Environment owner",
                 )),
             },
@@ -548,19 +548,17 @@ impl SessionEnvironmentOwner {
         environment: Arc<crate::session_environment::SessionEnvironment>,
         kind: awaken_session_state_contract::SessionEnvironmentEffectKind,
         intent: Option<&awaken_session_state_contract::SessionEnvironmentEffectIntent>,
-    ) -> Result<UnboundSessionEnvironment, HostError> {
+    ) -> Result<UnboundSessionEnvironment, RealizationError> {
         if let Some(intent) = intent {
-            intent
-                .verify()
-                .map_err(|error| HostError::internal(error.to_string()))?;
+            intent.verify().map_err(RealizationError::from)?;
             if intent.kind() != &kind {
-                return Err(HostError::internal(
+                return Err(RealizationError::invariant(
                     "candidate changed its captured effect kind",
                 ));
             }
         }
         let binding = serde_json::to_string(&environment.lifecycle().handle())
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(RealizationError::from)?;
         let origin = match (&mut *self, kind) {
             (Self::Vacant, awaken_session_state_contract::SessionEnvironmentEffectKind::Create) => {
                 UnboundSessionEnvironmentOrigin::New
@@ -602,14 +600,14 @@ impl SessionEnvironmentOwner {
                         )
                     );
                 if existing.intent.as_deref() != intent || !same_kind {
-                    return Err(HostError::internal(
+                    return Err(RealizationError::invariant(
                         "Session Environment candidate changed its create/adopt effect",
                     ));
                 }
                 return Ok(existing.clone());
             }
             _ => {
-                return Err(HostError::internal(
+                return Err(RealizationError::invariant(
                     "Session Environment candidate conflicts with its current owner phase",
                 ));
             }
@@ -649,21 +647,21 @@ impl SessionEnvironmentOwner {
         &mut self,
         expected: &UnboundSessionEnvironment,
         identity: BoundSessionEnvironmentIdentity,
-    ) -> Result<Arc<crate::session_environment::SessionEnvironment>, HostError> {
+    ) -> Result<Arc<crate::session_environment::SessionEnvironment>, RealizationError> {
         let Self::Preparing(SessionEnvironmentPreparation::Candidate(current)) = self else {
-            return Err(HostError::internal(
+            return Err(RealizationError::invariant(
                 "Session Environment publication lost its Preparing owner",
             ));
         };
         if !current.exact_matches(expected) {
-            return Err(HostError::internal(
+            return Err(RealizationError::invariant(
                 "Session Environment publication lost its exact candidate fence",
             ));
         }
         if candidate_receipt_decision(&current.origin, &identity)
             == CandidateCommitDecision::Conflict
         {
-            return Err(HostError::internal(
+            return Err(RealizationError::invariant(
                 "Session Environment publication changed durable identity",
             ));
         }
@@ -680,7 +678,7 @@ impl SessionEnvironmentOwner {
     pub fn begin_restore(
         &mut self,
         request: &awaken_session_state_contract::SandboxRestoreRequest,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), RealizationError> {
         match self {
             Self::Vacant => {
                 *self = Self::Restoring(SessionEnvironmentRestoration::Awaiting {
@@ -693,7 +691,7 @@ impl SessionEnvironmentOwner {
             {
                 Ok(())
             }
-            _ => Err(HostError::internal(
+            _ => Err(RealizationError::invariant(
                 "Session Environment restore lost its exact durable phase",
             )),
         }
@@ -703,7 +701,7 @@ impl SessionEnvironmentOwner {
         &mut self,
         cause: SessionEnvironmentRetirementCause,
         selection: RetirementSelection<'_>,
-    ) -> Result<Option<RetiringSessionEnvironment>, HostError> {
+    ) -> Result<Option<RetiringSessionEnvironment>, RealizationError> {
         let selected_matches =
             |environment: &Arc<crate::session_environment::SessionEnvironment>| match selection {
                 RetirementSelection::Current => true,
@@ -757,7 +755,7 @@ impl SessionEnvironmentOwner {
                     )
                 );
                 if !terminal_takeover {
-                    return Err(HostError::internal(
+                    return Err(RealizationError::invariant(
                         "lower-priority Session Environment retirement cannot replace its in-flight cause",
                     ));
                 }
@@ -775,21 +773,21 @@ impl SessionEnvironmentOwner {
         expected_binding: &str,
         environment: Arc<crate::session_environment::SessionEnvironment>,
         cause: SessionEnvironmentRetirementCause,
-    ) -> Result<RetiringSessionEnvironment, HostError> {
+    ) -> Result<RetiringSessionEnvironment, RealizationError> {
         let Self::Preparing(SessionEnvironmentPreparation::AwaitingAdoption { identity, binding }) =
             self
         else {
-            return Err(HostError::internal(
+            return Err(RealizationError::invariant(
                 "adopted cleanup candidate has no durable pending owner",
             ));
         };
         let adopted_binding = serde_json::to_string(&environment.lifecycle().handle())
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(RealizationError::from)?;
         if identity != expected_identity
             || binding != expected_binding
             || adopted_binding != expected_binding
         {
-            return Err(HostError::internal(
+            return Err(RealizationError::invariant(
                 "adopted cleanup candidate lost its exact durable fence",
             ));
         }
@@ -813,19 +811,19 @@ impl SessionEnvironmentOwner {
         &mut self,
         expected: &UnboundSessionEnvironment,
         cause: SessionEnvironmentRetirementCause,
-    ) -> Result<RetiringSessionEnvironment, HostError> {
+    ) -> Result<RetiringSessionEnvironment, RealizationError> {
         let Self::Preparing(SessionEnvironmentPreparation::Candidate(current)) = self else {
-            return Err(HostError::internal(
+            return Err(RealizationError::invariant(
                 "committed Candidate retirement has no Preparing owner",
             ));
         };
         if !current.exact_matches(expected) {
-            return Err(HostError::internal(
+            return Err(RealizationError::invariant(
                 "committed Candidate retirement lost its exact local fence",
             ));
         }
         let identity = current.durable_identity().cloned().ok_or_else(|| {
-            HostError::internal("Candidate retirement has no Store-read durable identity")
+            RealizationError::invariant("Candidate retirement has no Store-read durable identity")
         })?;
         let retiring = RetiringSessionEnvironment {
             cause,
@@ -876,34 +874,32 @@ impl SessionEnvironmentOwner {
         expected: &RetiringSessionEnvironment,
         environment: Arc<crate::session_environment::SessionEnvironment>,
         intent: Option<&awaken_session_state_contract::SessionEnvironmentEffectIntent>,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), RealizationError> {
         if let Some(intent) = intent {
-            intent
-                .verify()
-                .map_err(|error| HostError::internal(error.to_string()))?;
+            intent.verify().map_err(RealizationError::from)?;
             if !matches!(
                 intent.kind(),
                 awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt
             ) {
-                return Err(HostError::internal(
+                return Err(RealizationError::invariant(
                     "re-adoption changed its captured effect kind",
                 ));
             }
         }
         let Self::Retiring(current) = self else {
-            return Err(HostError::internal(
+            return Err(RealizationError::invariant(
                 "Session Environment re-adoption has no Retiring owner",
             ));
         };
         if !current.exact_matches(expected)
             || current.cause != SessionEnvironmentRetirementCause::RealizationRevocation
         {
-            return Err(HostError::internal(
+            return Err(RealizationError::invariant(
                 "Session Environment re-adoption lost its exact revocation fence",
             ));
         }
         let binding = serde_json::to_string(&environment.lifecycle().handle())
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(RealizationError::from)?;
         let (expected_binding, origin) = match &current.owned {
             RetiringEnvironmentOwner::Bound(owned)
                 if matches!(
@@ -921,7 +917,7 @@ impl SessionEnvironmentOwner {
                 UnboundSessionEnvironmentOrigin::Adoption,
             ),
             _ => {
-                return Err(HostError::internal(
+                return Err(RealizationError::invariant(
                     "LegacyDirect revocation requires typed physical rebuild",
                 ));
             }
@@ -938,7 +934,7 @@ impl SessionEnvironmentOwner {
             || same_physical_successor
                 && prior.is_ok_and(|prior| prior.owned_paths_are_monotonic_to(&successor)))
         {
-            return Err(HostError::internal(
+            return Err(RealizationError::invariant(
                 "Session Environment re-adoption changed its exact physical target",
             ));
         }

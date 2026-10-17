@@ -13,7 +13,7 @@ impl SharedHost {
         frozen_parent: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
     ) -> Result<ChildExecutionSubstrate, HostError> {
         let realizations = self.installed_sessions.realizations();
-        let lifecycle_guard = realizations.lock_lifecycle(thread).await;
+        let lifecycle_guard = realizations.lock_lifecycle(thread).await?;
         self.realizer
             .retry_unpublished_session_environment_cleanup(thread)
             .await?;
@@ -22,14 +22,18 @@ impl SharedHost {
             .read_run(thread, |run| run.context.clone())
             .flatten();
         let retained = realizations
-            .read_realization(thread, |r| r.environment.owner.resident())
+            .read_realization(thread, |r| r.environment.owner.resident())?
             .flatten();
         let environment = match retained {
             Some(existing) => existing,
             None => {
                 let parent = frozen_parent
                     .cloned()
-                    .or_else(|| realizations.published_snapshot(thread))
+                    .or_else(|| {
+                        realizations
+                            .published_snapshot(thread)
+                            .expect("session runtime slots mutex poisoned")
+                    })
                     .ok_or_else(|| {
                         HostError::internal(
                             "a cold child requires the frozen parent Session publication",

@@ -828,7 +828,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
                 "if capture_mode == ArtifactCaptureMode::ReceiptOnly",
                 "return self",
                 ".recover_terminal_receipts(",
-                "let projected_environment = exact_environment.cloned().or_else",
+                "let projected_environment = match exact_environment",
                 ".capture_artifacts()",
             ),
             "ReceiptOnly-before-live Artifact batch",
@@ -1400,7 +1400,7 @@ fn harvest_with_fence_mode_from_environment() {
     if capture_mode == ArtifactCaptureMode::ReceiptOnly {
         return self.recover_terminal_receipts(thread, workspace, effect);
     }
-    let projected_environment = exact_environment.cloned().or_else(|| self.installed_sessions.read(thread));
+    let projected_environment = match exact_environment { Some(env) => Some(env.clone()), None => self.installed_sessions.read(thread)? };
     env.capture_artifacts();
     harvest_idempotency_key(thread, path, content);
     publication.verify();
@@ -1933,8 +1933,8 @@ fn recover_terminal_receipts() {
     receipt_after_live[ARTIFACT_HARVEST] = receipt_after_live[ARTIFACT_HARVEST].replace(
         "return self.recover_terminal_receipts(thread, workspace, effect);\n"
         "    }\n"
-        "    let projected_environment = exact_environment.cloned().or_else(|| self.installed_sessions.read(thread));",
-        "let projected_environment = exact_environment.cloned().or_else(|| self.installed_sessions.read(thread));\n"
+        "    let projected_environment = match exact_environment { Some(env) => Some(env.clone()), None => self.installed_sessions.read(thread)? };",
+        "let projected_environment = match exact_environment { Some(env) => Some(env.clone()), None => self.installed_sessions.read(thread)? };\n"
         "    }\n"
         "    return self.recover_terminal_receipts(thread, workspace, effect);",
     )

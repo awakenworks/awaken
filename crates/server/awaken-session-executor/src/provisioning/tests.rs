@@ -23,13 +23,13 @@ fn denies(spec: &pc::SandboxSpec) -> bool {
 
 #[test]
 fn repository_binding_failure_controls_host_retry_semantics() {
-    // Cause/effect table: malformed/denied binding -> caller BadRequest;
-    // concurrent authority -> Conflict; authority outage or unknown read ->
-    // Unavailable; corrupt authority response -> Internal. This is the final
-    // Host boundary, so the typed cause must survive without message parsing.
+    // Cause/effect table: malformed/denied binding or a concurrently changed
+    // authority (a stale selection) -> caller BadRequest; authority outage or
+    // unknown read -> Unavailable; corrupt authority response -> Internal. The
+    // Host boundary enters through the one realization classifier, so it now
+    // agrees with the Run boundary's table, which pins Conflict -> BadRequest.
     // R1..R6 cover the complete verifier enum through the sole classifier;
-    // kind, literal code/message and Display are observable effects. The Run
-    // boundary's original table separately pins Conflict -> BadRequest.
+    // kind, literal code/message and Display are observable effects.
     // There is no lock, IO, state or poison precondition in this pure mapping.
     use crate::host::HostErrorKind as K;
     use awaken_resource_contract::RepositoryBindingVerifierError as E;
@@ -48,8 +48,8 @@ fn repository_binding_failure_controls_host_retry_semantics() {
         ),
         (
             E::Conflict { detail: "x".into() },
-            K::Conflict,
-            "conflict",
+            K::BadRequest,
+            "invalid_request",
             "Repository binding authority changed concurrently: x",
         ),
         (
@@ -72,7 +72,8 @@ fn repository_binding_failure_controls_host_retry_semantics() {
         ),
     ];
     for (error, expected, code, message) in cases {
-        let actual = repository_binding_host_error(error);
+        let actual =
+            crate::HostError::from(crate::realization_error::RealizationError::from(error));
         assert_eq!(actual.kind, expected);
         assert_eq!(actual.code, code);
         assert_eq!(actual.message, message);
@@ -289,6 +290,7 @@ async fn root_terminal_cleanup_effect(
         .installed_sessions
         .realizations()
         .read_realization(session_id, |r| r.environment.owner.resident())
+        .unwrap()
         .flatten()
         .expect("terminal test requires a resident Environment");
     let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
@@ -296,6 +298,7 @@ async fn root_terminal_cleanup_effect(
         .installed_sessions
         .realizations()
         .frozen(session_id)
+        .unwrap()
         .workspace
         .clone()
         .expect("terminal test requires a root Workspace projection");
@@ -462,18 +465,22 @@ async fn projected_sandbox_layout_preserves_one_complete_input_snapshot() {
     environment.network = awaken_session_configuration_contract::SessionNetworkPolicy::None;
     let environment = project_environment(&environment);
 
-    let spec = host.realizer.staging.sandbox_spec_for_projected_layout(
-        "complete-layout",
-        ProjectedSandboxLayout {
-            resource_mounts: vec![resource.clone()],
-            has_repositories: true,
-            baseline_mounts: Some(&baseline_mounts),
-            baseline_env: Some(&baseline_env),
-            content_delivery: Some(crate::frozen_inputs::ManagedContentDelivery::SemanticTools),
-            environment: Some(&environment),
-            network_isolation: false,
-        },
-    );
+    let spec = host
+        .realizer
+        .staging
+        .sandbox_spec_for_projected_layout(
+            "complete-layout",
+            ProjectedSandboxLayout {
+                resource_mounts: vec![resource.clone()],
+                has_repositories: true,
+                baseline_mounts: Some(&baseline_mounts),
+                baseline_env: Some(&baseline_env),
+                content_delivery: Some(crate::frozen_inputs::ManagedContentDelivery::SemanticTools),
+                environment: Some(&environment),
+                network_isolation: false,
+            },
+        )
+        .unwrap();
 
     assert_eq!(spec.mounts, vec![resource, baseline], "L1/E1");
     assert_eq!(spec.env, baseline_env, "L1/E2");
@@ -571,10 +578,14 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
             ..Default::default()
         },
     );
-    let fresh = host.realizer.staging.sandbox_substrate_spec_for_provider(
-        "checkpoint-memory",
-        &host.realizer.env.session_provider,
-    );
+    let fresh = host
+        .realizer
+        .staging
+        .sandbox_substrate_spec_for_provider(
+            "checkpoint-memory",
+            &host.realizer.env.session_provider,
+        )
+        .unwrap();
     assert_eq!(fresh.mounts.len(), 1, "M3/E3");
     assert_eq!(
         consistency(&fresh),
@@ -654,7 +665,8 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
             "checkpoint-memory",
             &resolved,
             &host.realizer.env.session_provider,
-        );
+        )
+        .unwrap();
     assert_eq!(cold.mounts.len(), 1, "M4/E3");
     assert_eq!(
         consistency(&cold),
@@ -667,18 +679,22 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
         "M4/E4"
     );
 
-    let readonly = host.realizer.staging.sandbox_spec_for_projected_layout(
-        "readonly-memory",
-        ProjectedSandboxLayout {
-            resource_mounts: vec![memory_mount(pc::MountAccess::ReadOnly, None)],
-            has_repositories: false,
-            baseline_mounts: None,
-            baseline_env: None,
-            content_delivery: None,
-            environment: Some(&strict_projection),
-            network_isolation: true,
-        },
-    );
+    let readonly = host
+        .realizer
+        .staging
+        .sandbox_spec_for_projected_layout(
+            "readonly-memory",
+            ProjectedSandboxLayout {
+                resource_mounts: vec![memory_mount(pc::MountAccess::ReadOnly, None)],
+                has_repositories: false,
+                baseline_mounts: None,
+                baseline_env: None,
+                content_delivery: None,
+                environment: Some(&strict_projection),
+                network_isolation: true,
+            },
+        )
+        .unwrap();
     assert_eq!(
         consistency(&readonly),
         pc::MemoryWriteConsistency::ProviderDefault,
@@ -688,18 +704,22 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
     let mut resident_environment = environment;
     resident_environment.idle_retention = Default::default();
     let resident_projection = project_environment(&resident_environment);
-    let resident = host.realizer.staging.sandbox_spec_for_projected_layout(
-        "resident-memory",
-        ProjectedSandboxLayout {
-            resource_mounts: vec![memory_mount(pc::MountAccess::ReadWrite, None)],
-            has_repositories: false,
-            baseline_mounts: None,
-            baseline_env: None,
-            content_delivery: None,
-            environment: Some(&resident_projection),
-            network_isolation: true,
-        },
-    );
+    let resident = host
+        .realizer
+        .staging
+        .sandbox_spec_for_projected_layout(
+            "resident-memory",
+            ProjectedSandboxLayout {
+                resource_mounts: vec![memory_mount(pc::MountAccess::ReadWrite, None)],
+                has_repositories: false,
+                baseline_mounts: None,
+                baseline_env: None,
+                content_delivery: None,
+                environment: Some(&resident_projection),
+                network_isolation: true,
+            },
+        )
+        .unwrap();
     assert_eq!(
         consistency(&resident),
         pc::MemoryWriteConsistency::ProviderDefault,
@@ -861,10 +881,10 @@ async fn repository_workspace_rejects_a_provider_with_split_tool_and_process_pat
     };
     assert!(
         error
-            .message
+            .to_string()
             .contains("backend isolation is weaker than requested"),
         "W1/E2: {}",
-        error.message
+        error
     );
 }
 
@@ -891,18 +911,22 @@ async fn trusted_host_repository_projection_preserves_the_exact_tier() {
                 pc::HostAccessPolicy::Isolated
             };
             let environment = project_environment(&environment);
-            let spec = host.realizer.staging.sandbox_spec_for_projected_layout(
-                "trust-matrix",
-                ProjectedSandboxLayout {
-                    resource_mounts: Vec::new(),
-                    has_repositories: repository,
-                    baseline_mounts: None,
-                    baseline_env: None,
-                    content_delivery: None,
-                    environment: Some(&environment),
-                    network_isolation: false,
-                },
-            );
+            let spec = host
+                .realizer
+                .staging
+                .sandbox_spec_for_projected_layout(
+                    "trust-matrix",
+                    ProjectedSandboxLayout {
+                        resource_mounts: Vec::new(),
+                        has_repositories: repository,
+                        baseline_mounts: None,
+                        baseline_env: None,
+                        content_delivery: None,
+                        environment: Some(&environment),
+                        network_isolation: false,
+                    },
+                )
+                .unwrap();
             assert_eq!(
                 spec.isolation,
                 if repository && !trusted {
@@ -967,10 +991,10 @@ async fn projected_acp_rejects_a_provider_with_split_tool_and_process_paths() {
     };
     assert!(
         error
-            .message
+            .to_string()
             .contains("one sandbox-absolute workspace path"),
         "A1/E2: {}",
-        error.message
+        error
     );
 }
 
@@ -1052,10 +1076,10 @@ async fn model_override_only_acp_candidate_rejects_split_process_paths() {
     };
     assert!(
         error
-            .message
+            .to_string()
             .contains("one sandbox-absolute workspace path"),
         "M1/E3: {}",
-        error.message
+        error
     );
 }
 
@@ -1149,7 +1173,10 @@ async fn realize_thread_repositories_fails_closed_on_an_unsafe_path() {
         )
         .await
         .expect_err("R9b clone failure must abort Session start");
-    assert!(error.message.contains("clone failed"), "R9b/E1: {error:?}");
+    assert!(
+        error.to_string().contains("clone failed"),
+        "R9b/E1: {error:?}"
+    );
 }
 
 #[tokio::test]
@@ -1213,7 +1240,7 @@ async fn explicit_repository_publication_uses_one_frozen_activation_and_verifies
         matches!(
             error,
             RepositoryPublicationActivationError::Failed(error)
-                if error.message.contains("read-only")
+                if error.to_string().contains("read-only")
         ),
         "H2/E3"
     );
@@ -1261,7 +1288,7 @@ async fn explicit_repository_publication_uses_one_frozen_activation_and_verifies
         matches!(
             error,
             RepositoryPublicationActivationError::Failed(error)
-                if error.message.contains("does not match")
+                if error.to_string().contains("does not match")
         ),
         "H4/E4"
     );
@@ -1795,6 +1822,7 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         .installed_sessions
         .realizations()
         .frozen("session-artifacts")
+        .unwrap()
         .workspace
         .clone()
         .expect("R4 frozen aggregate Repository inputs");
@@ -1809,6 +1837,7 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
             .read_realization("session-artifacts", |r| {
                 r.environment.owner.terminal_bound_environment().is_some()
             })
+            .unwrap()
             .unwrap_or(false),
         "R3 exact owner remains Retiring until aggregate-authorized Disposal"
     );
@@ -1844,8 +1873,7 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         .await
         .unwrap();
     assert!(
-        host.realizer
-            .session_environment("session-artifacts")
+        host.resident_session_environment("session-artifacts")
             .await
             .is_none()
     );
@@ -1957,7 +1985,8 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
         .realizations()
         .update_realization("artifact-response-loss", |r| {
             r.environment.owner = crate::environment_owner::SessionEnvironmentOwner::Vacant;
-        });
+        })
+        .unwrap();
     let recovered = host
         .realizer
         .cleanup
@@ -2592,6 +2621,7 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
             .read_realization("session-harvest-failure", |r| {
                 r.environment.owner.terminal_bound_environment().is_some()
             })
+            .unwrap()
             .unwrap_or(false),
         "R4 exact terminal owner remains hidden and retryable"
     );

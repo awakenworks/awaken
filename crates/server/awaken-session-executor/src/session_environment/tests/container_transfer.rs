@@ -60,15 +60,20 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
         let spec = host
             .realizer
             .staging
-            .sandbox_spec_for_provider(thread, &provider);
+            .sandbox_spec_for_provider(thread, &provider)
+            .expect("installed Sessions");
         // W0: establish actual Root admission/binding before the revocation
         // table. The selected fake provider does not invent durable authority:
         // use the production sink's first CAS and generated receipt readback.
-        let intent = host.realizer.execution.new_environment_effect_intent(
-            thread,
-            awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
-            None,
-        );
+        let intent = host
+            .realizer
+            .execution
+            .new_environment_effect_intent(
+                thread,
+                awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+                None,
+            )
+            .expect("installed Sessions");
         let effect = host
             .realizer
             .authorize_environment_effect_before_io(thread, &intent)
@@ -188,6 +193,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
                     .installed_sessions
                     .realizations()
                     .read_realization(thread, |r| r.environment.lifecycle.clone())
+                    .expect("installed Sessions")
                     .unwrap();
                 let _lifecycle = lifecycle.lock().await;
                 host.realizer
@@ -233,6 +239,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
                 .installed_sessions
                 .realizations()
                 .read_realization(thread, |r| r.environment.owner.terminal_bound_environment())
+                .expect("installed Sessions")
                 .flatten()
                 .unwrap();
             assert!(
@@ -251,6 +258,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
                 .installed_sessions
                 .realizations()
                 .read_realization(thread, |r| r.environment.owner.terminal_bound_environment())
+                .expect("installed Sessions")
                 .flatten()
                 .unwrap()
                 .environment;

@@ -15,7 +15,6 @@ use awaken_session_state_contract::{
 };
 use awaken_session_types::RunError;
 
-use crate::host_error::to_run_error;
 use crate::terminal_cleanup::TerminalCleanup;
 
 impl TerminalCleanup {
@@ -34,7 +33,7 @@ impl TerminalCleanup {
         let cleanup = self;
         let workspace = environments
             .publication
-            .workspace(command.session_id.as_str());
+            .workspace(command.session_id.as_str())?;
 
         // The canonical driver may install only the frozen aggregate after a
         // Worker restart. Hold the existing realization/lifecycle lock order
@@ -50,22 +49,22 @@ impl TerminalCleanup {
         let _lifecycle = staging
             .sessions
             .lock_lifecycle(command.session_id.as_str())
-            .await;
+            .await?;
         let mut current_lease = cleanup
             .authorize_lease(&command.session_id, lease)
-            .map_err(to_run_error)?;
+            .map_err(awaken_session_types::RunError::from)?;
         let staged = staging
             .stage_terminal_repository_publication_input(&workspace, &command, &current_lease)
             .await?;
 
         current_lease = cleanup
             .authorize_lease(&command.session_id, lease)
-            .map_err(to_run_error)?;
+            .map_err(awaken_session_types::RunError::from)?;
         let (assignment, resolved_resources) = staging
             .sessions
             .read_realization(command.session_id.as_str(), |r| {
                 (r.cleanup.assignment.clone(), r.previous_resources())
-            })
+            })?
             .ok_or_else(|| {
                 RunError::unavailable_classified(
                     "session_repository_publication_projection_missing",
@@ -89,7 +88,7 @@ impl TerminalCleanup {
             })?;
         let effect_fence = current_lease
             .sandbox_effect_fence(command.effect_id.clone())
-            .map_err(|error| RunError::internal(error.to_string()))?;
+            .map_err(crate::realization_error::RealizationError::from)?;
         let prepared = environments.prepare_bound_environment_for_effect_under_lifecycle(self,
                 command.session_id.as_str(),
                 binding,
@@ -98,17 +97,17 @@ impl TerminalCleanup {
                 crate::session_environment::BoundEnvironmentPreparationMode::TerminalRepositoryPublication,
             )
             .await
-            .map_err(to_run_error)?;
+            .map_err(awaken_session_types::RunError::from)?;
         if let Some(observation) = prepared.publication_source_closure() {
             cleanup
                 .authorize_lease(&command.session_id, lease)
-                .map_err(to_run_error)?;
+                .map_err(awaken_session_types::RunError::from)?;
             let rejection = SessionRepositoryPublicationRejection::source_closed(
                 &command,
                 binding,
                 observation.clone(),
             )
-            .map_err(|error| RunError::internal(error.to_string()))?;
+            .map_err(crate::realization_error::RealizationError::from)?;
             return Ok(SessionRepositoryPublicationEffect::Rejected(rejection));
         }
         if !prepared.permits_live_io() {
@@ -119,7 +118,7 @@ impl TerminalCleanup {
         }
         current_lease = cleanup
             .authorize_lease(&command.session_id, lease)
-            .map_err(to_run_error)?;
+            .map_err(awaken_session_types::RunError::from)?;
         let environment = prepared
             .environment
             .map(|(environment, _)| environment)
@@ -143,7 +142,7 @@ impl TerminalCleanup {
             .await;
         cleanup
             .authorize_lease(&command.session_id, lease)
-            .map_err(to_run_error)?;
+            .map_err(awaken_session_types::RunError::from)?;
         match effect {
             Ok(effect_receipt) => Ok(SessionRepositoryPublicationEffect::Published(
                 SessionRepositoryPublicationReceipt::new(&command, effect_receipt),
@@ -151,16 +150,11 @@ impl TerminalCleanup {
             Err(crate::provisioning::RepositoryPublicationActivationError::Rejected(
                 effect_rejection,
             )) => Ok(SessionRepositoryPublicationEffect::Rejected(
-                SessionRepositoryPublicationRejection::new(&command, effect_rejection).map_err(
-                    |error| {
-                        RunError::internal(format!(
-                            "Repository publication rejection did not match its command: {error}"
-                        ))
-                    },
-                )?,
+                SessionRepositoryPublicationRejection::new(&command, effect_rejection)
+                    .map_err(crate::realization_error::RealizationError::from)?,
             )),
             Err(crate::provisioning::RepositoryPublicationActivationError::Failed(error)) => {
-                Err(to_run_error(error))
+                Err(awaken_session_types::RunError::from(error))
             }
         }
     }

@@ -1,7 +1,7 @@
 // @formal entrypoint session_realization.control_failure_disposition_and_current_owner_loss_are_total_exact_and_terminal_absorbing
 //! Project canonical Session realization failures into Worker claim outcomes.
 
-use super::{HostError, HostErrorKind, execution_error, terminal_resolution_error, to_run_error};
+use super::{execution_error, terminal_resolution_error};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionRealizationWorkerEffect {
@@ -52,21 +52,23 @@ fn session_realization_control_disposition_projects_exact_worker_effect() {
     assert_eq!(session_realization_worker_effect(disposition), expected);
 }
 
-/// Preserve a deterministic Host admission refusal, and every classified
-/// environment provider failure, through the Session realization
-/// classification the realization driver uses, so both paths reach the
-/// same claim outcome. Other Host failures keep their retryable behavior.
-pub fn map_host_resolution_error(error: HostError) -> crate::Error {
-    if error.kind == HostErrorKind::BadRequest
-        || awaken_session_realization_contract::is_environment_effect_code(&error.code)
-    {
-        map_session_realization_drive_error(
-            awaken_session_realization_contract::SessionRealizationDriveError::Effect(
-                to_run_error(error),
-            ),
-        )
-    } else {
-        execution_error(error.to_string())
+/// Project one admission or realization failure onto the claim outcome its
+/// disposition names. The realization driver projects the same disposition
+/// through [`map_session_realization_drive_error`], so both paths agree.
+pub fn map_admission_error(error: impl Into<crate::AdmissionError>) -> crate::Error {
+    let error = error.into();
+    claim_outcome(error.claim_disposition(), error.to_string())
+}
+
+/// The claim outcome of one disposition, carrying the operator message.
+pub fn claim_outcome(
+    disposition: awaken_session_realization_contract::SessionRealizationControlDisposition,
+    message: String,
+) -> crate::Error {
+    match session_realization_worker_effect(disposition) {
+        SessionRealizationWorkerEffect::Defer => crate::Error::ResolutionNotReady(message),
+        SessionRealizationWorkerEffect::Relinquish => execution_error(message),
+        SessionRealizationWorkerEffect::Absorb => terminal_resolution_error(message),
     }
 }
 
@@ -86,9 +88,5 @@ pub fn map_session_realization_drive_error(
             return execution_error(retryable.to_string());
         }
     };
-    match session_realization_worker_effect(disposition) {
-        SessionRealizationWorkerEffect::Defer => crate::Error::ResolutionNotReady(message),
-        SessionRealizationWorkerEffect::Relinquish => execution_error(message),
-        SessionRealizationWorkerEffect::Absorb => terminal_resolution_error(message),
-    }
+    claim_outcome(disposition, message)
 }

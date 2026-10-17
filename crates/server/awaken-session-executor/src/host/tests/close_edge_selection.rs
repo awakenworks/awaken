@@ -151,7 +151,13 @@ async fn rebuilt_successor_is_not_interrupted(original_run_active: bool) {
     } else {
         None
     };
-    assert!(host.realizer.environments.sessions.remove_session(thread));
+    assert!(
+        host.realizer
+            .environments
+            .sessions
+            .remove_session(thread)
+            .expect("installed sessions readable")
+    );
     // Release the original real Workdir through its lifecycle before the
     // next actual incarnation creates its own root; never adopt an unowned
     // legacy directory or weaken the provider's fail-closed admission.

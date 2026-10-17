@@ -69,9 +69,7 @@ mod tests {
         let mut waiting = std::pin::pin!(waiting);
         assert!(futures_util::poll!(waiting.as_mut()).is_pending(), "R1/E1");
         slots.remove("session-a");
-        let recreated = slots
-            .realizations()
-            .update_realization("session-a", |r| r.execution.phase.clone());
+        let recreated = slots.install_realization("session-a", |r| r.execution.phase.clone());
         drop(held);
         let (_permit, admitted) = tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
             .await

@@ -6,6 +6,7 @@
 //! the managed mount layout against a provider.
 
 use crate::memory_binding::MemoryBinding;
+use crate::realization_error::RealizationError;
 use awaken_session_configuration_contract::SkillBundleSource;
 use awaken_session_realization_contract::ResourceOperationFence;
 use std::sync::Arc;
@@ -39,8 +40,9 @@ impl ResourceStaging {
     pub fn thread_session_mounts(
         &self,
         thread: &str,
-    ) -> Vec<awaken_provisioning_contract::MountRequirement> {
-        self.sessions
+    ) -> Result<Vec<awaken_provisioning_contract::MountRequirement>, RealizationError> {
+        Ok(self
+            .sessions
             .modify_session(thread, |slot| {
                 crate::provisioning::project_session_mounts(
                     slot.realization.staging.resources.mounts.clone(),
@@ -50,15 +52,20 @@ impl ResourceStaging {
                         .map(|baseline| baseline.mounts.as_slice()),
                     slot.realization.staging.content_delivery,
                 )
-            })
-            .unwrap_or_default()
+            })?
+            .unwrap_or_default())
     }
 
-    pub fn register_thread_memory(&self, thread: &str, memory: Option<Arc<MemoryBinding>>) {
+    pub fn register_thread_memory(
+        &self,
+        thread: &str,
+        memory: Option<Arc<MemoryBinding>>,
+    ) -> Result<(), RealizationError> {
         self.sessions.update_realization(thread, |r| {
             r.staging.memory_bindings.clear();
             r.staging.memory = memory;
-        });
+        })?;
+        Ok(())
     }
 
     /// Select the exact Awaken extension binding authored by the published
@@ -68,18 +75,18 @@ impl ResourceStaging {
         &self,
         thread: &str,
         binding_id: Option<&str>,
-    ) -> Result<Option<Arc<MemoryBinding>>, String> {
+    ) -> Result<Option<Arc<MemoryBinding>>, RealizationError> {
         let selected = self.sessions.update_realization(thread, |r| {
             let selected = binding_id.and_then(|id| r.staging.memory_bindings.get(id).cloned());
             r.staging.memory = selected.clone();
             selected
-        });
+        })?;
         match (binding_id, selected) {
             (_, Some(selected)) => Ok(Some(selected)),
             (None, None) => Ok(None),
-            (Some(binding_id), None) => Err(format!(
+            (Some(binding_id), None) => Err(RealizationError::invalid_request(format!(
                 "automatic memory binding `{binding_id}` is not mounted for this Session"
-            )),
+            ))),
         }
     }
 }

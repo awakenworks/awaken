@@ -3,22 +3,32 @@
 mod tests {
 
     #[test]
-    fn host_resolution_preserves_admission_and_retry_classes_by_kind() {
-        // Cause/effect table: H1 deterministic BadRequest -> the existing
-        // absorbing Session effect; H2-H4 Unavailable/Internal/Conflict -> the
-        // existing claim-local retry. Every row uses identical detail text so
-        // an operator message cannot become a second classification policy.
+    fn host_resolution_projects_the_contract_class_like_the_driver() {
+        // Cause/effect table: an executor (Host) failure reaches the claim
+        // resolver through its neutral Run projection and the contract's one
+        // classification, exactly as the realization driver classifies the
+        // same failure after the synchronizer. H1 BadRequest, H3 unclassified
+        // Internal and H4 Conflict (projected to BadRequest) absorb; H2
+        // Unavailable relinquishes. Every row uses identical detail text so an
+        // operator message cannot become a second classification policy.
         for (error, terminal) in [
             (crate::HostError::bad_request("same detail"), true),
             (crate::HostError::unavailable("same detail"), false),
-            (crate::HostError::internal("same detail"), false),
-            (crate::HostError::conflict("same detail"), false),
+            (crate::HostError::internal("same detail"), true),
+            (crate::HostError::conflict("same detail"), true),
         ] {
+            let run_error = crate::host_error::to_run_error(crate::HostError {
+                message: error.message.clone(),
+                kind: error.kind,
+                code: error.code.clone(),
+            });
             let actual =
-                awaken_dispatch_execution::session_worker_resolver::map_host_resolution_error(
-                    error,
-                );
+                awaken_dispatch_execution::session_worker_resolver::map_admission_error(error);
             assert_eq!(actual.is_terminal_resolution(), terminal);
+            let driver = awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error(
+                awaken_session_realization_contract::SessionRealizationDriveError::Effect(run_error),
+            );
+            assert_eq!(driver.is_terminal_resolution(), terminal, "driver agrees");
             if !terminal {
                 assert!(matches!(
                     actual,
@@ -44,7 +54,7 @@ mod tests {
         // SandboxError variant (its Classify disposition, or the capacity
         // class); C2 the path that observes it: P1 the realization driver
         // (synchronizer -> RunError -> FailSessionRealization + drive error)
-        // or P2 the claim resolver (HostError -> map_host_resolution_error).
+        // or P2 the claim resolver (HostError -> map_admission_error).
         // Effects: the claim outcome (the dispatch pool defers every
         // non-terminal outcome request-locally with the claim's backoff and
         // keeps its retry budget; `absorb` settles the Run), and the
@@ -121,10 +131,9 @@ mod tests {
                     awaken_session_realization_contract::environment_effect_error(&sandbox),
                 )
             };
-            let resolver =
-                awaken_dispatch_execution::session_worker_resolver::map_host_resolution_error(
-                    host_error(),
-                );
+            let resolver = awaken_dispatch_execution::session_worker_resolver::map_admission_error(
+                host_error(),
+            );
             // P1: the driver sees the same Host error after the synchronizer's
             // Run projection, reports it to Control, then returns it.
             let run_error = crate::host_error::to_run_error(host_error());
@@ -154,16 +163,16 @@ mod tests {
                 "{rule}: the provider detail survives the boundary"
             );
         }
-        // Fail closed: an unclassified Host failure keeps the resolver's
-        // existing retry, and a capacity code on a non-Unavailable fault is
-        // not a capacity refusal.
+        // Fail closed: an unclassified Host failure absorbs on the resolver as
+        // it does on the driver, and a capacity code on a non-Unavailable fault
+        // is not a capacity refusal.
         assert_eq!(
             claim_outcome(
-                &awaken_dispatch_execution::session_worker_resolver::map_host_resolution_error(
+                &awaken_dispatch_execution::session_worker_resolver::map_admission_error(
                     crate::HostError::internal("unclassified")
                 )
             ),
-            "relinquish"
+            "absorb"
         );
         assert_eq!(
             claim_outcome(&awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error(

@@ -5,7 +5,7 @@ use super::*;
 use awaken_dispatch_execution::session_execution::{
     RunWorkerFactory, SessionDispatch, TerminalRecovery, execution_error,
 };
-use awaken_dispatch_execution::session_worker_resolver::map_host_resolution_error;
+use awaken_dispatch_execution::session_worker_resolver::map_admission_error;
 use awaken_dispatch_execution::{DispatchBinding, DispatchWorker, Error};
 use awaken_dispatch_contract::{Claimed, RunClaim, RunDispatch};
 use awaken_runtime_contract::{
@@ -45,7 +45,7 @@ impl SessionDispatch for SharedHost {
         &self,
         thread: &str,
         projection: awaken_session_configuration_contract::SessionRuntimeProjection,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), awaken_dispatch_execution::AdmissionError> {
         self.install_environment_projection(thread, &projection.environment)?;
         self.installed_sessions
             .replace_frozen_with(thread, |next| next.tools = projection.tools);
@@ -133,7 +133,7 @@ impl RunWorkerFactory for SharedHost {
         };
         context
             .map(|ctx| ctx.claimed_worker.clone())
-            .map_err(map_host_resolution_error)
+            .map_err(map_admission_error)
     }
     async fn child_worker(
         &self,
@@ -187,10 +187,11 @@ impl SessionProjectionExecution for SharedHost {
         &self,
         thread: &str,
         publication: Option<&ExecutableAgentSnapshot>,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), awaken_session_realization::realization_error::RealizationError> {
         self.session_child_execution_substrate(thread, publication)
             .await
             .map(|_| ())
+            .map_err(Into::into)
     }
 
     async fn install_frozen_projection(
@@ -200,7 +201,7 @@ impl SessionProjectionExecution for SharedHost {
         claim: Option<&RunClaim>,
         synchronize_resources: bool,
         lease: Option<ObservedSessionRealizationLease>,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), awaken_session_realization::realization_error::RealizationError> {
         self.install_frozen_session_projection(
             session,
             projection,
@@ -209,6 +210,7 @@ impl SessionProjectionExecution for SharedHost {
             lease,
         )
         .await
+        .map_err(Into::into)
     }
     fn invalidate_realization_lease(
         &self,

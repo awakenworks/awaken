@@ -1,7 +1,7 @@
-//! The error vocabulary every Session operation returns, and its one
-//! projection to and from the neutral Run error. Realization and the run path
-//! both return it, so it sits below both; Runtime Host re-exports its existing public
-//! `HostError` path.
+//! The error vocabulary every Session operation of this executor returns, and
+//! its one projection to and from the neutral Run error. A Session realization
+//! failure enters it in exactly one place, `From<RealizationError>`, through
+//! the realization's own Run projection, so its disposition survives.
 
 use awaken_session_mcp::{McpError, McpErrorKind};
 use awaken_session_types::RunError;
@@ -97,6 +97,50 @@ pub fn from_run_error(error: RunError) -> HostError {
             awaken_session_types::RunErrorKind::Unavailable => HostErrorKind::Unavailable,
         },
         code: error.code,
+    }
+}
+
+/// The one entry of a realization failure: its Run projection already carries
+/// the fault and code its disposition implies.
+impl From<awaken_session_realization::realization_error::RealizationError> for HostError {
+    fn from(error: awaken_session_realization::realization_error::RealizationError) -> Self {
+        from_run_error(RunError::from(error))
+    }
+}
+
+/// An executor failure inside a realization port (substrate, frozen
+/// projection install) keeps its neutral Run class.
+impl From<HostError> for awaken_session_realization::realization_error::RealizationError {
+    fn from(error: HostError) -> Self {
+        Self::Run(to_run_error(error))
+    }
+}
+
+/// Dispatch admission failures keep their realization or Run classification.
+impl From<awaken_dispatch_execution::AdmissionError> for HostError {
+    fn from(error: awaken_dispatch_execution::AdmissionError) -> Self {
+        use awaken_dispatch_execution::AdmissionError;
+        match error {
+            AdmissionError::Rejected(message) => Self::bad_request(message),
+            AdmissionError::Realization(error) => Self::from(error),
+            AdmissionError::Run(error) => from_run_error(error),
+            AdmissionError::LiveControl(
+                error @ (awaken_dispatch_execution::LiveRunControlError::NotFound(_)
+                | awaken_dispatch_execution::LiveRunControlError::NoSubscriber(_)),
+            ) => Self::bad_request(error.to_string()),
+            error @ (AdmissionError::Dispatch(_)
+            | AdmissionError::LiveControl(_)
+            | AdmissionError::ResourceEnvelope(_)
+            | AdmissionError::RuntimeEnvelope(_)
+            | AdmissionError::AlreadyBound(_)) => Self::internal(error.to_string()),
+        }
+    }
+}
+
+/// An executor failure crossing into dispatch keeps its neutral Run class.
+impl From<HostError> for awaken_dispatch_execution::AdmissionError {
+    fn from(error: HostError) -> Self {
+        Self::Run(to_run_error(error))
     }
 }
 

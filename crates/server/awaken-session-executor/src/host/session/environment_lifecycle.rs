@@ -19,6 +19,18 @@ mod tests;
 
 #[cfg(test)]
 impl crate::host::SharedHost {
+    /// The resident Environment of a Session, observed by a test whose
+    /// registry is healthy.
+    pub async fn resident_session_environment(
+        &self,
+        thread: &str,
+    ) -> Option<Arc<crate::session_environment::SessionEnvironment>> {
+        self.realizer
+            .session_environment(thread)
+            .await
+            .expect("installed Sessions")
+    }
+
     pub async fn session_environment_handle(
         &self,
         thread: &str,
@@ -26,6 +38,7 @@ impl crate::host::SharedHost {
         self.realizer
             .session_environment(thread)
             .await
+            .expect("installed Sessions")
             .map(|env| env.lifecycle().handle())
     }
 
@@ -35,6 +48,7 @@ impl crate::host::SharedHost {
         workspace_id: &str,
         state: &awaken_session_state_contract::SessionEnvironmentState,
     ) -> Result<(), HostError> {
+        self.installed_sessions.install(thread);
         self.realizer.sessions.update_session(thread, |slot| {
             let owner = slot.realization.environment.owner.after_projection(
                 thread,
@@ -46,7 +60,7 @@ impl crate::host::SharedHost {
             slot.realization
                 .install_owner(owner, state, slot.run.holds_context());
             Ok(())
-        })
+        })?
     }
 
     pub fn install_test_resident_session_environment(
@@ -54,6 +68,7 @@ impl crate::host::SharedHost {
         thread: &str,
         environment: Arc<crate::session_environment::SessionEnvironment>,
     ) {
+        self.installed_sessions.install(thread);
         let realizations = self.realizer.sessions.clone();
         let binding = serde_json::to_string(&environment.lifecycle().handle())
             .expect("test Environment handle serializes");
@@ -63,24 +78,26 @@ impl crate::host::SharedHost {
             binding.clone(),
             None,
         );
-        realizations.update_realization(thread, |r| {
-            // A same-handle ABA test replaces only the process-local Arc. Keep
-            // its existing Root-generated identity instead of downgrading it.
-            if let SessionEnvironmentOwner::Resident(owned) = &mut r.environment.owner
-                && owned.binding == binding
-                && owned.environment.lifecycle().handle() == environment.lifecycle().handle()
-            {
-                owned.environment = environment;
-                return;
-            }
-            r.environment.owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
-                identity: BoundSessionEnvironmentIdentity::LegacyDirect(
-                    LegacyDirectEnvironmentProvenance::Direct(receipt),
-                ),
-                binding,
-                environment,
-            });
-        });
+        realizations
+            .update_realization(thread, |r| {
+                // A same-handle ABA test replaces only the process-local Arc. Keep
+                // its existing Root-generated identity instead of downgrading it.
+                if let SessionEnvironmentOwner::Resident(owned) = &mut r.environment.owner
+                    && owned.binding == binding
+                    && owned.environment.lifecycle().handle() == environment.lifecycle().handle()
+                {
+                    owned.environment = environment;
+                    return;
+                }
+                r.environment.owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
+                    identity: BoundSessionEnvironmentIdentity::LegacyDirect(
+                        LegacyDirectEnvironmentProvenance::Direct(receipt),
+                    ),
+                    binding,
+                    environment,
+                });
+            })
+            .expect("installed Sessions");
     }
 
     pub fn observe_retirement_status<E>(
@@ -90,11 +107,14 @@ impl crate::host::SharedHost {
         status: Result<awaken_provisioning_contract::SandboxStatus, E>,
     ) -> Result<bool, E> {
         let realizations = self.realizer.sessions.clone();
-        match realizations.modify_realization(thread, |r| {
-            r.environment
-                .owner
-                .observe_retirement_status(retirement, status)
-        }) {
+        match realizations
+            .modify_realization(thread, |r| {
+                r.environment
+                    .owner
+                    .observe_retirement_status(retirement, status)
+            })
+            .expect("installed Sessions")
+        {
             Some(observed) => observed,
             None => Ok(false),
         }
@@ -126,7 +146,10 @@ impl crate::host::SharedHost {
         expected: &Arc<crate::session_environment::SessionEnvironment>,
     ) -> bool {
         let realizations = self.realizer.sessions.clone();
-        let _lifecycle = realizations.lock_lifecycle(thread).await;
+        let _lifecycle = realizations
+            .lock_lifecycle(thread)
+            .await
+            .expect("installed Sessions");
         let Ok(Some(retirement)) = self.realizer.retire_current_environment(
             thread,
             SessionEnvironmentRetirementCause::RecoveryDiscard,
@@ -148,6 +171,7 @@ impl crate::host::SharedHost {
                 )) => Some(candidate.clone()),
                 _ => None,
             })
+            .expect("installed Sessions")
             .flatten()
     }
 
@@ -163,6 +187,6 @@ impl crate::host::SharedHost {
         self.realizer
             .persist_authorized_environment_before_publish(thread, candidate, &effect)
             .await
-            .map_err(|failure| failure.error)
+            .map_err(|failure| failure.error.into())
     }
 }

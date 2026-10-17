@@ -125,7 +125,9 @@ impl RunExecutor for ArtifactHarvestAttemptExecutor {
         let thread = activation.thread_id.0.clone();
         // Capture before execution: a stale attempt must never borrow a newer
         // replacement claim for its post-attempt Resource effects.
-        let claim = harvester.current_claim(&thread);
+        let claim = harvester
+            .current_claim(&thread)
+            .map_err(|error| ExecutionError::Resolution(error.to_string()))?;
         let result = self.inner.execute(activation, context).await;
         let result = Self::finish(&harvester, &thread, claim, result).await;
         drop(harvester);
@@ -153,7 +155,9 @@ impl RunAttemptExecutor for ArtifactHarvestAttemptExecutor {
             ExecutionError::Resolution("Artifact harvest owner is unavailable".into())
         })?;
         let thread = activation.thread_id.0.clone();
-        let claim = harvester.current_claim(&thread);
+        let claim = harvester
+            .current_claim(&thread)
+            .map_err(|error| ExecutionError::Resolution(error.to_string()))?;
         let result = self.inner.resume(activation, command, context).await;
         let result = Self::finish(&harvester, &thread, claim, result).await;
         drop(harvester);

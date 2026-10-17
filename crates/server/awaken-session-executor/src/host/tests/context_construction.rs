@@ -34,6 +34,7 @@ async fn failed_context_assembly_retains_one_environment_for_retry() {
         .realizer
         .session_environment(thread)
         .await
+        .expect("installed Sessions")
         .expect("E2 owner retained");
 
     let repeated = host
@@ -53,7 +54,12 @@ async fn failed_context_assembly_retains_one_environment_for_retry() {
     );
     assert!(
         Arc::ptr_eq(
-            &host.realizer.session_environment(thread).await.unwrap(),
+            &host
+                .realizer
+                .session_environment(thread)
+                .await
+                .expect("installed Sessions")
+                .unwrap(),
             &retained
         ),
         "E2 exact owner"
@@ -263,6 +269,7 @@ async fn acp_context_failure_releases_exports_and_reuses_environment() {
             .realizer
             .session_environment(thread)
             .await
+            .expect("installed Sessions")
             .expect("E3 retained owner");
         assert_eq!(
             exporter.leases_dropped.load(Ordering::SeqCst),
@@ -311,6 +318,7 @@ async fn cancelled_context_construction_releases_lock_and_partial_export() {
         .realizer
         .session_environment(thread)
         .await
+        .expect("installed Sessions")
         .expect("C1 resident owner");
     drop(open);
     assert!(

@@ -41,7 +41,7 @@ impl SharedHost {
     /// selecting, creating, or adopting a Session environment.
     pub(crate) async fn commit_for_read(&self, thread: &str) -> Result<Arc<HostCommit>, HostError> {
         let realizations = self.installed_sessions.realizations();
-        let _lifecycle = realizations.lock_lifecycle(thread).await;
+        let _lifecycle = realizations.lock_lifecycle_if_installed(thread).await?;
         self.commit_for_read_under_lifecycle(thread).await
     }
 
@@ -208,7 +208,9 @@ impl SharedHost {
             } else {
                 RuntimeContextPurpose::Execution
             };
-            let _lifecycle = realizations.lock_lifecycle(thread).await;
+            // Opening a Session context is the host's install path.
+            self.installed_sessions.install(thread);
+            let _lifecycle = realizations.lock_lifecycle(thread).await?;
             self.realizer
                 .retry_unpublished_session_environment_cleanup(thread)
                 .await?;

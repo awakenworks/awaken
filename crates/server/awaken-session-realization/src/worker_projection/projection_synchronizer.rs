@@ -7,7 +7,6 @@
 //! `WorkerProjectionSynchronizer` and the existing Host MCP effects.
 
 use super::SessionProjectionExecution;
-use crate::host_error::to_run_error;
 use crate::session_environment::SessionEnvironmentAdoptionDisposition;
 use awaken_session_configuration_contract::mcp as session_mcp;
 use awaken_session_configuration_contract::resource as session_resource;
@@ -128,7 +127,7 @@ where
     ) -> Result<(), awaken_session_types::RunError> {
         let realizations = self.host.sessions();
         let exec = self.host.realizer();
-        let retained_publication = realizations.published_snapshot(session_id.as_str());
+        let retained_publication = realizations.published_snapshot(session_id.as_str())?;
         if let Some(claimed) = self.published_snapshot
             && !matches!(
                 awaken_session_realization_contract::frozen_agent_publication_decision(
@@ -173,25 +172,24 @@ where
         // claimed legacy retirement must be resolved before raw delivery cache
         // repair or any projection/Resource effect, and the same guard prevents
         // another owner transition until the replacement projection is wholly
-        // installed.
-        let lifecycle_guard = realizations.lock_lifecycle(session_id.as_str()).await;
+        // installed. Installing Control's frozen projection is the install path.
+        realizations.install_session(session_id.as_str())?;
+        let lifecycle_guard = realizations.lock_lifecycle(session_id.as_str()).await?;
         if self.claim.is_some() {
-            let (canonical_publication, model_candidate) = exec
-                .publication
-                .resolve_canonical_session_projection(
+            let (canonical_publication, model_candidate) =
+                exec.publication.resolve_canonical_session_projection(
                     &projection.workspace_id,
                     CanonicalSessionProjection::Baseline(&projection.baseline),
                     published_snapshot.cloned(),
                     Some(projection.resources.skills()),
-                )
-                .map_err(to_run_error)?;
+                )?;
             let a2a_only = canonical_publication
                 .as_ref()
                 .is_some_and(|publication| !requires_local_environment(&publication.resolved_spec));
             let has_local_environment_owner = realizations
                 .read_realization(session_id.as_str(), |r| {
                     r.environment.owner.has_local_environment()
-                })
+                })?
                 .unwrap_or(false);
             let has_environment_binding = self.claimed_environment_binding.is_some()
                 || projection.environment.binding().is_some();
@@ -212,14 +210,12 @@ where
                         session_id.as_str(),
                         &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
                     )
-                }
-                .map_err(to_run_error)?;
+                }?;
                 exec.rebuild_claimed_legacy_environment_after_revocation(
                     session_id.as_str(),
                     provider,
                 )
-                .await
-                .map_err(to_run_error)?;
+                .await?;
             }
         }
         // A claim authorizes live Resource revalidation. A preparation Stage
@@ -250,17 +246,16 @@ where
                 synchronize_resources,
                 Some(lease.clone()),
             )
-            .await
-            .map_err(to_run_error)?;
+            .await?;
         // A Control-synchronized projection is the same complete Managed
         // Session authority as a co-located SessionRuntime installation. Mark
         // that existing ownership only after every frozen fact is installed;
         // otherwise the later claimed resolver mistakes an empty compatibility
         // envelope for ordinary desired state and drains Control's active MCP
         // generation.
-        realizations.enter_session_dispatch(session_id.as_str());
+        realizations.enter_session_dispatch(session_id.as_str())?;
         drop(lifecycle_guard);
-        let published_snapshot = realizations.published_snapshot(session_id.as_str());
+        let published_snapshot = realizations.published_snapshot(session_id.as_str())?;
         // A resident Arc is process-local ownership, not evidence that its
         // physical Sandbox survived. Revalidate every durable binding through
         // the one adoption path; Ready reuses that Arc, while closed evidence
@@ -269,7 +264,7 @@ where
         let runtime_authority_resident = realizations
             .modify_session(session_id.as_str(), |slot| {
                 slot.run.holds_context() || slot.realization.environment.owner.is_resident()
-            })
+            })?
             .unwrap_or(false);
         if self.requires_runtime_before_effects
             && published_snapshot.is_none()
@@ -285,9 +280,8 @@ where
             .generation()
             .map(|generation| generation.id());
         let adoption = if let Some(binding) = projection.environment.binding() {
-            let provider = exec
-                .projected_session_environment_provider(session_id.as_str(), None)
-                .map_err(to_run_error)?;
+            let provider =
+                exec.projected_session_environment_provider(session_id.as_str(), None)?;
             self.host
                 .realizer()
                 .adopt_bound_session_environment(
@@ -297,8 +291,7 @@ where
                     source_generation_id,
                     self.rebuild_unavailable_environment,
                 )
-                .await
-                .map_err(to_run_error)?
+                .await?
         } else {
             SessionEnvironmentAdoptionDisposition::NoBinding
         };
@@ -309,7 +302,7 @@ where
             // provider has proved the exact durable binding unavailable; the new
             // Environment receipt must still pass the ordinary durable sink.
             debug_assert!(
-                exec.durable_environment_binding(session_id.as_str())
+                exec.durable_environment_binding(session_id.as_str())?
                     .is_none(),
                 "terminated recovery owner clears its durable binding"
             );
@@ -328,8 +321,7 @@ where
         {
             self.host
                 .ensure_session_substrate(session_id.as_str(), published_snapshot.as_ref())
-                .await
-                .map_err(to_run_error)?;
+                .await?;
             true
         } else {
             false

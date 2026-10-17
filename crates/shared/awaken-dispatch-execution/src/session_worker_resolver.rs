@@ -5,7 +5,6 @@ use crate::session_execution::*;
 use crate::{DispatchWorker, Error, WorkerResolver};
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_dispatch_erasure::AnyDispatchStore;
-use awaken_session_realization::host_error::{HostError, HostErrorKind, to_run_error};
 use awaken_session_realization::worker_projection::SessionProjectionExecution;
 use std::sync::Arc;
 pub mod claim_failure;
@@ -13,6 +12,6 @@ pub mod claimed_dispatch;
 pub mod claimed_session;
 mod resolver;
 
-pub use claim_failure::{map_host_resolution_error, map_session_realization_drive_error};
+pub use claim_failure::{claim_outcome, map_admission_error, map_session_realization_drive_error};
 use claimed_session::install_claimed_session_projection;
 pub use resolver::SessionWorkerResolver;

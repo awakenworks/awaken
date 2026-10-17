@@ -26,7 +26,7 @@ impl SharedHost {
                 "coordination query received a snapshot for a different Session root",
             ));
         }
-        let delivered = realizations.published_snapshot(session_id);
+        let delivered = realizations.published_snapshot(session_id)?;
         // Relationship recovery and terminal teardown must remain available
         // after a publication is revoked. The committed advisor call supplies
         // identity; current publication only enriches its model label. Managed
@@ -878,7 +878,11 @@ mod tests {
         );
         for thread in [session_id, child_id.0.as_str()] {
             assert!(
-                host.realizer.session_environment(thread).await.is_none(),
+                host.realizer
+                    .session_environment(thread)
+                    .await
+                    .expect("installed Sessions")
+                    .is_none(),
                 "R3/E9 pure reads never prepare/install an Environment"
             );
         }

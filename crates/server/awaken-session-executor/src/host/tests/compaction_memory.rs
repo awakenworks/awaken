@@ -275,7 +275,8 @@ async fn generated_compaction_config_survives_claimed_rebuild() {
 
     host.realizer
         .evict_session_for_rebuild("durable-compact-config")
-        .await;
+        .await
+        .expect("installed Sessions");
     let executable = host
         .ctx_for_snapshot(
             "durable-compact-config",
@@ -1068,11 +1069,13 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
             serde_json::json!({}),
         ),
     };
+    host.installed_sessions.install("memory-replay");
     let lifecycle_guard = host
         .installed_sessions
         .realizations()
         .lock_lifecycle("memory-replay")
-        .await;
+        .await
+        .expect("installed Sessions");
     let preparing = tokio::spawn({
         let managed = managed.clone();
         let roots = roots.clone();
@@ -1087,6 +1090,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         host.realizer
             .session_environment("memory-replay")
             .await
+            .expect("installed Sessions")
             .is_none(),
         "preparation cannot expose Environment before the lifecycle owner commits the manifest"
     );
@@ -1107,6 +1111,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         .realizer
         .session_environment("memory-replay")
         .await
+        .expect("installed Sessions")
         .expect("live environment");
     let memory_file = sandbox_roots
         .path()
@@ -1148,7 +1153,8 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
             r.staging.resources = Default::default();
             r.staging.memory_bindings.clear();
             r.staging.memory = None;
-        });
+        })
+        .expect("installed Sessions");
     let replay = resource_transition(
         host.local_workspace(),
         0,
@@ -1173,13 +1179,15 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
             .realizer
             .session_environment("memory-replay")
             .await
+            .expect("installed Sessions")
             .unwrap()
     ));
 
     let installed = host
         .realizer
         .staging
-        .thread_resource_manifest("memory-replay");
+        .thread_resource_manifest("memory-replay")
+        .expect("installed Sessions");
     for field in [
         "store",
         "config",
@@ -1249,7 +1257,8 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         assert_eq!(
             host.realizer
                 .staging
-                .thread_resource_manifest("memory-replay"),
+                .thread_resource_manifest("memory-replay")
+                .expect("installed Sessions"),
             installed,
             "{field}"
         );

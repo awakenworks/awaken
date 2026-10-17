@@ -250,7 +250,11 @@ impl SharedHost {
     /// Runtime never treats this cache as an executable publication authority.
     pub fn thread_agent_projection(&self, thread: &str) -> Option<String> {
         let realizations = self.installed_sessions.realizations();
-        realizations.frozen(thread).agent_id.clone()
+        realizations
+            .frozen(thread)
+            .expect("session runtime slots mutex poisoned")
+            .agent_id
+            .clone()
     }
 
     /// Workspace context supplied to the Session application admission boundary.
@@ -259,6 +263,7 @@ impl SharedHost {
         self.installed_sessions
             .realizations()
             .workspace(thread, &self.local_workspace)
+            .expect("session runtime slots mutex poisoned")
     }
 
     /// Workspace for a prepared thread; unlike `thread_workspace`, unknown ids
@@ -267,6 +272,7 @@ impl SharedHost {
         self.installed_sessions
             .realizations()
             .registered_workspace(thread)
+            .expect("session runtime slots mutex poisoned")
     }
 
     /// Clone the completion projection consumed by the authenticated Worker
@@ -339,7 +345,7 @@ impl SharedHost {
                 commit: commit.clone(),
                 reader: commit,
                 owner: self.dispatch_owner().to_owned(),
-                session_resources: self.realizer.staging.thread_resource_manifest(thread),
+                session_resources: self.realizer.staging.thread_resource_manifest(thread)?,
                 publication_source: Some(publication_source.clone()),
                 claimed_model_request_gate: self.coordination_endpoint().map(|endpoint| {
                     crate::coordination::claimed_model_request_gate_factory(endpoint, thread)

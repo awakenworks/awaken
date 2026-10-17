@@ -286,7 +286,8 @@ async fn bound_test_memory(
             crate::LocalCommitAdapter::projected(awaken_store_inmem::MemoryCommitCoordinator::new(
                 awaken_time::system_clock(),
             )),
-        ))));
+        ))))
+        .expect("healthy Memory context");
     (runtime, bound, repository, extractions)
 }
 
@@ -979,7 +980,8 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
     recovered_host
         .installed_sessions
         .realizations()
-        .update_realization(parent, |r| r.staging.memory = Some(direct_binding.clone()));
+        .update_realization(parent, |r| r.staging.memory = Some(direct_binding.clone()))
+        .expect("installed Sessions");
     let first_recovery = recovered_host
         .bind_thread_memory_recovery(parent, parent_commit.clone())
         .await;
@@ -1003,15 +1005,24 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
         "R2/E3 recovery drained"
     );
     assert!(
-        parent_binding.extraction_commit().is_some(),
+        parent_binding
+            .extraction_commit()
+            .expect("healthy Memory context")
+            .is_some(),
         "R2/E6 mapped writable binding receives commit"
     );
     assert!(
-        direct_binding.extraction_commit().is_some(),
+        direct_binding
+            .extraction_commit()
+            .expect("healthy Memory context")
+            .is_some(),
         "R3/E6 direct-only selected binding receives commit"
     );
     assert!(
-        read_only_binding.extraction_commit().is_none(),
+        read_only_binding
+            .extraction_commit()
+            .expect("healthy Memory context")
+            .is_none(),
         "R2/R3 E6 read-only binding never drives extraction"
     );
 
@@ -1137,7 +1148,10 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
         "R4/E4 no Worker recovery is scheduled"
     );
     assert!(
-        binding.extraction_commit().is_none(),
+        binding
+            .extraction_commit()
+            .expect("healthy Memory context")
+            .is_none(),
         "R4/E4 the Worker does not bind Coordinator extraction execution"
     );
 }

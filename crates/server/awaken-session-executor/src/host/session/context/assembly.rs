@@ -115,7 +115,7 @@ pub(super) async fn assemble(
     let mut semantic_memory_tools = None;
     if content_delivery == crate::frozen_inputs::ManagedContentDelivery::SemanticTools {
         let bindings = realizations
-            .read_realization(thread, |r| r.staging.memory_bindings.clone())
+            .read_realization(thread, |r| r.staging.memory_bindings.clone())?
             .unwrap_or_default();
         if let Some(wiring) = crate::session_memory_tools::SessionMemoryTools::new(bindings) {
             if installed.is_some() && !is_acp {

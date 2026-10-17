@@ -296,6 +296,7 @@ mod tests {
             host.realizer
                 .session_environment("mcp-no-reaper")
                 .await
+                .expect("installed Sessions")
                 .is_none(),
             "S0/no Environment"
         );

@@ -36,12 +36,10 @@ impl TerminalReconciliationState {
         &self,
         directory: Arc<dyn awaken_dispatch_contract::WorkerDirectory>,
         source: Arc<dyn crate::WorkerTerminalReconciliation>,
-    ) -> Result<(), awaken_session_realization::host_error::HostError> {
-        self.worker_evidence.set((directory, source)).map_err(|_| {
-            awaken_session_realization::host_error::HostError::internal(
-                "Worker evidence reconciliation already bound",
-            )
-        })
+    ) -> Result<(), crate::AdmissionError> {
+        self.worker_evidence
+            .set((directory, source))
+            .map_err(|_| crate::AdmissionError::AlreadyBound("Worker evidence reconciliation"))
     }
     pub fn reconciler_started(&self) -> bool {
         self.dispatch_reconciler.get().is_some()

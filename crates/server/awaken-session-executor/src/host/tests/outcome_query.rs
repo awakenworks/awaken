@@ -12,7 +12,7 @@ async fn outcome_queries_need_no_frozen_runtime_or_environment_and_preserve_comm
     // Run; Q4 interrupted completion => exact report without invented usage.
     // EACH Q1-Q4 x cold/cached => zero Environment admission/persistence,
     // zero inference, unchanged full recovery snapshot, and the same cached
-    // context (or no context). C4 makes an accidental execution-context build
+    // context (or no context; a cold read installs no Session). C4 makes an accidental execution-context build
     // fail rather than invisibly installing a redundant physical Environment.
     // Graded completion decoding remains with the Controller Q3/Q4 table;
     // Deployment SDK owns the real Preparing-to-Frozen process boundary.
@@ -143,14 +143,18 @@ async fn outcome_queries_need_no_frozen_runtime_or_environment_and_preserve_comm
                 "Q{rule} no inference"
             );
             assert!(
-                host.realizer.session_environment(&thread.0).await.is_none(),
+                host.realizer
+                    .session_environment(&thread.0)
+                    .await
+                    .expect("installed Sessions")
+                    .is_none(),
                 "Q{rule} no Environment"
             );
             assert_eq!(
                 host.installed_sessions
                     .read_run(&thread.0, |run| run.context.is_some()),
-                Some(cached),
-                "Q{rule} no execution context construction"
+                cached.then_some(true),
+                "Q{rule} no execution context construction; a read never installs the Session"
             );
         }
     }

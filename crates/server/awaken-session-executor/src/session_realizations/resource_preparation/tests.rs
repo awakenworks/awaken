@@ -26,6 +26,8 @@ fn proof(epoch: Epoch) -> ObservedSessionRealizationLease {
 
 fn authority() -> (Arc<InstalledSessions>, ExecutionAuthority) {
     let source = Arc::new(InstalledSessions::default());
+    // Projection installation installs the Session before any preparation.
+    source.install("session");
     let authority = ExecutionAuthority {
         sessions: source.realizations(),
         worker: None,
@@ -43,9 +45,11 @@ fn resource_scope_retains_success_and_removes_only_its_unpublished_introduced_le
             let (source, authority) = authority();
             let sessions = authority.sessions.clone();
             if existing {
-                sessions.update_realization("session", |r| {
-                    assert!(r.install_lease(proof(Epoch::FIRST)))
-                });
+                sessions
+                    .update_realization("session", |r| {
+                        assert!(r.install_lease(proof(Epoch::FIRST)))
+                    })
+                    .expect("installed Sessions");
             }
             let guard =
                 ResourcePreparation::begin(&authority, "session", proof(Epoch::FIRST)).unwrap();
@@ -59,6 +63,7 @@ fn resource_scope_retains_success_and_removes_only_its_unpublished_introduced_le
                         r.staging.preparation.as_ref().unwrap(),
                         &token
                     ))
+                    .expect("installed Sessions")
                     .unwrap()
             );
             // Neither the concrete registry variable nor an ExecutionAuthority
@@ -69,6 +74,7 @@ fn resource_scope_retains_success_and_removes_only_its_unpublished_introduced_le
             if finished {
                 sessions
                     .update_realization("session", |r| guard.finish(r))
+                    .expect("installed Sessions")
                     .unwrap();
             }
             drop(guard);
@@ -80,6 +86,7 @@ fn resource_scope_retains_success_and_removes_only_its_unpublished_introduced_le
                         (existing || finished).then_some(&lease(Epoch::FIRST))
                     );
                 })
+                .expect("installed Sessions")
                 .unwrap();
         }
     }
@@ -109,24 +116,30 @@ async fn resource_scope_cancellation_and_slot_replacement_cannot_erase_a_success
             assert!(futures_util::poll!(ended.as_mut()).is_pending());
             match row {
                 "cancel" => guard.test_cancellation().cancel(),
-                "close" => sessions.update_realization("session", |r| {
-                    assert!(r.close_authority(Some(&lease(Epoch::FIRST))));
-                }),
-                "generation" => sessions.update_realization("session", |r| {
-                    assert!(
-                        r.install_lease(proof(Epoch::FIRST.next().expect("second fixture epoch")))
-                    );
-                }),
-                "token" => sessions.update_realization("session", |r| {
-                    r.staging.preparation = Some(successor.clone());
-                    r.execution.changed.notify_waiters();
-                }),
+                "close" => sessions
+                    .update_realization("session", |r| {
+                        assert!(r.close_authority(Some(&lease(Epoch::FIRST))));
+                    })
+                    .expect("installed Sessions"),
+                "generation" => sessions
+                    .update_realization("session", |r| {
+                        assert!(r.install_lease(proof(
+                            Epoch::FIRST.next().expect("second fixture epoch")
+                        )));
+                    })
+                    .expect("installed Sessions"),
+                "token" => sessions
+                    .update_realization("session", |r| {
+                        r.staging.preparation = Some(successor.clone());
+                        r.execution.changed.notify_waiters();
+                    })
+                    .expect("installed Sessions"),
                 "remove" => {
                     source.remove("session");
                 }
                 "slot_aba" => {
                     source.remove("session");
-                    sessions.update_realization("session", |r| {
+                    source.install_realization("session", |r| {
                         assert!(r.install_lease(proof(Epoch::FIRST)));
                         r.staging.preparation = Some(successor.clone());
                     });
@@ -141,6 +154,7 @@ async fn resource_scope_cancellation_and_slot_replacement_cannot_erase_a_success
         assert!(
             sessions
                 .modify_realization("session", |r| guard.finish(r))
+                .expect("installed Sessions")
                 .is_none_or(|result| result.is_err()),
             "{row}"
         );
@@ -158,6 +172,7 @@ async fn resource_scope_cancellation_and_slot_replacement_cannot_erase_a_success
                     );
                     assert!(r.staging.preparation.is_none());
                 })
+                .expect("installed Sessions")
                 .unwrap(),
             "token" | "slot_aba" => sessions
                 .read_realization("session", |r| {
@@ -168,11 +183,13 @@ async fn resource_scope_cancellation_and_slot_replacement_cannot_erase_a_success
                     ));
                     assert!(!successor.is_cancelled());
                 })
+                .expect("installed Sessions")
                 .unwrap(),
             "cancel" | "close" => sessions
                 .read_realization("session", |r| {
                     assert!(r.execution.authority.lease().is_none())
                 })
+                .expect("installed Sessions")
                 .unwrap(),
             _ => unreachable!(),
         }
@@ -189,6 +206,7 @@ impl CurrentExecutionAuthority for DeniedWorker {
 #[test]
 fn resource_scope_denied_worker_never_installs_or_reopens_a_session() {
     let (source, mut authority) = authority();
+    source.remove("session");
     authority.worker = Some(Arc::new(DeniedWorker));
     assert!(ResourcePreparation::begin(&authority, "session", proof(Epoch::FIRST)).is_err());
     assert!(
@@ -196,10 +214,19 @@ fn resource_scope_denied_worker_never_installs_or_reopens_a_session() {
         "Worker denies before the canonical slot write"
     );
     authority.worker = None;
-    authority.sessions.update_realization("session", |r| {
-        assert!(r.install_lease(proof(Epoch::FIRST)));
-        assert!(r.close_authority(Some(&lease(Epoch::FIRST))));
-    });
+    assert!(
+        ResourcePreparation::begin(&authority, "session", proof(Epoch::FIRST)).is_err(),
+        "an allowed preparation still never installs the Session"
+    );
+    assert!(!source.contains("session"));
+    source.install("session");
+    authority
+        .sessions
+        .update_realization("session", |r| {
+            assert!(r.install_lease(proof(Epoch::FIRST)));
+            assert!(r.close_authority(Some(&lease(Epoch::FIRST))));
+        })
+        .expect("installed Sessions");
     assert!(ResourcePreparation::begin(&authority, "session", proof(Epoch::FIRST)).is_err());
     authority
         .sessions
@@ -207,5 +234,6 @@ fn resource_scope_denied_worker_never_installs_or_reopens_a_session() {
             assert!(r.execution.authority.is_closed());
             assert!(r.staging.preparation.is_none());
         })
+        .expect("installed Sessions")
         .unwrap();
 }

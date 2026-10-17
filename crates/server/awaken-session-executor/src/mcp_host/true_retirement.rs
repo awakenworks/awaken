@@ -5,9 +5,7 @@
 //! Actual D240 removal followed by a legal successor, through the public Host API.
 
 use crate::installed_session::InstalledSessions;
-use crate::session_realizations::{
-    InstalledSessionsPoisoned, SessionRealizationAccess, SessionRealizationSource,
-};
+use crate::session_realizations::{SessionRealizationAccess, SessionRealizationSource};
 use std::sync::{
     Arc, Condvar, Mutex,
     atomic::{AtomicUsize, Ordering},
@@ -91,7 +89,7 @@ struct GateAfterCanonicalFinish {
 
 #[cfg(test)]
 impl SessionRealizationSource for GateAfterCanonicalFinish {
-    fn session_ids(&self) -> Vec<String> {
+    fn session_ids(&self) -> Result<Vec<String>, crate::realization_error::RealizationLock> {
         SessionRealizationSource::session_ids(self.inner.as_ref())
     }
 
@@ -106,22 +104,24 @@ impl SessionRealizationSource for GateAfterCanonicalFinish {
         SessionRealizationSource::acquire_realization(self.inner.as_ref(), session, admit)
     }
 
+    fn install(&self, session: &str) -> Result<(), crate::realization_error::RealizationLock> {
+        SessionRealizationSource::install(self.inner.as_ref(), session)
+    }
+
     fn visit(
         &self,
         session: &str,
-        create: bool,
         visit: &mut dyn FnMut(SessionRealizationAccess<'_>),
-    ) -> Result<(), InstalledSessionsPoisoned> {
+    ) -> Result<bool, crate::realization_error::RealizationLock> {
         let mut visited = false;
-        let result =
-            SessionRealizationSource::visit(self.inner.as_ref(), session, create, &mut |access| {
-                visited = true;
-                visit(access);
-            });
+        let result = SessionRealizationSource::visit(self.inner.as_ref(), session, &mut |access| {
+            visited = true;
+            visit(access);
+        });
         // The real source completed its original lookup and released its map
         // mutex. An unvisited successful non-creating lookup is actual absence;
         // no callback, output value or authority has been manufactured here.
-        if result.is_ok() && !create && !visited && session == self.session {
+        if result.is_ok() && !visited && session == self.session {
             self.gate.after_actual_absence();
         }
         result
@@ -131,16 +131,19 @@ impl SessionRealizationSource for GateAfterCanonicalFinish {
         &self,
         session: &str,
         update: &mut dyn FnMut(&mut awaken_session_realization::frozen_inputs::FrozenSessionInputs),
-    ) {
+    ) -> Result<(), crate::realization_error::RealizationLock> {
         SessionRealizationSource::replace_frozen(self.inner.as_ref(), session, update)
     }
 
-    fn remove_session(&self, session: &str) -> bool {
-        let actual = SessionRealizationSource::remove_session(self.inner.as_ref(), session);
+    fn remove_session(
+        &self,
+        session: &str,
+    ) -> Result<bool, crate::realization_error::RealizationLock> {
+        let actual = SessionRealizationSource::remove_session(self.inner.as_ref(), session)?;
         if actual && session == self.session {
             self.gate.after_actual_true();
         }
-        actual
+        Ok(actual)
     }
 
     fn finish_realization_revocation(
@@ -167,7 +170,7 @@ impl SessionRealizationSource for GateAfterCanonicalFinish {
         &self,
         session: &str,
         publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
-    ) -> Result<(), crate::HostError> {
+    ) -> Result<(), crate::realization_error::RealizationError> {
         SessionRealizationSource::retain_publication(self.inner.as_ref(), session, publication)
     }
 
@@ -179,7 +182,7 @@ impl SessionRealizationSource for GateAfterCanonicalFinish {
         compiled: crate::staged_resources::CompiledEffectiveInputs,
         versions: Vec<awaken_resource_contract::SkillVersion>,
         effect_key: String,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), crate::realization_error::RealizationError> {
         SessionRealizationSource::publish_resource_requirements(
             self.inner.as_ref(),
             session,
@@ -264,7 +267,7 @@ async fn original_relay(host: &Arc<crate::SharedHost>) -> awaken_session_mcp::Mc
 async fn retire_component_current(
     host: &crate::SharedHost,
     session: &str,
-) -> Result<bool, crate::HostError> {
+) -> Result<bool, crate::realization_error::RealizationError> {
     host.realizer
         .environments
         .retire_session_environment_for_revocation(
@@ -317,13 +320,18 @@ async fn successful_retirement_cannot_remove_a_successor_session_relay_route() {
             .expect("original constructor allocation observed")
             .clone();
         assert!(Arc::ptr_eq(&host.installed_sessions, &canonical));
+        canonical.install(session);
         assert!(Arc::ptr_eq(
             &host
                 .realizer
                 .environments
                 .sessions
-                .realization_lock(session),
-            &canonical.realizations().realization_lock(session),
+                .realization_lock(session)
+                .expect("installed Session"),
+            &canonical
+                .realizations()
+                .realization_lock(session)
+                .expect("installed Session"),
         ));
         let lease_a = crate::session_resource::SessionRealizationLease {
             owner: "worker".into(),

@@ -852,7 +852,7 @@ mod tests {
         .unwrap();
         let projection = filesystem_skill_prompt(registry.as_ref()).unwrap().unwrap();
         let slots = Arc::new(crate::installed_session::InstalledSessions::default());
-        slots.realizations().update_realization("skill-path", |r| {
+        slots.install_realization("skill-path", |r| {
             r.staging.skill_prompt = Some(projection.clone())
         });
         assert!(
@@ -866,23 +866,26 @@ mod tests {
         );
         // The test installs a resident projection only, not a durable claim.
         // Actual Managed owner transitions retain their existing integration tests.
-        slots.realizations().update_realization("skill-path", |r| {
-            use crate::environment_owner::{
-                BoundSessionEnvironment, BoundSessionEnvironmentIdentity,
-                LegacyDirectEnvironmentProvenance, LegacyEnvironmentEffect,
-                SessionEnvironmentOwner,
-            };
-            r.environment.owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
-                binding: "fixture".into(),
-                environment: env.clone(),
-                identity: BoundSessionEnvironmentIdentity::LegacyDirect(
-                    LegacyDirectEnvironmentProvenance::DurableBinding {
-                        binding: "fixture".into(),
-                        effect: LegacyEnvironmentEffect::Absent,
-                    },
-                ),
-            });
-        });
+        slots
+            .realizations()
+            .update_realization("skill-path", |r| {
+                use crate::environment_owner::{
+                    BoundSessionEnvironment, BoundSessionEnvironmentIdentity,
+                    LegacyDirectEnvironmentProvenance, LegacyEnvironmentEffect,
+                    SessionEnvironmentOwner,
+                };
+                r.environment.owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
+                    binding: "fixture".into(),
+                    environment: env.clone(),
+                    identity: BoundSessionEnvironmentIdentity::LegacyDirect(
+                        LegacyDirectEnvironmentProvenance::DurableBinding {
+                            binding: "fixture".into(),
+                            effect: LegacyEnvironmentEffect::Absent,
+                        },
+                    ),
+                });
+            })
+            .expect("installed Sessions");
         for cwd in [
             None,
             Some("项目 repo/src"),
@@ -933,19 +936,23 @@ mod tests {
             slots
                 .realizations()
                 .read_realization("skill-path", |r| r.staging.skill_prompt.clone())
+                .expect("installed Sessions")
                 .flatten(),
             Some(projection),
             "P2 metadata remains frozen"
         );
         // P6 malformed directory metadata cannot yield a model request once
         // realized; propagate the shared path validator's failure unchanged.
-        slots.realizations().update_realization("skill-path", |r| {
-            r.staging.skill_prompt = Some(FilesystemSkillPrompt::from_entries(vec![(
-                "Unsafe".into(),
-                "invalid".into(),
-                "../escape".into(),
-            )]))
-        });
+        slots
+            .realizations()
+            .update_realization("skill-path", |r| {
+                r.staging.skill_prompt = Some(FilesystemSkillPrompt::from_entries(vec![(
+                    "Unsafe".into(),
+                    "invalid".into(),
+                    "../escape".into(),
+                )]))
+            })
+            .expect("installed Sessions");
         assert!(
             slots
                 .realizations()

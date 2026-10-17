@@ -183,6 +183,8 @@ impl crate::SharedHost {
         session_id: &str,
         lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<(), crate::HostError> {
+        // The test fixture installs the Session whose lease it installs.
+        self.installed_sessions.install(session_id);
         let realizations = self.installed_sessions.realizations();
         let changed = self.realizer.execution.authorize_worker_effect(|| {
             realizations.update_realization(session_id, |r| {
@@ -194,7 +196,7 @@ impl crate::SharedHost {
                     ));
                 }
                 Ok(r.execution.changed.clone())
-            })
+            })?
         })?;
         changed.notify_waiters();
         Ok(())
@@ -211,15 +213,17 @@ impl crate::SharedHost {
         failed: &crate::session_resource::SessionRealizationLease,
     ) {
         let realizations = self.installed_sessions.realizations();
-        realizations.modify_realization(session_id, |r| {
-            if r.execution.authority.lease().is_some_and(|current| {
-                awaken_session_realization_contract::realization_lease_generation_authorizes(
-                    current, failed,
-                )
-            }) {
-                r.close_authority(None);
-            }
-        });
+        realizations
+            .modify_realization(session_id, |r| {
+                if r.execution.authority.lease().is_some_and(|current| {
+                    awaken_session_realization_contract::realization_lease_generation_authorizes(
+                        current, failed,
+                    )
+                }) {
+                    r.close_authority(None);
+                }
+            })
+            .expect("session runtime slots mutex poisoned");
     }
 
     /// Authorize an MCP effect admitted before a same-epoch lease extension.
@@ -306,7 +310,7 @@ impl crate::SharedHost {
                         session_id.as_str(),
                         lease,
                     )
-                    .await
+                    .await?
                 {
                     Ok(true)
                 } else {
@@ -334,7 +338,7 @@ impl crate::SharedHost {
                         session_id.as_str(),
                         lease,
                     )
-                    .await
+                    .await?
                 {
                     if let Some((_, Some(local))) = &original {
                         local.interrupt();
@@ -560,6 +564,7 @@ impl crate::SharedHost {
                 },
             )
             .await
+            .map_err(crate::HostError::from)
     }
 
     #[cfg(test)]
@@ -731,10 +736,11 @@ impl crate::SharedHost {
         // Desired-only staging and physical reconciliation therefore cannot
         // interleave a different resources/skills/manifest generation between
         // preflight and the baseline/transition/lease update below.
-        let _resource_projection = sessions.lock_resource_projection(thread).await;
+        self.installed_sessions.install(thread);
+        let _resource_projection = sessions.lock_resource_projection(thread).await?;
         let receipt =
             crate::session_realizations::FrozenProjectionReceipt::from_projection(&projection)?;
-        sessions.update_realization(thread, |r| r.validate_projection_receipt(&receipt))?;
+        sessions.update_realization(thread, |r| r.validate_projection_receipt(&receipt))??;
         let (publication, model_candidate) =
             exec.publication.resolve_canonical_session_projection(
                 &projection.workspace_id,
@@ -742,7 +748,7 @@ impl crate::SharedHost {
                 projection.agent_publication.clone(),
                 Some(projection.resources.skills()),
             )?;
-        let frozen_inputs = sessions.frozen(thread);
+        let frozen_inputs = sessions.frozen(thread)?;
         frozen_inputs
             .validate_publication(publication.as_ref())
             .map_err(|_| {
@@ -830,11 +836,11 @@ impl crate::SharedHost {
                     &resource_transition,
                     resource_mode.allows_unattempted_amendment(),
                 )
-            })
+            })?
             .unwrap_or(FrozenResourceTransitionInstallDecision::Stage);
         if transition_install == FrozenResourceTransitionInstallDecision::Reject {
             let existing = sessions
-                .read_realization(thread, |r| r.staging.transition.clone())
+                .read_realization(thread, |r| r.staging.transition.clone())?
                 .flatten();
             let existing_revision = existing
                 .as_ref()
@@ -906,7 +912,7 @@ impl crate::SharedHost {
                         Some(preparation) => preparation.authority_ended().await,
                         None => std::future::pending().await,
                     }
-                } => return Err(error),
+                } => return Err(error.into()),
                 result = stage => result.map_err(|error| crate::HostError::internal(error.to_string()))?,
             }
         }
@@ -1029,7 +1035,7 @@ impl crate::SharedHost {
         .await?;
         realizations.update_realization(assignment.session_id.as_str(), |r| {
             r.cleanup.assignment = Some(assignment.clone());
-        });
+        })?;
         Ok(())
     }
 
@@ -1057,6 +1063,7 @@ impl crate::SharedHost {
         self.installed_sessions
             .realizations()
             .credential_realization(thread)
+            .expect("session runtime slots mutex poisoned")
     }
 
     #[cfg(test)]
