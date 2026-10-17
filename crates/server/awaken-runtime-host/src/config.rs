@@ -1886,7 +1886,7 @@ mod tests {
         // A3: a malformed section fails closed at publish-time validation.
         let tmp = tempfile::tempdir().unwrap();
         let sandbox = awaken_sandbox_local::LocalProvider::new(tmp.path())
-            .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
+            .create_sandbox(&crate::sandbox_projection::agent_run_sandbox_spec("t"))
             .await
             .unwrap();
         let runtime = build_runtime(

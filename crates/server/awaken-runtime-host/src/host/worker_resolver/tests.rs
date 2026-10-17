@@ -1328,7 +1328,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
     host.installed_sessions.update("ordinary-remote", |slot| {
         slot.run.dispatch_claim = Some(predecessor.clone());
         slot.realization.execution.authority =
-            crate::session_realizations::SessionRealizationAuthority::Live(
+            crate::realization_state::SessionRealizationAuthority::Live(
                 awaken_session_realization::test_support::test_observed_lease(
                     crate::session_resource::SessionRealizationLease {
                         owner: claimed.lease.owner().to_owned(),

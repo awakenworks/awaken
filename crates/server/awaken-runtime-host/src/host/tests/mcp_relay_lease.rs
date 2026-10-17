@@ -97,7 +97,7 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
         .update_realization(session, |r| {
             let mut expired = lease.clone();
             expired.expires_at_unix_ms = 1;
-            r.execution.authority = crate::session_realizations::SessionRealizationAuthority::Live(
+            r.execution.authority = crate::realization_state::SessionRealizationAuthority::Live(
                 awaken_session_realization::test_support::test_expired_observed_lease(expired),
             );
         })

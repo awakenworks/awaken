@@ -54,7 +54,7 @@ impl crate::environment_holding::EnvironmentHolding {
             publication,
             env,
             staging,
-            execution: crate::session_realizations::ExecutionAuthority {
+            execution: crate::execution_authority::ExecutionAuthority {
                 sessions: sessions.clone(),
                 worker,
             },

@@ -1,13 +1,22 @@
 // @formal entrypoint session_realization.concurrent_phase_drivers_are_serialized_per_session
 // @formal entrypoint session_realization.renewal_preserves_owner_incarnation_epoch_and_expiry_fence
-//! The realization layer of one installed Session: its Environment owner,
-//! the Control-issued realization lease, and what is staged for it.
+//! The realization state of one installed Session, held under the installed
+//! Session's lock: one state per realization component (Environment holding,
+//! Resource staging, terminal effects, execution authority) and the
+//! process-local projection of the Control-issued realization authority.
+//! This module is the leaf of the crate's module graph: it names the state the
+//! components act on and depends on none of them.
+
+pub mod projection_receipt;
+pub use projection_receipt::FrozenProjectionReceipt;
 
 use crate::environment_owner::{
     BoundSessionEnvironment, BoundSessionEnvironmentIdentity, SessionEnvironmentOwner,
     SessionEnvironmentPreparation,
 };
+use crate::memory_binding::MemoryBinding;
 use awaken_session_configuration_contract::resource as session_resource;
+use std::sync::Arc;
 
 /// One process-local projection of aggregate authority, not another lease.
 /// Closing retains the exact lease for cleanup CAS, but never for admission.
@@ -83,10 +92,10 @@ impl SessionRealizationAuthority {
 /// only what a retry of a retained Environment owner still needs.
 #[derive(Default)]
 pub struct SessionRealization {
-    pub environment: crate::environment_holding::EnvironmentHoldingState,
-    pub staging: crate::resource_staging::ResourceStagingState,
-    pub cleanup: crate::terminal_cleanup::TerminalCleanupState,
-    pub execution: crate::session_realizations::ExecutionAuthorityState,
+    pub environment: EnvironmentHoldingState,
+    pub staging: ResourceStagingState,
+    pub cleanup: TerminalCleanupState,
+    pub execution: ExecutionAuthorityState,
 }
 
 impl SessionRealization {
@@ -137,18 +146,18 @@ impl SessionRealization {
     /// the content it was staged with. Everything else is rebuilt.
     pub fn take_retained_on_revocation(&mut self) -> Self {
         Self {
-            execution: crate::session_realizations::ExecutionAuthorityState {
+            execution: ExecutionAuthorityState {
                 phase: self.execution.phase.clone(),
                 changed: self.execution.changed.clone(),
                 authority: self.execution.authority.clone(),
                 ..Default::default()
             },
-            environment: crate::environment_holding::EnvironmentHoldingState {
+            environment: EnvironmentHoldingState {
                 lifecycle: self.environment.lifecycle.clone(),
                 owner: std::mem::take(&mut self.environment.owner),
                 ..Default::default()
             },
-            staging: crate::resource_staging::ResourceStagingState {
+            staging: ResourceStagingState {
                 projection: self.staging.projection.clone(),
                 content_delivery: self.staging.content_delivery,
                 resources: std::mem::take(&mut self.staging.resources),
@@ -349,4 +358,129 @@ impl SessionRealization {
         self.staging.mcp.reopen_admission();
         true
     }
+}
+
+/// Per-Session state held under the canonical installed-slot mutex.
+#[derive(Default)]
+pub struct EnvironmentHoldingState {
+    /// Serializes first materialization/rebuild for this Session without a
+    /// process-wide registry lock being held across I/O.
+    pub lifecycle: std::sync::Arc<tokio::sync::Mutex<()>>,
+    /// Sole live Environment owner. Every state transition is driven through
+    /// `environment_lifecycle.rs`; other modules may only inspect
+    /// Resident/occupancy projections through its read helpers.
+    pub owner: crate::environment_owner::SessionEnvironmentOwner,
+    /// Exact unavailable aggregate binding/generation authorized for one
+    /// RebuildFromCommittedTruth replacement. This is a process-local command
+    /// projection; the Session aggregate receipt remains the only transition
+    /// authority and clears it after durable publication.
+    pub rebuild_source: Option<(String, Option<String>)>,
+}
+
+/// Per-Session state held under the canonical installed-slot mutex.
+#[derive(Default)]
+pub struct ResourceStagingState {
+    /// Serializes one complete Resource-generation compare/realize/publish
+    /// transition. The global lock order is `realization -> lifecycle ->
+    /// resource_projection`; callers may acquire any suffix but never reverse
+    /// it. Keeping this separate lets projection installation remain atomic to
+    /// Runtime observers without re-entering `lifecycle` during Resource sync.
+    pub projection: std::sync::Arc<tokio::sync::Mutex<()>>,
+    /// Derived once while the Session context is built. Prompt projection,
+    /// mount realization, Native tools, and ACP export all consume this value;
+    /// none may independently choose another delivery path.
+    pub content_delivery: Option<crate::frozen_inputs::ManagedContentDelivery>,
+    /// Every standard MemoryStore resource frozen for this Session, keyed by
+    /// binding id. These exist independently of the optional Awaken automatic
+    /// memory extension selected into `memory` below.
+    pub memory_bindings: std::collections::HashMap<String, Arc<MemoryBinding>>,
+    /// The one explicitly selected automatic recall/extraction binding. This is
+    /// never the authority for which standard resources are mounted.
+    pub memory: Option<Arc<MemoryBinding>>,
+    /// The Session's MCP generation owners, quiescence fence, and frozen
+    /// attachment marker. Other Host modules use only its methods.
+    pub mcp: awaken_session_mcp::SessionMcpState,
+    /// Cancellation of the current Resource preparation only. This carries no
+    /// ownership: `authority` and Control remain the sole authorities.
+    pub preparation: Option<Arc<awaken_runtime_contract::CancellationToken>>,
+    /// `Some([])` means the frozen manifest delivers no Skills; `None` means this
+    /// embedded Session has no frozen Skill manifest.
+    pub skills: Option<Vec<awaken_resource_contract::SkillVersion>>,
+    /// Managed-filesystem Skill discovery metadata. Full instructions remain
+    /// in the exact frozen bundle (and its later filesystem projection) and
+    /// are read on demand by the ordinary `read` tool.
+    pub skill_prompt: Option<crate::skill_delivery::FilesystemSkillPrompt>,
+    pub resources: crate::staged_resources::StagedResources,
+    pub manifest: Option<awaken_session_configuration_contract::resource::SessionResourceManifest>,
+    /// Exact aggregate-owned physical replacement currently being replayed.
+    /// This is a rebuildable command projection, not completion state: the
+    /// durable Resource aggregate remains the only active/pending authority.
+    pub transition:
+        Option<awaken_session_configuration_contract::resource::SessionResourceTransition>,
+    /// Fingerprint of the exact transition + optional Run claim whose immutable
+    /// inputs were compiled into `resources`, `memory_bindings`, and `skills`.
+    /// This avoids duplicate File/Vault/catalog reads between deferred staging
+    /// and the same process's later physical Environment convergence.
+    pub effect_key: Option<String>,
+    /// How the resident Environment entered this process. Fresh substrates and
+    /// adopted providers require different idempotent mount completion, but the
+    /// aggregate transition remains their single desired-state authority.
+    pub reconciliation: crate::staged_resources::EnvironmentResourceReconciliation,
+}
+
+impl ResourceStagingState {
+    /// Select the one Resource manifest carried by a newly authored durable
+    /// Run dispatch. A prepared Session carries the aggregate's desired
+    /// generation so a cold Worker can realize that exact transition; legacy
+    /// Sessions fall back to the physically active manifest. Ordinary Runs use
+    /// active truth only and are never promoted by a staged transition.
+    ///
+    /// This read is intentionally side-effect free. Publishing `manifest`
+    /// remains the exclusive completion edge for physical Resource effects.
+    pub fn run_manifest(
+        &self,
+        session_dispatch: bool,
+    ) -> Option<awaken_session_configuration_contract::resource::SessionResourceManifest> {
+        if session_dispatch {
+            self.transition
+                .as_ref()
+                .map(|transition| transition.desired().clone())
+                .or_else(|| self.manifest.clone())
+        } else {
+            self.manifest.clone()
+        }
+    }
+}
+
+/// Per-Session state held under the canonical installed-slot mutex.
+#[derive(Default)]
+pub struct TerminalCleanupState {
+    /// One complete Control-issued terminal assignment. Its Environment state
+    /// and no-Create witness are observed together; authority remains in `authority`.
+    pub assignment: Option<awaken_session_realization_contract::SessionTerminalCleanupAssignment>,
+    /// Process-local parent of a terminal cleanup target. This is routing
+    /// metadata only: the aggregate's frozen command set remains the sole work
+    /// and receipt authority. It lets an accepted root receipt (or a later
+    /// aggregate Completed read after response loss) retire child projections
+    /// without maintaining a second cleanup registry.
+    pub root: Option<String>,
+}
+
+/// Per-Session state held under the canonical installed-slot mutex.
+#[derive(Default)]
+pub struct ExecutionAuthorityState {
+    /// Serializes the canonical realization phase driver for this Session.
+    /// Lease renewal may advance authority while this lock is held, but it must
+    /// not start a second Stage/Publish driver. This is deliberately separate
+    /// from `lifecycle`, which is re-entered by Environment materialization.
+    pub phase: Arc<tokio::sync::Mutex<()>>,
+    /// Last accepted aggregate version and equality digest; rebuildable, never authority.
+    pub frozen_receipt: Option<projection_receipt::FrozenProjectionReceipt>,
+    /// Current Control-issued projection authority. It is a live cache used to
+    /// request renewal; durable ownership remains in the Session aggregate.
+    pub authority: SessionRealizationAuthority,
+    /// Wakes a claim resolver waiting for the Session application's initial
+    /// restart reassignment. The lease above remains the only projected fact;
+    /// this notification carries no authority or parallel state.
+    pub changed: Arc<tokio::sync::Notify>,
 }

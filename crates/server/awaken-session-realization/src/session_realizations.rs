@@ -17,17 +17,10 @@ use crate::frozen_inputs::FrozenSessionInputs;
 use awaken_session_application_contract::DelegatedRun;
 
 pub mod dispatch_operations;
+use crate::realization_state::{SessionRealization, SessionRealizationAuthority};
 pub use dispatch_operations::{
     InstalledDispatchInputs, InstalledProjection, claimed_realization_continuation,
 };
-pub mod execution_authority;
-pub mod projection_receipt;
-pub mod resource_preparation;
-pub use resource_preparation::ResourcePreparation;
-pub mod state;
-pub use execution_authority::{ExecutionAuthority, ExecutionAuthorityState};
-pub use projection_receipt::FrozenProjectionReceipt;
-pub use state::{SessionRealization, SessionRealizationAuthority};
 
 /// An ephemeral selection of the existing allocation and closed authority.
 /// It owns no new counter or admission law. Callers capture it while borrowing
@@ -349,6 +342,18 @@ impl SessionRealizations {
 
     pub fn new(source: Arc<dyn SessionRealizationSource>) -> Self {
         Self(source)
+    }
+
+    /// The installed Sessions this view reaches, for the execution authority's
+    /// own visit under the same lock.
+    pub(crate) fn source(&self) -> &Arc<dyn SessionRealizationSource> {
+        &self.0
+    }
+
+    /// A weak handle: an authorization captured for a later effect must not
+    /// keep the installed Sessions alive.
+    pub(crate) fn downgrade(&self) -> std::sync::Weak<dyn SessionRealizationSource> {
+        Arc::downgrade(&self.0)
     }
 
     /// Visit one installed Session. Absence is `Ok(None)`: no read, write or

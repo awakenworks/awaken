@@ -407,7 +407,8 @@ impl SharedHost {
         // purpose, but needs no undeclared physical substrate.
         let inference_only_claim = claimed_attempt
             && !has_published_delegates
-            && published_snapshot.is_some_and(crate::provisioning::environment_free_inference)
+            && published_snapshot
+                .is_some_and(crate::sandbox_projection::environment_free_inference)
             && self
                 .installed_sessions
                 .read(thread, |slot| {

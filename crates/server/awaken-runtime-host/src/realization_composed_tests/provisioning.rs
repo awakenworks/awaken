@@ -7,7 +7,9 @@ use awaken_resource_contract::{FileCatalog, FileCatalogError, FileRecord};
 use std::sync::Arc;
 
 use awaken_session_configuration_contract::environment_projection::*;
-use awaken_session_realization::provisioning::*;
+use awaken_session_realization::artifact_harvest::*;
+use awaken_session_realization::resource_staging::repository_activation::RepositoryPublicationActivationError;
+use awaken_session_realization::sandbox_projection::*;
 
 #[cfg(test)]
 #[path = "../provisioning/tests.rs"]

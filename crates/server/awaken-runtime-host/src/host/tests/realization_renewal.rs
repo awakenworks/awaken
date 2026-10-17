@@ -500,7 +500,7 @@ async fn temporary_control_failure_retains_only_a_still_live_session_lease() {
         host.installed_sessions
             .install_realization(session_id, |r| {
                 r.execution.authority =
-                    crate::session_realizations::SessionRealizationAuthority::Live(proof);
+                    crate::realization_state::SessionRealizationAuthority::Live(proof);
             });
     }
 
@@ -690,12 +690,11 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
                 expires_at_unix_ms: now.saturating_add(90_000),
             };
             host.installed_sessions.install_realization(&session, |r| {
-                r.execution.authority =
-                    crate::session_realizations::SessionRealizationAuthority::Live(
-                        awaken_session_realization::test_support::test_expired_observed_lease(
-                            lease.clone(),
-                        ),
-                    );
+                r.execution.authority = crate::realization_state::SessionRealizationAuthority::Live(
+                    awaken_session_realization::test_support::test_expired_observed_lease(
+                        lease.clone(),
+                    ),
+                );
             });
             control
                 .renewals
@@ -724,9 +723,9 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
                     "session": session,
                     "identity": format!("{:p}", Arc::as_ptr(&r.execution.phase)),
                     "lease": serde_json::to_string(&match &r.execution.authority {
-                        crate::session_realizations::SessionRealizationAuthority::Live(proof) => Some(&proof.lease),
-                        crate::session_realizations::SessionRealizationAuthority::Closed(lease) => lease.as_ref(),
-                        crate::session_realizations::SessionRealizationAuthority::Uninstalled => None,
+                        crate::realization_state::SessionRealizationAuthority::Live(proof) => Some(&proof.lease),
+                        crate::realization_state::SessionRealizationAuthority::Closed(lease) => lease.as_ref(),
+                        crate::realization_state::SessionRealizationAuthority::Uninstalled => None,
                     }).unwrap(),
                     "closed": r.execution.authority.is_closed(),
                     "locked": r.execution.phase.try_lock().is_err(),
@@ -915,12 +914,11 @@ async fn delayed_realization_renewal_cannot_replace_or_revoke_new_projection() {
         };
         if expired {
             host.installed_sessions.install_realization(rule, |r| {
-                r.execution.authority =
-                    crate::session_realizations::SessionRealizationAuthority::Live(
-                        awaken_session_realization::test_support::test_expired_observed_lease(
-                            old.clone(),
-                        ),
-                    );
+                r.execution.authority = crate::realization_state::SessionRealizationAuthority::Live(
+                    awaken_session_realization::test_support::test_expired_observed_lease(
+                        old.clone(),
+                    ),
+                );
             });
             control
                 .renewals

@@ -22,14 +22,28 @@ use std::sync::Arc;
 use crate::environment_owner::{
     BoundSessionEnvironmentIdentity, LegacyDirectEnvironmentProvenance, UnboundSessionEnvironment,
 };
-use crate::session_environment::{
-    AuthorizedSessionEnvironmentEffect, EnvironmentBindingPersistenceError,
-    SessionEnvironmentProvider,
-};
+use crate::session_environment::{AuthorizedSessionEnvironmentEffect, SessionEnvironmentProvider};
 use awaken_session_state_contract::{
     SessionEnvironmentEffectAuthorization, SessionEnvironmentEffectIntent,
     SessionEnvironmentEffectKind,
 };
+
+pub struct EnvironmentBindingPersistenceError {
+    pub error: RealizationError,
+    /// Store-read proof that the root binding committed before a later
+    /// derivative dispatch-cache edge failed. The lifecycle owner consumes
+    /// this only to retain the same hidden Candidate under durable identity.
+    pub committed_identity: Option<crate::environment_owner::BoundSessionEnvironmentIdentity>,
+}
+
+impl From<RealizationError> for EnvironmentBindingPersistenceError {
+    fn from(error: RealizationError) -> Self {
+        Self {
+            error,
+            committed_identity: None,
+        }
+    }
+}
 
 impl crate::environment_holding::EnvironmentHolding {
     pub fn begin_session_environment_adoption(

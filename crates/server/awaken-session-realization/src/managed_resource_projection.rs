@@ -17,6 +17,7 @@ use crate::managed_input_layout::{
     ManagedLayoutProjection, ManagedLayoutValidationScope, ResourcePromptProjection,
     binding_layout_projection, managed_mount_access, resolved_input_layout_projection,
 };
+use crate::sandbox_projection::{ProjectedSandboxLayout, resource_mount_is_create_time};
 use crate::skill_delivery::skill_store_run_error;
 use crate::staged_resources::{CompiledEffectiveInputs, EnvironmentResourceReconciliation};
 
@@ -429,7 +430,7 @@ impl crate::resource_staging::ResourceStaging {
             previous_mounts.extend(
                 desired_mounts
                     .iter()
-                    .filter(|mount| crate::provisioning::resource_mount_is_create_time(mount))
+                    .filter(|mount| resource_mount_is_create_time(mount))
                     .cloned(),
             );
         }
@@ -635,7 +636,7 @@ impl crate::resource_staging::ResourceStaging {
                                 })?;
                             if reconciliation == EnvironmentResourceReconciliation::Adopted
                                 || (reconciliation == EnvironmentResourceReconciliation::Fresh
-                                    && crate::provisioning::resource_mount_is_create_time(mount))
+                                    && resource_mount_is_create_time(mount))
                             {
                                 continue;
                             }
@@ -1313,7 +1314,7 @@ impl crate::resource_staging::ResourceStaging {
         }
         let spec = self.sandbox_spec_for_projected_layout(
             thread,
-            crate::provisioning::ProjectedSandboxLayout {
+            ProjectedSandboxLayout {
                 resource_mounts: mounts,
                 has_repositories: !repository_paths.is_empty(),
                 baseline_mounts: baseline_mounts.or_else(|| {

@@ -26,22 +26,57 @@ pub struct EnvironmentHolding {
     /// Resource staging: spec projection, registration and layout validation.
     pub staging: crate::resource_staging::ResourceStaging,
     /// The authority physical Environment effects run under.
-    pub execution: crate::session_realizations::ExecutionAuthority,
+    pub execution: crate::execution_authority::ExecutionAuthority,
 }
 
-/// Per-Session state held under the canonical installed-slot mutex.
-#[derive(Default)]
-pub struct EnvironmentHoldingState {
-    /// Serializes first materialization/rebuild for this Session without a
-    /// process-wide registry lock being held across I/O.
-    pub lifecycle: std::sync::Arc<tokio::sync::Mutex<()>>,
-    /// Sole live Environment owner. Every state transition is driven through
-    /// `environment_lifecycle.rs`; other modules may only inspect
-    /// Resident/occupancy projections through its read helpers.
-    pub owner: crate::environment_owner::SessionEnvironmentOwner,
-    /// Exact unavailable aggregate binding/generation authorized for one
-    /// RebuildFromCommittedTruth replacement. This is a process-local command
-    /// projection; the Session aggregate receipt remains the only transition
-    /// authority and clears it after durable publication.
-    pub rebuild_source: Option<(String, Option<String>)>,
+/// Test-only spec helpers over the default Session provider. A fixture with a
+/// poisoned registry is a broken test, so these helpers panic instead of
+/// reporting the realization denial production paths return.
+#[cfg(any(test, feature = "test-support"))]
+impl EnvironmentHolding {
+    /// The provisioning request for a thread. Skills are not a sandbox mount
+    /// (ADR-0036); the environment provisions isolation tools plus the session's
+    /// staged resource mounts (ADR-0038), each realized read-only under `.mnt/`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn sandbox_spec(&self, thread: &str) -> awaken_provisioning_contract::SandboxSpec {
+        let resources = self
+            .staging
+            .thread_resources_snapshot(thread)
+            .expect("test fixture registry is healthy");
+        self.sandbox_spec_for_resources(thread, &resources)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn sandbox_spec_for_resources(
+        &self,
+        thread: &str,
+        resources: &crate::staged_resources::StagedResources,
+    ) -> awaken_provisioning_contract::SandboxSpec {
+        self.sandbox_spec_for_mount_layout(
+            thread,
+            resources.mounts.clone(),
+            !resources.repositories.is_empty(),
+        )
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn sandbox_spec_for_mount_layout(
+        &self,
+        thread: &str,
+        resource_mounts: Vec<awaken_provisioning_contract::MountRequirement>,
+        has_repositories: bool,
+    ) -> awaken_provisioning_contract::SandboxSpec {
+        self.staging
+            .sandbox_spec_for_mount_layout_with_network(
+                thread,
+                resource_mounts,
+                has_repositories,
+                self.env
+                    .session_provider
+                    .realizer()
+                    .capabilities()
+                    .network_isolation,
+            )
+            .expect("test fixture registry is healthy")
+    }
 }

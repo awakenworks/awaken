@@ -223,7 +223,7 @@ impl SharedHost {
         &self,
         thread: &str,
     ) -> Result<
-        crate::provisioning::HarvestedArtifacts,
+        crate::artifact_harvest::HarvestedArtifacts,
         awaken_resource_contract::ArtifactPublicationError,
     > {
         self.realizer.cleanup.artifacts.harvest(thread).await

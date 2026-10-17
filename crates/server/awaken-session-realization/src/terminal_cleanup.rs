@@ -8,20 +8,6 @@
 /// Run and cleanup effects share the one selected Artifact publication operation.
 #[derive(Clone)]
 pub struct TerminalCleanup {
-    pub artifacts: std::sync::Arc<crate::provisioning::ArtifactHarvester>,
+    pub artifacts: std::sync::Arc<crate::artifact_harvest::ArtifactHarvester>,
     pub sessions: crate::session_realizations::SessionRealizations,
-}
-
-/// Per-Session state held under the canonical installed-slot mutex.
-#[derive(Default)]
-pub struct TerminalCleanupState {
-    /// One complete Control-issued terminal assignment. Its Environment state
-    /// and no-Create witness are observed together; authority remains in `authority`.
-    pub assignment: Option<awaken_session_realization_contract::SessionTerminalCleanupAssignment>,
-    /// Process-local parent of a terminal cleanup target. This is routing
-    /// metadata only: the aggregate's frozen command set remains the sole work
-    /// and receipt authority. It lets an accepted root receipt (or a later
-    /// aggregate Completed read after response loss) retire child projections
-    /// without maintaining a second cleanup registry.
-    pub root: Option<String>,
 }

@@ -139,7 +139,7 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
         agent: capability::AgentExecution::new(agent, installed_sessions.clone()),
         exec,
         worker,
-        realizer: crate::RealizationExecutor {
+        realizer: crate::realization_executor::RealizationExecutor {
             clock: clock.clone(),
             environments: crate::environment_holding::EnvironmentHolding::new(
                 env,
@@ -163,7 +163,7 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
                 publication,
             ),
             cleanup: crate::terminal_cleanup::TerminalCleanup {
-                artifacts: Arc::new(crate::provisioning::ArtifactHarvester::new(
+                artifacts: Arc::new(crate::artifact_harvest::ArtifactHarvester::new(
                     realizations.clone(),
                     local_workspace.clone(),
                     resources.artifact_publisher.clone(),

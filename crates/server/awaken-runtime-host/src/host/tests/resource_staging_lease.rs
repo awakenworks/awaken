@@ -921,7 +921,7 @@ async fn missing_control_is_required_only_for_due_leases_without_skipping_refres
     host.installed_sessions
         .realizations()
         .update_realization(SESSION, |r| {
-            r.execution.authority = crate::session_realizations::SessionRealizationAuthority::Live(
+            r.execution.authority = crate::realization_state::SessionRealizationAuthority::Live(
                 awaken_session_realization::test_support::test_expired_observed_lease(
                     lease.clone(),
                 ),

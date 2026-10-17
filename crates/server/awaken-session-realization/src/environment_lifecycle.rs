@@ -7,6 +7,7 @@
 //! lifecycle truth remains in the Session aggregate; the slot machine retains
 //! each physical wrapper across every fallible or cancellable provider call.
 
+use crate::bound_environment::TerminalEnvironmentInstallation;
 use crate::environment_owner::{
     BoundSessionEnvironment, BoundSessionEnvironmentIdentity, LegacyDirectEnvironmentProvenance,
     RetiringEnvironmentOwner, RetiringSessionEnvironment, SessionEnvironmentOwner,
@@ -17,9 +18,7 @@ use crate::session_environment::{
     AuthorizedSessionEnvironmentEffect, BoundEnvironmentPreparationMode,
     SessionEnvironmentAdoptionDisposition, SessionEnvironmentUnavailablePolicy,
 };
-use crate::session_environment::{
-    PreparedBoundEnvironment, TerminalEffectMode, TerminalEnvironmentInstallation,
-};
+use crate::session_environment::{PreparedBoundEnvironment, TerminalEffectMode};
 use awaken_session_configuration_contract::resource as session_resource;
 use awaken_tool_contract::tool_batch::ResourceOriginRef;
 use std::sync::Arc;
@@ -162,11 +161,11 @@ impl TerminalEnvironmentPreparation {
     /// provider I/O safety. Once the provider reports `Disposing`, durable
     /// receipt recovery is mandatory even when the aggregate state would not
     /// authorize a live output read.
-    fn artifact_capture_mode(&self) -> Option<crate::provisioning::ArtifactCaptureMode> {
+    fn artifact_capture_mode(&self) -> Option<crate::artifact_harvest::ArtifactCaptureMode> {
         if !self.environment.permits_live_io() {
-            Some(crate::provisioning::ArtifactCaptureMode::ReceiptOnly)
+            Some(crate::artifact_harvest::ArtifactCaptureMode::ReceiptOnly)
         } else if self.state.binding().is_some() {
-            Some(crate::provisioning::ArtifactCaptureMode::Live)
+            Some(crate::artifact_harvest::ArtifactCaptureMode::Live)
         } else {
             None
         }
@@ -836,7 +835,7 @@ impl crate::environment_holding::EnvironmentHolding {
                 Some(asserted) => r.execution.authority.remaining_for(asserted).is_some(),
                 None => matches!(
                     r.execution.authority,
-                    crate::session_realizations::SessionRealizationAuthority::Uninstalled
+                    crate::realization_state::SessionRealizationAuthority::Uninstalled
                 ),
             })?
             .unwrap_or(operation.realization.is_none());
@@ -1412,8 +1411,8 @@ impl crate::environment_holding::EnvironmentHolding {
             // binding physical transition and MCP selection to this same slot.
             let retained = matches!(
                 &r.execution.authority,
-                crate::session_realizations::SessionRealizationAuthority::Live(_)
-                    | crate::session_realizations::SessionRealizationAuthority::Closed(Some(_))
+                crate::realization_state::SessionRealizationAuthority::Live(_)
+                    | crate::realization_state::SessionRealizationAuthority::Closed(Some(_))
             );
             if r.execution.authority.lease().is_some() {
                 r.close_authority(None);
@@ -1644,7 +1643,7 @@ mod terminal_output_tests {
         };
         assert_eq!(
             live_capture(resident),
-            Some(crate::provisioning::ArtifactCaptureMode::Live),
+            Some(crate::artifact_harvest::ArtifactCaptureMode::Live),
             "HT1a"
         );
         assert_eq!(
@@ -1664,7 +1663,7 @@ mod terminal_output_tests {
         };
         assert_eq!(
             disposing_non_agent_state.artifact_capture_mode(),
-            Some(crate::provisioning::ArtifactCaptureMode::ReceiptOnly),
+            Some(crate::artifact_harvest::ArtifactCaptureMode::ReceiptOnly),
             "HT1c"
         );
     }

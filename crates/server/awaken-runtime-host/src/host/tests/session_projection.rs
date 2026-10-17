@@ -1808,7 +1808,7 @@ async fn session_creation_and_explicit_cache_warmup_share_one_preparation_path()
         .with_cache_volume_initializer(initializer.clone()))
     .build()
     .expect("validated Host dependencies");
-    let mut spec = crate::provisioning::agent_run_sandbox_spec("cache-wiring");
+    let mut spec = crate::sandbox_projection::agent_run_sandbox_spec("cache-wiring");
     spec.mounts
         .push(awaken_provisioning_contract::MountRequirement {
             mount_id: "build-cache".into(),

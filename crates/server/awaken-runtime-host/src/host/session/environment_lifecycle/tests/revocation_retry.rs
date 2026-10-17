@@ -382,7 +382,7 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
             .realizations()
             .read_realization(thread, |r| r.execution.authority.clone())
             .expect("installed Sessions"),
-        Some(crate::session_realizations::SessionRealizationAuthority::Closed(Some(lease.clone()))),
+        Some(crate::realization_state::SessionRealizationAuthority::Closed(Some(lease.clone()))),
         "E4"
     );
     assert!(

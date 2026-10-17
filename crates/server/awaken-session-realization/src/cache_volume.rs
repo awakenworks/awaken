@@ -91,25 +91,6 @@ impl CacheVolumeError {
     pub fn initializer(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Self {
         Self::Initializer(Arc::from(error.into()))
     }
-
-    /// A wrong location is a deployment fault no retry repairs; a provider step
-    /// keeps the provider's class; every other failure may succeed later.
-    #[must_use]
-    pub fn disposition(&self) -> crate::realization_error::Disposition {
-        use crate::realization_error::Disposition;
-        match self {
-            Self::UnsupportedLocation(_) => Disposition::Terminal,
-            Self::Environment { source, .. } => {
-                crate::realization_error::RealizationError::Environment(source.clone())
-                    .disposition()
-            }
-            Self::Task(_)
-            | Self::Directory(_)
-            | Self::InitializerExited(_)
-            | Self::Initializer(_) => Disposition::Retry,
-            Self::Volume { source, .. } => source.disposition(),
-        }
-    }
 }
 
 /// Product-specific population of a rebuildable cache directory. Implementations

@@ -1173,7 +1173,7 @@ async fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epo
             host.installed_sessions
                 .install_realization(expired.session_id().as_str(), |r| {
                     r.execution.authority =
-                        crate::session_realizations::SessionRealizationAuthority::Live(proof);
+                        crate::realization_state::SessionRealizationAuthority::Live(proof);
                 });
         }
         assert_eq!(

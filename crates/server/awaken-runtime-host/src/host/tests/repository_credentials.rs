@@ -709,7 +709,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
             published.as_ref(), &expectation, Some(&renewed_fence),
         ).await.expect_err("C13 unknown authority must not grant publication");
         match refused {
-            crate::provisioning::RepositoryPublicationActivationError::Failed(error) => {
+            crate::resource_staging::repository_activation::RepositoryPublicationActivationError::Failed(error) => {
                 assert_eq!(error.disposition(), crate::realization_error::Disposition::Retry, "C13 unknown typed kind");
                 assert_eq!(error.code(), "unavailable", "C13 original code");
                 assert_eq!(error.to_string(), "Repository binding decision is indeterminate: injected unknown authority", "C13 original reason");
@@ -725,7 +725,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
             session, remote.local_workspace(), &malformed, &staged.binding_checks,
             published.as_ref(), &expectation, Some(&fence),
         ).await.expect_err("C13 pin rejects before verifier");
-        assert!(matches!(refused, crate::provisioning::RepositoryPublicationActivationError::Failed(error)
+        assert!(matches!(refused, crate::resource_staging::repository_activation::RepositoryPublicationActivationError::Failed(error)
             if error.disposition() == crate::realization_error::Disposition::Terminal && error.to_string() == "invalid Repository credential execution pin: Repository credential pin selects another source"));
         assert_eq!(remote_verifier.calls.load(Ordering::SeqCst), 3, "C13 malformed no refresh");
         assert_eq!(published.1.lock().unwrap().len(), 1, "C13 malformed zero effect");
@@ -734,7 +734,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
             session, remote.local_workspace(), repository, &staged.binding_checks,
             published.as_ref(), &expectation, Some(&fence),
         ).await.expect_err("C13 upstream direct downgrade rejects");
-        assert!(matches!(refused, crate::provisioning::RepositoryPublicationActivationError::Failed(error)
+        assert!(matches!(refused, crate::resource_staging::repository_activation::RepositoryPublicationActivationError::Failed(error)
             if error.disposition() == crate::realization_error::Disposition::Terminal && error.to_string() == "Gateway-mediated Repository cannot fall back to direct credentials"));
         assert_eq!(remote_verifier.calls.load(Ordering::SeqCst), 4, "C13 one downgrade decision");
         assert_eq!(published.1.lock().unwrap().len(), 1, "C13 downgrade zero effect");
@@ -752,7 +752,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
             session, missing.local_workspace(), repository, &staged.binding_checks,
             published.as_ref(), &expectation, Some(&fence),
         )).catch_unwind().await.expect("C12 missing verifier precedes poison").expect_err("C12 refused");
-        assert!(matches!(refused, crate::provisioning::RepositoryPublicationActivationError::Failed(error)
+        assert!(matches!(refused, crate::resource_staging::repository_activation::RepositoryPublicationActivationError::Failed(error)
             if error.disposition() == crate::realization_error::Disposition::Terminal && error.to_string() == "terminal Repository publication has no binding verifier"));
         assert!(matches!(
             std::panic::AssertUnwindSafe(missing.realizer.staging.realize_repository_activation(
@@ -794,7 +794,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         assert!(
             matches!(
                 refused.expect("C13 a poisoned Slot denies without unwinding"),
-                Err(crate::provisioning::RepositoryPublicationActivationError::Failed(
+                Err(crate::resource_staging::repository_activation::RepositoryPublicationActivationError::Failed(
                     crate::realization_error::RealizationError::Poisoned(_)
                 ))
             ),

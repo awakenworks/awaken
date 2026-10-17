@@ -10,10 +10,11 @@ use std::{io, time::Duration};
 use awaken_provisioning_contract::{CurrentExecutionAuthority, SandboxEffectFence};
 use awaken_session_configuration_contract::resource::SessionRealizationLease;
 
-use super::{SessionRealization, SessionRealizationSource, SessionRealizations};
+use crate::realization_state::SessionRealization;
 use crate::session_environment::AuthorizedSessionEnvironmentEffect;
 #[cfg(target_os = "linux")]
 use crate::session_environment::SessionEnvironment;
+use crate::session_realizations::{SessionRealizationSource, SessionRealizations};
 
 /// The authority every physical Environment effect of the realization executor
 /// runs under: the Worker's registry proof (absent on a direct Host) intersected
@@ -109,7 +110,7 @@ impl SessionExecutionAuthority {
     ) -> Self {
         Self {
             worker: execution.worker.clone(),
-            sessions: Arc::downgrade(&execution.sessions.0),
+            sessions: execution.sessions.downgrade(),
             session: session.into(),
             realization: realization.execution.phase.clone(),
             lifecycle: realization.environment.lifecycle.clone(),
@@ -254,7 +255,7 @@ impl ExecutionAuthority {
     ) -> SessionExecutionAuthority {
         SessionExecutionAuthority {
             worker: self.worker.clone(),
-            sessions: Arc::downgrade(&self.sessions.0),
+            sessions: self.sessions.downgrade(),
             session: session.into(),
             realization: realization.execution.phase.clone(),
             lifecycle: realization.environment.lifecycle.clone(),
@@ -297,7 +298,7 @@ impl ExecutionAuthority {
             ))
         });
         let mut outcome = None;
-        self.sessions.0.visit(session, &mut |access| {
+        self.sessions.source().visit(session, &mut |access| {
             outcome = capture.take().map(|capture| capture(access.realization));
         })?;
         outcome.ok_or_else(|| RealizationError::session_absent(session))?
@@ -332,25 +333,6 @@ impl ExecutionAuthority {
             .map_err(RealizationError::from)?;
         Ok(())
     }
-}
-
-/// Per-Session state held under the canonical installed-slot mutex.
-#[derive(Default)]
-pub struct ExecutionAuthorityState {
-    /// Serializes the canonical realization phase driver for this Session.
-    /// Lease renewal may advance authority while this lock is held, but it must
-    /// not start a second Stage/Publish driver. This is deliberately separate
-    /// from `lifecycle`, which is re-entered by Environment materialization.
-    pub phase: Arc<tokio::sync::Mutex<()>>,
-    /// Last accepted aggregate version and equality digest; rebuildable, never authority.
-    pub frozen_receipt: Option<super::FrozenProjectionReceipt>,
-    /// Current Control-issued projection authority. It is a live cache used to
-    /// request renewal; durable ownership remains in the Session aggregate.
-    pub authority: super::SessionRealizationAuthority,
-    /// Wakes a claim resolver waiting for the Session application's initial
-    /// restart reassignment. The lease above remains the only projected fact;
-    /// this notification carries no authority or parallel state.
-    pub changed: Arc<tokio::sync::Notify>,
 }
 
 impl ExecutionAuthority {

@@ -147,13 +147,13 @@ impl TerminalCleanup {
             Ok(effect_receipt) => Ok(SessionRepositoryPublicationEffect::Published(
                 SessionRepositoryPublicationReceipt::new(&command, effect_receipt),
             )),
-            Err(crate::provisioning::RepositoryPublicationActivationError::Rejected(
+            Err(crate::resource_staging::repository_activation::RepositoryPublicationActivationError::Rejected(
                 effect_rejection,
             )) => Ok(SessionRepositoryPublicationEffect::Rejected(
                 SessionRepositoryPublicationRejection::new(&command, effect_rejection)
                     .map_err(crate::realization_error::RealizationError::from)?,
             )),
-            Err(crate::provisioning::RepositoryPublicationActivationError::Failed(error)) => {
+            Err(crate::resource_staging::repository_activation::RepositoryPublicationActivationError::Failed(error)) => {
                 Err(awaken_session_types::RunError::from(error))
             }
         }

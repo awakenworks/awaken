@@ -1,6 +1,5 @@
 //! Host-only composed tests.
 
-use awaken_session_realization::session_realizations::*;
 #[cfg(target_os = "linux")]
 #[path = "session_realizations/execution_authority.rs"]
 mod execution_authority;
