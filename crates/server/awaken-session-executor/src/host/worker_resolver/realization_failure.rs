@@ -308,11 +308,42 @@ mod tests {
         // | transient provider / authority / pending / poisoned / stale Run | relinquish |
         // | Repository binding conflict / Run conflict / unclassified internal | relinquish |
         // | provider capacity                       | defer      |
+        // | provisioning before the provider's deadline | defer  |
+        // | provisioning with no deadline / at or past it | relinquish |
         // | permanent provider / projection conflict / invariant / invalid | absorb |
-        let rows: [Row; 13] = [
+        let rows: [Row; 16] = [
             (
                 "transient provider",
                 || SandboxError::timeout("t").into(),
+                "relinquish",
+            ),
+            (
+                "provisioning before its deadline",
+                || {
+                    RealizationError::provisioning(
+                        Some(awaken_provisioning_contract::ProvisioningDeadline::new(
+                            9, 4,
+                        )),
+                        "pulling",
+                    )
+                },
+                "defer",
+            ),
+            (
+                "provisioning past its deadline",
+                || {
+                    RealizationError::provisioning(
+                        Some(awaken_provisioning_contract::ProvisioningDeadline::new(
+                            9, 9,
+                        )),
+                        "pulling",
+                    )
+                },
+                "relinquish",
+            ),
+            (
+                "provisioning with no deadline",
+                || RealizationError::provisioning(None, "created"),
                 "relinquish",
             ),
             (

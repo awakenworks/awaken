@@ -100,6 +100,40 @@ fn decision_table() -> Vec<(&'static str, RealizationError, Disposition)> {
             Disposition::Retry,
         ));
     }
+    for (rule, deadline, disposition) in [
+        (
+            "D14 provisioning with no deadline",
+            None,
+            Disposition::Retry,
+        ),
+        (
+            "D14 provisioning before its deadline",
+            Some(awaken_provisioning_contract::ProvisioningDeadline::new(
+                10_000, 4_000,
+            )),
+            Disposition::Defer,
+        ),
+        (
+            "D14 provisioning at its deadline",
+            Some(awaken_provisioning_contract::ProvisioningDeadline::new(
+                10_000, 10_000,
+            )),
+            Disposition::Retry,
+        ),
+        (
+            "D14 provisioning past its deadline",
+            Some(awaken_provisioning_contract::ProvisioningDeadline::new(
+                10_000, 70_000,
+            )),
+            Disposition::Retry,
+        ),
+    ] {
+        rows.push((
+            rule,
+            RealizationError::provisioning(deadline, "provisioning"),
+            disposition,
+        ));
+    }
     for conflict in ProjectionConflict::ALL {
         rows.push((
             "D6 projection conflict",
@@ -187,7 +221,7 @@ fn decision_table() -> Vec<(&'static str, RealizationError, Disposition)> {
 
 #[test]
 fn each_failure_class_has_one_disposition_on_the_synchronizer_and_driver_paths() {
-    // Decision table: cause = the realization failure class (D1-D11 above);
+    // Decision table: cause = the realization failure class (D1-D14 above);
     // paths = P1 the realization's own decision, P2 the projection
     // synchronizer (RealizationError -> RunError, classified by the
     // contract), P3 the realization driver (FailSessionRealization report and
@@ -196,6 +230,8 @@ fn each_failure_class_has_one_disposition_on_the_synchronizer_and_driver_paths()
     // | Class | P1 = P2 = P3 |
     // | D1 transient provider / D4 authority lost / D5 pending / D11 poisoned | Retry |
     // | D2 capacity | Defer (report keeps the budget) |
+    // | D14 provisioning before the provider's deadline | Defer (report keeps the budget) |
+    // | D14 provisioning with no deadline, at or past it | Retry |
     // | D3 permanent provider / D6 projection conflict / D9 invariant / D13 evidence | Terminal |
     // | D7 Run port failure | the Run error's own class: unavailable, state conflict and unclassified internal retry; classified internal is terminal |
     // | D8 invalid request | Rejected (absorbs like Terminal) |
@@ -207,11 +243,17 @@ fn each_failure_class_has_one_disposition_on_the_synchronizer_and_driver_paths()
     // D5 pending stays Retry, not Defer: Defer is only for a wait whose owner
     // guarantees it resolves or expires, and no owner holds a deadline over
     // these states. They are observations of provider or evidence state (a
-    // failed or indeterminate observation, a sandbox the provider still
-    // reports Provisioning, a closed candidate). A Pod left Pending by a dead
-    // creator, or a provider that keeps failing to answer, never settles on
-    // its own; the realization lease expires for the claimant, not for the
-    // observed sandbox.
+    // failed or indeterminate observation, a closed candidate). A provider
+    // that keeps failing to answer never settles on its own; the realization
+    // lease expires for the claimant, not for the observed sandbox.
+    // D14 is the one wait with an owner: a provider whose backend progresses
+    // provisioning on its own (the cluster for a Pod) gives the observation
+    // its deadline, measured from the backend's durable creation record.
+    // Before it the wait defers; from it on, or without one (Docker, Podman
+    // and local sandboxes are progressed only by their creating call, and a
+    // legacy observation carries none), it is a failed attempt. It is Retry,
+    // not Terminal: the next attempt may find the sandbox ready or replaced,
+    // and the dispatch budget still bounds it.
     for (rule, error, expected) in decision_table() {
         let code = error.code().into_owned();
         assert_eq!(error.disposition(), expected, "{rule} P1 {error}");
@@ -252,7 +294,13 @@ fn closed_codes_are_unique_across_classes() {
                 .map(|conflict| conflict.code()),
         )
         .chain(UnrecoverableFault::ALL.iter().map(|fault| fault.code()))
-        .chain([POISONED_CODE, REPOSITORY_BINDING_CORRUPT_CODE]);
+        .chain([
+            POISONED_CODE,
+            REPOSITORY_BINDING_CORRUPT_CODE,
+            PROVISIONING_UNBOUNDED_CODE,
+            PROVISIONING_DEADLINE_ELAPSED_CODE,
+            ENVIRONMENT_PROVISIONING_CODE,
+        ]);
     for code in codes {
         assert!(seen.insert(code), "duplicate realization code {code}");
     }
@@ -324,4 +372,47 @@ fn a_repository_binding_conflict_projects_a_run_conflict() {
         projected.message,
         "Repository binding authority changed concurrently: x"
     );
+}
+
+#[test]
+fn only_a_provision_within_its_deadline_hints_when_to_look_again() {
+    // Decision table: cause = the failure; effect = the retry-after hint.
+    // | H1 | provisioning before its deadline | the wait left to the deadline |
+    // | H2 | provisioning at / past / without a deadline | none |
+    // | H3 | a capacity refusal and every other class | none (caller's backoff) |
+    use awaken_provisioning_contract::ProvisioningDeadline;
+    use std::time::Duration;
+    for (rule, error, hint) in [
+        (
+            "H1",
+            RealizationError::provisioning(Some(ProvisioningDeadline::new(10_000, 4_000)), "p"),
+            Some(Duration::from_millis(6_000)),
+        ),
+        (
+            "H2",
+            RealizationError::provisioning(Some(ProvisioningDeadline::new(10_000, 10_000)), "p"),
+            None,
+        ),
+        ("H2", RealizationError::provisioning(None, "p"), None),
+        (
+            "H3",
+            RealizationError::Environment(SandboxError::capacity_unavailable("quota")),
+            None,
+        ),
+        (
+            "H3",
+            RealizationError::pending(PendingState::ObservationIndeterminate, "unknown"),
+            None,
+        ),
+    ] {
+        assert_eq!(error.retry_after(), hint, "{rule}");
+        if let Some(hint) = hint {
+            assert_eq!(
+                error.disposition(),
+                Disposition::Defer,
+                "{rule} hint only on Defer"
+            );
+            assert!(!hint.is_zero(), "{rule}");
+        }
+    }
 }
