@@ -163,7 +163,7 @@ impl SharedHost {
         let binding = outcome_binding(&ctx.config, self.agent.judge_snapshot.as_ref());
         let host_grader = HostAgentGrader {
             host: self,
-            worker_cancel: ctx.cancel.clone(),
+            session_foreground: ctx.foreground.clone(),
         };
         // Outcome owns ordinary Worker Runs on the shared Thread. They reuse
         // the Session's frozen execution inputs but are not a second public
@@ -203,12 +203,7 @@ impl SharedHost {
                 // This process-local hint is only a live-owner fence: after a
                 // crash it is absent and the durable Outcome/Run state remains
                 // fully recoverable by the replacement process.
-                if ctx
-                    .active_run
-                    .lock()
-                    .expect("active run mutex poisoned")
-                    .is_some()
-                {
+                if ctx.foreground.has_run()? {
                     return Ok(OutcomeCommandResult::Driven(None));
                 }
                 match controller.resume_active().await {

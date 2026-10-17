@@ -72,7 +72,8 @@ async fn claimed_inference_only_grader_keeps_execution_authority_without_a_sandb
     assert!(host.realizer.session_environment(thread).await.is_none());
     assert_eq!(
         context
-            .context()
+            .context(&RunId("judge-attempt".into()))
+            .expect("readable foreground record")
             .execution_scope
             .as_ref()
             .map(|scope| scope.0.as_str()),

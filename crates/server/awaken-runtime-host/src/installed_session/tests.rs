@@ -765,8 +765,10 @@ async fn local_activity_combination_keeps_real_poison_fault_order() {
                 .expect("Q9 actual context");
             host.installed_sessions
                 .update_run(&root_id, |run| run.context = Some(ctx.clone()));
-            *ctx.active_run.lock().unwrap() = primary_active
-                .then(|| awaken_agent_contract::agent::run::Id("active-primary".into()));
+            ctx.foreground.install_for_test(
+                primary_active
+                    .then(|| awaken_agent_contract::agent::run::Id("active-primary".into())),
+            );
             let view = host.installed_sessions.realizations();
             let polls = std::sync::atomic::AtomicUsize::new(0);
             let (enter, entry) = tokio::sync::oneshot::channel::<()>();
@@ -883,11 +885,13 @@ async fn local_activity_combination_keeps_real_poison_fault_order() {
                 .update_run(&root_id, |run| run.context = Some(root.clone()));
             host.installed_sessions
                 .update_run(&child_id, |run| run.context = Some(child.clone()));
-            *root.active_run.lock().unwrap() = (!primary_fault && status == Status::Open)
-                .then(|| awaken_agent_contract::agent::run::Id("active-primary".into()));
+            root.foreground.install_for_test(
+                (!primary_fault && status == Status::Open)
+                    .then(|| awaken_agent_contract::agent::run::Id("active-primary".into())),
+            );
             let fault = if primary_fault { root } else { child };
             let marker_writer = std::thread::spawn(move || {
-                let _held = fault.active_run.lock().unwrap();
+                let _held = fault.foreground.hold_for_test();
                 panic!("Q11 actual active-marker poison");
             });
             assert!(marker_writer.join().is_err(), "Q11 marker writer joined");
@@ -920,25 +924,20 @@ async fn local_activity_combination_keeps_real_poison_fault_order() {
             ))
             .catch_unwind()
             .await;
+            // A poisoned foreground record is a typed refusal that counts as
+            // active, never a panic: the reader is still polled after Primary.
             assert_eq!(
                 polls.load(std::sync::atomic::Ordering::SeqCst),
-                usize::from(!primary_fault),
-                "Q11 exact Primary-before-reader order"
+                1,
+                "Q11 Primary first, then the reader"
             );
+            let observed = observed.expect("Q11 marker poison never panics");
             if status == Status::Completed {
-                assert!(
-                    !observed
-                        .expect("Q11 Completed skips child poisoned marker")
-                        .unwrap(),
-                    "Q11 no context-presence substitution"
-                );
+                assert!(!observed.unwrap(), "Q11 no context-presence substitution");
             } else {
-                let panic =
-                    observed.expect_err("Q11 actual active-marker poison cannot become inactive");
-                assert_eq!(
-                    panic.downcast_ref::<String>().unwrap(),
-                    &format!("active run mutex poisoned: {:?}", PoisonError::new(())),
-                    "Q11 original Runtime diagnostic"
+                assert!(
+                    observed.unwrap(),
+                    "Q11 actual active-marker poison cannot become inactive"
                 );
             }
         }

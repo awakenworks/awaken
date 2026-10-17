@@ -41,10 +41,7 @@ use resource_transition::{
 /// reselects the retained slot owners through the same Host operation.
 #[must_use = "closed projections still require cleanup or an explicit retry"]
 pub struct SessionRealizationRevocation {
-    selected: Vec<(
-        String,
-        crate::installed_session::SessionRealizationRevocationSelection,
-    )>,
+    selected: Vec<(String, crate::installed_session::ClosedSessionRealization)>,
 }
 
 fn terminal_cleanup_drive_error(
@@ -269,6 +266,19 @@ impl crate::SharedHost {
         session_id: &awaken_session_types::SessionId,
         lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<bool, crate::HostError> {
+        // A delayed NotFound belongs to this original lookup and physical
+        // projection. Capture its existing phase and local Run controls in one
+        // read, without creating a slot; the original lease and phase must both
+        // still authorize fallback retirement. An unreadable foreground record
+        // refuses the whole reconciliation before any Control I/O or effect.
+        let original = self
+            .installed_sessions
+            .read(session_id.as_str(), |slot| {
+                slot.run
+                    .select_interruption()
+                    .map(|selected| (slot.realization.execution.phase.clone(), selected.local))
+            })
+            .transpose()?;
         match control.terminal_cleanup_work(session_id, lease).await {
             Ok(Some(_)) => {
                 // This first read distinguishes an ordinary Session (`None`)
@@ -306,8 +316,17 @@ impl crate::SharedHost {
             Err(
                 awaken_session_realization_contract::SessionRealizationControlFailure::NotFound,
             ) => {
-                let _ = self.interrupt(session_id.as_str()).await;
-                if !self
+                // Terminal absence decision table (tests in
+                // host/tests/terminal_recovery_selection.rs). Never interrupt by
+                // Session ID: a successor may now serve that same Session.
+                // T1 a completed terminal projection of this generation is
+                //    retired => signal the Run controls captured before lookup.
+                // T2 otherwise, the original phase still holds this generation
+                //    (exact or monotonically renewed) => close it and retire it,
+                //    signalling the Run controls captured at that close.
+                // T3 otherwise (successor generation, replaced phase, absent)
+                //    => leave the current root and its Run untouched.
+                if self
                     .realizer
                     .cleanup
                     .retire_completed_terminal_cleanup_projection(
@@ -317,7 +336,17 @@ impl crate::SharedHost {
                     )
                     .await
                 {
-                    self.revoke_session_realization(session_id.as_str(), None)
+                    if let Some((_, Some(local))) = &original {
+                        local.interrupt();
+                    }
+                } else if let Some((phase, _)) = &original
+                    && let Some(selected) = self.installed_sessions.close_realization_generation(
+                        session_id.as_str(),
+                        lease,
+                        phase,
+                    )
+                {
+                    self.retire_selected_session_realization(session_id.as_str(), selected, true)
                         .await?;
                 }
                 Ok(true)
@@ -504,37 +533,45 @@ impl crate::SharedHost {
         .await
     }
 
+    /// Retire one closed root through its original physical owner. With
+    /// `interrupt`, the Run controls captured at the close are signalled after
+    /// the root still matches and before retirement; a foreground record that
+    /// was unreadable at the close refuses the retirement before any effect.
     async fn retire_selected_session_realization(
         &self,
         session_id: &str,
-        selected: crate::installed_session::SessionRealizationRevocationSelection,
+        selected: crate::installed_session::ClosedSessionRealization,
         interrupt: bool,
     ) -> Result<bool, crate::HostError> {
-        let _realization = selected.realization.lock().await;
-        let _lifecycle = selected.lifecycle.lock().await;
-        // This fence also applies to Worker-wide revocation: waiting cannot
-        // authorize cleanup of a replacement installed after the close edge.
-        if !self
-            .installed_sessions
-            .read(session_id, |slot| selected.matches(&slot.realization))
-            .unwrap_or(false)
-        {
-            return Ok(false);
-        }
-        if interrupt {
-            let _ = self
-                .interrupt_with_commit_read(
-                    session_id,
-                    self.commit_for_read_under_lifecycle(session_id),
-                )
-                .await;
-        }
+        let run = if interrupt { selected.run? } else { None };
         self.realizer
-            .retire_session_environment_for_revocation(
+            .retire_selected_session_environment(
                 session_id,
                 (&self.mcp, self.installed_sessions.as_ref()),
-                Some(&selected),
+                &selected.root,
+                || {
+                    #[cfg(test)]
+                    if let Some(after_check) = selected.after_check {
+                        after_check();
+                    }
+                    if let Some(run) = &run {
+                        run.interrupt();
+                    }
+                },
             )
+            .await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn retire_selected_session_realization_with_post_check(
+        &self,
+        session_id: &str,
+        mut selected: crate::installed_session::ClosedSessionRealization,
+        interrupt: bool,
+        after_check: impl FnOnce() + Send + 'static,
+    ) -> Result<bool, crate::HostError> {
+        selected.after_check = Some(Box::new(after_check));
+        self.retire_selected_session_realization(session_id, selected, interrupt)
             .await
     }
 

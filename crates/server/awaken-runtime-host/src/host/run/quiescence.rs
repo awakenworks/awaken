@@ -116,12 +116,12 @@ impl SharedHost {
             if pass == 0
                 && let Some(ctx) = &resident
             {
-                if let Some(token) = ctx.cancel.lock().expect("cancel mutex poisoned").as_ref() {
+                if let Some(token) = ctx.foreground.observe()?.cancellation {
                     token.cancel();
                 }
                 let deadline =
                     awaken_time::mono::MonoDeadline::after(std::time::Duration::from_secs(10));
-                while ctx.has_active_run() {
+                while ctx.foreground.has_run()? {
                     if deadline.has_passed() {
                         return Err(HostError::internal(format!(
                             "terminal quiescence timed out for Thread `{thread}`"

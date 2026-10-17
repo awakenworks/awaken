@@ -112,6 +112,7 @@ mod credential_capabilities;
 mod dispatch_execution;
 #[cfg(test)]
 mod dispatch_reconciliation;
+mod foreground_run;
 mod run_admission;
 mod run_control;
 pub(crate) use credential_capabilities::acp_mcp_client_injection_capabilities;
@@ -132,6 +133,7 @@ mod worker_resolver;
 
 pub(crate) use awaken_dispatch_execution::session_worker_resolver::SessionWorkerResolver;
 pub(crate) use completion::CompletionRegistry;
+pub(crate) use foreground_run::{ForegroundRunPoisoned, ForegroundRunRecord};
 pub(crate) use session_ctx::{
     ChildExecutionSubstrate, ClaimedRuntimeInput, RuntimePublicationIdentity, SessionCtx,
 };

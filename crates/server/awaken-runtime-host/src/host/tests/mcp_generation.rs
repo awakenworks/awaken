@@ -658,8 +658,9 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
         Some((true, false)),
         "RQ2 inactive Context"
     );
-    *runtime.active_run.lock().expect("active run mutex") =
-        Some(RunId("mcp-runtime-active-run".into()));
+    runtime
+        .foreground
+        .install_for_test(Some(RunId("mcp-runtime-active-run".into())));
     assert_eq!(
         query(runtime_thread),
         Some((true, true)),
@@ -745,7 +746,7 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
         "P3 retains the process owner"
     );
 
-    *runtime.active_run.lock().expect("active run mutex") = None;
+    runtime.foreground.install_for_test(None);
     assert_eq!(
         query(runtime_thread),
         Some((true, false)),
@@ -778,10 +779,11 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
             .unwrap_or(false),
         "P4 leaves Runtime removal to the outer quiesce owner"
     );
-    // RQ5 active mutex poison => preserve the original panic diagnostic,
-    // never substitute context presence or return a false quiescence result.
+    // RQ5 foreground record poison => a typed refusal, never a panic, and
+    // never context presence substituted or a false quiescence result: the
+    // marker reports the Run active, so every drain keeps refusing.
     // Environment continuation's primary/delegated reads use this same kernel,
-    // preserving their Slot -> active lock order and existing Runtime Arc.
+    // preserving their Slot -> foreground lock order and existing Runtime Arc.
     // Their absent/inactive/active conditions remain RQ0-RQ4; delegated status
     // still short-circuits a non-occupying dispatch before the Slot read.
     // This fault proves only the active kernel; the distinct actual Slot S4
@@ -790,23 +792,23 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
     // the primitive reads no registry, so this fault does not poison the slot.
     let poisoned_runtime = runtime.clone();
     let poisoned = std::thread::spawn(move || {
-        let _held = poisoned_runtime
-            .active_run
-            .lock()
-            .expect("before RQ5 poison");
+        let _held = poisoned_runtime.foreground.hold_for_test();
         panic!("RQ5 inject active marker poison");
     });
     assert!(poisoned.join().is_err(), "RQ5 actual marker poisoned");
-    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runtime.has_active_run()))
-        .expect_err("RQ5 poison must not become inactive");
-    let message = panic
-        .downcast_ref::<String>()
-        .map(String::as_str)
-        .or_else(|| panic.downcast_ref::<&str>().copied())
-        .unwrap_or("");
     assert!(
-        message.contains("active run mutex poisoned"),
-        "RQ5 original diagnostic"
+        runtime.has_active_run(),
+        "RQ5 poison must not become inactive"
+    );
+    assert_eq!(
+        runtime.foreground.observe().unwrap_err(),
+        crate::host::ForegroundRunPoisoned,
+        "RQ5 typed refusal"
+    );
+    assert_eq!(
+        query(runtime_thread),
+        Some((true, true)),
+        "RQ5 the slot query keeps the Run active"
     );
 }
 

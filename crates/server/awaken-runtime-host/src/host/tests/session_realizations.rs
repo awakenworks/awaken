@@ -185,10 +185,8 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                     (Status::CancelRequested, true),
                 ] {
                     for child_active in [false, true] {
-                        *ctx.active_run.lock().unwrap() =
-                            primary_active.then(|| RunId("query-primary".into()));
-                        *child.active_run.lock().unwrap() =
-                            child_active.then(|| RunId("query-child".into()));
+                        ctx.foreground.install_for_test(primary_active.then(|| RunId("query-primary".into())));
+                        child.foreground.install_for_test(child_active.then(|| RunId("query-child".into())));
                         let trace = std::sync::Mutex::new(Vec::new());
                         let result = primary_or_delegated_run_active(
                             thread,
@@ -231,8 +229,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                         );
                     }
                 }
-                *ctx.active_run.lock().unwrap() =
-                    primary_active.then(|| RunId("query-error-primary".into()));
+                ctx.foreground.install_for_test(primary_active.then(|| RunId("query-error-primary".into())));
                 let trace = std::sync::Mutex::new(Vec::new());
                 let error = primary_or_delegated_run_active(
                     thread,
@@ -274,8 +271,8 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                     "Q3 no child lookup"
                 );
             }
-            *ctx.active_run.lock().unwrap() = None;
-            *child.active_run.lock().unwrap() = None;
+            ctx.foreground.install_for_test(None);
+            child.foreground.install_for_test(None);
             for id in ["query-missing-slot", "created"] {
                 let mut missing = delegated(Status::Open);
                 missing.run_id = RunId(id.into());
@@ -306,7 +303,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                 !host.installed_sessions.contains("query-missing-slot"),
                 "Q1 no new Slot"
             );
-            *child.active_run.lock().unwrap() = Some(RunId("query-child".into()));
+            child.foreground.install_for_test(Some(RunId("query-child".into())));
             let mut second = delegated(Status::Open);
             second.run_id = RunId("query-never-read".into());
             let trace = std::sync::Mutex::new(Vec::new());
@@ -348,8 +345,8 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                 "Q6 original iter.any stops after first true"
             );
         }
-        *ctx.active_run.lock().unwrap() = None;
-        *child.active_run.lock().unwrap() = None;
+        ctx.foreground.install_for_test(None);
+        child.foreground.install_for_test(None);
         // Q13 exercises the ACTUAL original commit projection while the actual
         // lifecycle guard is held. A public/relocking reader would time out.
         let lifecycle = sessions.lock_lifecycle(thread).await;
@@ -382,8 +379,8 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         // Join both signals/writer; never replace the actual contexts by bools.
         for legacy in [false, true] {
             for prior_primary in [false, true] {
-                *ctx.active_run.lock().unwrap() = prior_primary.then(|| RunId("prior-primary".into()));
-                *child.active_run.lock().unwrap() = None;
+                ctx.foreground.install_for_test(prior_primary.then(|| RunId("prior-primary".into())));
+                child.foreground.install_for_test(None);
                 let (entered, entry) = tokio::sync::oneshot::channel::<()>();
                 let (changed, change) = tokio::sync::oneshot::channel::<()>();
                 let writer = tokio::spawn({
@@ -391,9 +388,9 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                     let child = child.clone();
                     async move {
                         entry.await.expect("Q12 actual reader entry");
-                        *ctx.active_run.lock().unwrap() = None;
+                        ctx.foreground.install_for_test(None);
                         if !prior_primary {
-                            *child.active_run.lock().unwrap() = Some(RunId("later-child".into()));
+                            child.foreground.install_for_test(Some(RunId("later-child".into())));
                         }
                         changed.send(()).expect("Q12 marker change joined");
                     }
@@ -434,8 +431,8 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                 );
             }
         }
-        *ctx.active_run.lock().unwrap() = None;
-        *child.active_run.lock().unwrap() = None;
+        ctx.foreground.install_for_test(None);
+        child.foreground.install_for_test(None);
     }).await;
 
     // R4/R6: the named action grants no generic mutable Frozen access. Ordinary
