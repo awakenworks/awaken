@@ -1,6 +1,6 @@
 //! Session environment lifecycle tests, split by topic; shared fixtures live here.
-use super::state::ProjectedEnvironmentOwner;
 use super::*;
+use crate::environment_holding::lifecycle::owner_decisions::ProjectedEnvironmentOwner;
 use crate::environment_owner::UnboundSessionEnvironmentOrigin;
 use awaken_session_environment::test_support::SandboxEnvironmentAccess;
 

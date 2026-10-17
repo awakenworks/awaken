@@ -21,12 +21,12 @@ use awaken_session_configuration_contract::resource as session_resource;
 use awaken_tool_contract::tool_batch::ResourceOriginRef;
 use std::sync::Arc;
 
+pub mod owner_decisions;
 mod publication;
 pub mod state;
 
-use state::{
-    RetirementSelection, checkpoint_source_identity, pending_revoked_resource_reservation,
-};
+use owner_decisions::checkpoint_source_identity;
+use state::{RetirementSelection, pending_revoked_resource_reservation};
 
 /// One atomic process-local retirement transition. A successful transition
 /// detaches the Runtime together with its Environment owner; an unmatched
