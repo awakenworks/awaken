@@ -309,6 +309,13 @@ pub(crate) struct SessionCtx {
 }
 
 impl SessionCtx {
+    /// The resident Runtime as the live control durable cancellation nudges.
+    pub(crate) fn live_control(
+        &self,
+    ) -> &(dyn awaken_runtime_contract::control::LiveRunControl + Send + Sync) {
+        self.runtime.as_ref()
+    }
+
     /// Whether a foreground Run is admitted. An unreadable record counts as
     /// active: it can never prove quiescence or let a caller detach a Run.
     pub(crate) fn has_active_run(&self) -> bool {

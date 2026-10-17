@@ -298,7 +298,7 @@ pub(crate) struct InstalledSessions {
 pub(crate) struct ClosedSessionRealization {
     pub(crate) root: crate::session_realizations::SessionRealizationRevocationSelection,
     pub(crate) run: Result<
-        Option<awaken_dispatch_execution::SelectedAttemptInterruption>,
+        Option<crate::host::SelectedAttemptInterruption>,
         crate::host::ForegroundRunPoisoned,
     >,
     #[cfg(test)]
@@ -331,7 +331,7 @@ impl ClosedSessionRealization {
 #[derive(Default)]
 pub(crate) struct SelectedRunInterruption {
     pub(crate) resident: Option<Arc<crate::host::SessionCtx>>,
-    pub(crate) local: Option<awaken_dispatch_execution::SelectedAttemptInterruption>,
+    pub(crate) local: Option<crate::host::SelectedAttemptInterruption>,
 }
 
 impl SessionRunBinding {
@@ -344,13 +344,12 @@ impl SessionRunBinding {
     ) -> Result<SelectedRunInterruption, crate::host::ForegroundRunPoisoned> {
         let local = match &self.context {
             Some(ctx) => Some(
-                awaken_dispatch_execution::LiveAttemptControl::new(ctx.runtime.clone())
-                    .select_interruption(
-                        ctx.foreground.observe()?,
-                        self.dispatch_claim
-                            .as_ref()
-                            .map(|claim| claim.run_id.clone()),
-                    ),
+                crate::host::LiveAttemptControl::new(ctx.runtime.clone()).select_interruption(
+                    ctx.foreground.observe()?,
+                    self.dispatch_claim
+                        .as_ref()
+                        .map(|claim| claim.run_id.clone()),
+                ),
             ),
             None => None,
         };
