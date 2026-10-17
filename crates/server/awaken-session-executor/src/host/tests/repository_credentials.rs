@@ -263,7 +263,7 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
                 crate::realization_error::Disposition::Terminal,
                 "D4"
             );
-            assert_eq!(error.code(), "internal", "D4");
+            assert_eq!(error.code(), "session_realization_invariant_violated", "D4");
             assert_eq!(
                 error.to_string(),
                 "repository credential requires a configured credential materializer",

@@ -114,3 +114,100 @@ async fn capacity_failures_keep_preparing_without_consuming_the_durable_budget()
         "D2/E2"
     );
 }
+
+#[tokio::test]
+async fn conflict_and_unclassified_internal_failures_retry_until_the_durable_budget_absorbs() {
+    // The driver path's bounded retry on the durable aggregate. Causes: C1 the
+    // failed effect's Run fault (state conflict / unclassified internal /
+    // classified internal), reported exactly as the realization driver reports
+    // it (`FailSessionRealization::for_effect`); C2 the persisted attempts
+    // against the realization retry budget (2). Effects: E1 keep Preparing
+    // with one attempt consumed; E2 ActivationFailed once the budget is spent,
+    // after which the next claim's begin is refused as Terminal (the claim
+    // absorbs the Run); E3 a classified internal fault absorbs at once.
+    // | Rule | C1 | C2 | effect |
+    // | B1 | conflict / unclassified internal | first failure | E1 |
+    // | B2 | conflict / unclassified internal | budget spent | E2 |
+    // | B3 | classified internal | first failure | E3 |
+    use awaken_session_types::RunError;
+    /// Row name, the failed effect's Run error, failures until it absorbs.
+    type Row = (&'static str, fn() -> RunError, usize);
+    let rows: [Row; 3] = [
+        ("conflict", || RunError::conflict("raced"), 2),
+        ("unclassified", || RunError::internal("unknown"), 2),
+        (
+            "classified",
+            || RunError::classified("session_realization_invariant_violated", "broken"),
+            1,
+        ),
+    ];
+    for (name, failure, failures_to_absorb) in rows {
+        let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+            sqlite_session_repository("session repository").await;
+        let session = format!("budget-{name}");
+        create(repo.as_ref(), persisted(&session, false, "preparing")).await;
+        let app = application_with_configuration(
+            repo.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+            SessionApplicationConfiguration {
+                realization_retry_budget: 2,
+                ..Default::default()
+            },
+        );
+        let id = SessionId::from(session.as_str());
+        let begin = |round: usize| {
+            app.begin_session_realization(
+                awaken_session_realization_contract::BeginSessionRealization {
+                    expected_resources: None,
+                    session_id: session.as_str().into(),
+                    target: awaken_session_realization_contract::SessionRealizationTarget {
+                        owner: "worker".into(),
+                        runtime_incarnation: format!("worker/{round}"),
+                        lease_expires_at_unix_ms: u64::MAX,
+                        reassign_existing_lease: false,
+                    },
+                },
+            )
+        };
+        for round in 1..=failures_to_absorb {
+            let lease = begin(round).await.expect("begin").authority.lease;
+            let report = awaken_session_realization_contract::FailSessionRealization::for_effect(
+                session.as_str().into(),
+                lease,
+                None,
+                None,
+                &failure(),
+            );
+            app.fail_session_realization(report)
+                .await
+                .expect("report the failure");
+            let after = repo.get(&id).await.unwrap();
+            if round < failures_to_absorb {
+                assert_eq!(
+                    after.execution,
+                    SessionExecutionState::Preparing,
+                    "{name} B1"
+                );
+                assert_eq!(
+                    after.realization_progress.attempts, round as u32,
+                    "{name} B1"
+                );
+            } else {
+                assert_eq!(
+                    after.execution,
+                    SessionExecutionState::ActivationFailed,
+                    "{name} B2/B3"
+                );
+            }
+        }
+        assert!(
+            matches!(
+                begin(failures_to_absorb + 1).await,
+                Err(
+                    awaken_session_realization_contract::SessionRealizationControlFailure::Terminal
+                )
+            ),
+            "{name}: the next claim's begin is terminal, so the claim absorbs the Run"
+        );
+    }
+}

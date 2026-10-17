@@ -54,22 +54,25 @@ pub fn is_environment_effect_code(code: &str) -> bool {
 
 /// The Worker effect class of one failed realization effect, by its typed
 /// fault and stable code, never its message: a capacity refusal is `NotReady`
-/// (the request-local deferral that keeps every retry budget), any other
-/// Unavailable fault is `Retryable`, everything else is `Terminal`. A capacity
-/// code on a non-Unavailable fault fails closed to `Terminal`.
+/// (the request-local deferral that keeps every retry budget); any other
+/// Unavailable fault, a state conflict and an internal fault no producer
+/// classified are `Retryable` within the caller's retry budget; a request
+/// fault and a classified internal fault are `Terminal`. A capacity code on a
+/// non-Unavailable fault is no capacity refusal: it keeps its fault's class.
 #[must_use]
 pub fn effect_failure_disposition(error: &RunError) -> SessionRealizationControlDisposition {
+    use awaken_session_types::RunErrorKind;
     match error.kind {
-        awaken_session_types::RunErrorKind::Unavailable
-            if error.code == ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE =>
-        {
+        RunErrorKind::Unavailable if error.code == ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE => {
             SessionRealizationControlDisposition::NotReady
         }
-        awaken_session_types::RunErrorKind::Unavailable => {
+        RunErrorKind::Unavailable | RunErrorKind::Conflict => {
             SessionRealizationControlDisposition::Retryable
         }
-        awaken_session_types::RunErrorKind::Internal
-        | awaken_session_types::RunErrorKind::BadRequest => {
+        RunErrorKind::Internal if error.is_unclassified_internal() => {
+            SessionRealizationControlDisposition::Retryable
+        }
+        RunErrorKind::Internal | RunErrorKind::BadRequest => {
             SessionRealizationControlDisposition::Terminal
         }
     }
@@ -228,13 +231,15 @@ mod tests {
 
     #[test]
     fn effect_failures_classify_by_fault_and_code_and_report_capacity() {
-        // Causes: C1 the effect's fault (Unavailable / Internal / BadRequest);
-        // C2 its code is the capacity code. Effects: E1 the Worker disposition;
-        // E2 the FailSessionRealization (retryable, capacity_unavailable).
+        // Causes: C1 the effect's fault (Unavailable / Conflict / Internal /
+        // BadRequest); C2 its code is the capacity code; C3 an Internal code is
+        // the unclassified one. Effects: E1 the Worker disposition; E2 the
+        // FailSessionRealization (retryable, capacity_unavailable).
         // | Rule | C1 | C2 | E1 | E2 |
         // | F1 | Unavailable | yes | NotReady | (true, true) |
         // | F2 | Unavailable | no | Retryable | (true, false) |
-        // | F3 | Internal/BadRequest | any | Terminal | (false, false) |
+        // | F4 | Conflict / unclassified Internal (C3) | no | Retryable | (true, false) |
+        // | F3 | classified Internal/BadRequest | any | Terminal | (false, false) |
         use awaken_provisioning_contract::SandboxError;
         let capacity =
             environment_effect_error(&SandboxError::capacity_unavailable("exceeded quota"));
@@ -254,6 +259,18 @@ mod tests {
             (
                 "F2",
                 RunError::unavailable("u"),
+                SessionRealizationControlDisposition::Retryable,
+                (true, false),
+            ),
+            (
+                "F4",
+                RunError::conflict("raced"),
+                SessionRealizationControlDisposition::Retryable,
+                (true, false),
+            ),
+            (
+                "F4",
+                RunError::internal("unknown"),
                 SessionRealizationControlDisposition::Retryable,
                 (true, false),
             ),
@@ -309,20 +326,26 @@ mod tests {
     fn effect_failure_disposition_is_exhaustive_over_fault_and_code() {
         // Exhaustive decision table over the classification's whole input
         // domain that matters: every RunErrorKind x {each stable environment
-        // code, a foreign code}. Oracle derived from the row, not the table:
-        // only Unavailable + capacity code defers; any other Unavailable
-        // retries; Internal/BadRequest are terminal whatever the code.
+        // code, the unclassified internal code, a foreign code}. Oracle derived
+        // from the row, not the table: only Unavailable + capacity code defers;
+        // any other Unavailable, any Conflict and an Internal fault carrying the
+        // unclassified code retry; BadRequest and a classified Internal fault
+        // are terminal whatever the code.
         use awaken_session_types::RunErrorKind;
+        use awaken_session_types::error::UNCLASSIFIED_INTERNAL_CODE;
         for kind in [
             RunErrorKind::Unavailable,
             RunErrorKind::Internal,
             RunErrorKind::BadRequest,
+            RunErrorKind::Conflict,
         ] {
             for code in [
                 ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE,
                 ENVIRONMENT_UNAVAILABLE_CODE,
                 ENVIRONMENT_REJECTED_CODE,
+                UNCLASSIFIED_INTERNAL_CODE,
                 "unavailable",
+                "conflict",
                 "",
             ] {
                 let error = RunError {
@@ -330,19 +353,82 @@ mod tests {
                     kind,
                     code: code.into(),
                 };
-                let expected = match (kind, code == ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE) {
-                    (RunErrorKind::Unavailable, true) => {
+                let capacity = code == ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE;
+                let unclassified = code == UNCLASSIFIED_INTERNAL_CODE;
+                let expected = match (kind, capacity, unclassified) {
+                    (RunErrorKind::Unavailable, true, _) => {
                         SessionRealizationControlDisposition::NotReady
                     }
-                    (RunErrorKind::Unavailable, false) => {
+                    (RunErrorKind::Unavailable | RunErrorKind::Conflict, _, _)
+                    | (RunErrorKind::Internal, _, true) => {
                         SessionRealizationControlDisposition::Retryable
                     }
-                    _ => SessionRealizationControlDisposition::Terminal,
+                    (RunErrorKind::Internal | RunErrorKind::BadRequest, _, _) => {
+                        SessionRealizationControlDisposition::Terminal
+                    }
                 };
                 assert_eq!(
                     effect_failure_disposition(&error),
                     expected,
                     "{kind:?} {code}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn conflict_and_unclassified_internal_retry_until_the_realization_budget_is_spent() {
+        // Decision table: C1 the failed effect's fault (state conflict /
+        // unclassified internal / classified internal / request fault);
+        // C2 the Session's counted attempts against the realization retry
+        // budget. Effect: the aggregate's outcome for the reported failure.
+        // | Rule | C1 | C2 | outcome |
+        // | E1 | conflict / unclassified internal | remaining | Retry, no refund |
+        // | E2 | conflict / unclassified internal | exhausted | Absorb |
+        // | E3 | classified internal / request fault | remaining | Absorb |
+        // The report is built from the error exactly as the driver builds it.
+        let budget = 3;
+        let lease = crate::SessionRealizationLease {
+            owner: "worker".into(),
+            runtime_incarnation: "worker/1".into(),
+            epoch: 1,
+            expires_at_unix_ms: 1,
+        };
+        let retry = Ok(RealizationFailureOutcome::Retry {
+            refund_attempt: false,
+        });
+        let absorb = Ok(RealizationFailureOutcome::Absorb);
+        let rows = [
+            ("E1", RunError::conflict("raced"), 2, retry),
+            ("E1", RunError::internal("unknown"), 0, retry),
+            ("E2", RunError::conflict("raced"), 3, absorb),
+            ("E2", RunError::internal("unknown"), 3, absorb),
+            (
+                "E3",
+                RunError::classified("session_realization_invariant_violated", "broken"),
+                0,
+                absorb,
+            ),
+            ("E3", RunError::bad_request("bad"), 0, absorb),
+        ];
+        for (rule, error, attempts, expected) in rows {
+            let report =
+                FailSessionRealization::for_effect("s".into(), lease.clone(), None, None, &error);
+            assert!(!report.capacity_unavailable, "{rule}");
+            for execution in [
+                SessionExecutionState::Preparing,
+                SessionExecutionState::Running,
+            ] {
+                assert_eq!(
+                    realization_failure_outcome(
+                        report.retryable,
+                        report.capacity_unavailable,
+                        execution,
+                        attempts,
+                        budget,
+                    ),
+                    expected,
+                    "{rule} {execution:?}"
                 );
             }
         }

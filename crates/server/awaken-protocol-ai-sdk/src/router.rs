@@ -618,6 +618,7 @@ fn query_error(error: RunApplicationError) -> Response {
         RunErrorKind::BadRequest => StatusCode::BAD_REQUEST,
         RunErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         RunErrorKind::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+        RunErrorKind::Conflict => StatusCode::CONFLICT,
     };
     (status, error.message).into_response()
 }
