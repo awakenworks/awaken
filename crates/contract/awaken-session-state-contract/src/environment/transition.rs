@@ -16,7 +16,7 @@
 //! step demands. Every rule below is derived from an existing production path
 //! and names it.
 
-use super::{SessionEnvironmentState, SuspendPhase};
+use super::{SessionEnvironmentPhase, SessionEnvironmentState, SuspendPhase};
 
 /// The durable lifecycle step of a Session Environment: its phase, refined by
 /// the suspend sub-phase. This is the state the transition function reasons
@@ -31,6 +31,19 @@ pub enum SessionEnvironmentStep {
 }
 
 impl SessionEnvironmentStep {
+    /// The durable phase this step refines: the one source of the phase a
+    /// global count selects.
+    #[must_use]
+    pub const fn phase(self) -> SessionEnvironmentPhase {
+        match self {
+            Self::Unmaterialized => SessionEnvironmentPhase::Unmaterialized,
+            Self::Resident => SessionEnvironmentPhase::Resident,
+            Self::Suspending(_) => SessionEnvironmentPhase::Suspending,
+            Self::Hibernated => SessionEnvironmentPhase::Hibernated,
+            Self::Restoring => SessionEnvironmentPhase::Restoring,
+        }
+    }
+
     /// Whether realization effects (lease assignment, staging, MCP publication)
     /// may run. A continuation has closed process admission until restore
     /// commits Resident again.

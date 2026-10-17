@@ -854,3 +854,23 @@ fn t9_frozen_topology_and_memory_evidence_guard_the_continuation() {
         }
     }
 }
+
+#[test]
+fn t10_the_count_phase_is_the_steps_projection() {
+    // G2 every step projects onto exactly the durable phase whose
+    // SessionEnvironmentState variant it refines; the four suspend sub-phases
+    // share Suspending.
+    use super::super::SessionEnvironmentPhase as P;
+    for (step, phase) in [
+        (U, P::Unmaterialized),
+        (R, P::Resident),
+        (SQ, P::Suspending),
+        (SU, P::Suspending),
+        (SR, P::Suspending),
+        (SD, P::Suspending),
+        (H, P::Hibernated),
+        (RS, P::Restoring),
+    ] {
+        assert_eq!(step.phase(), phase, "G2 {step:?}");
+    }
+}

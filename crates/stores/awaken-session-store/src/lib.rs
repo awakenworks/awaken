@@ -31,9 +31,9 @@ use futures_util::TryStreamExt;
 use {
     awaken_session_state_contract::{
         IdempotencyRecord, ManagedLifecycleFact, PersistedSession, ScopedPersistedSession,
-        SessionCreateResult, SessionEnvironmentPhase, SessionEnvironmentState,
-        SessionIdempotencyReceipt, SessionMutation, SessionMutationPayload, SessionMutationResult,
-        SessionRepositoryConflict, SessionRepositoryError, SessionScan, SessionWorkerObligation,
+        SessionCreateResult, SessionEnvironmentPhase, SessionIdempotencyReceipt, SessionMutation,
+        SessionMutationPayload, SessionMutationResult, SessionRepositoryConflict,
+        SessionRepositoryError, SessionScan, SessionWorkerObligation,
     },
     awaken_session_types::SessionRecoveryQuarantine,
 };
@@ -197,25 +197,7 @@ async fn count_environment_phase(
                     "managed Session aggregate id does not match its global phase-count index",
                 ));
             }
-            let selected = matches!(
-                (phase, &session.environment),
-                (
-                    SessionEnvironmentPhase::Unmaterialized,
-                    SessionEnvironmentState::Unmaterialized
-                ) | (
-                    SessionEnvironmentPhase::Resident,
-                    SessionEnvironmentState::Resident { .. }
-                ) | (
-                    SessionEnvironmentPhase::Suspending,
-                    SessionEnvironmentState::Suspending { .. }
-                ) | (
-                    SessionEnvironmentPhase::Hibernated,
-                    SessionEnvironmentState::Hibernated { .. }
-                ) | (
-                    SessionEnvironmentPhase::Restoring,
-                    SessionEnvironmentState::Restoring { .. }
-                )
-            );
+            let selected = session.environment.step().phase() == phase;
             count
                 .checked_add(u64::from(selected))
                 .ok_or_else(|| corrupt("Session Environment phase count overflow"))

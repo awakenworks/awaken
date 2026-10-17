@@ -81,8 +81,9 @@ pub struct SandboxCheckpointRequest {
 }
 
 /// Typed selector for a global count over the canonical Session environment
-/// state. This is a read projection only; [`SessionEnvironmentState`] remains
-/// the sole durable lifecycle authority.
+/// state: the phase of [`SessionEnvironmentState::step`] (see
+/// [`SessionEnvironmentStep::phase`]). A read projection only;
+/// [`SessionEnvironmentState`] remains the sole durable lifecycle authority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionEnvironmentPhase {
     Unmaterialized,
