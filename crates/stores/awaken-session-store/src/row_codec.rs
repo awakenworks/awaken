@@ -182,24 +182,19 @@ fn decode_aggregate(data: &str) -> Result<PersistedSession, serde_json::Error> {
     // typed environment phase. If the typed field exists it is authoritative;
     // carrying both shapes is corruption rather than a merge rule.
     if !object.contains_key("environment") {
-        let environment = match object.remove("environment_binding") {
-            Some(serde_json::Value::String(binding)) => {
-                awaken_session_state_contract::SessionEnvironmentState::Resident {
-                    binding,
-                    effect_id: None,
-                    generation: None,
-                    idle_since_unix_ms: None,
-                }
-            }
-            Some(serde_json::Value::Null) | None => {
-                awaken_session_state_contract::SessionEnvironmentState::Unmaterialized
-            }
+        let legacy_binding = match object.remove("environment_binding") {
+            Some(serde_json::Value::String(binding)) => Some(binding),
+            Some(serde_json::Value::Null) | None => None,
             Some(_) => {
                 return Err(invalid(
                     "legacy Session environment binding is not a string",
                 ));
             }
         };
+        let environment =
+            awaken_session_state_contract::SessionEnvironmentState::from_legacy_binding(
+                legacy_binding,
+            );
         object.insert(
             "environment".into(),
             serde_json::to_value(environment).expect("Session environment state serializes"),

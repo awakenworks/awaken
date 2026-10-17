@@ -474,10 +474,10 @@ const fn materialized(
     enter(SessionEnvironmentStep::Resident)
 }
 
-/// projection_synchronizer `merge_legacy_claimed_environment_binding`: only an
-/// Unmaterialized projection accepts the historical claim-first binding. The
-/// merge itself never consults terminality; a terminal Session refuses it here
-/// because a claim is not an in-flight receipt the cleanup join must admit.
+/// `SessionEnvironmentState::deliver_legacy_binding`, the realization's
+/// claim-first repair: only an Unmaterialized projection accepts the
+/// historical binding. A terminal Session refuses it because a claim is not an
+/// in-flight receipt the cleanup join must admit.
 const fn legacy_binding_delivered(facts: SessionEnvironmentFacts) -> Outcome {
     if !is_active(facts) {
         return Err(SessionEnvironmentRejection::Terminal);
@@ -813,6 +813,39 @@ impl SessionEnvironmentFacts {
             _ => None,
         };
         Self::project(session, now_unix_ms, asserted)
+    }
+
+    /// Project the facts of a realization directive's frozen Environment
+    /// state, for the one event a directive's projection receives
+    /// (`LegacyBindingDelivered`). Session-application issues a directive only
+    /// under `BeginRealization`'s admission, which refuses a terminal Session,
+    /// and the directive carries the lease it was issued under: the projection
+    /// stands Active and Fenced. It is a copy, not the live aggregate, so it
+    /// asserts no execution, activity, time or placement fact and admits no
+    /// continuation.
+    pub(crate) fn project_realization_directive(environment: &SessionEnvironmentState) -> Self {
+        let resident_generated = matches!(
+            environment,
+            SessionEnvironmentState::Resident {
+                effect_id: Some(_),
+                generation: Some(_),
+                ..
+            }
+        );
+        Self {
+            step: environment.step(),
+            terminality: SessionTerminality::Active,
+            execution_idle: false,
+            activities_open: false,
+            lease: RealizationLeaseStanding::Fenced,
+            resident_generated,
+            suspend_due: false,
+            suspend_evidence_consistent: environment.suspend_evidence_is_consistent(),
+            generation_live: false,
+            checkpoint_live: false,
+            continuation_topology_supported: false,
+            suspend_memory_admitted: false,
+        }
     }
 }
 
