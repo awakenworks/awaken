@@ -144,6 +144,12 @@ fi
 run_required_rust_tests -p awaken-session-executor --lib acp_backend::tests -- --include-ignored
 run_required_rust_tests -p awaken-execution-composition --lib local:: -- --include-ignored
 cargo test -p awaken-sandbox-fs --lib
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    run_required_rust_tests -p awaken-sandbox-fs --test windows_long_paths \
+      --require-case=windows_long_sibling_publication_keeps_exact_identity_and_noreplace
+    ;;
+esac
 cargo test -p awaken-sandbox-memoryd --lib
 cargo test -p awaken-sandbox-memoryd --test copy_lifecycle
 cargo test -p awaken-sandbox-memoryd --test writeback_faults
