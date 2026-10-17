@@ -69,10 +69,7 @@ mod tests {
                     );
                     r.environment.owner = Self::candidate(environment.clone());
                     Arc::new(SessionExecutionAuthority::for_test(
-                        &ExecutionAuthority {
-                            sessions: slots.realizations(),
-                            worker: Some(worker.clone()),
-                        },
+                        &ExecutionAuthority::new(slots.realizations(), Some(worker.clone())),
                         "session",
                         r,
                         asserted,
@@ -353,12 +350,9 @@ mod tests {
             .unwrap();
         let worker: Arc<dyn CurrentExecutionAuthority> = f.worker.clone();
         let sessions = f.slots.realizations();
-        let provider = ExecutionAuthority {
-            sessions,
-            worker: Some(worker),
-        }
-        .provider_effect_authority("session", &initial)
-        .unwrap();
+        let provider = ExecutionAuthority::new(sessions, Some(worker))
+            .provider_effect_authority("session", &initial)
+            .unwrap();
         assert!(f.authority.current_effect_fence(&initial).is_err());
         let mut calls = 0;
         let failure = provider.with_current_effect(&initial, &mut |current, remaining| {
@@ -423,10 +417,7 @@ mod tests {
                 .asserted_for_test()
                 .sandbox_effect_fence("create")
                 .unwrap();
-            let execution = ExecutionAuthority {
-                sessions: f.slots.realizations(),
-                worker: Some(f.worker.clone()),
-            };
+            let execution = ExecutionAuthority::new(f.slots.realizations(), Some(f.worker.clone()));
             let provider = execution
                 .provider_effect_authority("session", &initial)
                 .expect("E1 healthy exact capture");

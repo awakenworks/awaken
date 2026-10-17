@@ -179,7 +179,8 @@ mod tests {
             .await
             .expect("C1 complete eager projection remains eager");
         assert!(
-            host.realizer
+            host.realization_executor
+                .environments()
                 .session_environment("cold-legacy")
                 .await
                 .expect("installed Sessions")
@@ -217,7 +218,8 @@ mod tests {
             .await
             .expect("C2 cold Brain resolution stays deferred");
         assert!(
-            host.realizer
+            host.realization_executor
+                .environments()
                 .session_environment("cold-deferred")
                 .await
                 .expect("installed Sessions")
@@ -936,8 +938,8 @@ mod tests {
             .await
             .expect("M1 lease-only renewal reuses resident projection");
         assert!(
-            host.realizer
-                .staging
+            host.realization_executor
+                .staging()
                 .thread_resource_manifest(thread)
                 .expect("installed Sessions")
                 .is_none(),
@@ -1490,7 +1492,8 @@ mod tests {
         let original_materialization = settled.environment_materialization.clone();
         assert!(
             source_host
-                .realizer
+                .realization_executor
+                .environments()
                 .retire_session_environment_for_revocation(
                     thread,
                     (&source_host.mcp, source_host.installed_sessions.as_ref()),
@@ -1538,11 +1541,9 @@ mod tests {
         };
         let control = RecoveryControl::fixed(frozen);
         let delegate = host
-            .realizer
-            .environment_binding_sink
-            .read()
-            .unwrap()
-            .clone()
+            .realization_executor
+            .environments()
+            .environment_binding_sink()
             .expect("C4 already-configured actual Root authority");
         managed.install_test_environment_binding_sink(Arc::new(
             RecoveryEnvironmentBindingSink::rooted(&control, roots.clone(), delegate),
@@ -1725,7 +1726,8 @@ mod tests {
         // Publication deliberately evicts the rebuildable SessionCtx before the
         // final claimed resolve. A heartbeat may enter this exact gap; the
         // retained Environment remains the publication-authorized effect owner.
-        host.realizer
+        host.realization_executor
+            .environments()
             .evict_session_for_rebuild(thread)
             .await
             .expect("installed Sessions");
@@ -1777,7 +1779,8 @@ mod tests {
                     .await
                     .expect("R9 warm Runtime");
             } else {
-                host.realizer
+                host.realization_executor
+                    .environments()
                     .evict_session_for_rebuild(thread)
                     .await
                     .expect("installed Sessions");
@@ -1790,7 +1793,8 @@ mod tests {
                 "R9 fixture independently establishes each Runtime state"
             );
             let retained = host
-                .realizer
+                .realization_executor
+                .environments()
                 .session_environment(thread)
                 .await
                 .expect("installed Sessions")
@@ -1826,7 +1830,8 @@ mod tests {
                 Arc::ptr_eq(
                     &retained,
                     &host
-                        .realizer
+                        .realization_executor
+                        .environments()
                         .session_environment(thread)
                         .await
                         .expect("installed Sessions")
@@ -1866,7 +1871,8 @@ mod tests {
             assert!(Arc::ptr_eq(
                 &retained,
                 &host
-                    .realizer
+                    .realization_executor
+                    .environments()
                     .session_environment(thread)
                     .await
                     .expect("installed Sessions")
@@ -1897,7 +1903,8 @@ mod tests {
             .await.map_err(awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error)
             .expect("R10 rebuild through the production synchronizer");
             let replacement = host
-                .realizer
+                .realization_executor
+                .environments()
                 .session_environment(thread)
                 .await
                 .expect("installed Sessions")
@@ -1927,7 +1934,8 @@ mod tests {
                 Arc::ptr_eq(
                     &replacement,
                     &host
-                        .realizer
+                        .realization_executor
+                        .environments()
                         .session_environment(thread)
                         .await
                         .expect("installed Sessions")
@@ -2058,7 +2066,8 @@ mod tests {
         );
         assert!(
             unpinned_host
-                .realizer
+                .realization_executor
+                .environments()
                 .session_environment(first_use_thread)
                 .await
                 .expect("installed Sessions")
@@ -2213,7 +2222,8 @@ mod tests {
         );
         assert!(
             continuity_host
-                .realizer
+                .realization_executor
+                .environments()
                 .session_environment(continuity_thread)
                 .await
                 .expect("installed Sessions")

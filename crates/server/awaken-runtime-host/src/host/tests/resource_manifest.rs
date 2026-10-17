@@ -47,7 +47,7 @@ async fn told_equals_mounted_the_prompt_path_and_access_match_the_realized_mount
         prompts.iter().any(|p| p.contains("read-only")),
         "a read-only binding is described read-only: {prompts:?}"
     );
-    let mount = &host.realizer.sandbox_spec("t-g1").mounts[0];
+    let mount = &host.realization_executor.sandbox_spec("t-g1").mounts[0];
     assert_eq!(mount.mount_path, realized);
     assert_eq!(mount.access, MountAccess::ReadOnly);
 }
@@ -219,7 +219,7 @@ async fn managed_multi_memory_mounts_are_backend_neutral_pairwise() {
             .await
             .unwrap_or_else(|error| panic!("{} compiles the exact transition: {error}", case.rule));
 
-        let spec = host.realizer.sandbox_spec(&thread);
+        let spec = host.realization_executor.sandbox_spec(&thread);
         assert_eq!(spec.mounts.len(), count, "{} E1", case.rule);
         for (index, mount) in spec.mounts.iter().enumerate() {
             let managed_path = format!("/mnt/memory/{}-{index}", case.rule.to_lowercase());
@@ -462,7 +462,7 @@ async fn runtime_stages_exactly_the_effective_resource_list() {
         .unwrap();
 
     // Exactly one memory mount at that path, and it is the wire store S2.
-    let spec = host.realizer.sandbox_spec("t-g3");
+    let spec = host.realization_executor.sandbox_spec("t-g3");
     let at_path: Vec<_> = spec
         .mounts
         .iter()
@@ -481,7 +481,7 @@ async fn runtime_stages_exactly_the_effective_resource_list() {
     );
 
     assert_eq!(
-        memory_mount_store_id(&host.realizer.sandbox_spec("t-g3").mounts[0]),
+        memory_mount_store_id(&host.realization_executor.sandbox_spec("t-g3").mounts[0]),
         s2
     );
 }
@@ -599,7 +599,12 @@ async fn activation_validates_the_frozen_config_without_selecting_current_again(
         .await
         .expect_err("an absent frozen config must fail closed");
     assert!(error.message.contains("config version"));
-    assert!(host.realizer.sandbox_spec("missing-v3").mounts.is_empty());
+    assert!(
+        host.realization_executor
+            .sandbox_spec("missing-v3")
+            .mounts
+            .is_empty()
+    );
 
     catalog
         .change_memory_store_state(ChangeMemoryStoreState {
@@ -732,7 +737,8 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
     .await
     .expect("materialize Skill");
     let environment = host
-        .realizer
+        .realization_executor
+        .environments()
         .session_environment("skill-revoke")
         .await
         .expect("installed Sessions")
@@ -747,8 +753,8 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
         "pinned Skill tree is readable through the Environment"
     );
     let before_manifest = host
-        .realizer
-        .staging
+        .realization_executor
+        .staging()
         .thread_resource_manifest("skill-revoke")
         .expect("installed Sessions")
         .expect("installed manifest");
@@ -809,12 +815,21 @@ async fn an_effective_resource_mounts_on_a_worker_without_the_binding_repository
         .await
         .unwrap();
     assert_eq!(
-        memory_mount_store_id(&db_less.realizer.sandbox_spec("t-g5-worker").mounts[0]),
+        memory_mount_store_id(
+            &db_less
+                .realization_executor
+                .sandbox_spec("t-g5-worker")
+                .mounts[0]
+        ),
         store_id,
         "the effective input is sufficient for a DB-less worker"
     );
     assert_eq!(
-        db_less.realizer.sandbox_spec("t-g5-worker").mounts[0].access,
+        db_less
+            .realization_executor
+            .sandbox_spec("t-g5-worker")
+            .mounts[0]
+            .access,
         awaken_provisioning_contract::MountAccess::ReadOnly,
         "the carried access is sufficient; no Host-side write-back registry exists"
     );

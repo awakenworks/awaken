@@ -50,7 +50,7 @@ pub fn test_expired_observed_lease(
 /// Host's fence_source_tests exercise its real warmup/admission/recheck order;
 /// this adds no poll layer, state, provider or execution grant.
 pub fn create_session_environment<'a>(
-    environments: &'a crate::environment_holding::EnvironmentHolding,
+    executor: &'a crate::realization_executor::RealizationExecutor,
     provider: &'a crate::session_environment::SessionEnvironmentProvider,
     spec: &'a awaken_provisioning_contract::SandboxSpec,
     effect_fence: Option<&'a awaken_provisioning_contract::SandboxEffectFence>,
@@ -61,14 +61,17 @@ pub fn create_session_environment<'a>(
     Output = Result<crate::session_environment::SessionEnvironment, RealizationError>,
 > + Send
 + 'a {
-    environments.create_session_environment_with_provider_effect(
-        provider,
-        spec,
-        effect_fence,
-        authority,
-        source_handle,
-        intent,
-    )
+    executor
+        .environments()
+        .create_session_environment_with_provider_effect(
+            executor.peers(),
+            provider,
+            spec,
+            effect_fence,
+            authority,
+            source_handle,
+            intent,
+        )
 }
 
 /// Fixture composition samples the canonical wall-clock port. Production

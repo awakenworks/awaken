@@ -581,8 +581,8 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
                                 .unwrap_or(false))
                         } else {
                             Ok(host
-                                .realizer
-                                .sessions
+                                .realization_executor
+                                .sessions()
                                 .modify_session(id, |slot| slot.run.has_active_run())?
                                 .unwrap_or(false))
                         }

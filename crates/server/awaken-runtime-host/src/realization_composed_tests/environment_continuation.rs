@@ -69,7 +69,9 @@ mod tests {
                 Some(lease.clone()),
                 None,
             );
-            let fence = host.realizer.continuation_effect_fence(rule, &operation);
+            let fence = host
+                .realization_executor
+                .continuation_effect_fence(rule, &operation);
             assert_eq!(fence.is_ok(), admitted, "{rule}");
             if let Ok(fence) = fence {
                 assert_eq!(
@@ -141,7 +143,7 @@ mod tests {
             .unwrap();
         let persisted = preparation.sandbox_effect_fence().unwrap();
         assert_eq!(
-            host.realizer
+            host.realization_executor
                 .continuation_preparation_effect_fence(thread, &preparation)
                 .unwrap(),
             persisted,
@@ -151,14 +153,14 @@ mod tests {
         renewed.expires_at_unix_ms += 30_000;
         install(renewed.clone());
         assert_eq!(
-            host.realizer
+            host.realization_executor
                 .continuation_effect_fence(thread, &operation)
                 .unwrap(),
             renewed.sandbox_effect_fence(&operation.effect_id).unwrap(),
             "P2 ordinary operation observes same-generation renewal"
         );
         assert_eq!(
-            host.realizer
+            host.realization_executor
                 .continuation_preparation_effect_fence(thread, &preparation)
                 .unwrap(),
             persisted,
@@ -166,13 +168,13 @@ mod tests {
         );
         clock.set(lease.expires_at_unix_ms);
         assert!(
-            host.realizer
+            host.realization_executor
                 .continuation_preparation_effect_fence(thread, &preparation)
                 .is_err(),
             "P3 preparation must use the Host's injected clock"
         );
         assert!(
-            host.realizer
+            host.realization_executor
                 .continuation_effect_fence(thread, &operation)
                 .is_ok(),
             "P3 local renewed authority remains live independently"

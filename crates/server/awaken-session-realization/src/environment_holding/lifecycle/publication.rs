@@ -20,7 +20,8 @@ use crate::realization_error::{AuthorityLoss, PendingState, RealizationError, Re
 use std::sync::Arc;
 
 use crate::environment_owner::{
-    BoundSessionEnvironmentIdentity, LegacyDirectEnvironmentProvenance, UnboundSessionEnvironment,
+    BoundSessionEnvironmentIdentity, EnvironmentBindingPersistenceError,
+    LegacyDirectEnvironmentProvenance, UnboundSessionEnvironment,
 };
 use crate::session_environment::{AuthorizedSessionEnvironmentEffect, SessionEnvironmentProvider};
 use awaken_session_state_contract::{
@@ -28,31 +29,16 @@ use awaken_session_state_contract::{
     SessionEnvironmentEffectKind,
 };
 
-pub struct EnvironmentBindingPersistenceError {
-    pub error: RealizationError,
-    /// Store-read proof that the root binding committed before a later
-    /// derivative dispatch-cache edge failed. The lifecycle owner consumes
-    /// this only to retain the same hidden Candidate under durable identity.
-    pub committed_identity: Option<crate::environment_owner::BoundSessionEnvironmentIdentity>,
-}
-
-impl From<RealizationError> for EnvironmentBindingPersistenceError {
-    fn from(error: RealizationError) -> Self {
-        Self {
-            error,
-            committed_identity: None,
-        }
-    }
-}
-
 impl crate::environment_holding::EnvironmentHolding {
     pub fn begin_session_environment_adoption(
         &self,
+        peers: crate::peers::Peers<'_>,
         thread: &str,
         environment: Arc<crate::session_environment::SessionEnvironment>,
         intent: Option<&awaken_session_state_contract::SessionEnvironmentEffectIntent>,
     ) -> Result<UnboundSessionEnvironment, RealizationError> {
         self.begin_session_environment_candidate(
+            peers,
             thread,
             environment,
             awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt,
@@ -62,6 +48,7 @@ impl crate::environment_holding::EnvironmentHolding {
 
     fn begin_session_environment_candidate(
         &self,
+        peers: crate::peers::Peers<'_>,
         thread: &str,
         environment: Arc<crate::session_environment::SessionEnvironment>,
         kind: awaken_session_state_contract::SessionEnvironmentEffectKind,
@@ -79,7 +66,8 @@ impl crate::environment_holding::EnvironmentHolding {
                     .owner
                     .begin_preparing(environment, kind, intent)?;
             #[cfg(target_os = "linux")]
-            self.execution
+            peers
+                .authority
                 .bind(thread, slot.realization, &candidate.environment)?;
             Ok(candidate)
         })?
@@ -87,11 +75,13 @@ impl crate::environment_holding::EnvironmentHolding {
 
     pub fn begin_session_environment_preparation(
         &self,
+        peers: crate::peers::Peers<'_>,
         thread: &str,
         environment: Arc<crate::session_environment::SessionEnvironment>,
         intent: Option<&awaken_session_state_contract::SessionEnvironmentEffectIntent>,
     ) -> Result<UnboundSessionEnvironment, RealizationError> {
         self.begin_session_environment_candidate(
+            peers,
             thread,
             environment,
             intent.map_or(
@@ -170,6 +160,7 @@ impl crate::environment_holding::EnvironmentHolding {
     }
     pub async fn authorize_environment_effect_before_io(
         &self,
+        peers: crate::peers::Peers<'_>,
         thread: &str,
         intent: &SessionEnvironmentEffectIntent,
     ) -> Result<AuthorizedSessionEnvironmentEffect, RealizationError> {
@@ -262,7 +253,8 @@ impl crate::environment_holding::EnvironmentHolding {
         let provider_authority = provider_fence
             .as_ref()
             .map(|fence| {
-                self.execution
+                peers
+                    .authority
                     .provider_effect_authority(thread, fence)
                     .map(|source| {
                         Arc::new(source)
@@ -279,6 +271,7 @@ impl crate::environment_holding::EnvironmentHolding {
 
     pub async fn persist_authorized_environment_before_publish(
         &self,
+        peers: crate::peers::Peers<'_>,
         thread: &str,
         candidate: &UnboundSessionEnvironment,
         effect: &AuthorizedSessionEnvironmentEffect,
@@ -297,18 +290,24 @@ impl crate::environment_holding::EnvironmentHolding {
         {
             return Ok(identity.clone());
         }
-        self.persist_authorized_environment_binding(thread, candidate.binding.clone(), effect)
-            .await
+        self.persist_authorized_environment_binding(
+            peers,
+            thread,
+            candidate.binding.clone(),
+            effect,
+        )
+        .await
     }
 
     pub async fn persist_authorized_environment_binding(
         &self,
+        peers: crate::peers::Peers<'_>,
         thread: &str,
         binding: String,
         effect: &AuthorizedSessionEnvironmentEffect,
     ) -> Result<BoundSessionEnvironmentIdentity, EnvironmentBindingPersistenceError> {
-        let receipt = self
-            .execution
+        let receipt = peers
+            .authority
             .current_environment_receipt(binding.clone(), effect)?;
         // A Resource reservation extends the already-published Environment
         // handle under the Session root. It is not a Run placement and must not

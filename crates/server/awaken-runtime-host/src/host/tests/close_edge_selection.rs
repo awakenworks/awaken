@@ -152,9 +152,8 @@ async fn rebuilt_successor_is_not_interrupted(original_run_active: bool) {
         None
     };
     assert!(
-        host.realizer
-            .environments
-            .sessions
+        host.realization_executor
+            .sessions()
             .remove_session(thread)
             .expect("installed sessions readable")
     );

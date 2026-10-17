@@ -202,7 +202,7 @@ pub struct SharedHost {
     /// adapters the attempt executors share.
     pub(crate) exec: capability::AttemptBackends,
     /// The Session realizer and the sandbox providers it realizes through.
-    pub(crate) realizer: crate::realization_executor::RealizationExecutor,
+    pub(crate) realization_executor: crate::realization_executor::RealizationExecutor,
     /// Tool, Skill, plugin, and gate offering installed on every thread.
     pub(crate) tools: capability::ToolOffering,
     /// Resources-context ports: Memory, Files, Artifacts.
@@ -226,6 +226,10 @@ impl SharedHost {
         crate::artifact_harvest::HarvestedArtifacts,
         awaken_resource_contract::ArtifactPublicationError,
     > {
-        self.realizer.cleanup.artifacts.harvest(thread).await
+        self.realization_executor
+            .effects()
+            .artifacts()
+            .harvest(thread)
+            .await
     }
 }

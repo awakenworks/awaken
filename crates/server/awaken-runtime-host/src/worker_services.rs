@@ -76,7 +76,7 @@ impl SharedHost {
     pub fn worker_artifact_publisher(
         &self,
     ) -> Arc<dyn awaken_resource_contract::ArtifactPublisher<crate::ResourceOperationFence>> {
-        self.realizer.cleanup.artifacts.publisher()
+        self.realization_executor.effects().artifacts().publisher()
     }
 }
 

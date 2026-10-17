@@ -87,7 +87,8 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         .await
         .expect("first Run");
     let environment_before = host
-        .realizer
+        .realization_executor
+        .environments()
         .session_environment("t-attach")
         .await
         .expect("installed Sessions")
@@ -99,7 +100,11 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
             .unwrap_or(false),
         "the first Run caches the Thread's sandbox ctx"
     );
-    let before = host.realizer.sandbox_spec("t-attach").mounts.len();
+    let before = host
+        .realization_executor
+        .sandbox_spec("t-attach")
+        .mounts
+        .len();
 
     // Model the exact post-settlement residue observed by an idle durable
     // Session. No Dispatch store is installed, so any attempt to reinterpret
@@ -171,7 +176,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         "the live environment receives the file before attach returns"
     );
     // ... and the spec the next Run will build now carries the mount + its bytes.
-    let spec = host.realizer.sandbox_spec("t-attach");
+    let spec = host.realization_executor.sandbox_spec("t-attach");
     assert_eq!(spec.mounts.len(), before + 1, "one more mount staged");
     let dump = serde_json::to_string(&spec.mounts).expect("mounts serialize");
     assert!(
@@ -196,7 +201,8 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         .await
         .expect("runtime rebuild over retained environment");
     let environment_after = host
-        .realizer
+        .realization_executor
+        .environments()
         .session_environment("t-attach")
         .await
         .expect("installed Sessions")
@@ -211,7 +217,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         )
         .await
         .expect("detach");
-    let spec = host.realizer.sandbox_spec("t-attach");
+    let spec = host.realization_executor.sandbox_spec("t-attach");
     assert_eq!(spec.mounts.len(), before, "the mount is dropped on detach");
     assert!(
         !serde_json::to_string(&spec.mounts)
@@ -303,19 +309,22 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
     .await
     .unwrap();
     let environment = host
-        .realizer
+        .realization_executor
+        .environments()
         .session_environment("invalid-live-repository")
         .await
         .expect("installed Sessions")
         .expect("resident environment");
     let before_handle = environment.lifecycle().handle();
     let before_manifest = host
-        .realizer
-        .staging
+        .realization_executor
+        .staging()
         .thread_resource_manifest("invalid-live-repository")
         .expect("installed Sessions")
         .expect("installed manifest");
-    let before_spec = host.realizer.sandbox_spec("invalid-live-repository");
+    let before_spec = host
+        .realization_executor
+        .sandbox_spec("invalid-live-repository");
     let before_files = environment
         .harvest()
         .list_frozen_mount_files("/mnt/session/uploads")
@@ -353,15 +362,16 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
     assert!(error.message.contains("/repo"), "L1/L2: {error:?}");
     assert_eq!(verifier.calls.load(Ordering::SeqCst), 0, "L1/L2 verifier");
     assert_eq!(
-        host.realizer
-            .staging
+        host.realization_executor
+            .staging()
             .thread_resource_manifest("invalid-live-repository")
             .expect("installed Sessions"),
         Some(before_manifest),
         "L1/L2 manifest"
     );
     assert_eq!(
-        host.realizer.sandbox_spec("invalid-live-repository"),
+        host.realization_executor
+            .sandbox_spec("invalid-live-repository"),
         before_spec,
         "L1/L2 mounts"
     );
@@ -387,8 +397,8 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
         "L1/L2 cached Runtime"
     );
     assert!(
-        host.realizer
-            .staging
+        host.realization_executor
+            .staging()
             .thread_repository_activations("invalid-live-repository")
             .is_empty(),
         "L1/L2 Git activation"
@@ -500,7 +510,8 @@ async fn applying_repository_detach_removes_the_resident_namespace_checkout() {
             error.message
         );
         assert!(
-            host.realizer
+            host.realization_executor
+                .environments()
                 .session_environment("t-repo-detach")
                 .await
                 .expect("installed Sessions")
@@ -511,14 +522,15 @@ async fn applying_repository_detach_removes_the_resident_namespace_checkout() {
     }
     realization.expect("RD1 path-fidelitous Namespace realizes the Repository");
     let environment = host
-        .realizer
+        .realization_executor
+        .environments()
         .session_environment("t-repo-detach")
         .await
         .expect("installed Sessions")
         .expect("resident environment");
     let before_manifest = host
-        .realizer
-        .staging
+        .realization_executor
+        .staging()
         .thread_resource_manifest("t-repo-detach")
         .expect("installed Sessions")
         .expect("installed manifest");
@@ -582,7 +594,8 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
     .await
     .expect("first Run");
     let environment = host
-        .realizer
+        .realization_executor
+        .environments()
         .session_environment("t-local-attach")
         .await
         .expect("installed Sessions")
@@ -600,8 +613,8 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
         .expect("create File")
         .id;
     let before_manifest = host
-        .realizer
-        .staging
+        .realization_executor
+        .staging()
         .thread_resource_manifest("t-local-attach")
         .expect("installed Sessions")
         .unwrap_or_else(|| {
@@ -611,7 +624,7 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
                 crate::session_resource::ResolvedSessionResources::default(),
             )
         });
-    let before = host.realizer.sandbox_spec("t-local-attach");
+    let before = host.realization_executor.sandbox_spec("t-local-attach");
     let attached = effective_resources(vec![TestInput {
         kind: "file".into(),
         id: file_id,
@@ -636,7 +649,10 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
         .await
         .expect_err("Workdir cannot admit an official read-only File copy");
     assert!(error.message.contains("does not enforce read-only"));
-    assert_eq!(host.realizer.sandbox_spec("t-local-attach"), before);
+    assert_eq!(
+        host.realization_executor.sandbox_spec("t-local-attach"),
+        before
+    );
     assert!(
         environment
             .sandbox_environment()
@@ -749,7 +765,8 @@ async fn committed_queries_do_not_provision_a_failed_session_environment() {
         "Q1: {reservation_error}"
     );
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("t-query-after-provisioning-denial")
             .await
             .expect("installed Sessions")
@@ -779,7 +796,8 @@ async fn committed_queries_do_not_provision_a_failed_session_environment() {
         "Q2: {error}"
     );
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("t-query-after-provisioning-denial")
             .await
             .expect("installed Sessions")
@@ -800,7 +818,8 @@ async fn committed_queries_do_not_provision_a_failed_session_environment() {
     .expect("read empty committed lifecycle page");
     assert!(page.events.is_empty(), "Q3 inference never committed a Run");
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("t-query-after-provisioning-denial")
             .await
             .expect("installed Sessions")
@@ -876,7 +895,7 @@ async fn frozen_environment_network_follows_the_decision_table() {
             )
             .await
             .unwrap_or_else(|error| panic!("{id}: {error}"));
-        let spec = host.realizer.sandbox_spec(&thread);
+        let spec = host.realization_executor.sandbox_spec(&thread);
         assert_eq!(spec.network, expected_network, "{id}");
         assert_eq!(denies(spec), expected_denial, "{id}");
     }
@@ -930,7 +949,7 @@ async fn install_test_session_init_overlays_the_environment_sandbox_onto_the_spe
         .await
         .unwrap();
 
-    let spec = host.realizer.sandbox_spec("t-sb");
+    let spec = host.realization_executor.sandbox_spec("t-sb");
     assert_eq!(
         spec.isolation,
         IsolationClass::Namespace,
@@ -996,10 +1015,16 @@ async fn install_test_session_init_overlays_the_environment_sandbox_onto_the_spe
         "W2 Session ownership enters the one attempt context"
     );
     assert_eq!(
-        host.realizer.sandbox_spec("t-bare").isolation,
+        host.realization_executor.sandbox_spec("t-bare").isolation,
         IsolationClass::Workdir
     );
-    assert!(!host.realizer.sandbox_spec("t-bare").limits.is_set());
+    assert!(
+        !host
+            .realization_executor
+            .sandbox_spec("t-bare")
+            .limits
+            .is_set()
+    );
 }
 
 /// Cause/effect design: C1 eager Session preparation freezes configuration; C2 no
@@ -1046,7 +1071,8 @@ async fn install_test_session_init_is_lazy_and_first_run_materializes_the_enviro
         .unwrap();
 
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("lazy-environment")
             .await
             .expect("installed Sessions")
@@ -1066,7 +1092,8 @@ async fn install_test_session_init_is_lazy_and_first_run_materializes_the_enviro
     .await
     .expect("first Run waits for environment readiness");
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("lazy-environment")
             .await
             .expect("installed Sessions")
@@ -1156,7 +1183,8 @@ async fn coordinator_dispatch_context_never_materializes_an_eager_environment() 
         .expect("D1 builds a sandbox-free dispatch context");
     assert!(context.skill_registry.is_some(), "D1/E1");
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("coordinator-dispatch-only")
             .await
             .expect("installed Sessions")
@@ -1236,7 +1264,8 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
 
     assert!(context.env.is_none(), "B1/E2");
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("coordinator-backend-owned")
             .await
             .expect("installed Sessions")
@@ -1374,7 +1403,8 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
     .await
     .expect("P4 Worker Dispatch needs no Coordinator provider");
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("worker-dispatch-valid")
             .await
             .expect("installed Sessions")
@@ -1477,7 +1507,8 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
     );
     assert!(
         local
-            .realizer
+            .realization_executor
+            .environments()
             .session_environment("local-backend-owned")
             .await
             .expect("installed Sessions")
@@ -1526,7 +1557,8 @@ async fn frozen_environment_selects_trusted_host_exactly() {
     trusted.self_hosted = true;
     host.install_environment_projection("T1", &trusted).unwrap();
     let selected = host
-        .realizer
+        .realization_executor
+        .environments()
         .session_environment_provider_for_thread(
             "T1",
             &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
@@ -1549,10 +1581,13 @@ async fn frozen_environment_selects_trusted_host_exactly() {
     absent
         .install_environment_projection("T2", &trusted)
         .unwrap();
-    let error = match absent.realizer.session_environment_provider_for_thread(
-        "T2",
-        &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
-    ) {
+    let error = match absent
+        .realization_executor
+        .environments()
+        .session_environment_provider_for_thread(
+            "T2",
+            &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
+        ) {
         Ok(_) => panic!("T2/E2"),
         Err(error) => error,
     };
@@ -1582,7 +1617,8 @@ async fn frozen_environment_selects_trusted_host_exactly() {
         )
         .unwrap();
     let error = match host
-        .realizer
+        .realization_executor
+        .environments()
         .session_environment_provider_for_thread("I1", backend_owned.provisioning())
     {
         Ok(_) => panic!("I1/E3"),
@@ -1631,7 +1667,8 @@ async fn on_tool_use_text_only_run_keeps_the_environment_absent() {
     .await
     .unwrap();
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("deferred-text")
             .await
             .expect("installed Sessions")
@@ -1719,7 +1756,8 @@ async fn on_tool_use_published_delegate_forces_one_eager_environment() {
         "L9/E4: {missing}"
     );
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("deferred-delegate")
             .await
             .expect("installed Sessions")
@@ -1749,7 +1787,8 @@ async fn on_tool_use_published_delegate_forces_one_eager_environment() {
         .expect("L9 delegate context");
     assert!(context.env.is_some(), "L9/E2 runtime environment");
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("deferred-delegate")
             .await
             .expect("installed Sessions")

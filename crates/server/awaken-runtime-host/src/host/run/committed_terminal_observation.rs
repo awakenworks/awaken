@@ -7,6 +7,7 @@
 //! reach the Environment lifecycle (dispatch side: `host::dispatch_reconciliation`).
 
 use super::*;
+use awaken_session_realization::peers::EnvironmentPeer as _;
 
 /// Deliver one direct cold-recovery fact from the Runtime contract's sole
 /// committed-terminal predicate. The observer factory is deliberately lazy:
@@ -86,8 +87,9 @@ impl SharedHost {
             &thread_id,
             || async {
                 let (workspace, _, installed, _) = self
-                    .realizer
-                    .publication
+                    .realization_executor
+                    .environments()
+                    .publication()
                     .resolve_session_publication(thread, agent, None)?;
                 let frozen_model_ref = installed
                     .as_ref()

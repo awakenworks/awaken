@@ -167,15 +167,8 @@ async fn missing_projection_admits_only_the_direct_empty_revision_zero_noop() {
 
         host.installed_sessions.install(&thread);
         let result = host
-            .realizer
-            .staging
-            .apply_session_inputs_with_context(
-                &host.realizer,
-                &thread,
-                &transition,
-                claim.as_ref(),
-                None,
-            )
+            .realization_executor
+            .apply_session_inputs(&thread, &transition, claim.as_ref(), None)
             .await;
         if rule.accepted {
             result.unwrap_or_else(|error| panic!("{} must admit E1: {error}", rule.id));
@@ -766,8 +759,8 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             .expect_err("F1 rejects the complete prospective layout");
         assert!(error.message.contains("overlaps"), "F1: {error:?}");
         assert!(
-            host.realizer
-                .staging
+            host.realization_executor
+                .staging()
                 .thread_resource_manifest("prospective-layout-conflict")
                 .expect("installed Sessions")
                 .is_none(),
@@ -905,7 +898,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             "R1 stages the exact SessionResourceState generation without forging completion"
         );
 
-        let spec = host.realizer.sandbox_spec("flow-thread");
+        let spec = host.realization_executor.sandbox_spec("flow-thread");
         assert_eq!(spec.mounts.len(), 1);
         assert_eq!(spec.env.len(), 1);
         assert_eq!(
@@ -1249,7 +1242,8 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         "R1/E1 remains unclaimable before activity activation"
     );
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment(thread)
             .await
             .expect("installed Sessions")
@@ -1689,7 +1683,8 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
         .expect("R1 reservation does not require local adoption");
     assert!(reserved.env.is_none(), "R1/E1 no physical Environment");
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment(thread)
             .await
             .expect("installed Sessions")
@@ -1707,7 +1702,8 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
             .is_none()
     );
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment(thread)
             .await
             .expect("installed Sessions")
@@ -1729,7 +1725,8 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
     };
     // Eviction also exercises cold Coordinator reconstruction, rather than
     // accidentally succeeding through a previously cached envelope.
-    host.realizer
+    host.realization_executor
+        .environments()
         .evict_session_for_rebuild(thread)
         .await
         .expect("installed Sessions");
@@ -1744,7 +1741,8 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
     assert_eq!(queued[0].session_thread_id, Some(ThreadId(thread.into())));
     assert_eq!(queued[0].session_activity_epoch, Some(7));
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment(thread)
             .await
             .expect("installed Sessions")
@@ -1756,7 +1754,8 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
     assert!(host.continue_session_agent_report(invalid).await.is_err());
     assert_eq!(dispatch.list_dispatches().await.unwrap().len(), 1, "R5");
 
-    host.realizer
+    host.realization_executor
+        .environments()
         .evict_session_for_rebuild(thread)
         .await
         .expect("installed Sessions");
@@ -1797,7 +1796,8 @@ async fn rebuilt_coordination_context_never_borrows_a_retained_environment() {
         .await
         .expect("C1 create executable context");
     let retained = executable.env.clone().expect("C1 resident Environment");
-    host.realizer
+    host.realization_executor
+        .environments()
         .evict_session_for_rebuild(thread)
         .await
         .expect("installed Sessions");
@@ -1812,7 +1812,8 @@ async fn rebuilt_coordination_context_never_borrows_a_retained_environment() {
         Arc::ptr_eq(
             &retained,
             &host
-                .realizer
+                .realization_executor
+                .environments()
                 .session_environment(thread)
                 .await
                 .expect("installed Sessions")
@@ -1875,7 +1876,8 @@ async fn claimed_inference_only_context_keeps_scope_without_a_resource_transitio
     );
     assert!(ctx.env.is_none(), "R1 no physical environment");
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment(thread)
             .await
             .expect("installed Sessions")

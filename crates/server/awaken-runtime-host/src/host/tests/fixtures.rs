@@ -5,6 +5,7 @@ use crate::host::*;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse};
+use awaken_session_realization::peers::EnvironmentPeer as _;
 use awaken_session_types::SessionId;
 use std::collections::BTreeMap;
 use std::sync::{
@@ -891,10 +892,21 @@ impl SharedHost {
     pub(crate) fn test_local_provider(&self) -> awaken_sandbox_local::LocalProvider {
         let root = match &self.store_dir {
             Some(dir) => dir.join("sandboxes"),
-            None => self.realizer.env.sandbox_root.clone(),
+            None => self
+                .realization_executor
+                .environments()
+                .providers()
+                .sandbox_root
+                .clone(),
         };
         let provider = awaken_sandbox_local::LocalProvider::new(root);
-        if let Some(mounter) = self.realizer.environments.env.memory_mounter.clone() {
+        if let Some(mounter) = self
+            .realization_executor
+            .environments()
+            .providers()
+            .memory_mounter
+            .clone()
+        {
             provider.install_memory_mounter(mounter);
         }
         provider

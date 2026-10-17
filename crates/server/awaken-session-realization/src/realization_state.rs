@@ -94,7 +94,7 @@ impl SessionRealizationAuthority {
 pub struct SessionRealization {
     pub environment: EnvironmentHoldingState,
     pub staging: ResourceStagingState,
-    pub cleanup: TerminalCleanupState,
+    pub effects: TerminalEffectsState,
     pub execution: ExecutionAuthorityState,
 }
 
@@ -165,7 +165,7 @@ impl SessionRealization {
                 mcp: self.staging.mcp.take_retained_on_revocation(),
                 ..Default::default()
             },
-            cleanup: Default::default(),
+            effects: Default::default(),
         }
     }
 
@@ -454,7 +454,7 @@ impl ResourceStagingState {
 
 /// Per-Session state held under the canonical installed-slot mutex.
 #[derive(Default)]
-pub struct TerminalCleanupState {
+pub struct TerminalEffectsState {
     /// One complete Control-issued terminal assignment. Its Environment state
     /// and no-Create witness are observed together; authority remains in `authority`.
     pub assignment: Option<awaken_session_realization_contract::SessionTerminalCleanupAssignment>,

@@ -58,16 +58,16 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
             .await
             .unwrap();
         let spec = host
-            .realizer
-            .staging
+            .realization_executor
+            .staging()
             .sandbox_spec_for_provider(thread, &provider)
             .expect("installed Sessions");
         // W0: establish actual Root admission/binding before the revocation
         // table. The selected fake provider does not invent durable authority:
         // use the production sink's first CAS and generated receipt readback.
         let intent = host
-            .realizer
-            .execution
+            .realization_executor
+            .authority()
             .new_environment_effect_intent(
                 thread,
                 awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
@@ -75,8 +75,13 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
             )
             .expect("installed Sessions");
         let effect = host
-            .realizer
-            .authorize_environment_effect_before_io(thread, &intent)
+            .realization_executor
+            .environments()
+            .authorize_environment_effect_before_io(
+                host.realization_executor.peers(),
+                thread,
+                &intent,
+            )
             .await
             .unwrap();
         // W0a causes: exact/foreign operation fence and Create/Rebuild intent.
@@ -154,19 +159,28 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
         let handle = original.lifecycle().handle();
         let binding = serde_json::to_string(&handle).unwrap();
         let identity = host
-            .realizer
-            .persist_authorized_environment_binding(thread, binding.clone(), &effect)
+            .realization_executor
+            .environments()
+            .persist_authorized_environment_binding(
+                host.realization_executor.peers(),
+                thread,
+                binding.clone(),
+                &effect,
+            )
             .await
             .unwrap_or_else(|failure| panic!("W0 actual binding CAS: {}", failure.error));
         let candidate = host
-            .realizer
+            .realization_executor
+            .environments()
             .begin_session_environment_preparation(
+                host.realization_executor.peers(),
                 thread,
                 original.clone(),
                 Some(effect.authorization.intent()),
             )
             .unwrap();
-        host.realizer
+        host.realization_executor
+            .environments()
             .publish_prepared_session_environment(thread, &candidate, identity)
             .unwrap();
         let SandboxEnvironment::Container {
@@ -196,7 +210,8 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
                     .expect("installed Sessions")
                     .unwrap();
                 let _lifecycle = lifecycle.lock().await;
-                host.realizer
+                host.realization_executor
+                    .environments()
                     .retire_session_environment_for_revocation(
                         thread,
                         (&host.mcp, host.installed_sessions.as_ref()),
@@ -229,7 +244,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
             );
             fake.shared.lock().unwrap().remove("__ready_observation");
             assert!(
-                host.realizer
+                host.realization_executor
                     .adopt_bound_session_environment(thread, Some(&binding), &provider, None, false)
                     .await
                     .is_err(),
@@ -250,7 +265,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
                 .lock()
                 .unwrap()
                 .insert("__ready_observation".into(), Vec::new());
-            host.realizer
+            host.realization_executor
                 .adopt_bound_session_environment(thread, Some(&binding), &provider, None, false)
                 .await
                 .unwrap();

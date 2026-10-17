@@ -28,10 +28,7 @@ fn authority() -> (Arc<InstalledSessions>, ExecutionAuthority) {
     let source = Arc::new(InstalledSessions::default());
     // Projection installation installs the Session before any preparation.
     source.install("session");
-    let authority = ExecutionAuthority {
-        sessions: source.realizations(),
-        worker: None,
-    };
+    let authority = ExecutionAuthority::new(source.realizations(), None);
     (source, authority)
 }
 
@@ -43,7 +40,7 @@ fn resource_scope_retains_success_and_removes_only_its_unpublished_introduced_le
     for existing in [false, true] {
         for finished in [false, true] {
             let (source, authority) = authority();
-            let sessions = authority.sessions.clone();
+            let sessions = authority.sessions().clone();
             if existing {
                 sessions
                     .update_realization("session", |r| {
@@ -107,7 +104,7 @@ async fn resource_scope_cancellation_and_slot_replacement_cannot_erase_a_success
         "slot_aba",
     ] {
         let (source, authority) = authority();
-        let sessions = authority.sessions.clone();
+        let sessions = authority.sessions().clone();
         let guard = ResourcePreparation::begin(&authority, "session", proof(Epoch::FIRST)).unwrap();
         let successor = Arc::new(awaken_runtime_contract::CancellationToken::new());
         {
@@ -205,15 +202,16 @@ impl CurrentExecutionAuthority for DeniedWorker {
 
 #[test]
 fn resource_scope_denied_worker_never_installs_or_reopens_a_session() {
-    let (source, mut authority) = authority();
+    let (source, _) = authority();
     source.remove("session");
-    authority.worker = Some(Arc::new(DeniedWorker));
+    let mut authority =
+        ExecutionAuthority::new(source.realizations(), Some(Arc::new(DeniedWorker)));
     assert!(ResourcePreparation::begin(&authority, "session", proof(Epoch::FIRST)).is_err());
     assert!(
         !source.contains("session"),
         "Worker denies before the canonical slot write"
     );
-    authority.worker = None;
+    authority = ExecutionAuthority::new(source.realizations(), None);
     assert!(
         ResourcePreparation::begin(&authority, "session", proof(Epoch::FIRST)).is_err(),
         "an allowed preparation still never installs the Session"
@@ -221,7 +219,7 @@ fn resource_scope_denied_worker_never_installs_or_reopens_a_session() {
     assert!(!source.contains("session"));
     source.install("session");
     authority
-        .sessions
+        .sessions()
         .update_realization("session", |r| {
             assert!(r.install_lease(proof(Epoch::FIRST)));
             assert!(r.close_authority(Some(&lease(Epoch::FIRST))));
@@ -229,7 +227,7 @@ fn resource_scope_denied_worker_never_installs_or_reopens_a_session() {
         .expect("installed Sessions");
     assert!(ResourcePreparation::begin(&authority, "session", proof(Epoch::FIRST)).is_err());
     authority
-        .sessions
+        .sessions()
         .read_realization("session", |r| {
             assert!(r.execution.authority.is_closed());
             assert!(r.staging.preparation.is_none());

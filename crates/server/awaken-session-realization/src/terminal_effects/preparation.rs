@@ -7,17 +7,22 @@
 //! it only projects exact leases, provider observations, Memory evidence, and
 //! checkpoint work into the existing two-stage terminal protocol.
 
-use super::{
-    Arc, BoundEnvironmentPreparationMode, PreparedBoundEnvironment, RealizationError,
+use super::{TerminalEnvironmentPreparation, TerminalMemoryPlan};
+use crate::environment_owner::TerminalEnvironmentInstallation;
+use crate::environment_owner::{
     RetiringEnvironmentOwner, RetiringSessionEnvironment, SessionEnvironmentOwner,
-    SessionEnvironmentPreparation, SessionEnvironmentRetirementCause, TerminalEffectMode,
-    TerminalEnvironmentInstallation, TerminalEnvironmentPreparation, TerminalMemoryPlan,
+    SessionEnvironmentPreparation, SessionEnvironmentRetirementCause,
 };
+use crate::realization_error::RealizationError;
 use crate::realization_error::{AuthorityLoss, PendingState, ProjectionConflict};
+use crate::session_environment::{
+    BoundEnvironmentPreparationMode, PreparedBoundEnvironment, TerminalEffectMode,
+};
 use awaken_session_configuration_contract::resource as session_resource;
 use awaken_session_state_contract::{SessionEnvironmentState, SuspendPhase};
+use std::sync::Arc;
 
-impl crate::terminal_cleanup::TerminalCleanup {
+impl crate::terminal_effects::TerminalEffects {
     /// Revalidate the one aggregate-owned terminal assignment cached in the
     /// root Session slot. Preparation and disposal both consume this decision;
     /// each then lowers its own closed effect type exactly once.
@@ -166,7 +171,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
     }
 }
 
-impl crate::terminal_cleanup::TerminalCleanup {
+impl crate::terminal_effects::TerminalEffects {
     /// Take over a restore that has no aggregate binding yet. The frozen
     /// restore fence is identity evidence only; the live terminal fence is the
     /// sole mutation authority. A hot process-local owner must carry the exact
@@ -180,11 +185,12 @@ impl crate::terminal_cleanup::TerminalCleanup {
     /// remains available for original-history queries.
     pub(super) async fn prepare_terminal_environment_under_lifecycle(
         &self,
-        environments: &crate::environment_holding::EnvironmentHolding,
+        peers: crate::peers::Peers<'_>,
         thread: &str,
         effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
         mode: BoundEnvironmentPreparationMode,
     ) -> Result<TerminalEnvironmentPreparation, RealizationError> {
+        let environments = peers.environments;
         let realizer = environments;
         let (assignment, owner, previous_resources, workspace_id, checkpoint_policy) = self
             .sessions
@@ -192,7 +198,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
                 let baseline = slot.inputs.baseline.as_ref();
                 let r = &slot.realization;
                 (
-                    r.cleanup.assignment.clone(),
+                    r.effects.assignment.clone(),
                     r.environment.owner.clone(),
                     r.previous_resources(),
                     slot.inputs.workspace.clone(),
@@ -343,13 +349,14 @@ impl crate::terminal_cleanup::TerminalCleanup {
                 .map_err(RealizationError::Run)?;
             let provider = realizer.projected_session_environment_provider(thread, None)?;
             let spec = realizer.session_environment_adoption_spec(
+                peers,
                 thread,
                 provider,
                 previous_resources.as_ref(),
             )?;
             let environment = realizer
                 .install_bound_environment_under_lifecycle(
-                    self,
+                    peers,
                     TerminalEnvironmentInstallation {
                         thread,
                         binding: None,
@@ -393,7 +400,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
         }
         let environment = realizer
             .prepare_bound_environment_for_effect_under_lifecycle(
-                self,
+                peers,
                 thread,
                 binding,
                 effect_fence,
@@ -417,19 +424,24 @@ impl crate::terminal_cleanup::TerminalCleanup {
     /// carries writable Copy evidence.
     pub(super) async fn reconcile_terminal_memory(
         &self,
-        environments: &crate::environment_holding::EnvironmentHolding,
+        peers: crate::peers::Peers<'_>,
         effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
         environment: &crate::session_environment::SessionEnvironment,
         effect_mode: TerminalEffectMode,
         plan: &TerminalMemoryPlan,
     ) -> Result<(), RealizationError> {
+        let environments = peers.environments;
         if effect_mode == TerminalEffectMode::LiveUnprepared && !plan.intents.is_empty() {
             let workspace_id = plan.workspace_id.as_deref().ok_or_else(|| {
                 RealizationError::invariant("terminal Memory plan has no frozen Workspace")
             })?;
-            let mounter = environments.env.memory_mounter.clone().ok_or_else(|| {
-                RealizationError::invariant("terminal Memory copy has no MemoryMounter")
-            })?;
+            let mounter = environments
+                .providers()
+                .memory_mounter
+                .clone()
+                .ok_or_else(|| {
+                    RealizationError::invariant("terminal Memory copy has no MemoryMounter")
+                })?;
             for intent in &plan.intents {
                 self.effect_fence(effect)?;
                 let files = environment
@@ -438,14 +450,14 @@ impl crate::terminal_cleanup::TerminalCleanup {
                     .await
                     .map_err(RealizationError::terminal_effect_pending)?;
                 self.effect_fence(effect)?;
-                let operation_reference = if environments.staging.fetches_resources_upstream {
+                let operation_reference = if peers.staging.fetches_resources_upstream() {
                     awaken_resource_contract::MemoryMaterializationReferenceEncoder::<
                         awaken_session_state_contract::SessionTerminalMemoryIntent,
                     >::encode(
-                        environments
+                        peers
                             .staging
-                            .memory_reference_encoder
-                            .as_deref()
+                            .memory_reference_encoder()
+                            .map(|encoder| encoder.as_ref())
                             .ok_or_else(|| {
                                 RealizationError::invariant(
                                     "remote terminal Memory encoder is not configured",
@@ -478,8 +490,8 @@ impl crate::terminal_cleanup::TerminalCleanup {
             return Ok(());
         };
         let effect_fence = self.effect_fence(effect)?;
-        let authority = environments
-            .execution
+        let authority = peers
+            .authority
             .provider_effect_authority(effect.command.session_id.as_str(), &effect_fence)?;
         environment
             .lifecycle()
@@ -496,12 +508,13 @@ impl crate::terminal_cleanup::TerminalCleanup {
     /// No application-side checkpoint deletion runs after this command.
     pub async fn cleanup_terminal_checkpoint(
         &self,
-        environments: &crate::environment_holding::EnvironmentHolding,
+        peers: crate::peers::Peers<'_>,
         effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
         state: &awaken_session_state_contract::SessionEnvironmentState,
         pending_checkpoint: Option<&awaken_session_state_contract::SandboxCheckpointRequest>,
         environment: Option<&crate::session_environment::SessionEnvironment>,
     ) -> Result<(), RealizationError> {
+        let environments = peers.environments;
         let checkpoint = state.checkpoint();
         if checkpoint.is_some() && pending_checkpoint.is_some() {
             return Err(RealizationError::invariant(
@@ -512,7 +525,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
             return Ok(());
         }
         let store = environments
-            .env
+            .providers()
             .environment_checkpoint_store
             .as_ref()
             .ok_or_else(|| {
@@ -522,7 +535,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
                 )
             })?;
         let terminal_effect_fence = self.effect_fence(effect)?;
-        let authority = environments.execution.provider_effect_authority(
+        let authority = peers.authority.provider_effect_authority(
             effect.command.session_id.as_str(),
             &terminal_effect_fence,
         )?;
@@ -557,7 +570,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
                         )
                     })?;
                 let provider_request =
-                    crate::environment_continuation::provisioning_checkpoint_request(request);
+                    crate::sandbox_projection::provisioning_checkpoint_request(request);
                 environment
                     .lifecycle()
                     .cleanup_checkpoint_for_terminal(

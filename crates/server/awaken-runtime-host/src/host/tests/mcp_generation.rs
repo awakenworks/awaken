@@ -631,7 +631,7 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
     // Context/active => (true,true); RQ4 settled => (true,false), same owner.
     // holds_context never proves physical activity. The existing view reads
     // under registry -> active_run; MCP uses the same SessionCtx primitive.
-    let view = &runtime_host.realizer.cleanup.sessions;
+    let view = runtime_host.realization_executor.sessions();
     let query = |thread: &str| {
         view.modify_session(thread, |slot| {
             (slot.run.holds_context(), slot.run.has_active_run())
@@ -1595,15 +1595,18 @@ async fn a_github_repository_resource_does_not_create_a_parallel_mcp_projection(
 
     // The repo is staged for a host-side clone...
     assert_eq!(
-        host.realizer
-            .staging
+        host.realization_executor
+            .staging()
             .thread_repository_activations("t-gh")
             .len(),
         1,
         "repo staged for cloning"
     );
 
-    let activations = host.realizer.staging.thread_repository_activations("t-gh");
+    let activations = host
+        .realization_executor
+        .staging()
+        .thread_repository_activations("t-gh");
     let activation = &activations[0];
     assert_eq!(
         activation

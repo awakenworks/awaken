@@ -60,19 +60,24 @@ pub(super) async fn acquire(
     // projection synchronizer; only an explicit resume may consume the
     // quiesced owner here, after frozen publication and local-placement
     // validation. Ordinary and remote-only contexts remain fail-closed.
-    let exec = &host.realizer.environments;
+    let realization = &host.realization_executor;
+    let exec = realization.environments();
     if recover_revoked_legacy && !a2a_only {
         let provider = exec.session_environment_provider_for_thread(thread, provisioning)?;
-        exec.rebuild_claimed_legacy_environment_after_revocation(thread, provider)
-            .await?;
+        exec.rebuild_claimed_legacy_environment_after_revocation(
+            realization.peers(),
+            thread,
+            provider,
+        )
+        .await?;
     }
-    let retained = exec
-        .sessions
+    let retained = realization
+        .sessions()
         .read_realization(thread, |r| r.environment.owner.resident())?
         .flatten();
     let environment_owner_is_vacant = exec.session_environment_owner_is_vacant(thread)?;
-    let environment_owner_has_unpublished_candidate = exec
-        .sessions
+    let environment_owner_has_unpublished_candidate = realization
+        .sessions()
         .read_realization(thread, |r| {
             r.environment.owner.unpublished_candidate().is_some()
         })?
@@ -143,7 +148,7 @@ pub(super) async fn acquire(
     // mismatch before the Session activity opens; otherwise an impossible
     // mount remains `running` while the queue repeatedly relinquishes it.
     if force_defer_environment && host.runs_local_dispatch_pool() && !a2a_only && !can_defer {
-        exec.validate_session_environment_substrate(thread, provisioning)?;
+        exec.validate_session_environment_substrate(realization.peers(), thread, provisioning)?;
     }
     // Reservation is a projection-producing boundary, never an
     // Environment consumer. A cold Coordinator may legitimately know
@@ -172,15 +177,23 @@ pub(super) async fn acquire(
         RuntimeEnvironmentAdmission::Create => {
             let provider = exec.session_environment_provider_for_thread(thread, provisioning)?;
             Some(
-                exec.create_reserved_session_environment_under_lifecycle(thread, provider)
-                    .await?,
+                exec.create_reserved_session_environment_under_lifecycle(
+                    realization.peers(),
+                    thread,
+                    provider,
+                )
+                .await?,
             )
         }
     };
     let env = match env {
         Some(environment) => Some(
-            exec.ensure_published_environment_reconciled_under_lifecycle(thread, environment)
-                .await?,
+            exec.ensure_published_environment_reconciled_under_lifecycle(
+                realization.peers(),
+                thread,
+                environment,
+            )
+            .await?,
         ),
         None => None,
     };
@@ -237,7 +250,7 @@ pub(super) async fn acquire(
         .as_ref()
         .map(|snapshot| snapshot.resolved_spec.plugin_config.agent.toolsets.clone())
         .unwrap_or_default();
-    let session_tools = exec.sessions.frozen(thread)?.tools.clone();
+    let session_tools = realization.sessions().frozen(thread)?.tools.clone();
     let toolsets = session_tools
         .as_ref()
         .map(|tools| tools.toolsets.clone())

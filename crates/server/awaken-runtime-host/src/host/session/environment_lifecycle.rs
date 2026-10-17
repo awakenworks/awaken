@@ -11,7 +11,7 @@ use crate::session_environment::SessionEnvironmentAdoptionDisposition;
 use state::RetirementSelection;
 use std::sync::Arc;
 
-use awaken_session_realization::environment_lifecycle::*;
+use awaken_session_realization::environment_holding::lifecycle::*;
 
 #[cfg(test)]
 #[path = "environment_lifecycle/tests.rs"]
@@ -25,7 +25,8 @@ impl crate::host::SharedHost {
         &self,
         thread: &str,
     ) -> Option<Arc<crate::session_environment::SessionEnvironment>> {
-        self.realizer
+        self.realization_executor
+            .environments()
             .session_environment(thread)
             .await
             .expect("installed Sessions")
@@ -35,7 +36,8 @@ impl crate::host::SharedHost {
         &self,
         thread: &str,
     ) -> Option<awaken_provisioning_contract::SandboxHandle> {
-        self.realizer
+        self.realization_executor
+            .environments()
             .session_environment(thread)
             .await
             .expect("installed Sessions")
@@ -49,18 +51,20 @@ impl crate::host::SharedHost {
         state: &awaken_session_state_contract::SessionEnvironmentState,
     ) -> Result<(), HostError> {
         self.installed_sessions.install(thread);
-        self.realizer.sessions.update_session(thread, |slot| {
-            let owner = slot.realization.environment.owner.after_projection(
-                thread,
-                workspace_id,
-                state,
-                false,
-                false,
-            )?;
-            slot.realization
-                .install_owner(owner, state, slot.run.holds_context());
-            Ok(())
-        })?
+        self.realization_executor
+            .sessions()
+            .update_session(thread, |slot| {
+                let owner = slot.realization.environment.owner.after_projection(
+                    thread,
+                    workspace_id,
+                    state,
+                    false,
+                    false,
+                )?;
+                slot.realization
+                    .install_owner(owner, state, slot.run.holds_context());
+                Ok(())
+            })?
     }
 
     pub fn install_test_resident_session_environment(
@@ -69,7 +73,7 @@ impl crate::host::SharedHost {
         environment: Arc<crate::session_environment::SessionEnvironment>,
     ) {
         self.installed_sessions.install(thread);
-        let realizations = self.realizer.sessions.clone();
+        let realizations = self.realization_executor.sessions().clone();
         let binding = serde_json::to_string(&environment.lifecycle().handle())
             .expect("test Environment handle serializes");
         let receipt = awaken_session_state_contract::SessionEnvironmentReceipt::new(
@@ -106,7 +110,7 @@ impl crate::host::SharedHost {
         retirement: &RetiringSessionEnvironment,
         status: Result<awaken_provisioning_contract::SandboxStatus, E>,
     ) -> Result<bool, E> {
-        let realizations = self.realizer.sessions.clone();
+        let realizations = self.realization_executor.sessions().clone();
         match realizations
             .modify_realization(thread, |r| {
                 r.environment
@@ -145,16 +149,20 @@ impl crate::host::SharedHost {
         thread: &str,
         expected: &Arc<crate::session_environment::SessionEnvironment>,
     ) -> bool {
-        let realizations = self.realizer.sessions.clone();
+        let realizations = self.realization_executor.sessions().clone();
         let _lifecycle = realizations
             .lock_lifecycle(thread)
             .await
             .expect("installed Sessions");
-        let Ok(Some(retirement)) = self.realizer.retire_current_environment(
-            thread,
-            SessionEnvironmentRetirementCause::RecoveryDiscard,
-            RetirementSelection::Exact(expected),
-        ) else {
+        let Ok(Some(retirement)) = self
+            .realization_executor
+            .environments()
+            .retire_current_environment(
+                thread,
+                SessionEnvironmentRetirementCause::RecoveryDiscard,
+                RetirementSelection::Exact(expected),
+            )
+        else {
             return false;
         };
         self.stop_and_confirm_retirement(thread, &retirement.owner)
@@ -163,7 +171,7 @@ impl crate::host::SharedHost {
     }
 
     pub fn prepared_session_environment(&self, thread: &str) -> Option<UnboundSessionEnvironment> {
-        let realizations = self.realizer.sessions.clone();
+        let realizations = self.realization_executor.sessions().clone();
         realizations
             .read_realization(thread, |r| match &r.environment.owner {
                 SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(
@@ -181,11 +189,22 @@ impl crate::host::SharedHost {
         candidate: &UnboundSessionEnvironment,
     ) -> Result<BoundSessionEnvironmentIdentity, HostError> {
         let effect = self
-            .realizer
-            .authorize_environment_effect_before_io(thread, candidate.ordinary_intent()?)
+            .realization_executor
+            .environments()
+            .authorize_environment_effect_before_io(
+                self.realization_executor.peers(),
+                thread,
+                candidate.ordinary_intent()?,
+            )
             .await?;
-        self.realizer
-            .persist_authorized_environment_before_publish(thread, candidate, &effect)
+        self.realization_executor
+            .environments()
+            .persist_authorized_environment_before_publish(
+                self.realization_executor.peers(),
+                thread,
+                candidate,
+                &effect,
+            )
             .await
             .map_err(|failure| failure.error.into())
     }

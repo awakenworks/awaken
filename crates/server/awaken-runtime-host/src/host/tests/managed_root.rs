@@ -375,15 +375,8 @@ impl ManagedSessionRootFixture {
         )?;
         managed
             .host
-            .realizer
-            .staging
-            .apply_session_inputs_with_context(
-                &managed.host.realizer,
-                thread,
-                &transition,
-                None,
-                Some(lease),
-            )
+            .realization_executor
+            .apply_session_inputs(thread, &transition, None, Some(lease))
             .await?;
         self.settle_resource_stage(managed, thread, installed.clone())
             .await?;

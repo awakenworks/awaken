@@ -7,7 +7,6 @@
 //! lifecycle truth remains in the Session aggregate; the slot machine retains
 //! each physical wrapper across every fallible or cancellable provider call.
 
-use crate::bound_environment::TerminalEnvironmentInstallation;
 use crate::environment_owner::{
     BoundSessionEnvironment, BoundSessionEnvironmentIdentity, LegacyDirectEnvironmentProvenance,
     RetiringEnvironmentOwner, RetiringSessionEnvironment, SessionEnvironmentOwner,
@@ -15,18 +14,15 @@ use crate::environment_owner::{
 };
 use crate::realization_error::{AuthorityLoss, PendingState, ProjectionConflict, RealizationError};
 use crate::session_environment::{
-    AuthorizedSessionEnvironmentEffect, BoundEnvironmentPreparationMode,
-    SessionEnvironmentAdoptionDisposition, SessionEnvironmentUnavailablePolicy,
+    AuthorizedSessionEnvironmentEffect, SessionEnvironmentAdoptionDisposition,
+    SessionEnvironmentUnavailablePolicy,
 };
-use crate::session_environment::{PreparedBoundEnvironment, TerminalEffectMode};
 use awaken_session_configuration_contract::resource as session_resource;
 use awaken_tool_contract::tool_batch::ResourceOriginRef;
 use std::sync::Arc;
 
 mod publication;
 pub mod state;
-mod terminal_cleanup;
-mod terminal_preparation;
 
 use state::{
     RetirementSelection, checkpoint_source_identity, pending_revoked_resource_reservation,
@@ -39,16 +35,6 @@ pub struct LocalRetirementTransition {
     pub owner: RetiringSessionEnvironment,
 }
 
-/// One process-local teardown projection derived from the frozen aggregate
-/// Environment state. It carries no authority of its own; keeping the state and
-/// optional physical owner together prevents terminal checkpoint and Sandbox
-/// cleanup from re-reading or independently interpreting the slot.
-struct TerminalEnvironmentPreparation {
-    state: awaken_session_state_contract::SessionEnvironmentState,
-    environment: PreparedBoundEnvironment,
-    pending_checkpoint: Option<awaken_session_state_contract::SandboxCheckpointRequest>,
-}
-
 /// Exact decoded binding, provider-effective spec, and any process-local
 /// owner observations produced by the single adoption validator.
 type ValidatedSessionEnvironmentAdoption = (
@@ -57,16 +43,6 @@ type ValidatedSessionEnvironmentAdoption = (
     Option<Arc<crate::session_environment::SessionEnvironment>>,
     Option<UnboundSessionEnvironment>,
 );
-
-/// Pure terminal Memory projection produced before Artifact, checkpoint, or
-/// provider effects. The contract owns the optional-handle join and intent
-/// construction; this transient plan only carries its exact result forward.
-struct TerminalMemoryPlan {
-    intents: Vec<awaken_session_state_contract::SessionTerminalMemoryIntent>,
-    acknowledged_materializations:
-        Option<Vec<awaken_provisioning_contract::MemoryMaterializationEvidence>>,
-    workspace_id: Option<String>,
-}
 
 /// Borrowed inputs for the single unavailable-observation phase under the
 /// Session lifecycle lock. Every authority remains in its existing typed value;
@@ -154,22 +130,6 @@ fn closed_environment_recovery_consumes_only_rebuildable_owner_classes() {
         closed_environment_recovery_admission(policy, owner),
         rebuild && owner != ClosedEnvironmentRecoveryOwnerClass::ProtectedOrStale
     );
-}
-
-impl TerminalEnvironmentPreparation {
-    /// Select the one artifact edge without conflating aggregate state with
-    /// provider I/O safety. Once the provider reports `Disposing`, durable
-    /// receipt recovery is mandatory even when the aggregate state would not
-    /// authorize a live output read.
-    fn artifact_capture_mode(&self) -> Option<crate::artifact_harvest::ArtifactCaptureMode> {
-        if !self.environment.permits_live_io() {
-            Some(crate::artifact_harvest::ArtifactCaptureMode::ReceiptOnly)
-        } else if self.state.binding().is_some() {
-            Some(crate::artifact_harvest::ArtifactCaptureMode::Live)
-        } else {
-            None
-        }
-    }
 }
 
 impl crate::environment_holding::EnvironmentHolding {
@@ -399,6 +359,7 @@ impl crate::environment_holding::EnvironmentHolding {
     /// ordinary direct callers cannot use this transition as disposal authority.
     pub async fn rebuild_claimed_legacy_environment_after_revocation(
         &self,
+        peers: crate::peers::Peers<'_>,
         thread: &str,
         provider: &crate::session_environment::SessionEnvironmentProvider,
     ) -> Result<(), RealizationError> {
@@ -429,7 +390,7 @@ impl crate::environment_holding::EnvironmentHolding {
         };
         let environment = retiring.owned.environment();
         let handle = environment.lifecycle().handle();
-        let neutral_spec = self.session_environment_adoption_spec(thread, provider, None)?;
+        let neutral_spec = self.session_environment_adoption_spec(peers, thread, provider, None)?;
         let spec = provider
             .adoption()
             .effective_adoption_layout(&neutral_spec, &handle)
@@ -779,14 +740,15 @@ impl crate::environment_holding::EnvironmentHolding {
     /// supplies the previous Resource endpoint because that is what the exact
     /// physical substrate contains; no continuation path may reconstruct a
     /// second layout from ambient slot state.
-    fn session_environment_adoption_spec(
+    pub fn session_environment_adoption_spec(
         &self,
+        peers: crate::peers::Peers<'_>,
         thread: &str,
         provider: &crate::session_environment::SessionEnvironmentProvider,
         resolved_resources: Option<&session_resource::ResolvedSessionResources>,
     ) -> Result<awaken_provisioning_contract::SandboxSpec, RealizationError> {
         Ok(match resolved_resources {
-            Some(resources) => self
+            Some(resources) => peers
                 .staging
                 .sandbox_spec_for_resolved_resources_and_provider(thread, resources, provider)?,
             None => self
@@ -794,9 +756,10 @@ impl crate::environment_holding::EnvironmentHolding {
                 .read_realization(thread, |r| r.staging.transition.clone())?
                 .flatten()
                 .map_or_else(
-                    || self.staging.sandbox_spec_for_provider(thread, provider),
+                    || peers.staging.sandbox_spec_for_provider(thread, provider),
                     |transition| {
-                        self.staging
+                        peers
+                            .staging
                             .sandbox_spec_for_resolved_resources_and_provider(
                                 thread,
                                 &transition.desired().resources,
@@ -849,6 +812,7 @@ impl crate::environment_holding::EnvironmentHolding {
 
     pub fn validated_session_environment_adoption(
         &self,
+        peers: crate::peers::Peers<'_>,
         thread: &str,
         encoded: &str,
         provider: &crate::session_environment::SessionEnvironmentProvider,
@@ -863,7 +827,8 @@ impl crate::environment_holding::EnvironmentHolding {
                 handle.sandbox_id
             )));
         }
-        let spec = self.session_environment_adoption_spec(thread, provider, resolved_resources)?;
+        let spec =
+            self.session_environment_adoption_spec(peers, thread, provider, resolved_resources)?;
         let spec = self.validate_session_environment_adoption(provider, &spec, &handle)?;
         let (retained, candidate) = self
             .sessions
@@ -932,6 +897,7 @@ impl crate::environment_holding::EnvironmentHolding {
     /// forbidden here; this is the physical-only Disposal phase.
     pub async fn dispose_prepared_checkpoint_source_environment(
         &self,
+        peers: crate::peers::Peers<'_>,
         thread: &str,
         operation: &awaken_session_state_contract::SessionEnvironmentOperation,
         generation: &awaken_session_state_contract::SandboxGeneration,
@@ -983,8 +949,8 @@ impl crate::environment_holding::EnvironmentHolding {
                 "checkpoint source Disposal does not match its retained Preparation owner",
             ));
         }
-        let authority = self
-            .execution
+        let authority = peers
+            .authority
             .provider_effect_authority(thread, authorization.effect_fence())?;
         owned
             .environment
@@ -1012,6 +978,7 @@ impl crate::environment_holding::EnvironmentHolding {
     /// exact-incarnation unavailability; provider errors remain retryable.
     pub async fn adopt_bound_session_environment(
         &self,
+        peers: crate::peers::Peers<'_>,
         thread: &str,
         encoded: Option<&str>,
         provider: &crate::session_environment::SessionEnvironmentProvider,
@@ -1024,6 +991,7 @@ impl crate::environment_holding::EnvironmentHolding {
         };
         let _lifecycle = realizations.lock_lifecycle(thread).await?;
         self.adopt_bound_session_environment_under_lifecycle(
+            peers,
             thread,
             encoded,
             provider,
@@ -1038,8 +1006,10 @@ impl crate::environment_holding::EnvironmentHolding {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn adopt_bound_session_environment_under_lifecycle(
         &self,
+        peers: crate::peers::Peers<'_>,
         thread: &str,
         encoded: &str,
         provider: &crate::session_environment::SessionEnvironmentProvider,
@@ -1055,6 +1025,7 @@ impl crate::environment_holding::EnvironmentHolding {
             ));
         }
         let (handle, spec, mut resident, candidate) = exec.validated_session_environment_adoption(
+            peers,
             thread,
             encoded,
             provider,
@@ -1080,8 +1051,9 @@ impl crate::environment_holding::EnvironmentHolding {
             None => {
                 authorized = realizer
                     .authorize_environment_effect_before_io(
+                        peers,
                         thread,
-                        &realizer.execution.new_environment_effect_intent(
+                        &peers.authority.new_environment_effect_intent(
                             thread,
                             awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt,
                             Some(encoded),
@@ -1127,7 +1099,7 @@ impl crate::environment_holding::EnvironmentHolding {
         let authority = effect
             .provider_fence
             .as_ref()
-            .map(|fence| realizer.execution.provider_effect_authority(thread, fence))
+            .map(|fence| peers.authority.provider_effect_authority(thread, fence))
             .transpose()?;
         let provider_effect = crate::session_environment::ProviderEffect::from_parts(
             effect.provider_fence.as_ref(),
@@ -1191,7 +1163,7 @@ impl crate::environment_holding::EnvironmentHolding {
                 let environment = match (resident, candidate) {
                     (Some(environment), None) => environment,
                     (None, Some(candidate)) => {
-                        self.publish_session_environment_under_lifecycle(
+                        self.publish_session_environment_under_lifecycle(peers,
                             thread,
                             candidate.environment,
                             effect,
@@ -1222,7 +1194,7 @@ impl crate::environment_holding::EnvironmentHolding {
                                     .prepare_retiring_realization_adoption(retiring, environment.clone(), Some(effect.authorization.intent()))
                             })??;
                         }
-                        self.publish_session_environment_under_lifecycle(
+                        self.publish_session_environment_under_lifecycle(peers,
                             thread,
                             environment,
                             effect,
@@ -1236,7 +1208,7 @@ impl crate::environment_holding::EnvironmentHolding {
                         ));
                     }
                 };
-                self.ensure_published_environment_reconciled_under_lifecycle(thread, environment)
+                self.ensure_published_environment_reconciled_under_lifecycle(peers, thread, environment)
                     .await?;
                 exec.sessions.update_realization(thread, |r| {
                     r.environment.rebuild_source = None;
@@ -1268,9 +1240,9 @@ impl crate::environment_holding::EnvironmentHolding {
                 // A pending Managed Rebuild must retain that exact owner;
                 // unowned direct Threads keep the original recovery policy.
                 if unavailable_policy == SessionEnvironmentUnavailablePolicy::Rebuild {
-                    realizer.authorize_environment_effect_before_io(
+                    realizer.authorize_environment_effect_before_io(peers,
                         thread,
-                        &realizer.execution.new_environment_effect_intent(thread, awaken_session_state_contract::SessionEnvironmentEffectKind::Rebuild {
+                        &peers.authority.new_environment_effect_intent(thread, awaken_session_state_contract::SessionEnvironmentEffectKind::Rebuild {
                             source_generation_id: source_generation_id.map(str::to_owned),
                         },
                         Some(encoded))?,
@@ -1306,12 +1278,13 @@ impl crate::environment_holding::EnvironmentHolding {
     #[cfg(target_os = "linux")]
     pub async fn retire_replaced_scoped_execution<S: awaken_session_mcp::McpSessionSlots>(
         &self,
+        peers: crate::peers::Peers<'_>,
         thread: &str,
         incoming: &awaken_session_realization_contract::ObservedSessionRealizationLease,
         mcp: (&awaken_session_mcp::McpSessions, &S),
     ) -> Result<(), RealizationError> {
         let realizations = self.sessions.clone();
-        let retirement = self.execution.authorize_worker_effect(|| {
+        let retirement = peers.authority.authorize_worker_effect(|| {
             let now = awaken_authority_clock::authority_proof_started().map_err(|error| {
                 RealizationError::authority_lost(
                     AuthorityLoss::ProofClockUnavailable,
@@ -1541,130 +1514,5 @@ mod terminal_output_tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn terminal_effect_mode_keeps_live_recovery_and_provider_preparation_coupled() {
-        /* Process-local mode table HT0. Causes: C1 provider observation is
-         * Ready/filesystem-Terminal, Container-Terminal, primary absence, or Disposing; C2 the
-         * exact cleanup owner may be present/absent. Effects: E1 only live mode
-         * permits source reads; E2 live and unprepared-recovery require the
-         * provider preparation edge; E3 only Disposing proves that source
-         * effects were already prepared. The owner presence does not change
-         * these rules. This single projector prevents Artifact, Memory, and
-         * provider callers from inventing separate observation policies.
-         *
-         * | Rule | observation projection | live I/O | provider prep | prior prep |
-         * | T0 | LiveUnprepared | yes | yes | no |
-         * | T1 | RecoverOnlyUnprepared | no | yes | no |
-         * | T2 | RecoverOnlyAlreadyPrepared | no | no | yes | */
-        let cases = [
-            (
-                PreparedBoundEnvironment::new(None, None, TerminalEffectMode::LiveUnprepared),
-                true,
-                true,
-                false,
-            ),
-            (
-                PreparedBoundEnvironment::new(
-                    None,
-                    None,
-                    TerminalEffectMode::RecoverOnlyUnprepared,
-                ),
-                false,
-                true,
-                false,
-            ),
-            (
-                PreparedBoundEnvironment::new(
-                    None,
-                    None,
-                    TerminalEffectMode::RecoverOnlyAlreadyPrepared,
-                ),
-                false,
-                false,
-                true,
-            ),
-        ];
-        assert_eq!(
-            TerminalEffectMode::for_terminal_source(true),
-            TerminalEffectMode::LiveUnprepared,
-            "HT0 filesystem data remains readable"
-        );
-        assert_eq!(
-            TerminalEffectMode::for_terminal_source(false),
-            TerminalEffectMode::RecoverOnlyUnprepared,
-            "HT0 Container terminal source requires receipt-only reads and still needs preparation"
-        );
-        for (prepared, live_io, provider_preparation, already_prepared) in cases {
-            assert_eq!(prepared.permits_live_io(), live_io);
-            assert_eq!(
-                prepared.requires_provider_preparation(),
-                provider_preparation,
-            );
-            assert_eq!(
-                prepared.source_effects_are_already_prepared(),
-                already_prepared,
-            );
-        }
-    }
-
-    #[test]
-    fn only_agent_authored_terminal_states_read_live_outputs() {
-        /* Host terminal-output table HT1. Causes: C1 aggregate state is
-         * Resident/Suspending/otherwise; C2 provider I/O mode is Live or
-         * RecoverOnly. Effects: E1 Agent-authored+Live uses the one live
-         * ArtifactHarvester edge; E2 non-Agent-authored+Live skips live
-         * capture; E3 every RecoverOnly state invokes receipt recovery and
-         * performs no live read. Rules: HT1a Resident|Suspending+Live=>E1;
-         * HT1b otherwise+Live=>E2; HT1c any+RecoverOnly=>E3. C2 dominates C1:
-         * a durable Disposing gate must never be mistaken for "no artifacts"
-         * merely because the aggregate state is non-Agent-authored. */
-        let resident = awaken_session_state_contract::SessionEnvironmentState::Resident {
-            binding: "binding-a".into(),
-            effect_id: None,
-            generation: None,
-            idle_since_unix_ms: None,
-        };
-        // The aggregate's binding projection already owns exactly the
-        // Resident/Suspending source partition. Exercise the consuming artifact
-        // edge rather than maintaining a second variant classifier in Host.
-        let live_capture = |state| {
-            TerminalEnvironmentPreparation {
-                state,
-                environment: PreparedBoundEnvironment::new(
-                    None,
-                    None,
-                    TerminalEffectMode::LiveUnprepared,
-                ),
-                pending_checkpoint: None,
-            }
-            .artifact_capture_mode()
-        };
-        assert_eq!(
-            live_capture(resident),
-            Some(crate::artifact_harvest::ArtifactCaptureMode::Live),
-            "HT1a"
-        );
-        assert_eq!(
-            live_capture(awaken_session_state_contract::SessionEnvironmentState::Unmaterialized),
-            None,
-            "HT1b"
-        );
-
-        let disposing_non_agent_state = TerminalEnvironmentPreparation {
-            state: awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
-            environment: PreparedBoundEnvironment::new(
-                None,
-                None,
-                TerminalEffectMode::RecoverOnlyAlreadyPrepared,
-            ),
-            pending_checkpoint: None,
-        };
-        assert_eq!(
-            disposing_non_agent_state.artifact_capture_mode(),
-            Some(crate::artifact_harvest::ArtifactCaptureMode::ReceiptOnly),
-            "HT1c"
-        );
     }
 }

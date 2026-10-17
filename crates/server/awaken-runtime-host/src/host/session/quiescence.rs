@@ -24,13 +24,14 @@ impl ManagedHost {
         let sessions = &self.host.installed_sessions;
         let realization_view = sessions.realizations();
         self.host
-            .realizer
+            .realization_executor
             .continuation_effect_fence(thread, operation)?;
         let _realization = sessions.acquire_realization_with(thread, |_| ()).await.0;
         let _lifecycle = realization_view.lock_lifecycle(thread).await?;
         let environment = self
             .host
-            .realizer
+            .realization_executor
+            .environments()
             .resident_checkpoint_source_environment(
                 thread,
                 operation,
@@ -72,7 +73,7 @@ impl ManagedHost {
             ));
         }
         self.host
-            .realizer
+            .realization_executor
             .continuation_effect_fence(thread, operation)?;
         if !self
             .host
@@ -88,7 +89,7 @@ impl ManagedHost {
             ));
         }
         self.host
-            .realizer
+            .realization_executor
             .continuation_effect_fence(thread, operation)?;
         let mcp = self
             .host
@@ -96,7 +97,7 @@ impl ManagedHost {
             .await
             .map_err(to_run_error)?;
         self.host
-            .realizer
+            .realization_executor
             .continuation_effect_fence(thread, operation)?;
         environment.lifecycle().quiesce().await.map_err(|error| {
             RunError::unavailable_classified(
@@ -105,7 +106,7 @@ impl ManagedHost {
             )
         })?;
         self.host
-            .realizer
+            .realization_executor
             .continuation_effect_fence(thread, operation)?;
         sessions.modify_run(thread, |run| run.context = None);
         Ok(awaken_session_state_contract::QuiescenceReceipt {

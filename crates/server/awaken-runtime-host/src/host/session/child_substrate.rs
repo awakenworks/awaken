@@ -14,7 +14,8 @@ impl SharedHost {
     ) -> Result<ChildExecutionSubstrate, HostError> {
         let realizations = self.installed_sessions.realizations();
         let lifecycle_guard = realizations.lock_lifecycle(thread).await?;
-        self.realizer
+        self.realization_executor
+            .environments()
             .retry_unpublished_session_environment_cleanup(thread)
             .await?;
         let warm_context = self
@@ -47,16 +48,27 @@ impl SharedHost {
                     ));
                 }
                 let provider = self
-                    .realizer
+                    .realization_executor
+                    .environments()
                     .projected_session_environment_provider(thread, None)?;
-                self.realizer
-                    .create_reserved_session_environment_under_lifecycle(thread, provider)
+                self.realization_executor
+                    .environments()
+                    .create_reserved_session_environment_under_lifecycle(
+                        self.realization_executor.peers(),
+                        thread,
+                        provider,
+                    )
                     .await?
             }
         };
         let environment = self
-            .realizer
-            .ensure_published_environment_reconciled_under_lifecycle(thread, environment)
+            .realization_executor
+            .environments()
+            .ensure_published_environment_reconciled_under_lifecycle(
+                self.realization_executor.peers(),
+                thread,
+                environment,
+            )
             .await?;
         drop(lifecycle_guard);
         self.child_execution_substrate_from_environment(thread, warm_context, environment)
@@ -78,7 +90,8 @@ impl SharedHost {
         // must capture the actual Resident Arc/generation, not retain an old
         // parent's label or infer origin from a current desired projection.
         let (_, resource_origin) = self
-            .realizer
+            .realization_executor
+            .environments()
             .resident_environment_activity_identity(thread, &environment)?;
         let mut attempt_context = match warm_context {
             Some(context) => context.attempt_context.for_child_run(),

@@ -54,8 +54,13 @@ async fn captured_environment_intent_survives_renewal_without_rebuilding_adopt()
         )
         .from_binding("original-source");
         let effect = host
-            .realizer
-            .authorize_environment_effect_before_io(thread, &requested)
+            .realization_executor
+            .environments()
+            .authorize_environment_effect_before_io(
+                host.realization_executor.peers(),
+                thread,
+                &requested,
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -120,8 +125,8 @@ async fn managed_projection_without_a_lease_never_falls_back_to_unowned() {
             }
         });
         let intent = host
-            .realizer
-            .execution
+            .realization_executor
+            .authority()
             .new_environment_effect_intent(
                 thread,
                 awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
@@ -129,8 +134,13 @@ async fn managed_projection_without_a_lease_never_falls_back_to_unowned() {
             )
             .expect("installed Sessions");
         let missing = host
-            .realizer
-            .authorize_environment_effect_before_io(thread, &intent)
+            .realization_executor
+            .environments()
+            .authorize_environment_effect_before_io(
+                host.realization_executor.peers(),
+                thread,
+                &intent,
+            )
             .await;
         if !marker && !baseline && !closed {
             assert!(
@@ -155,8 +165,13 @@ async fn managed_projection_without_a_lease_never_falls_back_to_unowned() {
         });
         crate::ManagedHost::new(host.clone()).install_test_environment_binding_sink(sink.clone());
         let error = match host
-            .realizer
-            .authorize_environment_effect_before_io(thread, &intent)
+            .realization_executor
+            .environments()
+            .authorize_environment_effect_before_io(
+                host.realization_executor.peers(),
+                thread,
+                &intent,
+            )
             .await
         {
             Err(error) => error,
@@ -178,7 +193,8 @@ async fn managed_projection_without_a_lease_never_falls_back_to_unowned() {
             "M3 closes before any sink query"
         );
         assert!(
-            host.realizer
+            host.realization_executor
+                .environments()
                 .session_environment(thread)
                 .await
                 .expect("installed Sessions")
@@ -351,12 +367,14 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
     });
 
     let ordinary = host
-        .realizer
+        .realization_executor
+        .environments()
         .authorize_environment_effect_before_io(
+            host.realization_executor.peers(),
             thread,
             &host
-                .realizer
-                .execution
+                .realization_executor
+                .authority()
                 .new_environment_effect_intent(
                     thread,
                     awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
@@ -378,12 +396,14 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
     host.installed_sessions
         .update_run(thread, |run| run.session_dispatch = true);
     let managed = host
-        .realizer
+        .realization_executor
+        .environments()
         .authorize_environment_effect_before_io(
+            host.realization_executor.peers(),
             thread,
             &host
-                .realizer
-                .execution
+                .realization_executor
+                .authority()
                 .new_environment_effect_intent(
                     thread,
                     awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
@@ -430,7 +450,8 @@ async fn new_environment_binding_commits_once_before_concurrent_contexts_can_use
     assert_eq!(sink.calls.load(Ordering::SeqCst), 1);
     assert!(sink.observed_before_publish.load(Ordering::SeqCst));
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("binding-order")
             .await
             .expect("installed Sessions")
@@ -458,7 +479,8 @@ async fn root_response_loss_is_read_back_without_recreating_the_environment() {
     };
     assert_eq!(first_error.kind, HostErrorKind::Unavailable, "R1");
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("binding-response-loss")
             .await
             .expect("installed Sessions")
@@ -802,7 +824,8 @@ async fn recovered_environment_waits_for_replacement_realization_before_publish(
     assert_eq!(sink.authorize_calls.load(Ordering::SeqCst), 1, "R1");
     assert_eq!(sink.calls.load(Ordering::SeqCst), 0, "R1");
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("binding-restart")
             .await
             .expect("installed Sessions")
@@ -823,7 +846,8 @@ async fn recovered_environment_waits_for_replacement_realization_before_publish(
     assert_eq!(sink.authorize_calls.load(Ordering::SeqCst), 2, "R2");
     assert_eq!(sink.calls.load(Ordering::SeqCst), 1, "R2");
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("binding-restart")
             .await
             .expect("installed Sessions")
@@ -878,7 +902,8 @@ async fn environment_binding_catches_up_across_multiple_realization_fences() {
     assert_eq!(sink.authorize_calls.load(Ordering::SeqCst), 3, "E1/E2");
     assert_eq!(sink.calls.load(Ordering::SeqCst), 1, "E2");
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("binding-moving-fence")
             .await
             .expect("installed Sessions")
@@ -918,7 +943,8 @@ async fn missing_durable_environment_adoption_is_deferred_only_for_coordination(
     };
     assert!(error.to_string().contains("was not adopted"), "B1");
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("binding-corrupt")
             .await
             .expect("installed Sessions")
@@ -932,7 +958,8 @@ async fn missing_durable_environment_adoption_is_deferred_only_for_coordination(
         .expect("B2/B3 Coordinator-only projection does not adopt Worker substrate");
     assert!(reserved.env.is_none(), "B2/B3");
     assert_eq!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .durable_environment_binding("binding-corrupt")
             .expect("installed Sessions")
             .as_deref(),
@@ -940,7 +967,8 @@ async fn missing_durable_environment_adoption_is_deferred_only_for_coordination(
         "B2/B3 durable identity is retained",
     );
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("binding-corrupt")
             .await
             .expect("installed Sessions")
@@ -991,7 +1019,8 @@ async fn binding_commit_failure_is_retryable_and_never_publishes_the_environment
     assert_eq!(sink.authorize_calls.load(Ordering::SeqCst), 2);
     assert_eq!(sink.calls.load(Ordering::SeqCst), 2);
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("binding-failure")
             .await
             .expect("installed Sessions")
@@ -1066,7 +1095,8 @@ async fn on_tool_use_concurrent_hand_calls_create_and_persist_one_environment() 
     assert_eq!(sink.calls.load(Ordering::SeqCst), 1);
     assert!(sink.observed_before_publish.load(Ordering::SeqCst));
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("deferred-hand")
             .await
             .expect("installed Sessions")
@@ -1145,7 +1175,8 @@ async fn on_tool_use_binding_failure_never_publishes_the_environment() {
     assert_eq!(sink.authorize_calls.load(Ordering::SeqCst), 2);
     assert_eq!(sink.calls.load(Ordering::SeqCst), 2);
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("deferred-failure")
             .await
             .expect("installed Sessions")

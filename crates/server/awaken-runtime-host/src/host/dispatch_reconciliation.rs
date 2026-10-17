@@ -949,7 +949,8 @@ mod tests {
                     );
                 }
                 assert!(
-                    host.realizer
+                    host.realization_executor
+                        .environments()
                         .session_environment("orphan-thread")
                         .await
                         .expect("installed Sessions")
@@ -1080,14 +1081,16 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].run_id, RunId("run-control".to_string()), "R1");
         assert!(
-            host.realizer
+            host.realization_executor
+                .environments()
                 .session_environment("thread-control")
                 .await
                 .expect("installed Sessions")
                 .is_none()
         );
         assert!(
-            host.realizer
+            host.realization_executor
+                .environments()
                 .session_environment("thread-terminal")
                 .await
                 .expect("installed Sessions")
@@ -1311,7 +1314,8 @@ mod tests {
             "H1"
         );
         assert!(
-            host.realizer
+            host.realization_executor
+                .environments()
                 .session_environment("thread-exhausted")
                 .await
                 .expect("installed Sessions")
@@ -1413,7 +1417,8 @@ mod tests {
         assert_eq!(reconciled[0].0, run, "P1/E2");
         assert!(store.list_dispatches().await.unwrap().is_empty(), "P1/E2");
         assert!(
-            host.realizer
+            host.realization_executor
+                .environments()
                 .session_environment(&child.0)
                 .await
                 .expect("installed Sessions")

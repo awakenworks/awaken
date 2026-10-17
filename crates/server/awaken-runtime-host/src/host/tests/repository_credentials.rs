@@ -172,29 +172,30 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
             ),
         );
         let result = host
-            .realizer
-            .staging
-            .install_dispatched_resources(&host.realizer, &thread, &manifest, None)
+            .realization_executor
+            .install_dispatched_resources(&thread, &manifest, None)
             .await;
         result.unwrap_or_else(|error| panic!("{rule}: {error}"));
         assert_eq!(
-            host.realizer
-                .staging
+            host.realization_executor
+                .staging()
                 .thread_repository_activations(&thread)
                 .len(),
             1,
             "{rule}"
         );
         assert!(
-            host.realizer.staging.thread_repository_activations(&thread)[0]
+            host.realization_executor
+                .staging()
+                .thread_repository_activations(&thread)[0]
                 .credential_pin
                 .is_some(),
             "{rule}: staging retains only the exact pin"
         );
         let realizer = RecordingRepositoryRealizer::default();
         let effect = host
-            .realizer
-            .staging
+            .realization_executor
+            .staging()
             .realize_thread_repositories(&thread, host.local_workspace(), &realizer)
             .await;
         if install_credentials {
@@ -218,8 +219,8 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
             );
         }
         let staged = host
-            .realizer
-            .staging
+            .realization_executor
+            .staging()
             .thread_resources_snapshot(&thread)
             .expect("installed Sessions");
         let prior_calls = realizer.0.lock().unwrap().len();
@@ -230,17 +231,20 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
             }))
             .is_err()
         );
-        let effect =
-            std::panic::AssertUnwindSafe(host.realizer.staging.realize_repository_activation(
-                &thread,
-                host.local_workspace(),
-                &staged.repositories[0],
-                &staged.binding_checks,
-                &realizer,
-                awaken_provisioning_contract::RepositoryRealizationIntent::Initialize,
-            ))
-            .catch_unwind()
-            .await;
+        let effect = std::panic::AssertUnwindSafe(
+            host.realization_executor
+                .staging()
+                .realize_repository_activation(
+                    &thread,
+                    host.local_workspace(),
+                    &staged.repositories[0],
+                    &staged.binding_checks,
+                    &realizer,
+                    awaken_provisioning_contract::RepositoryRealizationIntent::Initialize,
+                ),
+        )
+        .catch_unwind()
+        .await;
         if install_credentials {
             let denied = effect
                 .expect("D3 a poisoned Slot denies without unwinding")
@@ -277,8 +281,8 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
         );
         let mut anonymous = staged.repositories[0].clone();
         anonymous.credential_pin = None;
-        host.realizer
-            .staging
+        host.realization_executor
+            .staging()
             .realize_repository_activation(
                 &thread,
                 host.local_workspace(),
@@ -375,14 +379,13 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         host.local_workspace(),
         platform_resources(),
     );
-    host.realizer
-        .staging
-        .install_dispatched_resources(&host.realizer, "platform-mediated", &manifest, Some(&claim))
+    host.realization_executor
+        .install_dispatched_resources("platform-mediated", &manifest, Some(&claim))
         .await
         .expect("P1 Gateway mediation needs no Worker materializer");
     let activations = host
-        .realizer
-        .staging
+        .realization_executor
+        .staging()
         .thread_repository_activations("platform-mediated");
     let activation = &activations[0];
     assert_eq!(
@@ -402,8 +405,8 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         "P1 retains the secret-free pin, never the staged capability"
     );
     let resources = host
-        .realizer
-        .staging
+        .realization_executor
+        .staging()
         .thread_resources_snapshot("platform-mediated")
         .expect("installed Sessions");
     let mut wrong_target = activation.clone();
@@ -420,8 +423,8 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
     );
     let invalid_realizer = RecordingRepositoryRealizer::default();
     let invalid = host
-        .realizer
-        .staging
+        .realization_executor
+        .staging()
         .realize_repository_activation(
             "platform-mediated",
             host.local_workspace(),
@@ -445,8 +448,8 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         .credential
         .id = "another-source".into();
     let invalid_source = host
-        .realizer
-        .staging
+        .realization_executor
+        .staging()
         .realize_repository_activation(
             "platform-mediated",
             host.local_workspace(),
@@ -467,8 +470,8 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
     assert!(invalid_realizer.0.lock().unwrap().is_empty(), "P5");
 
     let realizer = RecordingRepositoryRealizer::default();
-    host.realizer
-        .staging
+    host.realization_executor
+        .staging()
         .realize_thread_repositories("platform-mediated", host.local_workspace(), &realizer)
         .await
         .expect("P4 refreshes at the Git operation edge");
@@ -503,10 +506,9 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
     > = sequenced.clone();
     assert!(
         Arc::ptr_eq(
-            host.realizer
-                .staging
-                .repository_binding_verifier
-                .as_ref()
+            host.realization_executor
+                .staging()
+                .repository_binding_verifier()
                 .unwrap(),
             &original_verifier
         ),
@@ -514,9 +516,8 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
     );
     runtime
         .host
-        .realizer
-        .staging
-        .validate_thread_resource_bindings(&runtime.host.realizer, "platform-mediated")
+        .realization_executor
+        .validate_thread_resource_bindings("platform-mediated")
         .await
         .expect("P2 installed binding uses same Stage verifier");
     assert_eq!(
@@ -550,20 +551,14 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         platform_resources(),
     );
     downgrade_host
-        .realizer
-        .staging
-        .install_dispatched_resources(
-            &downgrade_host.realizer,
-            "platform-downgrade",
-            &downgrade_manifest,
-            Some(&claim),
-        )
+        .realization_executor
+        .install_dispatched_resources("platform-downgrade", &downgrade_manifest, Some(&claim))
         .await
         .expect("P6 initial Gateway route stages");
     let downgrade_realizer = RecordingRepositoryRealizer::default();
     let downgrade_error = downgrade_host
-        .realizer
-        .staging
+        .realization_executor
+        .staging()
         .realize_thread_repositories(
             "platform-downgrade",
             downgrade_host.local_workspace(),
@@ -596,48 +591,36 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         platform_resources(),
     );
     let denied = direct_host
-        .realizer
-        .staging
-        .install_dispatched_resources(
-            &direct_host.realizer,
-            "platform-direct-denied",
-            &direct_manifest,
-            Some(&claim),
-        )
+        .realization_executor
+        .install_dispatched_resources("platform-direct-denied", &direct_manifest, Some(&claim))
         .await
         .expect_err("P2 direct transport cannot receive Platform-held material");
     assert!(denied.message.contains("requires Gateway mediation"), "P2");
     assert!(
         direct_host
-            .realizer
-            .staging
+            .realization_executor
+            .staging()
             .thread_repository_activations("platform-direct-denied")
             .is_empty(),
         "P2"
     );
 
     direct_host
-        .realizer
-        .staging
-        .install_dispatched_resources(
-            &direct_host.realizer,
-            "platform-coordinator-stage",
-            &direct_manifest,
-            None,
-        )
+        .realization_executor
+        .install_dispatched_resources("platform-coordinator-stage", &direct_manifest, None)
         .await
         .expect("P3 unclaimed Coordinator stages only the exact Repository binding");
     assert!(
         direct_host
-            .realizer
-            .staging
+            .realization_executor
+            .staging()
             .thread_repository_activations("platform-coordinator-stage")
             .is_empty(),
         "P3 no Direct Git activation or anonymous fallback before a Run claim"
     );
     let staged = direct_host
-        .realizer
-        .staging
+        .realization_executor
+        .staging()
         .thread_resources_snapshot("platform-coordinator-stage")
         .expect("installed Sessions");
     assert_eq!(staged.binding_checks.len(), 1, "P3 exact binding retained");
@@ -674,7 +657,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
             },
         };
         let (lease, _) = terminal_recovery_effect(session, "terminal-protected-owner");
-        let staged = remote.realizer.staging.stage_terminal_repository_publication_input(
+        let staged = remote.realization_executor.staging().stage_terminal_repository_publication_input(
             "terminal-original-workspace", &command, &lease,
         ).await.expect("C13 freeze exact protected publication plan");
         let repository = &staged.repositories[0];
@@ -683,7 +666,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
             command: Box::new(command.clone()), lease: lease.clone(),
         });
         let published = Arc::new(RecordingRepositoryRealizer::default());
-        let receipt = remote.realizer.staging.publish_repository_activation(
+        let receipt = remote.realization_executor.staging().publish_repository_activation(
             session, remote.local_workspace(), repository, &staged.binding_checks,
             published.as_ref(), &expectation, Some(&fence),
         ).await.expect("C13 fresh capability at protected Git publication");
@@ -704,12 +687,12 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         renewed.expires_at_unix_ms += 1;
         let renewed_fence = (command.clone(), renewed.clone());
         *remote_verifier.next_error.lock().unwrap() = Some(awaken_resource_contract::RepositoryBindingVerifierError::Indeterminate { detail: "injected unknown authority".into() });
-        let refused = remote.realizer.staging.publish_repository_activation(
+        let refused = remote.realization_executor.staging().publish_repository_activation(
             session, remote.local_workspace(), repository, &staged.binding_checks,
             published.as_ref(), &expectation, Some(&renewed_fence),
         ).await.expect_err("C13 unknown authority must not grant publication");
         match refused {
-            crate::resource_staging::repository_activation::RepositoryPublicationActivationError::Failed(error) => {
+            crate::staged_resources::RepositoryPublicationActivationError::Failed(error) => {
                 assert_eq!(error.disposition(), crate::realization_error::Disposition::Retry, "C13 unknown typed kind");
                 assert_eq!(error.code(), "unavailable", "C13 original code");
                 assert_eq!(error.to_string(), "Repository binding decision is indeterminate: injected unknown authority", "C13 original reason");
@@ -721,20 +704,20 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
 
         let mut malformed = repository.clone();
         malformed.credential_pin.as_mut().unwrap().access.credential.id = "foreign-source".into();
-        let refused = remote.realizer.staging.publish_repository_activation(
+        let refused = remote.realization_executor.staging().publish_repository_activation(
             session, remote.local_workspace(), &malformed, &staged.binding_checks,
             published.as_ref(), &expectation, Some(&fence),
         ).await.expect_err("C13 pin rejects before verifier");
-        assert!(matches!(refused, crate::resource_staging::repository_activation::RepositoryPublicationActivationError::Failed(error)
+        assert!(matches!(refused, crate::staged_resources::RepositoryPublicationActivationError::Failed(error)
             if error.disposition() == crate::realization_error::Disposition::Terminal && error.to_string() == "invalid Repository credential execution pin: Repository credential pin selects another source"));
         assert_eq!(remote_verifier.calls.load(Ordering::SeqCst), 3, "C13 malformed no refresh");
         assert_eq!(published.1.lock().unwrap().len(), 1, "C13 malformed zero effect");
         *remote_verifier.next_transport.lock().unwrap() = Some(awaken_resource_contract::RepositoryTransport::Direct);
-        let refused = remote.realizer.staging.publish_repository_activation(
+        let refused = remote.realization_executor.staging().publish_repository_activation(
             session, remote.local_workspace(), repository, &staged.binding_checks,
             published.as_ref(), &expectation, Some(&fence),
         ).await.expect_err("C13 upstream direct downgrade rejects");
-        assert!(matches!(refused, crate::resource_staging::repository_activation::RepositoryPublicationActivationError::Failed(error)
+        assert!(matches!(refused, crate::staged_resources::RepositoryPublicationActivationError::Failed(error)
             if error.disposition() == crate::realization_error::Disposition::Terminal && error.to_string() == "Gateway-mediated Repository cannot fall back to direct credentials"));
         assert_eq!(remote_verifier.calls.load(Ordering::SeqCst), 4, "C13 one downgrade decision");
         assert_eq!(published.1.lock().unwrap().len(), 1, "C13 downgrade zero effect");
@@ -748,14 +731,14 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             missing.installed_sessions.modify(session, |_| panic!("C12 actual Slot poison"));
         })).is_err());
-        let refused = std::panic::AssertUnwindSafe(missing.realizer.staging.publish_repository_activation(
+        let refused = std::panic::AssertUnwindSafe(missing.realization_executor.staging().publish_repository_activation(
             session, missing.local_workspace(), repository, &staged.binding_checks,
             published.as_ref(), &expectation, Some(&fence),
         )).catch_unwind().await.expect("C12 missing verifier precedes poison").expect_err("C12 refused");
-        assert!(matches!(refused, crate::resource_staging::repository_activation::RepositoryPublicationActivationError::Failed(error)
+        assert!(matches!(refused, crate::staged_resources::RepositoryPublicationActivationError::Failed(error)
             if error.disposition() == crate::realization_error::Disposition::Terminal && error.to_string() == "terminal Repository publication has no binding verifier"));
         assert!(matches!(
-            std::panic::AssertUnwindSafe(missing.realizer.staging.realize_repository_activation(
+            std::panic::AssertUnwindSafe(missing.realization_executor.staging().realize_repository_activation(
                 session, missing.local_workspace(), repository, &staged.binding_checks,
                 published.as_ref(), awaken_provisioning_contract::RepositoryRealizationIntent::Initialize,
             )).catch_unwind().await.expect("C12 a poisoned Slot denies without unwinding"),
@@ -778,7 +761,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
             let expectation = expectation.clone();
             let fence = fence.clone();
             async move {
-                std::panic::AssertUnwindSafe(remote.realizer.staging.publish_repository_activation(
+                std::panic::AssertUnwindSafe(remote.realization_executor.staging().publish_repository_activation(
                     session, remote.local_workspace(), &repository, &checks,
                     published.as_ref(), &expectation, Some(&fence),
                 )).catch_unwind().await
@@ -794,7 +777,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         assert!(
             matches!(
                 refused.expect("C13 a poisoned Slot denies without unwinding"),
-                Err(crate::resource_staging::repository_activation::RepositoryPublicationActivationError::Failed(
+                Err(crate::staged_resources::RepositoryPublicationActivationError::Failed(
                     crate::realization_error::RealizationError::Poisoned(_)
                 ))
             ),
@@ -1075,7 +1058,10 @@ async fn repository_credential_realization_follows_the_decision_table() {
         );
         if rule.expected_error.is_none() || rejects_at_effect {
             result.unwrap_or_else(|error| panic!("{}: {error}", rule.id));
-            let staged = host.realizer.staging.thread_repository_activations(&thread);
+            let staged = host
+                .realization_executor
+                .staging()
+                .thread_repository_activations(&thread);
             assert_eq!(staged.len(), 1, "{}", rule.id);
             assert_eq!(
                 staged[0].credential_pin.is_some(),
@@ -1085,8 +1071,8 @@ async fn repository_credential_realization_follows_the_decision_table() {
             );
             let realizer = RecordingRepositoryRealizer::default();
             let effect = host
-                .realizer
-                .staging
+                .realization_executor
+                .staging()
                 .realize_thread_repositories(&thread, host.local_workspace(), &realizer)
                 .await;
             match rule.expected_error {
@@ -1102,8 +1088,8 @@ async fn repository_credential_realization_follows_the_decision_table() {
                         .await
                         .expect("H14 disable the exact source between Git effects");
                         let retry = host
-                            .realizer
-                            .staging
+                            .realization_executor
+                            .staging()
                             .realize_thread_repositories(&thread, host.local_workspace(), &realizer)
                             .await
                             .expect_err("H14 second Git effect revalidates liveness");
@@ -1200,7 +1186,9 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
         .expect("compile the exact initial Repository transition");
 
     let clone_credential_id = |h: &SharedHost| {
-        h.realizer.staging.thread_repository_activations("t-rot")[0]
+        h.realization_executor
+            .staging()
+            .thread_repository_activations("t-rot")[0]
             .credential_pin
             .as_ref()
             .map(|pin| pin.access.credential.id.clone())

@@ -36,7 +36,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         .await
         .build()
         .expect("validated Host dependencies");
-    let sessions = host.realizer.sessions.clone();
+    let sessions = host.realization_executor.sessions().clone();
 
     assert!(
         sessions

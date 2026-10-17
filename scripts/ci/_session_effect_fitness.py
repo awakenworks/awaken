@@ -79,19 +79,19 @@ SESSION_REALIZATION_CONTROL_DEADLINE = (
     "control_deadline.rs"
 )
 RUNTIME_REPOSITORY_PUBLICATION = (
-    "crates/server/awaken-session-realization/src/terminal_repository_publication.rs"
+    "crates/server/awaken-session-realization/src/terminal_effects/repository_publication.rs"
 )
 RUNTIME_HOST_TERMINAL = (
-    "crates/server/awaken-session-realization/src/environment_lifecycle.rs"
+    "crates/server/awaken-session-realization/src/environment_holding/lifecycle.rs"
 )
-RUNTIME_BOUND_ENVIRONMENT = "crates/server/awaken-session-realization/src/bound_environment.rs"
+RUNTIME_BOUND_ENVIRONMENT = "crates/server/awaken-session-realization/src/environment_holding/bound_environment.rs"
 RUNTIME_HOST_TERMINAL_PREPARATION = (
     "crates/server/awaken-session-realization/src/"
-    "environment_lifecycle/terminal_preparation.rs"
+    "terminal_effects/preparation.rs"
 )
 RUNTIME_HOST_TERMINAL_CLEANUP = (
     "crates/server/awaken-session-realization/src/"
-    "environment_lifecycle/terminal_cleanup.rs"
+    "terminal_effects/cleanup.rs"
 )
 GIT_REPOSITORY_PUBLICATION = (
     "crates/worker/awaken-sandbox-local/src/git_transport.rs"
@@ -725,7 +725,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
         _require_ordered_function(
             sources, RUNTIME_BOUND_ENVIRONMENT,
             "install_bound_environment_under_lifecycle",
-            ("self.execution.provider_effect_authority(",
+            ("peers.authority.provider_effect_authority(",
              ".prepare_terminal_effective_for_effect(", "&authority,"),
             "cold terminal reconstruction authority",
         )
@@ -757,7 +757,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
             sources, RUNTIME_HOST_TERMINAL_PREPARATION,
             "cleanup_terminal_checkpoint",
             ("self.effect_fence(effect)?",
-             "environments.execution.provider_effect_authority(",
+             "peers.authority.provider_effect_authority(",
              "with_current_sandbox_effect(", "match (checkpoint, pending_checkpoint)",
              ".cleanup_checkpoint_for_terminal(", "&authority,",
              "with_current_sandbox_effect("),
@@ -793,7 +793,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
                 "(SessionEnvironmentOwner::Retiring(retirement), None)",
                 "let exact_authorization = self.disposal_authorization(&effect)?",
                 "if exact_authorization != authorization",
-                "realizer.execution.provider_effect_authority(",
+                "peers.authority.provider_effect_authority(",
                 ".dispose_for_effect(&authorization, &authority)",
                 "sessions.end_terminal_disposal(",
                 "self.disposal_authorization(&effect)?",
@@ -804,7 +804,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
     )
     errors.extend(_require_ordered_function(
         sources, RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
-        ("realizer.execution.provider_effect_authority(",
+        ("peers.authority.provider_effect_authority(",
          ".dispose_restored(&spec, expected, &authorization, &authority)",
          "with_current_sandbox_effect("),
         "restored target current authority",
@@ -1088,7 +1088,7 @@ def _migrated_effect_owner_mutation_selftest(sources: dict[str, str]) -> None:
         (APPLICATION_CLEANUP, "authorize_terminal_cleanup_effect_from_root",
          ".with_source_dispatch(source_dispatch)", "root-derived terminal preparation authorization", False, ""),
         (RUNTIME_BOUND_ENVIRONMENT, "install_bound_environment_under_lifecycle",
-         "self.execution.provider_effect_authority(", "cold terminal reconstruction authority", False, ""),
+         "peers.authority.provider_effect_authority(", "cold terminal reconstruction authority", False, ""),
         (RUNTIME_BOUND_ENVIRONMENT, "install_bound_environment_under_lifecycle",
          "&authority,", "cold terminal reconstruction authority", False, ".prepare_terminal_effective_for_effect("),
         (RUNTIME_BOUND_ENVIRONMENT, "install_bound_environment_under_lifecycle",
@@ -1102,7 +1102,7 @@ def _migrated_effect_owner_mutation_selftest(sources: dict[str, str]) -> None:
         (RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
          "let exact_authorization = self.disposal_authorization(&effect)?", "physical terminal disposal", False, ""),
         (RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
-         "realizer.execution.provider_effect_authority(", "physical terminal disposal", True, ""),
+         "peers.authority.provider_effect_authority(", "physical terminal disposal", True, ""),
         (RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
          ".dispose_for_effect(&authorization, &authority)", "physical terminal disposal", False, ""),
         (RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
@@ -1110,7 +1110,7 @@ def _migrated_effect_owner_mutation_selftest(sources: dict[str, str]) -> None:
         (RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
          "SessionCleanupDisposalReceipt::new(", "physical terminal disposal", False, ""),
         (RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
-         "realizer.execution.provider_effect_authority(", "restored target current authority", False, ""),
+         "peers.authority.provider_effect_authority(", "restored target current authority", False, ""),
         (RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
          ".dispose_restored(&spec, expected, &authorization, &authority)", "restored target current authority", False, ""),
         (RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
@@ -1320,7 +1320,7 @@ async fn renew_session_realization() {
 """
     canonical[RUNTIME_BOUND_ENVIRONMENT] = """
 fn install_bound_environment_under_lifecycle() {
-    let authority = self.execution.provider_effect_authority(...);
+    let authority = peers.authority.provider_effect_authority(...);
     provider.prepare_terminal_effective_for_effect(spec, handle, expected_effect_fence, effect_fence, &authority,);
     provider.rebind_retained(spec, &authority,);
 }
@@ -1337,7 +1337,7 @@ fn disposal_authorization() {
 }
 fn cleanup_terminal_checkpoint() {
     let fence = self.effect_fence(effect)?;
-    let authority = environments.execution.provider_effect_authority(...);
+    let authority = peers.authority.provider_effect_authority(...);
     with_current_sandbox_effect(&fence, &authority, || Ok(()));
     match (checkpoint, pending_checkpoint) {
         provider.cleanup_checkpoint_for_terminal(request, store, expected, fence, &authority,);
@@ -1365,14 +1365,14 @@ fn dispose_terminal_cleanup_effect() {
     let authorization = self.disposal_authorization(&effect)?;
     self.prepare_terminal_environment_under_lifecycle(
         session_id, authorization.effect_fence(), BoundEnvironmentPreparationMode::TerminalDisposal);
-    let authority = realizer.execution.provider_effect_authority(...);
+    let authority = peers.authority.provider_effect_authority(...);
     provider.dispose_restored(&spec, expected, &authorization, &authority);
     with_current_sandbox_effect(authorization.effect_fence(), &authority, || Ok(()));
     match owner {
         (SessionEnvironmentOwner::Retiring(retirement), None) => {
             let exact_authorization = self.disposal_authorization(&effect)?;
             if exact_authorization != authorization { return Err(changed); }
-            let authority = realizer.execution.provider_effect_authority(...);
+            let authority = peers.authority.provider_effect_authority(...);
             environment.dispose_for_effect(&authorization, &authority);
         }
     }
@@ -1554,7 +1554,7 @@ fn recover_terminal_receipts() {
     # the typed disposal receipt. Accept C1+C2; either omission must fail even
     # when the old typed-fence and aggregate-receipt markers remain present.
     for marker in (
-        "let authority = realizer.execution.provider_effect_authority(...);",
+        "let authority = peers.authority.provider_effect_authority(...);",
         ".dispose_for_effect(&authorization, &authority)",
     ):
         mutant = dict(canonical)
@@ -1582,7 +1582,7 @@ fn recover_terminal_receipts() {
     # post-response admission. Removing either authority edge is rejected in
     # this function even though cold reconstruction retains all its markers.
     for marker, replacement, last in (
-        ("environments.execution.provider_effect_authority(", "", False),
+        ("peers.authority.provider_effect_authority(", "", False),
         ("with_current_sandbox_effect(", "", False),
         ("with_current_sandbox_effect(", "", True),
         (".cleanup_checkpoint_for_terminal(request, store, expected, fence, &authority,)",
@@ -1600,7 +1600,7 @@ fn recover_terminal_receipts() {
 
     # Restored target S1 capture, S2 exact forwarding, S3 post-response check.
     # Ordinary physical disposal remains intact and cannot mask this branch.
-    for marker in ("let authority = realizer.execution.provider_effect_authority(...);",
+    for marker in ("let authority = peers.authority.provider_effect_authority(...);",
                    ".dispose_restored(&spec, expected, &authorization, &authority)",
                    "with_current_sandbox_effect("):
         mutant = dict(canonical)

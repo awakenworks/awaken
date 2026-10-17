@@ -7,34 +7,14 @@
 //! through the realization executor and its provider owners. Host-level Memory,
 //! MCP, delegated-Run and publication coordination stays in the Host adapter.
 
+use crate::peers::EnvironmentPeer as _;
+use crate::sandbox_projection::provisioning_checkpoint_request;
 use awaken_session_configuration_contract::resource as session_resource;
 use awaken_session_realization_contract::ResourceOperationFence;
 
 use awaken_session_types::RunError;
 
 use crate::realization_executor::RealizationExecutor;
-
-/// The Runtime Host is the sole adapter from aggregate checkpoint intent to
-/// provider byte-custody input. Ordinary suspension and terminal takeover both
-/// call this projection so metadata, expiry, and effect identity cannot drift.
-/// Session activity/source/lease coordinates stay on the aggregate-side request;
-/// this capture input neither grants authority nor replaces the separate fence.
-pub fn provisioning_checkpoint_request(
-    request: &awaken_session_state_contract::SandboxCheckpointRequest,
-) -> awaken_provisioning_contract::SandboxCheckpointCaptureRequest {
-    awaken_provisioning_contract::SandboxCheckpointCaptureRequest {
-        workspace_id: request.workspace_id.clone(),
-        session_id: request.session_id.to_string(),
-        generation_id: request.generation.id().to_owned(),
-        environment_fingerprint: request.generation.environment_fingerprint().to_owned(),
-        base_image_fingerprint: request.generation.base_image_fingerprint().to_owned(),
-        effect_id: request.operation.effect_id.clone(),
-        format: request.format.clone(),
-        created_at_unix_ms: request.created_at_unix_ms,
-        expires_at_unix_ms: request.expires_at_unix_ms,
-        max_bytes: request.max_bytes,
-    }
-}
 
 impl RealizationExecutor {
     /// All continuation effects read the same Session slot admission decision.
@@ -161,11 +141,12 @@ impl RealizationExecutor {
         // Capture the original Worker/Session roots before awaiting lifecycle
         // ownership; a same-byte replacement must not rebind this operation.
         let authority = self
-            .execution
+            .authority
             .provider_effect_authority(thread, &effect_fence)
             .map_err(awaken_session_types::RunError::from)?;
         let _lifecycle = realizations.lock_lifecycle(thread).await?;
         let environment = self
+            .environments
             .resident_checkpoint_source_environment(
                 thread,
                 &request.operation,
@@ -175,7 +156,8 @@ impl RealizationExecutor {
             )
             .map_err(awaken_session_types::RunError::from)?;
         let store = self
-            .env
+            .environments
+            .providers()
             .environment_checkpoint_store
             .as_ref()
             .ok_or_else(|| {
@@ -215,7 +197,7 @@ impl RealizationExecutor {
     ) -> Result<awaken_session_state_contract::SourceReleasePreparedReceipt, RunError> {
         let exec = &self.environments;
         self.continuation_preparation_effect_fence(thread, preparation)?;
-        let Some(resources) = exec.staging.thread_resource_manifest(thread)? else {
+        let Some(resources) = self.staging.thread_resource_manifest(thread)? else {
             return Err(RunError::unavailable_classified(
                 "session_environment_continuation_resources_missing",
                 "Checkpoint source preparation has no frozen active Resource manifest",
@@ -262,12 +244,13 @@ impl RealizationExecutor {
                     error.to_string(),
                 )
             })?;
-        let _lifecycle = exec.sessions.lock_lifecycle(thread).await?;
+        let _lifecycle = self.sessions.lock_lifecycle(thread).await?;
         self.continuation_preparation_effect_fence(thread, preparation)?;
         let effect_fence = self.continuation_preparation_effect_fence(thread, preparation)?;
         let prepared = self
+            .environments
             .prepare_bound_environment_for_effect_under_lifecycle(
-                &self.cleanup,
+                self.peers(),
                 thread,
                 source_binding,
                 &effect_fence,
@@ -284,8 +267,8 @@ impl RealizationExecutor {
         };
         if prepared.permits_live_io() {
             self.continuation_preparation_effect_fence(thread, preparation)?;
-            self.cleanup
-                .artifacts
+            self.effects
+                .artifacts()
                 .harvest_with_environment_and_fence(
                     thread,
                     Some(ResourceOperationFence::CheckpointRelease(
@@ -304,7 +287,7 @@ impl RealizationExecutor {
         if let Some(materializations) = acknowledged_materializations {
             let effect_fence = self.continuation_preparation_effect_fence(thread, preparation)?;
             let authority = self
-                .execution
+                .authority
                 .provider_effect_authority(thread, &effect_fence)
                 .map_err(awaken_session_types::RunError::from)?;
             environment
@@ -320,7 +303,7 @@ impl RealizationExecutor {
         }
         let effect_fence = self.continuation_preparation_effect_fence(thread, preparation)?;
         let authority = self
-            .execution
+            .authority
             .provider_effect_authority(thread, &effect_fence)
             .map_err(awaken_session_types::RunError::from)?;
         let provider_prepared_effect_fence = environment
@@ -370,15 +353,17 @@ impl RealizationExecutor {
         let _lifecycle = realizations.lock_lifecycle(thread).await?;
         let provider_authorization =
             self.continuation_source_disposal_authorization(thread, disposal)?;
-        self.dispose_prepared_checkpoint_source_environment(
-            thread,
-            operation,
-            generation,
-            source_binding,
-            &provider_authorization,
-        )
-        .await
-        .map_err(awaken_session_types::RunError::from)?;
+        self.environments
+            .dispose_prepared_checkpoint_source_environment(
+                self.peers(),
+                thread,
+                operation,
+                generation,
+                source_binding,
+                &provider_authorization,
+            )
+            .await
+            .map_err(awaken_session_types::RunError::from)?;
         self.continuation_source_disposal_authorization(thread, disposal)?;
         Ok(awaken_session_state_contract::SourceDisposedReceipt {
             effect_id: operation.effect_id.clone(),
@@ -399,13 +384,16 @@ impl RealizationExecutor {
             .map_err(|error| RunError::unavailable(error.to_string()))?;
         let thread = request.session_id.clone();
         let _lifecycle = realizations.lock_lifecycle(&thread).await?;
-        exec.retry_unpublished_session_environment_cleanup(&thread)
+        exec.environments
+            .retry_unpublished_session_environment_cleanup(&thread)
             .await
             .map_err(awaken_session_types::RunError::from)?;
-        exec.begin_session_environment_restore(&thread, &request)
+        exec.environments
+            .begin_session_environment_restore(&thread, &request)
             .map_err(awaken_session_types::RunError::from)?;
         let store = exec
-            .env
+            .environments
+            .providers()
             .environment_checkpoint_store
             .as_ref()
             .ok_or_else(|| {
@@ -415,7 +403,8 @@ impl RealizationExecutor {
                 )
             })?;
         let (workspace, _, publication, _) = self
-            .publication
+            .environments
+            .publication()
             .resolve_session_publication(&thread, None, None)
             .map_err(awaken_session_types::RunError::from)?;
         if workspace != request.workspace_id {
@@ -428,6 +417,7 @@ impl RealizationExecutor {
             .map(|snapshot| snapshot.resolved_spec.model_binding.provisioning())
             .unwrap_or(&awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor);
         let provider = exec
+            .environments
             .session_environment_provider_for_thread(&thread, provisioning)
             .map_err(awaken_session_types::RunError::from)?;
         let spec = self.staging.sandbox_spec_for_provider(&thread, provider)?;
@@ -451,7 +441,8 @@ impl RealizationExecutor {
         checkpoint: &awaken_session_state_contract::SandboxCheckpointRef,
     ) -> Result<(), RunError> {
         let store = self
-            .env
+            .environments
+            .providers()
             .environment_checkpoint_store
             .as_ref()
             .ok_or_else(|| {

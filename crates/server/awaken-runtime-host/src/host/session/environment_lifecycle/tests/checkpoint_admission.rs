@@ -283,27 +283,40 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
                 awaken_session_realization::test_support::test_observed_lease(lease.clone()),
             );
         });
-        let handle = terminal_fixture_container_handle(thread, &host.realizer.sandbox_spec(thread));
+        let handle = terminal_fixture_container_handle(
+            thread,
+            &host.realization_executor.sandbox_spec(thread),
+        );
         let (state, _, _) =
             disposing_terminal_environment(thread, &lease, &handle, "exact-checkpoint");
         *worker.current.lock().unwrap() = None;
         assert!(
-            host.realizer
-                .cleanup
-                .cleanup_terminal_checkpoint(&host.realizer, &effect, &state, None, None)
+            host.realization_executor
+                .effects()
+                .cleanup_terminal_checkpoint(
+                    host.realization_executor.peers(),
+                    &effect,
+                    &state,
+                    None,
+                    None
+                )
                 .await
                 .is_err(),
             "R1"
         );
         assert!(events.lock().unwrap().is_empty(), "R1");
         *worker.current.lock().unwrap() = Some((fence.clone(), Duration::from_secs(1)));
-        let mut pending = Box::pin(host.realizer.cleanup.cleanup_terminal_checkpoint(
-            &host.realizer,
-            &effect,
-            &state,
-            None,
-            None,
-        ));
+        let mut pending = Box::pin(
+            host.realization_executor
+                .effects()
+                .cleanup_terminal_checkpoint(
+                    host.realization_executor.peers(),
+                    &effect,
+                    &state,
+                    None,
+                    None,
+                ),
+        );
         tokio::select! {
             biased;
             result = &mut pending => panic!("C2 must wait: {result:?}"),
@@ -364,9 +377,15 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
                 );
             })
             .expect("installed Sessions");
-        host.realizer
-            .cleanup
-            .cleanup_terminal_checkpoint(&host.realizer, &effect, &state, None, None)
+        host.realization_executor
+            .effects()
+            .cleanup_terminal_checkpoint(
+                host.realization_executor.peers(),
+                &effect,
+                &state,
+                None,
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -462,15 +481,16 @@ async fn suspension_and_terminal_admission_use_live_observation_and_never_reopen
             None,
         );
         assert_eq!(
-            host.realizer
+            host.realization_executor
+                .environments()
                 .validate_suspend_operation(rule, &operation, &generation)
                 .is_ok(),
             suspension,
             "{rule}/suspend"
         );
         assert_eq!(
-            host.realizer
-                .cleanup
+            host.realization_executor
+                .effects()
                 .authorize_lease(&awaken_session_types::SessionId::from(rule), &asserted)
                 .is_ok(),
             terminal,

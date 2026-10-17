@@ -106,8 +106,8 @@ async fn provider_fence_source_decision_table_preserves_exact_live_authority() {
             let initial = lease().sandbox_effect_fence("create").unwrap();
             install(&host, lease());
             let source = host
-                .realizer
-                .execution
+                .realization_executor
+                .authority()
                 .provider_effect_authority("session", &initial)
                 .unwrap();
             assert_eq!(source.current_effect_fence(&initial).unwrap(), initial);
@@ -260,8 +260,8 @@ async fn provider_fence_source_capture_rejects_absent_slot_and_invalid_identity(
     let host = host().await;
     let valid = lease().sandbox_effect_fence("create").unwrap();
     assert!(
-        host.realizer
-            .execution
+        host.realization_executor
+            .authority()
             .provider_effect_authority("session", &valid)
             .is_err()
     );
@@ -307,8 +307,8 @@ async fn provider_fence_source_capture_rejects_absent_slot_and_invalid_identity(
             _ => unreachable!(),
         }
         assert!(
-            host.realizer
-                .execution
+            host.realization_executor
+                .authority()
                 .provider_effect_authority("session", &initial)
                 .is_err(),
             "{rule}"
@@ -326,8 +326,8 @@ async fn provider_fence_source_cannot_retain_the_host_or_authorize_after_its_dro
     install(&host, lease());
     let initial = lease().sandbox_effect_fence("create").unwrap();
     let source = host
-        .realizer
-        .execution
+        .realization_executor
+        .authority()
         .provider_effect_authority("session", &initial)
         .unwrap();
     drop(host);
@@ -374,8 +374,8 @@ async fn provider_fence_source_waiting_for_worker_rechecks_slot_after_revocation
         install(&host, lease());
         let initial = lease().sandbox_effect_fence("create").unwrap();
         let source = host
-            .realizer
-            .execution
+            .realization_executor
+            .authority()
             .provider_effect_authority("session", &initial)
             .unwrap();
         std::thread::scope(|scope| {
@@ -609,8 +609,8 @@ async fn adoption_forwards_original_authority_across_observation_and_provider_wa
                 )
                 .into_session_provider();
                 let spec = host
-                    .realizer
-                    .staging
+                    .realization_executor
+                    .staging()
                     .sandbox_spec_for_provider("session", &provider)
                     .expect("installed Sessions");
                 let handle =
@@ -624,14 +624,16 @@ async fn adoption_forwards_original_authority_across_observation_and_provider_wa
                 .from_binding(&binding);
                 let initial = lease().sandbox_effect_fence(intent.effect_id()).unwrap();
                 let effect = AuthorizedSessionEnvironmentEffect {
-                    provider_authority: Some(Arc::new(host.realizer.execution.provider_effect_authority("session", &initial).unwrap())),
+                    provider_authority: Some(Arc::new(host.realization_executor.authority().provider_effect_authority("session", &initial).unwrap())),
                     provider_fence: Some(initial),
                     authorization:
                         awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized { intent: Box::new(intent) },
                 };
                 let adopt = host
-                    .realizer
+                    .realization_executor
+                    .environments()
                     .adopt_bound_session_environment_under_lifecycle(
+                        host.realization_executor.peers(),
                         "session",
                         &binding,
                         &provider,
@@ -744,8 +746,8 @@ async fn provider_fence_source_is_wired_across_preparation_and_provider_awaits()
             });
         let initial = lease().sandbox_effect_fence("create").unwrap();
         let authority = (rule != "provider_unfenced").then(|| {
-            host.realizer
-                .execution
+            host.realization_executor
+                .authority()
                 .provider_effect_authority("session", &initial)
                 .unwrap()
         });
@@ -753,7 +755,7 @@ async fn provider_fence_source_is_wired_across_preparation_and_provider_awaits()
             host.installed_sessions.close_realization("session", None);
         }
         let create = awaken_session_realization::test_support::create_session_environment(
-            &host.realizer,
+            &host.realization_executor,
             &provider,
             &spec,
             (rule != "provider_unfenced").then_some(&initial),
@@ -875,8 +877,8 @@ async fn environment_receipt_refreshes_only_the_captured_live_generation() {
             .for_environment("immutable-config");
             let initial = lease().sandbox_effect_fence(intent.effect_id()).unwrap();
             let authority = host
-                .realizer
-                .execution
+                .realization_executor
+                .authority()
                 .provider_effect_authority("session", &initial)
                 .unwrap();
             let effect = AuthorizedSessionEnvironmentEffect {
@@ -925,8 +927,8 @@ async fn environment_receipt_refreshes_only_the_captured_live_generation() {
                 _ => {}
             }
             let receipt = host
-                .realizer
-                .execution
+                .realization_executor
+                .authority()
                 .current_environment_receipt("binding".into(), &effect);
             assert_eq!(
                 receipt.is_ok(),

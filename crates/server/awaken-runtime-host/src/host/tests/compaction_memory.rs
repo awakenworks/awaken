@@ -273,7 +273,8 @@ async fn generated_compaction_config_survives_claimed_rebuild() {
     };
     assert_exact_config(&provisional.config, "C7/E1");
 
-    host.realizer
+    host.realization_executor
+        .environments()
         .evict_session_for_rebuild("durable-compact-config")
         .await
         .expect("installed Sessions");
@@ -1085,7 +1086,8 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     });
     tokio::task::yield_now().await;
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("memory-replay")
             .await
             .expect("installed Sessions")
@@ -1106,7 +1108,8 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     .await
     .unwrap();
     let environment = host
-        .realizer
+        .realization_executor
+        .environments()
         .session_environment("memory-replay")
         .await
         .expect("installed Sessions")
@@ -1174,7 +1177,8 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     assert!(Arc::ptr_eq(
         &environment,
         &host
-            .realizer
+            .realization_executor
+            .environments()
             .session_environment("memory-replay")
             .await
             .expect("installed Sessions")
@@ -1182,8 +1186,8 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     ));
 
     let installed = host
-        .realizer
-        .staging
+        .realization_executor
+        .staging()
         .thread_resource_manifest("memory-replay")
         .expect("installed Sessions");
     for field in [
@@ -1253,8 +1257,8 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
             );
         }
         assert_eq!(
-            host.realizer
-                .staging
+            host.realization_executor
+                .staging()
                 .thread_resource_manifest("memory-replay")
                 .expect("installed Sessions"),
             installed,

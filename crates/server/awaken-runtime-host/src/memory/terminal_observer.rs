@@ -113,8 +113,8 @@ impl crate::host::SharedHost {
                 )
             })?;
             let binding = self
-                .realizer
-                .staging
+                .realization_executor
+                .staging()
                 .compile_frozen_memory_binding(session_thread, manifest, binding_id)
                 .await
                 .map_err(|error| crate::HostError::internal(error.to_string()))?;

@@ -5,6 +5,7 @@
 //! constructor), per-thread registration, and the process dispatch pool.
 
 use super::*;
+use awaken_session_realization::peers::EnvironmentPeer as _;
 
 use awaken_runtime_contract::delegation::RunDelegationService;
 
@@ -139,13 +140,20 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
         agent: capability::AgentExecution::new(agent, installed_sessions.clone()),
         exec,
         worker,
-        realizer: crate::realization_executor::RealizationExecutor {
-            clock: clock.clone(),
-            environments: crate::environment_holding::EnvironmentHolding::new(
+        realization_executor: crate::realization_executor::RealizationExecutor::new(
+            clock.clone(),
+            realizations.clone(),
+            crate::environment_holding::EnvironmentHolding::new(
                 env,
                 execution.local.runs_local_pool(),
-                crate::resource_staging::ResourceStaging {
-                    sessions: realizations.clone(),
+                realizations.clone(),
+                environment_binding_sink,
+                dispatch_execution,
+                publication,
+            ),
+            crate::resource_staging::ResourceStaging::new(
+                realizations.clone(),
+                crate::resource_staging::ResourceSources {
                     bundle_source: skill_bundle_source,
                     file_content_source: resources.file_content_source.clone(),
                     memory: resources.memory_stores.clone(),
@@ -157,20 +165,20 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
                     credential_materializer,
                     memory_reference_encoder: authority.memory_reference_encoder(),
                 },
-                execution_authority,
-                environment_binding_sink,
-                dispatch_execution,
-                publication,
             ),
-            cleanup: crate::terminal_cleanup::TerminalCleanup {
-                artifacts: Arc::new(crate::artifact_harvest::ArtifactHarvester::new(
+            crate::terminal_effects::TerminalEffects::new(
+                realizations.clone(),
+                Arc::new(crate::artifact_harvest::ArtifactHarvester::new(
                     realizations.clone(),
                     local_workspace.clone(),
                     resources.artifact_publisher.clone(),
                 )),
-                sessions: realizations.clone(),
-            },
-        },
+            ),
+            crate::execution_authority::ExecutionAuthority::new(
+                realizations.clone(),
+                execution_authority,
+            ),
+        ),
         tools,
         resources: capability::ResourcePorts::new(resources, memory),
         mcp,
@@ -196,7 +204,7 @@ impl SharedHost {
     /// Warm Environment capacity supplied by this Host's existing providers.
     #[must_use]
     pub fn environment_capacity(&self) -> &crate::environment_providers::EnvironmentProviders {
-        &self.realizer.env
+        self.realization_executor.environments().providers()
     }
 
     /// Mint a fresh process-unique platform Workspace coordinate. This Host
@@ -345,7 +353,10 @@ impl SharedHost {
                 commit: commit.clone(),
                 reader: commit,
                 owner: self.dispatch_owner().to_owned(),
-                session_resources: self.realizer.staging.thread_resource_manifest(thread)?,
+                session_resources: self
+                    .realization_executor
+                    .staging()
+                    .thread_resource_manifest(thread)?,
                 publication_source: Some(publication_source.clone()),
                 claimed_model_request_gate: self.coordination_endpoint().map(|endpoint| {
                     crate::coordination::claimed_model_request_gate_factory(endpoint, thread)

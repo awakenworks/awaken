@@ -279,8 +279,8 @@ pub(crate) async fn available_local_environment_binding(
     projection: &awaken_session_realization_contract::FrozenSessionProjection,
 ) -> String {
     let intent = host
-        .realizer
-        .execution
+        .realization_executor
+        .authority()
         .new_environment_effect_intent(
             thread,
             awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
@@ -288,8 +288,9 @@ pub(crate) async fn available_local_environment_binding(
         )
         .expect("installed Sessions");
     let effect = host
-        .realizer
-        .authorize_environment_effect_before_io(thread, &intent)
+        .realization_executor
+        .environments()
+        .authorize_environment_effect_before_io(host.realization_executor.peers(), thread, &intent)
         .await
         .expect("admit original available-Environment Create under its existing Root");
     let (binding, environment) = match &effect.authorization {
@@ -306,12 +307,13 @@ pub(crate) async fn available_local_environment_binding(
             ..
         } => {
             let provider = host
-                .realizer
+                .realization_executor
+                .environments()
                 .projected_session_environment_provider(thread, None)
                 .expect("select available-Environment provider from frozen projection");
             let spec = host
-                .realizer
-                .staging
+                .realization_executor
+                .staging()
                 .sandbox_spec_for_resolved_resources_and_provider(
                     thread,
                     &projection.resources,
@@ -319,8 +321,13 @@ pub(crate) async fn available_local_environment_binding(
                 )
                 .expect("installed Sessions");
             let spec = host
-                .realizer
-                .validate_session_environment_capabilities(provider, &spec)
+                .realization_executor
+                .environments()
+                .validate_session_environment_capabilities(
+                    host.realization_executor.peers(),
+                    provider,
+                    &spec,
+                )
                 .expect("validate exact available-Environment fixture spec");
             let provider_effect = crate::session_environment::ProviderEffect::from_parts(
                 effect.provider_fence.as_ref(),
@@ -343,8 +350,14 @@ pub(crate) async fn available_local_environment_binding(
         }
     };
     let identity = host
-        .realizer
-        .persist_authorized_environment_binding(thread, binding.clone(), &effect)
+        .realization_executor
+        .environments()
+        .persist_authorized_environment_binding(
+            host.realization_executor.peers(),
+            thread,
+            binding.clone(),
+            &effect,
+        )
         .await
         .unwrap_or_else(|failure| {
             panic!(

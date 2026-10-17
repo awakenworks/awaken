@@ -141,7 +141,7 @@ async fn detached_realizer() -> (
         weak.upgrade().is_none(),
         "the operation cannot reach a Host"
     );
-    (owner.realizer, sessions)
+    (owner.realization_executor, sessions)
 }
 
 fn claim() -> RunClaim {
@@ -163,12 +163,14 @@ async fn detached_realizer_binds_only_the_original_claim_and_preserves_failure_c
             outcome: row,
             bindings: Mutex::new(Vec::new()),
         });
-        realizer.environments.dispatch_execution =
-            (row != "missing_role").then(|| selected.clone() as Arc<dyn DispatchExecution>);
+        realizer.environments_mut().replace_dispatch_execution(
+            (row != "missing_role").then(|| selected.clone() as Arc<dyn DispatchExecution>),
+        );
         if row != "direct" {
             sessions.update_run("session", |run| run.dispatch_claim = Some(claim()));
         }
         let result = realizer
+            .environments()
             .bind_deferred_dispatch_before_publish("session", "exact-binding")
             .await;
         match row {
@@ -211,12 +213,16 @@ async fn detached_realizer_keeps_committed_identity_and_never_rebinds_resource_r
             outcome: "fenced",
             bindings: Mutex::new(Vec::new()),
         });
-        realizer.environments.dispatch_execution = Some(selected.clone());
+        realizer
+            .environments_mut()
+            .replace_dispatch_execution(Some(selected.clone()));
         let sink = Arc::new(Sink {
             response_lost: row == "response_lost",
             persists: AtomicUsize::new(0),
         });
-        *realizer.environment_binding_sink.write().unwrap() = Some(sink.clone());
+        realizer
+            .environments()
+            .install_environment_binding_sink(sink.clone());
         sessions.update_run("session", |run| {
             run.dispatch_claim = Some(claim());
             run.session_dispatch = true;
@@ -229,7 +235,7 @@ async fn detached_realizer_keeps_committed_identity_and_never_rebinds_resource_r
             SessionEnvironmentEffectKind::Create
         };
         let intent = realizer
-            .execution
+            .authority()
             .new_environment_effect_intent(
                 "session",
                 kind,
@@ -237,11 +243,18 @@ async fn detached_realizer_keeps_committed_identity_and_never_rebinds_resource_r
             )
             .expect("installed Sessions");
         let effect = realizer
-            .authorize_environment_effect_before_io("session", &intent)
+            .environments()
+            .authorize_environment_effect_before_io(realizer.peers(), "session", &intent)
             .await
             .unwrap();
         let result = realizer
-            .persist_authorized_environment_binding("session", "next-binding".into(), &effect)
+            .environments()
+            .persist_authorized_environment_binding(
+                realizer.peers(),
+                "session",
+                "next-binding".into(),
+                &effect,
+            )
             .await;
         let generation = awaken_session_state_contract::SandboxGeneration::new(
             &awaken_session_types::SessionId::from("session"),

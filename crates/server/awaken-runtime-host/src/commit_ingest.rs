@@ -376,8 +376,8 @@ mod tests {
             .expect("validated Host dependencies");
         admission.installed_sessions.install(thread);
         admission
-            .realizer
-            .staging
+            .realization_executor
+            .staging()
             .register_thread_resource_manifest(thread, manifest)
             .expect("installed Sessions");
         let dispatch = admission
@@ -582,8 +582,8 @@ mod tests {
             );
         admission.installed_sessions.install(thread);
         admission
-            .realizer
-            .staging
+            .realization_executor
+            .staging()
             .register_thread_resource_manifest(thread, manifest)
             .expect("installed Sessions");
         let dispatch = admission

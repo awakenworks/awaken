@@ -15,9 +15,9 @@ use awaken_session_state_contract::{
 };
 use awaken_session_types::RunError;
 
-use crate::terminal_cleanup::TerminalCleanup;
+use crate::terminal_effects::TerminalEffects;
 
-impl TerminalCleanup {
+impl TerminalEffects {
     /// Execute one aggregate-derived terminal Repository publication without
     /// installing another Resource generation. The command's `ResolvedInput`
     /// is compiled through the ordinary staging projection. Local and remote
@@ -25,14 +25,15 @@ impl TerminalCleanup {
     /// boundary; only the transport implementation differs.
     pub async fn publish_terminal_repository(
         &self,
-        environments: &crate::environment_holding::EnvironmentHolding,
+        peers: crate::peers::Peers<'_>,
         command: SessionRepositoryPublicationCommand,
         lease: &SessionRealizationLease,
     ) -> Result<SessionRepositoryPublicationEffect, RunError> {
-        let staging = &environments.staging;
+        let environments = peers.environments;
+        let staging = peers.staging;
         let cleanup = self;
         let workspace = environments
-            .publication
+            .publication()
             .workspace(command.session_id.as_str())?;
 
         // The canonical driver may install only the frozen aggregate after a
@@ -46,7 +47,7 @@ impl TerminalCleanup {
             .sessions
             .acquire_realization(command.session_id.as_str())
             .await;
-        let _lifecycle = staging
+        let _lifecycle = self
             .sessions
             .lock_lifecycle(command.session_id.as_str())
             .await?;
@@ -60,10 +61,10 @@ impl TerminalCleanup {
         current_lease = cleanup
             .authorize_lease(&command.session_id, lease)
             .map_err(awaken_session_types::RunError::from)?;
-        let (assignment, resolved_resources) = staging
+        let (assignment, resolved_resources) = self
             .sessions
             .read_realization(command.session_id.as_str(), |r| {
-                (r.cleanup.assignment.clone(), r.previous_resources())
+                (r.effects.assignment.clone(), r.previous_resources())
             })?
             .ok_or_else(|| {
                 RunError::unavailable_classified(
@@ -89,7 +90,7 @@ impl TerminalCleanup {
         let effect_fence = current_lease
             .sandbox_effect_fence(command.effect_id.clone())
             .map_err(crate::realization_error::RealizationError::from)?;
-        let prepared = environments.prepare_bound_environment_for_effect_under_lifecycle(self,
+        let prepared = environments.prepare_bound_environment_for_effect_under_lifecycle(peers,
                 command.session_id.as_str(),
                 binding,
                 &effect_fence,
@@ -132,7 +133,7 @@ impl TerminalCleanup {
         let effect = staging
             .publish_repository_activation(
                 command.session_id.as_str(),
-                environments.publication.local_workspace(),
+                environments.publication().local_workspace(),
                 staged.repositories.first().expect("checked"),
                 &staged.binding_checks,
                 environment.repositories().as_ref(),
@@ -147,13 +148,13 @@ impl TerminalCleanup {
             Ok(effect_receipt) => Ok(SessionRepositoryPublicationEffect::Published(
                 SessionRepositoryPublicationReceipt::new(&command, effect_receipt),
             )),
-            Err(crate::resource_staging::repository_activation::RepositoryPublicationActivationError::Rejected(
+            Err(crate::staged_resources::RepositoryPublicationActivationError::Rejected(
                 effect_rejection,
             )) => Ok(SessionRepositoryPublicationEffect::Rejected(
                 SessionRepositoryPublicationRejection::new(&command, effect_rejection)
                     .map_err(crate::realization_error::RealizationError::from)?,
             )),
-            Err(crate::resource_staging::repository_activation::RepositoryPublicationActivationError::Failed(error)) => {
+            Err(crate::staged_resources::RepositoryPublicationActivationError::Failed(error)) => {
                 Err(awaken_session_types::RunError::from(error))
             }
         }

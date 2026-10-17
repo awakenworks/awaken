@@ -307,7 +307,8 @@ mod tests {
         };
 
         assert!(
-            host.realizer
+            host.realization_executor
+                .environments()
                 .session_environment_provider(&backend_owned)
                 .expect("E1")
                 .realizer()
@@ -323,7 +324,8 @@ mod tests {
         ] {
             assert!(
                 !host
-                    .realizer
+                    .realization_executor
+                    .environments()
                     .session_environment_provider(provisioning)
                     .unwrap_or_else(|_| panic!("{rule}"))
                     .realizer()

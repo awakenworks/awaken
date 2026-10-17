@@ -174,9 +174,9 @@ async fn cold_terminal_cleanup_consumes_only_control_no_create_evidence() {
         host.install_test_terminal_cleanup_projection(&assignment)
             .await
             .unwrap();
-        host.realizer
-            .cleanup
-            .dispose_terminal_cleanup_effect(&host.realizer, disposal.clone())
+        host.realization_executor
+            .effects()
+            .dispose_terminal_cleanup_effect(host.realization_executor.peers(), disposal.clone())
             .await
             .expect("H1/H4 exact disposal without guessed provider I/O");
         assert!(events.lock().unwrap().is_empty(), "H1 no provider effects");

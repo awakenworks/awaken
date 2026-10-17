@@ -32,7 +32,7 @@ impl<'a> ResourcePreparation<'a> {
     ) -> Result<Self, RealizationError> {
         let asserted = proof.lease.clone();
         let cancellation = Arc::new(awaken_runtime_contract::CancellationToken::new());
-        let sessions = authority.sessions.clone();
+        let sessions = authority.sessions().clone();
         let (introduced_lease, changed) = authority.authorize_worker_effect(|| {
             sessions.update_realization(session, |r| {
                 if r.staging.preparation.is_some() {

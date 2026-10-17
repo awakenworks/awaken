@@ -1,6 +1,7 @@
 //! Warm Environment capacity on the `RealizationExecutor`: which requests reach the
 //! installed provider's capacity owner and which are refused before it.
 
+use awaken_session_realization::peers::EnvironmentPeer as _;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -225,13 +226,24 @@ fn executor(
         warm_pool,
     );
     (
-        crate::realization_executor::RealizationExecutor {
-            clock: awaken_time::system_clock(),
-            environments: crate::environment_holding::EnvironmentHolding::new(
+        crate::realization_executor::RealizationExecutor::new(
+            awaken_time::system_clock(),
+            sessions.clone(),
+            crate::environment_holding::EnvironmentHolding::new(
                 env,
                 runs_local_dispatch_pool,
-                crate::resource_staging::ResourceStaging {
-                    sessions: sessions.clone(),
+                sessions.clone(),
+                None,
+                None,
+                crate::session_publication::SessionPublicationSelection::new(
+                    sessions.clone(),
+                    "capacity-workspace".into(),
+                    None,
+                ),
+            ),
+            crate::resource_staging::ResourceStaging::new(
+                sessions.clone(),
+                crate::resource_staging::ResourceSources {
                     bundle_source: None,
                     file_content_source: Arc::new(
                         awaken_resource_contract::UnavailableFileContentSource,
@@ -243,24 +255,17 @@ fn executor(
                     credential_materializer: None,
                     memory_reference_encoder: None,
                 },
-                None,
-                None,
-                None,
-                crate::session_publication::SessionPublicationSelection::new(
-                    sessions.clone(),
-                    "capacity-workspace".into(),
-                    None,
-                ),
             ),
-            cleanup: crate::terminal_cleanup::TerminalCleanup {
-                artifacts: Arc::new(crate::artifact_harvest::ArtifactHarvester::new(
+            crate::terminal_effects::TerminalEffects::new(
+                sessions.clone(),
+                Arc::new(crate::artifact_harvest::ArtifactHarvester::new(
                     sessions.clone(),
                     "capacity-workspace".into(),
                     Arc::new(awaken_resource_contract::UnavailableArtifactPublisher),
                 )),
-                sessions,
-            },
-        },
+            ),
+            crate::execution_authority::ExecutionAuthority::new(sessions, None),
+        ),
         recording,
     )
 }
@@ -288,10 +293,18 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
 
     for (row, local, pool) in [("W1", false, on), ("W2", true, crate::WarmPool::Disabled)] {
         let (executor, recording) = executor(local, pool, false);
-        assert_eq!(executor.env.environment_warmup_limits(), (0, 0), "{row}");
         assert_eq!(
             executor
-                .env
+                .environments()
+                .providers()
+                .environment_warmup_limits(),
+            (0, 0),
+            "{row}"
+        );
+        assert_eq!(
+            executor
+                .environments()
+                .providers()
                 .prewarm_default_environment_capacity(2)
                 .await
                 .unwrap(),
@@ -300,7 +313,8 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
         );
         assert_eq!(
             executor
-                .env
+                .environments()
+                .providers()
                 .prewarm_environment_snapshot(&environment, 2)
                 .await
                 .unwrap(),
@@ -311,10 +325,18 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
     }
 
     let (executor, recording) = executor(true, on, false);
-    assert_eq!(executor.env.environment_warmup_limits(), (2, 4), "W3");
     assert_eq!(
         executor
-            .env
+            .environments()
+            .providers()
+            .environment_warmup_limits(),
+        (2, 4),
+        "W3"
+    );
+    assert_eq!(
+        executor
+            .environments()
+            .providers()
             .prewarm_default_environment_capacity(0)
             .await
             .unwrap(),
@@ -323,7 +345,8 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
     );
     assert_eq!(
         executor
-            .env
+            .environments()
+            .providers()
             .prewarm_environment_snapshot(&environment, 0)
             .await
             .unwrap(),
@@ -332,7 +355,8 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
     );
     assert_eq!(
         executor
-            .env
+            .environments()
+            .providers()
             .prewarm_environment_snapshot(&self_hosted, 2)
             .await
             .unwrap(),
@@ -343,7 +367,8 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
 
     assert_eq!(
         executor
-            .env
+            .environments()
+            .providers()
             .prewarm_default_environment_capacity(2)
             .await
             .unwrap(),
@@ -352,7 +377,8 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
     );
     assert_eq!(
         executor
-            .env
+            .environments()
+            .providers()
             .prewarm_environment_snapshot(&environment, 3)
             .await
             .unwrap(),
@@ -362,11 +388,20 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
     assert_eq!(
         *recording.prewarmed.lock().unwrap(),
         vec![
-            (Some(executor.env.default_environment_capacity_shape()), 2),
             (
                 Some(
                     executor
-                        .env
+                        .environments()
+                        .providers()
+                        .default_environment_capacity_shape()
+                ),
+                2
+            ),
+            (
+                Some(
+                    executor
+                        .environments()
+                        .providers()
                         .environment_snapshot_capacity_shape(&environment)
                 ),
                 3
@@ -375,15 +410,20 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
         "W5 exact published shapes"
     );
     assert_ne!(
-        executor.env.default_environment_capacity_shape(),
         executor
-            .env
+            .environments()
+            .providers()
+            .default_environment_capacity_shape(),
+        executor
+            .environments()
+            .providers()
             .environment_snapshot_capacity_shape(&environment),
         "W5 distinct shapes"
     );
     assert_eq!(
         executor
-            .env
+            .environments()
+            .providers()
             .ready_environment_snapshot_capacity(&environment),
         7,
         "ready is observed"
@@ -392,7 +432,8 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
     let (failing, _) = executor_for_failure();
     assert!(
         failing
-            .env
+            .environments()
+            .providers()
             .prewarm_default_environment_capacity(2)
             .await
             .is_err(),
@@ -400,7 +441,8 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
     );
     assert!(
         failing
-            .env
+            .environments()
+            .providers()
             .prewarm_environment_snapshot(&environment, 2)
             .await
             .is_err(),
@@ -424,7 +466,8 @@ async fn image_preparation_covers_the_default_shape_and_every_non_self_hosted_en
     let mut self_hosted = environment.clone();
     self_hosted.self_hosted = true;
     executor
-        .env
+        .environments()
+        .providers()
         .prewarm_environment_images(&[environment, self_hosted])
         .await
         .unwrap();

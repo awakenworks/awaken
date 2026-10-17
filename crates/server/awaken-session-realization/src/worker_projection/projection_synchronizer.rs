@@ -7,6 +7,7 @@
 //! `WorkerProjectionSynchronizer` and the existing Host MCP effects.
 
 use super::SessionProjectionExecution;
+use crate::peers::EnvironmentPeer as _;
 use crate::session_environment::SessionEnvironmentAdoptionDisposition;
 use awaken_session_configuration_contract::mcp as session_mcp;
 use awaken_session_configuration_contract::resource as session_resource;
@@ -126,7 +127,7 @@ where
         prepare_session: bool,
     ) -> Result<(), awaken_session_types::RunError> {
         let realizations = self.host.sessions();
-        let exec = self.host.realizer();
+        let exec = self.host.realization_executor();
         let retained_publication = realizations.published_snapshot(session_id.as_str())?;
         if let Some(claimed) = self.published_snapshot
             && !matches!(
@@ -176,8 +177,10 @@ where
         realizations.install_session(session_id.as_str())?;
         let lifecycle_guard = realizations.lock_lifecycle(session_id.as_str()).await?;
         if self.claim.is_some() {
-            let (canonical_publication, model_candidate) =
-                exec.publication.resolve_canonical_session_projection(
+            let (canonical_publication, model_candidate) = exec
+                .environments()
+                .publication()
+                .resolve_canonical_session_projection(
                     &projection.workspace_id,
                     CanonicalSessionProjection::Baseline(&projection.baseline),
                     published_snapshot.cloned(),
@@ -201,12 +204,12 @@ where
             }
             if self.rebuild_unavailable_environment && !a2a_only {
                 let provider = if let Some(candidate) = model_candidate.as_ref() {
-                    exec.session_environment_provider_for_thread(
+                    exec.environments().session_environment_provider_for_thread(
                         session_id.as_str(),
                         candidate.provisioning(),
                     )
                 } else {
-                    exec.session_environment_provider_for_thread(
+                    exec.environments().session_environment_provider_for_thread(
                         session_id.as_str(),
                         &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
                     )
@@ -280,10 +283,11 @@ where
             .generation()
             .map(|generation| generation.id());
         let adoption = if let Some(binding) = projection.environment.binding() {
-            let provider =
-                exec.projected_session_environment_provider(session_id.as_str(), None)?;
+            let provider = exec
+                .environments()
+                .projected_session_environment_provider(session_id.as_str(), None)?;
             self.host
-                .realizer()
+                .realization_executor()
                 .adopt_bound_session_environment(
                     session_id.as_str(),
                     Some(binding),
@@ -302,7 +306,8 @@ where
             // provider has proved the exact durable binding unavailable; the new
             // Environment receipt must still pass the ordinary durable sink.
             debug_assert!(
-                exec.durable_environment_binding(session_id.as_str())?
+                exec.environments()
+                    .durable_environment_binding(session_id.as_str())?
                     .is_none(),
                 "terminated recovery owner clears its durable binding"
             );
@@ -327,7 +332,9 @@ where
             false
         };
         if synchronize_resources && !reconciled_by_substrate {
-            self.host.realizer().staging.apply_session_inputs_with_context(self.host.realizer(),
+            self.host
+                .realization_executor()
+                .apply_session_inputs(
                     session_id.as_str(),
                     &projection.resource_transition(
                         awaken_session_realization_contract::FrozenResourceTransitionUse::ApplyEffects,

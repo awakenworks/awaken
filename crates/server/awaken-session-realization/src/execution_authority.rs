@@ -21,10 +21,10 @@ use crate::session_realizations::{SessionRealizationSource, SessionRealizations}
 /// with the Session's live realization lease.
 #[derive(Clone)]
 pub struct ExecutionAuthority {
-    pub sessions: SessionRealizations,
+    sessions: SessionRealizations,
     /// Worker-owned registry proof. Direct Hosts have no Worker registration;
     /// every registered Worker installs this before enabling dispatch.
-    pub worker: Option<Arc<dyn CurrentExecutionAuthority>>,
+    worker: Option<Arc<dyn CurrentExecutionAuthority>>,
 }
 
 pub struct SessionExecutionAuthority {
@@ -214,6 +214,18 @@ impl SessionExecutionAuthority {
 }
 
 impl ExecutionAuthority {
+    pub fn new(
+        sessions: SessionRealizations,
+        worker: Option<Arc<dyn CurrentExecutionAuthority>>,
+    ) -> Self {
+        Self { sessions, worker }
+    }
+
+    /// The installed Sessions the authority reads the live lease from.
+    pub fn sessions(&self) -> &SessionRealizations {
+        &self.sessions
+    }
+
     /// Lock order: Worker proof -> Session slots -> synchronous provider grant.
     /// No async owner lock or external I/O may be held by this callback.
     /// A denial is a [`RealizationError`]; the effect keeps its own error type.

@@ -3,6 +3,7 @@
 //! Rebuild and recovery admission over closed, revoked, and retiring owners.
 
 use super::*;
+use awaken_session_realization::peers::EnvironmentPeer as _;
 
 #[tokio::test]
 async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
@@ -32,24 +33,27 @@ async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
     // publication without a Control-frozen baseline/Session execution marker.
     host.register_thread_workspace(thread, "workspace");
     host.register_thread_agent_projection(thread, snapshot.root_agent_id.0.as_str());
-    host.realizer
-        .publication
+    host.realization_executor
+        .environments()
+        .publication()
         .retain_session_publication(thread, Some(&snapshot))
         .unwrap();
     host.install_environment_projection(thread, &eager_environment())
         .unwrap();
     let provider = host
-        .realizer
+        .realization_executor
+        .environments()
         .projected_session_environment_provider(thread, None)
         .expect("RR1 canonical projected provider");
     let spec = host
-        .realizer
-        .staging
+        .realization_executor
+        .staging()
         .sandbox_spec_for_provider(thread, provider)
         .expect("installed Sessions");
     let environment = Arc::new(
-        host.realizer
-            .create_session_environment(provider, &spec)
+        host.realization_executor
+            .environments()
+            .create_session_environment(host.realization_executor.peers(), provider, &spec)
             .await
             .expect("RR1 exact LegacyDirect Environment"),
     );
@@ -91,7 +95,8 @@ async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
     {
         let _lifecycle = lifecycle.lock().await;
         assert!(
-            host.realizer
+            host.realization_executor
+                .environments()
                 .retire_session_environment_for_revocation(
                     thread,
                     (&host.mcp, host.installed_sessions.as_ref()),
@@ -176,11 +181,15 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
         "R21/C5 ordinary direct Runtime has no frozen provider projection"
     );
     let disposition = ready_host
-        .realizer
+        .realization_executor
         .adopt_bound_session_environment(
             ready_thread,
             Some(&ready_binding),
-            &ready_host.realizer.env.session_provider,
+            &ready_host
+                .realization_executor
+                .environments()
+                .providers()
+                .session_provider,
             None,
             true,
         )
@@ -192,7 +201,8 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
         "R21/E1"
     );
     let resident = ready_host
-        .realizer
+        .realization_executor
+        .environments()
         .session_environment(ready_thread)
         .await
         .expect("installed Sessions")
@@ -248,11 +258,15 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
         .await
         .expect("C3 terminated provider");
     let disposition = missing_host
-        .realizer
+        .realization_executor
         .adopt_bound_session_environment(
             missing_thread,
             Some(&terminated_binding),
-            &missing_host.realizer.env.session_provider,
+            &missing_host
+                .realization_executor
+                .environments()
+                .providers()
+                .session_provider,
             None,
             true,
         )
@@ -265,7 +279,8 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
     );
     assert!(
         missing_host
-            .realizer
+            .realization_executor
+            .environments()
             .session_environment_owner_is_vacant(missing_thread)
             .expect("installed Sessions"),
         "R21/E2 exact closed owner cleared"
@@ -304,7 +319,8 @@ async fn closed_revoked_durable_environment_can_enter_canonical_rebuild() {
     host.installed_sessions.install_realization(thread, |r| {
         r.environment.owner = resident(thread, environment.clone());
     });
-    host.realizer
+    host.realization_executor
+        .environments()
         .retire_current_environment(
             thread,
             SessionEnvironmentRetirementCause::RealizationRevocation,
@@ -316,7 +332,7 @@ async fn closed_revoked_durable_environment_can_enter_canonical_rebuild() {
     // R0 C1+C2+!C3 => reject and retain the exact revoked owner; only the
     // frozen aggregate policy may authorize the subsequent R1 rebuild.
     assert!(
-        host.realizer
+        host.realization_executor
             .adopt_bound_session_environment(
                 thread,
                 Some(&binding),
@@ -338,7 +354,7 @@ async fn closed_revoked_durable_environment_can_enter_canonical_rebuild() {
         "R0 retain revoked owner"
     );
     let disposition = host
-        .realizer
+        .realization_executor
         .adopt_bound_session_environment(
             thread,
             Some(&binding),
@@ -353,7 +369,8 @@ async fn closed_revoked_durable_environment_can_enter_canonical_rebuild() {
         SessionEnvironmentAdoptionDisposition::RebuildRequired
     );
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment_owner_is_vacant(thread)
             .expect("installed Sessions"),
         "R1 closed owner consumed"
@@ -415,13 +432,14 @@ async fn closed_recovery_cannot_override_protected_retirements() {
             }
         };
         let protected = host
-            .realizer
+            .realization_executor
+            .environments()
             .retire_current_environment(thread, cause, RetirementSelection::Exact(&environment))
             .unwrap()
             .unwrap();
         dispose_current_environment(&environment, thread).await;
         assert!(
-            host.realizer
+            host.realization_executor
                 .adopt_bound_session_environment(thread, Some(&binding), &provider, None, true)
                 .await
                 .is_err(),
@@ -548,7 +566,8 @@ async fn checkpoint_disposal_cannot_consume_a_different_prepared_durable_owner()
         None,
         None,
     );
-    host.realizer
+    host.realization_executor
+        .environments()
         .retain_checkpoint_source_environment_for_disposal(
             thread,
             &prepared_operation,
@@ -576,8 +595,10 @@ async fn checkpoint_disposal_cannot_consume_a_different_prepared_durable_owner()
     let authorization = source_disposal_authorization(&prepared_operation.effect_id);
 
     let error = host
-        .realizer
+        .realization_executor
+        .environments()
         .dispose_prepared_checkpoint_source_environment(
+            host.realization_executor.peers(),
             thread,
             &operation,
             &asserted_generation,

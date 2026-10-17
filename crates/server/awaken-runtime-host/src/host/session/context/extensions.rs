@@ -11,6 +11,7 @@ use awaken_ext_compact::CompactPlugin;
 use awaken_ext_skills::{SkillRegistry, SkillSpec};
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::resolved::{ContextPolicy, ToolDescriptor};
+use awaken_session_realization::peers::EnvironmentPeer as _;
 use std::sync::Arc;
 
 pub(super) struct SkillWiring {
@@ -28,7 +29,7 @@ pub(super) async fn skills(
     resources: &mut ContextResources,
     mut runtime: Runtime,
 ) -> Result<SkillWiring, HostError> {
-    let realizations = &host.realizer.environments.sessions;
+    let realizations = host.realization_executor.sessions();
     let frozen_skill_versions = resources.plan.frozen_skill_versions.take();
     let installed = &resources.plan.installed;
     let workspace = &resources.plan.workspace;
@@ -247,8 +248,8 @@ pub(super) async fn memory(
         } else {
             None
         };
-        host.realizer
-            .staging
+        host.realization_executor
+            .staging()
             .select_thread_memory_binding(thread, binding_id)?
             .map(|binding| host.resources.memory.bound(binding))
     } else {
@@ -299,7 +300,11 @@ pub(super) async fn memory(
                     snapshot,
                     commit.clone(),
                     host.clock.clone(),
-                    host.realizer.env.auxiliary_sandboxes.provider("mem-select"),
+                    host.realization_executor
+                        .environments()
+                        .providers()
+                        .auxiliary_sandboxes
+                        .provider("mem-select"),
                 ))
                     as Arc<dyn awaken_ext_memory::RecallSelector>)
             },
@@ -427,7 +432,11 @@ fn compact(
                 snapshot,
                 commit.clone(),
                 host.clock.clone(),
-                host.realizer.env.auxiliary_sandboxes.provider("compact"),
+                host.realization_executor
+                    .environments()
+                    .providers()
+                    .auxiliary_sandboxes
+                    .provider("compact"),
             );
             let backend = build_compact_backend(agent_tool, host.resources.memory.background());
             let plugin = CompactPlugin::new(compact_config).with_backend(thread, backend);

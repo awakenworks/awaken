@@ -1,6 +1,7 @@
 //! Terminal preparation, fences, and terminal Memory evidence.
 
 use super::*;
+use awaken_session_realization::peers::EnvironmentPeer as _;
 
 async fn await_terminal_fence_refresh_gate<T: std::fmt::Debug, E: std::fmt::Debug>(
     gate: &tokio::sync::Notify,
@@ -251,10 +252,10 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         .install("realization-memory-session");
     managed
         .host
-        .realizer
-        .staging
+        .realization_executor
+        .staging()
         .stage_prevalidated_resource_transition_under_resource_projection(
-            &managed.host.realizer,
+            managed.host.realization_executor.peers(),
             "realization-memory-session",
             &transition,
             None,
@@ -292,10 +293,10 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
 
     managed
         .host
-        .realizer
-        .staging
+        .realization_executor
+        .staging()
         .stage_prevalidated_resource_transition_under_resource_projection(
-            &managed.host.realizer,
+            managed.host.realization_executor.peers(),
             "realization-memory-session",
             &transition,
             None,
@@ -311,10 +312,10 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     };
     managed
         .host
-        .realizer
-        .staging
+        .realization_executor
+        .staging()
         .stage_prevalidated_resource_transition_under_resource_projection(
-            &managed.host.realizer,
+            managed.host.realization_executor.peers(),
             "realization-memory-session",
             &transition,
             None,
@@ -346,8 +347,8 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     };
     let run_only = managed
         .host
-        .realizer
-        .staging
+        .realization_executor
+        .staging()
         .stage_resolved_input("realization-workspace", &input, Some(&claim), None, None)
         .await
         .expect("R1 Run claim alone");
@@ -359,8 +360,8 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     );
     let both = managed
         .host
-        .realizer
-        .staging
+        .realization_executor
+        .staging()
         .stage_resolved_input(
             "realization-workspace",
             &input,
@@ -393,8 +394,8 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     };
     let stale_error = match managed
         .host
-        .realizer
-        .staging
+        .realization_executor
+        .staging()
         .stage_resolved_input(
             "realization-workspace",
             &input,
@@ -416,8 +417,8 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     foreign_input.binding_id = awaken_resource_contract::BindingId::from("foreign-memory");
     let foreign_error = match managed
         .host
-        .realizer
-        .staging
+        .realization_executor
+        .staging()
         .stage_resolved_input(
             "realization-workspace",
             &foreign_input,
@@ -443,8 +444,8 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     assert_eq!(events.lock().unwrap().len(), 4, "R4/R5 no mount reference");
     let zero_error = match managed
         .host
-        .realizer
-        .staging
+        .realization_executor
+        .staging()
         .stage_resolved_input(
             "realization-workspace",
             &input,
@@ -470,10 +471,10 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
 
     let error = match managed
         .host
-        .realizer
-        .staging
+        .realization_executor
+        .staging()
         .stage_prevalidated_resource_transition_under_resource_projection(
-            &managed.host.realizer,
+            managed.host.realization_executor.peers(),
             "unfenced-realization-memory-session",
             &transition,
             None,
@@ -506,9 +507,9 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     // ingress replay above skips IO. C4/C5's removal between the two Slot reads
     // is a source-level race invariant: no deterministic interleaving hook
     // exists here, so this test does not claim to execute those two schedules.
-    let stage = &managed.host.realizer.staging;
+    let stage = managed.host.realization_executor.staging();
     let key = stage
-        .sessions
+        .sessions()
         .read_realization("realization-memory-session", |r| {
             r.staging.effect_key.clone()
         })
@@ -531,7 +532,7 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         "C1 zero new encoder or content IO"
     );
     stage
-        .sessions
+        .sessions()
         .read_realization("realization-memory-session", |r| {
             assert_eq!(
                 retained.staged.mounts, r.staging.resources.mounts,
@@ -582,11 +583,11 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         "C2 one original encoder call"
     );
     let before = stage
-        .sessions
+        .sessions()
         .frozen("realization-memory-session")
         .expect("installed Sessions");
     let binding = stage
-        .sessions
+        .sessions()
         .read_realization("realization-memory-session", |r| {
             r.staging.memory_bindings["realization-memory"].clone()
         })
@@ -619,14 +620,14 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         Arc::ptr_eq(
             &before,
             &stage
-                .sessions
+                .sessions()
                 .frozen("realization-memory-session")
                 .expect("installed Sessions")
         ),
         "C7 Frozen unchanged"
     );
     stage
-        .sessions
+        .sessions()
         .read_realization("realization-memory-session", |r| {
             assert!(
                 Arc::ptr_eq(&binding, &r.staging.memory_bindings["realization-memory"]),
@@ -663,10 +664,10 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         .install("awaiting-memory-adoption");
     managed
         .host
-        .realizer
-        .staging
+        .realization_executor
+        .staging()
         .stage_prevalidated_resource_transition_under_resource_projection(
-            &managed.host.realizer,
+            managed.host.realization_executor.peers(),
             "awaiting-memory-adoption",
             &transition,
             Some(&claim),
@@ -721,8 +722,8 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         .build()
         .expect("validated upstream Host dependencies");
     let missing = missing_encoder_host
-        .realizer
-        .staging
+        .realization_executor
+        .staging()
         .stage_resolved_input("realization-workspace", &input, Some(&claim), None, None)
         .await;
     let missing = match missing {
@@ -836,12 +837,13 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
     )
     .await
     .expect("HS1 install frozen source projection");
-    host.realizer
-        .staging
+    host.realization_executor
+        .staging()
         .register_thread_resource_manifest(thread, source_manifest)
         .expect("installed Sessions");
 
-    let handle = terminal_fixture_container_handle(thread, &host.realizer.sandbox_spec(thread));
+    let handle =
+        terminal_fixture_container_handle(thread, &host.realization_executor.sandbox_spec(thread));
     let source_binding = serde_json::to_string(&handle).unwrap();
     let lease = crate::session_resource::SessionRealizationLease {
         owner: "source-cleanup-worker".into(),
@@ -921,7 +923,8 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
         "HS1/E2 binding retained"
     );
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment(thread)
             .await
             .expect("installed Sessions")
@@ -1125,8 +1128,8 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
             );
         });
     assert_eq!(
-        host.realizer
-            .cleanup
+        host.realization_executor
+            .effects()
             .effect_fence(&effect)
             .expect("R1/E1 preparation fence")
             .expires_at_unix_ms(),
@@ -1134,8 +1137,8 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
         "R1/E1 preparation projects current expiry"
     );
     assert_eq!(
-        host.realizer
-            .cleanup
+        host.realization_executor
+            .effects()
             .disposal_authorization(&disposal)
             .expect("R1/E1 disposal fence")
             .effect_fence()
@@ -1159,13 +1162,16 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
         })
         .expect("installed Sessions");
     assert_eq!(
-        host.realizer.cleanup.effect_fence(&effect).unwrap(),
+        host.realization_executor
+            .effects()
+            .effect_fence(&effect)
+            .unwrap(),
         effect.sandbox_effect_fence().unwrap(),
         "R4 fresh relative proof, not Worker UTC, owns preparation"
     );
     assert_eq!(
-        host.realizer
-            .cleanup
+        host.realization_executor
+            .effects()
             .disposal_authorization(&disposal)
             .expect("R4 same relative proof owns disposal projection"),
         disposal
@@ -1183,10 +1189,16 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
             );
         })
         .expect("installed Sessions");
-    assert!(host.realizer.cleanup.effect_fence(&effect).is_err(), "R5");
     assert!(
-        host.realizer
-            .cleanup
+        host.realization_executor
+            .effects()
+            .effect_fence(&effect)
+            .is_err(),
+        "R5"
+    );
+    assert!(
+        host.realization_executor
+            .effects()
             .disposal_authorization(&disposal)
             .is_err(),
         "R5"
@@ -1199,10 +1211,16 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
             .realizations()
             .update_realization(session_id, |r| r.execution.authority = closed)
             .expect("installed Sessions");
-        assert!(host.realizer.cleanup.effect_fence(&effect).is_err(), "R6");
         assert!(
-            host.realizer
-                .cleanup
+            host.realization_executor
+                .effects()
+                .effect_fence(&effect)
+                .is_err(),
+            "R6"
+        );
+        assert!(
+            host.realization_executor
+                .effects()
                 .disposal_authorization(&disposal)
                 .is_err(),
             "R6"
@@ -1220,12 +1238,15 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
         })
         .expect("installed Sessions");
     assert!(
-        host.realizer.cleanup.effect_fence(&effect).is_err(),
+        host.realization_executor
+            .effects()
+            .effect_fence(&effect)
+            .is_err(),
         "R2/E2"
     );
     assert!(
-        host.realizer
-            .cleanup
+        host.realization_executor
+            .effects()
             .disposal_authorization(&disposal)
             .is_err(),
         "R2/E2"
@@ -1245,12 +1266,15 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
         })
         .expect("installed Sessions");
     assert!(
-        host.realizer.cleanup.effect_fence(&effect).is_err(),
+        host.realization_executor
+            .effects()
+            .effect_fence(&effect)
+            .is_err(),
         "R3/E3"
     );
     assert!(
-        host.realizer
-            .cleanup
+        host.realization_executor
+            .effects()
             .disposal_authorization(&disposal)
             .is_err(),
         "R3/E3"
@@ -1344,9 +1368,10 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
     )
     .await
     .expect("install the exact frozen Memory/checkpoint projection");
-    let handle = terminal_fixture_container_handle(thread, &host.realizer.sandbox_spec(thread))
-        .with_memory_materializations(vec![terminal_memory_evidence()])
-        .expect("install exact writable Memory evidence");
+    let handle =
+        terminal_fixture_container_handle(thread, &host.realization_executor.sandbox_spec(thread))
+            .with_memory_materializations(vec![terminal_memory_evidence()])
+            .expect("install exact writable Memory evidence");
     let generation = awaken_session_state_contract::SandboxGeneration::new(
         &awaken_session_types::SessionId::from(thread),
         1,
@@ -1528,7 +1553,8 @@ async fn total_absence_recovers_artifacts_before_separate_terminal_disposal() {
     let host = (raw_host).build().expect("validated Host dependencies");
     let managed = install_test_dispatch_runtime(&host);
     install_test_session_application(&host);
-    let handle = terminal_fixture_container_handle(thread, &host.realizer.sandbox_spec(thread));
+    let handle =
+        terminal_fixture_container_handle(thread, &host.realization_executor.sandbox_spec(thread));
     let binding = serde_json::to_string(&handle).unwrap();
     let terminal_projection = install_terminal_recovery_projection(
         &host,
@@ -1641,7 +1667,8 @@ async fn disposing_cleanup_prepares_durability_before_resuming_physical_disposal
     let host = (raw_host).build().expect("validated Host dependencies");
     let managed = install_test_dispatch_runtime(&host);
     install_test_session_application(&host);
-    let handle = terminal_fixture_container_handle(thread, &host.realizer.sandbox_spec(thread));
+    let handle =
+        terminal_fixture_container_handle(thread, &host.realization_executor.sandbox_spec(thread));
     let (disposing_environment, source_preparation, source_preparation_receipt) =
         disposing_terminal_environment(thread, &lease, &handle, &checkpoint_id);
     let terminal_projection = install_terminal_recovery_projection(
@@ -1784,9 +1811,10 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
     )
     .await
     .expect("A1 install frozen writable Memory input");
-    let handle = terminal_fixture_container_handle(thread, &host.realizer.sandbox_spec(thread))
-        .with_memory_materializations(vec![terminal_memory_evidence()])
-        .expect("A1 durable handle carries exact writable Copy evidence");
+    let handle =
+        terminal_fixture_container_handle(thread, &host.realization_executor.sandbox_spec(thread))
+            .with_memory_materializations(vec![terminal_memory_evidence()])
+            .expect("A1 durable handle carries exact writable Copy evidence");
     let (disposing_environment, source_preparation, source_preparation_receipt) =
         disposing_terminal_environment(thread, &lease, &handle, checkpoint_id);
     // A changed aggregate Environment is a new root-CAS snapshot.
@@ -1907,9 +1935,12 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
         .await
         .expect("M0 install frozen writable Memory input");
 
-        let handle = terminal_fixture_container_handle(thread, &host.realizer.sandbox_spec(thread))
-            .with_memory_materializations(vec![terminal_memory_evidence()])
-            .expect("M0 durable handle carries exact writable Copy evidence");
+        let handle = terminal_fixture_container_handle(
+            thread,
+            &host.realization_executor.sandbox_spec(thread),
+        )
+        .with_memory_materializations(vec![terminal_memory_evidence()])
+        .expect("M0 durable handle carries exact writable Copy evidence");
         let binding = serde_json::to_string(&handle).expect("M0 encode durable binding");
         // A changed aggregate Environment is a new root-CAS snapshot.
         projection.revision.0 += 1;
@@ -1926,12 +1957,13 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
                 .sandbox_effect_fence("unacknowledged-auxiliary-create")
                 .unwrap();
             let environment = Arc::new(
-                host.realizer
-                    .env
+                host.realization_executor
+                    .environments()
+                    .providers()
                     .session_provider
                     .terminal()
                     .prepare_terminal_effective_for_effect(
-                        &host.realizer.sandbox_spec(thread),
+                        &host.realization_executor.sandbox_spec(thread),
                         Some(&handle),
                         None,
                         &fence,
@@ -1941,8 +1973,14 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
                     .unwrap()
                     .unwrap(),
             );
-            host.realizer
-                .begin_session_environment_preparation(thread, environment.clone(), None)
+            host.realization_executor
+                .environments()
+                .begin_session_environment_preparation(
+                    host.realization_executor.peers(),
+                    thread,
+                    environment.clone(),
+                    None,
+                )
                 .unwrap();
             retained = Some(environment);
             if unmaterialized {
@@ -2234,10 +2272,12 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
         .unwrap_or_else(|error| panic!("{} installs frozen Memory input: {error}", rule.name));
 
         let evidence = terminal_memory_evidence();
-        let handle =
-            terminal_fixture_container_handle(&thread, &host.realizer.sandbox_spec(&thread))
-                .with_memory_materializations(vec![evidence])
-                .expect("HM1 current V2 handle carries exact Memory evidence");
+        let handle = terminal_fixture_container_handle(
+            &thread,
+            &host.realization_executor.sandbox_spec(&thread),
+        )
+        .with_memory_materializations(vec![evidence])
+        .expect("HM1 current V2 handle carries exact Memory evidence");
         let binding = serde_json::to_string(&handle).expect("HM1 encode terminal binding");
         // A changed aggregate Environment is a new root-CAS snapshot.
         projection.revision.0 += 1;
@@ -2253,12 +2293,13 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                 .sandbox_effect_fence("unacknowledged-memory-create")
                 .unwrap();
             let environment = host
-                .realizer
-                .env
+                .realization_executor
+                .environments()
+                .providers()
                 .session_provider
                 .terminal()
                 .prepare_terminal_effective_for_effect(
-                    &host.realizer.sandbox_spec(&thread),
+                    &host.realization_executor.sandbox_spec(&thread),
                     Some(&handle),
                     None,
                     &fence,
@@ -2267,8 +2308,14 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                 .await
                 .unwrap()
                 .unwrap();
-            host.realizer
-                .begin_session_environment_preparation(&thread, Arc::new(environment), None)
+            host.realization_executor
+                .environments()
+                .begin_session_environment_preparation(
+                    host.realization_executor.peers(),
+                    &thread,
+                    Arc::new(environment),
+                    None,
+                )
                 .unwrap();
             if unmaterialized {
                 projection.environment =
@@ -2292,9 +2339,10 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
             let warm_fence = lease
                 .sandbox_effect_fence("resident-terminal-memory-preparation")
                 .expect("HM1 live resident preparation fence");
-            host.realizer
+            host.realization_executor
+                .environments()
                 .prepare_bound_environment_for_effect_under_lifecycle(
-                    &host.realizer.cleanup,
+                    host.realization_executor.peers(),
                     &thread,
                     &binding,
                     &warm_fence,
@@ -2315,7 +2363,8 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
             );
         } else {
             assert!(
-                host.realizer
+                host.realization_executor
+                    .environments()
                     .session_environment(&thread)
                     .await
                     .expect("installed Sessions")
@@ -2430,9 +2479,10 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
             )).expect("installed Sessions").unwrap(), "H7/H8 no invented commit evidence");
             let before = events.lock().unwrap().clone();
             let error = host
-                .realizer
+                .realization_executor
+                .environments()
                 .prepare_bound_environment_for_effect_under_lifecycle(
-                    &host.realizer.cleanup,
+                    host.realization_executor.peers(),
                     &thread,
                     &binding,
                     &effect.sandbox_effect_fence().unwrap(),
@@ -2444,11 +2494,15 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                 .expect("H7/H8 retired Candidate cannot become a live source");
             assert_eq!(error.code(), "session_terminal_unpublished_candidate");
             let error = host
-                .realizer
+                .realization_executor
                 .adopt_bound_session_environment(
                     &thread,
                     Some(&binding),
-                    &host.realizer.env.session_provider,
+                    &host
+                        .realization_executor
+                        .environments()
+                        .providers()
+                        .session_provider,
                     None,
                     false,
                 )
@@ -2478,7 +2532,8 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
             "HM1/E5 physical disposal is the final effect",
         );
         assert!(
-            host.realizer
+            host.realization_executor
+                .environments()
                 .session_environment(&thread)
                 .await
                 .expect("installed Sessions")

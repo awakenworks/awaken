@@ -398,7 +398,8 @@ mod terminal_scope_tests {
                 "L1 scope discovery cannot acknowledge or retire physical execution"
             );
             assert!(
-                host.realizer
+                host.realization_executor
+                    .environments()
                     .session_environment(&thread.0)
                     .await
                     .expect("installed Sessions")
