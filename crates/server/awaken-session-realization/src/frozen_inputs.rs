@@ -1,7 +1,7 @@
 //! Frozen Session values every runtime projection reads: the content delivery
 //! mode and the process-local projections of the Session baseline and
-//! Environment snapshot. The Session slot holds them; provisioning, resource
-//! layout and prompt rendering read them without reaching into the slot.
+//! Environment snapshot. The installed Session holds them; provisioning, resource
+//! layout and prompt rendering read them without reaching into the installed Session.
 
 /// One Session-wide delivery decision for resources that can be represented
 /// either as files or as semantic tools. The frozen Resource/Skill identities
@@ -26,9 +26,9 @@ pub enum ManagedContentDelivery {
 /// immutable coordinates.
 pub type FrozenBaselineInputs = awaken_session_configuration_contract::SessionBaseline;
 
-/// One Session's frozen inputs as this process holds them. The Session slot
+/// One Session's frozen inputs as this process holds them. The installed Session
 /// keeps one `Arc` of it and every change publishes a complete replacement, so
-/// no reader observes a partly installed value; removing the slot drops it.
+/// no reader observes a partly installed value; removing the installed Session drops it.
 #[derive(Clone, Default)]
 pub struct FrozenSessionInputs {
     pub workspace: Option<String>,

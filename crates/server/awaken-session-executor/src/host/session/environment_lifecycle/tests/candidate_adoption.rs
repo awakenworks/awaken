@@ -223,6 +223,12 @@ async fn unknown_candidate_retry_never_authorizes_or_relabels_its_owner() {
             .realization_executor
             .environments()
             .retry_session_environment_candidate_under_lifecycle(
+                host.realization_executor
+                    .sessions()
+                    .lock_lifecycle(thread)
+                    .await
+                    .unwrap()
+                    .held(),
                 host.realization_executor.peers(),
                 thread,
             )
@@ -245,9 +251,9 @@ async fn unknown_candidate_retry_never_authorizes_or_relabels_its_owner() {
         );
         host.installed_sessions.realizations().read_realization(thread, |realization| {
             if let Some(retirement) = &retirement {
-                assert!(matches!(&realization.environment.owner, SessionEnvironmentOwner::Retiring(current) if current.exact_matches(&retirement.owner)), "U1 exact retirement");
+                assert!(matches!(&realization.environment().owner, SessionEnvironmentOwner::Retiring(current) if current.exact_matches(&retirement.owner)), "U1 exact retirement");
             } else {
-                assert!(realization.environment.owner.unpublished_candidate().unwrap().exact_matches(&candidate), "U1 exact hidden owner");
+                assert!(realization.environment().owner.unpublished_candidate().unwrap().exact_matches(&candidate), "U1 exact hidden owner");
             }
         }).expect("installed Sessions").unwrap();
     }
@@ -526,7 +532,7 @@ async fn adopted_candidate_retains_successor_receipt_after_dispatch_fencing() {
                 .realizations()
                 .update_realization(thread, |r| {
                     let retiring = r
-                        .environment
+                        .environment_mut()
                         .owner
                         .begin_retirement(
                             SessionEnvironmentRetirementCause::RealizationRevocation,
@@ -534,7 +540,7 @@ async fn adopted_candidate_retains_successor_receipt_after_dispatch_fencing() {
                         )
                         .unwrap()
                         .unwrap();
-                    r.environment
+                    r.environment_mut()
                         .owner
                         .prepare_retiring_realization_adoption(&retiring, environment.clone(), None)
                         .unwrap();
@@ -716,6 +722,12 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
             .realization_executor
             .environments()
             .publish_session_environment_under_lifecycle(
+                host.realization_executor
+                    .sessions()
+                    .lock_lifecycle(thread)
+                    .await
+                    .unwrap()
+                    .held(),
                 host.realization_executor.peers(),
                 thread,
                 environment.clone(),
@@ -736,6 +748,12 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
                     .realization_executor
                     .environments()
                     .retry_session_environment_candidate_under_lifecycle(
+                        host.realization_executor
+                            .sessions()
+                            .lock_lifecycle(thread)
+                            .await
+                            .unwrap()
+                            .held(),
                         host.realization_executor.peers(),
                         thread,
                     )
@@ -765,6 +783,12 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
                 .realization_executor
                 .environments()
                 .retry_session_environment_candidate_under_lifecycle(
+                    host.realization_executor
+                        .sessions()
+                        .lock_lifecycle(thread)
+                        .await
+                        .unwrap()
+                        .held(),
                     host.realization_executor.peers(),
                     thread,
                 )
@@ -775,7 +799,7 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
             assert!(
                 host.installed_sessions
                     .realizations()
-                    .read_realization(thread, |r| matches!(&r.environment.owner,
+                    .read_realization(thread, |r| matches!(&r.environment().owner,
                 SessionEnvironmentOwner::Resident(owned) if owned.identity == expected))
                     .expect("installed Sessions")
                     .unwrap()
@@ -786,7 +810,7 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
                 "B direct success"
             );
         }
-        assert!(host.installed_sessions.realizations().read_realization(thread, |r| matches!(&r.environment.owner,
+        assert!(host.installed_sessions.realizations().read_realization(thread, |r| matches!(&r.environment().owner,
             SessionEnvironmentOwner::Resident(owned) if matches!(&owned.identity,
                 BoundSessionEnvironmentIdentity::Durable { effect_id, generation }
                     if effect_id == effect.authorization.intent().effect_id() && Some(generation) == source.generation()
@@ -889,7 +913,7 @@ async fn committed_hidden_create_candidate_is_terminally_retired_without_publica
         .installed_sessions
         .realizations()
         .update_realization(thread, |r| {
-            r.environment
+            r.environment_mut()
                 .owner
                 .begin_retirement_with_committed_candidate(&committed, cause)
         })
@@ -1200,7 +1224,7 @@ async fn unacknowledged_candidate_adoption_requires_aggregate_authority() {
     host.installed_sessions
         .realizations()
         .read_realization(thread, |r| {
-            assert!(matches!(&r.environment.owner,
+            assert!(matches!(&r.environment().owner,
         SessionEnvironmentOwner::Retiring(current) if current.exact_matches(&retirement.owner)))
         })
         .expect("installed Sessions")

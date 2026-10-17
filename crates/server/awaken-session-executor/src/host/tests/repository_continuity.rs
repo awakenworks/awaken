@@ -108,7 +108,7 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
         owner: "continuity-worker".into(),
         runtime_incarnation: "continuity-worker/1".into(),
         epoch: 1,
-        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
+        expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms()
             .saturating_add(120_000),
     };
     let baseline = awaken_session_configuration_contract::SessionBaseline::compile(
@@ -213,7 +213,7 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
     host.installed_sessions
         .realizations()
         .update_realization(thread, |state| {
-            state.staging.reconciliation =
+            state.staging_mut().reconciliation =
                 crate::staged_resources::EnvironmentResourceReconciliation::Adopted;
         })
         .expect("installed Sessions");

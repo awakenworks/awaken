@@ -97,7 +97,7 @@ impl ToolExecutor for DeferredSandboxExecutor {
             .and_then(|host| {
                 host.installed_sessions
                     .realizations()
-                    .read_realization(&self.thread, |r| r.environment.owner.resident())
+                    .read_realization(&self.thread, |r| r.environment().owner.resident())
                     .expect("session runtime slots mutex poisoned")
                     .flatten()
             })

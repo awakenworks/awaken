@@ -22,7 +22,7 @@ pub struct AuthorizedSessionEnvironmentEffect {
     pub authorization: awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
     pub provider_fence: Option<awaken_provisioning_contract::SandboxEffectFence>,
     /// Captured before provider I/O; renewal can advance expiry but cannot
-    /// lend this operation another slot allocation or Worker generation.
+    /// lend this operation another installed Session allocation or Worker generation.
     pub provider_authority:
         Option<Arc<dyn awaken_provisioning_contract::CurrentExecutionAuthority>>,
 }
@@ -93,7 +93,7 @@ impl TerminalEffectMode {
 }
 
 /// One exact terminal owner plus its non-durable I/O mode. This stays inside
-/// the process-local realizer and is never serialized, acknowledged, or used as mutation
+/// the process-local realization executor and is never serialized, acknowledged, or used as mutation
 /// authority.
 pub struct PreparedBoundEnvironment {
     pub environment: Option<(Arc<crate::session_environment::SessionEnvironment>, bool)>,

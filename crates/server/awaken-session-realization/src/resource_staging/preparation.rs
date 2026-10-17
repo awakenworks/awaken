@@ -1,5 +1,5 @@
 // @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
-//! Scoped Resource I/O preparation over the canonical realization slot.
+//! Scoped Resource I/O preparation over the installed Session.
 //!
 //! Worker authorization encloses the original synchronous lease installation.
 //! The scope retains no Host or scheduler, and can only remove its own token
@@ -7,14 +7,14 @@
 
 use crate::execution_authority::ExecutionAuthority;
 use crate::realization_error::RealizationError;
-use crate::realization_state::{SessionRealization, SessionRealizationAuthority};
+use crate::realization_state::SessionRealization;
 use crate::session_realizations::SessionRealizations;
 use awaken_session_configuration_contract::resource::SessionRealizationLease;
 use awaken_session_realization_contract::ObservedSessionRealizationLease;
 use std::sync::Arc;
 
 /// Scoped preparation, not another lease manager. The existing scheduler sees
-/// the canonical slot before Resource I/O; this guard only bounds that I/O's
+/// the installed Session before Resource I/O; this guard only bounds that I/O's
 /// lifetime and removes a newly introduced, unpublished lease on failure/drop.
 pub struct ResourcePreparation<'a> {
     sessions: SessionRealizations,
@@ -35,17 +35,17 @@ impl<'a> ResourcePreparation<'a> {
         let sessions = authority.sessions().clone();
         let (introduced_lease, changed) = authority.authorize_worker_effect(|| {
             sessions.update_realization(session, |r| {
-                if r.staging.preparation.is_some() {
+                if r.staging().preparation.is_some() {
                     return Err(RealizationError::invariant(
                         "Resource preparation already holds its projection lock",
                     ));
                 }
-                let introduced = r.execution.authority.lease().is_none();
+                let introduced = r.execution().authority.lease().is_none();
                 if !r.install_lease(proof) {
                     return Err(Self::ended());
                 }
-                r.staging.preparation = Some(cancellation.clone());
-                Ok((introduced, r.execution.changed.clone()))
+                r.staging_mut().preparation = Some(cancellation.clone());
+                Ok((introduced, r.execution().changed.clone()))
             })?
         })?;
         changed.notify_waiters();
@@ -62,7 +62,7 @@ impl<'a> ResourcePreparation<'a> {
 
     fn authorized(&self, realization: &SessionRealization) -> bool {
         realization
-            .staging
+            .staging()
             .preparation
             .as_ref()
             .is_some_and(|current| Arc::ptr_eq(current, &self.cancellation))
@@ -93,7 +93,7 @@ impl<'a> ResourcePreparation<'a> {
         if !self.authorized(realization) {
             return Err(Self::ended());
         }
-        realization.staging.preparation = None;
+        realization.staging_mut().preparation = None;
         Ok(())
     }
 
@@ -101,7 +101,7 @@ impl<'a> ResourcePreparation<'a> {
         let realizations = &self.sessions;
         loop {
             let changed = match realizations
-                .read_realization(self.session, |r| r.execution.changed.clone())
+                .read_realization(self.session, |r| r.execution().changed.clone())
             {
                 Ok(Some(changed)) => changed,
                 Ok(None) => return Self::ended(),
@@ -113,7 +113,7 @@ impl<'a> ResourcePreparation<'a> {
             notified.as_mut().enable();
             let remaining = match realizations.read_realization(self.session, |realization| {
                 self.authorized(realization)
-                    .then(|| realization.execution.authority.remaining())
+                    .then(|| realization.execution().authority.remaining())
                     .flatten()
             }) {
                 Ok(remaining) => remaining.flatten(),
@@ -137,22 +137,13 @@ impl Drop for ResourcePreparation<'_> {
         // Drop cannot report: a poisoned or retired registry holds no
         // preparation of this scope left to release.
         let _ = realizations.modify_realization(self.session, |r| {
-            if r.staging
-                .preparation
-                .as_ref()
-                .is_some_and(|current| Arc::ptr_eq(current, &self.cancellation))
-            {
-                r.staging.preparation = None;
-                if self.introduced_lease && r.execution.authority.lease().is_some_and(|current| {
-                    awaken_session_realization_contract::realization_lease_generation_authorizes(
-                        current,
-                        &self.asserted,
-                    )
-                }) {
-                    r.execution.authority = SessionRealizationAuthority::Uninstalled;
-                    r.execution.changed.notify_waiters();
-                }
-            }
+            r.end_resource_preparation(
+                &self.cancellation,
+                self.introduced_lease.then_some(&self.asserted),
+            );
         });
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -40,14 +40,14 @@ impl TerminalEffects {
         // Worker restart. Hold the existing realization/lifecycle lock order
         // across exact Environment recovery and publication so root cleanup
         // cannot dispose the source between adoption and its durable receipt.
-        // Lease renewal may still update the process-local slot while these
+        // Lease renewal may still update the process-local installed Session while these
         // effect locks are held; every boundary therefore re-reads the current
         // same-generation lease rather than extending the asserted value.
         let _realization = self
             .sessions
             .acquire_realization(command.session_id.as_str())
             .await;
-        let _lifecycle = self
+        let lifecycle = self
             .sessions
             .lock_lifecycle(command.session_id.as_str())
             .await?;
@@ -64,7 +64,7 @@ impl TerminalEffects {
         let (assignment, resolved_resources) = self
             .sessions
             .read_realization(command.session_id.as_str(), |r| {
-                (r.effects.assignment.clone(), r.previous_resources())
+                (r.effects().assignment.clone(), r.previous_resources())
             })?
             .ok_or_else(|| {
                 RunError::unavailable_classified(
@@ -90,7 +90,7 @@ impl TerminalEffects {
         let effect_fence = current_lease
             .sandbox_effect_fence(command.effect_id.clone())
             .map_err(crate::realization_error::RealizationError::from)?;
-        let prepared = environments.prepare_bound_environment_for_effect_under_lifecycle(peers,
+        let prepared = environments.prepare_bound_environment_for_effect_under_lifecycle(lifecycle.held(), peers,
                 command.session_id.as_str(),
                 binding,
                 &effect_fence,

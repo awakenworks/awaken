@@ -1,10 +1,10 @@
 // @formal surface requirement=session.managed_worker.work_authority
 // @formal reason: this view keeps Frozen inputs readonly and publishes resource
-// @formal reason: requirements through the original slot lock and realization lease.
-//! The realizer's view of the Sessions installed in this process.
+// @formal reason: requirements through the original installed Session lock and realization lease.
+//! The realization executor's view of the Sessions installed in this process.
 //!
 //! The host keeps each installed Session as three layers under one lock:
-//! frozen inputs, the realization layer and the run layer. The realizer reaches
+//! frozen inputs, the realization layer and the run layer. The realization executor reaches
 //! them only through [`SessionRealizations`]: the frozen inputs read-only, the
 //! realization layer read/write, and of the run layer a narrow query plus two
 //! named operations, each applied under the same lock as the realization edit
@@ -32,7 +32,7 @@ pub struct SessionRealizationRevocationSelection {
 }
 
 impl SessionRealizationRevocationSelection {
-    /// Close and select the original authority under its canonical slot lock.
+    /// Close and select the original authority under its installed Session lock.
     pub fn close(
         realization: &mut SessionRealization,
         expected: Option<&awaken_session_configuration_contract::resource::SessionRealizationLease>,
@@ -44,7 +44,7 @@ impl SessionRealizationRevocationSelection {
 
     /// Terminal absence closes this original physical root's generation,
     /// accepting only its monotonic lease renewal; ordinary exact-lease
-    /// revocation keeps the strict [`Self::close`] policy. The slot owner calls
+    /// revocation keeps the strict [`Self::close`] policy. The installed Session owner calls
     /// this inside its canonical mutation, so the check, the closure and any
     /// Run controls it captures beside it observe one root.
     pub fn close_generation(
@@ -52,10 +52,10 @@ impl SessionRealizationRevocationSelection {
         expected: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         phase: &Arc<tokio::sync::Mutex<()>>,
     ) -> Option<Self> {
-        if !Arc::ptr_eq(phase, &realization.execution.phase) {
+        if !Arc::ptr_eq(phase, &realization.execution().phase) {
             return None;
         }
-        let current = match &realization.execution.authority {
+        let current = match &realization.execution().authority {
             SessionRealizationAuthority::Live(proof) => &proof.lease,
             SessionRealizationAuthority::Closed(Some(lease)) => lease,
             SessionRealizationAuthority::Uninstalled
@@ -73,14 +73,14 @@ impl SessionRealizationRevocationSelection {
     /// The selection is cleanup identity, not proof of process death.
     pub fn from_realization(realization: &SessionRealization) -> Self {
         Self {
-            realization: realization.execution.phase.clone(),
-            lifecycle: realization.environment.lifecycle.clone(),
-            authority: realization.execution.authority.clone(),
+            realization: realization.execution().phase.clone(),
+            lifecycle: realization.environment().lifecycle.clone(),
+            authority: realization.execution().authority.clone(),
         }
     }
 
     /// Check the complete selected allocation and physical completion shape.
-    /// This pure rule must be consumed inside the canonical slot mutation;
+    /// This pure rule must be consumed inside the installed Session mutation;
     /// it grants neither disposal nor process-stop authority.
     pub fn matches_completion(
         &self,
@@ -94,7 +94,7 @@ impl SessionRealizationRevocationSelection {
         use crate::environment_owner::{
             RetiringEnvironmentOwner, SessionEnvironmentOwner, SessionEnvironmentRestoration,
         };
-        match (&realization.environment.owner, expected_owner) {
+        match (&realization.environment().owner, expected_owner) {
             (SessionEnvironmentOwner::Vacant, SessionEnvironmentOwner::Vacant) => true,
             (SessionEnvironmentOwner::Vacant, SessionEnvironmentOwner::Retiring(expected)) => {
                 disposed && matches!(&expected.owned, RetiringEnvironmentOwner::Unbound(_))
@@ -117,17 +117,17 @@ impl SessionRealizationRevocationSelection {
 
     /// Require both original lock allocations and the original closed authority.
     pub fn matches(&self, realization: &SessionRealization) -> bool {
-        Arc::ptr_eq(&self.realization, &realization.execution.phase)
-            && Arc::ptr_eq(&self.lifecycle, &realization.environment.lifecycle)
-            && self.authority == realization.execution.authority
+        Arc::ptr_eq(&self.realization, &realization.execution().phase)
+            && Arc::ptr_eq(&self.lifecycle, &realization.environment().lifecycle)
+            && self.authority == realization.execution().authority
     }
 }
 
 /// The one local Primary/delegated activity combination. Callers retain their
-/// original Slot query adapter and already-held lifecycle scope; the delegated
+/// original installed-Session query adapter and already-held lifecycle scope; the delegated
 /// future is polled only after Primary, even when Primary was active. This is
 /// local activity, never a physical-stop proof or Environment authorization.
-/// A failed Slot query (a poisoned registry) denies instead of reading as idle.
+/// A failed installed-Session query (a poisoned registry) denies instead of reading as idle.
 pub async fn primary_or_delegated_run_active<E>(
     thread: &str,
     mut active: impl FnMut(&str) -> Result<bool, E>,
@@ -145,7 +145,7 @@ pub async fn primary_or_delegated_run_active<E>(
     Ok(primary_active)
 }
 
-/// What the realizer may learn of a Session's run layer, and the only two
+/// What the realization executor may learn of a Session's run layer, and the only two
 /// changes it may make to it.
 pub trait SessionRunQuery {
     /// A run context is currently built for the Session.
@@ -164,20 +164,20 @@ pub trait SessionRunQuery {
     fn install_dispatch_claim(&mut self, claim: awaken_dispatch_contract::RunClaim);
 }
 
-/// One installed Session as the realizer sees it, borrowed under the lock.
+/// One installed Session as the realization executor sees it, borrowed under the lock.
 pub struct SessionRealizationAccess<'a> {
     pub inputs: &'a Arc<FrozenSessionInputs>,
     pub realization: &'a mut SessionRealization,
     pub run: &'a mut dyn SessionRunQuery,
 }
 
-/// Where the host keeps installed Sessions, as the realizer reaches them.
+/// Where the host keeps installed Sessions, as the realization executor reaches them.
 pub trait SessionRealizationSource: Send + Sync {
-    /// Existing registry operations; all keep the original slot owner/lock.
+    /// Existing registry operations; all keep the original installed Session owner/lock.
     fn session_ids(&self) -> Result<Vec<String>, RealizationLock>;
     fn remove_session(&self, session: &str) -> Result<bool, RealizationLock>;
 
-    /// Enter the installed-slot owner's canonical permit kernel. This is the
+    /// Enter the installed Session owner's canonical permit kernel. This is the
     /// same exclusion and replacement retry that Host admission uses. The
     /// permit opens the claimed install path, so it may install the Session.
     fn acquire_realization<'a>(
@@ -205,9 +205,9 @@ pub trait SessionRealizationSource: Send + Sync {
     ) -> Result<bool, RealizationLock>;
 
     /// Complete only the captured allocation/authority and exact physical owner.
-    /// The canonical slot implementation performs the comparison and mutation
+    /// The installed Session implementation performs the comparison and mutation
     /// together. Absence and a poisoned lock are false, never permission to
-    /// select a later slot.
+    /// select a later installed Session.
     fn finish_realization_revocation(
         &self,
         session: &str,
@@ -216,10 +216,10 @@ pub trait SessionRealizationSource: Send + Sync {
         disposed: bool,
     ) -> bool;
 
-    /// Validate and retain an exact immutable publication under the same slot
+    /// Validate and retain an exact immutable publication under the same installed Session
     /// lock. This is the only publication write available to the selector;
     /// ordinary realization visitors still cannot mutate frozen inputs.
-    /// Replace frozen inputs through their original slot owner. Installing
+    /// Replace frozen inputs through their original installed Session owner. Installing
     /// frozen inputs is the install path: it alone installs an absent Session.
     fn replace_frozen(
         &self,
@@ -233,7 +233,7 @@ pub trait SessionRealizationSource: Send + Sync {
         publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
     ) -> Result<(), RealizationError>;
 
-    /// Publish one completed requirements compilation under the original slot
+    /// Publish one completed requirements compilation under the original installed Session
     /// lock. Frozen inputs remain readonly to ordinary visit callbacks. An
     /// absent Session lost its realization: nothing is installed.
     fn publish_resource_requirements(
@@ -247,7 +247,7 @@ pub trait SessionRealizationSource: Send + Sync {
     ) -> Result<(), RealizationError>;
 }
 
-/// The realizer's handle on installed Sessions (see the module docs).
+/// The realization executor's handle on installed Sessions (see the module docs).
 #[derive(Clone)]
 pub struct SessionRealizations(Arc<dyn SessionRealizationSource>);
 
@@ -276,7 +276,7 @@ impl SessionRealizations {
     }
 
     /// Hold the Session's current realization allocation, revalidating any
-    /// removal/recreation during the wait through the canonical slot owner.
+    /// removal/recreation during the wait through the installed Session owner.
     pub async fn acquire_realization(
         &self,
         session: &str,
@@ -284,7 +284,7 @@ impl SessionRealizations {
         self.acquire_realization_with(session, |_| ()).await.0
     }
 
-    /// Observe/admit through the slot owner's same acquire callback. Reading
+    /// Observe/admit through the installed Session owner's same acquire callback. Reading
     /// after acquiring a permit would leave a remove/recreate gap between the
     /// identity check and the observation; the original owner closes that gap.
     pub async fn acquire_realization_with<R: Send>(
@@ -298,15 +298,15 @@ impl SessionRealizations {
         let mut result = None;
         let permit = self
             .0
-            .acquire_realization(session, &mut |slot| result = Some(admit(slot)))
+            .acquire_realization(session, &mut |installed| result = Some(admit(installed)))
             .await;
         (
             permit,
-            result.expect("canonical permit acquisition admits its current slot"),
+            result.expect("canonical permit acquisition admits its current installed Session"),
         )
     }
 
-    /// Apply the canonical slot owner's exact post-I/O cleanup CAS.
+    /// Apply the installed Session owner's exact post-I/O cleanup CAS.
     pub fn finish_realization_revocation(
         &self,
         session: &str,
@@ -394,16 +394,20 @@ impl SessionRealizations {
         session: &str,
         fence: awaken_session_mcp::McpQuiescenceAdmissionFence,
     ) -> Result<bool, RealizationError> {
-        Ok(self.update_session(session, |slot| {
-            slot.realization.staging.mcp.close_admission(fence)
+        Ok(self.update_session(session, |installed| {
+            installed
+                .realization
+                .staging_mut()
+                .mcp
+                .close_admission(fence)
         })??)
     }
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn mcp_realization_admitted(&self, session: &str) -> Result<bool, RealizationError> {
         Ok(self
-            .modify_session(session, |slot| {
-                slot.realization.staging.mcp.admits_realization()
+            .modify_session(session, |installed| {
+                installed.realization.staging().mcp.admits_realization()
             })?
             .unwrap_or(true))
     }
@@ -419,10 +423,10 @@ impl SessionRealizations {
         has_acp: bool,
         has_native: bool,
     ) -> Result<Vec<String>, RealizationError> {
-        self.modify_session(session, |slot| {
-            let mut prompts = slot.realization.staging.resources.prompts.clone();
-            let delivery = slot.realization.staging.content_delivery.unwrap_or_default();
-            let environment = slot.realization.environment.owner.resident();
+        self.modify_session(session, |installed| {
+            let mut prompts = installed.realization.staging().resources.prompts.clone();
+            let delivery = installed.realization.staging().content_delivery.unwrap_or_default();
+            let environment = installed.realization.environment().owner.resident();
             let path_view = match environment.as_deref() {
                 Some(environment) => environment
                     .agent_tools()
@@ -431,17 +435,17 @@ impl SessionRealizations {
                 None => Default::default(),
             };
             prompts.extend(
-                slot.realization.staging.resources
+                installed.realization.staging().resources
                     .resource_prompts
                     .iter()
                     .map(|prompt| prompt.render(delivery, path_view.clone())),
             );
-            if let Some(baseline) = &slot.inputs.baseline {
+            if let Some(baseline) = &installed.inputs.baseline {
                 prompts.extend(baseline.prompts.iter()
                     .filter(|prompt| !awaken_session_configuration_contract::SessionContextSeed::is_seed_prompt(prompt))
                     .cloned());
             }
-            if let Some(skill_prompt) = &slot.realization.staging.skill_prompt {
+            if let Some(skill_prompt) = &installed.realization.staging().skill_prompt {
                 prompts.push(
                     skill_prompt
                         .render(&path_view, environment.as_deref())
@@ -454,14 +458,11 @@ impl SessionRealizations {
     }
 
     /// Hold one installed Session's Environment `lifecycle` lock.
-    pub async fn lock_lifecycle(
-        &self,
-        session: &str,
-    ) -> Result<tokio::sync::OwnedMutexGuard<()>, RealizationError> {
-        let lifecycle = self.update_session(session, |slot| {
-            slot.realization.environment.lifecycle.clone()
+    pub async fn lock_lifecycle(&self, session: &str) -> Result<LifecycleGuard, RealizationError> {
+        let lifecycle = self.update_session(session, |installed| {
+            installed.realization.environment().lifecycle.clone()
         })?;
-        Ok(lifecycle.lock_owned().await)
+        Ok(LifecycleGuard::new(session, lifecycle.lock_owned().await))
     }
 
     /// Hold the Environment `lifecycle` lock of a Session if it is installed.
@@ -470,12 +471,12 @@ impl SessionRealizations {
     pub async fn lock_lifecycle_if_installed(
         &self,
         session: &str,
-    ) -> Result<Option<tokio::sync::OwnedMutexGuard<()>>, RealizationError> {
-        let lifecycle = self.modify_session(session, |slot| {
-            slot.realization.environment.lifecycle.clone()
+    ) -> Result<Option<LifecycleGuard>, RealizationError> {
+        let lifecycle = self.modify_session(session, |installed| {
+            installed.realization.environment().lifecycle.clone()
         })?;
         Ok(match lifecycle {
-            Some(lifecycle) => Some(lifecycle.lock_owned().await),
+            Some(lifecycle) => Some(LifecycleGuard::new(session, lifecycle.lock_owned().await)),
             None => None,
         })
     }
@@ -484,9 +485,12 @@ impl SessionRealizations {
     pub async fn lock_resource_projection(
         &self,
         session: &str,
-    ) -> Result<tokio::sync::OwnedMutexGuard<()>, RealizationError> {
-        let projection = self.update_realization(session, |r| r.staging.projection.clone())?;
-        Ok(projection.lock_owned().await)
+    ) -> Result<ResourceProjectionGuard, RealizationError> {
+        let projection = self.update_realization(session, |r| r.staging().projection.clone())?;
+        Ok(ResourceProjectionGuard::new(
+            session,
+            projection.lock_owned().await,
+        ))
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -494,7 +498,9 @@ impl SessionRealizations {
         &self,
         session: &str,
     ) -> Result<Arc<tokio::sync::Mutex<()>>, RealizationError> {
-        self.update_session(session, |slot| slot.realization.execution.phase.clone())
+        self.update_session(session, |installed| {
+            installed.realization.execution().phase.clone()
+        })
     }
 
     /// The immutable Agent publication retained for one Session.
@@ -534,7 +540,7 @@ impl SessionRealizations {
     /// value. An unknown Session reads as the empty projection.
     pub fn frozen(&self, session: &str) -> Result<Arc<FrozenSessionInputs>, RealizationError> {
         Ok(self
-            .modify_session(session, |slot| slot.inputs.clone())?
+            .modify_session(session, |installed| installed.inputs.clone())?
             .unwrap_or_default())
     }
 
@@ -544,7 +550,7 @@ impl SessionRealizations {
         session: &str,
         f: impl FnOnce(&SessionRealization) -> R,
     ) -> Result<Option<R>, RealizationError> {
-        self.modify_session(session, |slot| f(slot.realization))
+        self.modify_session(session, |installed| f(installed.realization))
     }
 
     /// Change only the realization layer of an installed Session; an absent
@@ -554,22 +560,22 @@ impl SessionRealizations {
         session: &str,
         f: impl FnOnce(&mut SessionRealization) -> R,
     ) -> Result<R, RealizationError> {
-        self.update_session(session, |slot| f(slot.realization))
+        self.update_session(session, |installed| f(installed.realization))
     }
 
-    /// Change only the realization layer of an existing slot.
+    /// Change only the realization layer of an existing installed Session.
     pub fn modify_realization<R>(
         &self,
         session: &str,
         f: impl FnOnce(&mut SessionRealization) -> R,
     ) -> Result<Option<R>, RealizationError> {
-        self.modify_session(session, |slot| f(slot.realization))
+        self.modify_session(session, |installed| f(installed.realization))
     }
 
     /// Drop the Session's run context; see [`SessionRunQuery::drop_context`].
     /// An absent Session has no context to drop.
     pub fn drop_run_context(&self, session: &str) -> Result<(), RealizationError> {
-        self.modify_session(session, |slot| slot.run.drop_context())?;
+        self.modify_session(session, |installed| installed.run.drop_context())?;
         Ok(())
     }
 
@@ -577,17 +583,18 @@ impl SessionRealizations {
     /// reconciliation together, under one lock. A Session already retired has
     /// nothing to end, and terminal cleanup never reinstalls it.
     pub fn end_terminal_disposal(&self, session: &str) -> Result<(), RealizationError> {
-        self.modify_session(session, |slot| {
-            slot.run.drop_context();
-            slot.realization.staging.reconciliation =
-                crate::staged_resources::EnvironmentResourceReconciliation::None;
+        self.modify_session(session, |installed| {
+            installed.run.drop_context();
+            installed.realization.set_resource_reconciliation(
+                crate::staged_resources::EnvironmentResourceReconciliation::None,
+            );
         })?;
         Ok(())
     }
 
     /// See [`SessionRunQuery::enter_session_dispatch`].
     pub fn enter_session_dispatch(&self, session: &str) -> Result<(), RealizationError> {
-        self.update_session(session, |slot| slot.run.enter_session_dispatch())
+        self.update_session(session, |installed| installed.run.enter_session_dispatch())
     }
 
     /// The durable dispatch claim the Session currently serves.
@@ -598,6 +605,86 @@ impl SessionRealizations {
         Ok(self
             .modify_session(session, |access| access.run.dispatch_claim().cloned())?
             .flatten())
+    }
+}
+
+/// The per-Session lock hierarchy, in the only order it may be acquired:
+/// `realization` (the realization permit) -> `lifecycle` -> `resource_projection`.
+/// A caller may acquire any suffix of that order but never reverse it. Each
+/// lock is held through a guard; a function that requires a lock is named
+/// `*_under_lifecycle` / `*_under_resource_projection` and takes the matching
+/// held token, which only its guard can lend, so holding the lock is a checked
+/// precondition rather than a comment.
+#[derive(Debug)]
+pub struct LifecycleGuard {
+    session: String,
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl LifecycleGuard {
+    fn new(session: &str, guard: tokio::sync::OwnedMutexGuard<()>) -> Self {
+        Self {
+            session: session.to_owned(),
+            _guard: guard,
+        }
+    }
+
+    /// Lend the proof that this Session's `lifecycle` lock is held.
+    pub fn held(&self) -> LifecycleHeld<'_> {
+        LifecycleHeld {
+            session: &self.session,
+        }
+    }
+}
+
+/// Proof that the caller holds one Session's `lifecycle` lock; only a
+/// [`LifecycleGuard`] lends it, and it cannot outlive the guard.
+#[derive(Clone, Copy)]
+pub struct LifecycleHeld<'a> {
+    session: &'a str,
+}
+
+impl LifecycleHeld<'_> {
+    /// The Session whose lock is held.
+    pub fn session(&self) -> &str {
+        self.session
+    }
+}
+
+/// One Session's held `resource_projection` lock: the innermost of the
+/// hierarchy, so it may be taken under `lifecycle` or alone.
+#[derive(Debug)]
+pub struct ResourceProjectionGuard {
+    session: String,
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl ResourceProjectionGuard {
+    fn new(session: &str, guard: tokio::sync::OwnedMutexGuard<()>) -> Self {
+        Self {
+            session: session.to_owned(),
+            _guard: guard,
+        }
+    }
+
+    /// Lend the proof that this Session's `resource_projection` lock is held.
+    pub fn held(&self) -> ResourceProjectionHeld<'_> {
+        ResourceProjectionHeld {
+            session: &self.session,
+        }
+    }
+}
+
+/// Proof that the caller holds one Session's `resource_projection` lock.
+#[derive(Clone, Copy)]
+pub struct ResourceProjectionHeld<'a> {
+    session: &'a str,
+}
+
+impl ResourceProjectionHeld<'_> {
+    /// The Session whose lock is held.
+    pub fn session(&self) -> &str {
+        self.session
     }
 }
 

@@ -1163,7 +1163,7 @@ async fn coordinator_dispatch_context_never_materializes_an_eager_environment() 
     host.installed_sessions
         .realizations()
         .update_realization("coordinator-dispatch-only", |r| {
-            r.staging.skills = Some(vec![SkillVersion {
+            r.staging_mut().skills = Some(vec![SkillVersion {
                 id: "skver_files_1".into(),
                 skill_id: "files".into(),
                 version: 1,

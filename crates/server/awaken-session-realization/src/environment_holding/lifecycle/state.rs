@@ -5,115 +5,21 @@
 //! Provider I/O remains in the parent module so every transition into or out
 //! of these phases is performed under the same Session lifecycle guard.
 
+use super::owner_decisions::{
+    CandidateCommitDecision, DurableProjectionIdentityDecision, ProjectedEnvironmentOwner,
+    candidate_receipt_decision, durable_projection_identity_decision, projected_environment_owner,
+    same_durable_generation,
+};
 use super::{
-    Arc, BoundSessionEnvironment, BoundSessionEnvironmentIdentity,
-    LegacyDirectEnvironmentProvenance, RealizationError, RetiringEnvironmentOwner,
-    RetiringSessionEnvironment, SessionEnvironmentOwner, SessionEnvironmentPreparation,
-    SessionEnvironmentRetirementCause, UnboundSessionEnvironment,
+    Arc, BoundSessionEnvironment, BoundSessionEnvironmentIdentity, RealizationError,
+    RetiringEnvironmentOwner, RetiringSessionEnvironment, SessionEnvironmentOwner,
+    SessionEnvironmentPreparation, SessionEnvironmentRetirementCause, UnboundSessionEnvironment,
 };
-use crate::environment_owner::{
-    LegacyEnvironmentEffect, SessionEnvironmentRestoration, UnboundSessionEnvironmentOrigin,
-};
-
-pub enum ProjectedEnvironmentOwner {
-    Vacant,
-    AwaitingAdoption {
-        identity: BoundSessionEnvironmentIdentity,
-        binding: String,
-    },
-    Restoring {
-        request: awaken_session_state_contract::SandboxRestoreRequest,
-    },
-}
+use crate::environment_owner::{SessionEnvironmentRestoration, UnboundSessionEnvironmentOrigin};
 
 pub enum RetirementSelection<'a> {
     Current,
     Exact(&'a Arc<crate::session_environment::SessionEnvironment>),
-}
-
-fn legacy_effect(effect_id: &Option<String>) -> LegacyEnvironmentEffect {
-    match effect_id {
-        Some(effect_id) => LegacyEnvironmentEffect::Known(effect_id.clone()),
-        None => LegacyEnvironmentEffect::Absent,
-    }
-}
-
-pub fn checkpoint_source_identity(
-    source_effect_id: &str,
-    source_binding: &str,
-    generation: &awaken_session_state_contract::SandboxGeneration,
-) -> BoundSessionEnvironmentIdentity {
-    if source_effect_id.is_empty() {
-        BoundSessionEnvironmentIdentity::LegacyDirect(
-            LegacyDirectEnvironmentProvenance::DurableBinding {
-                binding: source_binding.to_string(),
-                effect: LegacyEnvironmentEffect::Absent,
-            },
-        )
-    } else {
-        BoundSessionEnvironmentIdentity::Durable {
-            effect_id: source_effect_id.to_string(),
-            generation: generation.clone(),
-        }
-    }
-}
-
-fn projected_environment_owner(
-    state: &awaken_session_state_contract::SessionEnvironmentState,
-    workspace_id: &str,
-    session_id: &str,
-) -> Result<ProjectedEnvironmentOwner, RealizationError> {
-    use awaken_session_state_contract::SessionEnvironmentState;
-    match state {
-        SessionEnvironmentState::Unmaterialized | SessionEnvironmentState::Hibernated { .. } => {
-            Ok(ProjectedEnvironmentOwner::Vacant)
-        }
-        SessionEnvironmentState::Resident {
-            binding,
-            effect_id,
-            generation,
-            ..
-        } => {
-            let identity = match (effect_id, generation) {
-                (Some(effect_id), Some(generation)) => BoundSessionEnvironmentIdentity::Durable {
-                    effect_id: effect_id.clone(),
-                    generation: generation.clone(),
-                },
-                (effect_id, None) => BoundSessionEnvironmentIdentity::LegacyDirect(
-                    LegacyDirectEnvironmentProvenance::DurableBinding {
-                        binding: binding.clone(),
-                        effect: legacy_effect(effect_id),
-                    },
-                ),
-                (None, Some(_)) => {
-                    return Err(RealizationError::invariant(
-                        "durable Session Environment generation has no effect identity",
-                    ));
-                }
-            };
-            Ok(ProjectedEnvironmentOwner::AwaitingAdoption {
-                identity,
-                binding: binding.clone(),
-            })
-        }
-        SessionEnvironmentState::Suspending {
-            source_effect_id,
-            source_binding,
-            generation,
-            ..
-        } => Ok(ProjectedEnvironmentOwner::AwaitingAdoption {
-            identity: checkpoint_source_identity(source_effect_id, source_binding, generation),
-            binding: source_binding.clone(),
-        }),
-        SessionEnvironmentState::Restoring { .. } => Ok(ProjectedEnvironmentOwner::Restoring {
-            request: state
-                .restoring_request(
-                    workspace_id,
-                    &awaken_session_types::SessionId::from(session_id),
-                )
-                .expect("Restoring state projects one exact restore request"),
-        }),
-    }
 }
 
 fn compatible_durable_projection(
@@ -157,128 +63,9 @@ fn durable_reservation_handles(
     .then_some((current, projected))
 }
 
-fn same_durable_generation(
-    current: &BoundSessionEnvironmentIdentity,
-    projected: &BoundSessionEnvironmentIdentity,
-) -> bool {
-    matches!(
-        (current, projected),
-        (
-            BoundSessionEnvironmentIdentity::Durable {
-                generation: current,
-                ..
-            },
-            BoundSessionEnvironmentIdentity::Durable {
-                generation: projected,
-                ..
-            },
-        ) if current == projected
-    )
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DurableProjectionIdentityDecision {
-    Exact,
-    SamePhysicalOwnerStutter,
-    Conflict,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CandidateCommitClass {
-    New,
-    Adoption,
-    AdoptionFrom,
-    DurableCreate,
-    DurableAdoption,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CandidateCommitDecision {
-    BindCreate,
-    BindAdoption,
-    Replay,
-    Conflict,
-}
-
-const fn candidate_commit_decision(
-    class: CandidateCommitClass,
-    committed_identity_is_exact: bool,
-    source_identity_is_compatible: bool,
-) -> CandidateCommitDecision {
-    match class {
-        CandidateCommitClass::New => CandidateCommitDecision::BindCreate,
-        CandidateCommitClass::Adoption => CandidateCommitDecision::BindAdoption,
-        CandidateCommitClass::AdoptionFrom if source_identity_is_compatible => {
-            CandidateCommitDecision::BindAdoption
-        }
-        CandidateCommitClass::AdoptionFrom => CandidateCommitDecision::Conflict,
-        CandidateCommitClass::DurableCreate | CandidateCommitClass::DurableAdoption
-            if committed_identity_is_exact =>
-        {
-            CandidateCommitDecision::Replay
-        }
-        CandidateCommitClass::DurableCreate | CandidateCommitClass::DurableAdoption => {
-            CandidateCommitDecision::Conflict
-        }
-    }
-}
-
-// Source receipts and the current effect receipt have different roles. Both
-// publication and post-commit retention use this decision; otherwise dispatch
-// success could accept a receipt that the failure/retry path rejects.
-fn candidate_receipt_decision(
-    origin: &UnboundSessionEnvironmentOrigin,
-    identity: &BoundSessionEnvironmentIdentity,
-) -> CandidateCommitDecision {
-    let (class, exact, compatible) = match origin {
-        UnboundSessionEnvironmentOrigin::New => (CandidateCommitClass::New, false, false),
-        UnboundSessionEnvironmentOrigin::Adoption => (CandidateCommitClass::Adoption, false, false),
-        UnboundSessionEnvironmentOrigin::AdoptionFrom(source) => (
-            CandidateCommitClass::AdoptionFrom,
-            false,
-            source == identity
-                || same_durable_generation(source, identity)
-                || matches!(
-                    (source, identity),
-                    (
-                        BoundSessionEnvironmentIdentity::LegacyDirect(
-                            LegacyDirectEnvironmentProvenance::DurableBinding { .. }
-                        ),
-                        BoundSessionEnvironmentIdentity::Durable { .. }
-                    )
-                ),
-        ),
-        UnboundSessionEnvironmentOrigin::DurableCreate(current) => (
-            CandidateCommitClass::DurableCreate,
-            current == identity,
-            false,
-        ),
-        UnboundSessionEnvironmentOrigin::DurableAdoption(current) => (
-            CandidateCommitClass::DurableAdoption,
-            current == identity,
-            false,
-        ),
-    };
-    candidate_commit_decision(class, exact, compatible)
-}
-
-const fn durable_projection_identity_decision(
-    identity_is_exact: bool,
-    binding_is_exact: bool,
-    generation_is_exact: bool,
-) -> DurableProjectionIdentityDecision {
-    if identity_is_exact && binding_is_exact {
-        DurableProjectionIdentityDecision::Exact
-    } else if !identity_is_exact && binding_is_exact && generation_is_exact {
-        DurableProjectionIdentityDecision::SamePhysicalOwnerStutter
-    } else {
-        DurableProjectionIdentityDecision::Conflict
-    }
-}
-
 impl SessionEnvironmentOwner {
     /// Stage only the rebuildable owner coordinates. No physical owner is
-    /// retired or published until the caller commits under this same slot lock.
+    /// retired or published until the caller commits under this same installed Session lock.
     pub fn after_projection(
         &self,
         thread: &str,
@@ -950,77 +737,5 @@ impl SessionEnvironmentOwner {
             },
         ));
         Ok(())
-    }
-}
-
-#[cfg(kani)]
-/// @obligation session_environment.stale_projection_never_rolls_back_or_relabels_resident_or_retiring_owner
-/// @proof-input-debt free_symbol durable_projection_identity_decision binding_is_exact
-/// @proof-input-debt free_symbol durable_projection_identity_decision identity_is_exact
-#[kani::proof]
-fn durable_projection_identity_is_exact_or_a_same_physical_owner_stutter() {
-    // Cause/effect decision table:
-    // C1 effect identity is exact; C2 binding is exact; C3 immutable generation
-    // is exact. E1 C1+C2 => Exact. E2 !C1+C2+C3 => stale same-owner stutter.
-    // E3 every remaining combination => Conflict. The eight Boolean rules are
-    // exhausted here; only E1/E2 may be absorbed by Resident or Retiring.
-    let identity_is_exact: bool = kani::any();
-    let binding_is_exact: bool = kani::any();
-    let generation_is_exact: bool = kani::any();
-    let decision = durable_projection_identity_decision(
-        identity_is_exact,
-        binding_is_exact,
-        generation_is_exact,
-    );
-    assert_eq!(
-        decision == DurableProjectionIdentityDecision::Exact,
-        identity_is_exact && binding_is_exact
-    );
-    assert_eq!(
-        decision == DurableProjectionIdentityDecision::SamePhysicalOwnerStutter,
-        !identity_is_exact && binding_is_exact && generation_is_exact
-    );
-}
-
-#[cfg(kani)]
-/// @obligation session_environment.stale_projection_never_rolls_back_or_relabels_resident_or_retiring_owner
-#[kani::proof]
-fn committed_candidate_retains_effect_kind_and_rejects_identity_relabeling() {
-    // Cause/effect decision table: C1 is the closed Candidate origin class; C2
-    // a previously committed identity is exact. E1 New binds DurableCreate;
-    // E2 Adoption binds DurableAdoption; source adoption binds only a compatible
-    // physical generation (or typed legacy upgrade). E3 either committed class plus exact C2
-    // replays; E4 either durable class plus !C2 conflicts. The reducer returns
-    // no Resident decision, so every row remains hidden until the canonical
-    // publication or terminal-retirement owner consumes it.
-    let class = match kani::any::<u8>() % 5 {
-        0 => CandidateCommitClass::New,
-        1 => CandidateCommitClass::Adoption,
-        2 => CandidateCommitClass::DurableCreate,
-        3 => CandidateCommitClass::DurableAdoption,
-        _ => CandidateCommitClass::AdoptionFrom,
-    };
-    let exact: bool = kani::any();
-    let compatible: bool = kani::any();
-    let decision = candidate_commit_decision(class, exact, compatible);
-    match class {
-        CandidateCommitClass::New => assert_eq!(decision, CandidateCommitDecision::BindCreate),
-        CandidateCommitClass::Adoption => {
-            assert_eq!(decision, CandidateCommitDecision::BindAdoption)
-        }
-        CandidateCommitClass::AdoptionFrom => assert_eq!(
-            decision,
-            if compatible {
-                CandidateCommitDecision::BindAdoption
-            } else {
-                CandidateCommitDecision::Conflict
-            }
-        ),
-        CandidateCommitClass::DurableCreate | CandidateCommitClass::DurableAdoption if exact => {
-            assert_eq!(decision, CandidateCommitDecision::Replay)
-        }
-        CandidateCommitClass::DurableCreate | CandidateCommitClass::DurableAdoption => {
-            assert_eq!(decision, CandidateCommitDecision::Conflict)
-        }
     }
 }

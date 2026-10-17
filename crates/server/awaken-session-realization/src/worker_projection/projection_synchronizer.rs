@@ -14,7 +14,8 @@ use awaken_session_configuration_contract::resource as session_resource;
 use awaken_session_realization_contract::{CanonicalSessionProjection, requires_local_environment};
 
 pub struct WorkerProjectionSynchronizer<'a, T> {
-    pub host: &'a T,
+    /// The projection execution role the synchronizer drives.
+    pub execution: &'a T,
     pub claim: Option<&'a awaken_dispatch_contract::RunClaim>,
     pub published_snapshot: Option<&'a awaken_runtime_contract::ExecutableAgentSnapshot>,
     pub rebuild_unavailable_environment: bool,
@@ -29,7 +30,7 @@ where
     /// Project claim-owned inputs at the same adapter boundary as directive
     /// inputs. The parent drives phases; this adapter alone maps claim fields.
     pub fn for_claimed(
-        host: &'a T,
+        execution: &'a T,
         session_id: &str,
         directive: &awaken_session_realization_contract::SessionRealizationDirective,
         claimed: Option<&'a awaken_dispatch_contract::Claimed>,
@@ -45,7 +46,7 @@ where
         });
         let claimed_environment_binding = claimed.and_then(|claimed| claimed.sandbox.as_deref());
         Self::for_directive(
-            host,
+            execution,
             directive,
             claim,
             published_snapshot,
@@ -58,7 +59,7 @@ where
     /// its optional claimed-dispatch authority. The directive remains the owner
     /// of MCP stage intent; this adapter derives only the physical ordering bit.
     pub fn for_directive(
-        host: &'a T,
+        execution: &'a T,
         directive: &awaken_session_realization_contract::SessionRealizationDirective,
         claim: Option<&'a awaken_dispatch_contract::RunClaim>,
         published_snapshot: Option<&'a awaken_runtime_contract::ExecutableAgentSnapshot>,
@@ -73,7 +74,7 @@ where
                     .any(|stage| stage.target.sandbox_stdio_target().is_some())
         );
         Self {
-            host,
+            execution,
             claim,
             published_snapshot,
             rebuild_unavailable_environment,
@@ -126,8 +127,8 @@ where
         lease: &awaken_session_realization_contract::ObservedSessionRealizationLease,
         prepare_session: bool,
     ) -> Result<(), awaken_session_types::RunError> {
-        let realizations = self.host.sessions();
-        let exec = self.host.realization_executor();
+        let realizations = self.execution.sessions();
+        let exec = self.execution.realization_executor();
         let retained_publication = realizations.published_snapshot(session_id.as_str())?;
         if let Some(claimed) = self.published_snapshot
             && !matches!(
@@ -191,7 +192,7 @@ where
                 .is_some_and(|publication| !requires_local_environment(&publication.resolved_spec));
             let has_local_environment_owner = realizations
                 .read_realization(session_id.as_str(), |r| {
-                    r.environment.owner.has_local_environment()
+                    r.environment().owner.has_local_environment()
                 })?
                 .unwrap_or(false);
             let has_environment_binding = self.claimed_environment_binding.is_some()
@@ -227,8 +228,8 @@ where
         // opening an unclaimed remote materialization path.
         let synchronize_resources = self.claim.is_some() || prepare_session;
         // Control materializes current context on every directive. Install the
-        // supplied projection even for a lease-only Complete action so a
-        // Session command accepted between Runs cannot leave a warm slot stale.
+        // supplied projection even for a lease-only Complete action so a Session
+        // command accepted between Runs cannot leave a warm installed Session stale.
         let mut projection = projection.clone();
         // The aggregate is authoritative after any Environment transition.
         // RunDispatch.sandbox is only a raw-handle delivery cache; the helper
@@ -241,7 +242,7 @@ where
         if projection.agent_publication.is_none() {
             projection.agent_publication = published_snapshot.cloned();
         }
-        self.host
+        self.execution
             .install_frozen_projection(
                 session_id.as_str(),
                 projection.clone(),
@@ -265,8 +266,8 @@ where
         // follows the existing policy-fenced Rebuild decision.
         let has_environment_binding = projection.environment.binding().is_some();
         let runtime_authority_resident = realizations
-            .modify_session(session_id.as_str(), |slot| {
-                slot.run.holds_context() || slot.realization.environment.owner.is_resident()
+            .modify_session(session_id.as_str(), |held| {
+                held.run.holds_context() || held.realization.environment().owner.is_resident()
             })?
             .unwrap_or(false);
         if self.requires_runtime_before_effects
@@ -286,7 +287,7 @@ where
             let provider = exec
                 .environments()
                 .projected_session_environment_provider(session_id.as_str(), None)?;
-            self.host
+            self.execution
                 .realization_executor()
                 .adopt_bound_session_environment(
                     session_id.as_str(),
@@ -324,7 +325,7 @@ where
         } else if published_snapshot.is_some()
             && (has_environment_binding || self.requires_runtime_before_effects)
         {
-            self.host
+            self.execution
                 .ensure_session_substrate(session_id.as_str(), published_snapshot.as_ref())
                 .await?;
             true
@@ -332,7 +333,7 @@ where
             false
         };
         if synchronize_resources && !reconciled_by_substrate {
-            self.host
+            self.execution
                 .realization_executor()
                 .apply_session_inputs(
                     session_id.as_str(),
@@ -352,7 +353,7 @@ where
         session_id: &awaken_session_types::SessionId,
         lease: &session_resource::SessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
-        self.host
+        self.execution
             .invalidate_realization_lease(session_id.as_str(), lease);
         Ok(())
     }

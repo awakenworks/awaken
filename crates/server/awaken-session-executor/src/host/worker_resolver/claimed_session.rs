@@ -72,14 +72,10 @@ mod tests {
                 ),
             ] {
                 let expected = exact_claim && live_exact_proof;
+                let mut realization = crate::realization_state::SessionRealization::default();
+                realization.execution_mut().authority = authority;
                 let mut slot = InstalledSession {
-                    realization: crate::realization_state::SessionRealization {
-                        execution: crate::realization_state::ExecutionAuthorityState {
-                            authority,
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    },
+                    realization,
                     run: crate::installed_session::SessionRunBinding {
                         dispatch_claim: previous.clone(),
                         ..Default::default()

@@ -365,7 +365,7 @@ async fn successful_retirement_cannot_remove_a_successor_session_relay_route() {
         .await
         .expect("bounded complete original A projection install");
         let original = canonical
-            .read(session, |slot| slot.realization.execution.phase.clone())
+            .read(session, |slot| slot.realization.execution().phase.clone())
             .expect("A canonical allocation");
         let relay = original_relay(&host).await;
         let selected = host.begin_session_realization_revocation();
@@ -414,7 +414,7 @@ async fn successful_retirement_cannot_remove_a_successor_session_relay_route() {
         .await
         .expect("bounded complete successor B projection install");
         let successor = canonical
-            .read(session, |slot| slot.realization.execution.phase.clone())
+            .read(session, |slot| slot.realization.execution().phase.clone())
             .expect("B canonical allocation");
         assert!(
             !Arc::ptr_eq(&original, &successor),
@@ -485,7 +485,7 @@ async fn successful_retirement_cannot_remove_a_successor_session_relay_route() {
         assert!(Arc::ptr_eq(
             &successor,
             &canonical
-                .read(session, |slot| slot.realization.execution.phase.clone())
+                .read(session, |slot| slot.realization.execution().phase.clone())
                 .unwrap(),
         ));
         assert_eq!(
@@ -548,7 +548,7 @@ async fn absent_component_retirement_cannot_close_or_remove_a_later_session() {
                 Some(awaken_session_realization::test_support::test_observed_lease(lease.clone())),
             ).await.expect("B uses the original complete projection installer after real absence");
         }).await.expect("bounded complete successor installation");
-        let successor = canonical.read(session, |slot| slot.realization.execution.phase.clone()).unwrap();
+        let successor = canonical.read(session, |slot| slot.realization.execution().phase.clone()).unwrap();
         let generation = crate::test_mcp::mcp_fence(
             session, "docs", 1, &lease.runtime_incarnation, lease.epoch, lease.expires_at_unix_ms,
         );
@@ -556,7 +556,7 @@ async fn absent_component_retirement_cannot_close_or_remove_a_later_session() {
         drop(release);
         let retired = tokio::time::timeout(std::time::Duration::from_secs(5), finish)
             .await.expect("absence gate released").unwrap().unwrap();
-        let remains = canonical.read(session, |slot| Arc::ptr_eq(&successor, &slot.realization.execution.phase)).unwrap_or(false);
+        let remains = canonical.read(session, |slot| Arc::ptr_eq(&successor, &slot.realization.execution().phase)).unwrap_or(false);
         let authority = host.mcp_generation_root_authority(&generation);
         assert!(remains && authority == Some(true),
             "retirement that observed actual absence selected the later Session: remains={remains}, authority={authority:?}");

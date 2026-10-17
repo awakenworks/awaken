@@ -1150,10 +1150,10 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     host.installed_sessions
         .realizations()
         .update_realization("memory-replay", |r| {
-            r.staging.manifest = None;
-            r.staging.resources = Default::default();
-            r.staging.memory_bindings.clear();
-            r.staging.memory = None;
+            r.staging_mut().manifest = None;
+            r.staging_mut().resources = Default::default();
+            r.staging_mut().memory_bindings.clear();
+            r.staging_mut().memory = None;
         })
         .expect("installed Sessions");
     let replay = resource_transition(

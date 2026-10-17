@@ -360,7 +360,7 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
     let bindings = host
         .installed_sessions
         .realizations()
-        .read_realization("semantic-memory", |r| r.staging.memory_bindings.clone())
+        .read_realization("semantic-memory", |r| r.staging().memory_bindings.clone())
         .expect("installed Sessions")
         .unwrap();
     let tools = crate::session_memory_tools::SessionMemoryTools::new(bindings).unwrap();
@@ -462,7 +462,7 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
     assert_eq!(
         host.installed_sessions
             .realizations()
-            .read_realization("semantic-memory", |r| r.staging.content_delivery)
+            .read_realization("semantic-memory", |r| r.staging().content_delivery)
             .expect("installed Sessions")
             .flatten(),
         Some(crate::frozen_inputs::ManagedContentDelivery::SemanticTools),
@@ -901,7 +901,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         owner: "terminal-publication-worker".into(),
         runtime_incarnation: "terminal-publication-worker:incarnation".into(),
         epoch: 1,
-        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
+        expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms()
             .saturating_add(60_000),
     };
     // Reuse the Environment-binding test authority so the exact realization
@@ -1116,7 +1116,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         .installed_sessions
         .realizations()
         .read_realization(session_id, |r| {
-            r.environment.owner.terminal_bound_environment()
+            r.environment().owner.terminal_bound_environment()
         })
         .expect("installed Sessions")
         .flatten()
@@ -1208,11 +1208,11 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         host.installed_sessions.update(session_id, |slot| {
             let owned = slot
                 .realization
-                .environment
+                .environment()
                 .owner
                 .terminal_bound_environment()
                 .unwrap();
-            slot.realization.environment.owner =
+            slot.realization.environment_mut().owner =
                 crate::environment_owner::SessionEnvironmentOwner::Retiring(
                     crate::environment_owner::RetiringSessionEnvironment {
                         cause:
@@ -1247,6 +1247,12 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             .realization_executor
             .environments()
             .prepare_bound_environment_for_effect_under_lifecycle(
+                host.realization_executor
+                    .sessions()
+                    .lock_lifecycle(session_id)
+                    .await
+                    .unwrap()
+                    .held(),
                 host.realization_executor.peers(),
                 session_id,
                 binding,
@@ -1261,7 +1267,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         );
         host.installed_sessions.realizations().update_realization(session_id, |r| {
             if let crate::environment_owner::SessionEnvironmentOwner::Retiring(retiring) =
-                &mut r.environment.owner
+                &mut r.environment_mut().owner
             {
                 retiring.cause =
                     crate::environment_owner::SessionEnvironmentRetirementCause::RealizationRevocation;
@@ -1273,7 +1279,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             .installed_sessions
             .realizations()
             .read_realization(session_id, |r| {
-                r.environment.owner.terminal_bound_environment().unwrap()
+                r.environment().owner.terminal_bound_environment().unwrap()
             })
             .expect("installed Sessions")
             .unwrap();
@@ -1287,12 +1293,12 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             .read_realization(session_id, |r| {
                 assert!(
                     matches!(
-                        r.environment.owner,
+                        r.environment().owner,
                         crate::environment_owner::SessionEnvironmentOwner::Retiring(_)
                     ),
                     "P7 not Resident"
                 );
-                r.environment.owner.terminal_bound_environment().unwrap()
+                r.environment().owner.terminal_bound_environment().unwrap()
             })
             .expect("installed Sessions")
             .unwrap();
@@ -1385,7 +1391,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         host.installed_sessions
             .realizations()
             .read_realization(session_id, |r| {
-                r.environment.owner.terminal_bound_environment().is_some()
+                r.environment().owner.terminal_bound_environment().is_some()
             })
             .expect("installed Sessions")
             .unwrap_or(false),

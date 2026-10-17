@@ -23,7 +23,7 @@ impl SharedHost {
             .read_run(thread, |run| run.context.clone())
             .flatten();
         let retained = realizations
-            .read_realization(thread, |r| r.environment.owner.resident())?
+            .read_realization(thread, |r| r.environment().owner.resident())?
             .flatten();
         let environment = match retained {
             Some(existing) => existing,
@@ -54,6 +54,7 @@ impl SharedHost {
                 self.realization_executor
                     .environments()
                     .create_reserved_session_environment_under_lifecycle(
+                        lifecycle_guard.held(),
                         self.realization_executor.peers(),
                         thread,
                         provider,
@@ -65,6 +66,7 @@ impl SharedHost {
             .realization_executor
             .environments()
             .ensure_published_environment_reconciled_under_lifecycle(
+                lifecycle_guard.held(),
                 self.realization_executor.peers(),
                 thread,
                 environment,
@@ -235,7 +237,7 @@ mod tests {
             .installed_sessions
             .read(parent_thread, |slot| {
                 (
-                    slot.realization.environment.owner.is_resident(),
+                    slot.realization.environment().owner.is_resident(),
                     slot.run.context.is_some(),
                 )
             })

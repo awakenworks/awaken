@@ -40,7 +40,8 @@ async fn captured_environment_intent_survives_renewal_without_rebuilding_adopt()
     .unwrap()
     .observed(awaken_authority_clock::authority_proof_started().unwrap());
     host.installed_sessions.install_realization(thread, |r| {
-        r.execution.authority = crate::realization_state::SessionRealizationAuthority::Live(proof);
+        r.execution_mut().authority =
+            crate::realization_state::SessionRealizationAuthority::Live(proof);
     });
     *sink.original_intent.lock().unwrap() = Some(original.clone());
     for request_expiry in [60_000, 120_000] {
@@ -120,7 +121,7 @@ async fn managed_projection_without_a_lease_never_falls_back_to_unowned() {
                 });
             }
             if closed {
-                slot.realization.execution.authority =
+                slot.realization.execution_mut().authority =
                     crate::realization_state::SessionRealizationAuthority::Closed(None);
             }
         });

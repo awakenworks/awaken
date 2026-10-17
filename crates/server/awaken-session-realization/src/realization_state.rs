@@ -44,7 +44,7 @@ impl SessionRealizationAuthority {
     }
 
     /// One local admission rule: exact aggregate generation and a still-live
-    /// request-relative observation. Callers hold the existing slot mutex;
+    /// request-relative observation. Callers hold the existing installed Session lock;
     /// neither wall time nor a retained Closed lease grants authority.
     pub fn remaining_for(
         &self,
@@ -69,7 +69,7 @@ impl SessionRealizationAuthority {
         matches!(self, Self::Closed(_))
     }
 
-    /// Called under the Session slot mutex used for renewal application. The
+    /// Called under the installed Session lock used for renewal application. The
     /// pending provider GO callback must hold this same mutex through its grant.
     /// A retry may select the retained closed identity; a stale revoker cannot.
     pub fn close(&mut self, expected: Option<&session_resource::SessionRealizationLease>) -> bool {
@@ -90,16 +90,61 @@ impl SessionRealizationAuthority {
 /// under which realization lease, and which Resources, memory, Skills and MCP
 /// generations are staged for it. Built while realizing; revocation keeps
 /// only what a retry of a retained Environment owner still needs.
+///
+/// One state per realization component. Each is reached through a shared view
+/// or a mutable view of that one state only; a change that spans states is a
+/// named method of this type, so no caller edits two components' state through
+/// one borrow.
 #[derive(Default)]
 pub struct SessionRealization {
-    pub environment: EnvironmentHoldingState,
-    pub staging: ResourceStagingState,
-    pub effects: TerminalEffectsState,
-    pub execution: ExecutionAuthorityState,
+    environment: EnvironmentHoldingState,
+    staging: ResourceStagingState,
+    effects: TerminalEffectsState,
+    execution: ExecutionAuthorityState,
 }
 
 impl SessionRealization {
-    /// The original canonical MCP root rule, read under the Session slot lock.
+    /// The Environment holding state.
+    pub fn environment(&self) -> &EnvironmentHoldingState {
+        &self.environment
+    }
+
+    /// The Environment holding state, for a change of that state alone.
+    pub fn environment_mut(&mut self) -> &mut EnvironmentHoldingState {
+        &mut self.environment
+    }
+
+    /// The Resource staging state.
+    pub fn staging(&self) -> &ResourceStagingState {
+        &self.staging
+    }
+
+    /// The Resource staging state, for a change of that state alone.
+    pub fn staging_mut(&mut self) -> &mut ResourceStagingState {
+        &mut self.staging
+    }
+
+    /// The terminal effects state.
+    pub fn effects(&self) -> &TerminalEffectsState {
+        &self.effects
+    }
+
+    /// The terminal effects state, for a change of that state alone.
+    pub fn effects_mut(&mut self) -> &mut TerminalEffectsState {
+        &mut self.effects
+    }
+
+    /// The execution authority state.
+    pub fn execution(&self) -> &ExecutionAuthorityState {
+        &self.execution
+    }
+
+    /// The execution authority state, for a change of that state alone.
+    pub fn execution_mut(&mut self) -> &mut ExecutionAuthorityState {
+        &mut self.execution
+    }
+
+    /// The original canonical MCP root rule, read under the installed Session lock.
     /// Absence remains explicit and Closed never grants continuing admission.
     pub fn mcp_generation_root_authority(
         &self,
@@ -142,7 +187,7 @@ impl SessionRealization {
     }
 
     /// What revocation keeps while an Environment owner is still retained:
-    /// the slot's lock identities, the closed authority, the owner itself and
+    /// the installed Session's lock identities, the closed authority, the owner itself and
     /// the content it was staged with. Everything else is rebuilt.
     pub fn take_retained_on_revocation(&mut self) -> Self {
         Self {
@@ -167,6 +212,55 @@ impl SessionRealization {
             },
             effects: Default::default(),
         }
+    }
+
+    /// The Environment's arrival or disposal decides how Resource staging
+    /// reconciles its Resources with it next.
+    pub fn set_resource_reconciliation(
+        &mut self,
+        reconciliation: crate::staged_resources::EnvironmentResourceReconciliation,
+    ) {
+        self.staging.reconciliation = reconciliation;
+    }
+
+    /// End a Resource preparation scope: release its cancellation and, when the
+    /// scope introduced the current lease generation and nothing published
+    /// under it, withdraw that lease. Another preparation or generation is left
+    /// untouched.
+    pub fn end_resource_preparation(
+        &mut self,
+        cancellation: &Arc<awaken_runtime_contract::CancellationToken>,
+        introduced: Option<&session_resource::SessionRealizationLease>,
+    ) {
+        if !self
+            .staging
+            .preparation
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, cancellation))
+        {
+            return;
+        }
+        self.staging.preparation = None;
+        if introduced.is_some_and(|asserted| {
+            self.execution.authority.lease().is_some_and(|current| {
+                awaken_session_realization_contract::realization_lease_generation_authorizes(
+                    current, asserted,
+                )
+            })
+        }) {
+            self.execution.authority = SessionRealizationAuthority::Uninstalled;
+            self.execution.changed.notify_waiters();
+        }
+    }
+
+    /// The installed Session was removed: its Resource preparation can no
+    /// longer publish, and every waiter on its authority re-reads and finds it
+    /// gone. Run after releasing the installed Sessions' lock.
+    pub fn end_on_removal(&self) {
+        if let Some(preparation) = &self.staging.preparation {
+            preparation.cancel();
+        }
+        self.execution.changed.notify_waiters();
     }
 
     pub fn close_authority(
@@ -274,7 +368,7 @@ impl SessionRealization {
 }
 
 impl SessionRealization {
-    /// Install a projected Environment owner and, in the same slot lock, let
+    /// Install a projected Environment owner and, in the same installed Session lock, let
     /// the canonical projection reopen MCP admission when the run layer holds
     /// no local effect.
     pub fn install_owner(
@@ -360,7 +454,7 @@ impl SessionRealization {
     }
 }
 
-/// Per-Session state held under the canonical installed-slot mutex.
+/// Per-Session state held under the installed Session lock.
 #[derive(Default)]
 pub struct EnvironmentHoldingState {
     /// Serializes first materialization/rebuild for this Session without a
@@ -377,7 +471,7 @@ pub struct EnvironmentHoldingState {
     pub rebuild_source: Option<(String, Option<String>)>,
 }
 
-/// Per-Session state held under the canonical installed-slot mutex.
+/// Per-Session state held under the installed Session lock.
 #[derive(Default)]
 pub struct ResourceStagingState {
     /// Serializes one complete Resource-generation compare/realize/publish
@@ -452,7 +546,7 @@ impl ResourceStagingState {
     }
 }
 
-/// Per-Session state held under the canonical installed-slot mutex.
+/// Per-Session state held under the installed Session lock.
 #[derive(Default)]
 pub struct TerminalEffectsState {
     /// One complete Control-issued terminal assignment. Its Environment state
@@ -466,7 +560,7 @@ pub struct TerminalEffectsState {
     pub root: Option<String>,
 }
 
-/// Per-Session state held under the canonical installed-slot mutex.
+/// Per-Session state held under the installed Session lock.
 #[derive(Default)]
 pub struct ExecutionAuthorityState {
     /// Serializes the canonical realization phase driver for this Session.

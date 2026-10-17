@@ -44,7 +44,7 @@ fn install(host: &SharedHost, lease: SessionRealizationLease) {
         .unwrap()
         .observed(awaken_authority_clock::authority_proof_started().unwrap());
     host.installed_sessions.install_realization("session", |r| {
-        r.execution.authority = SessionRealizationAuthority::Live(proof);
+        r.execution_mut().authority = SessionRealizationAuthority::Live(proof);
     });
 }
 
@@ -122,7 +122,7 @@ async fn provider_fence_source_decision_table_preserves_exact_live_authority() {
                 "slot_aba" => {
                     let old = host.installed_sessions.remove("session").unwrap();
                     host.installed_sessions.install_realization("session", |r| {
-                        r.execution.authority = old.realization.execution.authority;
+                        r.execution_mut().authority = old.realization.execution().authority.clone();
                     });
                 }
                 "closed" => {
@@ -132,14 +132,14 @@ async fn provider_fence_source_decision_table_preserves_exact_live_authority() {
                     .installed_sessions
                     .realizations()
                     .update_realization("session", |r| {
-                        r.execution.authority = SessionRealizationAuthority::Uninstalled;
+                        r.execution_mut().authority = SessionRealizationAuthority::Uninstalled;
                     })
                     .expect("installed Sessions"),
                 "expired" => host
                     .installed_sessions
                     .realizations()
                     .update_realization("session", |r| {
-                        r.execution.authority = SessionRealizationAuthority::Live(
+                        r.execution_mut().authority = SessionRealizationAuthority::Live(
                             awaken_session_realization::test_support::test_expired_observed_lease(
                                 current.clone(),
                             ),
@@ -151,9 +151,9 @@ async fn provider_fence_source_decision_table_preserves_exact_live_authority() {
                     .realizations()
                     .update_realization("session", |r| {
                         if rule == "realization" {
-                            r.execution.phase = Arc::new(tokio::sync::Mutex::new(()));
+                            r.execution_mut().phase = Arc::new(tokio::sync::Mutex::new(()));
                         } else {
-                            r.environment.lifecycle = Arc::new(tokio::sync::Mutex::new(()));
+                            r.environment_mut().lifecycle = Arc::new(tokio::sync::Mutex::new(()));
                         }
                     })
                     .expect("installed Sessions"),
@@ -294,7 +294,7 @@ async fn provider_fence_source_capture_rejects_absent_slot_and_invalid_identity(
                 .installed_sessions
                 .realizations()
                 .update_realization("session", |r| {
-                    r.execution.authority = SessionRealizationAuthority::Uninstalled;
+                    r.execution_mut().authority = SessionRealizationAuthority::Uninstalled;
                 })
                 .expect("installed Sessions"),
             "closed" => {
@@ -389,7 +389,7 @@ async fn provider_fence_source_waiting_for_worker_rechecks_slot_after_revocation
                 "slot_aba" => {
                     let old = host.installed_sessions.remove("session").unwrap();
                     host.installed_sessions.install_realization("session", |r| {
-                        r.execution.authority = old.realization.execution.authority;
+                        r.execution_mut().authority = old.realization.execution().authority.clone();
                     });
                 }
                 "renewed" => {
@@ -629,10 +629,17 @@ async fn adoption_forwards_original_authority_across_observation_and_provider_wa
                     authorization:
                         awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized { intent: Box::new(intent) },
                 };
+                let lifecycle = host
+                    .realization_executor
+                    .sessions()
+                    .lock_lifecycle("session")
+                    .await
+                    .unwrap();
                 let adopt = host
                     .realization_executor
                     .environments()
                     .adopt_bound_session_environment_under_lifecycle(
+                        lifecycle.held(),
                         host.realization_executor.peers(),
                         "session",
                         &binding,
@@ -654,7 +661,8 @@ async fn adoption_forwards_original_authority_across_observation_and_provider_wa
                         "aba" => {
                             let old = host.installed_sessions.remove("session").unwrap();
                             host.installed_sessions.install_realization("session", |r| {
-                                r.execution.authority = old.realization.execution.authority;
+                                r.execution_mut().authority =
+                                    old.realization.execution().authority.clone();
                             });
                         }
                         "renewed" => {
@@ -779,7 +787,7 @@ async fn provider_fence_source_is_wired_across_preparation_and_provider_awaits()
             } else if rule.ends_with("_aba") {
                 let old = host.installed_sessions.remove("session").unwrap();
                 host.installed_sessions.install_realization("session", |r| {
-                    r.execution.authority = old.realization.execution.authority;
+                    r.execution_mut().authority = old.realization.execution().authority.clone();
                 });
             } else if rule != "provider_unfenced" {
                 let mut current = lease();
@@ -806,7 +814,7 @@ async fn provider_fence_source_is_wired_across_preparation_and_provider_awaits()
                 if matches!(rule, "provider_renewed" | "provider_unfenced") {
                     "projection probe finished"
                 } else if rule.ends_with("_aba") {
-                    "slot was replaced"
+                    "installed Session was replaced"
                 } else {
                     "proof is no longer live"
                 }
@@ -918,7 +926,7 @@ async fn environment_receipt_refreshes_only_the_captured_live_generation() {
                 "aba" => {
                     let old = host.installed_sessions.remove("session").unwrap();
                     host.installed_sessions.install_realization("session", |r| {
-                        r.execution.authority = old.realization.execution.authority;
+                        r.execution_mut().authority = old.realization.execution().authority.clone();
                     });
                 }
                 "worker_zero" => {

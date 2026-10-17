@@ -4,7 +4,7 @@
 //! Recover the exact bound Environment for one authorized physical effect.
 //!
 //! Provider observation, adoption and terminal reconstruction share the original
-//! Session slot and lifecycle guard. This executor owns no additional state.
+//! installed Session and lifecycle guard. This executor owns no additional state.
 
 use crate::environment_holding::EnvironmentHolding;
 use crate::environment_owner::{
@@ -21,10 +21,11 @@ use std::sync::Arc;
 
 impl EnvironmentHolding {
     /// Re-open one exact terminal substrate into the process-local teardown
-    /// slot. This helper deliberately writes no ordinary Environment receipt:
+    /// installed Session. This helper deliberately writes no ordinary Environment receipt:
     /// the surrounding terminal command is the sole durable effect authority.
     pub async fn install_bound_environment_under_lifecycle(
         &self,
+        lifecycle: crate::session_realizations::LifecycleHeld<'_>,
         peers: crate::peers::Peers<'_>,
         installation: TerminalEnvironmentInstallation<'_>,
         resident: Option<Arc<crate::session_environment::SessionEnvironment>>,
@@ -43,6 +44,11 @@ impl EnvironmentHolding {
             expected_effect_fence,
             effect_fence,
         } = installation;
+        debug_assert_eq!(
+            lifecycle.session(),
+            thread,
+            "lifecycle held for another Session"
+        );
         let mut adopted = resident.is_none();
         let authority = peers
             .authority
@@ -107,7 +113,7 @@ impl EnvironmentHolding {
         // receipt merely to finish this terminal command.
         if mode == BoundEnvironmentPreparationMode::TerminalRepositoryPublication
             && let Some(retiring) = sessions
-                .read_realization(thread, |r| match &r.environment.owner {
+                .read_realization(thread, |r| match &r.environment().owner {
                     SessionEnvironmentOwner::Retiring(retiring)
                         if retiring.cause
                             == SessionEnvironmentRetirementCause::RealizationRevocation
@@ -160,7 +166,7 @@ impl EnvironmentHolding {
             );
             admit()?;
             sessions.update_realization(thread, |r| {
-                let owner = &mut r.environment.owner;
+                let owner = &mut r.environment_mut().owner;
                 owner.prepare_retiring_realization_adoption(&retiring, fresh.clone(), None)?;
                 let SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(
                     candidate,
@@ -185,7 +191,7 @@ impl EnvironmentHolding {
         if adopted
             && !mode.requires_live_source()
             && let Some(retiring) = sessions
-                .read_realization(thread, |r| match &r.environment.owner {
+                .read_realization(thread, |r| match &r.environment().owner {
                     SessionEnvironmentOwner::Retiring(retiring) => Some(retiring.clone()),
                     _ => None,
                 })?
@@ -236,7 +242,7 @@ impl EnvironmentHolding {
                 } else {
                     let still_resident = sessions
                         .read_realization(thread, |r| {
-                            r.environment.owner.resident().is_some_and(|current| {
+                            r.environment().owner.resident().is_some_and(|current| {
                                 Arc::ptr_eq(&current, &environment)
                                     && current.lifecycle().handle()
                                         == environment.lifecycle().handle()
@@ -275,7 +281,7 @@ impl EnvironmentHolding {
                         ));
                     }
                     sessions.update_realization(thread, |r| {
-                        let owner = &mut r.environment.owner;
+                        let owner = &mut r.environment_mut().owner;
                         owner.begin_retirement_with_committed_candidate(candidate, cause)
                     })??;
                 } else if adopted {
@@ -292,7 +298,7 @@ impl EnvironmentHolding {
                             ));
                         }
                         sessions.update_realization(thread, |r| {
-                            r.environment.owner.begin_retirement_with_adopted(
+                            r.environment_mut().owner.begin_retirement_with_adopted(
                                 &identity,
                                 binding,
                                 environment.clone(),
@@ -336,8 +342,9 @@ impl EnvironmentHolding {
                     }
                 }
                 sessions.update_realization(thread, |r| {
-                    r.staging.reconciliation =
-                        crate::staged_resources::EnvironmentResourceReconciliation::None;
+                    r.set_resource_reconciliation(
+                        crate::staged_resources::EnvironmentResourceReconciliation::None,
+                    );
                 })?;
             }
         }
@@ -347,9 +354,11 @@ impl EnvironmentHolding {
     /// Resolve one durable binding into the process-local teardown owner under
     /// an already-authorized physical effect. Terminal cleanup and continuation
     /// source disposal share this path so provider observation, exact-absence
-    /// proof, terminal physical disposal, and slot publication cannot drift.
+    /// proof, terminal physical disposal, and installed Session publication cannot drift.
+    #[allow(clippy::too_many_arguments)]
     pub async fn prepare_bound_environment_for_effect_under_lifecycle(
         &self,
+        lifecycle: crate::session_realizations::LifecycleHeld<'_>,
         peers: crate::peers::Peers<'_>,
         thread: &str,
         binding: &str,
@@ -363,7 +372,7 @@ impl EnvironmentHolding {
             && realizations
                 .read_realization(thread, |r| {
                     matches!(
-                        &r.environment.owner,
+                        &r.environment().owner,
                         SessionEnvironmentOwner::Preparing(
                             SessionEnvironmentPreparation::Candidate(_)
                         ) | SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
@@ -488,7 +497,7 @@ impl EnvironmentHolding {
                     };
                     if let Some(candidate) = committed_candidate.as_ref() {
                         realizations.update_realization(thread, |r| {
-                            r.environment.owner
+                            r.environment_mut().owner
                                 .begin_retirement_with_committed_candidate(candidate, cause)
                         })??;
                     } else {
@@ -550,6 +559,7 @@ impl EnvironmentHolding {
         };
         let environment = self
             .install_bound_environment_under_lifecycle(
+                lifecycle,
                 peers,
                 TerminalEnvironmentInstallation {
                     thread,

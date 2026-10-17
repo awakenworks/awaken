@@ -770,7 +770,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
     )
     if disposal_projection is not None and any(
         marker in disposal_projection
-        for marker in ("validate_live_at", "runtime_unix_now_ms", "SystemTime::")
+        for marker in ("validate_live_at", "wall_clock_now_ms", "SystemTime::")
     ):
         errors.append(
             f"{RUNTIME_HOST_TERMINAL_PREPARATION}: terminal disposal projection "
@@ -782,7 +782,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
             RUNTIME_HOST_TERMINAL_CLEANUP,
             "dispose_terminal_cleanup_effect",
             (
-                "let realizer = environments;",
+                "let environments = peers.environments;",
                 "root_realization.lock().await",
                 "self.disposal_authorization(&effect)?",
                 "sessions.lock_lifecycle(session_id.as_str()).await",
@@ -1096,7 +1096,7 @@ def _migrated_effect_owner_mutation_selftest(sources: dict[str, str]) -> None:
         (RUNTIME_BOUND_ENVIRONMENT, "prepare_bound_environment_for_effect_under_lifecycle",
          ".install_bound_environment_under_lifecycle(", "bound Environment reconstruction handoff", False, ""),
         (RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
-         "let realizer = environments;", "physical terminal disposal", False, ""),
+         "let environments = peers.environments;", "physical terminal disposal", False, ""),
         (RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
          "let authorization = self.disposal_authorization(&effect)?", "physical terminal disposal", False, ""),
         (RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
@@ -1358,7 +1358,7 @@ fn prepare_terminal_cleanup_effect() {
     SessionCleanupPreparation::try_new(&effect, provider_prepared_effect_fence, artifact_receipts);
 }
 fn dispose_terminal_cleanup_effect() {
-    let realizer = environments;
+    let environments = peers.environments;
     root_realization.lock().await;
     self.disposal_authorization(&effect)?;
     sessions.lock_lifecycle(session_id.as_str()).await;
@@ -1879,7 +1879,7 @@ fn recover_terminal_receipts() {
                for error in session_effect_violations(missing_current)), "T8 current slot required"
     for clock in (
         "authorization.effect_fence().validate_live_at(now);",
-        "let now = runtime_unix_now_ms();",
+        "let now = wall_clock_now_ms();",
         "let now = std::time::SystemTime::now();",
     ):
         duplicate_clock = dict(canonical)
@@ -1890,7 +1890,7 @@ fn recover_terminal_receipts() {
                    for error in session_effect_violations(duplicate_clock)), "T9 duplicate UTC rejected"
     sibling_clock = dict(canonical)
     sibling_clock[RUNTIME_HOST_TERMINAL_PREPARATION] += (
-        "\nfn unrelated_durable_timestamp() { runtime_unix_now_ms(); }\n"
+        "\nfn unrelated_durable_timestamp() { wall_clock_now_ms(); }\n"
     )
     assert session_effect_violations(sibling_clock) == [], "T10 rule remains function-scoped"
 

@@ -2,7 +2,7 @@
 //! The Session MCP lifecycle over the Runtime Host's Session slots: exact
 //! generation owners are staged, published, renewed and drained here, and the
 //! Worker relay that serves authenticated generations is owned here. The Host
-//! supplies its slot registry through [`McpSessionSlots`] and its root
+//! supplies its installed Sessions through [`SessionMcpStates`] and its root
 //! realization authority through [`McpGenerationAuthority`]; this value holds
 //! only the narrow dependencies the lifecycle uses.
 
@@ -36,10 +36,10 @@ struct ProjectionDrain<R> {
     route: Option<crate::mcp_relay::CapturedRelayRoute>,
 }
 
-/// The Runtime Host's per-Session slot registry, seen only through each
-/// slot's [`SessionMcpState`] and its cached Session Runtime. Every closure
-/// runs under the registry's own lock, exactly like a direct slot access.
-pub trait McpSessionSlots: Send + Sync + 'static {
+/// The MCP state of each installed Session, seen only through its
+/// [`SessionMcpState`] and its cached Session Runtime. Every closure runs under
+/// the installed Sessions' own lock, exactly like a direct access.
+pub trait SessionMcpStates: Send + Sync + 'static {
     /// The Session Runtime a slot caches; publication invalidates it and drain
     /// cancels and awaits its active Run.
     type Runtime: Clone + Send + Sync;
@@ -264,7 +264,7 @@ impl McpSessions {
 }
 
 impl McpSessions {
-    pub fn active_projections<S: McpSessionSlots>(
+    pub fn active_projections<S: SessionMcpStates>(
         &self,
         slots: &S,
         thread: &str,
@@ -286,7 +286,7 @@ impl McpSessions {
             .unwrap_or_default()
     }
 
-    pub fn projection<S: McpSessionSlots>(
+    pub fn projection<S: SessionMcpStates>(
         &self,
         slots: &S,
         generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
@@ -301,7 +301,7 @@ impl McpSessions {
             .flatten()
     }
 
-    pub fn insert_projection<S: McpSessionSlots>(
+    pub fn insert_projection<S: SessionMcpStates>(
         &self,
         slots: &S,
         projection: McpGenerationProjection,
@@ -330,7 +330,7 @@ impl McpSessions {
 
     /// Transfer a freshly spawned stdio process into the already-installed
     /// exact-generation owner before any further fallible await.
-    pub fn attach_staging_process<S: McpSessionSlots>(
+    pub fn attach_staging_process<S: SessionMcpStates>(
         &self,
         slots: &S,
         generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
@@ -363,7 +363,7 @@ impl McpSessions {
 
     /// Publish only wiring into the private staged projection. Durable publish
     /// remains the separate `Staged -> Active` transition.
-    pub fn complete_staging<S: McpSessionSlots>(
+    pub fn complete_staging<S: SessionMcpStates>(
         &self,
         slots: &S,
         generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
@@ -402,7 +402,7 @@ impl McpSessions {
     /// binding must be identical and only the expiry/idempotency attempt may
     /// advance. Supporting Staged closes the race where Control renews while the
     /// first stage effect is in flight and republishes its longer exact fence.
-    pub fn renew_projection<S: McpSessionSlots>(
+    pub fn renew_projection<S: SessionMcpStates>(
         &self,
         slots: &S,
         request: &awaken_session_configuration_contract::mcp::StageMcpAttachment,
@@ -460,7 +460,7 @@ impl McpSessions {
     /// recovering after a concurrent Control CAS and heartbeat. Changed immutable
     /// bindings and non-monotonic renewals remain resident. The caller has already
     /// checked current ownership; removing a tombstone grants no staged receipt.
-    pub fn forget_replayable_removed_projection<S: McpSessionSlots>(
+    pub fn forget_replayable_removed_projection<S: SessionMcpStates>(
         &self,
         slots: &S,
         request: &awaken_session_configuration_contract::mcp::StageMcpAttachment,
@@ -489,7 +489,7 @@ impl McpSessions {
             .unwrap_or(false)
     }
 
-    pub async fn publish_projection<S: McpSessionSlots>(
+    pub async fn publish_projection<S: SessionMcpStates>(
         &self,
         slots: &S,
         generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
@@ -593,7 +593,7 @@ impl McpSessions {
         }
     }
 
-    pub async fn drain_projection<S: McpSessionSlots>(
+    pub async fn drain_projection<S: SessionMcpStates>(
         &self,
         slots: &S,
         generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
@@ -608,7 +608,7 @@ impl McpSessions {
     /// Drain only a previously selected physical projection. The caller selects
     /// it under its original canonical operation; this never discovers a later
     /// projection merely because it has the same Session or generation.
-    pub async fn drain_selected_projection<S: McpSessionSlots>(
+    pub async fn drain_selected_projection<S: SessionMcpStates>(
         &self,
         slots: &S,
         selected: &McpGenerationProjection,
@@ -620,7 +620,7 @@ impl McpSessions {
     // Close visibility and capture the exact physical owners in the original
     // slot transaction. The caller holds selected.drain across this transaction
     // and the subsequent waits; this value is only that operation's snapshot.
-    fn begin_projection_drain<S: McpSessionSlots>(
+    fn begin_projection_drain<S: SessionMcpStates>(
         &self,
         slots: &S,
         selected: &McpGenerationProjection,
@@ -692,7 +692,7 @@ impl McpSessions {
         projected.transpose().map(Option::flatten)
     }
 
-    async fn drain_projection_selection<S: McpSessionSlots>(
+    async fn drain_projection_selection<S: SessionMcpStates>(
         &self,
         slots: &S,
         selected: &McpGenerationProjection,
@@ -874,7 +874,7 @@ impl McpSessions {
 
     /// Drain the caller's original physical selection, continuing after each
     /// failure. New current projections are not an additional cleanup target.
-    pub async fn drain_selected_projections<S: McpSessionSlots>(
+    pub async fn drain_selected_projections<S: SessionMcpStates>(
         &self,
         slots: &S,
         selected: &[McpGenerationProjection],
@@ -894,7 +894,7 @@ impl McpSessions {
     /// any additional local leak, continuing after individual failures. The
     /// returned proof echoes the durable expected set; local slot contents are
     /// used only to find additional cleanup work and to reject residual effects.
-    pub async fn drain_projections<S: McpSessionSlots>(
+    pub async fn drain_projections<S: SessionMcpStates>(
         &self,
         slots: &S,
         thread: &str,

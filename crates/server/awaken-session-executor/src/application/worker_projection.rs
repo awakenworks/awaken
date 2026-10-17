@@ -83,7 +83,7 @@ pub async fn drive_session_realization_with_synchronizer(
     request_started: awaken_lease_contract::authority::AuthorityProofStarted,
     realization: &awaken_session_realization_contract::SessionRealizationPermit,
 ) -> Result<(), awaken_session_realization_contract::SessionRealizationDriveError> {
-    let host = synchronizer.host;
+    let host = synchronizer.execution;
     awaken_session_realization_driver::drive_session_realization(
         realization,
         synchronizer.claim.map(|claim| claim.run_id.clone()),

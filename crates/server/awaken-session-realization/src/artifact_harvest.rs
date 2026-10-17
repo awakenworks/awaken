@@ -202,7 +202,7 @@ impl ArtifactHarvester {
             Some(environment) => Some(environment.clone()),
             None => self
                 .sessions
-                .read_realization(thread, |r| r.environment.owner.resident())
+                .read_realization(thread, |r| r.environment().owner.resident())
                 .map_err(artifact_registry_denied)?
                 .flatten(),
         };

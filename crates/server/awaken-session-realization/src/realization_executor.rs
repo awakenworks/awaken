@@ -1,5 +1,5 @@
 // @formal surface requirement=session.lifecycle.session_state
-// @formal reason: Select the binding sink at construction and execute through the existing canonical Session slots and provider authority.
+// @formal reason: Select the binding sink at construction and execute through the existing installed Sessions and provider authority.
 //! The realization executor (ADR-0089): executes the Environment realization
 //! effects the Session aggregate projects, through ports chosen once when the
 //! process is composed. It keeps no durable state.

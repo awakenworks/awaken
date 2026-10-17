@@ -22,7 +22,7 @@ impl crate::peers::StagingPeer for ResourceStaging {
 
     fn memory_reference_encoder(
         &self,
-    ) -> Option<&Arc<dyn crate::memory_binding::RuntimeMemoryReferenceEncoder>> {
+    ) -> Option<&Arc<dyn crate::memory_binding::SessionMemoryReferenceEncoder>> {
         ResourceStaging::memory_reference_encoder(self)
     }
 
@@ -66,6 +66,7 @@ impl crate::peers::StagingPeer for ResourceStaging {
 
     async fn apply_session_inputs_under_lifecycle(
         &self,
+        lifecycle: crate::session_realizations::LifecycleHeld<'_>,
         peers: crate::peers::Peers<'_>,
         thread: &str,
         transition: &session_resource::SessionResourceTransition,
@@ -74,6 +75,7 @@ impl crate::peers::StagingPeer for ResourceStaging {
     ) -> Result<(), RunError> {
         ResourceStaging::apply_session_inputs_under_lifecycle(
             self,
+            lifecycle,
             peers,
             thread,
             transition,

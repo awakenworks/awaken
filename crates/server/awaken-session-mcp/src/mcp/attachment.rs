@@ -19,7 +19,7 @@ use awaken_session_types::RunError;
 
 use crate::mcp::credential_target::exact_credential_realization_target;
 use crate::mcp::error::run_error;
-use crate::mcp::{McpGenerationAuthority, McpSessionSlots, McpSessions};
+use crate::mcp::{McpGenerationAuthority, McpSessions, SessionMcpStates};
 
 fn validate_stdio_credential_binding(
     target: &awaken_agent_contract::McpTarget,
@@ -121,7 +121,7 @@ impl StagingAdmission {
 
 // The same installed activity is visible to drain before credentials/relay I/O.
 // Cancellation before any route exists releases only this exact staging owner.
-struct RelayStaging<S: McpSessionSlots> {
+struct RelayStaging<S: SessionMcpStates> {
     slots: Arc<S>,
     generation: awaken_session_configuration_contract::mcp::McpGenerationRef,
     request: awaken_session_configuration_contract::mcp::StageMcpAttachment,
@@ -130,7 +130,7 @@ struct RelayStaging<S: McpSessionSlots> {
     completed: bool,
 }
 
-impl<S: McpSessionSlots> RelayStaging<S> {
+impl<S: SessionMcpStates> RelayStaging<S> {
     fn begin(
         slots: &Arc<S>,
         request: &awaken_session_configuration_contract::mcp::StageMcpAttachment,
@@ -269,7 +269,7 @@ impl<S: McpSessionSlots> RelayStaging<S> {
     }
 }
 
-impl<S: McpSessionSlots> Drop for RelayStaging<S> {
+impl<S: SessionMcpStates> Drop for RelayStaging<S> {
     fn drop(&mut self) {
         if !self.completed {
             let _ = self
@@ -294,7 +294,7 @@ impl<S: McpSessionSlots> Drop for RelayStaging<S> {
 impl McpSessions {
     /// Stage through the SDK direct-assertion entrance. An installed root still
     /// overrides that assertion; service assignments use stage_assigned_attachment.
-    pub async fn stage_attachment<S: McpSessionSlots>(
+    pub async fn stage_attachment<S: SessionMcpStates>(
         &self,
         slots: &Arc<S>,
         host: &dyn McpStagingSession,
@@ -311,7 +311,7 @@ impl McpSessions {
     /// Platform provisioning retain their existing effect lifecycles: this is
     /// not proof that external provision was revoked or that all branch I/O
     /// was joined. They do not acquire the SDK direct-assertion fallback.
-    pub async fn stage_assigned_attachment<S: McpSessionSlots>(
+    pub async fn stage_assigned_attachment<S: SessionMcpStates>(
         &self,
         slots: &Arc<S>,
         host: &dyn McpStagingSession,
@@ -328,7 +328,7 @@ impl McpSessions {
         .await
     }
 
-    async fn stage_with_admission<S: McpSessionSlots>(
+    async fn stage_with_admission<S: SessionMcpStates>(
         &self,
         slots: &Arc<S>,
         host: &dyn McpStagingSession,
@@ -922,7 +922,7 @@ impl McpSessions {
     // Non-WorkerRelay branches retain their existing external effect lifecycle.
     // At least projection installation cannot cross a closed/unknown root.
     // This root read alone does not prove same-tenure slot allocation identity.
-    fn insert_projection_with_admission<S: McpSessionSlots>(
+    fn insert_projection_with_admission<S: SessionMcpStates>(
         &self,
         slots: &Arc<S>,
         admission: StagingAdmission,
@@ -966,7 +966,7 @@ impl McpSessions {
             })?
     }
 
-    async fn stage_sandbox_stdio<S: McpSessionSlots>(
+    async fn stage_sandbox_stdio<S: SessionMcpStates>(
         self,
         task_slots: Arc<S>,
         environment: Arc<awaken_session_environment_contract::SessionEnvironment>,
@@ -1042,7 +1042,7 @@ impl McpSessions {
         }
     }
 
-    pub async fn publish_attachment<S: McpSessionSlots>(
+    pub async fn publish_attachment<S: SessionMcpStates>(
         &self,
         slots: &S,
         host: &dyn McpStagingSession,
@@ -1060,7 +1060,7 @@ impl McpSessions {
             .map_err(run_error)
     }
 
-    pub async fn drain_attachment<S: McpSessionSlots>(
+    pub async fn drain_attachment<S: SessionMcpStates>(
         &self,
         slots: &S,
         generation: awaken_session_configuration_contract::mcp::McpGenerationRef,

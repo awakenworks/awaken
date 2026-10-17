@@ -147,8 +147,7 @@ fn terminal_cleanup_test_lease() -> session_resource::SessionRealizationLease {
         owner: "terminal-provisioning-test".into(),
         runtime_incarnation: "terminal-provisioning-test/incarnation".into(),
         epoch: 1,
-        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
-            + 60_000,
+        expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms() + 60_000,
     }
 }
 
@@ -300,7 +299,7 @@ async fn root_terminal_cleanup_effect(
     let environment = host
         .installed_sessions
         .realizations()
-        .read_realization(session_id, |r| r.environment.owner.resident())
+        .read_realization(session_id, |r| r.environment().owner.resident())
         .unwrap()
         .flatten()
         .expect("terminal test requires a resident Environment");
