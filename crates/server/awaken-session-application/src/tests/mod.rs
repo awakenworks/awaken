@@ -1415,6 +1415,18 @@ impl awaken_session_runtime_contract::CoordinationRuntime for RecordingReplyRunt
 
     // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
+    /// Commit the absorbing archive disposition on one logical child Thread
+    /// through its parent Session partition. Implementations must not mutate a
+    /// protocol cache or open child-named storage.
+    async fn archive_session_thread(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        thread_id: &str,
+    ) -> Result<(), awaken_session_types::RunError> {
+        awaken_session_runtime_contract::NeutralRuntime
+            .archive_session_thread(session_id, thread_id)
+            .await
+    }
 }
 
 #[async_trait::async_trait]
@@ -1653,18 +1665,6 @@ impl awaken_session_runtime_contract::ThreadReadRuntime for RecordingReplyRuntim
 
     // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
-    /// Commit the absorbing archive disposition on one logical child Thread
-    /// through its parent Session partition. Implementations must not mutate a
-    /// protocol cache or open child-named storage.
-    async fn archive_session_thread(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        thread_id: &str,
-    ) -> Result<(), awaken_session_types::RunError> {
-        awaken_session_runtime_contract::NeutralRuntime
-            .archive_session_thread(session_id, thread_id)
-            .await
-    }
 
     // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
@@ -2047,6 +2047,18 @@ impl awaken_session_runtime_contract::CoordinationRuntime for RecordingAgentAdmi
                 .unwrap_or_default(),
         })
     }
+    /// Commit the absorbing archive disposition on one logical child Thread
+    /// through its parent Session partition. Implementations must not mutate a
+    /// protocol cache or open child-named storage.
+    async fn archive_session_thread(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        thread_id: &str,
+    ) -> Result<(), awaken_session_types::RunError> {
+        awaken_session_runtime_contract::NeutralRuntime
+            .archive_session_thread(session_id, thread_id)
+            .await
+    }
 }
 
 #[async_trait::async_trait]
@@ -2254,18 +2266,6 @@ impl awaken_session_runtime_contract::ThreadReadRuntime for RecordingAgentAdmiss
 
     // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
-    /// Commit the absorbing archive disposition on one logical child Thread
-    /// through its parent Session partition. Implementations must not mutate a
-    /// protocol cache or open child-named storage.
-    async fn archive_session_thread(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        thread_id: &str,
-    ) -> Result<(), awaken_session_types::RunError> {
-        awaken_session_runtime_contract::NeutralRuntime
-            .archive_session_thread(session_id, thread_id)
-            .await
-    }
 
     // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
@@ -2645,6 +2645,18 @@ impl awaken_session_runtime_contract::CoordinationRuntime for RecordingBoundaryB
 
     // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
+    /// Commit the absorbing archive disposition on one logical child Thread
+    /// through its parent Session partition. Implementations must not mutate a
+    /// protocol cache or open child-named storage.
+    async fn archive_session_thread(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        thread_id: &str,
+    ) -> Result<(), awaken_session_types::RunError> {
+        awaken_session_runtime_contract::NeutralRuntime
+            .archive_session_thread(session_id, thread_id)
+            .await
+    }
 }
 
 #[async_trait::async_trait]
@@ -2911,18 +2923,6 @@ impl awaken_session_runtime_contract::ThreadReadRuntime for RecordingBoundaryBud
 
     // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
-    /// Commit the absorbing archive disposition on one logical child Thread
-    /// through its parent Session partition. Implementations must not mutate a
-    /// protocol cache or open child-named storage.
-    async fn archive_session_thread(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        thread_id: &str,
-    ) -> Result<(), awaken_session_types::RunError> {
-        awaken_session_runtime_contract::NeutralRuntime
-            .archive_session_thread(session_id, thread_id)
-            .await
-    }
 
     // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
@@ -3119,6 +3119,16 @@ impl awaken_session_runtime_contract::RealizationRuntime for RecordingCleanupRun
 
 #[async_trait::async_trait]
 impl awaken_session_runtime_contract::CoordinationRuntime for RecordingCleanupRuntime {
+    async fn archive_session_thread(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        thread_id: &str,
+    ) -> Result<(), awaken_session_types::RunError> {
+        awaken_session_runtime_contract::NeutralRuntime
+            .archive_session_thread(session_id, thread_id)
+            .await
+    }
+
     // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one complete self-affine Session Run as an unclaimable reservation.

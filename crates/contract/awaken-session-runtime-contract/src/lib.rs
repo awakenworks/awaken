@@ -73,12 +73,12 @@ pub use run_admission::{
 };
 pub use session::{
     BudgetRuntime, CapabilityRuntime, CommittedEvidenceError, CommittedOutcomeProjection,
-    CommittedSessionFacts, CompleteSessionRuntime, CoordinationRuntime, EnvironmentRuntime,
-    LiveInboxApplication, LiveInboxApplicationError, LiveInboxEntry, LiveInboxError,
-    LiveInboxRuntime, LiveInboxSnapshot, McpAttachmentRealizer, NeutralRuntime, OutcomeDrive,
-    OutcomeFailure, OutcomeIteration, OutcomeReport, OutcomeRuntime, ProjectionThreadSnapshots,
-    RealizationRuntime, SessionCoordinationReads, SessionEnvironmentBindingSink,
-    SessionExecutionClosureReference, SessionExecutionObservation,
+    CommittedSessionFacts, CommittedSessionProjection, CompleteSessionRuntime, CoordinationRuntime,
+    EnvironmentRuntime, LiveInboxApplication, LiveInboxApplicationError, LiveInboxEntry,
+    LiveInboxError, LiveInboxRuntime, LiveInboxSnapshot, McpAttachmentRealizer, NeutralRuntime,
+    OutcomeDrive, OutcomeFailure, OutcomeIteration, OutcomeReport, OutcomeRuntime,
+    ProjectionThreadSnapshots, RealizationRuntime, SessionCoordinationReads,
+    SessionEnvironmentBindingSink, SessionExecutionClosureReference, SessionExecutionObservation,
     SessionExecutionOperationFootprint, SessionExecutionRecoveryGap,
     SessionExecutionRecoveryObservation, SessionExecutionRoles, SessionExecutor,
     SessionModelRequestObservation, SessionProjectionReadTimings, SessionProjectionSource,

@@ -603,6 +603,7 @@ async fn claimed_child_terminal_memory_uses_parent_physical_commit_partition() {
             );
         }
         let parent_commit = host
+            .thread_reads
             .commit_for_read(&parent)
             .await
             .expect("parent commit authority");
@@ -769,6 +770,7 @@ async fn reopening_a_direct_terminal_thread_recovers_a_missing_extraction_outbox
     );
     bind_test_memory(&second, thread, "outbox-store", true);
     let commit = second
+        .thread_reads
         .commit_for_read(thread)
         .await
         .expect("committed Thread reader");

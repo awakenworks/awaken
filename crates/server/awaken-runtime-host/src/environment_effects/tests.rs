@@ -149,7 +149,18 @@ async fn detached_executor() -> (
         weak.upgrade().is_none(),
         "the operation cannot reach a Host"
     );
-    (owner.realization_executor, sessions)
+    let realization_executor = {
+        let owner = owner;
+        let crate::SharedHost {
+            realization_executor,
+            ..
+        } = owner;
+        realization_executor
+    };
+    let realization_executor = Arc::try_unwrap(realization_executor)
+        .ok()
+        .expect("only the dropped Host components shared the realization executor");
+    (realization_executor, sessions)
 }
 
 fn claim() -> RunClaim {

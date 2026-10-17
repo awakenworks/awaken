@@ -3,16 +3,14 @@
 // @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Managed Host adapter for the extension-owned Outcome controller.
 
-use awaken_ext_goal::controller::{CommittedOutcome, Controller, Error as ControllerError};
+use awaken_ext_goal::controller::{Controller, Error as ControllerError};
 use awaken_ext_goal::grader::{DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent_from_worker};
 use awaken_ext_goal::outcome::{Definition, Id};
 use awaken_ext_goal::state::Binding;
-use awaken_session_event_contract::OUTCOME_BUSY_CODE;
 
-use crate::host::{
-    HostError, HostOutcomeDrive, HostOutcomeIteration, HostOutcomeReport, SharedHost,
-};
+use crate::host::{HostError, HostOutcomeDrive, SharedHost};
 use crate::judge::HostAgentGrader;
+use crate::outcome_report::{controller_error, project_report};
 use crate::run_exec::BoundRunExecutor;
 
 enum OutcomeCommand<'a> {
@@ -102,26 +100,6 @@ impl SharedHost {
                 unreachable!("resume command result")
             }
         }
-    }
-
-    /// Read one exact terminal projection through the ordinary commit/read
-    /// adapter and the Outcome controller's sole projection implementation.
-    /// No Agent or physical Environment context is required for this query.
-    pub(crate) async fn committed_outcome_projection(
-        &self,
-        thread: &str,
-        outcome_id: &str,
-    ) -> Result<Option<CommittedOutcome>, HostError> {
-        let commit = self.commit_for_read(thread).await?;
-        let thread_id = awaken_runtime_contract::ThreadId(thread.to_owned());
-        let state = awaken_ext_goal::state::ThreadOutcomeState::new(
-            &thread_id,
-            commit.as_ref(),
-            commit.as_ref(),
-        );
-        Controller::committed_projection_from_state(&state, &Id(outcome_id.to_owned()))
-            .await
-            .map_err(controller_error)
     }
 
     async fn execute_outcome_command(
@@ -236,38 +214,6 @@ fn outcome_binding(
     }
 }
 
-pub(crate) fn project_report(report: awaken_ext_goal::controller::Report) -> HostOutcomeReport {
-    HostOutcomeReport {
-        iterations: report
-            .iterations
-            .into_iter()
-            .map(|iteration| HostOutcomeIteration {
-                messages: iteration.messages,
-                outcome_id: iteration.outcome_id.0,
-                description: iteration.description,
-                iteration: iteration.iteration,
-                result: iteration.result.token().into(),
-                explanation: iteration.explanation,
-                usage: iteration.usage,
-            })
-            .collect(),
-    }
-}
-
-fn controller_error(error: ControllerError) -> HostError {
-    match error {
-        ControllerError::Busy { .. } | ControllerError::WorkerRunning { .. } => {
-            HostError::unavailable_classified(OUTCOME_BUSY_CODE, error.to_string())
-        }
-        ControllerError::ActiveDefinitionConflict { .. }
-        | ControllerError::WorkerAwaiting { .. }
-        | ControllerError::Domain(_) => HostError::bad_request(error.to_string()),
-        ControllerError::Persistence(_)
-        | ControllerError::Execution(_)
-        | ControllerError::Serialization(_) => HostError::internal(error.to_string()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,7 +256,7 @@ mod tests {
         );
     }
 
-    fn completed(progress: HostOutcomeDrive) -> HostOutcomeReport {
+    fn completed(progress: HostOutcomeDrive) -> crate::HostOutcomeReport {
         match progress {
             HostOutcomeDrive::Completed(report) => report,
             HostOutcomeDrive::Awaiting => panic!("test Outcome unexpectedly awaited input"),
@@ -440,7 +386,8 @@ mod tests {
 
         let report = tokio::time::timeout(
             std::time::Duration::from_millis(100),
-            host.committed_outcome_projection("concurrent-read", "outcome-missing"),
+            host.thread_reads
+                .committed_outcome("concurrent-read", "outcome-missing"),
         )
         .await
         .expect("R1/E1 committed read must not join execution locks")

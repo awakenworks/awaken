@@ -806,6 +806,7 @@ async fn committed_queries_do_not_provision_a_failed_session_environment() {
     );
 
     let feed = host
+        .thread_reads
         .commit_for_read("t-query-after-provisioning-denial")
         .await
         .expect("committed query must not retry Sandbox provisioning");

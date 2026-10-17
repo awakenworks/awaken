@@ -69,7 +69,7 @@ pub trait RealizationRuntime: Send + Sync {
     ) -> Result<(), RunError>;
 }
 
-/// Session Run coordination: reservations, activation, child threads, tool replies and delegation quiescence.
+/// Session Run coordination: reservations, activation, child threads (including their archive), tool replies and delegation quiescence.
 ///
 /// Every method is required. Composition supplies this role before its caller runs.
 #[async_trait]
@@ -156,6 +156,15 @@ pub trait CoordinationRuntime: Send + Sync {
         delivery: crate::SessionThreadToolReplyDelivery,
         stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<StepOutcome, RunError>;
+
+    /// Commit the absorbing archive disposition on one logical child Thread
+    /// through its parent Session partition. Implementations must not mutate a
+    /// protocol cache or open child-named storage.
+    async fn archive_session_thread(
+        &self,
+        session_id: &crate::SessionId,
+        thread_id: &str,
+    ) -> Result<(), RunError>;
 
     /// Stop the parent Run, wait until it can no longer commit a delegation, and
     /// then read the complete child set from durable runtime authority.
@@ -453,6 +462,7 @@ pub trait EnvironmentRuntime: Send + Sync {
 }
 
 /// Committed thread readback: messages, recovery snapshots, run lifecycle, disposition and outcome projections.
+/// It grants no write: archiving a coordinated Thread is a [`CoordinationRuntime`] command.
 ///
 /// Every method is required. Composition supplies this role before its caller runs.
 #[async_trait]
@@ -507,15 +517,6 @@ pub trait ThreadReadRuntime: Send + Sync {
         session_id: &crate::SessionId,
         thread_id: &str,
     ) -> Result<awaken_agent_contract::ThreadDisposition, RunError>;
-
-    /// Commit the absorbing archive disposition on one logical child Thread
-    /// through its parent Session partition. Implementations must not mutate a
-    /// protocol cache or open child-named storage.
-    async fn archive_session_thread(
-        &self,
-        session_id: &crate::SessionId,
-        thread_id: &str,
-    ) -> Result<(), RunError>;
 
     /// Read one exact terminal Outcome projection from committed Thread truth.
     /// `None` means the id is absent or still active. Implementations must not

@@ -35,35 +35,6 @@ struct SessionOpenRequest {
 }
 
 impl SharedHost {
-    /// Open only the authoritative commit/read boundary for a query. A resident
-    /// context already owns the exact adapter (including a Worker's recovery
-    /// projection); otherwise reconstruct the configured durable adapter without
-    /// selecting, creating, or adopting a Session environment.
-    pub(crate) async fn commit_for_read(&self, thread: &str) -> Result<Arc<HostCommit>, HostError> {
-        let realizations = self.installed_sessions.realizations();
-        let _lifecycle = realizations.lock_lifecycle_if_installed(thread).await?;
-        self.commit_for_read_under_lifecycle(thread).await
-    }
-
-    /// Read the authoritative commit while the caller already owns this
-    /// Session's lifecycle guard. This is the only non-reentrant seam used by
-    /// continuation quiescence; ordinary callers use [`Self::commit_for_read`].
-    pub(crate) async fn commit_for_read_under_lifecycle(
-        &self,
-        thread: &str,
-    ) -> Result<Arc<HostCommit>, HostError> {
-        if let Some(commit) = self
-            .installed_sessions
-            .read_run(thread, |run| {
-                run.context.as_ref().map(|context| context.commit.clone())
-            })
-            .flatten()
-        {
-            return Ok(commit);
-        }
-        self.authority.open_commit(thread).await.map(Arc::new)
-    }
-
     pub(crate) async fn ctx_for(
         &self,
         thread: &str,

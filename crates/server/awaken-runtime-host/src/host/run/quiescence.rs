@@ -153,6 +153,7 @@ impl SharedHost {
                     let mut logically_unsettled = Vec::new();
                     for dispatch in dispatches.iter().filter(|row| active_here(row)) {
                         let committed = self
+                            .thread_reads
                             .commit_for_read(&dispatch.thread_id.0)
                             .await?
                             .authoritative_run(&dispatch.run_id)
@@ -209,17 +210,14 @@ impl SharedHost {
         // prevent cancellation of already-admitted Session children. One
         // atomic root prefix supplies both relationship and pending-call targets;
         // a lost child-admission response cannot make that child disappear.
-        let commit = self.commit_for_read(thread).await?;
-        let (mut snapshot, root) = self
-            .delegated_run_snapshot_from_commit(thread, commit)
-            .await?;
+        let (mut snapshot, root) = self.thread_reads.delegated_runs_and_root(thread).await?;
         if let Some(root) = root {
             coordinated_thread_ids.extend(
-                super::super::coordination::project_committed_coordination(
+                crate::thread_reads::project_committed_coordination(
                     &awaken_session_types::SessionId::from(thread),
                     None,
                     &root,
-                    super::super::coordination::CoordinationReadPurpose::TerminalScope,
+                    crate::thread_reads::CoordinationReadPurpose::TerminalScope,
                 )?
                 .cleanup_thread_ids,
             );
@@ -360,7 +358,7 @@ mod terminal_scope_tests {
             store.begin_attempt(&claim, Some(&binding)).await.unwrap();
             let original = store.load_physical_attempt(&run).await.unwrap().unwrap();
             if let Some(disposition) = disposition {
-                let commit = host.commit_for_read(&thread.0).await.unwrap();
+                let commit = host.thread_reads.commit_for_read(&thread.0).await.unwrap();
                 commit
                     .commit(ThreadCommit::assemble(
                         thread.clone(),

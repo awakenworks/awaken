@@ -422,7 +422,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                     |id| Ok(sessions
                         .modify_session(id, |slot| slot.run.has_active_run()).expect("installed Sessions")
                         .unwrap_or(false)),
-                    host.delegated_runs_under_lifecycle(thread),
+                    host.thread_reads.delegated_runs_under_lifecycle(thread),
                 )
             )
             .await

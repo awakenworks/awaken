@@ -102,6 +102,7 @@ impl RunApplication for RunApplicationHost {
 
     async fn pending(&self, thread: &str) -> Result<Option<Pending>, RunApplicationError> {
         self.host
+            .thread_reads
             .pending_tool(thread)
             .await
             .map_err(to_application_error)
@@ -109,6 +110,7 @@ impl RunApplication for RunApplicationHost {
 
     async fn history(&self, thread: &str) -> Result<Vec<Message>, RunApplicationError> {
         self.host
+            .thread_reads
             .committed_messages(thread)
             .await
             .map_err(to_application_error)
@@ -121,6 +123,7 @@ impl RunApplication for RunApplicationHost {
     async fn usage(&self, thread: &str) -> Result<(u64, u64), RunApplicationError> {
         let usage = self
             .host
+            .thread_reads
             .session_thread_usage(thread, &ThreadId(thread.to_string()))
             .await
             .map_err(to_application_error)?;

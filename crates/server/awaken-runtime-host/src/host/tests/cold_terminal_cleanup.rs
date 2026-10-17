@@ -1147,6 +1147,7 @@ async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recover
     .expect("validated Host dependencies");
     let parent = ThreadId("archive-saga-parent".into());
     let commit = host
+        .thread_reads
         .commit_for_read(&parent.0)
         .await
         .expect("parent partition");
@@ -1171,7 +1172,8 @@ async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recover
         .await
         .expect("A1 exact retry");
     assert_eq!(
-        host.session_thread_disposition(&parent.0, &idle)
+        host.thread_reads
+            .session_thread_disposition(&parent.0, &idle)
             .await
             .expect("A1 disposition"),
         awaken_agent_contract::ThreadDisposition::Archived,
@@ -1197,7 +1199,8 @@ async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recover
         .expect_err("A2 running work cannot archive");
     assert_eq!(rejected.kind, HostErrorKind::BadRequest, "A2/E2");
     assert_eq!(
-        host.session_thread_disposition(&parent.0, &pending)
+        host.thread_reads
+            .session_thread_disposition(&parent.0, &pending)
             .await
             .expect("A2 disposition"),
         awaken_agent_contract::ThreadDisposition::Active,
@@ -1336,7 +1339,8 @@ async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recover
         .expect("A3 archive task")
         .expect("A3/E3 one call archives after terminal settle");
     assert_eq!(
-        host.session_thread_disposition(&parent.0, &awaiting)
+        host.thread_reads
+            .session_thread_disposition(&parent.0, &awaiting)
             .await
             .expect("A3 disposition"),
         awaken_agent_contract::ThreadDisposition::Archived,

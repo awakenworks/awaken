@@ -177,6 +177,16 @@ impl awaken_session_runtime_contract::RealizationRuntime for ActivationOnlySessi
 
 #[async_trait::async_trait]
 impl awaken_session_runtime_contract::CoordinationRuntime for ActivationOnlySessionRunRuntime {
+    async fn archive_session_thread(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        thread_id: &str,
+    ) -> Result<(), awaken_session_types::RunError> {
+        awaken_session_runtime_contract::NeutralRuntime
+            .archive_session_thread(session_id, thread_id)
+            .await
+    }
+
     async fn reserve_session_run(
         &self,
         command: awaken_session_runtime_contract::AdmitSessionRun,
@@ -1249,6 +1259,16 @@ impl awaken_session_runtime_contract::RealizationRuntime for BlockingSessionRunR
 
 #[async_trait::async_trait]
 impl awaken_session_runtime_contract::CoordinationRuntime for BlockingSessionRunRuntime {
+    async fn archive_session_thread(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        thread_id: &str,
+    ) -> Result<(), awaken_session_types::RunError> {
+        awaken_session_runtime_contract::NeutralRuntime
+            .archive_session_thread(session_id, thread_id)
+            .await
+    }
+
     async fn reserve_session_run(
         &self,
         _command: awaken_session_runtime_contract::AdmitSessionRun,

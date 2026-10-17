@@ -72,6 +72,112 @@ pub trait SessionProjectionSource: Send + Sync {
     ) -> Result<Option<CommittedOutcomeProjection>, RunError>;
 }
 
+/// The projection port derived from the two read roles it is defined by.
+///
+/// A composition that selects `ThreadReadRuntime` and
+/// `SessionCoordinationReads` from separate executor components derives its
+/// projection here, so the projection can never read through a third owner:
+/// it is exactly those two roles and nothing else.
+#[derive(Clone)]
+pub struct CommittedSessionProjection {
+    thread_reads: Arc<dyn ThreadReadRuntime>,
+    coordination_reads: Arc<dyn SessionCoordinationReads>,
+}
+
+impl CommittedSessionProjection {
+    #[must_use]
+    pub fn new(
+        thread_reads: Arc<dyn ThreadReadRuntime>,
+        coordination_reads: Arc<dyn SessionCoordinationReads>,
+    ) -> Self {
+        Self {
+            thread_reads,
+            coordination_reads,
+        }
+    }
+}
+
+#[async_trait]
+impl SessionProjectionSource for CommittedSessionProjection {
+    async fn projection_thread_snapshot(
+        &self,
+        session_id: &crate::SessionId,
+        thread_id: &str,
+        selected_run: Option<&RunId>,
+    ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
+    {
+        projected_thread_snapshot(
+            self.thread_reads.as_ref(),
+            session_id,
+            thread_id,
+            selected_run,
+        )
+        .await
+    }
+
+    async fn projection_coordinated_threads(
+        &self,
+        session_id: &crate::SessionId,
+        observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
+    ) -> Result<Vec<crate::CoordinatedThreadLink>, RunError> {
+        self.coordination_reads
+            .coordinated_threads(session_id, observed_root)
+            .await
+    }
+
+    async fn projection_outcome(
+        &self,
+        thread: &str,
+        outcome_id: &str,
+    ) -> Result<Option<CommittedOutcomeProjection>, RunError> {
+        self.thread_reads
+            .committed_outcome_projection(thread, outcome_id)
+            .await
+    }
+}
+
+/// The one validated Thread prefix read both projection forms share: an
+/// exact selected Run, or the latest one, from the Thread read role.
+async fn projected_thread_snapshot<R: ThreadReadRuntime + ?Sized>(
+    reads: &R,
+    session_id: &crate::SessionId,
+    thread_id: &str,
+    selected_run: Option<&RunId>,
+) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError> {
+    let snapshot = match selected_run {
+        Some(run_id) => {
+            reads
+                .session_thread_run_recovery_snapshot(session_id, thread_id, run_id)
+                .await
+        }
+        None => {
+            reads
+                .session_thread_recovery_snapshot(session_id, thread_id)
+                .await
+        }
+    }?;
+    if snapshot
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.thread_id.0 != thread_id)
+    {
+        return Err(RunError::internal(
+            "Runtime returned a recovery snapshot for a different Session Thread",
+        ));
+    }
+    if let Some((snapshot, run)) = snapshot.as_ref().zip(selected_run)
+        && (snapshot.claimed_run_id != *run
+            || snapshot
+                .run_record(run)
+                .map_err(|error| RunError::internal(error.to_string()))?
+                .is_none())
+    {
+        return Err(RunError::internal(
+            "Runtime returned a recovery snapshot for a different selected Run",
+        ));
+    }
+    Ok(snapshot)
+}
+
 /// Every runtime owning committed Thread reads and coordination queries serves
 /// the projection port through exactly those read methods, so no runtime can
 /// offer a second, divergent projection read path.
@@ -87,38 +193,7 @@ where
         selected_run: Option<&RunId>,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
-        let snapshot = match selected_run {
-            Some(run_id) => {
-                ThreadReadRuntime::session_thread_run_recovery_snapshot(
-                    self, session_id, thread_id, run_id,
-                )
-                .await
-            }
-            None => {
-                ThreadReadRuntime::session_thread_recovery_snapshot(self, session_id, thread_id)
-                    .await
-            }
-        }?;
-        if snapshot
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.thread_id.0 != thread_id)
-        {
-            return Err(RunError::internal(
-                "Runtime returned a recovery snapshot for a different Session Thread",
-            ));
-        }
-        if let Some((snapshot, run)) = snapshot.as_ref().zip(selected_run)
-            && (snapshot.claimed_run_id != *run
-                || snapshot
-                    .run_record(run)
-                    .map_err(|error| RunError::internal(error.to_string()))?
-                    .is_none())
-        {
-            return Err(RunError::internal(
-                "Runtime returned a recovery snapshot for a different selected Run",
-            ));
-        }
-        Ok(snapshot)
+        projected_thread_snapshot(self, session_id, thread_id, selected_run).await
     }
 
     async fn projection_coordinated_threads(

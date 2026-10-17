@@ -559,6 +559,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         .await
         .expect("parent Session context");
     let commit = host
+        .thread_reads
         .commit_for_read(&parent.0)
         .await
         .expect("parent commit partition");
@@ -1157,6 +1158,7 @@ async fn remote_input_reply_uses_its_ticket_without_inventing_a_tool_batch() {
         .build()
         .expect("validated Host dependencies");
     let commit = host
+        .thread_reads
         .commit_for_read(&thread.0)
         .await
         .expect("remote input commit partition");
@@ -1228,6 +1230,7 @@ async fn remote_input_reply_uses_its_ticket_without_inventing_a_tool_batch() {
         .build()
         .expect("validated Host dependencies");
     let tool_commit = tool_host
+        .thread_reads
         .commit_for_read(&tool_thread.0)
         .await
         .expect("tool commit partition");
@@ -1341,6 +1344,7 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
             .await
             .expect("primary Session context");
         let commit = host
+            .thread_reads
             .commit_for_read(&parent.0)
             .await
             .expect("primary commit partition");
@@ -1619,7 +1623,11 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
             AwaitTarget::Pause(PauseReason::BudgetReached),
         )
     };
-    let root_commit = host.commit_for_read(&root.0).await.expect("B1 root commit");
+    let root_commit = host
+        .thread_reads
+        .commit_for_read(&root.0)
+        .await
+        .expect("B1 root commit");
     root_commit
         .commit(ThreadCommit::assemble(
             root.clone(),
@@ -1698,6 +1706,7 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
         .await
         .expect("B2 parent context");
     let child_commit = host
+        .thread_reads
         .commit_for_read(&parent.0)
         .await
         .expect("B2 parent commit partition");
@@ -1894,6 +1903,7 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
     let action_child = ThreadId("budget-action-child".into());
     let action_run = RunId("budget-action-run".into());
     let action_commit = host
+        .thread_reads
         .commit_for_read(&action_parent.0)
         .await
         .expect("B5 parent partition");
@@ -2171,6 +2181,7 @@ async fn pending_client_tool_query_uses_committed_ticket_during_projection_gap()
     // The query has no mutable process-local awaiting position to corrupt or
     // synchronize; committed Thread truth is its only input.
     let observed = host
+        .thread_reads
         .pending_tool("t-cross-protocol-pending")
         .await
         .expect("committed ticket read succeeds")
@@ -2179,7 +2190,11 @@ async fn pending_client_tool_query_uses_committed_ticket_during_projection_gap()
     assert_eq!(observed.name, "lookup");
     assert_eq!(observed.input, serde_json::json!({ "q": "weather" }));
     assert!(observed.client_executed);
-    assert!(host.is_awaiting("t-cross-protocol-pending").await);
+    assert!(
+        host.thread_reads
+            .is_awaiting("t-cross-protocol-pending")
+            .await
+    );
 
     let error = match host
         .run(
@@ -2206,7 +2221,12 @@ async fn pending_client_tool_query_uses_committed_ticket_during_projection_gap()
         .await
         .expect("committed wait resumes without the disposable position");
     assert!(matches!(resumed.state, RunState::Ended(_)));
-    assert!(!host.is_awaiting("t-cross-protocol-pending").await);
+    assert!(
+        !host
+            .thread_reads
+            .is_awaiting("t-cross-protocol-pending")
+            .await
+    );
 }
 
 /// Superseding a run requires durable ingress; a default (direct-ingress) host

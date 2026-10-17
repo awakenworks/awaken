@@ -85,7 +85,7 @@ impl SharedHost {
     ) -> Result<ChildExecutionSubstrate, HostError> {
         let parent_commit = match &warm_context {
             Some(context) => context.commit.clone(),
-            None => self.commit_for_read(thread).await?,
+            None => self.thread_reads.commit_for_read(thread).await?,
         };
         let commit = parent_commit.for_independent_child();
         // Reconciliation may replace the physical owner. Even a warm Context

@@ -244,6 +244,19 @@ macro_rules! neutral_role {
                 ))
             }
 
+            /// Commit the absorbing archive disposition on one logical child Thread
+            /// through its parent Session partition. Implementations must not mutate a
+            /// protocol cache or open child-named storage.
+            async fn archive_session_thread(
+                &self,
+                _session_id: &$crate::__macro_support::SessionId,
+                _thread_id: &str,
+            ) -> Result<(), $crate::__macro_support::RunError> {
+                Err($crate::__macro_support::RunError::unavailable(
+                    "durable coordinated Thread archive is unsupported",
+                ))
+            }
+
             /// Stop the parent Run, wait until it can no longer commit a delegation, and
             /// then read the complete child set from durable runtime authority.
             async fn quiesce_terminal_delegations(
@@ -724,19 +737,6 @@ impl $crate::SessionCoordinationReads for $ty {
                 _thread_id: &str,
             ) -> Result<awaken_agent_contract::ThreadDisposition, $crate::__macro_support::RunError> {
                 Ok(awaken_agent_contract::ThreadDisposition::Active)
-            }
-
-            /// Commit the absorbing archive disposition on one logical child Thread
-            /// through its parent Session partition. Implementations must not mutate a
-            /// protocol cache or open child-named storage.
-            async fn archive_session_thread(
-                &self,
-                _session_id: &$crate::__macro_support::SessionId,
-                _thread_id: &str,
-            ) -> Result<(), $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable(
-                    "durable coordinated Thread archive is unsupported",
-                ))
             }
 
             /// Read one exact terminal Outcome projection from committed Thread truth.

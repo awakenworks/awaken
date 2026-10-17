@@ -113,6 +113,7 @@ fn text_of(message: &Message) -> String {
 
 async fn assert_committed_child_report(host: &SharedHost, thread: &str) {
     let relationships = host
+        .thread_reads()
         .delegated_runs(thread)
         .await
         .expect("committed child-Run relationships remain readable");
@@ -131,6 +132,7 @@ async fn assert_committed_child_report(host: &SharedHost, thread: &str) {
     );
 
     let messages = host
+        .thread_reads()
         .committed_messages(thread)
         .await
         .expect("committed parent transcript remains readable");

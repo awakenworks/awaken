@@ -961,7 +961,7 @@ impl SessionApplication {
         thread_id: &str,
     ) -> Result<(), RunError> {
         let coordination_reads = self.runtime().coordination_reads();
-        let thread_reads = self.runtime().thread_reads();
+        let coordination = self.runtime().coordination();
 
         let child = awaken_agent_contract::agent::thread::Id(thread_id.to_string());
         let links = coordination_reads
@@ -975,7 +975,7 @@ impl SessionApplication {
                 "Agent Thread was not found in this Session",
             ));
         }
-        thread_reads
+        coordination
             .archive_session_thread(session_id, thread_id)
             .await
     }

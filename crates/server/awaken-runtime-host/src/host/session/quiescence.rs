@@ -62,7 +62,9 @@ impl ManagedHost {
                     })
                     .unwrap_or(false))
             },
-            self.host.delegated_runs_under_lifecycle(thread),
+            self.host
+                .thread_reads
+                .delegated_runs_under_lifecycle(thread),
         )
         .await
         .map_err(to_run_error)?
