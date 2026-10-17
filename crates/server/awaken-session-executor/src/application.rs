@@ -19,6 +19,7 @@ mod realization_renewal;
 mod resource_transition;
 
 use awaken_session_configuration_contract::environment_projection;
+use awaken_session_realization::peers::EnvironmentPeer as _;
 use std::sync::Arc;
 
 use futures_util::StreamExt as _;
@@ -187,18 +188,21 @@ impl crate::SharedHost {
         // The test fixture installs the Session whose lease it installs.
         self.installed_sessions.install(session_id);
         let realizations = self.installed_sessions.realizations();
-        let changed = self.realizer.execution.authorize_worker_effect(|| {
-            realizations.update_realization(session_id, |r| {
-                if !r.install_lease(
-                    awaken_session_realization::test_support::test_observed_lease(lease),
-                ) {
-                    return Err(crate::HostError::internal(
-                        "test lease installation rejected",
-                    ));
-                }
-                Ok(r.execution.changed.clone())
-            })?
-        })?;
+        let changed = self
+            .realization_executor
+            .authority()
+            .authorize_worker_effect(|| {
+                realizations.update_realization(session_id, |r| {
+                    if !r.install_lease(
+                        awaken_session_realization::test_support::test_observed_lease(lease),
+                    ) {
+                        return Err(crate::HostError::internal(
+                            "test lease installation rejected",
+                        ));
+                    }
+                    Ok(r.execution.changed.clone())
+                })?
+            })?;
         changed.notify_waiters();
         Ok(())
     }
@@ -304,8 +308,8 @@ impl crate::SharedHost {
             }
             Ok(None) => {
                 if self
-                    .realizer
-                    .cleanup
+                    .realization_executor
+                    .effects()
                     .retire_completed_terminal_cleanup_projection(
                         &self.mcp,
                         session_id.as_str(),
@@ -332,8 +336,8 @@ impl crate::SharedHost {
                 // T3 otherwise (successor generation, replaced phase, absent)
                 //    => leave the current root and its Run untouched.
                 if self
-                    .realizer
-                    .cleanup
+                    .realization_executor
+                    .effects()
                     .retire_completed_terminal_cleanup_projection(
                         &self.mcp,
                         session_id.as_str(),
@@ -549,7 +553,8 @@ impl crate::SharedHost {
         interrupt: bool,
     ) -> Result<bool, crate::HostError> {
         let run = if interrupt { selected.run? } else { None };
-        self.realizer
+        self.realization_executor
+            .environments()
             .retire_selected_session_environment(
                 session_id,
                 (&self.mcp, self.installed_sessions.as_ref()),
@@ -712,8 +717,9 @@ impl crate::SharedHost {
         resource_mode: FrozenResourceProjectionMode,
         realization_lease: Option<ObservedSessionRealizationLease>,
     ) -> Result<(), crate::HostError> {
-        let exec = &self.realizer.environments;
-        let sessions = &exec.sessions;
+        let realization = &self.realization_executor;
+        let exec = realization.environments();
+        let sessions = &realization.sessions();
         if projection.baseline.fingerprint.0.trim().is_empty() {
             return Err(crate::HostError::internal(
                 "frozen Session baseline fingerprint must not be empty",
@@ -743,7 +749,7 @@ impl crate::SharedHost {
             crate::realization_state::FrozenProjectionReceipt::from_projection(&projection)?;
         sessions.update_realization(thread, |r| r.validate_projection_receipt(&receipt))??;
         let (publication, model_candidate) =
-            exec.publication.resolve_canonical_session_projection(
+            exec.publication().resolve_canonical_session_projection(
                 &projection.workspace_id,
                 CanonicalSessionProjection::Baseline(&projection.baseline),
                 projection.agent_publication.clone(),
@@ -770,7 +776,7 @@ impl crate::SharedHost {
             && projection.baseline.runtime_placement
                 == awaken_session_types::SessionRuntimePlacement::Worker
         {
-            exec.staging.validate_structural_resource_layout(
+            realization.staging().validate_structural_resource_layout(
                 thread,
                 &projection.resources,
                 Some(&baseline.mounts),
@@ -783,7 +789,7 @@ impl crate::SharedHost {
                 |candidate| candidate.provisioning(),
             );
             let provider = exec.session_environment_provider_for_thread(thread, provisioning)?;
-            exec.staging.validate_resource_layout(
+            realization.staging().validate_resource_layout(
                 thread,
                 &projection.resources,
                 provider,
@@ -884,22 +890,24 @@ impl crate::SharedHost {
                 Ok::<_, crate::HostError>(())
             })?;
             let mcp = (&self.mcp, self.installed_sessions.as_ref());
-            exec.retire_replaced_scoped_execution(thread, proof, mcp)
+            exec.retire_replaced_scoped_execution(realization.peers(), thread, proof, mcp)
                 .await?;
         }
         let preparation = if resource_mode.synchronizes() && projection.resource_revision > 0 {
             realization_lease
                 .as_ref()
-                .map(|lease| ResourcePreparation::begin(&exec.execution, thread, lease.clone()))
+                .map(|lease| {
+                    ResourcePreparation::begin(realization.authority(), thread, lease.clone())
+                })
                 .transpose()?
         } else {
             None
         };
         if resource_mode.synchronizes() && projection.resource_revision > 0 {
-            let stage = exec
-                .staging
+            let stage = realization
+                .staging()
                 .stage_prevalidated_resource_transition_under_resource_projection(
-                    exec,
+                    realization.peers(),
                     thread,
                     &resource_transition,
                     claim,
@@ -920,7 +928,7 @@ impl crate::SharedHost {
         if let Some(preparation) = &preparation {
             preparation.validate()?;
         }
-        exec.execution.authorize_worker_effect(|| {
+        realization.authority().authorize_worker_effect(|| {
             self.installed_sessions.update(thread, |slot| {
                 // Revalidate fallible coordinates and stage the existing owner
                 // transition under the final slot lock. No correlated field is
@@ -1035,7 +1043,7 @@ impl crate::SharedHost {
         )
         .await?;
         realizations.update_realization(assignment.session_id.as_str(), |r| {
-            r.cleanup.assignment = Some(assignment.clone());
+            r.effects.assignment = Some(assignment.clone());
         })?;
         Ok(())
     }

@@ -5,16 +5,18 @@
 //! executes its exact Preparation and Disposal effects and retires only the
 //! corresponding Worker projection after Control accepts the receipt.
 
-use super::{
-    BoundEnvironmentPreparationMode, RealizationError, RetiringEnvironmentOwner,
-    SessionEnvironmentOwner, SessionEnvironmentPreparation, SessionEnvironmentRetirementCause,
-    TerminalEnvironmentPreparation,
+use super::TerminalEnvironmentPreparation;
+use crate::environment_owner::{
+    RetiringEnvironmentOwner, SessionEnvironmentOwner, SessionEnvironmentPreparation,
+    SessionEnvironmentRetirementCause,
 };
+use crate::realization_error::RealizationError;
 use crate::realization_error::{AuthorityLoss, PendingState, ProjectionConflict};
+use crate::session_environment::BoundEnvironmentPreparationMode;
 use awaken_session_configuration_contract::resource as session_resource;
 use awaken_session_state_contract::SessionCleanupDisposalReceipt;
 
-impl crate::terminal_cleanup::TerminalCleanup {
+impl crate::terminal_effects::TerminalEffects {
     /// Complete every source-dependent participant under one exact aggregate
     /// preparation fence without deleting the physical realization. The pure
     /// Memory evidence join precedes MCP, Artifact, Memory, checkpoint, and
@@ -22,7 +24,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
     /// and returns no durable preparation receipt.
     pub async fn prepare_terminal_cleanup_effect<D, DF, B, BF, S>(
         &self,
-        environments: &crate::environment_holding::EnvironmentHolding,
+        peers: crate::peers::Peers<'_>,
         effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
         authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
         delegated: D,
@@ -86,7 +88,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
         let root_environment = if effect.command.thread_id == effect.command.session_id {
             let mut prepared = self
                 .prepare_terminal_environment_under_lifecycle(
-                    environments,
+                    peers,
                     &effect.command.thread_id,
                     &effect_fence,
                     BoundEnvironmentPreparationMode::Terminal,
@@ -118,7 +120,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
             .transpose()?;
 
         sessions.modify_realization(&effect.command.thread_id, |r| {
-            r.cleanup.root = Some(effect.command.session_id.to_string());
+            r.effects.root = Some(effect.command.session_id.to_string());
         })?;
 
         if crate::session_realizations::primary_or_delegated_run_active(
@@ -249,7 +251,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
             if let Some((environment, _)) = environment.as_ref() {
                 self.effect_fence(&effect)?;
                 self.reconcile_terminal_memory(
-                    environments,
+                    peers,
                     &effect,
                     environment.as_ref(),
                     effect_mode,
@@ -264,7 +266,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
             // remains on the checkpoint port's existing terminal edge. Neither
             // case is a reason to skip cleanup after a provider Disposing gate.
             self.cleanup_terminal_checkpoint(
-                environments,
+                peers,
                 &effect,
                 &prepared.state,
                 prepared.pending_checkpoint.as_ref(),
@@ -277,7 +279,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
                 && let Some((environment, _)) = environment
             {
                 let provider_effect_fence = self.effect_fence(&effect)?;
-                let authority = environments.execution.provider_effect_authority(
+                let authority = peers.authority.provider_effect_authority(
                     effect.command.session_id.as_str(),
                     &provider_effect_fence,
                 )?;
@@ -313,9 +315,10 @@ impl crate::terminal_cleanup::TerminalCleanup {
     /// provider preparation are forbidden on this path.
     pub async fn dispose_terminal_cleanup_effect(
         &self,
-        environments: &crate::environment_holding::EnvironmentHolding,
+        peers: crate::peers::Peers<'_>,
         effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
     ) -> Result<SessionCleanupDisposalReceipt, RealizationError> {
+        let environments = peers.environments;
         let realizer = environments;
         let sessions = &self.sessions;
         let session_id = &effect.command.session_id;
@@ -343,7 +346,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
             // cold=>E1+E2+E3; absent=>E1+E2 without a guessed delete.
             Some(
                 self.prepare_terminal_environment_under_lifecycle(
-                    environments,
+                    peers,
                     session_id.as_str(),
                     authorization.effect_fence(),
                     BoundEnvironmentPreparationMode::TerminalDisposal,
@@ -377,12 +380,13 @@ impl crate::terminal_cleanup::TerminalCleanup {
                     .read_realization(session_id.as_str(), |r| r.previous_resources())?
                     .flatten();
                 let spec = realizer.session_environment_adoption_spec(
+                    peers,
                     session_id.as_str(),
                     provider,
                     previous_resources.as_ref(),
                 )?;
-                let authority = realizer
-                    .execution
+                let authority = peers
+                    .authority
                     .provider_effect_authority(session_id.as_str(), authorization.effect_fence())?;
                 provider
                     .terminal()
@@ -436,7 +440,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
                             "terminal disposal authorization changed under its lifecycle lock",
                         ));
                     }
-                    let authority = realizer.execution.provider_effect_authority(
+                    let authority = peers.authority.provider_effect_authority(
                         effect.command.session_id.as_str(),
                         authorization.effect_fence(),
                     )?;
@@ -531,7 +535,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
     ) -> Result<bool, RealizationError> {
         let realizations = self.sessions.clone();
         let projected_terminal = realizations
-            .read_realization(session_id, |r| r.cleanup.assignment.is_some())?
+            .read_realization(session_id, |r| r.effects.assignment.is_some())?
             .unwrap_or(false);
         if !projected_terminal {
             return Ok(false);
@@ -573,7 +577,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
                 if thread_id == session_id
                     || realizations
                         .read_realization(&thread_id, |r| {
-                            r.cleanup.root.as_deref() == Some(session_id)
+                            r.effects.root.as_deref() == Some(session_id)
                         })?
                         .unwrap_or(false)
                 {
@@ -609,7 +613,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
             let belongs_to_operation = thread_id == session_id
                 || realizations
                     .read_realization(&thread_id, |r| {
-                        r.cleanup.root.as_deref() == Some(session_id)
+                        r.effects.root.as_deref() == Some(session_id)
                     })?
                     .unwrap_or(false);
             if !belongs_to_operation {

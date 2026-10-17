@@ -7,6 +7,7 @@
 use crate::host::{ClaimedRuntimeInput, RuntimePublicationIdentity};
 use crate::{HostError, SharedHost};
 use awaken_runtime_contract::ExecutableAgentSnapshot;
+use awaken_session_realization::peers::EnvironmentPeer as _;
 use std::sync::Arc;
 
 pub(super) struct ContextPlan {
@@ -37,11 +38,11 @@ pub(super) async fn prepare(
     claimed_attempt: Option<&ClaimedRuntimeInput>,
     force_defer_environment: bool,
 ) -> Result<ContextPlan, HostError> {
-    let realizations = &host.realizer.environments.sessions;
+    let realizations = host.realization_executor.sessions();
     // Resolve the immutable publication before selecting an environment.
     // Environment identity is a consequence of provisioning, not of the ACP
     // executor or a process-wide sandbox default.
-    let publication = &host.realizer.publication;
+    let publication = host.realization_executor.environments().publication();
     let (workspace, selected_agent, installed, model_candidate) =
         publication.resolve_session_publication(thread, agent, published_snapshot)?;
     publication.retain_session_publication(thread, installed.as_ref())?;

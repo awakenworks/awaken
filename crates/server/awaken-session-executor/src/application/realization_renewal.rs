@@ -97,8 +97,8 @@ impl crate::SharedHost {
                 // and install atomically: another driver may already have extended,
                 // replaced, or removed that projection. A renewal is not authority
                 // to recreate a slot or overwrite a later installed lease.
-                self.realizer
-                    .execution
+                self.realization_executor
+                    .authority()
                     .authorize_worker_effect::<_, crate::HostError>(|| {
                         Ok(realizations
                             .modify_realization(&session_id, |state| {

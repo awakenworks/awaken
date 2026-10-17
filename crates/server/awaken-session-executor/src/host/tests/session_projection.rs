@@ -1,6 +1,7 @@
 //! Frozen Session projection: model/tool/web/skill overlays and cache warmup.
 
 use super::*;
+use awaken_session_realization::peers::EnvironmentPeer as _;
 
 #[tokio::test]
 async fn host_accepts_only_backend_projections_that_match_the_publication() {
@@ -1396,8 +1397,9 @@ async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_read
     )
     .expect("literal model reference");
     let (_, selected_agent, selected, _) = fallback_host
-        .realizer
-        .publication
+        .realization_executor
+        .environments()
+        .publication()
         .resolve_session_publication("delivered-agent-thread", None, Some(delivered.clone()))
         .expect("R5 use the delivered publication as the retained identity authority");
     assert_eq!(selected_agent, "delivered-agent", "R5/E5");
@@ -1493,15 +1495,17 @@ async fn frozen_session_resolves_its_exact_agent_revision_instead_of_current() {
     .expect("frozen baseline");
 
     let (_, _, selected, _) = host
-        .realizer
-        .publication
+        .realization_executor
+        .environments()
+        .publication()
         .resolve_session_publication("frozen-revision", None, None)
         .expect("R1 exact frozen publication");
     assert_eq!(selected, Some(frozen), "R1");
 
     let (_, _, selected, _) = host
-        .realizer
-        .publication
+        .realization_executor
+        .environments()
+        .publication()
         .resolve_session_publication("legacy-current", Some("agent-a"), None)
         .expect("R2 legacy current publication");
     assert_eq!(selected, Some(current), "R2");
@@ -1828,8 +1832,17 @@ async fn session_creation_and_explicit_cache_warmup_share_one_preparation_path()
         });
 
     let environment = host
-        .realizer
-        .create_session_environment(&host.realizer.env.session_provider, &spec)
+        .realization_executor
+        .environments()
+        .create_session_environment(
+            host.realization_executor.peers(),
+            &host
+                .realization_executor
+                .environments()
+                .providers()
+                .session_provider,
+            &spec,
+        )
         .await
         .expect("cache preparation precedes Session environment creation");
     assert_eq!(initializer.0.load(Ordering::SeqCst), 1, "E1/E2");
@@ -1893,7 +1906,9 @@ async fn repository_layout_conflict_fails_before_cache_prewarm() {
         .await
         .expect("P1 stage Repository without opening an Environment");
 
-    let mut spec = host.realizer.sandbox_spec("repository-prewarm-fence");
+    let mut spec = host
+        .realization_executor
+        .sandbox_spec("repository-prewarm-fence");
     spec.mounts
         .push(awaken_provisioning_contract::MountRequirement {
             mount_id: "conflicting-cache".into(),
@@ -1909,8 +1924,17 @@ async fn repository_layout_conflict_fails_before_cache_prewarm() {
             required: false,
         });
     let error = match host
-        .realizer
-        .create_session_environment(&host.realizer.env.session_provider, &spec)
+        .realization_executor
+        .environments()
+        .create_session_environment(
+            host.realization_executor.peers(),
+            &host
+                .realization_executor
+                .environments()
+                .providers()
+                .session_provider,
+            &spec,
+        )
         .await
     {
         Ok(_) => panic!("P2 must fail before cache preparation"),

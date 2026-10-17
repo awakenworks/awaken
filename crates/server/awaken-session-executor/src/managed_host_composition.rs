@@ -31,12 +31,10 @@ impl ManagedHost {
         &self,
         sink: Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
     ) {
-        *self
-            .host
-            .realizer
-            .environment_binding_sink
-            .write()
-            .expect("test receipt sink lock poisoned") = Some(sink);
+        self.host
+            .realization_executor
+            .environments()
+            .install_environment_binding_sink(sink);
     }
 
     /// Decide whether a complete projection needs execution preparation before
@@ -145,10 +143,10 @@ impl ManagedHost {
             .project_session_init(thread, &init)
             .map_err(to_run_error)?;
         self.host
-            .realizer
-            .staging
+            .realization_executor
+            .staging()
             .stage_resource_manifest(
-                &self.host.realizer,
+                self.host.realization_executor.peers(),
                 thread,
                 &init.workspace_id,
                 init.resource_revision,

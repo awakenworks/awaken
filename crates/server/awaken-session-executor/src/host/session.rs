@@ -211,11 +211,16 @@ impl SharedHost {
             // Opening a Session context is the host's install path.
             self.installed_sessions.install(thread);
             let _lifecycle = realizations.lock_lifecycle(thread).await?;
-            self.realizer
+            self.realization_executor
+                .environments()
                 .retry_unpublished_session_environment_cleanup(thread)
                 .await?;
-            self.realizer
-                .retry_session_environment_candidate_under_lifecycle(thread)
+            self.realization_executor
+                .environments()
+                .retry_session_environment_candidate_under_lifecycle(
+                    self.realization_executor.peers(),
+                    thread,
+                )
                 .await?;
             if let Some(ctx) = self
                 .installed_sessions

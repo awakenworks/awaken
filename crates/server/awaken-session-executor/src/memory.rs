@@ -620,8 +620,8 @@ impl crate::host::SharedHost {
         // The embedder seam installs the Session it binds (the host's install
         // path); the realization view then only changes the installed slot.
         self.installed_sessions.update(thread, |_| ());
-        self.realizer
-            .staging
+        self.realization_executor
+            .staging()
             .register_thread_memory(thread, Some(Arc::new(binding)))
             .expect("session runtime slots mutex poisoned");
     }

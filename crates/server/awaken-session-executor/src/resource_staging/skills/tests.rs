@@ -35,7 +35,7 @@ async fn empty_pinned_skill_set_needs_no_repository_but_real_references_fail_clo
     .build()
     .unwrap();
     let catalog = &host.tools.skills;
-    let staging = &host.realizer.staging;
+    let staging = host.realization_executor.staging();
     assert!(
         staging
             .load_pinned("ws-a", &[], None, None)
@@ -129,8 +129,8 @@ async fn skill_catalog_and_bundle_read_roles_are_selected_independently_before_c
             catalog,
         );
         let loaded = host
-            .realizer
-            .staging
+            .realization_executor
+            .staging()
             .load_pinned("ws-a", std::slice::from_ref(&binding), None, None)
             .await;
         assert_eq!(loaded.is_ok(), bytes);
@@ -154,7 +154,7 @@ async fn frozen_binding_keeps_v1_after_v2_and_is_workspace_scoped() {
     .build()
     .unwrap();
     let catalog = &host.tools.skills;
-    let staging = &host.realizer.staging;
+    let staging = host.realization_executor.staging();
     catalog
         .create(
             SkillDefinition {
@@ -217,7 +217,7 @@ async fn prebuilt_and_custom_selectors_follow_one_resolution_table() {
     .build()
     .unwrap();
     let catalog = &host.tools.skills;
-    let staging = &host.realizer.staging;
+    let staging = host.realization_executor.staging();
     for selector in ["latest", "1"] {
         let selection = AgentSkillBinding {
             kind: AgentSkillKind::Anthropic,

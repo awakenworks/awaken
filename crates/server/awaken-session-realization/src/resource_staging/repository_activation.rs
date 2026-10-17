@@ -6,16 +6,11 @@
 //! Repository publication.
 
 use crate::realization_error::{PendingState, RealizationError};
+use crate::staged_resources::RepositoryPublicationActivationError;
 use crate::staged_resources::{RepositoryActivation, ResourceBindingCheck};
 use awaken_provisioning_contract as pc;
 use awaken_session_configuration_contract::resource as session_resource;
 use awaken_session_realization_contract::ResourceOperationFence;
-
-#[derive(Debug)]
-pub enum RepositoryPublicationActivationError {
-    Rejected(pc::RepositoryPublicationRejection),
-    Failed(RealizationError),
-}
 
 fn repository_http_basic_credential(
     material: awaken_credential_contract::CredentialMaterial,

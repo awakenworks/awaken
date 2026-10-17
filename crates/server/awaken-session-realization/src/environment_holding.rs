@@ -6,77 +6,86 @@
 //! Environment owner under the Session's lifecycle lock, and keeps the warm
 //! capacity those providers prepare.
 
-/// Holds each installed Session's Environment. It owns the sandbox providers;
-/// staging and the execution authority are the ports its effects go through.
+pub mod bound_environment;
+pub mod lifecycle;
+mod peer;
+pub mod realization;
+
+/// Holds each installed Session's Environment through the sandbox providers it
+/// owns. Resource staging and the execution authority are peers: an
+/// operation that consults them receives them from the executor.
 pub struct EnvironmentHolding {
     /// The selected aggregate publication authority; the lock permits fixture installation only.
-    pub environment_binding_sink: std::sync::RwLock<
+    environment_binding_sink: std::sync::RwLock<
         Option<std::sync::Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>>,
     >,
     /// The same dispatch instance used by this process, narrowed to execution binding.
-    pub dispatch_execution:
-        Option<std::sync::Arc<dyn awaken_dispatch_contract::DispatchExecution>>,
-    /// Frozen publication selection over the installed Session slots.
-    pub publication: crate::session_publication::SessionPublicationSelection,
-
+    dispatch_execution: Option<std::sync::Arc<dyn awaken_dispatch_contract::DispatchExecution>>,
+    /// Frozen publication selection over the installed Sessions.
+    publication: crate::session_publication::SessionPublicationSelection,
     /// The Session-owned, BackendOwned and housekeeping sandbox providers.
-    pub env: crate::environment_providers::EnvironmentProviders,
+    providers: crate::environment_providers::EnvironmentProviders,
     /// The installed Sessions, as far as realization may reach them.
-    pub sessions: crate::session_realizations::SessionRealizations,
-    /// Resource staging: spec projection, registration and layout validation.
-    pub staging: crate::resource_staging::ResourceStaging,
-    /// The authority physical Environment effects run under.
-    pub execution: crate::execution_authority::ExecutionAuthority,
+    sessions: crate::session_realizations::SessionRealizations,
 }
 
-/// Test-only spec helpers over the default Session provider. A fixture with a
-/// poisoned registry is a broken test, so these helpers panic instead of
-/// reporting the realization denial production paths return.
-#[cfg(any(test, feature = "test-support"))]
 impl EnvironmentHolding {
-    /// The provisioning request for a thread. Skills are not a sandbox mount
-    /// (ADR-0036); the environment provisions isolation tools plus the session's
-    /// staged resource mounts (ADR-0038), each realized read-only under `.mnt/`.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn sandbox_spec(&self, thread: &str) -> awaken_provisioning_contract::SandboxSpec {
-        let resources = self
-            .staging
-            .thread_resources_snapshot(thread)
-            .expect("test fixture registry is healthy");
-        self.sandbox_spec_for_resources(thread, &resources)
+    /// Hold Environments over the installed Sessions with the sandbox providers
+    /// they realize through.
+    pub fn new(
+        mut providers: crate::environment_providers::EnvironmentProviders,
+        runs_local_dispatch_pool: bool,
+        sessions: crate::session_realizations::SessionRealizations,
+        environment_binding_sink: Option<
+            std::sync::Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
+        >,
+        dispatch_execution: Option<
+            std::sync::Arc<dyn awaken_dispatch_contract::DispatchExecution>,
+        >,
+        publication: crate::session_publication::SessionPublicationSelection,
+    ) -> Self {
+        providers.runs_local_dispatch_pool = runs_local_dispatch_pool;
+        Self {
+            environment_binding_sink: std::sync::RwLock::new(environment_binding_sink),
+            dispatch_execution,
+            publication,
+            providers,
+            sessions,
+        }
     }
 
+    /// The binding sink of a test fixture.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn sandbox_spec_for_resources(
+    pub fn environment_binding_sink(
         &self,
-        thread: &str,
-        resources: &crate::staged_resources::StagedResources,
-    ) -> awaken_provisioning_contract::SandboxSpec {
-        self.sandbox_spec_for_mount_layout(
-            thread,
-            resources.mounts.clone(),
-            !resources.repositories.is_empty(),
-        )
+    ) -> Option<std::sync::Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>>
+    {
+        self.environment_binding_sink
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
+    /// Replace the dispatch execution role of a test fixture.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn sandbox_spec_for_mount_layout(
+    pub fn replace_dispatch_execution(
+        &mut self,
+        dispatch_execution: Option<
+            std::sync::Arc<dyn awaken_dispatch_contract::DispatchExecution>,
+        >,
+    ) {
+        self.dispatch_execution = dispatch_execution;
+    }
+
+    /// Replace the binding sink of a test fixture.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn install_environment_binding_sink(
         &self,
-        thread: &str,
-        resource_mounts: Vec<awaken_provisioning_contract::MountRequirement>,
-        has_repositories: bool,
-    ) -> awaken_provisioning_contract::SandboxSpec {
-        self.staging
-            .sandbox_spec_for_mount_layout_with_network(
-                thread,
-                resource_mounts,
-                has_repositories,
-                self.env
-                    .session_provider
-                    .realizer()
-                    .capabilities()
-                    .network_isolation,
-            )
-            .expect("test fixture registry is healthy")
+        sink: std::sync::Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
+    ) {
+        *self
+            .environment_binding_sink
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sink);
     }
 }

@@ -1,6 +1,7 @@
 //! Published MCP credential materialization and realizer ownership.
 
 use super::*;
+use awaken_session_realization::peers::EnvironmentPeer as _;
 
 #[tokio::test]
 async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_revision() {
@@ -567,8 +568,9 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     let protected_session = "mcp-acp-protected";
     acp_host.register_thread_agent_projection(protected_session, "assistant");
     acp_host
-        .realizer
-        .publication
+        .realization_executor
+        .environments()
+        .publication()
         .retain_session_publication(protected_session, Some(&host_acp_snapshot))
         .expect("H12 exact HostExecutor publication");
     // Deliberately install no credential resolver: the no-bypass failure must mask
@@ -859,8 +861,9 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     ] {
         secure_acp_host.register_thread_agent_projection(session, "assistant");
         secure_acp_host
-            .realizer
-            .publication
+            .realization_executor
+            .environments()
+            .publication()
             .retain_session_publication(session, Some(&host_acp_snapshot))
             .unwrap();
     }
@@ -922,8 +925,9 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     );
     secure_acp_host.register_thread_agent_projection("mcp-acp-secure", "assistant");
     secure_acp_host
-        .realizer
-        .publication
+        .realization_executor
+        .environments()
+        .publication()
         .retain_session_publication("mcp-acp-secure", Some(&host_acp_snapshot))
         .expect("H20 exact HostExecutor publication");
 
@@ -943,8 +947,9 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     default_relay_host.register_thread_backend_projection("mcp-acp-default-relay", "acp:test");
     default_relay_host.register_thread_agent_projection("mcp-acp-default-relay", "assistant");
     default_relay_host
-        .realizer
-        .publication
+        .realization_executor
+        .environments()
+        .publication()
         .retain_session_publication("mcp-acp-default-relay", Some(&host_acp_snapshot))
         .unwrap();
     let default_relay_managed = crate::ManagedHost::new(default_relay_host.clone());
@@ -1081,8 +1086,9 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         .expect("H26 external relay transport is bound before staging");
     backend_secure_host.register_thread_agent_projection("mcp-acp-backend-secure", "assistant");
     backend_secure_host
-        .realizer
-        .publication
+        .realization_executor
+        .environments()
+        .publication()
         .retain_session_publication("mcp-acp-backend-secure", Some(&backend_owned_snapshot))
         .expect("H26 frozen BackendOwned publication");
     let backend_secure = crate::ManagedHost::new(backend_secure_host.clone());
@@ -1107,8 +1113,9 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     default_secure_host.register_thread_backend_projection("mcp-acp-backend-weak", "acp:test");
     default_secure_host.register_thread_agent_projection("mcp-acp-backend-weak", "assistant");
     default_secure_host
-        .realizer
-        .publication
+        .realization_executor
+        .environments()
+        .publication()
         .retain_session_publication("mcp-acp-backend-weak", Some(&backend_owned_snapshot))
         .expect("H27 frozen BackendOwned publication");
     let error = crate::ManagedHost::new(default_secure_host.clone())

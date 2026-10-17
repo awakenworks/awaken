@@ -293,7 +293,8 @@ mod tests {
         assert_eq!(error.code, "mcp_generation_process_reaper_missing", "S0/E1");
         assert!(host.mcp_projection(&generation).is_none(), "S0/no Staging");
         assert!(
-            host.realizer
+            host.realization_executor
+                .environments()
                 .session_environment("mcp-no-reaper")
                 .await
                 .expect("installed Sessions")

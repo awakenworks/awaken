@@ -16,6 +16,7 @@
 //! The Host task registry retains each live handle through caller cancellation;
 //! a later process still needs the provider’s durable effect and physical proof.
 
+use awaken_session_realization::peers::EnvironmentPeer as _;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -159,8 +160,9 @@ impl SessionAcpCapabilityNegotiator {
         let spec = crate::sandbox_projection::agent_run_sandbox_spec(scope);
         let environment = self
             .host
-            .realizer
-            .env
+            .realization_executor
+            .environments()
+            .providers()
             .session_provider
             .create(&spec)
             .await

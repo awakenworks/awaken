@@ -148,8 +148,10 @@ async fn revoked_resource_successor_reaches_only_the_canonical_adoption_edge() {
         });
     });
     let (_, _, resident, candidate) = host
-        .realizer
+        .realization_executor
+        .environments()
         .validated_session_environment_adoption(
+            host.realization_executor.peers(),
             thread,
             &binding,
             &provider,
@@ -162,8 +164,10 @@ async fn revoked_resource_successor_reaches_only_the_canonical_adoption_edge() {
         "R1 old Arc is not B2"
     );
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .validated_session_environment_adoption(
+                host.realization_executor.peers(),
                 thread,
                 &binding,
                 &provider,
@@ -712,7 +716,8 @@ async fn discard_keeps_live_owner_and_exact_retry_clears_after_termination() {
         "R19/E1 live owner is retained"
     );
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment(thread)
             .await
             .expect("installed Sessions")
@@ -736,7 +741,8 @@ async fn discard_keeps_live_owner_and_exact_retry_clears_after_termination() {
         "R21/E2 exact retry clears"
     );
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment_owner_is_vacant(thread)
             .expect("installed Sessions"),
         "R21/E2"
@@ -928,12 +934,13 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
     // selected by the frozen projection. A second LocalProvider root would be
     // a parallel physical authority and could not observe this exact marker.
     let provider = host
-        .realizer
+        .realization_executor
+        .environments()
         .projected_session_environment_provider(thread, None)
         .expect("C1 frozen Environment provider");
     let spec = host
-        .realizer
-        .staging
+        .realization_executor
+        .staging()
         .sandbox_spec_for_provider(thread, provider)
         .expect("installed Sessions");
     // LegacyDirect is the aggregate-Unowned creation row. Reuse the single
@@ -941,8 +948,9 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
     // marker-free V1 that this compatibility path owns; a fenced V2 fixture
     // would require aggregate disposal authorization that does not exist here.
     let environment = Arc::new(
-        host.realizer
-            .create_session_environment(provider, &spec)
+        host.realization_executor
+            .environments()
+            .create_session_environment(host.realization_executor.peers(), provider, &spec)
             .await
             .expect("C1 exact LegacyDirect Environment"),
     );
@@ -964,7 +972,8 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
     {
         let _lifecycle = lifecycle.lock().await;
         assert!(
-            host.realizer
+            host.realization_executor
+                .environments()
                 .retire_session_environment_for_revocation(
                     thread,
                     (&host.mcp, host.installed_sessions.as_ref()),
@@ -1042,7 +1051,7 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
 
     {
         let _lifecycle = lifecycle.lock().await;
-        host.realizer
+        host.realization_executor
             .rebuild_claimed_legacy_environment_after_revocation(thread, provider)
             .await
             .expect("CP2/CP3 exact typed observation consumes the retirement");

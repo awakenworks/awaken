@@ -17,10 +17,12 @@ impl crate::environment_holding::EnvironmentHolding {
     #[cfg(any(test, feature = "test-support"))]
     pub async fn create_session_environment(
         &self,
+        peers: crate::peers::Peers<'_>,
         provider: &crate::session_environment::SessionEnvironmentProvider,
         spec: &awaken_provisioning_contract::SandboxSpec,
     ) -> Result<crate::session_environment::SessionEnvironment, RealizationError> {
         self.create_session_environment_with_provider_effect(
+            peers,
             provider,
             spec,
             None,
@@ -31,44 +33,13 @@ impl crate::environment_holding::EnvironmentHolding {
         .await
     }
 
-    /// Hold Environments over the installed Sessions with the sandbox providers
-    /// they realize through and the Worker's execution proof, when registered.
-    pub fn new(
-        mut env: crate::environment_providers::EnvironmentProviders,
-        runs_local_dispatch_pool: bool,
-        staging: crate::resource_staging::ResourceStaging,
-        worker: Option<std::sync::Arc<dyn awaken_provisioning_contract::CurrentExecutionAuthority>>,
-        environment_binding_sink: Option<
-            std::sync::Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
-        >,
-        dispatch_execution: Option<
-            std::sync::Arc<dyn awaken_dispatch_contract::DispatchExecution>,
-        >,
-        publication: crate::session_publication::SessionPublicationSelection,
-    ) -> Self {
-        env.runs_local_dispatch_pool = runs_local_dispatch_pool;
-        let sessions = staging.sessions.clone();
-        Self {
-            environment_binding_sink: std::sync::RwLock::new(environment_binding_sink),
-            dispatch_execution,
-            publication,
-            env,
-            staging,
-            execution: crate::execution_authority::ExecutionAuthority {
-                sessions: sessions.clone(),
-                worker,
-            },
-            sessions,
-        }
-    }
-
     pub fn session_environment_provider(
         &self,
         provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
     ) -> Result<&crate::session_environment::SessionEnvironmentProvider, RealizationError> {
         match provisioning {
             awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { .. } => self
-                .env
+                .providers
                 .backend_owned_session_provider
                 .as_ref()
                 .ok_or_else(|| {
@@ -79,7 +50,7 @@ impl crate::environment_holding::EnvironmentHolding {
             awaken_runtime_contract::resolved::ModelProvisioning::Provider { .. }
             | awaken_runtime_contract::resolved::ModelProvisioning::Remote { .. }
             | awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor => {
-                Ok(&self.env.session_provider)
+                Ok(&self.providers.session_provider)
             }
         }
     }
@@ -103,13 +74,15 @@ impl crate::environment_holding::EnvironmentHolding {
         if sandbox.as_ref().is_some_and(|sandbox| {
             sandbox.host_access == awaken_provisioning_contract::HostAccessPolicy::TrustedHost
         }) {
-            if self.env.trusted_host != crate::environment_providers::TrustedHostPolicy::Admitted {
+            if self.providers.trusted_host
+                != crate::environment_providers::TrustedHostPolicy::Admitted
+            {
                 return Err(RealizationError::invalid_request(
                     "trusted_host Environment is disabled on this Worker",
                 ));
             }
             let provider = self
-                .env
+                .providers
                 .backend_owned_session_provider
                 .as_ref()
                 .ok_or_else(|| {
@@ -139,6 +112,7 @@ impl crate::environment_holding::EnvironmentHolding {
 
     async fn create_session_environment_for_effect(
         &self,
+        peers: crate::peers::Peers<'_>,
         provider: &crate::session_environment::SessionEnvironmentProvider,
         spec: &awaken_provisioning_contract::SandboxSpec,
         effect: &AuthorizedSessionEnvironmentEffect,
@@ -164,6 +138,7 @@ impl crate::environment_holding::EnvironmentHolding {
             awaken_session_environment_contract::EnvironmentRealizationKind::Create
         };
         self.create_session_environment_with_provider_effect(
+            peers,
             provider,
             spec,
             effect.provider_fence.as_ref(),
@@ -174,8 +149,10 @@ impl crate::environment_holding::EnvironmentHolding {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn create_session_environment_with_provider_effect(
         &self,
+        peers: crate::peers::Peers<'_>,
         provider: &crate::session_environment::SessionEnvironmentProvider,
         spec: &awaken_provisioning_contract::SandboxSpec,
         effect_fence: Option<&awaken_provisioning_contract::SandboxEffectFence>,
@@ -183,7 +160,7 @@ impl crate::environment_holding::EnvironmentHolding {
         source_handle: Option<&awaken_provisioning_contract::SandboxHandle>,
         intent: awaken_session_environment_contract::EnvironmentRealizationKind,
     ) -> Result<crate::session_environment::SessionEnvironment, RealizationError> {
-        let spec = self.validate_session_environment_capabilities(provider, spec)?;
+        let spec = self.validate_session_environment_capabilities(peers, provider, spec)?;
         // Capture before any preparation await. A same-byte replacement slot
         // must not lend its proof to this in-flight creation or its retries.
         let current_fence = match (effect_fence, authority) {
@@ -199,7 +176,7 @@ impl crate::environment_holding::EnvironmentHolding {
             crate::session_environment::ProviderEffect::from_parts(effect_fence, current_fence)
                 .map_err(RealizationError::from)?;
         effect.admit().map_err(RealizationError::from)?;
-        self.env
+        self.providers
             .cache_volume_prewarmer
             .prepare_mounts(&spec.mounts)
             .await
@@ -225,21 +202,23 @@ impl crate::environment_holding::EnvironmentHolding {
     /// mounts and its provider before any Environment exists.
     pub fn validate_session_environment_substrate(
         &self,
+        peers: crate::peers::Peers<'_>,
         thread: &str,
         provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
     ) -> Result<(), RealizationError> {
         let provider = self.session_environment_provider_for_thread(thread, provisioning)?;
-        let spec = self.staging.sandbox_spec_for_provider(thread, provider)?;
-        self.validate_session_environment_capabilities(provider, &spec)
+        let spec = peers.staging.sandbox_spec_for_provider(thread, provider)?;
+        self.validate_session_environment_capabilities(peers, provider, &spec)
             .map(|_| ())
     }
 
     pub fn validate_session_environment_capabilities(
         &self,
+        peers: crate::peers::Peers<'_>,
         provider: &crate::session_environment::SessionEnvironmentProvider,
         spec: &awaken_provisioning_contract::SandboxSpec,
     ) -> Result<awaken_provisioning_contract::SandboxSpec, RealizationError> {
-        let resources = self.staging.thread_resources_snapshot(&spec.scope)?;
+        let resources = peers.staging.thread_resources_snapshot(&spec.scope)?;
         let repository_paths = resources
             .repositories
             .iter()
@@ -393,6 +372,7 @@ impl crate::environment_holding::EnvironmentHolding {
     /// the handle that was persisted.
     pub async fn publish_session_environment_under_lifecycle(
         &self,
+        peers: crate::peers::Peers<'_>,
         thread: &str,
         environment: Arc<crate::session_environment::SessionEnvironment>,
         effect: &AuthorizedSessionEnvironmentEffect,
@@ -402,11 +382,11 @@ impl crate::environment_holding::EnvironmentHolding {
         let exec = &self;
         let candidate = match effect.authorization.intent().kind() {
             awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt => {
-                exec.begin_session_environment_adoption(thread, environment.clone(), Some(effect.authorization.intent()))?
+                exec.begin_session_environment_adoption(peers, thread, environment.clone(), Some(effect.authorization.intent()))?
             }
             awaken_session_state_contract::SessionEnvironmentEffectKind::Create
             | awaken_session_state_contract::SessionEnvironmentEffectKind::Rebuild { .. } => {
-                exec.begin_session_environment_preparation(thread, environment.clone(), Some(effect.authorization.intent()))?
+                exec.begin_session_environment_preparation(peers, thread, environment.clone(), Some(effect.authorization.intent()))?
             }
             awaken_session_state_contract::SessionEnvironmentEffectKind::ResourceProjectionReservation {
                 ..
@@ -417,7 +397,7 @@ impl crate::environment_holding::EnvironmentHolding {
             }
         };
         let identity = match self
-            .persist_authorized_environment_before_publish(thread, &candidate, effect)
+            .persist_authorized_environment_before_publish(peers, thread, &candidate, effect)
             .await
         {
             Ok(identity) => identity,
@@ -449,6 +429,7 @@ impl crate::environment_holding::EnvironmentHolding {
     /// the existing Store readback supplies durable publication identity.
     pub async fn retry_session_environment_candidate_under_lifecycle(
         &self,
+        peers: crate::peers::Peers<'_>,
         thread: &str,
     ) -> Result<Option<Arc<crate::session_environment::SessionEnvironment>>, RealizationError> {
         let realizations = self.sessions.clone();
@@ -468,6 +449,7 @@ impl crate::environment_holding::EnvironmentHolding {
             // Unmaterialized root; raw local binding is not durable authority.
             let provider = self.projected_session_environment_provider(thread, None)?;
             self.adopt_bound_session_environment_under_lifecycle(
+                peers,
                 thread,
                 &binding,
                 provider,
@@ -495,10 +477,10 @@ impl crate::environment_holding::EnvironmentHolding {
             return Ok(None);
         };
         let effect = self
-            .authorize_environment_effect_before_io(thread, candidate.ordinary_intent()?)
+            .authorize_environment_effect_before_io(peers, thread, candidate.ordinary_intent()?)
             .await?;
         let identity = match self
-            .persist_authorized_environment_before_publish(thread, &candidate, &effect)
+            .persist_authorized_environment_before_publish(peers, thread, &candidate, &effect)
             .await
         {
             Ok(identity) => identity,
@@ -536,11 +518,12 @@ impl crate::environment_holding::EnvironmentHolding {
     /// Session lifecycle fence.
     pub async fn create_reserved_session_environment_under_lifecycle(
         &self,
+        peers: crate::peers::Peers<'_>,
         thread: &str,
         provider: &crate::session_environment::SessionEnvironmentProvider,
     ) -> Result<Arc<crate::session_environment::SessionEnvironment>, RealizationError> {
         let realizations = self.sessions.clone();
-        let staging = &self.staging;
+        let staging = peers.staging;
         let transition = realizations
             .read_realization(thread, |r| r.staging.transition.clone())?
             .flatten()
@@ -574,9 +557,10 @@ impl crate::environment_holding::EnvironmentHolding {
         };
         let effect = self
             .authorize_environment_effect_before_io(
+                peers,
                 thread,
-                &self
-                    .execution
+                &peers
+                    .authority
                     .new_environment_effect_intent(thread, kind, source_binding)?,
             )
             .await?;
@@ -586,7 +570,7 @@ impl crate::environment_holding::EnvironmentHolding {
         } = &effect.authorization
         {
             return self
-                .adopt_already_applied_environment_under_lifecycle(
+                .adopt_already_applied_environment_under_lifecycle(peers,
                     thread, provider, binding, &effect,
                 )
                 .await;
@@ -595,9 +579,10 @@ impl crate::environment_holding::EnvironmentHolding {
         // aggregate transition before choosing the provider's create-time mount
         // subset. With no live Environment this performs no workspace mutation;
         // the second call after publication consumes the keyed staged result.
-        self.staging
+        peers
+            .staging
             .apply_session_inputs_under_lifecycle(
-                self,
+                peers,
                 thread,
                 &transition,
                 claim.as_ref(),
@@ -607,7 +592,7 @@ impl crate::environment_holding::EnvironmentHolding {
             .map_err(RealizationError::from)?;
         let spec = staging.sandbox_substrate_spec_for_provider(thread, provider)?;
         let environment = Arc::new(
-            self.create_session_environment_for_effect(provider, &spec, &effect)
+            self.create_session_environment_for_effect(peers, provider, &spec, &effect)
                 .await?,
         );
         for input in transition.desired().resources.inputs() {
@@ -619,6 +604,7 @@ impl crate::environment_holding::EnvironmentHolding {
         }
         let environment = self
             .publish_session_environment_under_lifecycle(
+                peers,
                 thread,
                 environment,
                 &effect,
@@ -628,7 +614,7 @@ impl crate::environment_holding::EnvironmentHolding {
         realizations.update_realization(thread, |r| {
             r.environment.rebuild_source = None;
         })?;
-        self.ensure_published_environment_reconciled_under_lifecycle(thread, environment)
+        self.ensure_published_environment_reconciled_under_lifecycle(peers, thread, environment)
             .await
     }
 
@@ -637,6 +623,7 @@ impl crate::environment_holding::EnvironmentHolding {
     /// provider creation here could replace the very substrate the root names.
     async fn adopt_already_applied_environment_under_lifecycle(
         &self,
+        peers: crate::peers::Peers<'_>,
         thread: &str,
         provider: &crate::session_environment::SessionEnvironmentProvider,
         binding: &str,
@@ -644,6 +631,7 @@ impl crate::environment_holding::EnvironmentHolding {
     ) -> Result<Arc<crate::session_environment::SessionEnvironment>, RealizationError> {
         let disposition = self
             .adopt_bound_session_environment_under_lifecycle(
+                peers,
                 thread,
                 binding,
                 provider,
@@ -671,6 +659,7 @@ impl crate::environment_holding::EnvironmentHolding {
     /// exposing a partially projected workspace.
     pub async fn ensure_published_environment_reconciled_under_lifecycle(
         &self,
+        peers: crate::peers::Peers<'_>,
         thread: &str,
         environment: Arc<crate::session_environment::SessionEnvironment>,
     ) -> Result<Arc<crate::session_environment::SessionEnvironment>, RealizationError> {
@@ -686,7 +675,7 @@ impl crate::environment_holding::EnvironmentHolding {
                     "published Session Environment lacks its Resource transition",
                 )
             })?;
-        let installed = self.staging.thread_resource_manifest(thread)?;
+        let installed = peers.staging.thread_resource_manifest(thread)?;
         if reconciliation == crate::staged_resources::EnvironmentResourceReconciliation::None
             && installed.as_ref() == Some(transition.desired())
         {
@@ -700,9 +689,10 @@ impl crate::environment_holding::EnvironmentHolding {
                 )
             })?
             .unwrap_or_default();
-        self.staging
+        peers
+            .staging
             .apply_session_inputs_under_lifecycle(
-                self,
+                peers,
                 thread,
                 &transition,
                 claim.as_ref(),
@@ -718,16 +708,17 @@ impl crate::environment_holding::EnvironmentHolding {
     /// creator, and publication follows resource realization + durable binding.
     pub async fn ensure_session_environment_for_tool(
         &self,
+        peers: crate::peers::Peers<'_>,
         thread: &str,
     ) -> Result<Arc<crate::session_environment::SessionEnvironment>, RealizationError> {
         let realizations = self.sessions.clone();
         let _lifecycle = realizations.lock_lifecycle(thread).await?;
         if let Some(environment) = self
-            .retry_session_environment_candidate_under_lifecycle(thread)
+            .retry_session_environment_candidate_under_lifecycle(peers, thread)
             .await?
         {
             return self
-                .ensure_published_environment_reconciled_under_lifecycle(thread, environment)
+                .ensure_published_environment_reconciled_under_lifecycle(peers, thread, environment)
                 .await;
         }
         if let Some(environment) = realizations
@@ -735,13 +726,14 @@ impl crate::environment_holding::EnvironmentHolding {
             .flatten()
         {
             return self
-                .ensure_published_environment_reconciled_under_lifecycle(thread, environment)
+                .ensure_published_environment_reconciled_under_lifecycle(peers, thread, environment)
                 .await;
         }
         let provider = self.projected_session_environment_provider(thread, None)?;
         if let Some(binding) = self.durable_environment_binding(thread)? {
             let disposition = self
                 .adopt_bound_session_environment_under_lifecycle(
+                    peers,
                     thread,
                     &binding,
                     provider,
@@ -761,7 +753,7 @@ impl crate::environment_holding::EnvironmentHolding {
                 )
             });
         }
-        self.create_reserved_session_environment_under_lifecycle(thread, provider)
+        self.create_reserved_session_environment_under_lifecycle(peers, thread, provider)
             .await
     }
 }

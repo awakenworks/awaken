@@ -40,7 +40,7 @@ async fn mount_projection_reads_current_resource_and_frozen_inputs_without_retai
     .await
     .build()
     .expect("validated Host dependencies");
-    let staging = host.realizer.staging.clone();
+    let staging = host.realization_executor.staging().clone();
     let thread = "mount-view";
     assert!(
         staging
@@ -88,7 +88,7 @@ async fn mount_projection_reads_current_resource_and_frozen_inputs_without_retai
     host.installed_sessions
         .replace_frozen_with(thread, |next| next.baseline = Some(baseline));
     staging
-        .sessions
+        .sessions()
         .update_realization(thread, |r| {
             r.staging.resources.mounts = vec![resource.clone(), resource_memory.clone()];
             r.staging.content_delivery = Some(ManagedContentDelivery::ManagedFilesystem);
@@ -107,7 +107,7 @@ async fn mount_projection_reads_current_resource_and_frozen_inputs_without_retai
         "M2"
     );
     staging
-        .sessions
+        .sessions()
         .update_realization(thread, |r| {
             r.staging.content_delivery = Some(ManagedContentDelivery::SemanticTools);
         })
@@ -134,7 +134,7 @@ async fn mount_projection_reads_current_resource_and_frozen_inputs_without_retai
     let replacement = mount("replacement", false);
     host.installed_sessions.install(thread);
     staging
-        .sessions
+        .sessions()
         .update_realization(thread, |r| {
             r.staging.resources.mounts = vec![replacement.clone()]
         })

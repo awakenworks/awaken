@@ -292,9 +292,8 @@ async fn run_prepared_session_messages(
 ) -> Result<awaken_session_application_contract::StepOutcome, awaken_session_types::RunError> {
     managed
         .host
-        .realizer
-        .staging
-        .validate_thread_resource_bindings(&managed.host.realizer, thread)
+        .realization_executor
+        .validate_thread_resource_bindings(thread)
         .await?;
     let result = managed
         .host
@@ -837,8 +836,8 @@ pub(crate) fn bind_test_memory(host: &SharedHost, thread: &str, store_id: &str, 
         writable,
     ));
     host.installed_sessions.install(thread);
-    host.realizer
-        .staging
+    host.realization_executor
+        .staging()
         .register_thread_memory(
             thread,
             Some(Arc::new(crate::memory_binding::MemoryBinding::new(
@@ -1405,7 +1404,8 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Bindin
         self.calls.fetch_add(1, Ordering::SeqCst);
         let host = self.host.upgrade().expect("host remains live");
         self.observed_before_publish.store(
-            host.realizer
+            host.realization_executor
+                .environments()
                 .session_environment(receipt.session_id.as_str())
                 .await
                 .expect("installed Sessions")

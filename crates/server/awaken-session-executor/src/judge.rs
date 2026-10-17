@@ -283,7 +283,8 @@ mod tests {
         assert_eq!(grade.decision, GradeDecision::NeedsRevision);
         assert_eq!(grade.explanation, "add coverage");
         assert!(
-            host.realizer
+            host.realization_executor
+                .environments()
                 .session_environment(&thread.0)
                 .await
                 .expect("installed Sessions")

@@ -88,3 +88,9 @@ pub struct CompiledEffectiveInputs {
     pub memory_bindings:
         std::collections::HashMap<String, std::sync::Arc<crate::memory_binding::MemoryBinding>>,
 }
+
+#[derive(Debug)]
+pub enum RepositoryPublicationActivationError {
+    Rejected(awaken_provisioning_contract::RepositoryPublicationRejection),
+    Failed(crate::realization_error::RealizationError),
+}

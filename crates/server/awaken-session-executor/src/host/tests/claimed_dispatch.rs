@@ -2,6 +2,7 @@
 //! Claimed snapshots, durable dispatch freezing, inference holders, and sandbox adoption.
 
 use super::*;
+use awaken_session_realization::peers::EnvironmentPeer as _;
 
 #[tokio::test]
 async fn ctx_for_carries_one_self_consistent_snapshot_on_any_claiming_node() {
@@ -70,7 +71,8 @@ async fn claimed_inference_only_grader_keeps_execution_authority_without_a_sandb
         Some(&identity)
     );
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment(thread)
             .await
             .expect("installed Sessions")
@@ -197,7 +199,8 @@ async fn background_task_fails_closed_on_a_database_less_worker() {
     );
     assert!(
         worker
-            .realizer
+            .realization_executor
+            .environments()
             .session_environment("background-worker")
             .await
             .expect("installed Sessions")
@@ -253,7 +256,8 @@ async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
     assert!(ctx.env.is_none(), "R1 Environment");
     assert!(ctx.attempt_context.tool_executor.is_none(), "R1 Hand");
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("a2a-io-only")
             .await
             .expect("installed Sessions")
@@ -275,23 +279,25 @@ async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
         .install_projection(&managed, "a2a-with-mount", projection)
         .await
         .unwrap();
-    host.realizer.staging.register_thread_resources(
-        "a2a-with-mount",
-        crate::staged_resources::StagedResources {
-            mounts: vec![awaken_provisioning_contract::MountRequirement {
-                mount_id: "input".into(),
-                source: awaken_provisioning_contract::MountSource::File {
-                    file_id: "file".into(),
-                    content_hash: None,
-                },
-                mount_path: "/workspace/input".into(),
-                access: awaken_provisioning_contract::MountAccess::ReadOnly,
-                lifetime: awaken_provisioning_contract::MountLifetime::Session,
-                required: true,
-            }],
-            ..Default::default()
-        },
-    );
+    host.realization_executor
+        .staging()
+        .register_thread_resources(
+            "a2a-with-mount",
+            crate::staged_resources::StagedResources {
+                mounts: vec![awaken_provisioning_contract::MountRequirement {
+                    mount_id: "input".into(),
+                    source: awaken_provisioning_contract::MountSource::File {
+                        file_id: "file".into(),
+                        content_hash: None,
+                    },
+                    mount_path: "/workspace/input".into(),
+                    access: awaken_provisioning_contract::MountAccess::ReadOnly,
+                    lifetime: awaken_provisioning_contract::MountLifetime::Session,
+                    required: true,
+                }],
+                ..Default::default()
+            },
+        );
     let error = match host
         .ctx_for_snapshot("a2a-with-mount", Some("remote-agent"), Some(snapshot))
         .await
@@ -301,7 +307,8 @@ async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
     };
     assert_eq!(error.kind, crate::host::HostErrorKind::BadRequest, "R2");
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("a2a-with-mount")
             .await
             .expect("installed Sessions")
@@ -560,8 +567,8 @@ async fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope
             "{rule}/E6 exact Session affinity",
         );
         assert_eq!(
-            host.realizer
-                .staging
+            host.realization_executor
+                .staging()
                 .thread_resource_manifest(&thread)
                 .expect("installed Sessions"),
             active,
@@ -1025,11 +1032,11 @@ async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
     let binding = serde_json::to_string(&handle).expect("encode durable handle");
     assert_eq!(
         replacement
-            .realizer
+            .realization_executor
             .adopt_bound_session_environment(
                 thread,
                 Some(&binding),
-                &replacement.realizer.env.session_provider,
+                &replacement.realization_executor.environments().providers().session_provider,
                 None,
                 false
             )
@@ -1086,11 +1093,11 @@ async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
 
     let resident_binding = serde_json::to_string(&resident_handle).unwrap();
     assert_eq!(
-        host.realizer
+        host.realization_executor
             .adopt_bound_session_environment(
                 "t-resident-adoption",
                 Some(&resident_binding),
-                &host.realizer.env.session_provider,
+                &host.realization_executor.environments().providers().session_provider,
                 None,
                 false
             )
@@ -1114,19 +1121,24 @@ async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
     );
 
     let foreign = host
-        .realizer
-        .env
+        .realization_executor
+        .environments()
+        .providers()
         .session_provider
-        .create(&host.realizer.sandbox_spec("t-foreign-resident"))
+        .create(&host.realization_executor.sandbox_spec("t-foreign-resident"))
         .await
         .expect("foreign sandbox");
     let foreign_binding = serde_json::to_string(&foreign.lifecycle().handle()).unwrap();
     let error = match host
-        .realizer
+        .realization_executor
         .adopt_bound_session_environment(
             "t-resident-adoption",
             Some(&foreign_binding),
-            &host.realizer.env.session_provider,
+            &host
+                .realization_executor
+                .environments()
+                .providers()
+                .session_provider,
             None,
             false,
         )
@@ -1183,26 +1195,32 @@ async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         .expect("eager environment")
         .lifecycle()
         .handle();
-    host.realizer
+    host.realization_executor
+        .environments()
         .evict_session_for_rebuild("t-retained-adoption")
         .await
         .expect("installed Sessions");
     drop(original);
 
     let foreign = host
-        .realizer
-        .env
+        .realization_executor
+        .environments()
+        .providers()
         .session_provider
-        .create(&host.realizer.sandbox_spec("t-foreign-retained"))
+        .create(&host.realization_executor.sandbox_spec("t-foreign-retained"))
         .await
         .expect("foreign sandbox");
     let foreign_binding = serde_json::to_string(&foreign.lifecycle().handle()).unwrap();
     let error = match host
-        .realizer
+        .realization_executor
         .adopt_bound_session_environment(
             "t-retained-adoption",
             Some(&foreign_binding),
-            &host.realizer.env.session_provider,
+            &host
+                .realization_executor
+                .environments()
+                .providers()
+                .session_provider,
             None,
             false,
         )
@@ -1222,11 +1240,11 @@ async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
 
     let retained_binding = serde_json::to_string(&retained_handle).unwrap();
     assert_eq!(
-        host.realizer
+        host.realization_executor
             .adopt_bound_session_environment(
                 "t-retained-adoption",
                 Some(&retained_binding),
-                &host.realizer.env.session_provider,
+                &host.realization_executor.environments().providers().session_provider,
                 None,
                 false
             )

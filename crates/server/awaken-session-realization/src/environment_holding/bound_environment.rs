@@ -10,6 +10,7 @@ use crate::environment_holding::EnvironmentHolding;
 use crate::environment_owner::{
     BoundSessionEnvironmentIdentity, RetiringEnvironmentOwner, RetiringSessionEnvironment,
     SessionEnvironmentOwner, SessionEnvironmentPreparation, SessionEnvironmentRetirementCause,
+    TerminalEnvironmentInstallation,
 };
 use crate::realization_error::{AuthorityLoss, PendingState, ProjectionConflict, RealizationError};
 use crate::session_environment::{
@@ -18,27 +19,13 @@ use crate::session_environment::{
 use awaken_session_configuration_contract::resource as session_resource;
 use std::sync::Arc;
 
-/// Borrowed inputs for one terminal Environment installation phase. The
-/// aggregate effect fence, provider spec, handle, and optional restore fence
-/// remain their canonical value objects; this context owns no lifecycle fact.
-pub struct TerminalEnvironmentInstallation<'a> {
-    pub thread: &'a str,
-    pub binding: Option<&'a str>,
-    pub committed_candidate: Option<&'a crate::environment_owner::UnboundSessionEnvironment>,
-    pub provider: &'a crate::session_environment::SessionEnvironmentProvider,
-    pub spec: &'a awaken_provisioning_contract::SandboxSpec,
-    pub handle: Option<&'a awaken_provisioning_contract::SandboxHandle>,
-    pub expected_effect_fence: Option<&'a awaken_provisioning_contract::SandboxEffectFence>,
-    pub effect_fence: &'a awaken_provisioning_contract::SandboxEffectFence,
-}
-
 impl EnvironmentHolding {
     /// Re-open one exact terminal substrate into the process-local teardown
     /// slot. This helper deliberately writes no ordinary Environment receipt:
     /// the surrounding terminal command is the sole durable effect authority.
     pub async fn install_bound_environment_under_lifecycle(
         &self,
-        cleanup: &crate::terminal_cleanup::TerminalCleanup,
+        peers: crate::peers::Peers<'_>,
         installation: TerminalEnvironmentInstallation<'_>,
         resident: Option<Arc<crate::session_environment::SessionEnvironment>>,
         mode: BoundEnvironmentPreparationMode,
@@ -57,8 +44,8 @@ impl EnvironmentHolding {
             effect_fence,
         } = installation;
         let mut adopted = resident.is_none();
-        let authority = self
-            .execution
+        let authority = peers
+            .authority
             .provider_effect_authority(thread, effect_fence)?;
         let mut environment = match resident {
             Some(environment) => environment,
@@ -227,8 +214,12 @@ impl EnvironmentHolding {
             BoundEnvironmentPreparationMode::LiveSource
             | BoundEnvironmentPreparationMode::TerminalRepositoryPublication => {
                 if adopted {
-                    let candidate =
-                        exec.begin_session_environment_adoption(thread, environment.clone(), None)?;
+                    let candidate = exec.begin_session_environment_adoption(
+                        peers,
+                        thread,
+                        environment.clone(),
+                        None,
+                    )?;
                     let crate::environment_owner::UnboundSessionEnvironmentOrigin::AdoptionFrom(
                         identity,
                     ) = &candidate.origin
@@ -258,7 +249,9 @@ impl EnvironmentHolding {
                     // live adoption cannot reopen it for tools/checkpoint work.
                     let retained_terminal = mode
                         == BoundEnvironmentPreparationMode::TerminalRepositoryPublication
-                        && cleanup.retained_preparation_owner(thread, &environment)?;
+                        && peers
+                            .effects
+                            .retained_preparation_owner(thread, &environment)?;
                     if !still_resident && !retained_terminal {
                         return Err(RealizationError::pending(
                             PendingState::LiveOwnerNotResident,
@@ -313,6 +306,7 @@ impl EnvironmentHolding {
                         // Unbound retirement owner; it gains no durable binding
                         // and can only be disposed by this terminal fence.
                         exec.begin_session_environment_preparation(
+                            peers,
                             thread,
                             environment.clone(),
                             None,
@@ -328,7 +322,9 @@ impl EnvironmentHolding {
                 } else {
                     let retained_terminal_preparation = mode
                         == BoundEnvironmentPreparationMode::TerminalDisposal
-                        && cleanup.retained_preparation_owner(thread, &environment)?;
+                        && peers
+                            .effects
+                            .retained_preparation_owner(thread, &environment)?;
                     if !retained_terminal_preparation {
                         exec.retire_exact_environment(
                             thread,
@@ -354,7 +350,7 @@ impl EnvironmentHolding {
     /// proof, terminal physical disposal, and slot publication cannot drift.
     pub async fn prepare_bound_environment_for_effect_under_lifecycle(
         &self,
-        cleanup: &crate::terminal_cleanup::TerminalCleanup,
+        peers: crate::peers::Peers<'_>,
         thread: &str,
         binding: &str,
         effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
@@ -385,6 +381,7 @@ impl EnvironmentHolding {
         }
         let provider = self.projected_session_environment_provider(thread, None)?;
         let (handle, spec, resident, candidate) = exec.validated_session_environment_adoption(
+            peers,
             thread,
             binding,
             provider,
@@ -497,7 +494,7 @@ impl EnvironmentHolding {
                     } else {
                         let retained_terminal_preparation = mode
                             == BoundEnvironmentPreparationMode::TerminalDisposal
-                            && cleanup.retained_preparation_owner(thread, &environment)?;
+                            && peers.effects.retained_preparation_owner(thread, &environment)?;
                         if !retained_terminal_preparation {
                             exec.retire_exact_environment(thread, cause, &environment, AuthorityLoss::EffectFenceLost, "lost the exact unavailable Environment owner")?;
                         }
@@ -553,7 +550,7 @@ impl EnvironmentHolding {
         };
         let environment = self
             .install_bound_environment_under_lifecycle(
-                cleanup,
+                peers,
                 TerminalEnvironmentInstallation {
                     thread,
                     binding: Some(binding),
