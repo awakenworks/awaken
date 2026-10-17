@@ -360,7 +360,8 @@ async fn completed_terminal_projection_not_found_cancels_its_original_real_run()
                     ),
                 },
             );
-        });
+        })
+        .expect("installed session");
     let control = RemoteTerminalCleanupControl::default();
     control
         .terminal_work_not_found

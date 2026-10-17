@@ -90,3 +90,118 @@ pub fn map_session_realization_drive_error(
     };
     claim_outcome(disposition, message)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_provisioning_contract::SandboxError;
+    use awaken_session_realization::realization_error::{
+        AuthorityLoss, PendingState, ProjectionConflict, RealizationError, RealizationLock,
+    };
+
+    /// One table row: rule, the failure it builds, and the expected outcome.
+    type Row = (&'static str, fn() -> RealizationError, &'static str);
+
+    fn outcome(error: &crate::Error) -> &'static str {
+        match error {
+            crate::Error::ResolutionNotReady(_) => "defer",
+            crate::Error::Execution(_) => "relinquish",
+            crate::Error::TerminalResolution(_) => "absorb",
+            other => panic!("unexpected claim outcome {other:?}"),
+        }
+    }
+
+    #[test]
+    fn one_realization_failure_reaches_one_outcome_on_every_path() {
+        // Decision table: cause = the realization failure class; paths = P1
+        // the claim resolver (RealizationError -> AdmissionError -> claim),
+        // P2 the projection synchronizer (its one Run projection) and P3 the
+        // realization driver (the synchronizer's Run error as a drive error).
+        // Effect: the claim outcome, identical on all three paths.
+        // | Class                                   | outcome    |
+        // | transient provider / authority / pending / poisoned / stale Run | relinquish |
+        // | provider capacity                       | defer      |
+        // | permanent provider / projection conflict / invariant / invalid | absorb |
+        let rows: [Row; 10] = [
+            (
+                "transient provider",
+                || SandboxError::timeout("t").into(),
+                "relinquish",
+            ),
+            (
+                "capacity",
+                || SandboxError::capacity_unavailable("q").into(),
+                "defer",
+            ),
+            (
+                "permanent provider",
+                || SandboxError::unauthorized("u").into(),
+                "absorb",
+            ),
+            (
+                "authority lost",
+                || RealizationError::authority_lost(AuthorityLoss::ClaimStale, "stale claim"),
+                "relinquish",
+            ),
+            (
+                "pending",
+                || RealizationError::pending(PendingState::TerminalHandNotQuiescent, "busy"),
+                "relinquish",
+            ),
+            (
+                "projection conflict",
+                || {
+                    RealizationError::conflict(
+                        ProjectionConflict::PublicationConflict,
+                        "foreign publication",
+                    )
+                },
+                "absorb",
+            ),
+            (
+                "invariant",
+                || RealizationError::invariant("broken"),
+                "absorb",
+            ),
+            (
+                "invalid request",
+                || RealizationError::invalid_request("bad"),
+                "absorb",
+            ),
+            (
+                "poisoned registry",
+                || RealizationError::Poisoned(RealizationLock::InstalledSessions),
+                "relinquish",
+            ),
+            (
+                "stale Run lease",
+                || {
+                    awaken_session_types::RunError::unavailable_classified(
+                        "session_realization_stale",
+                        "stale",
+                    )
+                    .into()
+                },
+                "relinquish",
+            ),
+        ];
+        for (rule, failure, expected) in rows {
+            let claim = map_admission_error(failure());
+            let synchronizer = awaken_session_types::RunError::from(failure());
+            let driver = map_session_realization_drive_error(
+                awaken_session_realization_contract::SessionRealizationDriveError::Effect(
+                    awaken_session_types::RunError::from(failure()),
+                ),
+            );
+            assert_eq!(outcome(&claim), expected, "{rule} P1 claim");
+            assert_eq!(
+                session_realization_worker_effect(
+                    awaken_session_realization_contract::effect_failure_disposition(&synchronizer)
+                ),
+                session_realization_worker_effect(failure().disposition().contract_class()),
+                "{rule} P2 synchronizer"
+            );
+            assert_eq!(outcome(&driver), expected, "{rule} P3 driver");
+        }
+    }
+}
