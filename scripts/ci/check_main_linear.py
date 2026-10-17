@@ -9,7 +9,8 @@ history rewrite sets AWAKEN_ALLOW_MAIN_REWRITE=1 for that one command.
 Decision table (--self-test):
 | Rule | update of refs/heads/main              | result  |
 | L1   | another ref                            | ignored |
-| L2   | creation (old is zero)                 | allowed |
+| L2   | creation (old is zero, main absent)    | allowed |
+| L10  | old not stated (zero) while main exists| judged against main's current value |
 | L3   | deletion (new is zero)                 | refused |
 | L4   | new does not descend from old          | refused |
 | L5   | fast-forward adding a merge commit     | refused |
@@ -41,14 +42,25 @@ def merges_between(old: str, new: str) -> list[str]:
     return git("rev-list", "--merges", f"{old}..{new}").stdout.split()
 
 
+def current_main() -> str:
+    """The value main holds while the transaction is prepared (or zero if absent)."""
+    out = git("rev-parse", "--verify", "--quiet", MAIN).stdout.strip()
+    return out or ZERO
+
+
 def violations(lines: list[str], ancestor: Callable[[str, str], bool],
-               merges: Callable[[str, str], list[str]]) -> list[str]:
+               merges: Callable[[str, str], list[str]], current: Callable[[], str]) -> list[str]:
     found = []
     for line in lines:
         parts = line.split()
         if len(parts) != 3 or parts[2] != MAIN:
             continue
         old, new, _ = parts
+        if old == ZERO:
+            # A caller that does not state the expected old value (`update-ref main X`,
+            # `branch -f`) is reported with a zero old value; judge it against the value
+            # main still holds while the transaction is prepared.
+            old = current()
         if old == ZERO:
             continue
         if new == ZERO:
@@ -73,7 +85,7 @@ def main(argv: list[str]) -> int:
         return 0
     if argv[1] != "prepared":
         return 0
-    errors = violations(sys.stdin.read().splitlines(), is_ancestor, merges_between)
+    errors = violations(sys.stdin.read().splitlines(), is_ancestor, merges_between, current_main)
     if errors and os.environ.get("AWAKEN_ALLOW_MAIN_REWRITE") != "1":
         for error in errors:
             print(f"ERROR: {error} (deliberate rewrite: AWAKEN_ALLOW_MAIN_REWRITE=1)", file=sys.stderr)
@@ -86,12 +98,16 @@ def self_test() -> None:
     anc = {(a, b), (a, c)}
     ancestor = lambda o, n: (o, n) in anc
     merges = lambda o, n: ["m" * 40] if n == c else []
-    assert violations([f"{a} {b} refs/heads/feature"], ancestor, merges) == [], "L1"
-    assert violations([f"{ZERO} {b} {MAIN}"], ancestor, merges) == [], "L2"
-    assert "deleted" in violations([f"{a} {ZERO} {MAIN}"], ancestor, merges)[0], "L3"
-    assert "fast-forward" in violations([f"{b} {a} {MAIN}"], ancestor, merges)[0], "L4"
-    assert "merge commit" in violations([f"{a} {c} {MAIN}"], ancestor, merges)[0], "L5"
-    assert violations([f"{a} {b} {MAIN}"], ancestor, merges) == [], "L6"
+    absent = lambda: ZERO
+    assert violations([f"{a} {b} refs/heads/feature"], ancestor, merges, absent) == [], "L1"
+    assert violations([f"{ZERO} {b} {MAIN}"], ancestor, merges, absent) == [], "L2"
+    assert "deleted" in violations([f"{a} {ZERO} {MAIN}"], ancestor, merges, absent)[0], "L3"
+    assert "fast-forward" in violations([f"{b} {a} {MAIN}"], ancestor, merges, absent)[0], "L4"
+    assert "merge commit" in violations([f"{a} {c} {MAIN}"], ancestor, merges, absent)[0], "L5"
+    assert violations([f"{a} {b} {MAIN}"], ancestor, merges, absent) == [], "L6"
+    assert "fast-forward" in violations([f"{ZERO} {a} {MAIN}"], ancestor, merges, lambda: b)[0], \
+        "L10 an unstated old value is judged against main's current value"
+    assert violations([f"{ZERO} {b} {MAIN}"], ancestor, merges, lambda: a) == [], "L10 forward from current"
     os.environ["AWAKEN_ALLOW_MAIN_REWRITE"] = "1"
     try:
         assert main(["x", "committed"]) == 0, "L8"
