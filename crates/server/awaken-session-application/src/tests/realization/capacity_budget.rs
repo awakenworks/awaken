@@ -50,17 +50,16 @@ async fn capacity_failures_keep_preparing_without_consuming_the_durable_budget()
             .lease
         }
     };
-    let failure = |lease, retryable, capacity_unavailable| {
-        awaken_session_realization_contract::FailSessionRealization {
+    let failure =
+        |lease, retryable, not_ready| awaken_session_realization_contract::FailSessionRealization {
             session_id: "capacity-budget".into(),
             lease,
             prepared_resource_revision: None,
             retryable,
-            capacity_unavailable,
+            not_ready,
             source_run_id: None,
             reason: "exceeded quota: compute".into(),
-        }
-    };
+        };
 
     for round in 1..=5 {
         let lease = begin(round).await;

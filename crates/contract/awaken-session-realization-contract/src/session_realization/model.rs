@@ -458,11 +458,17 @@ pub struct FailSessionRealization {
     /// enter the existing terminal failure path.
     #[serde(default)]
     pub retryable: bool,
-    /// The retryable failure was the environment backend having no room
-    /// (ADR-0092): the realization produced no environment and consumes no
-    /// attempt of the persisted budget. Absent on the wire means `false`.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub capacity_unavailable: bool,
+    /// The retryable report is no failure but a request-local "not yet": the
+    /// environment backend had no room (ADR-0092), or the provider is still
+    /// provisioning within its own deadline (ADR-0015). It consumes no attempt
+    /// of the persisted budget. The wire keeps the historical member name;
+    /// absent means `false`.
+    #[serde(
+        rename = "capacity_unavailable",
+        default,
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub not_ready: bool,
     /// Exact claimed Run that drove the failed effect, when one exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_run_id: Option<awaken_agent_contract::agent::run::Id>,
