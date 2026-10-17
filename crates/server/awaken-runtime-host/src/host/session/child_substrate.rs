@@ -214,6 +214,7 @@ mod tests {
             .expect("claim S1")
             .expect("S1 available");
         crate::host::session_worker_resolver(&host)
+            .expect("Host dispatch resolver")
             .worker_for_claimed(&claimed)
             .await
             .expect("S1/E1 child resolve");

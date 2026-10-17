@@ -86,27 +86,12 @@ impl ManagedHost {
 
     /// Publish only execution-preparation effects that are not already part of
     /// the complete frozen projection.
-    pub(super) fn complete_session_preparation(
-        &self,
-        thread: &str,
-        environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
-    ) {
+    pub(super) fn complete_session_preparation(&self, thread: &str) {
         self.host.installed_sessions.update_run(thread, |run| {
             run.context = None;
             run.session_dispatch = true;
         });
-        if environment.sandbox_provisioning
-            == awaken_session_configuration_contract::SandboxProvisioning::OnToolUse
-        {
-            let executor: Arc<dyn awaken_tool_contract::tool::ToolExecutor> =
-                Arc::new(crate::lazy_sandbox::DeferredSandboxExecutor::new(
-                    Arc::downgrade(&self.host),
-                    thread,
-                ));
-            self.host
-                .installed_sessions
-                .update_run(thread, |run| run.deferred_executor = Some(executor));
-        }
+        crate::lazy_sandbox::bind_deferred_executor(&self.host, thread);
     }
 
     /// Install all immutable facts selected by one typed mode through the sole
@@ -171,7 +156,7 @@ impl ManagedHost {
                 None,
             )
             .await?;
-        self.complete_session_preparation(thread, &init.environment);
+        self.complete_session_preparation(thread);
         Ok(())
     }
 }

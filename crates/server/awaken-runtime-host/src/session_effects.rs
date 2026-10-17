@@ -118,6 +118,7 @@ impl awaken_session_runtime_contract::McpAttachmentRealizer for SessionEffects {
 
 /// Ordinary Run compatibility effects borrow the same configured MCP owner.
 /// Only this role selects the SDK's Direct admission; it never installs a root.
+#[derive(Clone)]
 pub(crate) struct RunMcpEffects {
     pub(super) host: Weak<SharedHost>,
 }

@@ -28,7 +28,7 @@ pub(crate) struct DispatchCapability {
     /// The coordinator-only maintenance loop and its terminal scan
     /// (`host::dispatch_reconciliation`).
     pub(crate) terminal_reconciliation:
-        awaken_dispatch_execution::session_reconciliation::TerminalReconciliationState,
+        Arc<awaken_dispatch_execution::session_reconciliation::TerminalReconciliationState>,
 }
 
 impl DispatchCapability {
@@ -141,7 +141,9 @@ impl SharedHost {
             return Ok(());
         };
         let resolver: Arc<dyn WorkerResolver<AnyDispatchStore>> =
-            Arc::new(crate::host::session_worker_resolver(self));
+            Arc::new(crate::host::session_worker_resolver(self).map_err(|error| {
+                awaken_dispatch_execution::session_execution::execution_error(error.message)
+            })?);
         let config = self.dispatch.execution.dispatch_service_config();
         let concurrency = sizing.slots().get();
         // On the Postgres backend with a typed PgNotify or NATS wake selection,
@@ -256,8 +258,11 @@ impl SharedHost {
         let Some(store) = self.optional_dispatch_store() else {
             return false;
         };
+        let Ok(resolver) = crate::host::session_worker_resolver(self) else {
+            return false;
+        };
         let resolver: Arc<dyn awaken_dispatch_execution::WorkerResolver<AnyDispatchStore>> =
-            Arc::new(crate::host::session_worker_resolver(self));
+            Arc::new(resolver);
         let wake = self
             .authority
             .dispatch_wake()

@@ -12,6 +12,32 @@ pub(crate) struct DeferredSandboxExecutor {
     thread: String,
 }
 
+/// Bind the deferred Sandbox executor an on-tool-use Environment needs: the
+/// one installation, for a co-located Session preparation and a Worker's
+/// claimed resolve alike. An installed executor is kept.
+pub(crate) fn bind_deferred_executor(host: &Arc<crate::SharedHost>, thread: &str) {
+    let needed = host
+        .installed_sessions
+        .read(thread, |slot| {
+            slot.run.deferred_executor.is_none()
+                && slot
+                    .inputs
+                    .environment_projection
+                    .as_ref()
+                    .is_some_and(|env| {
+                        env.provisioning
+                            == awaken_session_configuration_contract::SandboxProvisioning::OnToolUse
+                    })
+        })
+        .unwrap_or(false);
+    if needed {
+        let executor: Arc<dyn awaken_tool_contract::tool::ToolExecutor> =
+            Arc::new(DeferredSandboxExecutor::new(Arc::downgrade(host), thread));
+        host.installed_sessions
+            .update_run(thread, |run| run.deferred_executor = Some(executor));
+    }
+}
+
 impl DeferredSandboxExecutor {
     pub(crate) fn new(host: Weak<crate::SharedHost>, thread: impl Into<String>) -> Self {
         Self {

@@ -12,7 +12,6 @@ layer = "infrastructure"
 authority = "dispatch-execution"
 
 [dependencies]
-awaken-session-realization.workspace = true
 awaken-session-realization-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
 awaken-session-types.workspace = true
