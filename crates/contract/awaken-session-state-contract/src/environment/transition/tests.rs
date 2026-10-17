@@ -192,7 +192,7 @@ fn t1_every_step_and_event_under_ready_facts() {
             admit(K::Rebuild, true),
             [
                 No(X::RequiresResident),
-                Stay,
+                No(X::MaterializationPending),
                 CONT,
                 CONT,
                 CONT,

@@ -2307,3 +2307,138 @@ async fn terminal_cleanup_delegates_checkpoint_to_the_one_runtime_effect() {
             .is_completed()
     );
 }
+
+// The continuation orchestrates only what the Session aggregate decides. Rows
+// adopted from the Environment transition table that change behaviour:
+//
+// | Rule | committed step | cause | effect |
+// | O1 | ReadyToDispose without its checkpoint | inconsistent evidence | refused (was: silently "no work"); zero effects; root unchanged |
+// | O2 | Uploading whose operation lease the root superseded | stale lease | refused before the checkpoint effect (was: effect attempted) |
+// | O3 | Restoring whose operation lease the root superseded | stale lease | refused before the restore effect (was: effect attempted) |
+#[tokio::test]
+async fn continuation_refuses_inconsistent_evidence_and_superseded_operation_leases() {
+    let superseded = crate::session_resource::SessionRealizationLease {
+        owner: "continuation-worker-a".into(),
+        runtime_incarnation: "continuation-runtime-a".into(),
+        epoch: 3,
+        expires_at_unix_ms: u64::MAX,
+    };
+    let uploading = |id: &str, lease: Option<crate::session_resource::SessionRealizationLease>| {
+        let mut session = generated_session(id);
+        let operation = session
+            .environment
+            .begin_suspend_at(
+                "workspace",
+                &awaken_session_types::SessionId::from(id),
+                0,
+                lease,
+                2_000,
+            )
+            .unwrap()
+            .clone();
+        let generation_id = session.environment.generation().unwrap().id().to_owned();
+        session
+            .environment
+            .record_quiescence(
+                &awaken_session_state_contract::QuiescenceReceipt {
+                    effect_id: operation.effect_id,
+                    generation_id,
+                    activity_epoch: 0,
+                    live_environment_effects: 0,
+                    mcp_generations: Vec::new(),
+                },
+                &[],
+            )
+            .unwrap();
+        session
+    };
+
+    // O1
+    let mut inconsistent = uploading("inconsistent-evidence", None);
+    let realization = inconsistent.realization.clone();
+    if let awaken_session_state_contract::SessionEnvironmentState::Suspending {
+        suspend_phase,
+        operation,
+        ..
+    } = &mut inconsistent.environment
+    {
+        *suspend_phase = awaken_session_state_contract::SuspendPhase::ReadyToDispose;
+        operation.realization = realization;
+    }
+    // O2
+    let stale_upload = uploading("stale-upload", Some(superseded.clone()));
+    // O3
+    let mut stale_restore = hibernated_session("stale-restore", 100_000);
+    stale_restore
+        .environment
+        .begin_restore(
+            "workspace",
+            &awaken_session_types::SessionId::from("stale-restore"),
+            1,
+            Some(superseded),
+            1_000,
+        )
+        .unwrap();
+
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
+    for session in [
+        inconsistent.clone(),
+        stale_upload.clone(),
+        stale_restore.clone(),
+    ] {
+        create(repo.as_ref(), session).await;
+    }
+    let runtime = Arc::new(ContinuationRuntime::default());
+    let app = application_with_runtime(
+        runtime.clone(),
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+
+    for (rule, id, before) in [
+        ("O1", "inconsistent-evidence", &inconsistent),
+        ("O2", "stale-upload", &stale_upload),
+    ] {
+        assert!(
+            app.reconcile_environment_continuation(&SessionId::from(id), 2_000)
+                .await
+                .is_err(),
+            "{rule} refused"
+        );
+        assert_eq!(
+            repo.get(&SessionId::from(id)).await.unwrap().environment,
+            before.environment,
+            "{rule} root unchanged"
+        );
+    }
+    assert!(
+        app.ensure_environment_resident(&SessionId::from("stale-restore"), 1_000)
+            .await
+            .is_err(),
+        "O3 refused"
+    );
+    assert_eq!(
+        repo.get(&SessionId::from("stale-restore"))
+            .await
+            .unwrap()
+            .environment,
+        stale_restore.environment,
+        "O3 root unchanged"
+    );
+    assert_eq!(
+        runtime.checkpoints.load(Ordering::SeqCst),
+        0,
+        "O2 no effect"
+    );
+    assert_eq!(
+        runtime.preparations.load(Ordering::SeqCst),
+        0,
+        "O1 no effect"
+    );
+    assert_eq!(runtime.disposals.load(Ordering::SeqCst), 0, "O1 no effect");
+    assert_eq!(runtime.restores.load(Ordering::SeqCst), 0, "O3 no effect");
+}

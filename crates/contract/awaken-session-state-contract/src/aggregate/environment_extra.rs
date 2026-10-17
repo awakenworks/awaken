@@ -9,24 +9,20 @@ use super::{
 
 impl SessionEnvironmentOperations<'_> {
     /// Discard only an expired retained checkpoint after its external deletion
-    /// succeeded. The subsequent root CAS fences a concurrent newer generation.
+    /// succeeded: the decision admits the deletion receipt only for an active
+    /// Hibernated Environment whose checkpoint or generation expired. The
+    /// subsequent root CAS fences a concurrent newer generation.
     pub fn discard_expired_checkpoint(
         &mut self,
         now: u64,
     ) -> Result<bool, SessionEnvironmentTransitionError> {
-        match &self.aggregate.state.environment {
-            SessionEnvironmentState::Hibernated {
-                checkpoint,
-                generation,
-            } if checkpoint.expired_at(now) || generation.expired_at(now) => {
-                self.aggregate.state.environment = SessionEnvironmentState::Unmaterialized;
-                Ok(true)
-            }
-            SessionEnvironmentState::Hibernated { .. } => {
-                Err(SessionEnvironmentTransitionError::WrongPhase)
-            }
-            _ => Err(SessionEnvironmentTransitionError::NotHibernated),
-        }
+        // The only admitted edge is Hibernated to Unmaterialized.
+        crate::transition_environment(
+            crate::SessionEnvironmentFacts::project(&self.aggregate.state, now, None),
+            crate::SessionEnvironmentEvent::ExpiredCheckpointDeleted,
+        )?;
+        self.aggregate.state.environment = SessionEnvironmentState::Unmaterialized;
+        Ok(true)
     }
 
     /// Derive a missing binding generation from this root's immutable baseline,

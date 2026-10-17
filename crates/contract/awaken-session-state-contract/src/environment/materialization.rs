@@ -7,6 +7,7 @@
 
 use super::{
     SessionEnvironmentEffectIntent, SessionEnvironmentEffectKind, SessionEnvironmentReceiptError,
+    SessionEnvironmentRejection,
 };
 use crate::{PersistedSession, SessionMutationValidationError};
 
@@ -133,7 +134,9 @@ impl SessionEnvironmentMaterialization {
                 | SessionEnvironmentEffectKind::ResourceProjectionReservation { .. }
         ) && (self.origin.is_none() || self.pending.is_some())
         {
-            return Err(SessionEnvironmentReceiptError::MaterializationPending);
+            return Err(SessionEnvironmentReceiptError::Rejected(
+                SessionEnvironmentRejection::MaterializationPending,
+            ));
         }
         Ok(())
     }
@@ -145,11 +148,15 @@ impl SessionEnvironmentMaterialization {
         match intent.kind() {
             SessionEnvironmentEffectKind::Create => {
                 if self.pending().or_else(|| self.origin()) != Some(intent) {
-                    return Err(SessionEnvironmentReceiptError::InvalidTransition);
+                    return Err(SessionEnvironmentReceiptError::Rejected(
+                        SessionEnvironmentRejection::InvalidTransition,
+                    ));
                 }
             }
             SessionEnvironmentEffectKind::Rebuild { .. } => {
-                return Err(SessionEnvironmentReceiptError::MaterializationPending);
+                return Err(SessionEnvironmentReceiptError::Rejected(
+                    SessionEnvironmentRejection::MaterializationPending,
+                ));
             }
             SessionEnvironmentEffectKind::Adopt
             | SessionEnvironmentEffectKind::ResourceProjectionReservation { .. } => {}

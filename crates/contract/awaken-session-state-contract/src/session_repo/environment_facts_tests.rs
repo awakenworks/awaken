@@ -478,3 +478,163 @@ fn continuation_facts_assert_the_lease_the_next_effect_presents() {
         );
     }
 }
+
+#[test]
+fn aggregate_laws_apply_only_what_the_environment_decision_admits() {
+    // Every aggregate wrapper decides before its data law, so the decision's
+    // terminality and evidence rules hold on each path and a refusal leaves
+    // the candidate unchanged.
+    // W1-W4 a terminal Session refuses the quiescence, checkpoint, source
+    // release and restore observations (they used to apply on terminal roots);
+    // W5 it refuses the expired-checkpoint deletion; W6 an active expired
+    // Hibernated retires to Unmaterialized; W7 a live checkpoint is refused;
+    // W8 a restore intent over an expired checkpoint is CheckpointExpired;
+    // W9 a terminal Session refuses the suspend intent; W10 Uploading that
+    // already holds a checkpoint refuses its checkpoint as inconsistent.
+    use crate::SessionEnvironmentTransitionError as Error;
+    let operation = SessionEnvironmentOperation {
+        effect_id: "suspend".into(),
+        activity_epoch: 1,
+        started_at_unix_ms: 1,
+        realization: None,
+    };
+    let suspending = |phase, checkpointed: bool| SessionEnvironmentState::Suspending {
+        operation: operation.clone(),
+        source_effect_id: Box::new("create".into()),
+        source_binding: "binding".into(),
+        generation: generation(u64::MAX),
+        suspend_phase: phase,
+        checkpoint: checkpointed.then(|| checkpoint(u64::MAX)),
+        source_release_preparation: None,
+    };
+    let aggregate = |environment, terminal: bool| {
+        let mut session = root(Some(checkpoint_and_release()));
+        session.environment = environment;
+        if terminal {
+            session.archive("2026-10-17T00:00:00Z", 0).unwrap();
+        }
+        crate::SessionAggregate::try_from(session).unwrap()
+    };
+    let terminal = Err(Error::Rejected(SessionEnvironmentRejection::Terminal));
+    let quiesced = crate::QuiescenceReceipt {
+        effect_id: "suspend".into(),
+        generation_id: generation(u64::MAX).id().to_owned(),
+        activity_epoch: 1,
+        live_environment_effects: 0,
+        mcp_generations: Vec::new(),
+    };
+    let checkpointed = crate::CheckpointReceipt {
+        effect_id: "suspend".into(),
+        generation_id: generation(u64::MAX).id().to_owned(),
+        checkpoint: checkpoint(u64::MAX),
+    };
+    let released = crate::SourceDisposedReceipt {
+        effect_id: "suspend".into(),
+        generation_id: generation(u64::MAX).id().to_owned(),
+        source_binding: "binding".into(),
+        terminated: true,
+    };
+    let restored = crate::RestoreReceipt {
+        effect_id: "restore".into(),
+        generation_id: generation(u64::MAX).id().to_owned(),
+        checkpoint_id: "checkpoint".into(),
+        binding: "restored".into(),
+    };
+
+    let mut root_ = aggregate(suspending(SuspendPhase::Quiescing, false), true);
+    let before = root_.clone();
+    assert_eq!(
+        root_.environment().record_quiescence(&quiesced, &[], NOW),
+        terminal,
+        "W1"
+    );
+    assert_eq!(root_, before, "W1 unchanged");
+    let mut root_ = aggregate(suspending(SuspendPhase::Uploading, false), true);
+    assert_eq!(
+        root_.environment().record_checkpoint(&checkpointed, NOW),
+        terminal,
+        "W2"
+    );
+    let mut root_ = aggregate(suspending(SuspendPhase::Disposing, true), true);
+    assert_eq!(
+        root_.environment().complete_suspend(&released, NOW),
+        terminal,
+        "W3"
+    );
+    let restoring = SessionEnvironmentState::Restoring {
+        operation: SessionEnvironmentOperation {
+            effect_id: "restore".into(),
+            ..operation.clone()
+        },
+        checkpoint: checkpoint(u64::MAX),
+        generation: generation(u64::MAX),
+    };
+    let mut root_ = aggregate(restoring, true);
+    assert_eq!(
+        root_.environment().complete_restore(&restored, NOW),
+        terminal,
+        "W4"
+    );
+
+    let expired = || SessionEnvironmentState::Hibernated {
+        checkpoint: checkpoint(NOW),
+        generation: generation(u64::MAX),
+    };
+    let mut root_ = aggregate(expired(), true);
+    assert_eq!(
+        root_.environment().discard_expired_checkpoint(NOW),
+        terminal,
+        "W5"
+    );
+    let mut root_ = aggregate(expired(), false);
+    assert_eq!(
+        root_.environment().discard_expired_checkpoint(NOW),
+        Ok(true),
+        "W6"
+    );
+    assert_eq!(
+        root_.environment.step(),
+        SessionEnvironmentStep::Unmaterialized,
+        "W6"
+    );
+    let mut root_ = aggregate(
+        SessionEnvironmentState::Hibernated {
+            checkpoint: checkpoint(u64::MAX),
+            generation: generation(u64::MAX),
+        },
+        false,
+    );
+    assert_eq!(
+        root_.environment().discard_expired_checkpoint(NOW),
+        Err(Error::Rejected(SessionEnvironmentRejection::CheckpointLive)),
+        "W7"
+    );
+    let mut root_ = aggregate(expired(), false);
+    assert_eq!(
+        root_
+            .environment()
+            .begin_restore("workspace", NOW)
+            .map(|_| ()),
+        Err(Error::CheckpointExpired),
+        "W8"
+    );
+    let mut root_ = aggregate(resident(Some(NOW - 10_000), true), true);
+    assert_eq!(
+        root_
+            .environment()
+            .begin_suspend_at("workspace", NOW)
+            .map(|_| ()),
+        Err(Error::Rejected(SessionEnvironmentRejection::Terminal)),
+        "W9"
+    );
+    let mut root_ = aggregate(suspending(SuspendPhase::Uploading, true), false);
+    let before = root_.clone();
+    assert_eq!(
+        root_.environment().record_checkpoint(&checkpointed, NOW),
+        Err(Error::Rejected(
+            SessionEnvironmentRejection::InconsistentEvidence
+        )),
+        "W10"
+    );
+    assert_eq!(root_, before, "W10 unchanged");
+}

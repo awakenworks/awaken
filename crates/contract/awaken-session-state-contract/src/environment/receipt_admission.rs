@@ -10,18 +10,15 @@
 //! exact classification of rejected receipt evidence and the provider-neutral
 //! monotonic reservation check reused by those transitions.
 
+use super::SessionEnvironmentRejection;
+
+/// A refused suspend/restore law. The step refusal is the Environment
+/// decision's [`SessionEnvironmentRejection`], carried unchanged; the other
+/// variants are evidence only the exact data law can judge.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SessionEnvironmentTransitionError {
-    #[error("Session environment is not a generated resident environment")]
-    NotResident,
-    #[error("Session environment is not suspending")]
-    NotSuspending,
-    #[error("Session environment is not hibernated")]
-    NotHibernated,
-    #[error("Session environment is not restoring")]
-    NotRestoring,
-    #[error("Session environment operation is in the wrong phase")]
-    WrongPhase,
+    #[error(transparent)]
+    Rejected(#[from] SessionEnvironmentRejection),
     #[error("Session environment receipt does not match its exact effect")]
     ReceiptMismatch,
     #[error("Session environment checkpoint is expired")]
@@ -30,20 +27,20 @@ pub enum SessionEnvironmentTransitionError {
     InvalidCheckpointPolicy(&'static str),
 }
 
+/// A refused Environment intent or receipt. The step refusal is the
+/// Environment decision's [`SessionEnvironmentRejection`]; a lost lease keeps
+/// its one name, `RealizationStale`, which the realization boundary reads as
+/// lost authority. The other variants are exact-evidence refusals.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SessionEnvironmentReceiptError {
+    #[error(transparent)]
+    Rejected(SessionEnvironmentRejection),
     #[error("Session environment receipt does not match its exact effect")]
     Mismatch,
     #[error("Session environment receipt targets another frozen Environment")]
     EnvironmentMismatch,
     #[error("Session environment effect was fenced by another realization owner")]
     RealizationStale,
-    #[error("Session environment receipt is not valid in the current lifecycle phase")]
-    WrongPhase,
-    #[error("Session environment receipt requires a resident source binding")]
-    RequiresResident,
-    #[error("Session environment receipt does not prove an allowed state transition")]
-    InvalidTransition,
     #[error("Session environment Resource reservation does not monotonically extend one substrate")]
     InvalidReservation,
     #[error(
@@ -52,8 +49,15 @@ pub enum SessionEnvironmentReceiptError {
     ResourceTransitionMismatch,
     #[error("Session original materialization history is unknown")]
     MaterializationUnknown,
-    #[error("Session materialization remains pending its exact original effect and source closure")]
-    MaterializationPending,
+}
+
+impl From<SessionEnvironmentRejection> for SessionEnvironmentReceiptError {
+    fn from(rejection: SessionEnvironmentRejection) -> Self {
+        match rejection {
+            SessionEnvironmentRejection::LeaseNotCurrent => Self::RealizationStale,
+            rejection => Self::Rejected(rejection),
+        }
+    }
 }
 
 /// Closed disposition for an Environment intent/receipt rejected by current
@@ -65,20 +69,45 @@ pub enum SessionEnvironmentReceiptRecoveryAction {
     Reject,
 }
 
+impl SessionEnvironmentRejection {
+    /// Whether the refused event may succeed once the Session moves on: a
+    /// lifecycle, lease or materialization that may still change retries;
+    /// a causal refusal is final for the same evidence.
+    #[must_use]
+    pub const fn recovery_action(self) -> SessionEnvironmentReceiptRecoveryAction {
+        match self {
+            Self::Terminal
+            | Self::NotTerminal
+            | Self::ContinuationInProgress
+            | Self::ActivitiesOpen
+            | Self::WrongStep
+            | Self::LeaseNotCurrent
+            | Self::CheckpointLive
+            | Self::MaterializationPending
+            | Self::MemoryEvidenceUnproven => SessionEnvironmentReceiptRecoveryAction::Retry,
+            Self::NotGenerated
+            | Self::RequiresResident
+            | Self::InvalidTransition
+            | Self::GenerationExpired
+            | Self::InconsistentEvidence
+            | Self::UnsupportedContinuationTopology => {
+                SessionEnvironmentReceiptRecoveryAction::Reject
+            }
+        }
+    }
+}
+
 impl SessionEnvironmentReceiptError {
     #[must_use]
     pub const fn recovery_action(&self) -> SessionEnvironmentReceiptRecoveryAction {
         match self {
+            Self::Rejected(rejection) => rejection.recovery_action(),
             Self::RealizationStale
-            | Self::WrongPhase
             | Self::ResourceTransitionMismatch
-            | Self::MaterializationUnknown
-            | Self::MaterializationPending => SessionEnvironmentReceiptRecoveryAction::Retry,
-            Self::Mismatch
-            | Self::EnvironmentMismatch
-            | Self::RequiresResident
-            | Self::InvalidTransition
-            | Self::InvalidReservation => SessionEnvironmentReceiptRecoveryAction::Reject,
+            | Self::MaterializationUnknown => SessionEnvironmentReceiptRecoveryAction::Retry,
+            Self::Mismatch | Self::EnvironmentMismatch | Self::InvalidReservation => {
+                SessionEnvironmentReceiptRecoveryAction::Reject
+            }
         }
     }
 }

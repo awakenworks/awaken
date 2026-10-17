@@ -992,7 +992,9 @@ impl PersistedSession {
         operation: &crate::SessionEnvironmentOperation,
     ) -> Result<(), crate::SessionEnvironmentReceiptError> {
         if self.is_terminal() {
-            return Err(crate::SessionEnvironmentReceiptError::WrongPhase);
+            return Err(crate::SessionEnvironmentReceiptError::Rejected(
+                crate::SessionEnvironmentRejection::Terminal,
+            ));
         }
         let crate::SessionEnvironmentState::Suspending {
             operation: current_operation,
@@ -1001,7 +1003,9 @@ impl PersistedSession {
             ..
         } = &self.environment
         else {
-            return Err(crate::SessionEnvironmentReceiptError::WrongPhase);
+            return Err(crate::SessionEnvironmentReceiptError::Rejected(
+                crate::SessionEnvironmentRejection::WrongStep,
+            ));
         };
         if current_operation != operation {
             return Err(crate::SessionEnvironmentReceiptError::Mismatch);
@@ -1024,7 +1028,9 @@ impl PersistedSession {
         &self,
     ) -> Result<crate::SourceReleasePreparationEffect, crate::SessionEnvironmentReceiptError> {
         if self.is_terminal() {
-            return Err(crate::SessionEnvironmentReceiptError::WrongPhase);
+            return Err(crate::SessionEnvironmentReceiptError::Rejected(
+                crate::SessionEnvironmentRejection::Terminal,
+            ));
         }
         let current_realization = self
             .realization
@@ -1037,13 +1043,17 @@ impl PersistedSession {
     /// Admit one exact preparation receipt under the same aggregate-current
     /// realization generation that authorized it. A monotonic expiry renewal
     /// may race the root CAS; owner/incarnation/epoch replacement may not.
+    /// The Environment decision admits the step (active, fenced, consistent
+    /// Suspending evidence) before the exact lease and receipt laws run.
     pub fn record_source_release_prepared(
         &mut self,
         receipt: &crate::SourceReleasePreparedReceipt,
+        now_unix_ms: u64,
     ) -> Result<bool, crate::SessionEnvironmentReceiptError> {
-        if self.is_terminal() {
-            return Err(crate::SessionEnvironmentReceiptError::WrongPhase);
-        }
+        crate::transition_environment(
+            crate::SessionEnvironmentFacts::project(self, now_unix_ms, None),
+            crate::SessionEnvironmentEvent::SourceReleasePrepared,
+        )?;
         let current_realization = self
             .realization
             .as_ref()
@@ -1066,14 +1076,16 @@ impl PersistedSession {
         self.environment
             .record_source_release_prepared(receipt)
             .map_err(|error| match error {
+                crate::SessionEnvironmentTransitionError::Rejected(rejection) => rejection.into(),
                 crate::SessionEnvironmentTransitionError::ReceiptMismatch => {
                     crate::SessionEnvironmentReceiptError::Mismatch
                 }
-                crate::SessionEnvironmentTransitionError::NotSuspending
-                | crate::SessionEnvironmentTransitionError::WrongPhase => {
-                    crate::SessionEnvironmentReceiptError::WrongPhase
+                crate::SessionEnvironmentTransitionError::CheckpointExpired
+                | crate::SessionEnvironmentTransitionError::InvalidCheckpointPolicy(_) => {
+                    crate::SessionEnvironmentReceiptError::Rejected(
+                        crate::SessionEnvironmentRejection::InvalidTransition,
+                    )
                 }
-                _ => crate::SessionEnvironmentReceiptError::InvalidTransition,
             })
     }
 
@@ -1085,7 +1097,9 @@ impl PersistedSession {
         &self,
     ) -> Result<crate::SourceReleaseDisposal, crate::SessionEnvironmentReceiptError> {
         if self.is_terminal() {
-            return Err(crate::SessionEnvironmentReceiptError::WrongPhase);
+            return Err(crate::SessionEnvironmentReceiptError::Rejected(
+                crate::SessionEnvironmentRejection::Terminal,
+            ));
         }
         let current_realization = self
             .realization
@@ -1351,13 +1365,22 @@ impl PersistedSession {
             self.is_terminal(),
             self.terminal_cleanup.is_fenced(),
         ) {
-            return Err(crate::SessionEnvironmentReceiptError::WrongPhase);
+            return Err(crate::SessionEnvironmentReceiptError::Rejected(
+                crate::SessionEnvironmentRejection::Terminal,
+            ));
         }
         receipt.verify()?;
         let intent = receipt.effect_intent()?;
         if let Some(facts) = self.environment_materialization.as_deref() {
             facts.validate_existing_origin_effect(&intent)?;
         }
+        crate::transition_environment(
+            crate::SessionEnvironmentFacts::project(self, now_unix_ms, intent.realization()),
+            crate::SessionEnvironmentEvent::Materialized {
+                kind: intent.kind().materialization_kind(),
+                already_applied: self.environment.records_effect(intent.effect_id()),
+            },
+        )?;
         let authorization = self.authorize_environment_effect(owner_scope, &intent, now_unix_ms)?;
         if let Some(facts) = self.environment_materialization.as_deref() {
             facts.validate_receipt(&intent)?;

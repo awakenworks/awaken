@@ -10,9 +10,9 @@
 
 use super::{
     CheckpointReceipt, QuiescenceReceipt, RestoreReceipt, SandboxCheckpointRef, SandboxGeneration,
-    SessionEnvironmentOperation, SessionEnvironmentReceiptError, SessionEnvironmentState,
-    SessionEnvironmentTransitionError, SourceDisposedReceipt, SuspendPhase,
-    checkpoint_source_disposal_authorized, checkpoint_source_preparation_authorized,
+    SessionEnvironmentOperation, SessionEnvironmentReceiptError, SessionEnvironmentRejection,
+    SessionEnvironmentState, SessionEnvironmentTransitionError, SourceDisposedReceipt,
+    SuspendPhase, checkpoint_source_disposal_authorized, checkpoint_source_preparation_authorized,
     source_release_preparation_receipt_admitted,
 };
 use crate::SessionId;
@@ -465,7 +465,9 @@ impl SessionEnvironmentState {
             ..
         } = self
         else {
-            return Err(SessionEnvironmentReceiptError::WrongPhase);
+            return Err(SessionEnvironmentReceiptError::Rejected(
+                SessionEnvironmentRejection::WrongStep,
+            ));
         };
         SourceReleasePreparationEffect::new(operation.clone(), current_realization.clone())
     }
@@ -487,7 +489,9 @@ impl SessionEnvironmentState {
             ..
         } = self
         else {
-            return Err(SessionEnvironmentReceiptError::WrongPhase);
+            return Err(SessionEnvironmentReceiptError::Rejected(
+                SessionEnvironmentRejection::WrongStep,
+            ));
         };
         preparation
             .verify(operation, generation, source_binding)
@@ -531,7 +535,12 @@ impl SessionEnvironmentState {
             ..
         } = self
         else {
-            return Err(SessionEnvironmentTransitionError::NotResident);
+            let rejection = if matches!(self, Self::Resident { .. }) {
+                SessionEnvironmentRejection::NotGenerated
+            } else {
+                SessionEnvironmentRejection::WrongStep
+            };
+            return Err(rejection.into());
         };
         let operation = SessionEnvironmentOperation::new_started_at(
             workspace_id,
@@ -570,7 +579,9 @@ impl SessionEnvironmentState {
             ..
         } = self
         else {
-            return Err(SessionEnvironmentTransitionError::NotSuspending);
+            return Err(SessionEnvironmentTransitionError::Rejected(
+                SessionEnvironmentRejection::WrongStep,
+            ));
         };
         receipt.verify(operation, generation, expected_mcp_generations)?;
         if *suspend_phase != SuspendPhase::Quiescing {
@@ -593,7 +604,9 @@ impl SessionEnvironmentState {
             ..
         } = self
         else {
-            return Err(SessionEnvironmentTransitionError::NotSuspending);
+            return Err(SessionEnvironmentTransitionError::Rejected(
+                SessionEnvironmentRejection::WrongStep,
+            ));
         };
         receipt.verify(operation, generation)?;
         if matches!(*suspend_phase, SuspendPhase::ReadyToDispose)
@@ -601,7 +614,9 @@ impl SessionEnvironmentState {
             || matches!(*suspend_phase, SuspendPhase::Disposing)
                 && source_release_preparation.is_none()
         {
-            return Err(SessionEnvironmentTransitionError::WrongPhase);
+            return Err(SessionEnvironmentTransitionError::Rejected(
+                SessionEnvironmentRejection::InconsistentEvidence,
+            ));
         }
         if matches!(
             *suspend_phase,
@@ -614,7 +629,9 @@ impl SessionEnvironmentState {
             };
         }
         if *suspend_phase != SuspendPhase::Uploading {
-            return Err(SessionEnvironmentTransitionError::WrongPhase);
+            return Err(SessionEnvironmentTransitionError::Rejected(
+                SessionEnvironmentRejection::WrongStep,
+            ));
         }
         *checkpoint = Some(receipt.checkpoint.clone());
         *suspend_phase = SuspendPhase::ReadyToDispose;
@@ -638,7 +655,9 @@ impl SessionEnvironmentState {
             ..
         } = self
         else {
-            return Err(SessionEnvironmentTransitionError::NotSuspending);
+            return Err(SessionEnvironmentTransitionError::Rejected(
+                SessionEnvironmentRejection::WrongStep,
+            ));
         };
         receipt.verify(operation, generation, source_binding)?;
         if *suspend_phase == SuspendPhase::Disposing && checkpoint.is_some() {
@@ -653,7 +672,9 @@ impl SessionEnvironmentState {
             checkpoint.is_some(),
             source_release_preparation.is_some(),
         ) {
-            return Err(SessionEnvironmentTransitionError::WrongPhase);
+            return Err(SessionEnvironmentTransitionError::Rejected(
+                SessionEnvironmentRejection::WrongStep,
+            ));
         }
         *source_release_preparation = Some(Box::new(receipt.clone()));
         *suspend_phase = SuspendPhase::Disposing;
@@ -676,10 +697,19 @@ impl SessionEnvironmentState {
                 source_release_preparation.is_some(),
             ),
             Self::Hibernated { .. } => return Ok(false),
-            _ => return Err(SessionEnvironmentTransitionError::WrongPhase),
+            _ => {
+                return Err(SessionEnvironmentTransitionError::Rejected(
+                    SessionEnvironmentRejection::WrongStep,
+                ));
+            }
         };
         if !checkpoint_source_disposal_authorized(phase, has_checkpoint, has_preparation) {
-            return Err(SessionEnvironmentTransitionError::WrongPhase);
+            let rejection = if self.suspend_evidence_is_consistent() {
+                SessionEnvironmentRejection::WrongStep
+            } else {
+                SessionEnvironmentRejection::InconsistentEvidence
+            };
+            return Err(rejection.into());
         }
         let Self::Suspending {
             operation,
@@ -717,7 +747,9 @@ impl SessionEnvironmentState {
             generation,
         } = self
         else {
-            return Err(SessionEnvironmentTransitionError::NotHibernated);
+            return Err(SessionEnvironmentTransitionError::Rejected(
+                SessionEnvironmentRejection::WrongStep,
+            ));
         };
         if checkpoint.expired_at(now_unix_ms) || generation.expired_at(now_unix_ms) {
             return Err(SessionEnvironmentTransitionError::CheckpointExpired);
@@ -753,7 +785,9 @@ impl SessionEnvironmentState {
             generation,
         } = self
         else {
-            return Err(SessionEnvironmentTransitionError::NotRestoring);
+            return Err(SessionEnvironmentTransitionError::Rejected(
+                SessionEnvironmentRejection::WrongStep,
+            ));
         };
         receipt.verify(operation, generation, checkpoint)?;
         *self = Self::Resident {

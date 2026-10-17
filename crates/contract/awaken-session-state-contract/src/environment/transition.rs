@@ -68,6 +68,13 @@ impl SessionEnvironmentState {
         }
     }
 
+    /// Whether the Resident binding already records this effect: the replay
+    /// of its own materialization.
+    #[must_use]
+    pub fn records_effect(&self, effect_id: &str) -> bool {
+        matches!(self, Self::Resident { effect_id: Some(recorded), .. } if recorded == effect_id)
+    }
+
     /// The one realization-effect gate, shared by scan, direct realization
     /// entry and the transition function.
     #[must_use]
@@ -262,7 +269,8 @@ impl SessionEnvironmentDecision {
     }
 }
 
-/// Why the aggregate refuses an event. Closed: callers map it once.
+/// Why the aggregate refuses an event. Closed: callers map it once. The
+/// refusals that receipts also report keep the receipt wording callers read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SessionEnvironmentRejection {
     #[error("the Session is terminal")]
@@ -277,9 +285,9 @@ pub enum SessionEnvironmentRejection {
     NotGenerated,
     #[error("the event is not valid in the current Environment step")]
     WrongStep,
-    #[error("the effect requires a resident source binding")]
+    #[error("Session environment receipt requires a resident source binding")]
     RequiresResident,
-    #[error("the effect does not prove an allowed transition")]
+    #[error("Session environment receipt does not prove an allowed state transition")]
     InvalidTransition,
     #[error("the realization lease is not current")]
     LeaseNotCurrent,
@@ -289,7 +297,7 @@ pub enum SessionEnvironmentRejection {
     CheckpointLive,
     #[error("the suspend evidence does not match its sub-phase")]
     InconsistentEvidence,
-    #[error("the materialization remains pending its original effect and source closure")]
+    #[error("Session materialization remains pending its exact original effect and source closure")]
     MaterializationPending,
     #[error(
         "checkpoint-and-release retention has no continuation transport for an external Worker"
@@ -411,11 +419,12 @@ const fn admit_materialization(
     if let Err(rejection) = materialization_admitted(facts.step, kind, already_applied) {
         return Err(rejection);
     }
-    if already_applied {
-        return stay(facts);
-    }
+    // A Rebuild admission waits for source closure and access, which neither a
+    // target receipt nor the current lease supplies, even when its effect is
+    // already recorded.
     match kind {
         MaterializationKind::Rebuild => Err(SessionEnvironmentRejection::MaterializationPending),
+        _ if already_applied => stay(facts),
         MaterializationKind::Create if !is_fenced(facts) => {
             Err(SessionEnvironmentRejection::LeaseNotCurrent)
         }

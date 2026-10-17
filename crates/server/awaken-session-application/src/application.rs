@@ -1001,7 +1001,9 @@ impl RepositoryEnvironmentBindingSink {
                 let code = if matches!(
                     error,
                     SessionEnvironmentReceiptError::MaterializationUnknown
-                        | SessionEnvironmentReceiptError::MaterializationPending
+                        | SessionEnvironmentReceiptError::Rejected(
+                            awaken_session_state_contract::SessionEnvironmentRejection::MaterializationPending
+                        )
                 ) {
                     "session_environment_materialization_pending"
                 } else if matches!(error, SessionEnvironmentReceiptError::RealizationStale) {

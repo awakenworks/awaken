@@ -31,6 +31,22 @@ pub enum SessionEnvironmentEffectKind {
     },
 }
 
+impl SessionEnvironmentEffectKind {
+    /// How this effect relates the Environment to its binding, in the
+    /// transition function's vocabulary.
+    #[must_use]
+    pub const fn materialization_kind(&self) -> super::MaterializationKind {
+        match self {
+            Self::Create => super::MaterializationKind::Create,
+            Self::Adopt => super::MaterializationKind::Adopt,
+            Self::Rebuild { .. } => super::MaterializationKind::Rebuild,
+            Self::ResourceProjectionReservation { .. } => {
+                super::MaterializationKind::ReserveResources
+            }
+        }
+    }
+}
+
 /// Result of checking one Environment effect against the durable Session root.
 /// `Unowned` is reserved for process-local threads without a Managed aggregate;
 /// `AlreadyApplied` is the response-loss recovery path and must never re-run a
