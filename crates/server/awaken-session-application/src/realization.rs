@@ -27,17 +27,6 @@ use awaken_session_state_contract::{
 };
 use awaken_session_types::RunError;
 
-/// The same Environment phase gate owns scan and direct realization entry.
-/// Continuation has closed process admission until restore commits Resident.
-pub(super) fn environment_admits_realization_effects(
-    environment: &SessionEnvironmentState,
-) -> bool {
-    matches!(
-        environment,
-        SessionEnvironmentState::Unmaterialized | SessionEnvironmentState::Resident { .. }
-    )
-}
-
 use super::{SessionApplication, SessionMutationError};
 use crate::{creation::DurableSessionRoot, projection};
 
@@ -858,7 +847,7 @@ impl SessionApplication {
                 }
                 continue;
             }
-            if !environment_admits_realization_effects(&session.environment) {
+            if !session.environment.admits_realization_effects() {
                 continue;
             }
             // Recovery cause/effect decision table:
@@ -1010,8 +999,7 @@ impl SessionApplication {
         if session.is_terminal() {
             return Err(SessionRealizationControlFailure::Terminal);
         }
-        if session.frozen_baseline().is_none()
-            || !environment_admits_realization_effects(&session.environment)
+        if session.frozen_baseline().is_none() || !session.environment.admits_realization_effects()
         {
             return Err(SessionRealizationControlFailure::NotReady);
         }

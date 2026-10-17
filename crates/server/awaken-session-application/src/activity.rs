@@ -633,9 +633,7 @@ impl SessionApplication {
                 ) {
                     return Err(SessionActivityError::Conflict);
                 }
-                !crate::realization::environment_admits_realization_effects(
-                    &projected_root.environment,
-                )
+                !projected_root.environment.admits_realization_effects()
             }
             None => false,
         };
