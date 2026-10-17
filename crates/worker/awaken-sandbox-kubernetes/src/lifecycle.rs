@@ -4,7 +4,7 @@ use kube::api::{DeleteParams, Preconditions};
 use kube::{Api, Resource};
 
 use super::error::api_not_found;
-use super::{RuntimeError, backend};
+use super::{K8sRuntime, RuntimeError, backend};
 
 /// Observe disappearance of one previously authorized incarnation. A DELETE
 /// response only establishes intent; a valid replacement UID or 404 ends this
@@ -68,6 +68,90 @@ pub(super) fn pod_delete_params(pod: &Pod, preconditions: Preconditions) -> Dele
     } else {
         params
     }
+}
+
+pub(super) async fn await_exact_pod_deleted(
+    runtime: &K8sRuntime,
+    pod_name: &str,
+    pod_uid: &str,
+    admit: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
+) -> Result<(), RuntimeError> {
+    const DELETE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+    await_exact_deletion(
+        &runtime.pods(),
+        pod_name,
+        pod_uid,
+        DELETE_TIMEOUT,
+        "Kubernetes Sandbox Pod",
+        admit,
+    )
+    .await
+}
+
+pub(super) async fn begin_exact_pod_delete(
+    runtime: &K8sRuntime,
+    pod: &Pod,
+    expected_uid: &str,
+    expected_resource_version: &str,
+    _attempt_id: Option<&str>,
+    admit: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
+) -> Result<(), RuntimeError> {
+    let pod_name = pod
+        .metadata
+        .name
+        .as_deref()
+        .ok_or_else(|| backend("Kubernetes Sandbox Pod has no name"))?;
+    if pod.metadata.uid.as_deref() != Some(expected_uid) {
+        return Err(backend(
+            "Kubernetes Sandbox Pod incarnation changed before deletion",
+        ));
+    }
+    if pod.metadata.resource_version.as_deref() != Some(expected_resource_version) {
+        return Err(backend(
+            "Kubernetes Sandbox Pod resourceVersion changed before deletion",
+        ));
+    }
+    let params = pod_delete_params(
+        pod,
+        kube::api::Preconditions {
+            uid: Some(expected_uid.to_owned()),
+            resource_version: Some(expected_resource_version.to_owned()),
+        },
+    );
+    admit()?;
+    let deleted = runtime.pods().delete(pod_name, &params).await;
+    admit()?;
+    match deleted {
+        Ok(_) => {}
+        Err(error) if api_not_found(&error) => return Ok(()),
+        Err(error) => return Err(backend(error)),
+    }
+
+    Ok(())
+}
+
+pub(super) async fn delete_exact_pod(
+    runtime: &K8sRuntime,
+    pod: &Pod,
+    expected_uid: &str,
+    expected_resource_version: &str,
+    attempt_id: Option<&str>,
+) -> Result<(), RuntimeError> {
+    let pod_name = pod
+        .metadata
+        .name
+        .as_deref()
+        .ok_or_else(|| backend("Kubernetes Sandbox Pod has no name"))?;
+    begin_exact_pod_delete(
+        runtime,
+        pod,
+        expected_uid,
+        expected_resource_version,
+        attempt_id,
+        &|| Ok(()),
+    )
+    .await?;
+    await_exact_pod_deleted(runtime, pod_name, expected_uid, &|| Ok(())).await
 }
 
 #[cfg(test)]
