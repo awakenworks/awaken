@@ -13,23 +13,15 @@
 
 use super::{ContainerPlan, LIVE_INPUTS_ROOT, RootfsPlan, RuntimeError, StagingGuard, pc};
 
-#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
 pub(crate) const RESTORE_EFFECT_LABEL: &str = "awaken.sandbox.restore.effect";
-#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
 pub(crate) const RESTORE_GENERATION_LABEL: &str = "awaken.sandbox.restore.generation";
-#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
 pub(crate) const RESTORE_CHECKPOINT_LABEL: &str = "awaken.sandbox.restore.checkpoint";
-#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
 pub(crate) const RESTORE_CHECKPOINT_DIGEST_LABEL: &str = "awaken.sandbox.restore.checkpoint-digest";
-#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
 pub(crate) const RESTORE_SPEC_LABEL: &str = "awaken.sandbox.restore.spec";
-#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
 pub(crate) const RESTORE_EXCLUSIONS_LABEL: &str = "awaken.sandbox.restore.exclusions";
-#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
-pub(crate) const RESTORE_PLAN_LABEL: &str = "awaken.sandbox.restore.plan";
+pub const RESTORE_PLAN_LABEL: &str = "awaken.sandbox.restore.plan";
 
-#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
-pub(crate) fn restoration_metadata(
+pub fn restoration_metadata(
     evidence: &pc::SandboxRestorationEvidence,
 ) -> [(&'static str, &str); 6] {
     [
@@ -48,7 +40,7 @@ pub(crate) fn restoration_metadata(
     ]
 }
 
-pub(crate) fn restoration_plan_fingerprint(plan: &ContainerPlan) -> String {
+pub fn restoration_plan_fingerprint(plan: &ContainerPlan) -> String {
     let mut canonical = plan.clone();
     canonical
         .binds
@@ -64,8 +56,7 @@ pub(crate) fn restoration_plan_fingerprint(plan: &ContainerPlan) -> String {
         .to_string()
 }
 
-#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
-pub(crate) fn restoration_evidence_from_metadata(
+pub fn restoration_evidence_from_metadata(
     mut value: impl FnMut(&str) -> Option<String>,
     substrate: &str,
 ) -> Result<Option<pc::SandboxRestorationEvidence>, RuntimeError> {

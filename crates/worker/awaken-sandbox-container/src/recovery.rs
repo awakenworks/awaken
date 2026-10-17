@@ -31,7 +31,7 @@ pub(crate) fn decode_handle(
 
 /// Lower the one verified original realization into its existing terminal
 /// handle. Control identity is a Pod fact, never permission to bind a channel.
-pub(crate) fn terminal_handle(
+pub fn terminal_handle(
     spec: &pc::SandboxSpec,
     container_id: String,
     runtime_handle: crate::ContainerContinuationHandle,
@@ -78,7 +78,7 @@ pub(crate) fn terminal_handle(
     ))
 }
 
-pub(crate) fn source_mount_paths(spec: &pc::SandboxSpec) -> Vec<String> {
+pub fn source_mount_paths(spec: &pc::SandboxSpec) -> Vec<String> {
     spec.mounts.iter().map(|m| m.mount_path.clone()).collect()
 }
 
@@ -170,13 +170,10 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 "materialized container has unretained terminal participants",
             ));
         }
-        #[cfg(feature = "k8s")]
         let guarded_claim = matches!(
             runtime_handle,
             crate::ContainerContinuationHandle::KubernetesGuardedClaim(_)
         );
-        #[cfg(not(feature = "k8s"))]
-        let guarded_claim = false;
         let handle = terminal_handle(
             spec,
             container_id,

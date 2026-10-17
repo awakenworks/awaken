@@ -205,7 +205,7 @@
       "obligation": "external.container_and_kernel_isolation",
       "kind": "infrastructure",
       "integration_evidence": [
-        "crates/worker/awaken-sandbox-container/tests/k8s_e2e.rs",
+        "crates/worker/awaken-sandbox-kubernetes/tests/k8s_e2e.rs",
         "crates/worker/awaken-sandbox-container/tests/docker_e2e.rs"
       ],
       "runtime_evidence": [],
@@ -219,7 +219,7 @@
         "recovery_point_seconds": 0,
         "scope": "release_qualification_not_customer_sla",
         "drill_evidence": [
-          "crates/worker/awaken-sandbox-container/tests/k8s_e2e.rs",
+          "crates/worker/awaken-sandbox-kubernetes/tests/k8s_e2e.rs",
           "crates/worker/awaken-sandbox-container/tests/docker_e2e.rs"
         ]
       },
@@ -236,7 +236,7 @@
       "obligation": "external.orchestrator_correctness",
       "kind": "infrastructure",
       "integration_evidence": [
-        "crates/worker/awaken-sandbox-container/tests/k8s_it.rs",
+        "crates/worker/awaken-sandbox-kubernetes/tests/k8s_it.rs",
         "e2e/remote_worker_recovery_e2e.ts"
       ],
       "runtime_evidence": [],

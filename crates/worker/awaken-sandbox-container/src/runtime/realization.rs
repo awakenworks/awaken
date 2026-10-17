@@ -34,8 +34,7 @@ const fn observation_admitted(
 /// Adapters own discovery and effects only. They must pass every object selected
 /// by the stable Session-scope identity; this function owns the 0/1/>1,
 /// fingerprint, and phase policy so no backend grows a different retry rule.
-#[cfg(any(test, feature = "docker", feature = "podman", feature = "k8s"))]
-pub(crate) fn existing_realization_decision(
+pub fn existing_realization_decision(
     context: &crate::ContainerRealizationContext<'_>,
     expected: Option<&pc::SandboxRealizationFingerprint>,
     rebuild_continuity: RebuildContinuityEvidence,
@@ -181,7 +180,7 @@ pub(crate) fn existing_realization_decision(
 
 #[cfg(kani)]
 /// @obligation resource_reclamation.continuation_claim_deletion_requires_exact_incarnation_fence
-/// @kani profile=solver-kissat-v1 features=k8s
+/// @kani profile=solver-kissat-v1
 /// @proof-input-debt free_symbol observation_admitted exact_continuation
 /// @proof-input-debt free_symbol observation_admitted is_source
 /// @proof-input-debt free_symbol observation_admitted reconstructible

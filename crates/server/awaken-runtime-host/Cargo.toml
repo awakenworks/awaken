@@ -99,7 +99,7 @@ test-support = [
 # Live-backend tests only. The container tiers themselves are assembled by
 # `awaken-execution-composition`; these features enable a real backend in the
 # test-only container dependency for the Host tests that drive one.
-k8s-tests = ["awaken-sandbox-container/k8s", "awaken-session-realization/k8s-tests"]
+k8s-tests = ["awaken-session-realization/k8s-tests"]
 
 [dev-dependencies]
 awaken-environment-contract.workspace = true

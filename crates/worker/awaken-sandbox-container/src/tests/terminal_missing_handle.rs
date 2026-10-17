@@ -242,8 +242,6 @@ async fn exact_created_pod_reenters_the_existing_handle_bound_terminal_path() {
         "P2/P3 no delete"
     );
 }
-
-#[cfg(feature = "k8s")]
 #[tokio::test]
 async fn guarded_claim_uses_the_existing_two_phase_terminal_owner() {
     // Causes: C1 the old Worker join retained one inert protected Pod and one
@@ -255,7 +253,7 @@ async fn guarded_claim_uses_the_existing_two_phase_terminal_owner() {
     // authorized disposal re-observes and removes exactly once. Rules G1 all
     // causes=>E1+E2+E4, G2 !C2=>Unknown, G3 !C3=>E3. The real K8s test owns
     // guard policy/UID and PVC API effects; this case owns provider ordering.
-    use crate::k8s::{CreateTicket, CreateTicketRequest, TicketOrigin, TicketResult, TicketStatus};
+    use crate::{CreateTicket, CreateTicketRequest, TicketOrigin, TicketResult, TicketStatus};
     let scope = "guarded-claim-terminal";
     let create = pc::SandboxEffectFence::new(
         "create-guarded-claim",

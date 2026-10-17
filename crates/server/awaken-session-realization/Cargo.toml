@@ -49,11 +49,13 @@ tracing = "0.1"
 [features]
 default = []
 test-support = ["awaken-session-mcp/test-support"]
-k8s-tests = ["awaken-sandbox-container/k8s"]
+# Live PVC initialization against a real cluster (AWAKEN_K8S_E2E=1).
+k8s-tests = []
 
 [dev-dependencies]
 awaken-agent-channel.workspace = true
 awaken-sandbox-container.workspace = true
+awaken-sandbox-kubernetes.workspace = true
 awaken-session-environment = { workspace = true, features = ["test-support"] }
 tempfile = "3"
 

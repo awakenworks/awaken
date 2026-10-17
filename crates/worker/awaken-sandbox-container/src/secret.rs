@@ -9,12 +9,11 @@
 pub struct SecretBytes(Vec<u8>);
 
 impl SecretBytes {
-    pub(crate) fn new(bytes: Vec<u8>) -> Self {
+    pub fn new(bytes: Vec<u8>) -> Self {
         Self(bytes)
     }
 
-    #[cfg(any(test, feature = "k8s"))]
-    pub(crate) fn expose(&self) -> &[u8] {
+    pub fn expose(&self) -> &[u8] {
         &self.0
     }
 }

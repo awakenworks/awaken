@@ -5,6 +5,7 @@
 //! no daemon required.
 
 use super::*;
+use crate::test_support::{disposal_authorization, spec};
 use awaken_provisioning_contract::SandboxProvider;
 use awaken_provisioning_contract::test_support::FenceTamper as _;
 use std::collections::HashMap;
@@ -17,93 +18,6 @@ use tokio::io::AsyncWriteExt;
 mod memory_reservation;
 mod terminal_missing_handle;
 mod terminal_preparation;
-
-pub(crate) fn disposal_authorization(
-    prepared: &pc::SandboxEffectFence,
-) -> pc::SandboxDisposalAuthorization {
-    let preparation_fingerprint = format!("test-preparation:{}", prepared.operation_id());
-    let preparation =
-        pc::SandboxDisposalPreparation::new(prepared.clone(), preparation_fingerprint)
-            .expect("test preparation is complete");
-    let operation_id = preparation
-        .operation_id()
-        .expect("stable disposal identity");
-    let successor = pc::SandboxEffectFence::new(
-        operation_id,
-        prepared.owner(),
-        prepared.runtime_incarnation(),
-        prepared.epoch(),
-        prepared.expires_at_unix_ms(),
-    )
-    .expect("test authorization successor is valid");
-    preparation
-        .authorize(successor)
-        .expect("test authorization is aggregate-authorized")
-}
-
-pub(crate) fn spec(scope: &str) -> pc::SandboxSpec {
-    pc::SandboxSpec {
-        process_tree_supervision: false,
-        scope: scope.into(),
-        isolation: pc::IsolationClass::Container,
-        environment: None,
-        command: vec!["claude".into(), "--acp".into()],
-        deny_tool_egress: false,
-        mounts: vec![
-            pc::MountRequirement {
-                mount_id: "in".into(),
-                source: pc::MountSource::File {
-                    file_id: "file-1".into(),
-                    content_hash: None,
-                },
-                mount_path: "/data/in.txt".into(),
-                access: pc::MountAccess::ReadOnly,
-                lifetime: pc::MountLifetime::PerRun,
-                required: true,
-            },
-            pc::MountRequirement {
-                mount_id: "work".into(),
-                source: pc::MountSource::Resource {
-                    resource_id: "res-9".into(),
-                    content_hash: None,
-                },
-                mount_path: "/work".into(),
-                access: pc::MountAccess::ReadWrite,
-                lifetime: pc::MountLifetime::Session,
-                required: true,
-            },
-        ],
-        env: vec![
-            pc::EnvVar {
-                name: "TZ".into(),
-                value: pc::EnvValue::Inline {
-                    value: "UTC".into(),
-                },
-                visibility: pc::EnvVisibility::Process,
-            },
-            pc::EnvVar {
-                name: "API_KEY".into(),
-                value: pc::EnvValue::Secret {
-                    reference: "broker://k".into(),
-                },
-                visibility: pc::EnvVisibility::Process,
-            },
-        ],
-        packages: Default::default(),
-        network: pc::NetworkPolicy::Unrestricted,
-        outputs_path: "/mnt/session/outputs".into(),
-        requests: Default::default(),
-        limits: pc::ResourceLimits {
-            cpu_millis: Some(2000),
-            memory_bytes: Some(1 << 30),
-            pids: Some(256),
-            disk_bytes: None,
-        },
-        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
-        lease_ttl_secs: Some(60),
-        control_services: Default::default(),
-    }
-}
 
 fn add_future_restoration(handle: &pc::SandboxHandle) -> pc::SandboxHandle {
     let mut wire = serde_json::to_value(handle).unwrap();
@@ -2940,7 +2854,6 @@ struct FakeState {
     observation: Option<pc::SandboxObservation>,
     unmaterialized_absence_proven: bool,
     recovered_created_pod: Option<(String, String, Option<String>)>,
-    #[cfg(feature = "k8s")]
     recovered_guarded_claim: Option<(String, crate::KubernetesGuardedClaimHandle)>,
     unmaterialized_absence_checks: usize,
     configuration: Option<std::collections::BTreeMap<String, String>>,
@@ -3236,7 +3149,6 @@ impl ContainerRuntime for FakeRuntime {
     ) -> Result<MissingHandleTerminalEvidence, RuntimeError> {
         let mut state = self.st.lock().unwrap();
         state.unmaterialized_absence_checks += 1;
-        #[cfg(feature = "k8s")]
         if expected_effect_fence.is_some()
             && let Some((container_id, guarded)) = &state.recovered_guarded_claim
         {

@@ -1,0 +1,69 @@
+[package]
+name = "awaken-sandbox-kubernetes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[package.metadata.awaken]
+# The Kubernetes container engine of the container Sandbox provider. A crate of
+# its own so the kube client and API types stay out of every build that does
+# not realize Kubernetes Sessions; the provider and its Docker/Podman engines
+# never depend on it.
+context = "worker"
+product = "platform"
+bounded_context = "sandbox"
+layer = "infrastructure"
+authority = "sandbox-kubernetes"
+separation = "isolation"
+isolates = ["k8s-openapi", "kube"]
+
+[dependencies]
+# The provider whose `ContainerRuntime` port this engine implements, and the
+# shared engine vocabulary (labels, fence/restoration codecs, recovery). Like
+# every real engine it reaches Session Pods over the `connection` transport,
+# which also brings the warm pool.
+awaken-sandbox-container = { workspace = true, features = ["connection"] }
+awaken-container-contract.workspace = true
+awaken-environment-contract.workspace = true
+awaken-provisioning-contract.workspace = true
+awaken-time.workspace = true
+awaken-agent-channel.workspace = true
+awaken-local-process.workspace = true
+awaken-sandbox-control.workspace = true
+awaken-sandbox-control-transport.workspace = true
+awaken-outbound-http.workspace = true
+# Pod channels reuse the one topology factory (direct or reverse dial).
+awaken-connection-plan.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+serde = { workspace = true, features = ["derive"] }
+thiserror.workspace = true
+blake3 = "1"
+tokio = { workspace = true, features = ["sync", "rt", "io-util", "time", "net"] }
+# kube-apiserver via the SDK, never kubectl.
+kube = { workspace = true, features = ["client", "http-proxy", "rustls-tls", "ws"] }
+k8s-openapi.workspace = true
+http = "1"
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
+# A process-incarnation nonce: uniqueness, not time.
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+# The provider's shared Session fixtures, and the exec admission the
+# integration suites need because they drive the runtime port directly.
+awaken-sandbox-container = { workspace = true, features = ["test-support", "unrecorded-exec"] }
+awaken-provisioning-contract = { workspace = true, features = ["test-support"] }
+awaken-runtime-contract.workspace = true
+awaken-resource-contract.workspace = true
+awaken-tool-contract.workspace = true
+awaken-tool-relay.workspace = true
+awaken-lease-testkit.workspace = true
+awaken-memory-store = { workspace = true, features = ["test-support"] }
+awaken-sandbox-memoryd.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "io-util", "net", "time", "test-util"] }
+tar = "0.4"
+serde-saphyr.workspace = true

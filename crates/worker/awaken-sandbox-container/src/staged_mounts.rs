@@ -601,7 +601,7 @@ mod cancellation_tests {
             entered: Arc::clone(&entered),
         });
 
-        let mut spec = crate::tests::spec("cancelled-memory-stage");
+        let mut spec = crate::test_support::spec("cancelled-memory-stage");
         spec.mounts.push(pc::MountRequirement {
             mount_id: "memory".into(),
             source: pc::MountSource::MemoryStore {

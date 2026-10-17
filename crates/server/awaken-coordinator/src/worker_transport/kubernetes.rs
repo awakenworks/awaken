@@ -10,7 +10,7 @@ use awaken_run_ingress::{
     WorkerExecutionStopSource, WorkerIdentity, WorkerProcessStopStatus, WorkerRegistration,
 };
 use awaken_run_ingress::{NativeAttemptFootprint, NativeAttemptTermination};
-use awaken_sandbox_container::k8s::{
+use awaken_sandbox_kubernetes::{
     K8sLedgerBinding, K8sWorkerCreateLedger, PodProcessBinding, PodProcessObserver,
     PodProcessStopper, PodProcessTermination,
 };

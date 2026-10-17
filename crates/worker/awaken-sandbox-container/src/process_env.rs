@@ -86,7 +86,7 @@ pub(super) fn bind_resident_process_environment(
 /// Portable PID-1 command for a Session-owned container environment. Attempt
 /// commands run through exec; PID 1 only keeps the mount and network namespaces
 /// alive until the owning Session disposes the sandbox.
-pub(super) fn environment_keepalive_command() -> Vec<String> {
+pub fn environment_keepalive_command() -> Vec<String> {
     vec![
         "/bin/sh".into(),
         "-c".into(),

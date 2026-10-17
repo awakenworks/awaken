@@ -15,7 +15,7 @@ pub use awaken_container_contract::{LIVE_INPUTS_ROOT, live_input_relative_path};
 /// One classification for initial planning and subsequent attach/remove. Keeping
 /// it here prevents Docker/Podman and Kubernetes from drifting on which mounts
 /// belong to the Managed File projection.
-pub(crate) fn manages(bind: &BindPlan) -> bool {
+pub fn manages_live_input(bind: &BindPlan) -> bool {
     bind.read_only && live_input_relative_path(&bind.mount_path).is_some()
 }
 
@@ -116,7 +116,7 @@ pub(super) fn stage_host_projection(
 
     let mut retained = Vec::with_capacity(binds.len() + 1);
     for bind in std::mem::take(binds) {
-        if manages(&bind) {
+        if manages_live_input(&bind) {
             let bytes = std::fs::read(&bind.source_ref).map_err(|error| {
                 pc::SandboxError::backend("stage_host_projection", error.to_string())
             })?;

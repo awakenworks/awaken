@@ -19,8 +19,7 @@ use awaken_provisioning_contract as pc;
 /// matching, and phase semantics are shared here so Docker, Podman, and
 /// Kubernetes cannot independently decide that a transport error or an
 /// ambiguous physical object is safe to replace.
-#[cfg(any(test, feature = "docker", feature = "podman", feature = "k8s"))]
-pub(crate) fn sandbox_observation(
+pub fn sandbox_observation(
     expected_incarnation: Option<&str>,
     expected_adoption: Option<&pc::SandboxRealizationFingerprint>,
     expected_fingerprint: Option<&pc::SandboxRealizationFingerprint>,

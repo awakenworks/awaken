@@ -34,7 +34,11 @@ path = "src/main.rs"
 # sessions inside containers/Pods. Off by default (bwrap namespace tier).
 container-docker = ["awaken-execution-composition/docker"]
 container-podman = ["awaken-execution-composition/podman"]
-container-k8s = ["awaken-execution-composition/k8s", "awaken-worker-transport-security/kubernetes"]
+container-k8s = [
+    "awaken-execution-composition/k8s",
+    "awaken-worker-transport-security/kubernetes",
+    "dep:awaken-sandbox-kubernetes",
+]
 
 [dependencies]
 awaken-dispatch-erasure.workspace = true
@@ -63,6 +67,8 @@ awaken-lease-contract.workspace = true
 awaken-credential-materializer.workspace = true
 awaken-ext-builtin-tools.workspace = true
 awaken-sandbox-container.workspace = true
+# The Kubernetes engine: Pod process observation and the brokered Create client.
+awaken-sandbox-kubernetes = { workspace = true, optional = true }
 awaken-tool-relay.workspace = true
 awaken-authority-clock.workspace = true
 awaken-session-configuration-contract.workspace = true

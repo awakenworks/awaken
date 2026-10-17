@@ -173,8 +173,8 @@ elif command -v kubectl >/dev/null 2>&1 && kubectl get nodes >/dev/null 2>&1; th
       docker save awaken-bb:1 | docker exec -i "$NODE" ctr -n k8s.io images import - >/dev/null
       docker save "$k8s_hand_image" | docker exec -i "$NODE" ctr -n k8s.io images import - >/dev/null
     done
-    run "k8s:k8s_it" cargo test -q -p awaken-sandbox-container --features k8s --test k8s_it
-    run "k8s:k8s_e2e" env AWAKEN_K8S_E2E=1 AWAKEN_K8S_SESSION_IMAGE="$k8s_hand_image" cargo test -q -p awaken-sandbox-container --features k8s --test k8s_e2e
+    run "k8s:k8s_it" cargo test -q -p awaken-sandbox-kubernetes --test k8s_it
+    run "k8s:k8s_e2e" env AWAKEN_K8S_E2E=1 AWAKEN_K8S_SESSION_IMAGE="$k8s_hand_image" cargo test -q -p awaken-sandbox-kubernetes --test k8s_e2e
   else
     skip "k8s: cannot resolve every node needed for fixture image loading"
   fi
@@ -237,8 +237,11 @@ if [ "${COVERAGE:-0}" = 1 ] && command -v cargo-llvm-cov >/dev/null; then
     cargo llvm-cov --all-features -p awaken-sandbox --summary-only 2>/dev/null \
       | grep -E "bridge|hand|TOTAL" || true
   CARGO_TARGET_DIR="$COV" \
-    cargo llvm-cov -p awaken-sandbox-container --features docker,podman,k8s --summary-only 2>/dev/null \
+    cargo llvm-cov -p awaken-sandbox-container --features docker,podman --summary-only 2>/dev/null \
       | grep -E "lease|recovery|TOTAL" || true
+  CARGO_TARGET_DIR="$COV" \
+    cargo llvm-cov -p awaken-sandbox-kubernetes --summary-only 2>/dev/null \
+      | grep -E "TOTAL" || true
   # WHY the uncovered lines are NOT gaps: the execution-plane binary's uncovered
   # surface is exactly its OS-BOUNDARY code, which is integration-tested against REAL
   # substrates (a real binary / container / cluster) rather than unit tests, so

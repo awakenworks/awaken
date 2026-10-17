@@ -199,10 +199,10 @@ namespaces and six Kind reservations:
 
 ```bash
 AWAKEN_K8S_E2E=1 AWAKEN_K8S_ISOLATION_E2E=1 \
-  cargo test -p awaken-sandbox-container --features k8s --test k8s_e2e \
+  cargo test -p awaken-sandbox-kubernetes --test k8s_e2e \
   brokered_create_isolation_joins_six_real_api_uids_after_reservation
 AWAKEN_K8S_E2E=1 AWAKEN_K8S_ISOLATION_E2E=1 \
-  cargo test -p awaken-sandbox-container --features k8s --test k8s_e2e \
+  cargo test -p awaken-sandbox-kubernetes --test k8s_e2e \
   original_create_guard_keeps_a_deleted_pod_visible_until_exact_release
 ```
 

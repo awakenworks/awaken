@@ -9,7 +9,7 @@
 // exec -> response; inspecting the container proves no per-attempt environment exists.
 //
 // The k8s POD mechanics of the same seam are covered by the k8s adapter e2e
-// (`awaken-sandbox-container/tests/k8s_e2e.rs`) + the k3d topology e2e; Docker and
+// (`awaken-sandbox-kubernetes/tests/k8s_e2e.rs`) + the k3d topology e2e; Docker and
 // Podman keep this managed-protocol proof to a single daemon (no cluster).
 //
 // Select Podman with `AWAKEN_E2E_CONTAINER_ENGINE=podman`. The standalone npm suite

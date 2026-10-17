@@ -51,7 +51,7 @@ async fn restored_disposal_keeps_immutable_id_and_current_authority_at_each_adap
             "exclusions",
         )
         .unwrap();
-        let authorization = crate::tests::disposal_authorization(
+        let authorization = crate::test_support::disposal_authorization(
             &pc::SandboxEffectFence::new("restore-cleanup", "owner", "boot", 1, u64::MAX - 1)
                 .unwrap(),
         );
