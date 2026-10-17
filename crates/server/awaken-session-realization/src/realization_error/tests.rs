@@ -226,7 +226,7 @@ fn each_failure_class_has_one_disposition_on_the_synchronizer_and_driver_paths()
         let report =
             FailSessionRealization::for_effect("s".into(), lease(), None, None, &projected);
         assert_eq!(
-            (report.retryable, report.capacity_unavailable),
+            (report.retryable, report.not_ready),
             match expected {
                 Disposition::Retry => (true, false),
                 Disposition::Defer => (true, true),

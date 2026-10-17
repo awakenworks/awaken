@@ -159,7 +159,7 @@ mod tests {
                 None,
                 &run_error,
             );
-            let reported = (command.retryable, command.capacity_unavailable);
+            let reported = (command.retryable, command.not_ready);
             let driver = awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error(
                 awaken_session_realization_contract::SessionRealizationDriveError::Effect(
                     run_error,
