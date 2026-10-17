@@ -972,7 +972,8 @@ async fn install_test_session_init_overlays_the_environment_sandbox_onto_the_spe
         .ctx_for("t-bare", None)
         .await
         .expect("W2 runtime context")
-        .context();
+        .context(&RunId("t-bare-attempt".into()))
+        .expect("W2 readable foreground record");
     assert_eq!(
         context
             .execution_scope

@@ -58,12 +58,14 @@ impl McpSessionSlots for InstalledSessions {
         })
     }
 
+    /// An unreadable foreground record signals nothing; `runtime_has_active_run`
+    /// then reports the Run active, so the drain refuses with its timeout
+    /// instead of manufacturing quiescence.
     fn cancel_runtime(runtime: &Self::Runtime) {
-        if let Some(token) = runtime
-            .cancel
-            .lock()
-            .expect("cancel mutex poisoned")
-            .as_ref()
+        if let Ok(awaken_dispatch_execution::ForegroundRun {
+            cancellation: Some(token),
+            ..
+        }) = runtime.foreground.observe()
         {
             token.cancel();
         }

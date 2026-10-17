@@ -45,8 +45,11 @@ async fn delayed_interruption_preserves_the_successor(start_with_active_run: boo
         "idle-interrupt-later-run"
     };
     let ctx = host.ctx_for(thread, None).await.expect("idle resident");
-    assert!(ctx.active_run.lock().unwrap().is_none(), "C1 idle Run");
-    assert!(ctx.cancel.lock().unwrap().is_none(), "C1 no attempt token");
+    assert!(!ctx.foreground.has_run().unwrap(), "C1 idle Run");
+    assert!(
+        ctx.foreground.observe().unwrap().cancellation.is_none(),
+        "C1 no attempt token"
+    );
 
     let original_run = if start_with_active_run {
         let mut run = tokio::spawn({
@@ -66,10 +69,10 @@ async fn delayed_interruption_preserves_the_successor(start_with_active_run: boo
         .await
         .expect("original Run entered real inference");
         let token = ctx
-            .cancel
-            .lock()
+            .foreground
+            .observe()
             .unwrap()
-            .clone()
+            .cancellation
             .expect("original real attempt token");
         Some((run, token))
     } else {
@@ -108,7 +111,7 @@ async fn delayed_interruption_preserves_the_successor(start_with_active_run: boo
             "original Run completed before cancellation delivery"
         );
         assert!(
-            ctx.active_run.lock().unwrap().is_none(),
+            !ctx.foreground.has_run().unwrap(),
             "original Run is no longer active"
         );
         model.calls.store(2, Ordering::SeqCst);
@@ -143,10 +146,10 @@ async fn delayed_interruption_preserves_the_successor(start_with_active_run: boo
         "C3 same original resident Runtime, not a replacement fake context"
     );
     let actual_later_token = ctx
-        .cancel
-        .lock()
+        .foreground
+        .observe()
         .unwrap()
-        .clone()
+        .cancellation
         .expect("C3 actual attempt token");
     assert!(!actual_later_token.is_cancelled(), "C3 initially live");
     release_read.notify_one();

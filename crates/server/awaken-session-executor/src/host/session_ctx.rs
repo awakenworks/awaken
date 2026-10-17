@@ -287,15 +287,13 @@ pub(crate) struct SessionCtx {
     /// The thread's skill registry (delivered + workspace), used to expand user
     /// `/skill-name` invocations. `None` when skills are not offered.
     pub(crate) skill_registry: Option<Arc<dyn SkillRegistry>>,
-    /// The in-flight run's cancellation token, so a concurrent `interrupt` (a
-    /// separate request) can cancel it. A plain `std::sync::Mutex` (brief locks),
-    /// held by neither the run loop nor the execution lock, so interrupt never
-    /// waits for model or tool IO.
-    pub(crate) cancel: Arc<std::sync::Mutex<Option<CancellationToken>>>,
-    /// Stable identity of the foreground Run currently being driven. Direct
-    /// execution uses `cancel`; durable execution uses this id to persist a
-    /// cancellation intent for whichever pool worker owns the claim.
-    pub(crate) active_run: std::sync::Mutex<Option<RunId>>,
+    /// The foreground Run this Session drives and the signal that interrupts
+    /// it, written together. A concurrent `interrupt` (a separate request)
+    /// observes both at once; neither the run loop nor the execution lock holds
+    /// this brief lock, so interrupt never waits for model or tool IO. Direct
+    /// execution uses the signal; durable execution uses the identity to
+    /// persist a cancellation intent for whichever pool worker owns the claim.
+    pub(crate) foreground: Arc<ForegroundRunRecord>,
     /// Serializes publication of committed step projections to the process-local
     /// protocol hub. It contains no execution position: awaiting truth is read
     /// exclusively from the committed Thread view.
@@ -311,11 +309,10 @@ pub(crate) struct SessionCtx {
 }
 
 impl SessionCtx {
+    /// Whether a foreground Run is admitted. An unreadable record counts as
+    /// active: it can never prove quiescence or let a caller detach a Run.
     pub(crate) fn has_active_run(&self) -> bool {
-        self.active_run
-            .lock()
-            .expect("active run mutex poisoned")
-            .is_some()
+        self.foreground.has_run().unwrap_or(true)
     }
 
     pub(crate) fn is_coordination_envelope(&self) -> bool {
@@ -346,23 +343,23 @@ impl SessionCtx {
         activation
     }
 
-    /// A run context carrying a fresh cancellation token, registered on this ctx so
-    /// a concurrent `interrupt` can cancel the run it drives. The ingress owns
+    /// A run context for one attempt of `run`, carrying a fresh cancellation
+    /// signal installed with `run` in the foreground record so a concurrent
+    /// `interrupt` can cancel the attempt it drives. The ingress owns
     /// per-Thread execution exclusivity; `command` only keeps Host admission and
-    /// this process-local control slot ordered around that ingress boundary.
-    pub(crate) fn context(&self) -> RuntimeRunContext {
-        let token = CancellationToken::new();
-        *self.cancel.lock().expect("cancel mutex poisoned") = Some(token.clone());
+    /// this process-local control record ordered around that ingress boundary.
+    pub(crate) fn context(&self, run: &RunId) -> Result<RuntimeRunContext, ForegroundRunPoisoned> {
+        let token = self.foreground.arm(run)?;
         let context = self
             .attempt_context
             .clone()
             .with_commit(self.commit.clone())
             .with_reader(self.commit.clone())
             .with_cancellation(token);
-        match &self.stream_checkpoint {
+        Ok(match &self.stream_checkpoint {
             Some(checkpoint) => context.with_stream_checkpoint(checkpoint.clone()),
             None => context,
-        }
+        })
     }
 }
 

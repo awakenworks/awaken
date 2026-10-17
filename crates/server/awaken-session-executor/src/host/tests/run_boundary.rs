@@ -232,6 +232,11 @@ async fn worker_interrupt_uses_resident_claim_without_coordinator_queue_operatio
     // D2 no direct hint + claim + C1 -> cancel that token, never list/requeue.
     // D3 D1/D2 + C3 -> unrelated token unchanged; no physical ACK fabricated.
     // D4 C4 -> idempotent no-op, no cold Runtime or Session materialization.
+    // D5 direct hint whose Runtime registration is absent -> the foreground
+    // signal is cancelled and the request succeeds (the former live delivery
+    // failed NotActive here and was ignored; nothing is delivered now).
+    // A later registration of the same Run after selection is the
+    // dispatch-execution selection test; it is never signalled.
     // Coordinator user interruption keeps its existing durable-intent tests.
     let local = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
@@ -264,7 +269,8 @@ async fn worker_interrupt_uses_resident_claim_without_coordinator_queue_operatio
             other,
             awaken_runtime_contract::execution::LiveInput::None,
         );
-        *ctx.active_run.lock().unwrap() = direct.then(|| run_id.clone());
+        ctx.foreground
+            .install_for_test(direct.then(|| run_id.clone()));
         worker.installed_sessions.update_run("worker-stop", |run| {
             run.context = Some(ctx.clone());
             run.dispatch_claim = Some(awaken_dispatch_contract::RunClaim {
@@ -284,6 +290,17 @@ async fn worker_interrupt_uses_resident_claim_without_coordinator_queue_operatio
         );
         drop((scope, other_scope));
     }
+    let unregistered = RunId("worker-stop-unregistered".into());
+    let foreground_signal = ctx.foreground.arm(&unregistered).unwrap();
+    worker.installed_sessions.update_run("worker-stop", |run| {
+        run.dispatch_claim = Some(awaken_dispatch_contract::RunClaim {
+            run_id: unregistered.clone(),
+            owner: "worker-old".into(),
+            epoch: 1,
+        });
+    });
+    worker.interrupt("worker-stop").await.unwrap();
+    assert!(foreground_signal.is_cancelled(), "D5 foreground signal");
     worker.interrupt("absent-worker-session").await.unwrap();
     assert!(
         !worker.installed_sessions.contains("absent-worker-session"),
@@ -1213,7 +1230,7 @@ async fn managed_primary_interrupt_recovers_the_active_dispatch_without_a_local_
         .await
         .expect("M1 resident Session");
     assert!(
-        ctx.active_run.lock().unwrap().is_none(),
+        !ctx.foreground.has_run().unwrap(),
         "M1/C3 Managed admission has no foreground hint"
     );
     host.ensure_dispatch_pool()

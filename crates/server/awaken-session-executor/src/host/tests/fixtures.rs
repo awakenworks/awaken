@@ -229,6 +229,7 @@ pub(crate) struct RemoteTerminalCleanupControl {
     pub(crate) terminal_work_release: tokio::sync::Notify,
     pub(crate) terminal_work_seen: Mutex<Vec<String>>,
     pub(crate) terminal_work_fail_for: Mutex<Option<String>>,
+    pub(crate) terminal_work_not_found: AtomicBool,
     pub(crate) terminal_work_gate: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
     pub(crate) terminal_work_active: AtomicUsize,
     pub(crate) max_terminal_work_active: AtomicUsize,
@@ -472,6 +473,11 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue
                 awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
                     "injected terminal work failure".into(),
                 ),
+            );
+        }
+        if self.terminal_work_not_found.load(Ordering::SeqCst) {
+            return Err(
+                awaken_session_realization_contract::SessionRealizationControlFailure::NotFound,
             );
         }
         if self

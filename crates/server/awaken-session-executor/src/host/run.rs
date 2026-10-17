@@ -6,7 +6,6 @@
 use super::types::VerifiedStepProjection;
 use super::*;
 use awaken_dispatch_contract::SessionContinuationOutbox as _;
-use awaken_runtime_contract::control::{LiveCommand, LiveRunControl};
 
 mod projection;
 mod quiescence;
@@ -337,57 +336,36 @@ impl SharedHost {
         thread: &str,
         commit_read: impl std::future::Future<Output = Result<Arc<HostCommit>, HostError>>,
     ) -> Result<(), HostError> {
-        // Cancellation is a control-plane operation. Resolve only an already
-        // resident Runtime accelerator; creating a context here would make an
-        // operator unable to recover the exact Runs whose Environment cannot be
-        // realized. Durable dispatch and committed Thread truth remain the
-        // authorities for cold Managed Sessions.
-        let (resident, installed_claim) = self
+        // Snapshot original controls under the canonical Slot lock before
+        // durable I/O. Physical revocation consumes this same selection kernel.
+        // An unreadable foreground record refuses the request before any effect.
+        let selected = self
             .installed_sessions
-            .read_run(thread, |run| {
-                (
-                    run.context.clone(),
-                    run.dispatch_claim
-                        .as_ref()
-                        .map(|claim| claim.run_id.clone()),
-                )
-            })
-            .unwrap_or_default();
-        // Select the original local controls before any durable read or intent
-        // await. A retained SessionCtx may serve a later Run; reading its mutable
-        // token after that await would cancel the successor. The Run hint guards
-        // this short snapshot, while cancellation remains the existing token.
-        let (active_run, cancellation) = resident
-            .as_ref()
-            .map(|ctx| {
-                let active = ctx.active_run.lock().expect("active run mutex poisoned");
-                let cancellation = ctx.cancel.lock().expect("cancel mutex poisoned").clone();
-                (active.clone(), cancellation)
-            })
+            .read_run(
+                thread,
+                crate::installed_session::SessionRunBinding::select_interruption,
+            )
+            .transpose()?
             .unwrap_or_default();
         if !self.authority.cancels_through_durable_intent() {
             // A Worker revokes its resident attempt, not the Coordinator's
-            // durable cancellation intent. Its transport deliberately cannot
-            // list/requeue/cancel the global queue. Reuse the installed claim
-            // and Runtime's existing local signal even after lease loss; this
-            // cannot authorize a replacement attempt or acknowledge return.
-            if let Some(ctx) = resident.as_ref() {
-                let run_id = active_run.or(installed_claim);
-                if let Some(run_id) = run_id {
-                    let _ = ctx.runtime.deliver(LiveCommand::Cancel { run_id });
-                }
-                if let Some(token) = cancellation.as_ref() {
-                    token.cancel();
-                }
+            // durable cancellation intent: its transport cannot list, requeue
+            // or cancel the global queue. It signals the Runtime registration
+            // selected above (by foreground Run or installed claim) and the
+            // foreground signal, never a later registration of the same Run.
+            if let Some(local) = &selected.local {
+                local.interrupt();
             }
             return Ok(());
         }
+        let active_run = selected.local.as_ref().and_then(|local| local.active_run());
+        let resident = selected.resident;
         if let (Some(ctx), Some(ingress), Some(run_id)) = (
             resident.as_ref(),
             resident
                 .as_ref()
                 .and_then(|ctx| ctx.delivery.is_durable().then_some(&ctx.claimed_worker)),
-            active_run.as_ref(),
+            active_run,
         ) {
             if self.dispatch.dispatch_pool.get().is_some() {
                 // The process pool is the sole durable claim driver. This edge
@@ -409,8 +387,8 @@ impl SharedHost {
                 .await
                 .map_err(|error| HostError::internal(error.to_string()))?;
             }
-            if let Some(token) = cancellation.as_ref() {
-                token.cancel();
+            if let Some(local) = &selected.local {
+                local.interrupt();
             }
             return Ok(());
         }
@@ -439,11 +417,11 @@ impl SharedHost {
                 .await?;
             }
         }
-        // Direct/foreground ACP attempts retain this exact token outside the
-        // Runtime registry. Durable paths reach it only after intent persistence;
-        // direct paths have no durable ordering precondition.
-        if let Some(token) = cancellation {
-            token.cancel();
+        // The selected control owns both original registration and direct/ACP
+        // signals. Durable paths reach it only after intent persistence; it
+        // never looks up a later registration by mutable Run identity.
+        if let Some(local) = &selected.local {
+            local.interrupt();
         }
         Ok(())
     }
@@ -631,7 +609,7 @@ impl SharedHost {
         {
             Ok(state) => state,
             Err(error) => {
-                Self::clear_active_run(&ctx, &run_id);
+                Self::clear_active_run(&ctx, &run_id)?;
                 return Err(HostError::internal(error.to_string()));
             }
         };
@@ -661,11 +639,11 @@ impl SharedHost {
         command: ResumeCommand,
     ) -> Result<RunState, HostError> {
         let run_id = activation.run_id.clone();
-        *ctx.active_run.lock().expect("active run mutex poisoned") = Some(run_id.clone());
+        ctx.foreground.begin(run_id.clone())?;
         if ctx.delivery.is_durable() {
             let result = self.resume_durable_foreground(ctx, command).await;
             if result.is_err() {
-                Self::clear_active_run(ctx, &run_id);
+                Self::clear_active_run(ctx, &run_id)?;
             }
             return result;
         }
@@ -680,7 +658,7 @@ impl SharedHost {
             .resume(activation, command, context)
             .await;
         if result.is_err() {
-            Self::clear_active_run(ctx, &run_id);
+            Self::clear_active_run(ctx, &run_id)?;
         }
         result.map_err(|error| HostError::internal(error.to_string()))
     }
@@ -1298,11 +1276,9 @@ impl SharedHost {
         Ok(result)
     }
 
-    fn clear_active_run(ctx: &SessionCtx, run_id: &RunId) {
-        let mut active = ctx.active_run.lock().expect("active run mutex poisoned");
-        if active.as_ref() == Some(run_id) {
-            *active = None;
-        }
+    fn clear_active_run(ctx: &SessionCtx, run_id: &RunId) -> Result<(), HostError> {
+        ctx.foreground.release(run_id)?;
+        Ok(())
     }
 
     async fn finish_active_step(
@@ -1317,7 +1293,7 @@ impl SharedHost {
         let result = self
             .finish_step(ctx, run_id, state, expectation, thread)
             .await;
-        Self::clear_active_run(ctx, &active_run);
+        Self::clear_active_run(ctx, &active_run)?;
         result
     }
 

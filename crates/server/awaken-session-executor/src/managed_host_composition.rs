@@ -48,13 +48,17 @@ impl ManagedHost {
             .installed_sessions
             .read(thread, |slot| {
                 (
-                    slot.run.context.as_ref().and_then(|context| {
-                        context
-                            .active_run
-                            .lock()
-                            .expect("active run mutex poisoned")
-                            .clone()
-                    }),
+                    slot.run
+                        .context
+                        .as_ref()
+                        .map(|context| {
+                            context
+                                .foreground
+                                .observe()
+                                .map(|foreground| foreground.run)
+                        })
+                        .transpose()
+                        .map(Option::flatten),
                     slot.inputs.baseline.is_some() || slot.run.session_dispatch,
                     slot.run
                         .context
@@ -62,8 +66,11 @@ impl ManagedHost {
                         .is_some_and(|context| context.is_coordination_envelope()),
                 )
             })
-            .unwrap_or((None, false, false));
-        match active_projection {
+            .unwrap_or((Ok(None), false, false));
+        let (active_run, installed, coordination) = active_projection;
+        let active_run = active_run
+            .map_err(|poisoned| crate::managed_adapter_error::to_run_error(poisoned.into()))?;
+        match (active_run, installed, coordination) {
             // A coordination envelope owns no execution projection. Even when
             // it wins the cache race before a Worker claim, the Worker must run
             // the canonical realization driver and install its lease before

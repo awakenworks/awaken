@@ -1595,7 +1595,9 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
         .ctx_for("active-projection", None)
         .await
         .expect("P2 pre-projection context");
-    *active.active_run.lock().expect("active run mutex") = Some(RunId("active-run".into()));
+    active
+        .foreground
+        .install_for_test(Some(RunId("active-run".into())));
     let error = crate::ManagedHost::new(host.clone())
         .install_test_session_init(
             "active-projection",
@@ -1641,8 +1643,9 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
         .ctx_for("active-frozen-projection", None)
         .await
         .expect("P4 context built after frozen authority");
-    *frozen_active.active_run.lock().expect("active run mutex") =
-        Some(RunId("frozen-active-run".into()));
+    frozen_active
+        .foreground
+        .install_for_test(Some(RunId("frozen-active-run".into())));
     crate::ManagedHost::new(host.clone())
         .install_test_session_init("active-frozen-projection", frozen_init)
         .await
@@ -1739,7 +1742,9 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
         .expect("validated Host dependencies");
     let _local_managed = install_test_dispatch_runtime(&local);
     let local_ctx = local.ctx_for("local-live", None).await.expect("L6 context");
-    *local_ctx.active_run.lock().expect("active run mutex") = Some(RunId("run-local".into()));
+    local_ctx
+        .foreground
+        .install_for_test(Some(RunId("run-local".into())));
     let tracking = local_ctx.runtime.begin_active_attempt(
         &RunId("run-local".into()),
         &local_ctx.thread_id,
@@ -1768,7 +1773,9 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
         .ctx_for("remote-live", None)
         .await
         .expect("L7 context");
-    *remote_ctx.active_run.lock().expect("active run mutex") = Some(RunId("run-remote".into()));
+    remote_ctx
+        .foreground
+        .install_for_test(Some(RunId("run-remote".into())));
     assert!(remote.live_inbox("remote-live").await.is_none(), "L7/E3");
 }
 
