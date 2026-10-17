@@ -94,7 +94,7 @@ pub struct InMemorySessionRealizations {
 #[derive(Default)]
 struct InMemorySession {
     inputs: std::sync::Arc<crate::frozen_inputs::FrozenSessionInputs>,
-    realization: crate::session_realizations::SessionRealization,
+    realization: crate::realization_state::SessionRealization,
     run: InMemoryRun,
 }
 

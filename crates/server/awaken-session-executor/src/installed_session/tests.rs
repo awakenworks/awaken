@@ -42,7 +42,7 @@ fn dispatch_resource_manifest_has_one_session_generation_selector() {
         });
         let slot = InstalledSession {
             realization: SessionRealization {
-                staging: crate::resource_staging::ResourceStagingState {
+                staging: crate::realization_state::ResourceStagingState {
                     manifest: active.clone(),
                     transition,
                     ..Default::default()
@@ -81,7 +81,7 @@ fn environment_only_session_lease_remains_supervised() {
     let slots = Arc::new(InstalledSessions::default());
     slots.install_realization("environment-only", |r| {
         assert!(!r.staging.mcp.has_frozen_attachment(), "C2");
-        r.execution.authority = crate::session_realizations::SessionRealizationAuthority::Live(
+        r.execution.authority = crate::realization_state::SessionRealizationAuthority::Live(
             test_observed_lease(crate::session_resource::SessionRealizationLease {
                 owner: "worker".into(),
                 runtime_incarnation: "worker/incarnation".into(),

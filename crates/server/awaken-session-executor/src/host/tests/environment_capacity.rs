@@ -205,7 +205,10 @@ fn executor(
     runs_local_dispatch_pool: bool,
     warm_pool: crate::WarmPool,
     fail: bool,
-) -> (crate::RealizationExecutor, Arc<RecordingCapacity>) {
+) -> (
+    crate::realization_executor::RealizationExecutor,
+    Arc<RecordingCapacity>,
+) {
     let root = std::env::temp_dir().join(format!("capacity-{}", uuid::Uuid::new_v4().simple()));
     let recording = Arc::new(RecordingCapacity {
         inner: crate::uninstalled_environment::default_session_provider(root.clone()),
@@ -222,7 +225,7 @@ fn executor(
         warm_pool,
     );
     (
-        crate::RealizationExecutor {
+        crate::realization_executor::RealizationExecutor {
             clock: awaken_time::system_clock(),
             environments: crate::environment_holding::EnvironmentHolding::new(
                 env,
@@ -250,7 +253,7 @@ fn executor(
                 ),
             ),
             cleanup: crate::terminal_cleanup::TerminalCleanup {
-                artifacts: Arc::new(crate::provisioning::ArtifactHarvester::new(
+                artifacts: Arc::new(crate::artifact_harvest::ArtifactHarvester::new(
                     sessions.clone(),
                     "capacity-workspace".into(),
                     Arc::new(awaken_resource_contract::UnavailableArtifactPublisher),
@@ -405,7 +408,10 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
     );
 }
 
-fn executor_for_failure() -> (crate::RealizationExecutor, Arc<RecordingCapacity>) {
+fn executor_for_failure() -> (
+    crate::realization_executor::RealizationExecutor,
+    Arc<RecordingCapacity>,
+) {
     executor(true, crate::WarmPool::new(2, 4), true)
 }
 

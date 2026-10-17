@@ -141,7 +141,6 @@ pub use crate::host::{
 };
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::no_model::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};
-pub use crate::realization_executor::RealizationExecutor;
 pub use crate::run_application_host::RunApplicationHost;
 use awaken_credential_materializer::{CredentialRefreshFactory, PinnedCredentialMaterializer};
 use awaken_resource_contract::FileContentSource;
@@ -1410,10 +1409,10 @@ pub(crate) use awaken_session_configuration_contract::resource as session_resour
 #[cfg(test)]
 use awaken_session_realization::environment_owner;
 use awaken_session_realization::{
-    cache_volume, environment_holding, environment_providers, frozen_inputs, managed_input_layout,
-    memory_binding, provisioning, realization_error, realization_executor, resource_staging,
-    session_environment, session_publication, session_realizations, skill_delivery,
-    staged_resources, terminal_cleanup,
+    artifact_harvest, cache_volume, environment_holding, environment_providers, frozen_inputs,
+    managed_input_layout, memory_binding, realization_error, realization_executor,
+    realization_state, resource_staging, sandbox_projection, session_environment,
+    session_publication, session_realizations, skill_delivery, staged_resources, terminal_cleanup,
 };
 #[cfg(test)]
 #[path = "realization_composed_tests/mod.rs"]

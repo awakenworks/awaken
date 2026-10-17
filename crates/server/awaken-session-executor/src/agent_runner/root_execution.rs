@@ -223,7 +223,7 @@ async fn run_configured_agent_inner(
     let created = match &sandbox {
         AgentRunSandbox::Fresh(provider) => Some(
             provider
-                .create_rooted_sandbox(&crate::provisioning::agent_run_sandbox_spec(thread))
+                .create_rooted_sandbox(&crate::sandbox_projection::agent_run_sandbox_spec(thread))
                 .await
                 .map_err(|error| AgentRunError::Provisioning(error.to_string()))?,
         ),

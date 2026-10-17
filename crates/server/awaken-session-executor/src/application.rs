@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use futures_util::StreamExt as _;
 
-use crate::session_realizations::ResourcePreparation;
+use crate::resource_staging::ResourcePreparation;
 use awaken_dispatch_contract::RunClaim;
 use awaken_session_realization_contract::CanonicalSessionProjection;
 use awaken_session_realization_contract::{
@@ -740,7 +740,7 @@ impl crate::SharedHost {
         self.installed_sessions.install(thread);
         let _resource_projection = sessions.lock_resource_projection(thread).await?;
         let receipt =
-            crate::session_realizations::FrozenProjectionReceipt::from_projection(&projection)?;
+            crate::realization_state::FrozenProjectionReceipt::from_projection(&projection)?;
         sessions.update_realization(thread, |r| r.validate_projection_receipt(&receipt))??;
         let (publication, model_candidate) =
             exec.publication.resolve_canonical_session_projection(

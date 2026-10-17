@@ -1,6 +1,6 @@
 // @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 use super::*;
-use crate::session_realizations::SessionRealizationAuthority;
+use crate::realization_state::SessionRealizationAuthority;
 use awaken_provisioning_contract::test_support::FenceTamper as _;
 use awaken_provisioning_contract::{CurrentExecutionAuthority, SandboxEffectFence};
 use awaken_session_configuration_contract::resource as session_resource;

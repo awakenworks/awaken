@@ -97,7 +97,6 @@
     "awaken-sandbox-local": 3,
     "awaken-session-application": 2,
     "awaken-session-mcp": 3,
-    "awaken-session-realization": 6,
     "awaken-tool-contract": 2,
     "awaken-worker-contract": 3
   },
@@ -367,7 +366,7 @@
     "awaken-session-realization::environment_lifecycle/terminal_preparation.rs::prepare_terminal_environment_under_lifecycle": 228,
     "awaken-session-realization::managed_resource_projection.rs::apply_session_inputs_body": 435,
     "awaken-session-realization::managed_resource_projection.rs::stage_resolved_input_with_resource_authority": 297,
-    "awaken-session-realization::provisioning.rs::repository_operation_credential": 195,
+    "awaken-session-realization::resource_staging/repository_activation.rs::repository_operation_credential": 195,
     "awaken-session-realization::worker_projection/projection_synchronizer.rs::synchronize_session_projection": 220,
     "awaken-session-store::postgres.rs::commit": 151,
     "awaken-session-store::sqlite.rs::commit": 155,
@@ -397,9 +396,6 @@
     "impl-spread": {
       "awaken-runtime::Runtime": "Inject the existing shared WallClock at Runtime and Host composition; fail before approval or Fresh child effects; retain one approval loop and no ambient clock",
       "awaken-session-state-contract::PersistedSession": "P0 original-effect provenance after duplication review: Root adds one read-only getter for private history; existing App binding sink admits first intent with the same single 3-attempt CAS/readback protocol, no new public domain selector; Host retains full candidate intent and rejects missing Managed authority before I/O; existing keys/Resident matcher/ProviderEffect kernels shared. Preserve host part, dependency budgets, admission/formal/physical requirements and R/W21 extraction targets.; then: Native terminal-cleanup P0: retain original operation/epoch/Thread/Run in the existing activity CAS, expose one read-only history and one replay identity law; migrate exact root/coordinated/reply/budget consumers, consolidate resident recovery, preserve legacy Unknown; remaining application split belongs to W21"
-    },
-    "module-cycle": {
-      "awaken-session-realization": "R extraction onto main822 (ADR-0089/plan10.4): original long-function key identities migrate to the new crate; borrowed component/MCP callback signatures add plumbing only. Record inherited R module cycle6 and correct Host measurement including existing E/H Run/dispatch glue. Whole Host and internal deps shrink; final Host<20k/26-28deps, cycles and remaining persistence-port debt are not claimed complete. Current main MemoryExecutionContent replaces the removed broad repository throughout the extracted source; no compatibility implementation."
     },
     "long-function": {
       "awaken-session-executor::agent_runner/child_execution.rs::run_configured_agent_until_boundary": "Inject the existing shared WallClock at Runtime and Host composition; fail before approval or Fresh child effects; retain one approval loop and no ambient clock",

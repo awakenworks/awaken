@@ -409,7 +409,7 @@ async fn artifact_decorator_holds_same_owner_until_real_publication_finishes() {
             });
             dependencies.resources.artifact_publisher = publisher.clone();
             let host = dependencies.build().unwrap();
-            let spec = crate::provisioning::agent_run_sandbox_spec("lifetime-thread");
+            let spec = crate::sandbox_projection::agent_run_sandbox_spec("lifetime-thread");
             let environment = Arc::new(
                 awaken_session_environment::SandboxEnvironment::workdir(
                     awaken_sandbox_local::LocalProvider::new(storage.path())

@@ -156,7 +156,7 @@ impl SessionAcpCapabilityNegotiator {
             Result<NegotiatedAcpCapabilities, pc::SandboxError>,
         >,
     ) -> Result<NegotiatedAcpCapabilities, pc::SandboxError> {
-        let spec = crate::provisioning::agent_run_sandbox_spec(scope);
+        let spec = crate::sandbox_projection::agent_run_sandbox_spec(scope);
         let environment = self
             .host
             .realizer

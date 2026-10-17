@@ -14,7 +14,7 @@ use crate::realization_error::{RealizationError, RealizationLock};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::session_realizations::SessionRealization;
+use crate::realization_state::SessionRealization;
 /// The exclusion every realization phase driver must hold is contract-owned
 /// (`SessionRealizationPermit`); this crate only supplies the Session slot
 /// allocation as its identity.

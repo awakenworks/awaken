@@ -674,7 +674,7 @@ mod tests {
         let env = Arc::new(
             awaken_session_environment::SandboxEnvironment::workdir(
                 provider
-                    .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
+                    .create_sandbox(&crate::sandbox_projection::agent_run_sandbox_spec("t"))
                     .await
                     .unwrap(),
             )
@@ -739,7 +739,7 @@ mod tests {
         let env = Arc::new(
             awaken_session_environment::SandboxEnvironment::workdir(
                 LocalProvider::new(&base)
-                    .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
+                    .create_sandbox(&crate::sandbox_projection::agent_run_sandbox_spec("t"))
                     .await
                     .unwrap(),
             )
@@ -814,7 +814,9 @@ mod tests {
         let env = Arc::new(
             awaken_session_environment::SandboxEnvironment::workdir(
                 LocalProvider::new(base.path())
-                    .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("skill-path"))
+                    .create_sandbox(&crate::sandbox_projection::agent_run_sandbox_spec(
+                        "skill-path",
+                    ))
                     .await
                     .unwrap(),
             )
@@ -971,7 +973,7 @@ mod tests {
         let env = Arc::new(
             awaken_session_environment::SandboxEnvironment::workdir(
                 LocalProvider::new(&base)
-                    .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
+                    .create_sandbox(&crate::sandbox_projection::agent_run_sandbox_spec("t"))
                     .await
                     .unwrap(),
             )
@@ -1033,7 +1035,7 @@ mod tests {
         let env = Arc::new(
             awaken_session_environment::SandboxEnvironment::workdir(
                 LocalProvider::new(&base)
-                    .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
+                    .create_sandbox(&crate::sandbox_projection::agent_run_sandbox_spec("t"))
                     .await
                     .unwrap(),
             )
@@ -1167,7 +1169,7 @@ mod tests {
         let env = Arc::new(
             awaken_session_environment::SandboxEnvironment::workdir(
                 LocalProvider::new(base.path())
-                    .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
+                    .create_sandbox(&crate::sandbox_projection::agent_run_sandbox_spec("t"))
                     .await
                     .unwrap(),
             )
@@ -1227,7 +1229,7 @@ mod tests {
         let env = Arc::new(
             awaken_session_environment::SandboxEnvironment::workdir(
                 LocalProvider::new(&base)
-                    .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
+                    .create_sandbox(&crate::sandbox_projection::agent_run_sandbox_spec("t"))
                     .await
                     .unwrap(),
             )

@@ -584,6 +584,27 @@ impl From<RealizationError> for RunError {
     }
 }
 
+/// A CacheVolume failure is classified here, with every other realization
+/// failure, so one place decides its disposition.
+impl crate::cache_volume::CacheVolumeError {
+    /// A wrong location is a deployment fault no retry repairs; a provider step
+    /// keeps the provider's class; every other failure may succeed later.
+    #[must_use]
+    pub fn disposition(&self) -> Disposition {
+        match self {
+            Self::UnsupportedLocation(_) => Disposition::Terminal,
+            Self::Environment { source, .. } => {
+                RealizationError::Environment(source.clone()).disposition()
+            }
+            Self::Task(_)
+            | Self::Directory(_)
+            | Self::InitializerExited(_)
+            | Self::Initializer(_) => Disposition::Retry,
+            Self::Volume { source, .. } => source.disposition(),
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "realization_error/tests.rs"]
 mod tests;

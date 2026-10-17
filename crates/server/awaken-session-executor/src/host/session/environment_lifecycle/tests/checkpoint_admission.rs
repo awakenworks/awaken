@@ -38,7 +38,7 @@ impl awaken_provisioning_contract::SandboxCheckpointStore for PendingUploadStore
 
 #[tokio::test]
 async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_and_store_waits() {
-    use crate::session_realizations::SessionRealizationAuthority as Authority;
+    use crate::realization_state::SessionRealizationAuthority as Authority;
     use awaken_provisioning_contract as pc;
     use awaken_provisioning_contract::test_support::FenceTamper as _;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -279,7 +279,7 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
         .build()
         .expect("validated Host dependencies");
         host.installed_sessions.install_realization(thread, |r| {
-            r.execution.authority = crate::session_realizations::SessionRealizationAuthority::Live(
+            r.execution.authority = crate::realization_state::SessionRealizationAuthority::Live(
                 awaken_session_realization::test_support::test_observed_lease(lease.clone()),
             );
         });
@@ -318,7 +318,7 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
                 .realizations()
                 .update_realization(thread, |r| {
                     r.execution.authority =
-                        crate::session_realizations::SessionRealizationAuthority::Closed(Some(
+                        crate::realization_state::SessionRealizationAuthority::Closed(Some(
                             lease.clone(),
                         ));
                 })
@@ -333,7 +333,7 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
                     }
                     next.expires_at_unix_ms += 10_000;
                     r.execution.authority =
-                        crate::session_realizations::SessionRealizationAuthority::Live(
+                        crate::realization_state::SessionRealizationAuthority::Live(
                             awaken_session_realization::test_support::test_observed_lease(next),
                         );
                 })
@@ -359,12 +359,9 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
         host.installed_sessions
             .realizations()
             .update_realization(thread, |r| {
-                r.execution.authority =
-                    crate::session_realizations::SessionRealizationAuthority::Live(
-                        awaken_session_realization::test_support::test_observed_lease(
-                            lease.clone(),
-                        ),
-                    );
+                r.execution.authority = crate::realization_state::SessionRealizationAuthority::Live(
+                    awaken_session_realization::test_support::test_observed_lease(lease.clone()),
+                );
             })
             .expect("installed Sessions");
         host.realizer
@@ -382,7 +379,7 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
 
 #[tokio::test]
 async fn suspension_and_terminal_admission_use_live_observation_and_never_reopen_closed_slots() {
-    use crate::session_realizations::SessionRealizationAuthority as Authority;
+    use crate::realization_state::SessionRealizationAuthority as Authority;
     use awaken_session_configuration_contract::resource::SessionRealizationLease;
     use awaken_session_realization_contract::SessionRealizationLeaseReceipt;
 
