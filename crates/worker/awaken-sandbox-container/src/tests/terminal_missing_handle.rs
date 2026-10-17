@@ -152,7 +152,7 @@ async fn exact_created_pod_reenters_the_existing_handle_bound_terminal_path() {
             Some("claim-uid".into()),
         ));
     }
-    retained_runtime.set_observation(pc::SandboxObservation::Provisioning);
+    retained_runtime.set_observation(pc::SandboxObservation::Provisioning { deadline: None });
     let retained_provider = provider_without_broker(retained_runtime.clone());
     let mut retained = empty.clone();
     retained.filesystem_continuity = pc::FilesystemContinuity::Retained;

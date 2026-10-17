@@ -844,7 +844,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         }
         match self.observe_container_handle(handle).await? {
             pc::SandboxObservation::Ready => {}
-            pc::SandboxObservation::Provisioning => {
+            pc::SandboxObservation::Provisioning { .. } => {
                 return Err(pc::SandboxError::not_ready(
                     "container realization is still provisioning",
                 ));
@@ -893,7 +893,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 )
                 .await
             }
-            pc::SandboxObservation::Provisioning => Err(pc::SandboxError::not_ready(
+            pc::SandboxObservation::Provisioning { .. } => Err(pc::SandboxError::not_ready(
                 "container realization is still provisioning",
             )),
             pc::SandboxObservation::DefinitivelyUnavailable { .. } => Err(pc::SandboxError::gone(
@@ -1149,7 +1149,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 )
                 .await
             }
-            pc::SandboxObservation::Provisioning => Err(pc::SandboxError::not_ready(
+            pc::SandboxObservation::Provisioning { .. } => Err(pc::SandboxError::not_ready(
                 "container realization is still provisioning",
             )),
             pc::SandboxObservation::DefinitivelyUnavailable { .. } => Err(pc::SandboxError::gone(
