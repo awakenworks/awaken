@@ -308,6 +308,7 @@ pub(crate) fn error_response(err: StateError) -> (StatusCode, Json<ErrorResponse
             }
             RunErrorKind::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "api_error", e.message),
             RunErrorKind::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "api_error", e.message),
+            RunErrorKind::Conflict => (StatusCode::CONFLICT, "invalid_request_error", e.message),
         },
         // No compatible route emits these errors. Keep the generic envelope for
         // internal exhaustive mapping; awaken-protocol-awaken owns the extension's

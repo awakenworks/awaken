@@ -35,6 +35,7 @@ fn driver_fault(error: &RunApplicationError) -> (StatusCode, i32) {
         RunErrorClassification::UnsupportedOutputModes => (StatusCode::BAD_REQUEST, -32005),
         RunErrorClassification::InvalidRequest => (StatusCode::BAD_REQUEST, -32602),
         RunErrorClassification::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, -32603),
+        RunErrorClassification::Conflict => (StatusCode::CONFLICT, -32603),
         _ => (StatusCode::INTERNAL_SERVER_ERROR, -32603),
     }
 }
@@ -50,6 +51,7 @@ pub(super) fn error_response(err: RunApplicationError) -> Response {
         (RunErrorKind::BadRequest, message) => (StatusCode::BAD_REQUEST, -32600, message),
         (RunErrorKind::Internal, message) => (StatusCode::INTERNAL_SERVER_ERROR, -32603, message),
         (RunErrorKind::Unavailable, message) => (StatusCode::SERVICE_UNAVAILABLE, -32603, message),
+        (RunErrorKind::Conflict, message) => (StatusCode::CONFLICT, -32603, message),
     };
     (status, Json(ErrorResponse::new(code, message))).into_response()
 }

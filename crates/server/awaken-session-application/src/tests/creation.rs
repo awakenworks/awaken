@@ -130,7 +130,13 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingCreateRu
                     "injected retryable projection failure",
                 ));
             }
-            2 => return Err(RunError::internal("injected terminal projection failure")),
+            2 => {
+                return Err(RunError::classified(
+                    "session_realization_invariant_violated",
+                    "injected terminal projection failure",
+                ));
+            }
+            3 => return Err(RunError::internal("injected unknown projection failure")),
             _ => {}
         }
         Ok(())
@@ -1649,7 +1655,8 @@ async fn committed_create_conflicts_recover_only_through_the_exact_receipt() {
 #[tokio::test]
 async fn create_failure_cleanup_is_authorized_only_by_a_terminal_durable_root() {
     // Cleanup-admission cause/effect graph. C1 projection failure is retryable
-    // unavailable/nonretryable internal; C2 the canonical failure command leaves
+    // unavailable/nonretryable classified internal/unclassified internal (a
+    // bounded retry); C2 the canonical failure command leaves
     // the root nonterminal/commits ActivationFailed. Effects: E1 both creates
     // retain the original effect error; E2 a nonterminal root keeps cleanup
     // unfenced for lifecycle retry; E3 only the terminal root enters and fences
@@ -1658,8 +1665,9 @@ async fn create_failure_cleanup_is_authorized_only_by_a_terminal_durable_root() 
     // | Rule | Effect | Durable root | Cleanup |
     // |---|---|---|---|
     // | F1 | unavailable | nonterminal | E1+E2 |
-    // | F2 | internal | ActivationFailed | E1+E3 |
-    for (rule, failure, terminal) in [("F1", 1, false), ("F2", 2, true)] {
+    // | F2 | classified internal | ActivationFailed | E1+E3 |
+    // | F3 | unclassified internal | nonterminal | E1+E2 |
+    for (rule, failure, terminal) in [("F1", 1, false), ("F2", 2, true), ("F3", 3, false)] {
         let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
                 .await

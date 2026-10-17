@@ -23,7 +23,7 @@ use awaken_session_configuration_contract::SessionInit;
 use awaken_session_execution_contract::{OutcomeDrive, SessionRuntime, ToolPermissionDecision};
 use awaken_session_state_contract::{PersistedSession, SessionExecutionState};
 use awaken_session_store::SqliteManagedSessionRepository;
-use awaken_session_types::{RunError, RunErrorKind};
+use awaken_session_types::RunError;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -40,7 +40,7 @@ struct PreparingFake {
     staged: Arc<Mutex<Vec<awaken_session_configuration_contract::mcp::StageMcpAttachment>>>,
     observed_durable: Arc<Mutex<Vec<PersistedSession>>>,
     repo: Option<Arc<dyn awaken_session_repository_contract::SessionStore>>,
-    fail_with: Option<RunErrorKind>,
+    fail_with: Option<fn() -> RunError>,
 }
 
 #[derive(Default)]
@@ -194,11 +194,7 @@ impl awaken_session_execution_contract::RealizationRuntime for PreparingFake {
                 .unwrap()
                 .push(projection.session_init());
             match self.fail_with {
-                Some(RunErrorKind::BadRequest) => Err(RunError::bad_request("prepare refused")),
-                Some(RunErrorKind::Internal) => Err(RunError::internal("prepare blew up")),
-                Some(RunErrorKind::Unavailable) => {
-                    Err(RunError::unavailable("environment image is not ready"))
-                }
+                Some(failure) => Err(failure()),
                 None => Ok(()),
             }
         } else {
@@ -1126,7 +1122,7 @@ async fn hot_harness_with_repo(
 
 /// Sessions + vaults over ONE shared `VaultState`, the way the server mounts
 /// them, so a credential entered through the vault routes is bindable at create.
-async fn harness(fail_with: Option<RunErrorKind>) -> Harness {
+async fn harness(fail_with: Option<fn() -> RunError>) -> Harness {
     let secrets = Arc::new(InMemorySecretStore::new());
     let credentials = Arc::new(InMemoryCredentialRepo::new());
     let vaults = Arc::new(support::vault(secrets, credentials));
@@ -1833,11 +1829,14 @@ async fn known_plus_unknown_vault_id_still_fails_the_create() {
 
 #[tokio::test]
 async fn failing_complete_projection_fails_the_create_with_the_mapped_envelope() {
-    // Cause/effect decision table: R1 permanent internal preparation failure
-    // maps to 500/api_error; R2 caller-invalid preparation maps to
-    // 400/invalid_request_error; R3 transient Environment image readiness maps
-    // to 503/api_error while retaining a queryable Preparing intent for fenced
-    // retry. Permanent failures remain queryable activation_failed roots but
+    // Cause/effect decision table: R1 permanent (classified) internal
+    // preparation failure maps to 500/api_error; R2 caller-invalid preparation
+    // maps to 400/invalid_request_error; R3 transient Environment image
+    // readiness maps to 503/api_error while retaining a queryable Preparing
+    // intent for fenced retry; R4 an unclassified internal failure maps to
+    // 500/api_error and R5 a state conflict to 409/invalid_request_error, both
+    // retaining the Preparing intent like R3 (a bounded retry that consumed one
+    // attempt of the realization budget). Permanent failures remain queryable activation_failed roots but
     // project as terminated/failed. FMECA: classifying every outage as permanent
     // loses recovery; projecting a permanent failure as live admits Runs without
     // a Runtime; hiding it loses the durable cause and makes exact GET disagree
@@ -1850,24 +1849,42 @@ async fn failing_complete_projection_fails_the_create_with_the_mapped_envelope()
     // Constraint K0: this preparation-only fixture commits no Run, so its one
     // atomic Thread recovery query returns None; unsupported production runtimes
     // remain fail-closed rather than falling back to split transcript reads.
-    for (kind, status, error_type) in [
+    /// Rule, the preparation failure, its create status and error type.
+    type Row = (&'static str, fn() -> RunError, StatusCode, &'static str);
+    let rows: [Row; 5] = [
         (
-            RunErrorKind::Internal,
+            "R1",
+            || RunError::classified("session_realization_invariant_violated", "prepare blew up"),
             StatusCode::INTERNAL_SERVER_ERROR,
             "api_error",
         ),
         (
-            RunErrorKind::BadRequest,
+            "R2",
+            || RunError::bad_request("prepare refused"),
             StatusCode::BAD_REQUEST,
             "invalid_request_error",
         ),
         (
-            RunErrorKind::Unavailable,
+            "R3",
+            || RunError::unavailable("environment image is not ready"),
             StatusCode::SERVICE_UNAVAILABLE,
             "api_error",
         ),
-    ] {
-        let h = harness(Some(kind)).await;
+        (
+            "R4",
+            || RunError::internal("prepare blew up for an unknown reason"),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "api_error",
+        ),
+        (
+            "R5",
+            || RunError::conflict("Session changed concurrently"),
+            StatusCode::CONFLICT,
+            "invalid_request_error",
+        ),
+    ];
+    for (kind, failure, status, error_type) in rows {
+        let h = harness(Some(failure)).await;
         let body = call(
             &h.app,
             "POST",
@@ -1901,14 +1918,14 @@ async fn failing_complete_projection_fails_the_create_with_the_mapped_envelope()
             .get(&failed_id)
             .await
             .expect("recoverable failed intent");
-        if kind == RunErrorKind::Unavailable {
-            assert_eq!(read["status"], "rescheduling", "R3");
-            assert_eq!(failed.execution, SessionExecutionState::Preparing, "R3");
-            assert_eq!(failed.realization_progress.attempts, 1, "R3");
+        if matches!(kind, "R3" | "R4" | "R5") {
+            assert_eq!(read["status"], "rescheduling", "{kind}");
+            assert_eq!(failed.execution, SessionExecutionState::Preparing, "{kind}");
+            assert_eq!(failed.realization_progress.attempts, 1, "{kind}");
             assert_eq!(
                 failed.mcp.attachments[0].state,
                 awaken_session_configuration_contract::mcp::McpAttachmentState::Realizing,
-                "R3"
+                "{kind}"
             );
         } else {
             assert_eq!(read["status"], "terminated", "R1/R2: {kind:?}");
@@ -1918,14 +1935,10 @@ async fn failing_complete_projection_fails_the_create_with_the_mapped_envelope()
                 SessionExecutionState::ActivationFailed,
                 "R1/R2: {kind:?}"
             );
-            let expected_cause = match kind {
-                RunErrorKind::BadRequest => "run failed: prepare refused",
-                RunErrorKind::Internal => "run failed: prepare blew up",
-                RunErrorKind::Unavailable => unreachable!("R3 remains preparing"),
-            };
+            let expected_cause = format!("run failed: {}", failure().message);
             assert_eq!(
                 failed.realization_progress.last_error.as_deref(),
-                Some(expected_cause),
+                Some(expected_cause.as_str()),
                 "R1/R2 durable root retains the exact realization cause: {kind:?}"
             );
             assert_eq!(

@@ -74,7 +74,8 @@ impl HostError {
 
 pub fn to_run_error(error: HostError) -> RunError {
     match error.kind {
-        HostErrorKind::BadRequest | HostErrorKind::Conflict => RunError::bad_request(error.message),
+        HostErrorKind::BadRequest => RunError::bad_request(error.message),
+        HostErrorKind::Conflict => RunError::conflict_classified(error.code, error.message),
         HostErrorKind::Unavailable if error.code == "unavailable" => {
             RunError::unavailable(error.message)
         }
@@ -95,6 +96,7 @@ pub fn from_run_error(error: RunError) -> HostError {
             awaken_session_types::RunErrorKind::BadRequest => HostErrorKind::BadRequest,
             awaken_session_types::RunErrorKind::Internal => HostErrorKind::Internal,
             awaken_session_types::RunErrorKind::Unavailable => HostErrorKind::Unavailable,
+            awaken_session_types::RunErrorKind::Conflict => HostErrorKind::Conflict,
         },
         code: error.code,
     }
@@ -164,14 +166,17 @@ mod tests {
 
     #[test]
     fn run_and_host_error_projection_preserves_fault_and_code() {
-        // Cause/effect table: C1 Run fault is BadRequest/Internal/Unavailable;
-        // C2 its code is default/custom. Every row must preserve both fields
-        // through Run -> Host -> Run so lifecycle adapters cannot turn a stale
-        // lease into an absorbing Internal error or erase a stable diagnosis.
+        // Cause/effect table: C1 Run fault is BadRequest/Internal/Unavailable/
+        // Conflict; C2 its code is default/custom. Every row must preserve both
+        // fields through Run -> Host -> Run so lifecycle adapters cannot turn a
+        // stale lease into an absorbing Internal error, flatten a conflict into
+        // a request fault or erase a stable diagnosis.
         for original in [
             RunError::bad_request("bad"),
+            RunError::internal("unknown"),
             RunError::classified("custom_internal", "internal"),
             RunError::unavailable_classified("session_realization_stale", "retry"),
+            RunError::conflict("raced"),
         ] {
             let expected_kind = original.kind;
             let expected_code = original.code.clone();
@@ -179,5 +184,19 @@ mod tests {
             assert_eq!(projected.kind, expected_kind);
             assert_eq!(projected.code, expected_code);
         }
+    }
+
+    #[test]
+    fn a_host_conflict_stays_a_conflict_across_the_run_boundary() {
+        // Cause: an executor state conflict. Effects: its Run projection is a
+        // Conflict with the Host's code, and the inverse restores the Host's
+        // Conflict, so every adapter answers 409 conflict.
+        let projected = to_run_error(HostError::conflict("raced"));
+        assert_eq!(projected.kind, awaken_session_types::RunErrorKind::Conflict);
+        assert_eq!(projected.code, "conflict");
+        let host = from_run_error(projected);
+        assert_eq!(host.kind, HostErrorKind::Conflict);
+        assert_eq!(host.code, "conflict");
+        assert_eq!(host.message, "raced");
     }
 }
