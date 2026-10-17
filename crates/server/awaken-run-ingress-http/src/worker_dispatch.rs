@@ -802,6 +802,7 @@ fn respond_realization(result: Result<Value, RealizationHttpError>) -> (StatusCo
                 awaken_session_types::RunErrorKind::BadRequest => StatusCode::BAD_REQUEST,
                 awaken_session_types::RunErrorKind::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
                 awaken_session_types::RunErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+                awaken_session_types::RunErrorKind::Conflict => StatusCode::CONFLICT,
             };
             (
                 status,

@@ -172,6 +172,7 @@ fn map_run_error(error: awaken_session_types::RunError) -> ApplicationError {
         RunErrorKind::BadRequest => ApplicationError::invalid(error.message),
         RunErrorKind::Unavailable => ApplicationError::unavailable(error.message),
         RunErrorKind::Internal => ApplicationError::internal(error.message),
+        RunErrorKind::Conflict => ApplicationError::conflict(error.message),
     }
 }
 

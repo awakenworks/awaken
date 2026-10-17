@@ -23,11 +23,12 @@ fn denies(spec: &pc::SandboxSpec) -> bool {
 
 #[test]
 fn repository_binding_failure_controls_host_retry_semantics() {
-    // Cause/effect table: malformed/denied binding or a concurrently changed
-    // authority (a stale selection) -> caller BadRequest; authority outage or
-    // unknown read -> Unavailable; corrupt authority response -> Internal. The
-    // Host boundary enters through the one realization classifier, so it now
-    // agrees with the Run boundary's table, which pins Conflict -> BadRequest.
+    // Cause/effect table: malformed/denied binding -> caller BadRequest; a
+    // concurrently changed authority -> Conflict (409, retried within the
+    // budget); authority outage or unknown read -> Unavailable; corrupt
+    // authority response -> Internal with its own closed code (terminal). The
+    // Host boundary enters through the one realization classifier, so it
+    // agrees with the Run boundary's table.
     // R1..R6 cover the complete verifier enum through the sole classifier;
     // kind, literal code/message and Display are observable effects.
     // There is no lock, IO, state or poison precondition in this pure mapping.
@@ -48,8 +49,8 @@ fn repository_binding_failure_controls_host_retry_semantics() {
         ),
         (
             E::Conflict { detail: "x".into() },
-            K::BadRequest,
-            "invalid_request",
+            K::Conflict,
+            "conflict",
             "Repository binding authority changed concurrently: x",
         ),
         (
@@ -67,7 +68,7 @@ fn repository_binding_failure_controls_host_retry_semantics() {
         (
             E::CorruptAuthority { detail: "x".into() },
             K::Internal,
-            "internal",
+            "repository_binding_authority_corrupt",
             "Repository binding authority returned corrupt data: x",
         ),
     ];

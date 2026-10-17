@@ -149,6 +149,9 @@ fn coordination_failure(
                 error.message,
             )
         }
+        awaken_session_types::RunErrorKind::Conflict => {
+            awaken_session_realization_contract::SessionRealizationControlFailure::Conflict
+        }
         awaken_session_types::RunErrorKind::Internal
         | awaken_session_types::RunErrorKind::Unavailable => {
             awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(

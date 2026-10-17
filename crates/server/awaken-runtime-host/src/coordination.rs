@@ -351,7 +351,8 @@ fn tool_error(error: awaken_session_types::RunError) -> ToolError {
             ToolError::InvalidArguments(error.message)
         }
         awaken_session_types::RunErrorKind::Internal
-        | awaken_session_types::RunErrorKind::Unavailable => {
+        | awaken_session_types::RunErrorKind::Unavailable
+        | awaken_session_types::RunErrorKind::Conflict => {
             ToolError::DefinitiveFailure(error.message)
         }
     }

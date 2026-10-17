@@ -79,8 +79,10 @@ mod tests {
     #[test]
     fn admission_failures_project_one_claim_class() {
         // Decision table: cause = the admission failure; effect = the claim
-        // class. A Run failure keeps the contract's class; dispatch-local
-        // refusals absorb; store and delivery faults relinquish. The
+        // class. A Run failure keeps the contract's class (a conflict and an
+        // unclassified internal fault relinquish within the retry budget);
+        // dispatch-local refusals absorb; store and delivery faults
+        // relinquish. The
         // realization's projection into this class is the realization's table.
         use SessionRealizationControlDisposition::{NotReady, Retryable, Terminal};
         let rows = [
@@ -133,9 +135,22 @@ mod tests {
                 Retryable,
             ),
             (
-                "A8 Run internal",
+                "A8 Run unclassified internal",
                 AdmissionError::from(RunError::internal("i")),
+                Retryable,
+            ),
+            (
+                "A8 Run classified internal",
+                AdmissionError::from(RunError::classified(
+                    "session_realization_invariant_violated",
+                    "i",
+                )),
                 Terminal,
+            ),
+            (
+                "A8 Run state conflict",
+                AdmissionError::from(RunError::conflict("c")),
+                Retryable,
             ),
             (
                 "A8 Run invalid",

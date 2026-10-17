@@ -56,9 +56,19 @@ fn decision_table() -> Vec<(&'static str, RealizationError, Disposition)> {
             Disposition::Defer,
         ),
         (
-            "D7 internal Run failure",
+            "D7 classified internal Run failure",
             RealizationError::Run(RunError::classified("custom", "broken")),
             Disposition::Terminal,
+        ),
+        (
+            "D7 unclassified internal Run failure",
+            RealizationError::Run(RunError::internal("unknown")),
+            Disposition::Retry,
+        ),
+        (
+            "D7 Run state conflict",
+            RealizationError::Run(RunError::conflict("raced")),
+            Disposition::Retry,
         ),
         (
             "D7 invalid Run request",
@@ -108,7 +118,7 @@ fn decision_table() -> Vec<(&'static str, RealizationError, Disposition)> {
         ),
         (
             RepositoryBindingVerifierError::Conflict { detail: "x".into() },
-            Disposition::Rejected,
+            Disposition::Retry,
         ),
         (
             RepositoryBindingVerifierError::AuthorityUnavailable { detail: "x".into() },
@@ -186,10 +196,13 @@ fn each_failure_class_has_one_disposition_on_the_synchronizer_and_driver_paths()
     // | Class | P1 = P2 = P3 |
     // | D1 transient provider / D4 authority lost / D5 pending / D11 poisoned | Retry |
     // | D2 capacity | Defer (report keeps the budget) |
-    // | D3 permanent provider / D6 conflict / D9 invariant | Terminal |
-    // | D7 Run port failure | the Run error's own class |
+    // | D3 permanent provider / D6 projection conflict / D9 invariant / D13 evidence | Terminal |
+    // | D7 Run port failure | the Run error's own class: unavailable, state conflict and unclassified internal retry; classified internal is terminal |
     // | D8 invalid request | Rejected (absorbs like Terminal) |
-    // | D10 Repository binding | by verifier class |
+    // | D10 Repository binding | by verifier class; a concurrent authority change retries |
+    // Retry consumes one attempt of the caller's budget (the report is
+    // retryable and not a capacity refusal); its exhaustion is the contract's
+    // `conflict_and_unclassified_internal_retry_until_the_realization_budget_is_spent`.
     for (rule, error, expected) in decision_table() {
         let code = error.code().into_owned();
         assert_eq!(error.disposition(), expected, "{rule} P1 {error}");
@@ -229,7 +242,8 @@ fn closed_codes_are_unique_across_classes() {
                 .iter()
                 .map(|conflict| conflict.code()),
         )
-        .chain([POISONED_CODE]);
+        .chain(UnrecoverableFault::ALL.iter().map(|fault| fault.code()))
+        .chain([POISONED_CODE, REPOSITORY_BINDING_CORRUPT_CODE]);
     for code in codes {
         assert!(seen.insert(code), "duplicate realization code {code}");
     }
@@ -269,5 +283,36 @@ fn projection_keeps_the_operator_message() {
     assert_eq!(
         RunError::from(RealizationError::Environment(provider.clone())).message,
         provider.to_string()
+    );
+}
+
+#[test]
+fn a_terminal_failure_never_projects_the_unclassified_internal_code() {
+    // Cause: a terminal realization failure. Effect: its Run projection names
+    // its own closed code, so the contract cannot read it as an unknown
+    // internal fault and retry it.
+    for (rule, error, expected) in decision_table() {
+        if expected == Disposition::Terminal {
+            let projected = RunError::from(error);
+            assert!(!projected.is_unclassified_internal(), "{rule}");
+        }
+    }
+}
+
+#[test]
+fn a_repository_binding_conflict_projects_a_run_conflict() {
+    // Cause: the binding authority changed concurrently. Effects: the Run
+    // projection is a state conflict (so adapters answer 409 conflict) and the
+    // disposition retries.
+    let error = RealizationError::RepositoryBinding(RepositoryBindingVerifierError::Conflict {
+        detail: "x".into(),
+    });
+    assert_eq!(error.disposition(), Disposition::Retry);
+    let projected = RunError::from(error);
+    assert_eq!(projected.kind, awaken_session_types::RunErrorKind::Conflict);
+    assert_eq!(projected.code, "conflict");
+    assert_eq!(
+        projected.message,
+        "Repository binding authority changed concurrently: x"
     );
 }

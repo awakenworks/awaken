@@ -144,6 +144,10 @@ impl WorkerControlClient {
             .unwrap_or("Session Environment control request rejected");
         if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
             awaken_session_types::RunError::unavailable_classified(code, message)
+        } else if status == reqwest::StatusCode::CONFLICT {
+            // A conflict keeps its fault across the Worker boundary, so the
+            // Worker retries it exactly as a co-located realization would.
+            awaken_session_types::RunError::conflict_classified(code, message)
         } else {
             awaken_session_types::RunError::classified(code, message)
         }
@@ -884,5 +888,59 @@ impl WorkerControlClient {
         let body = self.post(path, body).await?;
         serde_json::from_value(body.get("mutation").cloned().unwrap_or(Value::Null))
             .map_err(|error| format!("worker mutation decode: {error}"))
+    }
+}
+
+#[cfg(test)]
+mod session_environment_error_tests {
+    use super::WorkerControlClient;
+    use awaken_session_types::RunErrorKind;
+    use serde_json::json;
+
+    #[test]
+    fn a_session_environment_refusal_keeps_its_fault_across_the_worker_boundary() {
+        // Decision table: cause = the Coordinator's status and body code;
+        // effect = the Run fault and code the Worker classifies.
+        // | Rule | status | body code | kind | code |
+        // | W1 | 503 | absent | Unavailable | unavailable |
+        // | W2 | 409 | conflict | Conflict | conflict |
+        // | W3 | 400 | absent | Internal | session_environment_control_rejected |
+        // | W4 | 500 | stated | Internal | the stated code |
+        let rows = [
+            (
+                "W1",
+                reqwest::StatusCode::SERVICE_UNAVAILABLE,
+                json!({ "error": "m" }),
+                RunErrorKind::Unavailable,
+                "unavailable",
+            ),
+            (
+                "W2",
+                reqwest::StatusCode::CONFLICT,
+                json!({ "error": "m", "code": "conflict" }),
+                RunErrorKind::Conflict,
+                "conflict",
+            ),
+            (
+                "W3",
+                reqwest::StatusCode::BAD_REQUEST,
+                json!({ "error": "m" }),
+                RunErrorKind::Internal,
+                "session_environment_control_rejected",
+            ),
+            (
+                "W4",
+                reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "m", "code": "session_realization_invariant_violated" }),
+                RunErrorKind::Internal,
+                "session_realization_invariant_violated",
+            ),
+        ];
+        for (rule, status, body, kind, code) in rows {
+            let error = WorkerControlClient::session_environment_error(status, &body);
+            assert_eq!(error.kind, kind, "{rule}");
+            assert_eq!(error.code, code, "{rule}");
+            assert_eq!(error.message, "m", "{rule}");
+        }
     }
 }

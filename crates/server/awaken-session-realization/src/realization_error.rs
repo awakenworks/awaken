@@ -22,8 +22,11 @@ use awaken_session_types::{RunError, RunErrorKind};
 /// What a caller does next with a failed realization operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Disposition {
-    /// The same request may succeed once authority or state settles: relinquish
-    /// the claim and retry within the Session's retry budget.
+    /// The same request may succeed once authority or state settles, a raced
+    /// concurrent change resolves or an unknown internal fault clears:
+    /// relinquish the claim and retry, consuming one attempt of the caller's
+    /// retry budget. An exhausted budget turns the retry into an absorbing
+    /// outcome.
     Retry,
     /// Nothing was realized for lack of capacity: park the request without
     /// consuming any retry budget (ADR-0092).
@@ -47,8 +50,9 @@ impl Disposition {
     }
 
     /// Classify a neutral Run error the way the contract does: a capacity code
-    /// on an Unavailable fault defers, any other Unavailable fault retries, a
-    /// BadRequest is the caller's fault and everything else is terminal.
+    /// on an Unavailable fault defers; any other Unavailable fault, a conflict
+    /// and an unclassified internal fault retry; a BadRequest is the caller's
+    /// fault and a classified internal fault is terminal.
     #[must_use]
     pub fn of_run_error(error: &RunError) -> Self {
         match (error.kind, effect_failure_disposition(error)) {
@@ -438,16 +442,41 @@ impl RealizationError {
             Self::Run(error) => Cow::Borrowed(error.code.as_str()),
             Self::InvalidRequest(_) => Cow::Borrowed("invalid_request"),
             Self::Poisoned(_) => Cow::Borrowed(POISONED_CODE),
-            Self::Credential(_)
-            | Self::FileContent(_)
-            | Self::CacheVolume(_)
-            | Self::Evidence(_)
-            | Self::Invariant(_) => Cow::Borrowed(match self.disposition() {
-                Disposition::Retry | Disposition::Defer => "unavailable",
-                Disposition::Rejected => "invalid_request",
-                Disposition::Terminal => "internal",
-            }),
+            Self::Credential(_) => self.class_code(UnrecoverableFault::Credential),
+            Self::FileContent(_) => self.class_code(UnrecoverableFault::FileContent),
+            Self::CacheVolume(_) => self.class_code(UnrecoverableFault::CacheVolume),
+            Self::Evidence(_) => self.class_code(UnrecoverableFault::Evidence),
+            Self::Invariant(_) => self.class_code(UnrecoverableFault::Invariant),
         }
+    }
+
+    /// The code of a failure whose variant carries no finer code: its
+    /// disposition's generic code, or the variant's own closed code when it is
+    /// terminal. That code is never the unclassified internal code, so the
+    /// contract keeps classifying the projection as terminal rather than as an
+    /// unknown, retryable fault.
+    fn class_code(&self, terminal: UnrecoverableFault) -> Cow<'static, str> {
+        Cow::Borrowed(match self.disposition() {
+            Disposition::Retry | Disposition::Defer => "unavailable",
+            Disposition::Rejected => "invalid_request",
+            Disposition::Terminal => terminal.code(),
+        })
+    }
+}
+
+closed_codes! {
+    /// A failure no retry can repair whose variant carries no finer code.
+    UnrecoverableFault {
+        /// Credential material is permanently unusable for the effect.
+        Credential => "credential_material_rejected",
+        /// A selected File's content is corrupt or purged.
+        FileContent => "file_content_unrecoverable",
+        /// A CacheVolume cannot be prepared at its location.
+        CacheVolume => "cache_volume_unrecoverable",
+        /// Evidence the effect consumes is malformed.
+        Evidence => "session_realization_evidence_invalid",
+        /// A realization invariant does not hold.
+        Invariant => "session_realization_invariant_violated",
     }
 }
 
@@ -477,25 +506,53 @@ fn environment_disposition(error: &SandboxError) -> Disposition {
 
 fn repository_binding_disposition(error: &RepositoryBindingVerifierError) -> Disposition {
     match error {
-        // A concurrently changed authority leaves the caller's selection stale:
-        // the same request cannot bind until the caller selects again.
         RepositoryBindingVerifierError::InvalidRequest { .. }
-        | RepositoryBindingVerifierError::Denied { .. }
-        | RepositoryBindingVerifierError::Conflict { .. } => Disposition::Rejected,
-        RepositoryBindingVerifierError::AuthorityUnavailable { .. }
+        | RepositoryBindingVerifierError::Denied { .. } => Disposition::Rejected,
+        // The binding authority changed concurrently: an optimistic-concurrency
+        // loss, retried within the budget against the settled authority.
+        RepositoryBindingVerifierError::Conflict { .. }
+        | RepositoryBindingVerifierError::AuthorityUnavailable { .. }
         | RepositoryBindingVerifierError::Indeterminate { .. } => Disposition::Retry,
         RepositoryBindingVerifierError::CorruptAuthority { .. } => Disposition::Terminal,
     }
 }
 
+/// Stable code of a Repository binding authority that returned corrupt data.
+const REPOSITORY_BINDING_CORRUPT_CODE: &str = "repository_binding_authority_corrupt";
+
 fn repository_binding_code(error: &RepositoryBindingVerifierError) -> &'static str {
     match error {
         RepositoryBindingVerifierError::InvalidRequest { .. }
-        | RepositoryBindingVerifierError::Denied { .. }
-        | RepositoryBindingVerifierError::Conflict { .. } => "invalid_request",
+        | RepositoryBindingVerifierError::Denied { .. } => "invalid_request",
+        RepositoryBindingVerifierError::Conflict { .. } => {
+            awaken_session_types::error::CONFLICT_CODE
+        }
         RepositoryBindingVerifierError::AuthorityUnavailable { .. }
         | RepositoryBindingVerifierError::Indeterminate { .. } => "unavailable",
-        RepositoryBindingVerifierError::CorruptAuthority { .. } => "internal",
+        RepositoryBindingVerifierError::CorruptAuthority { .. } => REPOSITORY_BINDING_CORRUPT_CODE,
+    }
+}
+
+/// A Repository binding failure keeps its fault across the Run boundary: a
+/// concurrently changed authority stays a conflict.
+fn repository_binding_run_error(error: &RepositoryBindingVerifierError) -> RunError {
+    let message = error.to_string();
+    let code = repository_binding_code(error);
+    match error {
+        RepositoryBindingVerifierError::InvalidRequest { .. }
+        | RepositoryBindingVerifierError::Denied { .. } => {
+            RunError::bad_request_classified(code, message)
+        }
+        RepositoryBindingVerifierError::Conflict { .. } => {
+            RunError::conflict_classified(code, message)
+        }
+        RepositoryBindingVerifierError::AuthorityUnavailable { .. }
+        | RepositoryBindingVerifierError::Indeterminate { .. } => {
+            RunError::unavailable_classified(code, message)
+        }
+        RepositoryBindingVerifierError::CorruptAuthority { .. } => {
+            RunError::classified(code, message)
+        }
     }
 }
 
@@ -510,6 +567,7 @@ impl From<RealizationError> for RunError {
             RealizationError::Environment(error) => environment_effect_error(&error),
             RealizationError::Run(error) => error,
             RealizationError::Mcp(error) => mcp_run_error(&error),
+            RealizationError::RepositoryBinding(error) => repository_binding_run_error(&error),
             other => {
                 let message = other.to_string();
                 match disposition {

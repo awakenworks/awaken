@@ -7,15 +7,23 @@ mod tests {
         // Cause/effect table: an executor (Host) failure reaches the claim
         // resolver through its neutral Run projection and the contract's one
         // classification, exactly as the realization driver classifies the
-        // same failure after the synchronizer. H1 BadRequest, H3 unclassified
-        // Internal and H4 Conflict (projected to BadRequest) absorb; H2
-        // Unavailable relinquishes. Every row uses identical detail text so an
-        // operator message cannot become a second classification policy.
+        // same failure after the synchronizer. H1 BadRequest and H5 classified
+        // Internal absorb; H2 Unavailable, H3 unclassified Internal and H4
+        // Conflict relinquish within the retry budget. Every row uses identical
+        // detail text so an operator message cannot become a second
+        // classification policy.
         for (error, terminal) in [
             (crate::HostError::bad_request("same detail"), true),
             (crate::HostError::unavailable("same detail"), false),
-            (crate::HostError::internal("same detail"), true),
-            (crate::HostError::conflict("same detail"), true),
+            (crate::HostError::internal("same detail"), false),
+            (crate::HostError::conflict("same detail"), false),
+            (
+                crate::HostError::classified(
+                    "session_realization_invariant_violated",
+                    "same detail",
+                ),
+                true,
+            ),
         ] {
             let run_error = crate::host_error::to_run_error(crate::HostError {
                 message: error.message.clone(),
@@ -163,16 +171,24 @@ mod tests {
                 "{rule}: the provider detail survives the boundary"
             );
         }
-        // Fail closed: an unclassified Host failure absorbs on the resolver as
-        // it does on the driver, and a capacity code on a non-Unavailable fault
-        // is not a capacity refusal.
+        // An unclassified Host failure relinquishes on the resolver as it does
+        // on the driver (a bounded retry), and a capacity code on a
+        // non-Unavailable fault is not a capacity refusal.
         assert_eq!(
             claim_outcome(
                 &awaken_dispatch_execution::session_worker_resolver::map_admission_error(
                     crate::HostError::internal("unclassified")
                 )
             ),
-            "absorb"
+            "relinquish"
+        );
+        assert_eq!(
+            claim_outcome(&awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error(
+                awaken_session_realization_contract::SessionRealizationDriveError::Effect(
+                    awaken_session_types::RunError::internal("unclassified"),
+                ),
+            )),
+            "relinquish"
         );
         assert_eq!(
             claim_outcome(&awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error(
@@ -288,9 +304,10 @@ mod tests {
         // Effect: the claim outcome, identical on all three paths.
         // | Class                                   | outcome    |
         // | transient provider / authority / pending / poisoned / stale Run | relinquish |
+        // | Repository binding conflict / Run conflict / unclassified internal | relinquish |
         // | provider capacity                       | defer      |
         // | permanent provider / projection conflict / invariant / invalid | absorb |
-        let rows: [Row; 10] = [
+        let rows: [Row; 13] = [
             (
                 "transient provider",
                 || SandboxError::timeout("t").into(),
@@ -350,6 +367,26 @@ mod tests {
                     )
                     .into()
                 },
+                "relinquish",
+            ),
+            (
+                "Repository binding conflict",
+                || {
+                    awaken_resource_contract::RepositoryBindingVerifierError::Conflict {
+                        detail: "raced".into(),
+                    }
+                    .into()
+                },
+                "relinquish",
+            ),
+            (
+                "Run conflict",
+                || awaken_session_types::RunError::conflict("raced").into(),
+                "relinquish",
+            ),
+            (
+                "unclassified internal",
+                || awaken_session_types::RunError::internal("unknown").into(),
                 "relinquish",
             ),
         ];

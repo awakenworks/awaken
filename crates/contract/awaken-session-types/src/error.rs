@@ -13,7 +13,18 @@ pub enum RunErrorKind {
     Internal,
     BadRequest,
     Unavailable,
+    /// The request raced a concurrent change of the state it reads (an
+    /// optimistic-concurrency loss or a busy owner). The same request may
+    /// succeed once that change settles.
+    Conflict,
 }
+
+/// The code of an internal fault no producer classified. Any other code on an
+/// Internal fault names a known, unrecoverable cause.
+pub const UNCLASSIFIED_INTERNAL_CODE: &str = "internal";
+
+/// The code of a state conflict no producer classified further.
+pub const CONFLICT_CODE: &str = "conflict";
 
 /// Stable application facts. Protocol adapters project these without parsing prose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +35,7 @@ pub enum RunErrorClassification {
     UnsupportedOutputModes,
     Unavailable,
     Internal,
+    Conflict,
 }
 
 impl RunError {
@@ -37,6 +49,7 @@ impl RunError {
             (RunErrorKind::BadRequest, _) => RunErrorClassification::InvalidRequest,
             (RunErrorKind::Unavailable, _) => RunErrorClassification::Unavailable,
             (RunErrorKind::Internal, _) => RunErrorClassification::Internal,
+            (RunErrorKind::Conflict, _) => RunErrorClassification::Conflict,
         }
     }
 
@@ -44,7 +57,25 @@ impl RunError {
         Self {
             message: message.into(),
             kind: RunErrorKind::Internal,
-            code: "internal".into(),
+            code: UNCLASSIFIED_INTERNAL_CODE.into(),
+        }
+    }
+
+    /// An internal fault whose cause no producer classified.
+    #[must_use]
+    pub fn is_unclassified_internal(&self) -> bool {
+        self.kind == RunErrorKind::Internal && self.code == UNCLASSIFIED_INTERNAL_CODE
+    }
+
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self::conflict_classified(CONFLICT_CODE, message)
+    }
+
+    pub fn conflict_classified(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            kind: RunErrorKind::Conflict,
+            code: code.into(),
         }
     }
 
@@ -95,7 +126,7 @@ mod tests {
 
     #[test]
     fn run_error_display_and_kind_mapping() {
-        // R1 ordinary errors retain the three stable classifications/codes;
+        // R1 ordinary errors retain the four stable classifications/codes;
         // R2 classified errors preserve the caller's code without changing kind.
         // HTTP status selection stays with each transport adapter.
         for (error, kind, code) in [
@@ -129,11 +160,68 @@ mod tests {
                 RunErrorKind::Unavailable,
                 "dependency",
             ),
+            (
+                RunError::conflict("failure"),
+                RunErrorKind::Conflict,
+                "conflict",
+            ),
+            (
+                RunError::conflict_classified("binding", "failure"),
+                RunErrorKind::Conflict,
+                "binding",
+            ),
         ] {
             assert_eq!(error.kind, kind);
             assert_eq!(error.code, code);
             assert_eq!(error.message, "failure");
             assert_eq!(error.to_string(), "run failed: failure");
+        }
+    }
+
+    #[test]
+    fn only_the_unclassified_internal_code_is_an_unknown_internal_fault() {
+        // Decision table: C1 the fault kind; C2 the code is the unclassified
+        // internal code. Effect: whether the fault is an unknown internal one
+        // (bounded retry) rather than a classified, unrecoverable cause.
+        // | Rule | C1 | C2 | unknown internal | classification |
+        // | U1 | Internal | yes | yes | Internal |
+        // | U2 | Internal | no | no | Internal |
+        // | U3 | BadRequest/Unavailable/Conflict | yes | no | own kind |
+        let rows = [
+            (
+                "U1",
+                RunError::internal("m"),
+                true,
+                RunErrorClassification::Internal,
+            ),
+            (
+                "U2",
+                RunError::classified("session_realization_invariant_violated", "m"),
+                false,
+                RunErrorClassification::Internal,
+            ),
+            (
+                "U3",
+                RunError::bad_request_classified(UNCLASSIFIED_INTERNAL_CODE, "m"),
+                false,
+                RunErrorClassification::InvalidRequest,
+            ),
+            (
+                "U3",
+                RunError::unavailable_classified(UNCLASSIFIED_INTERNAL_CODE, "m"),
+                false,
+                RunErrorClassification::Unavailable,
+            ),
+            (
+                "U3",
+                RunError::conflict("m"),
+                false,
+                RunErrorClassification::Conflict,
+            ),
+        ];
+        for (rule, error, unknown, classification) in rows {
+            assert_eq!(error.is_unclassified_internal(), unknown, "{rule}");
+            assert_eq!(error.classification(), classification, "{rule}");
         }
     }
 }

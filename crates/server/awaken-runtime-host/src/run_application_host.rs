@@ -14,9 +14,8 @@ use crate::{HostResume, SharedHost};
 
 fn to_application_error(error: HostError) -> RunApplicationError {
     match error.kind {
-        HostErrorKind::BadRequest | HostErrorKind::Conflict => {
-            RunApplicationError::bad_request(error.message)
-        }
+        HostErrorKind::BadRequest => RunApplicationError::bad_request(error.message),
+        HostErrorKind::Conflict => crate::host_error::to_run_error(error),
         HostErrorKind::Internal => RunApplicationError::internal(error.message),
         HostErrorKind::Unavailable if error.code == "unavailable" => {
             RunApplicationError::unavailable(error.message)
@@ -126,5 +125,55 @@ impl RunApplication for RunApplicationHost {
             .await
             .map_err(to_application_error)?;
         Ok((usage.input_tokens, usage.output_tokens))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_session_types::RunErrorKind;
+
+    #[test]
+    fn host_failures_keep_their_fault_for_every_run_protocol() {
+        // Decision table: cause = the Host fault; effect = the Run
+        // application error AI SDK, AG-UI and A2A project. A state conflict
+        // stays a conflict (409); the other faults keep their kind and code.
+        // | Rule | Host fault | Run kind | code |
+        // | A1 | BadRequest | BadRequest | invalid_request |
+        // | A2 | Conflict | Conflict | conflict |
+        // | A3 | Internal | Internal | internal |
+        // | A4 | Unavailable (classified) | Unavailable | its own code |
+        let rows = [
+            (
+                "A1",
+                HostError::bad_request("m"),
+                RunErrorKind::BadRequest,
+                "invalid_request",
+            ),
+            (
+                "A2",
+                HostError::conflict("m"),
+                RunErrorKind::Conflict,
+                "conflict",
+            ),
+            (
+                "A3",
+                HostError::internal("m"),
+                RunErrorKind::Internal,
+                "internal",
+            ),
+            (
+                "A4",
+                HostError::unavailable_classified("dependency", "m"),
+                RunErrorKind::Unavailable,
+                "dependency",
+            ),
+        ];
+        for (rule, error, kind, code) in rows {
+            let projected = to_application_error(error);
+            assert_eq!(projected.kind, kind, "{rule}");
+            assert_eq!(projected.code, code, "{rule}");
+            assert_eq!(projected.message, "m", "{rule}");
+        }
     }
 }
