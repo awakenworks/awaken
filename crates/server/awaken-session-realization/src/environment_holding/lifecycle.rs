@@ -290,9 +290,9 @@ impl crate::environment_holding::EnvironmentHolding {
                     .await?;
                 Ok(())
             }
-            awaken_provisioning_contract::SandboxObservation::Provisioning { .. } => {
-                Err(RealizationError::pending(
-                    PendingState::Provisioning,
+            awaken_provisioning_contract::SandboxObservation::Provisioning { deadline } => {
+                Err(RealizationError::provisioning(
+                    deadline,
                     format!(
                         "Session sandbox {} is still provisioning",
                         handle.sandbox_id
@@ -1055,9 +1055,9 @@ impl crate::environment_holding::EnvironmentHolding {
                 })?;
                 Ok(SessionEnvironmentAdoptionDisposition::Ready)
             }
-            awaken_provisioning_contract::SandboxObservation::Provisioning { .. } => {
-                Err(RealizationError::pending(
-                    PendingState::Provisioning,
+            awaken_provisioning_contract::SandboxObservation::Provisioning { deadline } => {
+                Err(RealizationError::provisioning(
+                    deadline,
                     format!(
                         "Session sandbox {} is still provisioning",
                         handle.sandbox_id

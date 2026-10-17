@@ -16,9 +16,39 @@ pub const ENVIRONMENT_UNAVAILABLE_CODE: &str = "environment_unavailable";
 /// request: nothing was realized and another Worker, a raised quota or a new
 /// node may succeed.
 pub const ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE: &str = "environment_capacity_unavailable";
+/// Stable `RunError` code of an Environment the provider still reports
+/// provisioning before the provider's own deadline: no failure yet, so it
+/// defers like a capacity refusal and spends no budget.
+pub const ENVIRONMENT_PROVISIONING_CODE: &str = "environment_provisioning";
 /// Stable `RunError` code of a Permanent environment failure: an identical
 /// retry against the same provider cannot succeed.
 pub const ENVIRONMENT_REJECTED_CODE: &str = "environment_rejected";
+
+/// The Worker class of an Environment the provider still reports
+/// provisioning. Waiting is no failure until the provider's deadline passes:
+/// before it the request defers (`NotReady`, no budget); from it on, or with
+/// no deadline because no owner progresses the wait, it is a failed attempt
+/// (`Retryable` within the caller's budget). It is never terminal: a later
+/// attempt may find the Environment ready, or re-provision it.
+#[must_use]
+pub fn provisioning_disposition(
+    deadline: Option<&awaken_provisioning_contract::ProvisioningDeadline>,
+) -> SessionRealizationControlDisposition {
+    match deadline {
+        Some(deadline) if deadline.is_pending() => SessionRealizationControlDisposition::NotReady,
+        _ => SessionRealizationControlDisposition::Retryable,
+    }
+}
+
+/// Whether `code` names a request-local "not yet" rather than a failure: a
+/// capacity refusal or a provision still within its deadline.
+#[must_use]
+pub fn is_not_ready_code(code: &str) -> bool {
+    matches!(
+        code,
+        ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE | ENVIRONMENT_PROVISIONING_CODE
+    )
+}
 
 /// Carry one provider failure across the environment realization boundary
 /// with its disposition: Transient stays retryable, Permanent is terminal and
@@ -53,17 +83,18 @@ pub fn is_environment_effect_code(code: &str) -> bool {
 }
 
 /// The Worker effect class of one failed realization effect, by its typed
-/// fault and stable code, never its message: a capacity refusal is `NotReady`
-/// (the request-local deferral that keeps every retry budget); any other
-/// Unavailable fault, a state conflict and an internal fault no producer
-/// classified are `Retryable` within the caller's retry budget; a request
-/// fault and a classified internal fault are `Terminal`. A capacity code on a
-/// non-Unavailable fault is no capacity refusal: it keeps its fault's class.
+/// fault and stable code, never its message: a capacity refusal or a provision
+/// within its deadline is `NotReady` (the request-local deferral that keeps
+/// every retry budget); any other Unavailable fault, a state conflict and an
+/// internal fault no producer classified are `Retryable` within the caller's
+/// retry budget; a request fault and a classified internal fault are
+/// `Terminal`. A not-ready code on a non-Unavailable fault is no deferral: it
+/// keeps its fault's class.
 #[must_use]
 pub fn effect_failure_disposition(error: &RunError) -> SessionRealizationControlDisposition {
     use awaken_session_types::RunErrorKind;
     match error.kind {
-        RunErrorKind::Unavailable if error.code == ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE => {
+        RunErrorKind::Unavailable if is_not_ready_code(&error.code) => {
             SessionRealizationControlDisposition::NotReady
         }
         RunErrorKind::Unavailable | RunErrorKind::Conflict => {
@@ -226,6 +257,32 @@ fn capacity_failures_never_consume_or_exhaust_the_realization_budget() {
     }
 }
 
+#[cfg(kani)]
+/// @obligation session_realization.control_failure_disposition_and_current_owner_loss_are_total_exact_and_terminal_absorbing
+#[kani::proof]
+fn provisioning_defers_only_before_the_providers_deadline() {
+    use awaken_provisioning_contract::ProvisioningDeadline;
+    // The u16 instant domain keeps the expiry law's millisecond-to-instant
+    // conversion tractable, as the realization lease harnesses do; the
+    // comparison it decides does not depend on magnitude.
+    let deadline_ms = u64::from(kani::any::<u16>());
+    let observed_ms = u64::from(kani::any::<u16>());
+    let known: bool = kani::any();
+    let reading = ProvisioningDeadline::new(deadline_ms, observed_ms);
+    match provisioning_disposition(known.then_some(&reading)) {
+        SessionRealizationControlDisposition::NotReady => {
+            // A deferral needs a known deadline still ahead of the reading.
+            assert!(known && observed_ms < deadline_ms);
+        }
+        SessionRealizationControlDisposition::Retryable => {
+            assert!(!known || observed_ms >= deadline_ms);
+        }
+        SessionRealizationControlDisposition::Terminal => {
+            panic!("a provisioning wait is never terminal")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,7 +294,7 @@ mod tests {
         // the unclassified one. Effects: E1 the Worker disposition; E2 the
         // FailSessionRealization (retryable, not_ready).
         // | Rule | C1 | C2 | E1 | E2 |
-        // | F1 | Unavailable | yes | NotReady | (true, true) |
+        // | F1 | Unavailable | yes (capacity or provisioning) | NotReady | (true, true) |
         // | F2 | Unavailable | no | Retryable | (true, false) |
         // | F4 | Conflict / unclassified Internal (C3) | no | Retryable | (true, false) |
         // | F3 | classified Internal/BadRequest | any | Terminal | (false, false) |
@@ -248,6 +305,12 @@ mod tests {
             (
                 "F1",
                 capacity,
+                SessionRealizationControlDisposition::NotReady,
+                (true, true),
+            ),
+            (
+                "F1",
+                RunError::unavailable_classified(ENVIRONMENT_PROVISIONING_CODE, "provisioning"),
                 SessionRealizationControlDisposition::NotReady,
                 (true, true),
             ),
@@ -320,6 +383,38 @@ mod tests {
     }
 
     #[test]
+    fn a_provisioning_wait_defers_only_before_the_providers_deadline() {
+        // Decision table: C1 the provider gave a deadline; C2 the observation
+        // is before / at / after it. Effect: the Worker class.
+        // | Rule | C1 | C2 | class |
+        // | V1 | no (no owner progresses the wait, or a legacy observation) | - | Retryable |
+        // | V2 | yes | before | NotReady (no budget) |
+        // | V3 | yes | at or after | Retryable (spends the budget) |
+        // Never Terminal: a later attempt may find it ready or re-provision.
+        use awaken_provisioning_contract::ProvisioningDeadline;
+        for (rule, deadline, class) in [
+            ("V1", None, SessionRealizationControlDisposition::Retryable),
+            (
+                "V2",
+                Some(ProvisioningDeadline::new(10_000, 9_999)),
+                SessionRealizationControlDisposition::NotReady,
+            ),
+            (
+                "V3",
+                Some(ProvisioningDeadline::new(10_000, 10_000)),
+                SessionRealizationControlDisposition::Retryable,
+            ),
+            (
+                "V3",
+                Some(ProvisioningDeadline::new(10_000, 60_000)),
+                SessionRealizationControlDisposition::Retryable,
+            ),
+        ] {
+            assert_eq!(provisioning_disposition(deadline.as_ref()), class, "{rule}");
+        }
+    }
+
+    #[test]
     fn effect_failure_disposition_is_exhaustive_over_fault_and_code() {
         // Exhaustive decision table over the classification's whole input
         // domain that matters: every RunErrorKind x {each stable environment
@@ -338,6 +433,7 @@ mod tests {
         ] {
             for code in [
                 ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE,
+                ENVIRONMENT_PROVISIONING_CODE,
                 ENVIRONMENT_UNAVAILABLE_CODE,
                 ENVIRONMENT_REJECTED_CODE,
                 UNCLASSIFIED_INTERNAL_CODE,
@@ -350,7 +446,8 @@ mod tests {
                     kind,
                     code: code.into(),
                 };
-                let capacity = code == ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE;
+                let capacity = code == ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE
+                    || code == ENVIRONMENT_PROVISIONING_CODE;
                 let unclassified = code == UNCLASSIFIED_INTERNAL_CODE;
                 let expected = match (kind, capacity, unclassified) {
                     (RunErrorKind::Unavailable, true, _) => {

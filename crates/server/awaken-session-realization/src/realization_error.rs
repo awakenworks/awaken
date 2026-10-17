@@ -11,11 +11,12 @@
 
 use std::borrow::Cow;
 
-use awaken_provisioning_contract::SandboxError;
+use awaken_provisioning_contract::{ProvisioningDeadline, SandboxError};
 use awaken_resource_contract::RepositoryBindingVerifierError;
 use awaken_session_realization_contract::{
-    ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE, SessionRealizationControlDisposition,
-    effect_failure_disposition, environment_effect_error,
+    ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE, ENVIRONMENT_PROVISIONING_CODE,
+    SessionRealizationControlDisposition, effect_failure_disposition, environment_effect_error,
+    provisioning_disposition,
 };
 use awaken_session_types::{RunError, RunErrorKind};
 
@@ -28,8 +29,9 @@ pub enum Disposition {
     /// retry budget. An exhausted budget turns the retry into an absorbing
     /// outcome.
     Retry,
-    /// Nothing was realized for lack of capacity: park the request without
-    /// consuming any retry budget (ADR-0092).
+    /// No failure yet: nothing was realized for lack of capacity (ADR-0092),
+    /// or the provider is still provisioning within its own deadline
+    /// (ADR-0015). Park the request without consuming any retry budget.
     Defer,
     /// The effect can never succeed for this Session: absorb the Run.
     Terminal,
@@ -49,8 +51,20 @@ impl Disposition {
         }
     }
 
-    /// Classify a neutral Run error the way the contract does: a capacity code
-    /// on an Unavailable fault defers; any other Unavailable fault, a conflict
+    /// The disposition of one contract Worker class. The contract's
+    /// `Terminal` is this boundary's `Terminal`: a request fault is told apart
+    /// only by [`Disposition::of_run_error`].
+    #[must_use]
+    pub const fn of_contract_class(class: SessionRealizationControlDisposition) -> Self {
+        match class {
+            SessionRealizationControlDisposition::NotReady => Self::Defer,
+            SessionRealizationControlDisposition::Retryable => Self::Retry,
+            SessionRealizationControlDisposition::Terminal => Self::Terminal,
+        }
+    }
+
+    /// Classify a neutral Run error the way the contract does: a capacity or
+    /// provisioning code on an Unavailable fault defers; any other Unavailable fault, a conflict
     /// and an unclassified internal fault retry; a BadRequest is the caller's
     /// fault and a classified internal fault is terminal.
     #[must_use]
@@ -154,12 +168,9 @@ closed_codes! {
         CandidateObservationClosed => "session_environment_candidate_observation_closed",
         CheckpointStoreUnavailable => "session_environment_checkpoint_store_unavailable",
         EffectObservationIndeterminate => "session_environment_effect_observation_indeterminate",
-        EffectProvisioning => "session_environment_effect_provisioning",
         LiveSourceNotReady => "session_environment_live_source_not_ready",
-        LiveSourceProvisioning => "session_environment_live_source_provisioning",
         ObservationIndeterminate => "session_environment_observation_indeterminate",
         OwnedRootMissing => "session_environment_owned_root_missing",
-        Provisioning => "session_environment_provisioning",
         RevocationPendingAdoption => "session_environment_revocation_pending_adoption",
         LiveAdoptionIndeterminate => "session_live_environment_adoption_indeterminate",
         LiveOwnerNotResident => "session_live_environment_owner_not_resident",
@@ -317,6 +328,14 @@ pub enum RealizationError {
         state: PendingState,
         message: Cow<'static, str>,
     },
+    /// The provider still reports the Environment provisioning. `deadline`
+    /// is the provider's bound on that wait as read at the observation; the
+    /// provider owns it, so this failure judges it and never reads a clock.
+    #[error("{message}")]
+    Provisioning {
+        deadline: Option<ProvisioningDeadline>,
+        message: Cow<'static, str>,
+    },
     /// Installed state contradicts the projection the effect was authorized for.
     #[error("{message}")]
     ProjectionConflict {
@@ -370,6 +389,18 @@ impl RealizationError {
         }
     }
 
+    /// The provider observed the Environment still provisioning, with the
+    /// deadline (if any) that observation carried.
+    pub fn provisioning(
+        deadline: Option<ProvisioningDeadline>,
+        message: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        Self::Provisioning {
+            deadline,
+            message: message.into(),
+        }
+    }
+
     /// A terminal effect's provider or store step failed: terminal cleanup
     /// stays pending and retries, whatever the step's own class was.
     pub fn terminal_effect_pending(error: impl std::fmt::Display) -> Self {
@@ -408,6 +439,9 @@ impl RealizationError {
             Self::AuthorityLost { .. } | Self::Pending { .. } | Self::Poisoned(_) => {
                 Disposition::Retry
             }
+            Self::Provisioning { deadline, .. } => {
+                Disposition::of_contract_class(provisioning_disposition(deadline.as_ref()))
+            }
             Self::ProjectionConflict { .. } | Self::Evidence(_) | Self::Invariant(_) => {
                 Disposition::Terminal
             }
@@ -429,6 +463,21 @@ impl RealizationError {
         }
     }
 
+    /// When a deferred request is worth observing again: a provision within
+    /// its deadline needs no new look after that deadline, so the caller's
+    /// backoff never sleeps past it. Every other failure leaves the cadence
+    /// to the caller.
+    #[must_use]
+    pub fn retry_after(&self) -> Option<std::time::Duration> {
+        match self {
+            Self::Provisioning {
+                deadline: Some(deadline),
+                ..
+            } => deadline.remaining(),
+            _ => None,
+        }
+    }
+
     /// The stable code of this failure, as its Run projection carries it.
     #[must_use]
     pub fn code(&self) -> Cow<'_, str> {
@@ -436,6 +485,7 @@ impl RealizationError {
             Self::Environment(error) => Cow::Owned(environment_effect_error(error).code),
             Self::AuthorityLost { cause, .. } => Cow::Borrowed(cause.code()),
             Self::Pending { state, .. } => Cow::Borrowed(state.code()),
+            Self::Provisioning { deadline, .. } => Cow::Borrowed(provisioning_code(*deadline)),
             Self::ProjectionConflict { conflict, .. } => Cow::Borrowed(conflict.code()),
             Self::RepositoryBinding(error) => Cow::Borrowed(repository_binding_code(error)),
             Self::Mcp(error) => Cow::Borrowed(error.code.as_str()),
@@ -457,7 +507,8 @@ impl RealizationError {
     /// unknown, retryable fault.
     fn class_code(&self, terminal: UnrecoverableFault) -> Cow<'static, str> {
         Cow::Borrowed(match self.disposition() {
-            Disposition::Retry | Disposition::Defer => "unavailable",
+            Disposition::Retry => "unavailable",
+            Disposition::Defer => ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE,
             Disposition::Rejected => "invalid_request",
             Disposition::Terminal => terminal.code(),
         })
@@ -477,6 +528,24 @@ closed_codes! {
         Evidence => "session_realization_evidence_invalid",
         /// A realization invariant does not hold.
         Invariant => "session_realization_invariant_violated",
+    }
+}
+
+/// Stable code of a provisioning wait with no deadline: no owner progresses
+/// it (or the observation predates deadlines), so it is a failed attempt.
+pub const PROVISIONING_UNBOUNDED_CODE: &str = "session_environment_provisioning";
+/// Stable code of a provisioning wait observed at or after the provider's
+/// deadline: a failed attempt.
+pub const PROVISIONING_DEADLINE_ELAPSED_CODE: &str =
+    "session_environment_provisioning_deadline_elapsed";
+
+/// The code of a provisioning wait: within its deadline it is the contract's
+/// not-ready code; otherwise it names why the wait became a failed attempt.
+fn provisioning_code(deadline: Option<ProvisioningDeadline>) -> &'static str {
+    match (deadline, provisioning_disposition(deadline.as_ref())) {
+        (_, SessionRealizationControlDisposition::NotReady) => ENVIRONMENT_PROVISIONING_CODE,
+        (None, _) => PROVISIONING_UNBOUNDED_CODE,
+        (Some(_), _) => PROVISIONING_DEADLINE_ELAPSED_CODE,
     }
 }
 
@@ -572,10 +641,8 @@ impl From<RealizationError> for RunError {
                 let message = other.to_string();
                 match disposition {
                     Disposition::Retry => RunError::unavailable_classified(code, message),
-                    Disposition::Defer => RunError::unavailable_classified(
-                        ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE,
-                        message,
-                    ),
+                    // Every deferring variant's code is a not-ready code.
+                    Disposition::Defer => RunError::unavailable_classified(code, message),
                     Disposition::Terminal => RunError::classified(code, message),
                     Disposition::Rejected => RunError::bad_request_classified(code, message),
                 }
