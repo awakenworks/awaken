@@ -502,8 +502,7 @@ impl SessionApplication {
                     ))
                 })?;
             session
-        } else if !crate::realization::environment_admits_realization_effects(&session.environment)
-        {
+        } else if !session.environment.admits_realization_effects() {
             // Suspending/Hibernated/Restoring are canonical continuation
             // phases, not invalid realization states. Install only the
             // complete non-physical dispatch projection so the durable Run can

@@ -269,8 +269,7 @@ impl SessionApplication {
             let mut session =
                 crate::mutation::aggregate_from_snapshot(session).map_err(repository_control)?;
             if session.frozen_baseline().is_none()
-                || (!session.is_terminal()
-                    && !environment_admits_realization_effects(&session.environment))
+                || (!session.is_terminal() && !session.environment.admits_realization_effects())
             {
                 return Err(SessionRealizationControlFailure::NotReady);
             }
