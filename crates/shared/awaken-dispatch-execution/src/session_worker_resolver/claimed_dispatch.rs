@@ -155,10 +155,13 @@ impl SessionWorkerResolver {
             .observe_projection(&thread_id.0)
             .map_err(map_admission_error)?
         else {
-            return Err(Error::ResolutionNotReady(format!(
-                "run {} lost its installed Session before claim binding",
-                claimed.lease.run_id().0
-            )));
+            return Err(Error::ResolutionNotReady(
+                format!(
+                    "run {} lost its installed Session before claim binding",
+                    claimed.lease.run_id().0
+                )
+                .into(),
+            ));
         };
         let canonical_session_realization = canonical_session_projection_is_installed(
             has_authority,
@@ -166,10 +169,13 @@ impl SessionWorkerResolver {
             observed.has_frozen_baseline,
         );
         if has_authority && !canonical_session_realization {
-            return Err(Error::ResolutionNotReady(format!(
-                "run {} lost its canonical Session projection before MCP effects",
-                claimed.lease.run_id().0
-            )));
+            return Err(Error::ResolutionNotReady(
+                format!(
+                    "run {} lost its canonical Session projection before MCP effects",
+                    claimed.lease.run_id().0
+                )
+                .into(),
+            ));
         }
         let claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
         // A failed/NotReady resolve must not publish an attempt claim into the
@@ -200,10 +206,13 @@ impl SessionWorkerResolver {
             )
             .map_err(map_admission_error)?
         {
-            return Err(Error::ResolutionNotReady(format!(
-                "run {} lost its original Session projection before claim binding",
-                claimed.lease.run_id().0
-            )));
+            return Err(Error::ResolutionNotReady(
+                format!(
+                    "run {} lost its original Session projection before claim binding",
+                    claimed.lease.run_id().0
+                )
+                .into(),
+            ));
         }
         Ok((canonical_session_realization, dispatched_mcp_stages))
     }
