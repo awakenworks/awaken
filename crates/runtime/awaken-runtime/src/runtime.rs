@@ -117,6 +117,21 @@ struct ActiveAttemptControls {
 }
 
 impl ActiveAttemptControls {
+    fn snapshot(&self, run_id: &RunId) -> Option<ActiveAttemptSnapshot> {
+        self.by_run.get(run_id).map(|entry| ActiveAttemptSnapshot {
+            run_id: run_id.clone(),
+            generation: entry.generation,
+            live_inbox: entry.live_inbox.clone(),
+            ownership: entry.ownership.clone(),
+        })
+    }
+
+    fn registration_is_current(&self, snapshot: &ActiveAttemptSnapshot) -> bool {
+        self.by_run
+            .get(&snapshot.run_id)
+            .is_some_and(|entry| entry.generation == snapshot.generation)
+    }
+
     fn register(
         &mut self,
         run_id: &RunId,
@@ -677,17 +692,17 @@ impl Runtime {
         }
     }
 
-    fn active_attempt_snapshot(&self, run_id: &RunId) -> Option<ActiveAttemptSnapshot> {
+    /// Capture the cancellation signal of the registration observed now.
+    /// A later registration cannot substitute another signal. The handle keeps
+    /// the caller-selected scope: deliberately shared cancellation tokens still
+    /// signal that shared scope. Local revocation may signal after lease loss;
+    /// this proves neither current ownership nor physical process termination.
+    pub fn registered_attempt_cancellation(&self, run_id: &RunId) -> Option<CancellationToken> {
         self.active_attempt_controls
             .lock()
             .by_run
             .get(run_id)
-            .map(|entry| ActiveAttemptSnapshot {
-                run_id: run_id.clone(),
-                generation: entry.generation,
-                live_inbox: entry.live_inbox.clone(),
-                ownership: entry.ownership.clone(),
-            })
+            .and_then(|attempt| attempt.cancellation.clone())
     }
 
     async fn ownership_is_current(snapshot: &ActiveAttemptSnapshot) -> bool {
@@ -695,14 +710,6 @@ impl Runtime {
             Some(ownership) => ownership.verify_current().await.is_ok(),
             None => true,
         }
-    }
-
-    fn registration_is_current(&self, snapshot: &ActiveAttemptSnapshot) -> bool {
-        self.active_attempt_controls
-            .lock()
-            .by_run
-            .get(&snapshot.run_id)
-            .is_some_and(|entry| entry.generation == snapshot.generation)
     }
 
     async fn active_attempt_for_thread(
@@ -726,7 +733,10 @@ impl Runtime {
         let mut current = Vec::new();
         for candidate in candidates {
             if Self::ownership_is_current(&candidate).await
-                && self.registration_is_current(&candidate)
+                && self
+                    .active_attempt_controls
+                    .lock()
+                    .registration_is_current(&candidate)
             {
                 current.push(candidate);
             }
@@ -735,7 +745,9 @@ impl Runtime {
             return None;
         }
         let candidate = current.pop().expect("one current candidate");
-        self.registration_is_current(&candidate)
+        self.active_attempt_controls
+            .lock()
+            .registration_is_current(&candidate)
             .then_some(candidate)
     }
 
@@ -769,7 +781,9 @@ impl Runtime {
             | LiveCommand::Wake { run_id, .. } => run_id,
         };
         let snapshot = self
-            .active_attempt_snapshot(run_id)
+            .active_attempt_controls
+            .lock()
+            .snapshot(run_id)
             .ok_or(ControlError::NotActive)?;
         if !Self::ownership_is_current(&snapshot).await {
             return Err(ControlError::NotActive);
