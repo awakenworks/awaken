@@ -5,6 +5,11 @@
 use awaken_provisioning_contract as pc;
 use serde::{Deserialize, Serialize};
 
+mod create_ticket;
+pub use create_ticket::{
+    CreateTicket, CreateTicketRequest, TicketOrigin, TicketResult, TicketStatus,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KubernetesProjectedKind {
@@ -15,16 +20,16 @@ pub enum KubernetesProjectedKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KubernetesProjectedObject {
-    pub(crate) kind: KubernetesProjectedKind,
-    pub(crate) name: String,
-    pub(crate) uid: String,
-    pub(crate) owner_references_fingerprint: String,
+    pub kind: KubernetesProjectedKind,
+    pub name: String,
+    pub uid: String,
+    pub owner_references_fingerprint: String,
 }
 
 /// Provenance of this one physical fact set, not another lifecycle state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub(crate) enum KubernetesProjectedOrigin {
+pub enum KubernetesProjectedOrigin {
     Created {
         attempt: String,
     },
@@ -64,7 +69,7 @@ impl KubernetesProjectedParticipants {
             && valid_kubernetes_uid(pod_uid)
     }
 
-    pub(crate) fn new(
+    pub fn new(
         namespace: String,
         pod_uid: String,
         mut objects: Vec<KubernetesProjectedObject>,
@@ -116,7 +121,7 @@ impl KubernetesProjectedParticipants {
             origin,
         })
     }
-    pub(crate) fn joined_empty(
+    pub fn joined_empty(
         namespace: String,
         pod_uid: String,
         attempt: String,
@@ -137,7 +142,7 @@ impl KubernetesProjectedParticipants {
         Ok(set)
     }
 
-    pub(crate) fn frozen_plan_empty(
+    pub fn frozen_plan_empty(
         namespace: String,
         pod_uid: String,
         adoption: pc::SandboxRealizationFingerprint,
@@ -158,8 +163,27 @@ impl KubernetesProjectedParticipants {
             },
         })
     }
-    #[cfg(feature = "k8s")]
-    pub(crate) fn attempt(&self) -> Option<&str> {
+    #[must_use]
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+
+    #[must_use]
+    pub fn pod_uid(&self) -> &str {
+        &self.pod_uid
+    }
+
+    #[must_use]
+    pub fn objects(&self) -> &[KubernetesProjectedObject] {
+        &self.objects
+    }
+
+    #[must_use]
+    pub fn origin(&self) -> &KubernetesProjectedOrigin {
+        &self.origin
+    }
+
+    pub fn attempt(&self) -> Option<&str> {
         match &self.origin {
             KubernetesProjectedOrigin::Created { attempt }
             | KubernetesProjectedOrigin::JoinedEmpty { attempt, .. } => Some(attempt),
@@ -167,7 +191,7 @@ impl KubernetesProjectedParticipants {
             | KubernetesProjectedOrigin::FrozenPlanEmpty { .. } => None,
         }
     }
-    pub(crate) fn restoration(&self) -> Option<(&pc::SandboxRestorationEvidence, &str)> {
+    pub fn restoration(&self) -> Option<(&pc::SandboxRestorationEvidence, &str)> {
         match &self.origin {
             KubernetesProjectedOrigin::Restoration {
                 evidence,
@@ -176,7 +200,7 @@ impl KubernetesProjectedParticipants {
             _ => None,
         }
     }
-    pub(crate) fn terminal_only(&self) -> bool {
+    pub fn terminal_only(&self) -> bool {
         matches!(
             self.origin,
             KubernetesProjectedOrigin::JoinedEmpty { .. }
@@ -248,6 +272,84 @@ impl<'de> Deserialize<'de> for KubernetesProjectedParticipants {
             }
         }
         .map_err(serde::de::Error::custom)
+    }
+}
+
+/// Terminal-only, provider-verified name reservation paired with one
+/// original retained claim, persisted inside a Container handle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KubernetesGuardedClaimHandle {
+    pub(crate) scope: String,
+    pub(crate) predecessor: crate::ContainerEffectFence,
+    pub(crate) guard: CreateTicket,
+    pub(crate) claim_uid: String,
+}
+
+impl KubernetesGuardedClaimHandle {
+    pub fn new(
+        scope: &str,
+        predecessor: &crate::ContainerEffectFence,
+        guard: CreateTicket,
+        claim_uid: &str,
+    ) -> Result<Self, crate::RuntimeError> {
+        if scope.is_empty()
+            || scope.trim() != scope
+            || claim_uid.trim().is_empty()
+            || claim_uid.trim() != claim_uid
+            || guard.request.resource != "pods"
+            || guard.isolation_pending
+            || !matches!(
+                &guard.status,
+                TicketStatus::Finished(TicketResult::Isolated { uid })
+                    if !uid.trim().is_empty() && uid.trim() == uid
+            )
+        {
+            return Err(crate::RuntimeError::Backend(
+                "guarded Kubernetes claim lacks exact terminal evidence".into(),
+            ));
+        }
+        Ok(Self {
+            scope: scope.to_owned(),
+            predecessor: predecessor.clone(),
+            guard,
+            claim_uid: claim_uid.to_owned(),
+        })
+    }
+
+    #[must_use]
+    pub fn scope(&self) -> &str {
+        &self.scope
+    }
+
+    #[must_use]
+    pub fn predecessor(&self) -> &crate::ContainerEffectFence {
+        &self.predecessor
+    }
+
+    #[must_use]
+    pub fn guard(&self) -> &CreateTicket {
+        &self.guard
+    }
+
+    #[must_use]
+    pub fn claim_uid(&self) -> &str {
+        &self.claim_uid
+    }
+
+    #[must_use]
+    pub fn guard_name(&self) -> &str {
+        &self.guard.request.name
+    }
+
+    #[must_use]
+    pub fn guard_uid(&self) -> Option<&str> {
+        match &self.guard.status {
+            TicketStatus::Finished(TicketResult::Isolated { uid }) if !uid.trim().is_empty() => {
+                Some(uid)
+            }
+            _ => None,
+        }
     }
 }
 

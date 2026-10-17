@@ -595,7 +595,6 @@ fn future_host_bind_is_reader_only_and_legacy_nested_enum_rejects_it() {
         ContainerContinuationHandle::KubernetesContinuation { .. }
         | ContainerContinuationHandle::KubernetesContinuationV3 { .. }
         | ContainerContinuationHandle::HostBindRestoration(_) => panic!("R9/E2 wrong kind"),
-        #[cfg(feature = "k8s")]
         ContainerContinuationHandle::KubernetesGuardedClaim(_) => panic!("R9/E2 wrong kind"),
     }
     assert_eq!(
@@ -624,7 +623,6 @@ fn future_host_bind_is_reader_only_and_legacy_nested_enum_rejects_it() {
         | ContainerContinuationHandle::KubernetesContinuationV3 { .. } => {
             panic!("R10/E3 wrong kind")
         }
-        #[cfg(feature = "k8s")]
         ContainerContinuationHandle::KubernetesGuardedClaim(_) => panic!("R10/E3 wrong kind"),
     }
     assert_eq!(serde_json::to_value(decoded).unwrap(), future, "R10/E3");
@@ -660,8 +658,6 @@ fn future_host_bind_is_reader_only_and_legacy_nested_enum_rejects_it() {
         "R11/E4 HostBind locator"
     );
 }
-
-#[cfg(feature = "k8s")]
 #[test]
 fn guarded_claim_handle_keeps_one_typed_terminal_incarnation() {
     // Causes: C1 a joined Pod reservation has one Isolated UID and a retained
@@ -672,7 +668,7 @@ fn guarded_claim_handle_keeps_one_typed_terminal_incarnation() {
     // fence and the exact serialized wire; E2 C3 refuses before a physical-
     // incarnation claim. Rules H1=C1+C2+C4->E1, H2=C3->E2. Ordinary adoption
     // is owned by the K8s runtime purpose table, not duplicated in this test.
-    use crate::k8s::{CreateTicket, CreateTicketRequest, TicketOrigin, TicketResult, TicketStatus};
+    use crate::{CreateTicket, CreateTicketRequest, TicketOrigin, TicketResult, TicketStatus};
     let predecessor =
         crate::ContainerEffectFence::new("old-effect", "old-worker", "old-boot", 1, u64::MAX)
             .unwrap();

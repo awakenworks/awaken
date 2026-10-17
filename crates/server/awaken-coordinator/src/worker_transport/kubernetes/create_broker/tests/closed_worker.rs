@@ -4,7 +4,7 @@ use awaken_dispatch::{
     AttemptExecutionBinding, DispatchClaims, DispatchControlReads, DispatchEnqueue,
     DispatchExecution, WorkerDirectory,
 };
-use awaken_sandbox_container::k8s::{PodProcessObserver, PodProcessStopper};
+use awaken_sandbox_kubernetes::{PodProcessObserver, PodProcessStopper};
 use awaken_worker_contract::WorkerProcessExit;
 
 #[tokio::test]

@@ -203,7 +203,7 @@ fn pod_requests(spec: &pc::SandboxSpec) -> (String, String, String) {
         None,
     )
     .expect("the frozen policy produces one valid container plan");
-    let pod = awaken_sandbox_container::k8s::pod_for_plan("resource-proof", &plan);
+    let pod = awaken_sandbox_kubernetes::pod_for_plan("resource-proof", &plan);
     let agent = pod
         .spec
         .expect("Kubernetes PodSpec")

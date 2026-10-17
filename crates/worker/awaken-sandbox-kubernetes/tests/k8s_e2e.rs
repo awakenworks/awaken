@@ -1,0 +1,1815 @@
+//! Real Kubernetes end-to-end (k3d): launch a Session-owned Pod, exec a `busybox`
+//! newline-wire agent into that same environment, and exchange the ACP wire over the
+//! exec stdio channel. This proves the production `create`/`spawn_agent` path against
+//! a live cluster (the multi-node cloud tier of ADR-0041/0056).
+//!
+//! Gated on `AWAKEN_K8S_E2E=1` with a reachable cluster
+//! (KUBECONFIG pointing at it). It self-skips only when the gate is not requested;
+//! once requested, missing infrastructure is a hard failure. The cluster + the
+//! `awaken-bb:1` fixture image are set up by
+//! `scripts/e2e/k8s_container_e2e.sh`, which runs this test.
+
+// The container provider owns the cross-engine fixtures: one memory-mount
+// spec and one attached-exec lifecycle oracle for Docker, Podman and Kubernetes.
+#[path = "../../awaken-sandbox-container/tests/common/mod.rs"]
+mod common;
+mod k8s_common;
+mod pod_process_termination;
+#[path = "../../awaken-sandbox-container/tests/common/process.rs"]
+mod process_lifecycle;
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use async_trait::async_trait;
+use awaken_memory_store::{MemoryWriter, VolatileMemoryRepository};
+use awaken_provisioning_contract as pc;
+use awaken_runtime_contract::llm::ToolCall;
+use awaken_sandbox_container::{
+    ContainerEnvironment, ContainerEnvironmentAdoption, ContainerEnvironmentProvider,
+    ContainerHandleCodec as _, ContainerProvider, ContainerRuntime, ContainerSandbox,
+    ResidentHandConfig, SandboxControlService, SandboxControlServiceKind,
+    SandboxControlServicePublisher, command_of,
+};
+#[cfg(unix)]
+use awaken_sandbox_container::{ContainerState, WarmContainerPool};
+use awaken_sandbox_kubernetes::{
+    DEFAULT_REPOSITORY_GIT_CONTROL_PORT, K8sRuntime, K8sSandboxControlForwarder,
+};
+use awaken_sandbox_memoryd::MemoryStoreMounter;
+use awaken_tool_contract::tool::{
+    ToolError, ToolExecutor, ToolOperationContext, with_tool_operation_context,
+};
+use common::memory_mount;
+use k8s_common::{
+    container_environment, container_id, control_image, disposal_authorization, effect_fence,
+    fixture_image, spec_with_command,
+};
+use pc::test_support::EffectAuthority;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+#[derive(Default)]
+struct CredentialBroker {
+    current: Mutex<Vec<u8>>,
+    reject_writeback: AtomicBool,
+}
+
+#[async_trait]
+impl pc::SecretBroker for CredentialBroker {
+    async fn materialize(&self, _reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
+        Ok(self.current.lock().unwrap().clone())
+    }
+
+    async fn materialize_process(&self, _reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
+        Err(pc::SandboxError::unsupported(
+            "process secrets are not configured",
+        ))
+    }
+
+    async fn write_back(
+        &self,
+        _target: pc::SecretWritebackTarget<'_>,
+        bytes: Vec<u8>,
+    ) -> Result<(), pc::SandboxError> {
+        if self.reject_writeback.load(Ordering::SeqCst) {
+            return Err(pc::SandboxError::unauthorized(
+                "injected live broker rejection",
+            ));
+        }
+        *self.current.lock().unwrap() = bytes;
+        Ok(())
+    }
+}
+
+fn require_live_cluster() -> bool {
+    if std::env::var("AWAKEN_K8S_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping: set AWAKEN_K8S_E2E=1 to require the live Kubernetes suite");
+        return false;
+    }
+    // Q1 the exact cluster answers immediately -> proceed. Q2 its API is
+    // briefly unavailable during parallel Pod/PVC convergence -> retry that
+    // same read, then proceed only on a real success. Q3 sustained failure ->
+    // panic in required mode, never an empty test or a fabricated Pod result.
+    for attempt in 0..6 {
+        let observed = kubectl(&["--request-timeout=5s", "get", "nodes"]);
+        if observed.status.success() {
+            return true;
+        }
+        if attempt == 5 {
+            panic!(
+                "AWAKEN_K8S_E2E=1 requires a reachable Kubernetes cluster: {}",
+                String::from_utf8_lossy(&observed.stderr)
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    unreachable!("bounded cluster-read admission returns on its final row")
+}
+
+fn session_argv() -> Vec<String> {
+    vec!["sh".into(), "-c".into(), "sleep 300".into()]
+}
+
+fn session_image() -> String {
+    std::env::var("AWAKEN_K8S_SESSION_IMAGE").unwrap_or_else(|_| "awaken-sandbox:local".to_string())
+}
+
+fn spec(scope: &str, image: String) -> pc::SandboxSpec {
+    spec_with_command(scope, image, session_argv())
+}
+
+/// A stdio agent fixture. Session-owned Kubernetes environments execute an agent via
+/// the Pod exec subresource; they do not create a second, direct TCP control path.
+fn agent_argv() -> Vec<String> {
+    let script = "read _p; \
+        printf '{\"type\":\"message\",\"text\":\"sandboxed reply:%s:%s\"}\\n' \
+          \"$AWAKEN_PROJECT_DIR\" \"$AWAKEN_OUTPUTS_DIR\"; \
+        printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'";
+    vec!["sh".into(), "-c".into(), script.into()]
+}
+
+/// A busybox fixture that reads the ConfigMap-projected file at `/acp-config/config.toml`
+/// and echoes its contents back over the wire — so the host can prove the inline content
+/// was materialized *inside the Pod*, not merely planned. Same newline-wire shape as
+/// `agent_argv`, but the reply text is whatever the mounted file holds.
+fn cat_mount_argv() -> Vec<String> {
+    let script = "read _p; \
+        printf '{\"type\":\"message\",\"text\":\"%s\"}\\n' \"$(cat /acp-config/config.toml)\"; \
+        printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'";
+    vec!["sh".into(), "-c".into(), script.into()]
+}
+
+/// The e2e spec with one `Inline` mount the container tier realizes as a ConfigMap volume
+/// (the codex `config.toml` / ADR-0038 resource path on the k8s tier).
+fn inline_spec(scope: &str, marker: &str) -> pc::SandboxSpec {
+    pc::SandboxSpec {
+        process_tree_supervision: false,
+        scope: scope.into(),
+        isolation: pc::IsolationClass::Container,
+        environment: Some(container_environment(fixture_image())),
+        command: session_argv(),
+        deny_tool_egress: false,
+        mounts: vec![pc::MountRequirement {
+            mount_id: "cfg".into(),
+            source: pc::MountSource::Inline {
+                contents: marker.into(),
+            },
+            mount_path: "/acp-config/config.toml".into(),
+            access: pc::MountAccess::ReadOnly,
+            lifetime: pc::MountLifetime::PerRun,
+            required: true,
+        }],
+        env: Vec::new(),
+        packages: Default::default(),
+        network: pc::NetworkPolicy::Unrestricted,
+        outputs_path: "/mnt/session/outputs".into(),
+        requests: Default::default(),
+        limits: pc::ResourceLimits::default(),
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
+        lease_ttl_secs: None,
+        control_services: Default::default(),
+    }
+}
+
+fn managed_input_spec(scope: &str, path: &str, marker: &str) -> pc::SandboxSpec {
+    pc::SandboxSpec {
+        process_tree_supervision: false,
+        scope: scope.into(),
+        isolation: pc::IsolationClass::Container,
+        environment: Some(container_environment(fixture_image())),
+        command: session_argv(),
+        deny_tool_egress: false,
+        mounts: vec![pc::MountRequirement {
+            mount_id: format!("managed-{marker}"),
+            source: pc::MountSource::Inline {
+                contents: marker.into(),
+            },
+            mount_path: path.into(),
+            access: pc::MountAccess::ReadOnly,
+            lifetime: pc::MountLifetime::Session,
+            required: true,
+        }],
+        env: Vec::new(),
+        packages: Default::default(),
+        network: pc::NetworkPolicy::Unrestricted,
+        outputs_path: "/mnt/session/outputs".into(),
+        requests: Default::default(),
+        limits: pc::ResourceLimits::default(),
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
+        lease_ttl_secs: None,
+        control_services: Default::default(),
+    }
+}
+
+#[tokio::test]
+async fn projected_official_hand_reaps_adopted_exec_descendants() {
+    /* PID-1 cause/effect table: P1 the official Sandbox image supplies tini,
+     * P2 an exact projection fence opens the Kubernetes command gate, and P3
+     * attached exec shells leave short-lived children behind. P1+P2 => the
+     * running Hand has tini as PID 1; P1+P2+P3 => all adopted children are
+     * reaped before a Session can accumulate zombies. The pure gate test owns
+     * fixture commands and changed-fence refusal; this live rule proves the
+     * actual image, Pod command override, and kernel child-reaping boundary. */
+    if !require_live_cluster() {
+        return;
+    }
+
+    let scope = format!("k8s-pid1-reap-{}", std::process::id());
+    let image = session_image();
+    let runtime = k8s_common::connect_with_clock("default", "127.0.0.1:1".parse().unwrap())
+        .await
+        .expect("connect to the cluster");
+    let provider = ContainerProvider::new(Arc::new(runtime), image.clone())
+        .with_clock(awaken_time::system_clock())
+        .with_resident_hand(
+            ResidentHandConfig::new("/usr/local/bin/awaken-sandbox", 7777).unwrap(),
+        );
+    let mut sandbox_spec = managed_input_spec(&scope, "/mnt/session/inputs/reaper-proof", "ready");
+    sandbox_spec.environment = Some(container_environment(image));
+    let create_fence = effect_fence(&scope, "create", "reaper-owner", 1);
+    let sandbox = ContainerEnvironmentProvider::create_environment_for_effect(
+        &provider,
+        &sandbox_spec,
+        &create_fence,
+        &EffectAuthority::new(&create_fence),
+        awaken_container_contract::EnvironmentRealizationIntent::Create,
+    )
+    .await
+    .expect("create the projected Hand Pod");
+    let pod = container_id(&sandbox.handle());
+    let init = kubectl(&["exec", &pod, "-c", "agent", "--", "cat", "/proc/1/comm"]);
+    assert!(init.status.success(), "P1+P2 PID 1 is readable");
+    assert_eq!(
+        init.stdout.as_slice(),
+        b"tini\n",
+        "P1+P2 the image init was restored"
+    );
+
+    for _ in 0..12 {
+        let orphan = kubectl(&[
+            "exec",
+            &pod,
+            "-c",
+            "agent",
+            "--",
+            "sh",
+            "-c",
+            "sleep 0.05 </dev/null >/dev/null 2>&1 &",
+        ]);
+        assert!(
+            orphan.status.success(),
+            "P3 attached exec created an orphan"
+        );
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let zombies = kubectl(&[
+        "exec",
+        &pod,
+        "-c",
+        "agent",
+        "--",
+        "sh",
+        "-c",
+        "grep -l '^State:[[:space:]]*Z' /proc/[0-9]*/status 2>/dev/null || true",
+    ]);
+    assert!(
+        zombies.status.success(),
+        "P1+P2+P3 inspect adopted children"
+    );
+    assert!(zombies.stdout.is_empty(), "P1+P2+P3 no zombies remain");
+
+    let terminal_fence = effect_fence(&scope, "terminal", "reaper-owner", 2);
+    sandbox
+        .prepare_disposal_for_effect(&terminal_fence, &EffectAuthority::new(&terminal_fence))
+        .await
+        .expect("prepare exact physical cleanup");
+    sandbox
+        .dispose_for_effect(
+            &disposal_authorization(&terminal_fence),
+            &EffectAuthority::new(disposal_authorization(&terminal_fence).effect_fence()),
+        )
+        .await
+        .expect("dispose the probe Pod");
+}
+
+/// The e2e spec with one `File` mount whose bytes the provider resolves by id through the
+/// injected `BlobSource` — then realizes as a ConfigMap volume just like inline content.
+fn file_spec(scope: &str) -> pc::SandboxSpec {
+    pc::SandboxSpec {
+        process_tree_supervision: false,
+        scope: scope.into(),
+        isolation: pc::IsolationClass::Container,
+        environment: Some(container_environment(fixture_image())),
+        command: session_argv(),
+        deny_tool_egress: false,
+        mounts: vec![pc::MountRequirement {
+            mount_id: "cfg".into(),
+            source: pc::MountSource::File {
+                file_id: "blob-k8s".into(),
+                content_hash: None,
+            },
+            mount_path: "/acp-config/config.toml".into(),
+            access: pc::MountAccess::ReadOnly,
+            lifetime: pc::MountLifetime::PerRun,
+            required: true,
+        }],
+        env: Vec::new(),
+        packages: Default::default(),
+        network: pc::NetworkPolicy::Unrestricted,
+        outputs_path: "/mnt/session/outputs".into(),
+        requests: Default::default(),
+        limits: pc::ResourceLimits::default(),
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
+        lease_ttl_secs: None,
+        control_services: Default::default(),
+    }
+}
+
+/// A busybox fixture that greps for an ASCII marker embedded in a BINARY file (the file
+/// begins with non-UTF-8 bytes) — proving a `binaryData` ConfigMap reached the Pod intact.
+fn grep_binary_argv() -> Vec<String> {
+    let script = "read _p; \
+        if grep -q binary-marker-ok /acp-config/config.toml; then M=binary-ok; else M=binary-missing; fi; \
+        printf '{\"type\":\"message\",\"text\":\"%s\"}\\n' \"$M\"; \
+        printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'";
+    vec!["sh".into(), "-c".into(), script.into()]
+}
+
+async fn exchange(
+    sandbox: &dyn ContainerEnvironment,
+    argv: Vec<String>,
+) -> Result<String, pc::SandboxError> {
+    let process = sandbox
+        .spawn_agent_process(pc::Command {
+            argv,
+            cwd: String::new(),
+            env: Vec::new(),
+            stdio: pc::Stdio::Piped,
+        })
+        .await?;
+    let mut channel = process.channel;
+    channel.write_all(b"hello\n").await.map_err(|error| {
+        pc::SandboxError::transport(format!("write to Kubernetes agent exec: {error}"))
+    })?;
+    channel.flush().await.map_err(|error| {
+        pc::SandboxError::transport(format!("flush Kubernetes agent exec: {error}"))
+    })?;
+
+    let mut got = String::new();
+    let mut buf = [0_u8; 512];
+    for _ in 0..50 {
+        match tokio::time::timeout(Duration::from_secs(2), channel.read(&mut buf)).await {
+            Ok(Ok(0)) => break,
+            Ok(Ok(n)) => {
+                got.push_str(&String::from_utf8_lossy(&buf[..n]));
+                if got.contains("turn_end") {
+                    break;
+                }
+            }
+            Ok(Err(error)) => {
+                return Err(pc::SandboxError::transport(format!(
+                    "read from Kubernetes agent exec: {error}"
+                )));
+            }
+            Err(_) => break,
+        }
+    }
+    let status = process.process.wait().await?;
+    if status.code != Some(0) {
+        return Err(pc::SandboxError::backend(
+            "exchange",
+            format!("Kubernetes agent exec exited with {:?}", status.code),
+        ));
+    }
+    Ok(got)
+}
+
+/// The e2e spec with a `File` whose bytes are NON-UTF-8 — the k8s tier must realize it as a
+/// ConfigMap `binaryData` entry (the text `data` path would reject the invalid UTF-8).
+fn binary_file_spec(scope: &str) -> pc::SandboxSpec {
+    pc::SandboxSpec {
+        process_tree_supervision: false,
+        scope: scope.into(),
+        isolation: pc::IsolationClass::Container,
+        environment: Some(container_environment(fixture_image())),
+        command: session_argv(),
+        deny_tool_egress: false,
+        mounts: vec![pc::MountRequirement {
+            mount_id: "cfg".into(),
+            source: pc::MountSource::File {
+                file_id: "blob-bin".into(),
+                content_hash: None,
+            },
+            mount_path: "/acp-config/config.toml".into(),
+            access: pc::MountAccess::ReadOnly,
+            lifetime: pc::MountLifetime::PerRun,
+            required: true,
+        }],
+        env: Vec::new(),
+        packages: Default::default(),
+        network: pc::NetworkPolicy::Unrestricted,
+        outputs_path: "/mnt/session/outputs".into(),
+        requests: Default::default(),
+        limits: pc::ResourceLimits::default(),
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
+        lease_ttl_secs: None,
+        control_services: Default::default(),
+    }
+}
+
+fn credential_spec(scope: &str, refreshed: &[u8]) -> pc::SandboxSpec {
+    pc::SandboxSpec {
+        process_tree_supervision: false,
+        scope: scope.into(),
+        isolation: pc::IsolationClass::Container,
+        environment: Some(container_environment(fixture_image())),
+        command: vec![
+            "sh".into(),
+            "-c".into(),
+            format!(
+                "printf '%s' '{}' > /acp-config/auth.json; sleep 300",
+                String::from_utf8_lossy(refreshed)
+            ),
+        ],
+        deny_tool_egress: false,
+        mounts: vec![pc::MountRequirement {
+            mount_id: "codex-auth".into(),
+            source: pc::MountSource::Secret {
+                reference: "credential://acp/native/codex".into(),
+                content_hash: None,
+            },
+            mount_path: "/acp-config/auth.json".into(),
+            access: pc::MountAccess::ReadWrite,
+            lifetime: pc::MountLifetime::Durable,
+            required: true,
+        }],
+        env: Vec::new(),
+        packages: Default::default(),
+        network: pc::NetworkPolicy::Unrestricted,
+        outputs_path: "/mnt/session/outputs".into(),
+        requests: Default::default(),
+        limits: Default::default(),
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
+        lease_ttl_secs: None,
+        control_services: Default::default(),
+    }
+}
+
+const KUBECTL_BIN: &str = "kubectl";
+
+fn kubectl(args: &[&str]) -> std::process::Output {
+    std::process::Command::new(KUBECTL_BIN)
+        .args(args)
+        .output()
+        .expect("kubectl runs")
+}
+
+fn assert_pod_present(pod: &str, rule: &str) {
+    let mut observed = kubectl(&[
+        "get",
+        "pod",
+        pod,
+        "-o",
+        "jsonpath={.metadata.uid}:{.status.phase}:{.metadata.deletionTimestamp}",
+    ]);
+    for _ in 0..4 {
+        if observed.status.success() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+        observed = kubectl(&[
+            "get",
+            "pod",
+            pod,
+            "-o",
+            "jsonpath={.metadata.uid}:{.status.phase}:{.metadata.deletionTimestamp}",
+        ]);
+    }
+    assert!(
+        observed.status.success(),
+        "{rule} expected the exact Pod to remain observable: status={}, stdout={}, stderr={}",
+        observed.status,
+        String::from_utf8_lossy(&observed.stdout),
+        String::from_utf8_lossy(&observed.stderr)
+    );
+}
+
+fn pod_of(sandbox: &ContainerSandbox<K8sRuntime>) -> String {
+    container_id(&pc::Sandbox::handle(sandbox))
+}
+
+/// Failure-only teardown for credential broker cases that deliberately prove
+/// production disposal rejected before mutation. It is never the cleanup
+/// success oracle and is not used after an expected successful disposal.
+fn cleanup_credential_pod(pod: &str) {
+    let secret = format!("{pod}-credential-0");
+    let _ = kubectl(&["delete", "pod", pod, "--ignore-not-found", "--wait=true"]);
+    let _ = kubectl(&[
+        "delete",
+        "secret",
+        &secret,
+        "--ignore-not-found",
+        "--wait=true",
+    ]);
+}
+
+struct LiveRepositoryCredential;
+
+#[async_trait]
+impl SandboxControlService for LiveRepositoryCredential {
+    async fn handle(
+        &self,
+        _request: awaken_sandbox_control::SandboxControlRequest,
+    ) -> awaken_sandbox_control::SandboxControlResponse {
+        let expires = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+            .saturating_add(60_000);
+        awaken_sandbox_control::SandboxControlResponse::RepositoryGitCredential {
+            username: awaken_sandbox_control::SandboxControlSecret::new("git-user").unwrap(),
+            password: awaken_sandbox_control::SandboxControlSecret::new("live-capability").unwrap(),
+            expires_at_unix_ms: awaken_sandbox_control::CapabilityExpiresAtUnixMs(
+                u64::try_from(expires).unwrap(),
+            ),
+        }
+    }
+}
+
+#[tokio::test]
+async fn gated_k8s_marker_readiness_and_first_real_helper_roundtrip() {
+    /* Live control-path cause/effect table:
+     * C1=explicit control E2E gate, reachable cluster, and digest-pinned image
+     * containing the trusted awaken-sandbox binary; C2=Pod reaches Ready only
+     * after the marker exec probe; C3=the first real helper connects through
+     * the read-only logical Unix endpoint and authenticated Pod port-forward.
+     * E1=create returns an incarnation-bound environment; E2=helper prints the
+     * exact fresh credential; E3=close/dispose removes the Pod. Rule GKC1
+     * C1+C2+C3=>E1+E2+E3. When C1 is absent this expensive test alone skips.
+     */
+    if std::env::var("AWAKEN_K8S_CONTROL_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping: set AWAKEN_K8S_CONTROL_E2E=1 for the control roundtrip");
+        return;
+    }
+    assert_eq!(
+        std::env::var("AWAKEN_K8S_E2E").as_deref(),
+        Ok("1"),
+        "the control gate also requires the ordinary live-cluster gate"
+    );
+    assert!(require_live_cluster(), "GKC1 reachable cluster");
+    let image = control_image();
+    let executable = std::env::var("AWAKEN_K8S_CONTROL_EXECUTABLE")
+        .unwrap_or_else(|_| "/usr/local/bin/awaken-sandbox".into());
+    let namespace = std::env::var("AWAKEN_K8S_NAMESPACE").unwrap_or_else(|_| "default".into());
+    let runtime = k8s_common::connect_with_clock(&namespace, "127.0.0.1:1".parse().unwrap())
+        .await
+        .expect("connect to Kubernetes")
+        .with_sandbox_control_forwarder(
+            K8sSandboxControlForwarder::new(
+                image.clone(),
+                executable.clone(),
+                DEFAULT_REPOSITORY_GIT_CONTROL_PORT,
+            )
+            .expect("GKC1 digest-pinned forwarder"),
+        );
+    let provider = ContainerProvider::new(Arc::new(runtime), image.clone())
+        .with_clock(awaken_time::system_clock());
+    let scope = format!("k8s-control-{}", std::process::id());
+    let mut demanded = spec(&scope, image);
+    demanded
+        .control_services
+        .insert(SandboxControlServiceKind::RepositoryGitCredential);
+    let sandbox = provider
+        .create_container(&demanded)
+        .await
+        .expect("GKC1/E1 marker-ready Pod");
+    let pod = pod_of(&sandbox);
+    let lease = SandboxControlServicePublisher::publish_sandbox_control_service(
+        &sandbox,
+        SandboxControlServiceKind::RepositoryGitCredential,
+        Arc::new(LiveRepositoryCredential),
+    )
+    .await
+    .expect("GKC1 first authenticated port-forward");
+
+    let process = sandbox
+        .spawn_agent(pc::Command {
+            argv: vec![
+                executable,
+                "git-credential".into(),
+                "--socket".into(),
+                awaken_sandbox_control::REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH.into(),
+                "get".into(),
+            ],
+            cwd: String::new(),
+            env: Vec::new(),
+            stdio: pc::Stdio::Piped,
+        })
+        .await
+        .expect("GKC1 exec real helper");
+    let mut channel = process.channel;
+    channel
+        .write_all(b"protocol=https\nhost=gateway.test\npath=git/repository\n\n")
+        .await
+        .unwrap();
+    let mut output = Vec::new();
+    tokio::time::timeout(Duration::from_secs(30), channel.read_to_end(&mut output))
+        .await
+        .expect("GKC1 helper response deadline")
+        .unwrap();
+    assert_eq!(
+        output, b"username=git-user\npassword=live-capability\n\n",
+        "GKC1/E2"
+    );
+    assert_eq!(
+        process.process.wait().await.unwrap().code,
+        Some(0),
+        "GKC1/E2"
+    );
+    lease.close().await;
+    sandbox.dispose().await.expect("GKC1/E3");
+    assert!(
+        String::from_utf8_lossy(
+            &kubectl(&["-n", &namespace, "get", "pod", &pod, "--ignore-not-found",]).stdout,
+        )
+        .trim()
+        .is_empty(),
+        "GKC1/E3"
+    );
+}
+
+/// Kubernetes warm-capacity cause/effect design:
+/// C1=reachable cluster, C2=mount-less Ephemeral exact shape, C3=target one,
+/// C4=Session consumes the warm Pod, C5=capacity shutdown runs. E1=prewarm
+/// returns only after the Pod is Ready, E2=Session receives that Pod without a
+/// cold create or retained PVC, E3=shutdown deletes only unused capacity,
+/// E4=the active Session Pod remains live until its own dispose, then reaches
+/// Gone. The Retained row is owned by the poolable-shape unit table and must
+/// yield zero rather than bypassing its receipt-fenced identity rule.
+/// Decision rule: (C1,C2,C3,C4,C5)->(E1,E2,E3,E4).
+#[cfg(unix)]
+#[tokio::test]
+async fn k8s_warm_capacity_reaches_ready_hands_out_and_drains_without_killing_session() {
+    if !require_live_cluster() {
+        return;
+    }
+    let namespace = std::env::var("AWAKEN_K8S_NAMESPACE").unwrap_or_else(|_| "default".into());
+    let runtime = Arc::new(
+        k8s_common::connect_with_clock(&namespace, "127.0.0.1:1".parse().unwrap())
+            .await
+            .expect("connect to Kubernetes"),
+    );
+    let image = fixture_image();
+    let provider = Arc::new(
+        ContainerProvider::new(runtime.clone(), image.clone())
+            .with_clock(awaken_time::system_clock()),
+    );
+    let pool = WarmContainerPool::new(provider, 1);
+    let mut session_spec = spec(&format!("k8s-warm-capacity-{}", std::process::id()), image);
+    session_spec.filesystem_continuity = pc::FilesystemContinuity::Ephemeral;
+
+    assert_eq!(pool.prewarm(&session_spec, 1).await.unwrap(), 1, "E1");
+    assert_eq!(pool.ready_len(&session_spec), 1);
+    let environment =
+        ContainerEnvironmentProvider::create_unattached_environment(&pool, &session_spec)
+            .await
+            .expect("E2 bind one Ready warm Pod to the Session");
+    assert_eq!(pool.ready_len(&session_spec), 0, "E2 consumed capacity");
+    assert_eq!(
+        environment.status().await.unwrap(),
+        pc::SandboxStatus::Ready
+    );
+    let handle = environment.handle();
+    let pod = handle
+        .container_payload()
+        .expect("warm Session owns a typed Kubernetes payload")
+        .container_id
+        .clone();
+
+    pool.shutdown().await;
+    assert_eq!(pool.ready_len(&session_spec), 0, "E3");
+    assert_eq!(
+        runtime.inspect(&pod).await.unwrap(),
+        ContainerState::Running,
+        "E3"
+    );
+
+    environment
+        .dispose_unattached()
+        .await
+        .expect("dispose active Session Pod");
+    assert_eq!(
+        runtime.inspect(&pod).await.unwrap(),
+        ContainerState::Gone,
+        "E4"
+    );
+}
+
+#[tokio::test]
+async fn a_k8s_pod_rotates_and_persists_a_native_credential_file() {
+    /* Credential-disposal FMECA rule KCF1. Causes: C1 a durable writable
+     * credential is projected; C2 the agent replaces it; C3 remote read and
+     * broker write both succeed. C1+C2+C3 => E1 persist the exact replacement,
+     * E2 delete the Pod and projected Secret only after persistence. KCF2/KCF3
+     * below cover each failed dependency and require preservation for retry.
+     */
+    if !require_live_cluster() {
+        return;
+    }
+    let initial = br#"{"tokens":{"access_token":"old","refresh_token":"old"}}"#;
+    let refreshed = br#"{"tokens":{"access_token":"new","refresh_token":"rotated"}}"#;
+    let scope = format!("k8s-credential-{}", std::process::id());
+    let broker = Arc::new(CredentialBroker {
+        current: Mutex::new(initial.to_vec()),
+        reject_writeback: AtomicBool::new(false),
+    });
+    let runtime = k8s_common::connect_with_clock("default", "127.0.0.1:1".parse().unwrap())
+        .await
+        .expect("connect to the cluster");
+    let provider = ContainerProvider::new(Arc::new(runtime), fixture_image())
+        .with_clock(awaken_time::system_clock())
+        .with_secret_broker(broker.clone());
+    let spec = credential_spec(&scope, refreshed);
+    let sandbox = provider
+        .create_container(&spec)
+        .await
+        .expect("create Pod with writable native credential");
+    let pod = pod_of(&sandbox);
+    let secret = format!("{pod}-credential-0");
+    let mut ready = false;
+    for _ in 0..120 {
+        let phase = kubectl(&["get", "pod", &pod, "-o", "jsonpath={.status.phase}"]);
+        if String::from_utf8_lossy(&phase.stdout) == "Running" {
+            ready = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    assert!(
+        ready,
+        "credential Pod reaches Running after its init container"
+    );
+    let process = sandbox
+        .spawn_agent(pc::Command {
+            argv: command_of(&spec),
+            cwd: String::new(),
+            env: Vec::new(),
+            stdio: pc::Stdio::Piped,
+        })
+        .await
+        .expect("start the credential-writing agent exec");
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    process
+        .process
+        .signal(pc::Signal::Term)
+        .await
+        .expect("terminate the agent exec");
+    sandbox
+        .dispose()
+        .await
+        .expect("harvest the credential before deleting the Pod");
+    assert_eq!(broker.current.lock().unwrap().as_slice(), refreshed);
+    let secret_after = kubectl(&["get", "secret", &secret, "--ignore-not-found"]);
+    assert!(
+        String::from_utf8_lossy(&secret_after.stdout)
+            .trim()
+            .is_empty(),
+        "credential Secret is deleted after harvest"
+    );
+}
+
+#[tokio::test]
+async fn live_credential_failures_preserve_the_k8s_environment_for_retry() {
+    /* Credential-disposal FMECA cause/effect graph on the real apiserver:
+     * C1 a durable writable credential exists; C2 remote `cat` exits 0;
+     * C3 the broker accepts replacement material; C4 the Kubernetes exec
+     * transport is temporarily unavailable. Effects: E1 successful
+     * harvest removes the Pod (covered by the preceding test); E2 !C2 or !C3
+     * returns an error, keeps authoritative bytes unchanged, and preserves the
+     * exact Pod for retry; E3 C4 is distinguished from the intended injected
+     * fault and retries the same idempotent preparation without deleting.
+     *
+     * | Rule | C2 remote read | C3 broker write | Result |
+     * | KCF1 | success | success | E1 |
+     * | KCF2 | failure | - | E2 |
+     * | KCF3 | success | failure | E2 |
+     * | KCF4 | unavailable then target result | any | E3 then KCF2/KCF3 |
+     */
+    if !require_live_cluster() {
+        return;
+    }
+    let initial = br#"{"tokens":{"access_token":"old"}}"#;
+    let refreshed = br#"{"tokens":{"access_token":"rotated"}}"#;
+
+    let read_scope = format!("k8s-credential-read-failure-{}", std::process::id());
+    let read_broker = Arc::new(CredentialBroker {
+        current: Mutex::new(initial.to_vec()),
+        reject_writeback: AtomicBool::new(false),
+    });
+    let runtime = k8s_common::connect_with_clock("default", "127.0.0.1:1".parse().unwrap())
+        .await
+        .expect("connect to the cluster");
+    let provider = ContainerProvider::new(Arc::new(runtime), fixture_image())
+        .with_clock(awaken_time::system_clock())
+        .with_secret_broker(read_broker.clone());
+    let sandbox = provider
+        .create_container(&credential_spec(&read_scope, refreshed))
+        .await
+        .expect("create credential Pod");
+    let pod = pod_of(&sandbox);
+    let removed = kubectl(&[
+        "exec",
+        &pod,
+        "-c",
+        "agent",
+        "--",
+        "rm",
+        "-f",
+        "/acp-config/auth.json",
+    ]);
+    assert!(removed.status.success(), "remove live credential fixture");
+    let mut read_error = None;
+    for _ in 0..4 {
+        let error = sandbox
+            .dispose()
+            .await
+            .expect_err("KCF2 remote read failure must block disposal");
+        if error.to_string().contains("exit code") {
+            read_error = Some(error);
+            break;
+        }
+        assert!(
+            error.to_string().contains("Connect"),
+            "KCF2 unexpected preparation error: {error}"
+        );
+        assert_pod_present(&pod, "KCF4 after transient KCF2 transport failure");
+    }
+    let error = read_error.expect("KCF2 reaches the injected remote read failure after retries");
+    assert!(error.to_string().contains("exit code"), "KCF2: {error}");
+    assert_eq!(read_broker.current.lock().unwrap().as_slice(), initial);
+    assert_pod_present(&pod, "KCF2");
+    cleanup_credential_pod(&pod);
+
+    let write_scope = format!("k8s-credential-write-failure-{}", std::process::id());
+    let write_broker = Arc::new(CredentialBroker {
+        current: Mutex::new(initial.to_vec()),
+        reject_writeback: AtomicBool::new(true),
+    });
+    let runtime = k8s_common::connect_with_clock("default", "127.0.0.1:1".parse().unwrap())
+        .await
+        .expect("connect to the cluster");
+    let provider = ContainerProvider::new(Arc::new(runtime), fixture_image())
+        .with_clock(awaken_time::system_clock())
+        .with_secret_broker(write_broker.clone());
+    let sandbox = provider
+        .create_container(&credential_spec(&write_scope, refreshed))
+        .await
+        .expect("create credential Pod");
+    let pod = pod_of(&sandbox);
+    let mut write_error = None;
+    for _ in 0..4 {
+        let error = sandbox
+            .dispose()
+            .await
+            .expect_err("KCF3 broker rejection must block disposal");
+        if error.to_string().contains("broker rejection") {
+            write_error = Some(error);
+            break;
+        }
+        assert!(
+            error.to_string().contains("Connect"),
+            "KCF3 unexpected preparation error: {error}"
+        );
+        assert_pod_present(&pod, "KCF4 after transient KCF3 transport failure");
+    }
+    let error = write_error.expect("KCF3 reaches the injected broker failure after retries");
+    assert!(
+        error.to_string().contains("broker rejection"),
+        "KCF3: {error}"
+    );
+    assert_eq!(write_broker.current.lock().unwrap().as_slice(), initial);
+    assert_pod_present(&pod, "KCF3");
+    cleanup_credential_pod(&pod);
+}
+
+#[tokio::test]
+async fn a_pod_agent_speaks_the_wire_over_the_exec_channel() {
+    // Cause/effect decision table — KRP1: C1 a Session-owned Pod is running;
+    // C2 its opaque agent starts through attached exec; C3 runtime paths are not
+    // part of the Pod's static environment. C1+C2+C3 => E1 the process receives
+    // /workspace and the exact SandboxSpec output boundary, E2 it speaks on the
+    // same stdio channel, and E3 disposal removes the Pod.
+    if !require_live_cluster() {
+        return;
+    }
+
+    let scope = format!("k8s-e2e-{}", std::process::id());
+    let runtime = k8s_common::connect_with_clock("default", "127.0.0.1:1".parse().unwrap())
+        .await
+        .expect("connect to the cluster");
+    let runtime = Arc::new(runtime);
+    let image = fixture_image();
+    let provider = ContainerProvider::new(runtime.clone(), image.clone())
+        .with_clock(awaken_time::system_clock());
+
+    let sandbox = provider
+        .create_container(&spec(&scope, image))
+        .await
+        .expect("create the agent Pod");
+    let pod = pod_of(&sandbox);
+
+    // The long-lived Session environment must be Running before its agent is exec'd.
+    let ready = {
+        let mut ok = false;
+        for _ in 0..120 {
+            let phase = kubectl(&["get", "pod", &pod, "-o", "jsonpath={.status.phase}"]);
+            if String::from_utf8_lossy(&phase.stdout) == "Running" {
+                ok = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        ok
+    };
+
+    assert!(ready, "the agent Pod must reach Running");
+    let got = exchange(&sandbox, agent_argv())
+        .await
+        .expect("exchange ACP frames over the Kubernetes exec channel");
+    process_lifecycle::verify_security_floor(runtime.as_ref(), &pod).await;
+    process_lifecycle::verify_wait_cancellation_and_signal(runtime.as_ref(), &pod).await;
+    sandbox
+        .dispose()
+        .await
+        .expect("KRP1 E3 production exact disposal removes the Pod");
+
+    assert!(
+        got.contains("sandboxed reply:/workspace:/mnt/session/outputs"),
+        "the Pod agent must observe runtime paths over exec stdio: {got:?}"
+    );
+    assert!(got.contains("turn_end"), "the turn completed: {got:?}");
+}
+
+#[tokio::test]
+async fn a_live_managed_file_is_replaceable_by_the_runtime_and_read_only_to_the_agent() {
+    // Cause/effect decision table — KLI1: C1 a live K8s Session receives a
+    // read-only File below the managed input root; C2 the runtime projector owns
+    // the writable side of the shared volume; C3 the Agent owns neither projector
+    // nor Kubernetes credentials. C1+C2+C3 => E1 attach becomes immediately
+    // visible, E2 Agent writes fail while bytes stay unchanged, and E3 runtime
+    // removal makes the path and now-empty parents absent without replacing the
+    // Pod or deleting the shared projection root.
+    if !require_live_cluster() {
+        return;
+    }
+
+    let scope = format!("k8s-live-input-{}", std::process::id());
+    let runtime = k8s_common::connect_with_clock("default", "127.0.0.1:1".parse().unwrap())
+        .await
+        .expect("connect to the cluster");
+    let image = fixture_image();
+    let provider = ContainerProvider::new(Arc::new(runtime), image.clone())
+        .with_clock(awaken_time::system_clock());
+    let sandbox = provider
+        .create_container(&spec(&scope, image))
+        .await
+        .expect("create the agent Pod");
+    let pod = pod_of(&sandbox);
+    let path = "/mnt/session/uploads/awaken-design/current/index.html";
+    let marker = "runtime-projected-generation-2";
+    let requirement = pc::MountRequirement {
+        mount_id: "current-index".into(),
+        source: pc::MountSource::Inline {
+            contents: marker.into(),
+        },
+        mount_path: path.into(),
+        access: pc::MountAccess::ReadOnly,
+        lifetime: pc::MountLifetime::Session,
+        required: true,
+    };
+
+    pc::Sandbox::attach(&sandbox, requirement)
+        .await
+        .expect("project a live managed File");
+    let read = kubectl(&["exec", &pod, "-c", "agent", "--", "cat", path]);
+    assert!(read.status.success());
+    assert_eq!(String::from_utf8_lossy(&read.stdout), marker);
+
+    let write = kubectl(&[
+        "exec",
+        &pod,
+        "-c",
+        "agent",
+        "--",
+        "sh",
+        "-c",
+        "printf changed > /mnt/session/uploads/awaken-design/current/index.html",
+    ]);
+    assert!(
+        !write.status.success(),
+        "Agent must not mutate managed inputs"
+    );
+    let unchanged = kubectl(&["exec", &pod, "-c", "agent", "--", "cat", path]);
+    assert_eq!(String::from_utf8_lossy(&unchanged.stdout), marker);
+
+    sandbox
+        .remove_live_input_path(path)
+        .await
+        .expect("remove the managed File through the projector");
+    let absent = kubectl(&["exec", &pod, "-c", "agent", "--", "test", "!", "-e", path]);
+    assert!(absent.status.success());
+    let empty_parent_absent = kubectl(&[
+        "exec",
+        &pod,
+        "-c",
+        "agent",
+        "--",
+        "test",
+        "!",
+        "-e",
+        "/mnt/session/uploads/awaken-design/current",
+    ]);
+    assert!(
+        empty_parent_absent.status.success(),
+        "hot removal must prune empty parents up to, but never including, the live-input root"
+    );
+    let root_retained = kubectl(&[
+        "exec",
+        &pod,
+        "-c",
+        "agent",
+        "--",
+        "test",
+        "-d",
+        "/mnt/session/uploads",
+    ]);
+    assert!(
+        root_retained.status.success(),
+        "projection root remains mounted"
+    );
+
+    sandbox.dispose().await.unwrap();
+}
+
+#[tokio::test]
+async fn managed_manifest_recovery_reuses_the_pod_and_removes_obsolete_files() {
+    /* Cause/effect recovery decision table — KLI2:
+     * C1 a fenced create produced the exact Session Pod plus durable V2 handle;
+     * C2 recovery presents that handle with the byte-identical frozen creation
+     * spec and same live effect; C3 the separately owned live Managed File
+     * manifest changes from path/value A to path/value B; C4 the shared
+     * EffectAuthority fixture admits the exact current create fence. C1+C2+C3+C4
+     * => E1 adopt
+     * reuses the same Pod without a create/re-fingerprint path, E2 the canonical
+     * live projection port removes A and projects B, E3 no per-file ConfigMap
+     * exists, E4 source-dependent preparation leaves the Pod live, and E5 the
+     * separately admitted physical phase removes it. A changed creation spec is deliberately excluded: K1 in
+     * k8s_it proves it fails closed rather than conflating mutable manifest state
+     * with immutable realization identity.
+     */
+    if !require_live_cluster() {
+        return;
+    }
+
+    let scope = format!("k8s-manifest-recovery-{}", std::process::id());
+    let path_a = "/mnt/session/uploads/awaken-design/current/old.html";
+    let path_b = "/mnt/session/uploads/awaken-design/current/index.html";
+    let runtime = k8s_common::connect_with_clock("default", "127.0.0.1:1".parse().unwrap())
+        .await
+        .expect("connect to the cluster");
+    let provider = ContainerProvider::new(Arc::new(runtime), fixture_image())
+        .with_clock(awaken_time::system_clock());
+
+    let first_spec = managed_input_spec(&scope, path_a, "generation-a");
+    let next_spec = managed_input_spec(&scope, path_b, "generation-b");
+    let create_fence = effect_fence(&scope, "create", "manifest-owner", 1);
+    let first = ContainerEnvironmentProvider::create_environment_for_effect(
+        &provider,
+        &first_spec,
+        &create_fence,
+        &EffectAuthority::new(&create_fence),
+        awaken_container_contract::EnvironmentRealizationIntent::Create,
+    )
+    .await
+    .expect("create the initial Session Pod and project A");
+    let handle = first.handle();
+    let pod = container_id(&handle);
+    let read_a = kubectl(&["exec", &pod, "-c", "agent", "--", "cat", path_a]);
+    assert!(read_a.status.success());
+    assert_eq!(String::from_utf8_lossy(&read_a.stdout), "generation-a");
+
+    drop(first);
+    let recovered = ContainerEnvironmentProvider::adopt_environment_for_effect(
+        &provider,
+        ContainerEnvironmentAdoption::new(&first_spec, &handle),
+        &create_fence,
+        &EffectAuthority::new(&create_fence),
+    )
+    .await
+    .expect("recover the stable Pod from its frozen spec and exact V2 handle");
+    assert_eq!(container_id(&recovered.handle()), pod);
+    assert!(
+        recovered.supports_live_mount_replacement(&first_spec.mounts, &next_spec.mounts),
+        "KLI2 mutable manifest is admitted by the existing live projection owner"
+    );
+    recovered
+        .remove_live_input_path(path_a)
+        .await
+        .expect("KLI2 remove obsolete path through the live projection port");
+    pc::Sandbox::attach(recovered.as_ref(), next_spec.mounts[0].clone())
+        .await
+        .expect("KLI2 project the replacement path through the live projection port");
+    let old_absent = kubectl(&["exec", &pod, "-c", "agent", "--", "test", "!", "-e", path_a]);
+    assert!(old_absent.status.success());
+    let read_b = kubectl(&["exec", &pod, "-c", "agent", "--", "cat", path_b]);
+    assert!(read_b.status.success());
+    assert_eq!(String::from_utf8_lossy(&read_b.stdout), "generation-b");
+
+    let configmaps = kubectl(&[
+        "get",
+        "configmap",
+        "-l",
+        &format!("awaken-cfg-owner={pod}"),
+        "-o",
+        "name",
+    ]);
+    assert!(configmaps.status.success());
+    assert!(configmaps.stdout.is_empty());
+
+    let terminal_fence = effect_fence(&scope, "terminal", "manifest-owner", 2);
+    recovered
+        .prepare_disposal_for_effect(
+            &terminal_fence,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence),
+        )
+        .await
+        .expect("KLI2/E4 prepare source-dependent effects");
+    assert_pod_present(&pod, "KLI2/E4 preparation has zero physical effect");
+    recovered
+        .dispose_for_effect(
+            &disposal_authorization(&terminal_fence),
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                disposal_authorization(&terminal_fence).effect_fence(),
+            ),
+        )
+        .await
+        .expect("KLI2/E5 exact physical cleanup");
+}
+
+#[tokio::test]
+async fn inline_content_reaches_the_pod_as_a_configmap_volume() {
+    /* Mount-realization FMECA rule KMR1. C1 inline UTF-8 bytes and a read-only
+     * path are valid; C2 the Pod reaches Running. C1+C2 => E1 one ConfigMap
+     * contains the exact text, E2 the agent reads it at the requested path,
+     * E3 disposal reaps both Pod and ConfigMap. Invalid paths and create
+     * rollback are owned by the pure realization decision table.
+     */
+    if !require_live_cluster() {
+        return;
+    }
+
+    let scope = format!("k8s-cfg-{}", std::process::id());
+    let marker = "inline-configmap-marker-42";
+
+    let runtime = k8s_common::connect_with_clock("default", "127.0.0.1:1".parse().unwrap())
+        .await
+        .expect("connect to the cluster");
+    let provider = ContainerProvider::new(Arc::new(runtime), fixture_image())
+        .with_clock(awaken_time::system_clock());
+
+    let sandbox = provider
+        .create_container(&inline_spec(&scope, marker))
+        .await
+        .expect("create the agent Pod with a ConfigMap-backed inline mount");
+    let pod = pod_of(&sandbox);
+
+    // The Pod-owned ConfigMap must exist after realization and before readiness.
+    let cm = kubectl(&[
+        "get",
+        "configmap",
+        &format!("{pod}-cfg-0"),
+        "-o",
+        "jsonpath={.data.content}",
+    ]);
+    let cm_data = String::from_utf8_lossy(&cm.stdout).to_string();
+
+    let ready = {
+        let mut ok = false;
+        for _ in 0..120 {
+            let phase = kubectl(&["get", "pod", &pod, "-o", "jsonpath={.status.phase}"]);
+            if String::from_utf8_lossy(&phase.stdout) == "Running" {
+                ok = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        ok
+    };
+
+    assert!(ready, "the agent Pod must reach Running");
+    let got = exchange(&sandbox, cat_mount_argv())
+        .await
+        .expect("read the ConfigMap mount from the agent exec");
+    sandbox
+        .dispose()
+        .await
+        .expect("KMR1 E3 production exact disposal removes the Pod and ConfigMap");
+
+    // The ConfigMap held the inline bytes verbatim.
+    assert_eq!(
+        cm_data, marker,
+        "the ConfigMap must hold the inline content"
+    );
+    // The Pod `cat`ed the ConfigMap-projected file and sent it back — proof the inline
+    // content was materialized *inside the Pod*, at the exact mount_path, and readable.
+    assert!(
+        got.contains(marker),
+        "the ConfigMap-projected inline content must be readable at the mount_path in the Pod: {got:?}"
+    );
+
+    // dispose() reaps the ConfigMap too (best-effort label sweep); it must be gone.
+    let after = kubectl(&[
+        "get",
+        "configmap",
+        &format!("{pod}-cfg-0"),
+        "--ignore-not-found",
+    ]);
+    assert!(
+        String::from_utf8_lossy(&after.stdout).trim().is_empty(),
+        "dispose must reap the inline-content ConfigMap"
+    );
+}
+
+#[tokio::test]
+async fn multiple_memory_stores_round_trip_with_exact_access_in_a_live_pod() {
+    if !require_live_cluster() {
+        return;
+    }
+    let memory = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
+    memory
+        .create("k8s-rw", "/note.md", "rw-seed")
+        .await
+        .unwrap();
+    memory
+        .create("k8s-ro", "/note.md", "ro-seed")
+        .await
+        .unwrap();
+
+    let namespace = std::env::var("AWAKEN_K8S_NAMESPACE").unwrap_or_else(|_| "default".into());
+    let runtime = k8s_common::connect_with_clock(&namespace, "127.0.0.1:1".parse().unwrap())
+        .await
+        .expect("connect to the cluster");
+    let image = session_image();
+    let provider = ContainerProvider::new(Arc::new(runtime), image.clone())
+        .with_clock(awaken_time::system_clock());
+    let terminal_mounter = Arc::new(MemoryStoreMounter::copy_only(memory.clone()));
+    provider.install_memory_mounter(terminal_mounter.clone());
+
+    // Live Pod Memory decision table:
+    // C0=the accepted production Session image carries the canonical
+    // `awaken-sandbox read-tree-nofollow` helper; C1=two authoritative snapshots;
+    // C2=RW Agent volume; C3=RO Agent volume; C4=unbound parent path; C5=create
+    // and terminal effects are durable and exact, with current authority from
+    // the same EffectAuthority fixture as the lifecycle suite. R1 C0+C1+C2+C5 => E1 seeded
+    // read, mutation and harvested durable update; R2 C0+C1+C3+C5 => E2 seeded
+    // read, kernel rejects mutation and durable head stays unchanged; R3
+    // C0+C1+C4+C5 => E3 sealed parent rejects an unowned path; R4 R1+R2+C5 =>
+    // E4 the image-local nofollow scanner snapshots each exact volume, the
+    // existing terminal reconciliation port commits RW bytes before the
+    // provider preparation receipt, preparation leaves the Pod live, and only
+    // the separately admitted physical phase removes it. Missing C0 is an
+    // image-acceptance failure, never a shell fallback; missing C5 is owned by
+    // the runtime unit table and fails before native Memory projection.
+    let scope = format!("k8s-memory-boundary-{}", std::process::id());
+    let mut memory_spec = spec(&scope, image);
+    memory_spec.mounts = vec![
+        memory_mount(
+            "rw-memory",
+            "k8s-rw",
+            "/mnt/memory/rw",
+            pc::MountAccess::ReadWrite,
+        ),
+        memory_mount(
+            "ro-memory",
+            "k8s-ro",
+            "/mnt/memory/ro",
+            pc::MountAccess::ReadOnly,
+        ),
+    ];
+    let create_fence = effect_fence(&scope, "create", "memory-owner", 1);
+    let sandbox = ContainerEnvironmentProvider::create_environment_for_effect(
+        &provider,
+        &memory_spec,
+        &create_fence,
+        &EffectAuthority::new(&create_fence),
+        awaken_container_contract::EnvironmentRealizationIntent::Create,
+    )
+    .await
+    .expect("create fenced Pod with two MemoryStore volumes");
+    let probe = concat!(
+        "read _p; ",
+        "test \"$(cat /mnt/memory/rw/note.md)\" = rw-seed; ",
+        "test \"$(cat /mnt/memory/ro/note.md)\" = ro-seed; ",
+        "printf rw-updated > /mnt/memory/rw/note.md; ",
+        "! sh -c 'printf forbidden > /mnt/memory/ro/note.md'; ",
+        "! sh -c 'printf escaped > /mnt/memory/unbound.md'; ",
+        "printf '%s\\n' '{\"type\":\"message\",\"text\":\"memory-boundary-ok\"}'; ",
+        "printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'"
+    );
+    let got = exchange(
+        sandbox.as_ref(),
+        vec!["sh".into(), "-ec".into(), probe.into()],
+    )
+    .await
+    .expect("exercise MemoryStore paths through a real Pod exec");
+    assert!(
+        got.contains("memory-boundary-ok"),
+        "live probe completed: {got:?}"
+    );
+    let terminal_fence = effect_fence(&scope, "terminal", "memory-owner", 2);
+    let handle = sandbox.handle();
+    let evidence = handle
+        .memory_materializations()
+        .expect("K8s Memory handle is current V2")
+        .expect("K8s Memory handle records the complete Copy evidence");
+    assert_eq!(evidence.len(), 2, "R4/C1 exact Memory evidence set");
+    for materialization in evidence {
+        let requirement = memory_spec
+            .mounts
+            .iter()
+            .find(|requirement| requirement.mount_path == materialization.mount_path)
+            .expect("R4 each materialization joins one frozen mount");
+        let files = sandbox
+            .read_files(&materialization.mount_path)
+            .await
+            .expect("R4 snapshot the exact native Memory root")
+            .into_iter()
+            .map(|file| (file.path, file.bytes))
+            .collect::<Vec<_>>();
+        pc::MemoryMounter::reconcile_recovered_copy(
+            terminal_mounter.as_ref(),
+            &materialization.store_id,
+            materialization,
+            &files,
+            requirement.access,
+        )
+        .await
+        .expect("R4 reconcile through the canonical terminal Memory port");
+    }
+    sandbox
+        .acknowledge_memory_reconciliation(
+            &terminal_fence,
+            evidence,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence),
+        )
+        .await
+        .expect("R4 acknowledge the complete reconciled evidence set");
+    sandbox
+        .prepare_disposal_for_effect(
+            &terminal_fence,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence),
+        )
+        .await
+        .expect("R4 prepare source-dependent cleanup after Memory is durable");
+    let pod = container_id(&handle);
+    assert_pod_present(&pod, "R4 provider preparation has zero physical effect");
+    sandbox
+        .dispose_for_effect(
+            &disposal_authorization(&terminal_fence),
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                disposal_authorization(&terminal_fence).effect_fence(),
+            ),
+        )
+        .await
+        .expect("R4 physical disposal runs only after preparation");
+
+    assert_eq!(
+        awaken_resource_contract::MemoryQueries::get_by_path(memory.as_ref(), "k8s-rw", "/note.md")
+            .await
+            .unwrap()
+            .unwrap()
+            .content
+            .as_deref(),
+        Some("rw-updated"),
+        "RW Pod volume is harvested to the authoritative repository",
+    );
+    assert_eq!(
+        awaken_resource_contract::MemoryQueries::get_by_path(memory.as_ref(), "k8s-ro", "/note.md")
+            .await
+            .unwrap()
+            .unwrap()
+            .content
+            .as_deref(),
+        Some("ro-seed"),
+        "RO Pod volume cannot alter the authoritative repository",
+    );
+}
+
+#[tokio::test]
+async fn a_file_resolved_from_the_blob_source_reaches_the_pod() {
+    /* By-reference mount FMECA rule KMR2. C1 the File id exists in the injected
+     * BlobSource; C2 its bytes are UTF-8; C3 the Pod becomes runnable; C4 exact
+     * production disposal is requested. C1+C2+C3 => E1 resolve once through the
+     * canonical BlobSource, E2 project the exact bytes, E3 make them readable
+     * only at the requested path; C4=>E4 exact disposal succeeds. Missing and
+     * corrupt content are covered at the provider boundary before mutation.
+     */
+    if !require_live_cluster() {
+        return;
+    }
+
+    let scope = format!("k8s-file-{}", std::process::id());
+    let marker = "file-via-blobsource-99";
+
+    let runtime = k8s_common::connect_with_clock("default", "127.0.0.1:1".parse().unwrap())
+        .await
+        .expect("connect to the cluster");
+    // The provider resolves the `File` id `blob-k8s` from its seeded BlobSource, then the
+    // k8s tier projects the resolved bytes as a ConfigMap — the by-reference content path.
+    let provider = ContainerProvider::new(Arc::new(runtime), fixture_image())
+        .with_clock(awaken_time::system_clock())
+        .with_blob("blob-k8s", marker);
+
+    let sandbox = provider
+        .create_container(&file_spec(&scope))
+        .await
+        .expect("create the agent Pod with a File mount resolved via BlobSource");
+    let pod = pod_of(&sandbox);
+
+    let ready = {
+        let mut ok = false;
+        for _ in 0..120 {
+            let phase = kubectl(&["get", "pod", &pod, "-o", "jsonpath={.status.phase}"]);
+            if String::from_utf8_lossy(&phase.stdout) == "Running" {
+                ok = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        ok
+    };
+
+    assert!(ready, "the agent Pod must reach Running");
+    let got = exchange(&sandbox, cat_mount_argv())
+        .await
+        .expect("read the resolved File mount from the agent exec");
+    sandbox
+        .dispose()
+        .await
+        .expect("KMR2 E4 production exact disposal removes the Pod");
+
+    // The Pod read the ConfigMap-projected file whose bytes the provider resolved from the
+    // BlobSource by the File's content id — the full by-reference → ConfigMap → pod path.
+    assert!(
+        got.contains(marker),
+        "a File resolved via BlobSource must reach the Pod at its mount_path: {got:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_binary_file_reaches_the_pod_via_configmap_binary_data() {
+    /* Binary mount FMECA rule KMR3. C1 the File id resolves; C2 bytes are not
+     * valid UTF-8 but contain an exact marker; C3 the Pod becomes runnable; C4
+     * exact production disposal is requested. C1+C2+C3 => E1 select ConfigMap
+     * binaryData rather than lossy text, E2 preserve all bytes, E3 expose the
+     * marker to the agent at the exact path; C4=>E4 exact disposal succeeds.
+     */
+    if !require_live_cluster() {
+        return;
+    }
+
+    let scope = format!("k8s-bin-{}", std::process::id());
+
+    let runtime = k8s_common::connect_with_clock("default", "127.0.0.1:1".parse().unwrap())
+        .await
+        .expect("connect to the cluster");
+    // Non-UTF-8 bytes: a 0xff/0xfe prefix (so String::from_utf8 fails → binaryData) followed
+    // by an ASCII marker the Pod greps for.
+    let mut bytes = vec![0xffu8, 0xfe];
+    bytes.extend_from_slice(b"binary-marker-ok");
+    let provider = ContainerProvider::new(Arc::new(runtime), fixture_image())
+        .with_clock(awaken_time::system_clock())
+        .with_blob("blob-bin", bytes);
+
+    let sandbox = provider
+        .create_container(&binary_file_spec(&scope))
+        .await
+        .expect("create the agent Pod with a binaryData ConfigMap mount");
+    let pod = pod_of(&sandbox);
+
+    let ready = {
+        let mut ok = false;
+        for _ in 0..120 {
+            let phase = kubectl(&["get", "pod", &pod, "-o", "jsonpath={.status.phase}"]);
+            if String::from_utf8_lossy(&phase.stdout) == "Running" {
+                ok = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        ok
+    };
+
+    assert!(ready, "the agent Pod must reach Running");
+    let got = exchange(&sandbox, grep_binary_argv())
+        .await
+        .expect("read the binaryData mount from the agent exec");
+    sandbox
+        .dispose()
+        .await
+        .expect("KMR3 E4 production exact disposal removes the Pod");
+
+    // The binary file (non-UTF-8 prefix + ASCII marker) reached the Pod intact via binaryData.
+    assert!(
+        got.contains("binary-ok"),
+        "a binary File must reach the Pod via a binaryData ConfigMap: {got:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_expired_hand_exec_is_indeterminate_but_a_later_call_uses_the_same_session_pod() {
+    /*
+     * Real Kubernetes Hand-expiry decision table. Causes: C1 a live Session Pod
+     * executes bash through the production relay and Hand; C2 its attached-exec
+     * process is killed before the next request; C3 the same dead executor is
+     * invoked; C4 one replacement Hand receives a different operation in the
+     * unchanged Pod. Effects: E1 the initial call succeeds; E2 the attempted send
+     * on the dead stream is the typed Indeterminate outcome; E3 the later
+     * operation executes on the replacement; E4 the Session Pod identity is
+     * unchanged and is disposed. Constraint K1: a stream write cannot prove that
+     * zero bytes were dispatched, so C3 must never become the pre-dispatch retry
+     * signal. Rules: KHR1=C1+C2+C3=>E1+E2; KHR2=KHR1+C4=>E3+E4.
+     * The relay RPD1 test owns the transport classification, while Runtime-host's
+     * H1-H6 table owns the one bounded replacement for a separately proven
+     * pre-dispatch failure; this live test only composes those authorities with
+     * the Kubernetes exec lifecycle.
+     */
+    if !require_live_cluster() {
+        return;
+    }
+
+    let namespace = std::env::var("AWAKEN_K8S_NAMESPACE").unwrap_or_else(|_| "default".to_string());
+    let image = session_image();
+    let scope = format!("k8s-hand-recovery-{}", std::process::id());
+    let runtime = k8s_common::connect_with_clock(&namespace, "127.0.0.1:1".parse().unwrap())
+        .await
+        .expect("connect to Kubernetes");
+    let provider = ContainerProvider::new(Arc::new(runtime), image.clone())
+        .with_clock(awaken_time::system_clock());
+    let sandbox_spec = spec(&scope, image);
+    let sandbox = provider
+        .create_container(&sandbox_spec)
+        .await
+        .expect("create the Session Pod");
+    let session_handle = pc::Sandbox::handle(&sandbox);
+
+    let first = sandbox
+        .spawn_agent(pc::Command {
+            argv: vec![
+                "/usr/local/bin/awaken-sandbox".into(),
+                "hand".into(),
+                "--stdio".into(),
+            ],
+            cwd: "/workspace".into(),
+            env: Vec::new(),
+            stdio: pc::Stdio::Piped,
+        })
+        .await
+        .expect("attach the initial Hand");
+    let first_executor = awaken_tool_relay::RemoteToolExecutor::new(first.channel)
+        .with_operation_scope(pc::Sandbox::id(&sandbox));
+    let before = first_executor
+        .invoke(&ToolCall {
+            call_id: "before-expiry".into(),
+            tool_id: "bash".into(),
+            arguments: serde_json::json!({"command": "printf before-expiry"}),
+        })
+        .await
+        .expect("the initial Hand executes a real tool");
+    assert!(before.text().contains("before-expiry"));
+    first
+        .process
+        .signal(pc::Signal::Kill)
+        .await
+        .expect("kill the attached Hand exec");
+    first.process.wait().await.expect("observe Hand exit");
+
+    let error = first_executor
+        .invoke(&ToolCall {
+            call_id: "closed-channel".into(),
+            tool_id: "bash".into(),
+            arguments: serde_json::json!({"command": "printf must-not-run"}),
+        })
+        .await
+        .expect_err("the expired channel cannot dispatch another call");
+    assert!(
+        matches!(error, ToolError::Indeterminate(_)),
+        "an attempted stream write is never safe to replay: {error:?}"
+    );
+
+    let replacement = sandbox
+        .spawn_agent(pc::Command {
+            argv: vec![
+                "/usr/local/bin/awaken-sandbox".into(),
+                "hand".into(),
+                "--stdio".into(),
+            ],
+            cwd: "/workspace".into(),
+            env: Vec::new(),
+            stdio: pc::Stdio::Piped,
+        })
+        .await
+        .expect("attach one replacement Hand");
+    let replacement_process = replacement.process;
+    let replacement_executor = awaken_tool_relay::RemoteToolExecutor::new(replacement.channel)
+        .with_operation_scope(pc::Sandbox::id(&sandbox));
+    let after = replacement_executor
+        .invoke(&ToolCall {
+            call_id: "after-expiry".into(),
+            tool_id: "bash".into(),
+            arguments: serde_json::json!({"command": "printf after-expiry"}),
+        })
+        .await
+        .expect("the replacement Hand executes a real tool");
+    assert!(after.text().contains("after-expiry"));
+    assert_eq!(pc::Sandbox::handle(&sandbox), session_handle);
+
+    replacement_process
+        .signal(pc::Signal::Term)
+        .await
+        .expect("stop the replacement Hand");
+    replacement_process
+        .wait()
+        .await
+        .expect("observe replacement exit");
+    sandbox.dispose().await.expect("dispose the Session Pod");
+}
+
+#[tokio::test]
+async fn resident_hand_joins_and_caches_across_two_provider_owners_of_one_pod() {
+    /*
+     * Real Kubernetes resident-takeover rules H1/H2/H3/H5 and Cloud RH1/RH5.
+     * Causes: C0 the exact declared Session image contains the resident Hand
+     * executable; C1 provider/Worker A creates a Session Pod whose PID1 is the
+     * real `awaken-sandbox hand --listen`; C2 operation O performs one filesystem
+     * side effect and remains in flight; C3 A's port-forward disappears before
+     * the reply; C4 independent provider/Worker B adopts the durable handle and
+     * opens a new authenticated Pod subresource; C5 B re-drives O, then a third
+     * channel re-drives completed O; C6 the Pod is deleted before another open.
+     * Effects: E1 B joins the original result; E2 the third channel reads the
+     * cache; E3 the side-effect count is one; E4 Pod identity never changes;
+     * E5 the unavailable Pod channel fails within its bound. Constraints: the
+     * SandboxSpec environment is the sole image authority, and no attached Hand
+     * or Service is created. Rules: RH0=C0+C1=>resident channel ready;
+     * RH1=RH0+C2+C3+C4=>E1+E3+E4; RH2=RH1+C5=>E2+E3; RH3=RH2+C6=>E5.
+     * This is the executable control for duplicate effect, decorator/channel
+     * drift, and API-unavailable FMECA paths.
+     */
+    if !require_live_cluster() {
+        return;
+    }
+
+    let namespace = std::env::var("AWAKEN_K8S_NAMESPACE").unwrap_or_else(|_| "default".into());
+    let image = session_image();
+    let scope = format!("k8s-resident-takeover-{}", std::process::id());
+    let runtime_a = k8s_common::connect_with_clock(&namespace, "127.0.0.1:1".parse().unwrap())
+        .await
+        .expect("connect Worker A provider")
+        .with_pod_channel_port(7777);
+    let provider_a = ContainerProvider::new(Arc::new(runtime_a), image.clone())
+        .with_clock(awaken_time::system_clock())
+        .with_resident_hand(
+            ResidentHandConfig::new("/usr/local/bin/awaken-sandbox", 7777).unwrap(),
+        );
+    let sandbox_spec = spec(&scope, image);
+    let sandbox = provider_a
+        .create_container(&sandbox_spec)
+        .await
+        .expect("Worker A creates resident Session Pod");
+    let pod = pod_of(&sandbox);
+    let handle = pc::Sandbox::handle(&sandbox);
+
+    let mut channel_a = None;
+    for _ in 0..120 {
+        match sandbox.open_agent_channel().await {
+            Ok(channel) => {
+                channel_a = Some(channel);
+                break;
+            }
+            Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+        }
+    }
+    let channel_a = channel_a.expect("resident Hand accepts the bounded initial channel probe");
+    const HA_STARTED_MARKER: &str = "/tmp/awaken-ha-started";
+    let operation = ToolCall {
+        call_id: "resident-one-effect".into(),
+        tool_id: "bash".into(),
+        arguments: serde_json::json!({
+            "command": format!("count=$(cat /tmp/awaken-ha-count 2>/dev/null || echo 0); count=$((count+1)); printf '%s' \"$count\" > /tmp/awaken-ha-count; touch {HA_STARTED_MARKER}; sleep 2; printf 'resident-result-%s' \"$count\"")
+        }),
+    };
+    let worker_a = tokio::spawn({
+        let operation = operation.clone();
+        let scope = scope.clone();
+        async move {
+            let executor = awaken_tool_relay::RemoteToolExecutor::new(channel_a)
+                .with_operation_scope(scope)
+                .with_durable_request_recovery();
+            with_tool_operation_context(
+                ToolOperationContext::for_run("resident-run", "resident-one-effect"),
+                executor.invoke(&operation),
+            )
+            .await
+        }
+    });
+    // H2/C2 waits on the agent's own file, not a local poll count or channel
+    // signal. One exact kubectl exec settles only after that fact exists; the
+    // deadline kills the observer and fails loudly if it never appears.
+    let marker_probe = format!("while ! test -f '{HA_STARTED_MARKER}'; do sleep 0.1; done");
+    let observed = tokio::time::timeout(
+        Duration::from_secs(8),
+        tokio::process::Command::new(KUBECTL_BIN)
+            .args(["exec", &pod, "-c", "agent", "--", "sh", "-c", &marker_probe])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .expect("H2/C2 exact marker deadline")
+    .expect("H2/C2 kubectl observer");
+    assert!(
+        observed.status.success(),
+        "H2/C2 real side effect entered before disconnect: {}",
+        String::from_utf8_lossy(&observed.stderr)
+    );
+    worker_a.abort();
+    let _ = worker_a.await;
+    drop(sandbox);
+    drop(provider_a);
+
+    let runtime_b = k8s_common::connect_with_clock(&namespace, "127.0.0.1:1".parse().unwrap())
+        .await
+        .expect("connect Worker B provider")
+        .with_pod_channel_port(7777);
+    let provider_b = ContainerProvider::new(Arc::new(runtime_b), "unused-on-adopt")
+        .with_clock(awaken_time::system_clock())
+        .with_resident_hand(
+            ResidentHandConfig::new("/usr/local/bin/awaken-sandbox", 7777).unwrap(),
+        );
+    let adopted = provider_b
+        .adopt_unattached_environment(awaken_sandbox_container::ContainerEnvironmentAdoption::new(
+            &sandbox_spec,
+            &handle,
+        ))
+        .await
+        .expect("Worker B adopts the same Pod");
+    assert_eq!(adopted.handle(), handle, "H2/E4");
+    let channel_b = adopted.open_agent_channel().await.expect("RH1/C4");
+    let joined_executor = awaken_tool_relay::RemoteToolExecutor::new(channel_b)
+        .with_operation_scope(scope.clone())
+        .with_durable_request_recovery();
+    let joined = with_tool_operation_context(
+        ToolOperationContext::for_run("resident-run", "resident-one-effect"),
+        joined_executor.invoke(&operation),
+    )
+    .await
+    .expect("H2/E1 replacement joins original operation");
+    assert!(joined.text().contains("resident-result-1"), "H2/E1");
+
+    let channel_c = adopted.open_agent_channel().await.expect("H3/C5");
+    let cached_executor = awaken_tool_relay::RemoteToolExecutor::new(channel_c)
+        .with_operation_scope(scope.clone())
+        .with_durable_request_recovery();
+    let cached = with_tool_operation_context(
+        ToolOperationContext::for_run("resident-run", "resident-one-effect"),
+        cached_executor.invoke(&operation),
+    )
+    .await
+    .expect("H3/E2 cached result");
+    assert_eq!(cached, joined, "H3/E2");
+    let count_call = ToolCall {
+        call_id: "resident-effect-count".into(),
+        tool_id: "bash".into(),
+        arguments: serde_json::json!({"command": "cat /tmp/awaken-ha-count"}),
+    };
+    let count = with_tool_operation_context(
+        ToolOperationContext::for_run("resident-run", "resident-effect-count"),
+        cached_executor.invoke(&count_call),
+    )
+    .await
+    .expect("inspect the real side effect");
+    assert_eq!(count.text().trim(), "1", "H2/H3 E3");
+    drop(cached_executor);
+
+    adopted
+        .dispose_unattached()
+        .await
+        .expect("delete Session Pod");
+    let unavailable = tokio::time::timeout(Duration::from_secs(20), adopted.open_agent_channel())
+        .await
+        .expect("H5/E5 channel establishment owns a finite bound");
+    assert!(unavailable.is_err(), "H5/E5 deleted Pod is unavailable");
+}
+
+#[path = "k8s_e2e/create_ledger_live.rs"]
+mod create_ledger_live;

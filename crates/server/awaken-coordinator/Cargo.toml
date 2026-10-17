@@ -36,6 +36,8 @@ awaken-local-process.workspace = true
 awaken-fs-durability.workspace = true
 awaken-worker-transport-security.workspace = true
 awaken-sandbox-container.workspace = true
+# The Kubernetes Create broker speaks the engine's ledger and Pod process wire.
+awaken-sandbox-kubernetes = { workspace = true, optional = true }
 kube = { workspace = true, features = ["client", "rustls-tls", "http-proxy"], optional = true }
 awaken-executable-agent-contract.workspace = true
 awaken-service-auth-contract.workspace = true
@@ -172,7 +174,7 @@ test-support = [
 nats = ["awaken-dispatch/nats"]
 # Paired Kubernetes Worker identity and independent process evidence only.
 # Execution backend selection remains in awaken-execution-composition.
-container-k8s = ["awaken-worker-transport-security/kubernetes", "awaken-sandbox-container/k8s", "dep:kube"]
+container-k8s = ["awaken-worker-transport-security/kubernetes", "dep:awaken-sandbox-kubernetes", "dep:kube"]
 
 [dev-dependencies]
 awaken-executable-environment-contract.workspace = true

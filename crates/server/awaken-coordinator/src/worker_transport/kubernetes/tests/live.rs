@@ -10,7 +10,7 @@ use awaken_dispatch::{
     AttemptAdmission, RunClaim, RunDispatch, SqliteDispatchStore, WorkerHeartbeat,
 };
 use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
-use awaken_sandbox_container::k8s::{
+use awaken_sandbox_kubernetes::{
     K8sCreateRequest, K8sCreateTransport, K8sLedgerBinding, K8sWorkerCreateLedger,
     PodProcessObserver, RequestJoin,
 };
@@ -28,7 +28,7 @@ use kube::api::{DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use std::time::Duration;
 
 const TTL: u64 = 60_000;
-const FINALIZER: &str = awaken_sandbox_container::k8s::WORKER_PROCESS_EVIDENCE_FINALIZER;
+const FINALIZER: &str = awaken_sandbox_kubernetes::WORKER_PROCESS_EVIDENCE_FINALIZER;
 
 async fn ready_deployment_pod(pods: &kube::Api<Pod>, previous_uid: Option<&str>) -> Pod {
     tokio::time::timeout(Duration::from_secs(60), async {
@@ -208,7 +208,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
         String::from_utf8(context.stdout).unwrap().trim(),
         format!("k3d-{cluster}")
     );
-    let client = awaken_sandbox_container::k8s::connect_control_client()
+    let client = awaken_sandbox_kubernetes::connect_control_client()
         .await
         .unwrap();
     let namespaces: kube::Api<Namespace> = kube::Api::all(client.clone());
@@ -544,7 +544,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
     std::fs::remove_file(&old_token).unwrap();
     clock.set(100 + TTL + 1);
     let transport = WorkerTransport::kubernetes(
-        awaken_sandbox_container::k8s::connect_control_client()
+        awaken_sandbox_kubernetes::connect_control_client()
             .await
             .unwrap(),
         name,

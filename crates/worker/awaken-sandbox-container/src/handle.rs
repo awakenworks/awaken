@@ -19,7 +19,9 @@
 //! or an empty API projection derived from the published frozen plan.
 //! Missing historical membership is never an empty current projection.
 
-use crate::kubernetes_handle::{KubernetesProjectedParticipants, valid_kubernetes_uid};
+use crate::kubernetes_handle::{
+    KubernetesGuardedClaimHandle, KubernetesProjectedParticipants, valid_kubernetes_uid,
+};
 use std::collections::BTreeSet;
 
 use awaken_provisioning_contract as pc;
@@ -99,80 +101,13 @@ pub enum ContainerContinuationHandle {
     },
     /// Terminal-only, provider-verified name reservation paired with one
     /// original retained claim. Ordinary adoption must reject this locator.
-    #[cfg(feature = "k8s")]
     KubernetesGuardedClaim(Box<KubernetesGuardedClaimHandle>),
     /// Host-owned exact staging target for a checkpoint restore.
     HostBindRestoration(HostBindRestorationHandle),
 }
 
-#[cfg(feature = "k8s")]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct KubernetesGuardedClaimHandle {
-    pub(crate) scope: String,
-    pub(crate) predecessor: crate::ContainerEffectFence,
-    pub(crate) guard: crate::k8s::CreateTicket,
-    pub(crate) claim_uid: String,
-}
-
-#[cfg(feature = "k8s")]
-impl KubernetesGuardedClaimHandle {
-    pub(crate) fn new(
-        scope: &str,
-        predecessor: &crate::ContainerEffectFence,
-        guard: crate::k8s::CreateTicket,
-        claim_uid: &str,
-    ) -> Result<Self, crate::RuntimeError> {
-        use crate::k8s::{TicketResult, TicketStatus};
-        if scope.is_empty()
-            || scope.trim() != scope
-            || claim_uid.trim().is_empty()
-            || claim_uid.trim() != claim_uid
-            || guard.request.resource != "pods"
-            || guard.isolation_pending
-            || !matches!(
-                &guard.status,
-                TicketStatus::Finished(TicketResult::Isolated { uid })
-                    if !uid.trim().is_empty() && uid.trim() == uid
-            )
-        {
-            return Err(crate::RuntimeError::Backend(
-                "guarded Kubernetes claim lacks exact terminal evidence".into(),
-            ));
-        }
-        Ok(Self {
-            scope: scope.to_owned(),
-            predecessor: predecessor.clone(),
-            guard,
-            claim_uid: claim_uid.to_owned(),
-        })
-    }
-
-    #[must_use]
-    pub fn claim_uid(&self) -> &str {
-        &self.claim_uid
-    }
-
-    #[must_use]
-    pub fn guard_name(&self) -> &str {
-        &self.guard.request.name
-    }
-
-    #[must_use]
-    pub fn guard_uid(&self) -> Option<&str> {
-        match &self.guard.status {
-            crate::k8s::TicketStatus::Finished(crate::k8s::TicketResult::Isolated { uid })
-                if !uid.trim().is_empty() =>
-            {
-                Some(uid)
-            }
-            _ => None,
-        }
-    }
-}
-
 impl ContainerContinuationHandle {
-    pub(crate) fn kubernetes_incarnation(&self) -> Option<(&str, Option<&str>)> {
+    pub fn kubernetes_incarnation(&self) -> Option<(&str, Option<&str>)> {
         match self {
             Self::KubernetesContinuationV2 { pod_uid, claim_uid }
             | Self::KubernetesContinuationV3 {
@@ -182,12 +117,12 @@ impl ContainerContinuationHandle {
         }
     }
 
-    pub(crate) fn terminal_only(&self) -> bool {
+    pub fn terminal_only(&self) -> bool {
         self.projected_participants()
             .is_some_and(KubernetesProjectedParticipants::terminal_only)
     }
 
-    pub(crate) fn projected_participants(&self) -> Option<&KubernetesProjectedParticipants> {
+    pub fn projected_participants(&self) -> Option<&KubernetesProjectedParticipants> {
         match self {
             Self::KubernetesContinuationV3 { participants, .. } => Some(participants),
             _ => None,
@@ -500,7 +435,6 @@ impl ContainerHandleCodec for pc::SandboxHandle {
                     "legacy Kubernetes handle has no Pod incarnation evidence",
                 ))
             }
-            #[cfg(feature = "k8s")]
             Some(ContainerContinuationHandle::KubernetesGuardedClaim(guarded)) => {
                 guarded.guard_uid().map(str::to_owned).ok_or_else(|| {
                     pc::SandboxError::invalid(

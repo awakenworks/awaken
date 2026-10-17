@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Real Kubernetes (k3d) end-to-end for the container ACP tier: stand up a cluster,
 # load the busybox fixture image into its node, and run the gated k8s e2e test
-# (crates/worker/awaken-sandbox-container/tests/k8s_e2e.rs) against it.
+# (crates/worker/awaken-sandbox-kubernetes/tests/k8s_e2e.rs) against it.
 #
 # Verified path: K8sRuntime::connect → create_container (real Session Pod via the kube
 # API) → Pod Running → exec subresource stdio → newline ACP wire exchange.
@@ -250,7 +250,7 @@ if kubectl exec allowlist-client -- wget -q -T 3 -O - "http://${attacker_ip}:808
 fi
 
 log "running the k8s e2e test"
-AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-container --features k8s --test k8s_it -- --nocapture
+AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-kubernetes --test k8s_it -- --nocapture
 # These scenarios deliberately share one small, offline cluster and exercise
 # retained PVC deletion. Running all of them concurrently turns local-path's
 # single-node cleanup queue into the subject under test and can leave Pods in
@@ -263,13 +263,13 @@ AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-container --features k8s --test k8
 # test. The Rust test remains the sole owner of the control-path assertions.
 AWAKEN_K8S_E2E=1 AWAKEN_K8S_CONTROL_E2E=1 AWAKEN_K8S_ISOLATION_E2E=1 \
   AWAKEN_K8S_CONTROL_IMAGE="$CONTROL_IMAGE" \
-  cargo test -p awaken-sandbox-container --features k8s \
+  cargo test -p awaken-sandbox-kubernetes \
   --test k8s_e2e -- --nocapture --test-threads=1
-AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-container --features k8s \
+AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-kubernetes \
   --test k8s_policy_drift -- --nocapture --test-threads=1
 # ADR-0092: a namespace quota refusal and an unschedulable Pod are both
 # CapacityUnavailable, leave no Pod behind, and succeed once there is room.
-AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-container --features k8s \
+AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-kubernetes \
   --test k8s_capacity_e2e -- --nocapture --test-threads=1
 AWAKEN_K8S_E2E=1 cargo test -p awaken-session-executor --features k8s-tests --lib \
   k8s_live_pvc_initialization_is_readable_and_reused -- --nocapture

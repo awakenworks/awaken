@@ -19,11 +19,12 @@ use awaken_dispatch::{
     WorkerState,
 };
 use awaken_sandbox_container::ContainerEffectFence;
-use awaken_sandbox_container::k8s::{
-    CreateReplyProfile, CreateTicketRequest, ISOLATION_ID_ANNOTATION, ISOLATION_LABEL,
-    K8S_CREATE_WIRE_VERSION, K8sCreateRequest, K8sCreateResponse, K8sLedgerBinding,
-    K8sWorkerCreateLedger, ORIGINAL_GUARD_FINALIZER, REQUEST_DIGEST_ANNOTATION, RequestJoin,
-    TicketAdmission, TicketResult, collect_create_body, original_request_metadata_matches,
+use awaken_sandbox_container::{CreateTicketRequest, TicketResult};
+use awaken_sandbox_kubernetes::{
+    CreateReplyProfile, ISOLATION_ID_ANNOTATION, ISOLATION_LABEL, K8S_CREATE_WIRE_VERSION,
+    K8sCreateRequest, K8sCreateResponse, K8sLedgerBinding, K8sWorkerCreateLedger,
+    ORIGINAL_GUARD_FINALIZER, REQUEST_DIGEST_ANNOTATION, RequestJoin, TicketAdmission,
+    collect_create_body, original_request_metadata_matches,
 };
 use awaken_time::{WallClock, WallClockExt};
 use awaken_worker_transport_security::kubernetes::KubernetesPodIdentity;
@@ -569,7 +570,7 @@ impl K8sCreateBroker {
                     || ticket.isolation_pending
                     || !matches!(
                         &ticket.status,
-                        awaken_sandbox_container::k8s::TicketStatus::Finished(existing)
+                        awaken_sandbox_container::TicketStatus::Finished(existing)
                             if existing == &result
                     )
                 {

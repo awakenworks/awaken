@@ -7,11 +7,11 @@
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
-use awaken_sandbox_container::k8s::{
+use awaken_sandbox_container::{ContainerEffectFence, RuntimeError};
+use awaken_sandbox_kubernetes::{
     CreateReplyProfile, K8S_CREATE_CAPTURE_HEADER, K8S_CREATE_WIRE_VERSION, K8sCreateRequest,
     K8sCreateResponse, K8sCreateTransport, RequestJoin,
 };
-use awaken_sandbox_container::{ContainerEffectFence, RuntimeError};
 use awaken_worker_contract::WorkerIdentity;
 use awaken_worker_transport_security::WorkerUpstream;
 use serde::Serialize;

@@ -2,7 +2,7 @@
 
 use awaken_provisioning_contract as pc;
 
-pub(crate) const PVC_BIND_REF_PREFIX: &str = "awaken-pvc://";
+pub const PVC_BIND_REF_PREFIX: &str = "awaken-pvc://";
 
 /// Return a resolved runtime bind when `source` is a CacheVolume; other mount
 /// kinds remain owned by the ordinary byte/materialization path.

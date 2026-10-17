@@ -111,7 +111,7 @@ CANCEL_SAFETY_EXEMPTIONS: dict[str, str] = {
     "crates/worker/awaken-sandbox-local/src/auxiliary.rs::create_rooted_sandbox": (
         "delegates to LocalProvider::create_sandbox; its callers are the counted effect"
     ),
-    "crates/worker/awaken-sandbox-container/src/k8s/image_warmup.rs::reconcile_image_prewarm": (
+    "crates/worker/awaken-sandbox-kubernetes/src/image_warmup.rs::reconcile_image_prewarm": (
         "Kubernetes owns the persisted DaemonSet and its Pods; the existing Worker "
         "Environment reconciliation re-observes its deterministic identity with "
         "the canonical realization fingerprint/projection, then retires obsolete "

@@ -29,17 +29,19 @@ pub struct ContainerTierPolicy {
     pub worker_mcp_relay_substitution: bool,
     /// Public CA and exact host alias for the hosted private Repository Gateway.
     /// This is transport trust, not a credential or Repository authority.
-    pub repository_gateway_trust: Option<awaken_sandbox_container::K8sRepositoryGatewayTrust>,
+    #[cfg(feature = "k8s")]
+    pub repository_gateway_trust: Option<awaken_sandbox_kubernetes::K8sRepositoryGatewayTrust>,
     /// One signed, independent Create executor selected by the Worker before
     /// provider construction and bound to its Registry identity before Ready.
     #[cfg(feature = "k8s")]
-    pub k8s_create_transport: Option<Arc<dyn awaken_sandbox_container::k8s::K8sCreateTransport>>,
+    pub k8s_create_transport: Option<Arc<dyn awaken_sandbox_kubernetes::K8sCreateTransport>>,
 }
 
 impl std::fmt::Debug for ContainerTierPolicy {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut debug = formatter.debug_struct("ContainerTierPolicy");
         debug.field("allowlist_proxy", &self.allowlist_proxy.is_some());
+        #[cfg(feature = "k8s")]
         debug.field(
             "repository_gateway_trust",
             &self.repository_gateway_trust.is_some(),
@@ -72,11 +74,11 @@ const RESIDENT_HAND_PORT: u16 = 7777;
 fn k8s_sandbox_control_forwarder(
     image: Option<&str>,
     settings: &awaken_session_executor::SandboxSettings,
-) -> Result<awaken_sandbox_container::k8s::K8sSandboxControlForwarder, String> {
-    awaken_sandbox_container::k8s::K8sSandboxControlForwarder::new(
+) -> Result<awaken_sandbox_kubernetes::K8sSandboxControlForwarder, String> {
+    awaken_sandbox_kubernetes::K8sSandboxControlForwarder::new(
         container_image(image)?,
         settings.container_hand_bin.clone(),
-        awaken_sandbox_container::k8s::DEFAULT_REPOSITORY_GIT_CONTROL_PORT,
+        awaken_sandbox_kubernetes::DEFAULT_REPOSITORY_GIT_CONTROL_PORT,
     )
     .map_err(|error| format!("Kubernetes Sandbox control forwarder: {error}"))
 }
@@ -272,7 +274,7 @@ fn podman_runtime_for_realization(
 #[cfg(feature = "k8s")]
 async fn k8s_package_provisioner(
     settings: &awaken_session_executor::SandboxSettings,
-    create_transport: Option<Arc<dyn awaken_sandbox_container::k8s::K8sCreateTransport>>,
+    create_transport: Option<Arc<dyn awaken_sandbox_kubernetes::K8sCreateTransport>>,
 ) -> Result<Option<Arc<dyn awaken_sandbox_container::PackageImageProvisioner>>, String> {
     let Some(builder) = settings.package_image_builder else {
         return Ok(None);
@@ -299,7 +301,7 @@ async fn k8s_package_provisioner(
         }
         awaken_session_executor::PackageImageBuilder::Kubernetes => {
             let mut provisioner =
-                awaken_sandbox_container::k8s::K8sPackageImageProvisioner::connect_with_create_transport(
+                awaken_sandbox_kubernetes::K8sPackageImageProvisioner::connect_with_create_transport(
                     settings.k8s_namespace.clone(),
                     registry,
                     settings.k8s_image_pull_secrets.clone(),
@@ -414,7 +416,7 @@ pub async fn build_container_environment_for_realization(
             // Exec-attached Session environments do not publish an ACP port. Keep the
             // constructor's legacy address inert until that adapter parameter is removed.
             let inert = "127.0.0.1:1".parse().expect("literal socket address");
-            let mut runtime = awaken_sandbox_container::k8s::K8sRuntime::connect_for_realization_with_repository_gateway_trust(
+            let mut runtime = awaken_sandbox_kubernetes::K8sRuntime::connect_for_realization_with_repository_gateway_trust(
                 namespace,
                 realization_namespace,
                 inert,

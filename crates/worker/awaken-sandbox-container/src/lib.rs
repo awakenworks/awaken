@@ -28,13 +28,15 @@ pub use awaken_sandbox_control::{
 use std::sync::Arc;
 
 mod cache_volume;
-mod checkpoint;
-pub use checkpoint::{ContainerCheckpointAccess, ContainerCheckpointMutation};
+// The access/mutation values are the container port's vocabulary and live in
+// the container contract beside `ContainerEnvironment::checkpoint_upload`.
+pub use awaken_container_contract::{ContainerCheckpointAccess, ContainerCheckpointMutation};
 mod control;
 use control::ContainerControlPublicationRegistry;
 mod cgroup;
 mod disposal;
 mod egress;
+pub mod engine;
 mod exec_attempts;
 mod files;
 mod image_warmup;
@@ -42,6 +44,11 @@ pub use image_warmup::K8sImagePrewarm;
 mod handle;
 mod host_evidence;
 mod kubernetes_handle;
+pub use kubernetes_handle::{
+    CreateTicket, CreateTicketRequest, KubernetesGuardedClaimHandle, KubernetesProjectedKind,
+    KubernetesProjectedObject, KubernetesProjectedOrigin, KubernetesProjectedParticipants,
+    TicketOrigin, TicketResult, TicketStatus,
+};
 mod live_inputs;
 mod packages;
 mod podman_plan;
@@ -68,10 +75,8 @@ pub use egress::{
 pub use exec_attempts::AdmittedExec;
 use exec_attempts::ExecAttempts;
 pub(crate) use exec_attempts::exec_orphan_reaper_command;
-#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
+#[cfg(any(feature = "docker", feature = "podman"))]
 pub(crate) use exec_attempts::{exec_pid_file, exec_pid_file_prelude};
-#[cfg(feature = "k8s")]
-pub use handle::KubernetesGuardedClaimHandle;
 pub use handle::{
     ContainerContinuationHandle, ContainerHandleCodec, ContainerSandboxHandleV1,
     ContainerSandboxHandleV2, HostBindRestorationHandle, KubernetesPodUid,
@@ -95,7 +100,7 @@ pub use provider_contract::{
 /// Mint the ephemeral witness for one in-process create attempt from this
 /// process's runtime owner identity. Only this provider creates backend objects,
 /// so it is the only minter.
-pub(crate) fn fresh_create_attempt() -> ContainerCreateAttempt {
+pub fn fresh_create_attempt() -> ContainerCreateAttempt {
     ContainerCreateAttempt::new(runtime_owner_id())
 }
 pub use resident_hand::ResidentHandConfig;
@@ -104,7 +109,7 @@ use restore_target::remove_host_staging_path;
 pub(crate) use restore_target::restoration_plan_fingerprint;
 #[cfg(any(feature = "docker", feature = "podman"))]
 pub(crate) use restore_target::restore_container_name;
-#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
+#[cfg(any(feature = "docker", feature = "podman"))]
 pub(crate) use restore_target::{
     RESTORE_PLAN_LABEL, restoration_evidence_from_metadata, restoration_metadata,
 };
@@ -117,7 +122,7 @@ pub use runtime::{
     MissingHandleTerminalEvidence, PackageImageProvisioner, RuntimeAgentProcess, RuntimeError,
     RuntimeRestoreTarget, SandboxControlBindingRequest,
 };
-#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
+#[cfg(any(feature = "docker", feature = "podman"))]
 pub(crate) use runtime::{
     RUNTIME_OWNER_LABEL, SANDBOX_ATTEMPT_LABEL, container_effect_fence_from_values,
     sandbox_scope_identity,
@@ -1141,7 +1146,7 @@ pub fn container_plan(
     container_plan_with_allowlist(spec, default_image, command, forward_proxy, None, None)
 }
 
-fn container_plan_with_allowlist(
+pub fn container_plan_with_allowlist(
     spec: &pc::SandboxSpec,
     default_image: &str,
     command: &[String],
@@ -1826,60 +1831,7 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
 #[cfg(feature = "docker")]
 pub mod docker;
 
-#[cfg(feature = "k8s")]
-pub mod k8s;
 pub use awaken_container_contract::REPOSITORY_GATEWAY_CA_PATH;
-
-/// Deployment-owned public trust and exact network coordinate for hosted
-/// Repository Git. It carries no credential or Repository authority.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct K8sRepositoryGatewayTrust {
-    pub(crate) host: String,
-    pub(crate) address: std::net::IpAddr,
-    pub(crate) port: u16,
-    pub(crate) ca_secret_name: String,
-    pub(crate) ca_secret_key: String,
-}
-
-impl K8sRepositoryGatewayTrust {
-    pub fn new(
-        host: impl Into<String>,
-        address: std::net::IpAddr,
-        port: u16,
-        ca_secret_name: impl Into<String>,
-        ca_secret_key: impl Into<String>,
-    ) -> Result<Self, RuntimeError> {
-        let host = host.into();
-        let ca_secret_name = ca_secret_name.into();
-        let ca_secret_key = ca_secret_key.into();
-        if normalize_hostname(&host).ok().as_deref() != Some(host.as_str())
-            || port == 0
-            || ca_secret_name.trim().is_empty()
-            || ca_secret_name.contains('/')
-            || ca_secret_key.trim().is_empty()
-            || ca_secret_key.contains('/')
-        {
-            return Err(RuntimeError::Backend(
-                "invalid Kubernetes Repository Gateway trust configuration".into(),
-            ));
-        }
-        Ok(Self {
-            host,
-            address,
-            port,
-            ca_secret_name,
-            ca_secret_key,
-        })
-    }
-}
-/// Real Kubernetes backend (kube). Gated behind the `k8s` feature; compile-verified
-/// here, running requires a cluster.
-#[cfg(feature = "k8s")]
-mod k8s_package_image;
-/// Versioned, typed, read-only package-realization evidence shared by the sole
-/// Kubernetes emitter and pinned composing consumers.
-#[cfg(feature = "k8s")]
-pub mod k8s_package_realization;
 
 /// Rootless Podman backend (daemonless CLI fork-exec). Gated behind the `podman`
 /// feature; compile-verified here, running requires the `podman` binary.
@@ -1894,6 +1846,10 @@ pub mod podman;
 pub mod pool;
 #[cfg(all(unix, any(feature = "connection", test)))]
 pub use pool::WarmContainerPool;
+
+/// Fixtures shared with the container engine crates' tests.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 
 #[cfg(test)]
 mod exec_cancellation_tests;
