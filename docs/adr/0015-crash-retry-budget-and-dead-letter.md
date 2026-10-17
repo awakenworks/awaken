@@ -124,3 +124,39 @@ attempts **and** classified failed attempts, and the budget still resets on
   `Indeterminate` and the Session stays usable.
 - The "returns a terminal error" consequence is unchanged: such a Run still
   settles `Done` at once.
+
+## Amendment 2026-10-18: a provisioning wait is no failure until its deadline
+
+Counting classified failures (the amendment above) bounded every pending
+observation by the dispatch budget, including a sandbox its provider still
+reports `Provisioning`. Five attempts behind the 250 ms doubling backoff span
+about 15 s, so a slow but healthy Pod (an image pull during recovery) ended its
+Run `Indeterminate`. Every wait needs an owner and a deadline:
+
+- The owner is the provider whose backend progresses provisioning on its own.
+  Kubernetes is the one such provider: the cluster schedules and starts a
+  created Pod without its creator. Its observation carries
+  `SandboxObservation::Provisioning { deadline }`, a `ProvisioningDeadline` of
+  the Pod's durable `creationTimestamp` + `k8s_unschedulable_wait_secs`
+  (default 300 s) + the 120 s start-up timeout — the latest moment the
+  creating attempt's own readiness wait gives up — read on the Worker clock at
+  the observation. No new configuration, no persisted field and no migration:
+  the API server keeps the creation instant across restarts.
+- Docker, Podman and local sandboxes are progressed only by their creating
+  call; a `created` container or a `Creating` marker seen by another observer
+  is a dead creator's leftover, so these providers give no deadline. A runtime
+  composed without a clock, a Pod without a creation instant and a legacy
+  observation give none either.
+- `RealizationError::Provisioning { deadline }` is classified once
+  (`provisioning_disposition` in the realization contract): before the
+  deadline it is `Defer` (code `environment_provisioning`, no budget, the
+  realization report keeps the attempt) and the claim's deferral is due no
+  later than the deadline (`NotReady::retry_after`, the pool takes the shorter
+  of it and its backoff); at or after the deadline
+  (`session_environment_provisioning_deadline_elapsed`) and without one
+  (`session_environment_provisioning`) it is `Retry` and spends this budget.
+  It is never `Terminal`: the next attempt may find the sandbox ready or
+  replaced. The decision reads only the observation's two instants, never a
+  clock.
+- `FailSessionRealization::not_ready` (wire member still
+  `capacity_unavailable`) names both budget-free cases.

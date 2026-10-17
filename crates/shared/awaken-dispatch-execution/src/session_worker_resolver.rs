@@ -11,6 +11,7 @@ pub mod claimed_dispatch;
 pub mod claimed_session;
 mod resolver;
 
+pub(crate) use claim_failure::deferral_retry_after;
 pub use claim_failure::{claim_outcome, map_admission_error, map_session_realization_drive_error};
 pub use resolver::{
     ClaimedExecution, CommittedTerminalScan, ProjectionAuthority, SessionWorkerResolver,

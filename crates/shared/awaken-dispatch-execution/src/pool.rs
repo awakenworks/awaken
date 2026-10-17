@@ -1255,7 +1255,6 @@ async fn claim_and_drive<S: Dispatch + 'static>(
     // before `drive_claimed` installs its guard. Renew from queue exit onward.
     let claim = crate::RunClaim::from(&claimed.lease);
     let retry_after = claim_failure_backoff(claim.epoch);
-    let retry_after_ms = retry_after.as_millis() as u64;
     let claim_renewal = renew_claim_while_active(store.clone(), &claim, lease_ms);
     // Route to the runtime that owns this run's thread, then drive+settle there.
     // The resolved worker shares this store and owner, so the settle it performs
@@ -1300,10 +1299,11 @@ async fn claim_and_drive<S: Dispatch + 'static>(
                     .await
             }
             Err(error) => {
+                let retry_after = error.retry_after(retry_after);
                 release_failed_claim(
                     store.as_ref(),
                     &claim,
-                    retry_after_ms,
+                    retry_after.as_millis() as u64,
                     admission.max_attempts,
                     &error,
                 )
@@ -1321,10 +1321,11 @@ async fn claim_and_drive<S: Dispatch + 'static>(
             // attempt spends one attempt of the retry budget. A stale claim is
             // fenced by the same store operation.
             let request_local = claim_failure_is_request_local(&error);
+            let retry_after = error.retry_after(retry_after);
             release_failed_claim(
                 store.as_ref(),
                 &claim,
-                retry_after_ms,
+                retry_after.as_millis() as u64,
                 admission.max_attempts,
                 &error,
             )

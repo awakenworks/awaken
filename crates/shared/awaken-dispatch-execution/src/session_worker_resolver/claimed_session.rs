@@ -35,9 +35,9 @@ pub fn map_claimed_session_control_error(
     error: awaken_session_realization_contract::ClaimedSessionControlError,
 ) -> crate::Error {
     match session_realization_worker_effect(error.disposition()) {
-        SessionRealizationWorkerEffect::Defer => crate::Error::ResolutionNotReady(format!(
-            "run {run_id} is waiting for its Session Environment Work slot"
-        )),
+        SessionRealizationWorkerEffect::Defer => crate::Error::ResolutionNotReady(
+            format!("run {run_id} is waiting for its Session Environment Work slot").into(),
+        ),
         SessionRealizationWorkerEffect::Relinquish => execution_error(format!(
             "run {run_id} frozen Session resume failed: {error}"
         )),
@@ -126,10 +126,13 @@ impl SessionWorkerResolver {
                         )
                     });
                 if !projection_ready {
-                    return Err(crate::Error::ResolutionNotReady(format!(
-                        "run {} is waiting for its co-located frozen Session projection",
-                        claimed.lease.run_id().0
-                    )));
+                    return Err(crate::Error::ResolutionNotReady(
+                        format!(
+                            "run {} is waiting for its co-located frozen Session projection",
+                            claimed.lease.run_id().0
+                        )
+                        .into(),
+                    ));
                 }
                 if let Some(manifest) = dispatched_resources {
                     install_dispatched_resources(installation, &thread_id.0, manifest, &claim)

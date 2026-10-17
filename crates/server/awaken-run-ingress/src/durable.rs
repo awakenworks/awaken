@@ -471,9 +471,8 @@ fn exec_error(err: Error) -> ExecError {
     match err {
         Error::Execution(err) | Error::TerminalResolution(err) => err,
         Error::Dispatch(err) => ExecError::Execution(err.to_string()),
-        Error::ResolutionNotReady(message) | Error::SettlementObservationPending(message) => {
-            ExecError::Execution(message)
-        }
+        Error::ResolutionNotReady(not_ready) => ExecError::Execution(not_ready.to_string()),
+        Error::SettlementObservationPending(message) => ExecError::Execution(message),
     }
 }
 

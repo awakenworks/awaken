@@ -58,16 +58,21 @@ fn session_realization_control_disposition_projects_exact_worker_effect() {
 /// through [`map_session_realization_drive_error`], so both paths agree.
 pub fn map_admission_error(error: impl Into<crate::AdmissionError>) -> crate::Error {
     let error = error.into();
-    claim_outcome(error.claim_disposition(), error.to_string())
+    claim_outcome(error.claim_disposition(), error.to_string(), None)
 }
 
-/// The claim outcome of one disposition, carrying the operator message.
+/// The claim outcome of one disposition, carrying the operator message. A
+/// deferral keeps `retry_after`, the waited-on owner's bound on when to look
+/// again; a failed or absorbed attempt has no use for it.
 pub fn claim_outcome(
     disposition: awaken_session_realization_contract::SessionRealizationControlDisposition,
     message: String,
+    retry_after: Option<std::time::Duration>,
 ) -> crate::Error {
     match session_realization_worker_effect(disposition) {
-        SessionRealizationWorkerEffect::Defer => crate::Error::ResolutionNotReady(message),
+        SessionRealizationWorkerEffect::Defer => {
+            crate::Error::ResolutionNotReady(crate::NotReady::after(message, retry_after))
+        }
         SessionRealizationWorkerEffect::Relinquish => execution_error(message),
         SessionRealizationWorkerEffect::Absorb => terminal_resolution_error(message),
     }
@@ -89,5 +94,32 @@ pub fn map_session_realization_drive_error(
             return execution_error(retryable.to_string());
         }
     };
-    claim_outcome(disposition, message)
+    claim_outcome(disposition, message, None)
+}
+
+/// When a deferred claim is due again: the pool's backoff, shortened to the
+/// waited-on owner's hint, so a deferral never sleeps past either.
+#[must_use]
+pub(crate) fn deferral_retry_after(
+    backoff: std::time::Duration,
+    hint: Option<std::time::Duration>,
+) -> std::time::Duration {
+    hint.map_or(backoff, |hint| hint.min(backoff))
+}
+
+#[cfg(kani)]
+/// @obligation session_realization.control_failure_disposition_and_current_owner_loss_are_total_exact_and_terminal_absorbing
+#[kani::proof]
+fn a_deferral_is_due_no_later_than_its_owners_hint_or_the_backoff() {
+    let backoff = std::time::Duration::from_millis(kani::any::<u64>());
+    let hinted: bool = kani::any();
+    let hint = hinted.then(|| std::time::Duration::from_millis(kani::any::<u64>()));
+    let due = deferral_retry_after(backoff, hint);
+    assert!(due <= backoff);
+    match hint {
+        // A provision deferred before its deadline is observed again no later
+        // than that deadline.
+        Some(hint) => assert!(due <= hint && (due == hint || due == backoff)),
+        None => assert_eq!(due, backoff),
+    }
 }

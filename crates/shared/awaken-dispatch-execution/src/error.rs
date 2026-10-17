@@ -17,16 +17,74 @@ pub enum Error {
     #[error(transparent)]
     TerminalResolution(awaken_runtime_contract::execution::Error),
     /// The claimed Run is valid, but its Session's Environment Work slot is
-    /// still occupied, or the environment backend had no capacity for it
-    /// (ADR-0092). This is scheduling pressure, not a Worker crash or an
-    /// absorbing Session failure.
+    /// still occupied, the environment backend had no capacity for it
+    /// (ADR-0092), or its provider is still provisioning within its own
+    /// deadline (ADR-0015). This is no failed attempt, not a Worker crash and
+    /// not an absorbing Session failure.
     #[error("Session resolution is not ready: {0}")]
-    ResolutionNotReady(String),
+    ResolutionNotReady(NotReady),
     /// The Run already committed terminal truth, but its exact Session
     /// settlement projection is not yet observable. Retry only this Dispatch;
     /// this is not evidence that the shared store or Worker pool is unhealthy.
     #[error("Session settlement observation is not ready: {0}")]
     SettlementObservationPending(String),
+}
+
+/// Why a claim's resolution is not ready, and when the waited-on owner says
+/// it is worth looking again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotReady {
+    reason: String,
+    retry_after: Option<std::time::Duration>,
+}
+
+impl NotReady {
+    /// A deferral whose cadence the pool's backoff decides.
+    #[must_use]
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+            retry_after: None,
+        }
+    }
+
+    /// A deferral whose owner bounds its wait: the pool looks again no later
+    /// than `retry_after` (a provider's provisioning deadline).
+    #[must_use]
+    pub fn after(reason: impl Into<String>, retry_after: Option<std::time::Duration>) -> Self {
+        Self {
+            reason: reason.into(),
+            retry_after,
+        }
+    }
+
+    #[must_use]
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+
+    #[must_use]
+    pub const fn retry_after(&self) -> Option<std::time::Duration> {
+        self.retry_after
+    }
+}
+
+impl std::fmt::Display for NotReady {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.reason)
+    }
+}
+
+impl From<String> for NotReady {
+    fn from(reason: String) -> Self {
+        Self::new(reason)
+    }
+}
+
+impl From<&str> for NotReady {
+    fn from(reason: &str) -> Self {
+        Self::new(reason)
+    }
 }
 
 /// How the pool returns a claim whose attempt it could not settle.
@@ -53,6 +111,18 @@ impl Error {
             | Self::ResolutionNotReady(_)
             | Self::SettlementObservationPending(_) => ClaimRelease::Defer,
         }
+    }
+
+    /// How long the pool waits before this claim is due again: its backoff,
+    /// shortened to the waited-on owner's hint when a deferral carries one,
+    /// so a deferral never sleeps past the owner's deadline.
+    #[must_use]
+    pub(crate) fn retry_after(&self, backoff: std::time::Duration) -> std::time::Duration {
+        let hint = match self {
+            Self::ResolutionNotReady(not_ready) => not_ready.retry_after(),
+            _ => None,
+        };
+        crate::session_worker_resolver::deferral_retry_after(backoff, hint)
     }
 
     #[must_use]
@@ -92,6 +162,46 @@ mod error_scope_tests {
             !Error::Dispatch(DispatchError::Unavailable("store".into())).is_dispatch_conflict()
         );
         assert!(!Error::SettlementObservationPending("pending".into()).is_dispatch_conflict());
+    }
+
+    #[test]
+    fn a_deferral_is_due_no_later_than_its_owners_hint() {
+        // Decision table: C1 the failure class; C2 the deferral's hint vs the
+        // pool's backoff. Effect: when the claim is due again.
+        // | D1 | NotReady without a hint | backoff |
+        // | D2 | NotReady, hint shorter than the backoff | hint |
+        // | D3 | NotReady, hint longer than the backoff | backoff |
+        // | D4 | a failed attempt or another deferral | backoff |
+        use std::time::Duration;
+        let backoff = Duration::from_secs(4);
+        let execution = || awaken_runtime_contract::execution::Error::Execution("m".into());
+        for (rule, error, due) in [
+            ("D1", Error::ResolutionNotReady("m".into()), backoff),
+            (
+                "D2",
+                Error::ResolutionNotReady(super::NotReady::after(
+                    "m",
+                    Some(Duration::from_millis(700)),
+                )),
+                Duration::from_millis(700),
+            ),
+            (
+                "D3",
+                Error::ResolutionNotReady(super::NotReady::after(
+                    "m",
+                    Some(Duration::from_secs(600)),
+                )),
+                backoff,
+            ),
+            ("D4", Error::Execution(execution()), backoff),
+            (
+                "D4",
+                Error::SettlementObservationPending("m".into()),
+                backoff,
+            ),
+        ] {
+            assert_eq!(error.retry_after(backoff), due, "{rule}");
+        }
     }
 
     #[test]
