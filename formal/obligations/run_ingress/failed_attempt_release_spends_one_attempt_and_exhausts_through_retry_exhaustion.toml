@@ -1,0 +1,16 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/RunIngress.tla",
+]
+production_entrypoints = []
+
+[[bounds]]
+text = '''Kani exhausts the production DispatchTransition state, full u64 current/candidate epoch, attempt-count and max_attempts domains, owner equality, and all four physical-attempt slot classes for a failed-attempt release. Only an exact current Leased claim can transition. From an empty slot it spends exactly one attempt (saturating): below max_attempts the row returns to Pending, and the attempt that reaches or passes max_attempts keeps the Leased state for the adapter to expire, which is the retry-exhaustion claim's eligibility shape. Behind a predecessor's slot it returns Recovering with the count unchanged, because the recovery re-claim spends that attempt; an exact slot is fenced and a torn slot is corrupt.'''
+
+[[bounds]]
+text = '''Memory, SQLite, and PostgreSQL read attempt_count with the claim evidence under their existing aggregate lock or row transaction, consume the same reducer, and write back only its returned value, with the store-clock retry deadline that defer_claim also writes. The shared dispatch conformance rule failed_attempts_spend_the_budget_and_exhaust_like_a_crash checks one spent attempt per failure, budget-free deferral, the exhausting attempt reaching claim_retry_exhausted while ordinary claims honor the deadline, the over-budget recovery row, and stale-claim fencing on every backend. The pool chooses this release only for a failed attempt (dispatch-execution Error::claim_release), and the Worker transport applies the Coordinator's own max_attempts. Mutex/row-lock exclusion, SQL compare-and-set execution, database durability, clocks, and adapter decoding remain native-conformance or TCB evidence rather than Kani claims.'''

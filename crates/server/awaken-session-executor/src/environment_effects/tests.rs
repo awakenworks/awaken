@@ -54,6 +54,14 @@ impl DispatchExecution for Execution {
     async fn defer_claim(&self, _: &RunClaim, _: u64) -> Result<SettleOutcome, DispatchError> {
         unreachable!("only binding was requested")
     }
+    async fn retry_claim(
+        &self,
+        _: &RunClaim,
+        _: u64,
+        _: u64,
+    ) -> Result<SettleOutcome, DispatchError> {
+        unreachable!("only binding was requested")
+    }
     async fn record_credential_realization(
         &self,
         _: &RunClaim,

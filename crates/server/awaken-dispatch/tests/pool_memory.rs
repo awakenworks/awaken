@@ -3559,12 +3559,13 @@ async fn renewal_stops_when_claim_resolution_fails() {
     // Cause/effect decision table:
     // | Rule | claim | resolver/drive | local activity | renewal/recovery effect |
     // | R1 | live | blocked | present | exact lease renews (covered above) |
-    // | R2 | live | fails | removed | exact claim is request-locally deferred |
+    // | R2 | live | fails | removed | exact claim returns behind its retry deadline, one attempt spent |
     // | R3 | absent | n/a | absent | no lease write (idle-poller test) |
     // R2 drops the exact guard instead of indefinitely preserving an unsettled
-    // claim after provisioning or Runtime construction has failed. Deferral
-    // avoids waiting a full lease or charging crash recovery without allowing
-    // one unresolved request to hot-loop.
+    // claim after provisioning or Runtime construction has failed. The
+    // failed-attempt release avoids waiting a full lease without allowing one
+    // unresolved request to hot-loop, and spends one attempt of the retry
+    // budget so a request that keeps failing is bounded (ADR-0015).
     let clock = Arc::new(ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     store
@@ -3604,6 +3605,12 @@ async fn renewal_stops_when_claim_resolution_fails() {
     assert!(
         premature.is_none(),
         "R2 failed claim is not eligible before its request-local deadline"
+    );
+    let row = store.list_dispatches().await.unwrap().remove(0);
+    assert_eq!(
+        (row.state, row.attempt_count),
+        (awaken_dispatch::DispatchState::Pending, 1),
+        "R2 the failed attempt spent one attempt"
     );
     clock.set(250);
     let reclaimed = store
@@ -3859,6 +3866,8 @@ async fn session_work_backpressure_defers_only_that_request_then_retries() {
         "B1 is retried after its request-local deadline"
     );
     assert_eq!(store.dispatch_count(), 1, "B1 is retained across retries");
+    let deferred = store.list_dispatches().await.unwrap().remove(0);
+    assert_eq!(deferred.attempt_count, 0, "B1 a deferral spends no budget");
     pool.shutdown().await;
 }
 
@@ -4483,6 +4492,8 @@ async fn authority_suspension_does_not_cancel_an_in_flight_run() {
 mod maintenance_observations;
 #[path = "pool_memory/queue_depth.rs"]
 mod queue_depth;
+#[path = "pool_memory/retry_budget.rs"]
+mod retry_budget;
 
 #[path = "pool_memory/composition.rs"]
 mod composition;

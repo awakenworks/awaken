@@ -485,14 +485,25 @@ pub(super) async fn relinquish(
                 "authenticated worker does not own the relinquished claim",
             ));
         }
-        let relinquished = match request.retry_after_ms {
-            Some(retry_after_ms) => {
+        let relinquished = match (request.retry_after_ms, request.attempt_failed) {
+            (Some(retry_after_ms), true) => {
+                service
+                    .dispatch
+                    .retry_claim(&request.claim, retry_after_ms, service.max_attempts)
+                    .await
+            }
+            (Some(retry_after_ms), false) => {
                 service
                     .dispatch
                     .defer_claim(&request.claim, retry_after_ms)
                     .await
             }
-            None => service.dispatch.relinquish_claim(&request.claim).await,
+            (None, true) => {
+                return Err(HostError::bad_request(
+                    "a failed attempt is released behind a retry deadline",
+                ));
+            }
+            (None, false) => service.dispatch.relinquish_claim(&request.claim).await,
         }
         .map_err(|error| HostError::internal(error.to_string()))?
         .applied();

@@ -417,6 +417,7 @@ pub async fn assert_dispatch_conformance_with_clock<S: ConformanceDispatch + Inb
     exact_claim_recovery_and_fencing(store, namespace, clock).await;
     settlement_fence_and_pending_input_are_atomic(store, namespace, capabilities, clock).await;
     retry_exhaustion_claim_is_atomic_and_policy_exact(store, namespace, clock).await;
+    failed_attempts_spend_the_budget_and_exhaust_like_a_crash(store, namespace).await;
     attempt_credentials_are_atomic_and_epoch_fenced(store, namespace, capabilities, clock).await;
     incompatible_credentials_do_not_poison_broad_claims(store, namespace, clock).await;
     parent_mediated_commands_are_atomic(store, namespace, clock).await;
@@ -466,6 +467,8 @@ include!("conformance/fixtures.rs");
 include!("conformance/reliability.rs");
 
 include!("conformance/upgrade_window.rs");
+
+include!("conformance/failed_attempt_budget.rs");
 
 use awaken_dispatch_contract::{
     DispatchAdministration, DispatchAttemptControl, DispatchClaimOwnership, DispatchClaims,

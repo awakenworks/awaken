@@ -29,7 +29,32 @@ pub enum Error {
     SettlementObservationPending(String),
 }
 
+/// How the pool returns a claim whose attempt it could not settle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClaimRelease {
+    /// Not a failed attempt (pressure, a fenced claim, a pending observation,
+    /// or a queue-storage fault): defer the claim and keep its retry budget.
+    Defer,
+    /// A failed attempt: spend one attempt of the retry budget; the attempt
+    /// that exhausts it is terminalized like a crashed one (ADR-0015).
+    Retry,
+}
+
 impl Error {
+    /// The one decision of how a failed claim is returned to the queue, read
+    /// from this failure's class only. A terminal resolution reaches here only
+    /// after execution began, where it can no longer be absorbed before entry,
+    /// so it counts as a failed attempt.
+    #[must_use]
+    pub(crate) const fn claim_release(&self) -> ClaimRelease {
+        match self {
+            Self::Execution(_) | Self::TerminalResolution(_) => ClaimRelease::Retry,
+            Self::Dispatch(_)
+            | Self::ResolutionNotReady(_)
+            | Self::SettlementObservationPending(_) => ClaimRelease::Defer,
+        }
+    }
+
     #[must_use]
     pub fn is_terminal_resolution(&self) -> bool {
         matches!(self, Self::TerminalResolution(_))
@@ -67,5 +92,48 @@ mod error_scope_tests {
             !Error::Dispatch(DispatchError::Unavailable("store".into())).is_dispatch_conflict()
         );
         assert!(!Error::SettlementObservationPending("pending".into()).is_dispatch_conflict());
+    }
+
+    #[test]
+    fn only_a_failed_attempt_spends_the_retry_budget() {
+        // Decision table: the failure class -> how the pool returns the claim.
+        // | Rule | failure | release |
+        // | C1 | Execution (Retry disposition) | Retry: spend one attempt |
+        // | C2 | TerminalResolution after execution began | Retry |
+        // | C3 | ResolutionNotReady (Defer disposition) | Defer: keep the budget |
+        // | C4 | SettlementObservationPending | Defer |
+        // | C5 | Dispatch fault, conflict or otherwise | Defer |
+        use super::ClaimRelease;
+        let execution = || awaken_runtime_contract::execution::Error::Execution("m".into());
+        for (rule, error, release) in [
+            ("C1", Error::Execution(execution()), ClaimRelease::Retry),
+            (
+                "C2",
+                Error::TerminalResolution(execution()),
+                ClaimRelease::Retry,
+            ),
+            (
+                "C3",
+                Error::ResolutionNotReady("m".into()),
+                ClaimRelease::Defer,
+            ),
+            (
+                "C4",
+                Error::SettlementObservationPending("m".into()),
+                ClaimRelease::Defer,
+            ),
+            (
+                "C5",
+                Error::Dispatch(DispatchError::Conflict("m".into())),
+                ClaimRelease::Defer,
+            ),
+            (
+                "C5",
+                Error::Dispatch(DispatchError::Unavailable("m".into())),
+                ClaimRelease::Defer,
+            ),
+        ] {
+            assert_eq!(error.claim_release(), release, "{rule}");
+        }
     }
 }

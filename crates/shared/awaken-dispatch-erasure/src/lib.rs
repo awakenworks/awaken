@@ -324,6 +324,15 @@ macro_rules! worker_roles {
                 delegate!(self, defer_claim(claim, retry_after_ms))
             }
 
+            async fn retry_claim(
+                &self,
+                claim: &RunClaim,
+                retry_after_ms: u64,
+                max_attempts: u64,
+            ) -> Result<SettleOutcome, DispatchError> {
+                delegate!(self, retry_claim(claim, retry_after_ms, max_attempts))
+            }
+
             async fn record_credential_realization(
                 &self,
                 claim: &RunClaim,

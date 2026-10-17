@@ -1,3 +1,4 @@
+// @formal entrypoint run_ingress.failed_attempt_release_spends_one_attempt_and_exhausts_through_retry_exhaustion
 // @formal entrypoint run_ingress.relinquish_requires_exact_current_claim_and_preserves_retry_budget
 // SQLite release transaction for the neutral DispatchQueue contract. Kept
 // separate from the large trait implementation because it owns one physical
@@ -17,6 +18,7 @@ async fn release_claim_transaction(
     p: &str,
     claim: RunClaim,
     retry_not_before: Option<i64>,
+    attempt: awaken_dispatch_contract::ReleasedAttempt,
     now_ms: u64,
 ) -> Result<SettleOutcome, DispatchError> {
     let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
@@ -62,6 +64,7 @@ async fn release_claim_transaction(
         owner.as_deref() == Some(&claim.owner),
         slot,
         attempt_count,
+        attempt,
     ) {
         awaken_dispatch_contract::RelinquishTransition::Pending {
             state,

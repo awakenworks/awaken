@@ -1580,7 +1580,8 @@ async fn failed_nonterminal_realization_expires_assignment_before_same_incarnati
     // C3 attempt below / at budget; C4 exact / stale failure lease.
     // Decision table: F0 stale -> no root mutation; F1 initial+retry+below ->
     // Preparing, expired assignment; F2 other initial -> ActivationFailed;
-    // F3 Idle+any C2/C3 -> Idle, expired assignment, retained active resources.
+    // F3 Idle+any C2/C3 -> Idle, expired assignment, retained active resources,
+    // realization attempts unchanged (the Run's dispatch budget bounds retries).
     // F4 F1/F3+same-incarnation begin -> successor epoch, never reuse the closed
     // generation; old failure replay cannot mutate that successor. The existing
     // running-realization test owns interval/terminal settlement. The HTTP MCP
@@ -1641,6 +1642,14 @@ async fn failed_nonterminal_realization_expires_assignment_before_same_incarnati
                     failed.resources, before.resources,
                     "retain active resource authority"
                 );
+                if idle {
+                    // F3: an Idle Session's failure spends no realization
+                    // budget; the Run's dispatch retry budget bounds it.
+                    assert_eq!(
+                        failed.realization_progress.attempts, attempts,
+                        "F3 Idle keeps the realization budget"
+                    );
+                }
                 assert_eq!(failed.realization.as_ref().unwrap().epoch, 7);
                 if recoverable {
                     assert_eq!(
