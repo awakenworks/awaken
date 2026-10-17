@@ -562,17 +562,17 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                     slot.inputs.baseline.is_none()
                         && slot.inputs.workspace.is_none()
                         && slot.inputs.agent_id.is_none()
-                        && slot.realization.staging.manifest.is_none()
-                        && slot.realization.staging.resources.mounts.is_empty()
-                        && slot.realization.staging.resources.prompts.is_empty()
+                        && slot.realization.staging().manifest.is_none()
+                        && slot.realization.staging().resources.mounts.is_empty()
+                        && slot.realization.staging().resources.prompts.is_empty()
                         && slot
                             .realization
-                            .staging
+                            .staging()
                             .resources
                             .resource_prompts
                             .is_empty()
                         && slot.inputs.request_context.is_empty()
-                        && slot.realization.execution.authority.lease().is_none()
+                        && slot.realization.execution().authority.lease().is_none()
                         && !slot.run.session_dispatch
                 })
                 .unwrap_or(true),
@@ -645,16 +645,13 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                 .read("authority-amendment", |slot| {
                     slot.inputs.baseline.is_some()
                         && slot.run.session_dispatch
-                        && slot.realization.staging.manifest.is_none()
-                        && slot
-                            .realization
-                            .staging
-                            .transition
-                            .as_ref()
-                            .is_some_and(|transition| {
+                        && slot.realization.staging().manifest.is_none()
+                        && slot.realization.staging().transition.as_ref().is_some_and(
+                            |transition| {
                                 transition.desired().revision == initial_dispatch.resource_revision
                                     && transition.desired().resources == initial_dispatch.resources
-                            })
+                            },
+                        )
                 })
                 .unwrap_or(false),
             "A0/E0 complete projection stages one transition without forging physical completion"
@@ -691,8 +688,8 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                 .installed_sessions
                 .realizations()
                 .read_realization("authority-amendment", |r| {
-                    r.staging.manifest.is_none()
-                        && r.staging.transition.as_ref().is_some_and(|transition| {
+                    r.staging().manifest.is_none()
+                        && r.staging().transition.as_ref().is_some_and(|transition| {
                             transition.desired().resources
                                 == crate::session_resource::ResolvedSessionResources::default()
                         })
@@ -714,8 +711,8 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                 .installed_sessions
                 .realizations()
                 .read_realization("authority-amendment", |r| {
-                    r.staging.manifest.is_none()
-                        && r.staging.transition.as_ref().is_some_and(|transition| {
+                    r.staging().manifest.is_none()
+                        && r.staging().transition.as_ref().is_some_and(|transition| {
                             transition.desired()
                                 == &crate::session_resource::SessionResourceManifest::at_revision(
                                     amended_dispatch.workspace_id.clone(),
@@ -886,8 +883,8 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             host.installed_sessions
                 .realizations()
                 .read_realization("flow-thread", |r| {
-                    r.staging.manifest.is_none()
-                        && r.staging.transition.as_ref().is_some_and(|transition| {
+                    r.staging().manifest.is_none()
+                        && r.staging().transition.as_ref().is_some_and(|transition| {
                             transition.desired().revision == 7
                                 && transition.desired().resources
                                     == crate::session_resource::ResolvedSessionResources::default()

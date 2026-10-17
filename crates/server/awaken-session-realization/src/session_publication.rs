@@ -1,10 +1,10 @@
 // @formal surface requirement=model.routing.exact_binding
 // @formal reason: Frozen Session coordinates select and retain the exact Agent/model publication through
-// @formal reason: the same installed-slot lock; context, cold replay and provider selection share this owner.
+// @formal reason: the same installed Session lock; context, cold replay and provider selection share this owner.
 //! Immutable Agent/model publication selection for installed Sessions.
 //!
 //! The component sees only the publication source selected at construction,
-//! the process Workspace fallback and the canonical realization slots. It
+//! the process Workspace fallback and the installed Sessions. It
 //! neither owns inference executors nor reaches back into the Host.
 
 use crate::realization_error::RealizationError;
@@ -192,7 +192,7 @@ impl SessionPublicationSelection {
             .unwrap_or("assistant");
         let skill_pins = realizations
             .read_realization(thread, |r| {
-                r.staging
+                r.staging()
                     .transition
                     .as_ref()
                     .map(|transition| transition.desired().resources.skills().to_vec())
@@ -232,8 +232,8 @@ impl SessionPublicationSelection {
         ))
     }
 
-    /// Freeze one exact publication into the existing Session runtime slot.
-    /// The slot is already the projection used by claimed-worker replay; direct
+    /// Freeze one exact publication into the existing installed Session.
+    /// The installed Session is already the projection used by claimed-worker replay; direct
     /// and deferred execution reuse it instead of adding a provider-selection
     /// store or resolving a later catalog head.
     pub fn retain_session_publication(

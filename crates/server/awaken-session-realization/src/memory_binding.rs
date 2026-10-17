@@ -142,7 +142,7 @@ impl MemoryStoreHandle for MemoryBinding {
 /// terminal Session-scoped Memory operations. The generic Resource ports stay
 /// authoritative; this private intersection trait only permits one trait
 /// object to carry both implementations through Runtime composition.
-pub trait RuntimeMemoryReferenceEncoder:
+pub trait SessionMemoryReferenceEncoder:
     awaken_resource_contract::MemoryMaterializationReferenceEncoder<
         awaken_dispatch_contract::RunClaim,
     > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
@@ -153,7 +153,7 @@ pub trait RuntimeMemoryReferenceEncoder:
 {
 }
 
-impl<T> RuntimeMemoryReferenceEncoder for T where
+impl<T> SessionMemoryReferenceEncoder for T where
     T: awaken_resource_contract::MemoryMaterializationReferenceEncoder<
             awaken_dispatch_contract::RunClaim,
         > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<

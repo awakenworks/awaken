@@ -98,7 +98,7 @@ impl CurrentExecutionAuthority for SessionExecutionAuthority {
 }
 
 impl SessionExecutionAuthority {
-    /// Original composed tests exercise the actual slot, Worker proof and
+    /// Original composed tests exercise the actual installed Session, Worker proof and
     /// Environment Arc. This helper installs no registry or authority.
     #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
     pub fn for_test(
@@ -112,8 +112,8 @@ impl SessionExecutionAuthority {
             worker: execution.worker.clone(),
             sessions: execution.sessions.downgrade(),
             session: session.into(),
-            realization: realization.execution.phase.clone(),
-            lifecycle: realization.environment.lifecycle.clone(),
+            realization: realization.execution().phase.clone(),
+            lifecycle: realization.environment().lifecycle.clone(),
             asserted,
             target: SessionEffectTarget::Execution(Arc::downgrade(environment)),
         }
@@ -168,12 +168,12 @@ impl SessionExecutionAuthority {
         effect: &mut dyn FnMut(&SessionRealizationLease, Duration) -> io::Result<()>,
         worker_remaining: Option<Duration>,
     ) -> io::Result<()> {
-        if !Arc::ptr_eq(&self.realization, &realization.execution.phase)
-            || !Arc::ptr_eq(&self.lifecycle, &realization.environment.lifecycle)
+        if !Arc::ptr_eq(&self.realization, &realization.execution().phase)
+            || !Arc::ptr_eq(&self.lifecycle, &realization.environment().lifecycle)
         {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                "Session realization slot was replaced",
+                "installed Session was replaced",
             ));
         }
         match &self.target {
@@ -181,7 +181,7 @@ impl SessionExecutionAuthority {
             SessionEffectTarget::Execution(expected) => {
                 let environment = expected.upgrade().ok_or_else(denied)?;
                 let owned = realization
-                    .environment
+                    .environment()
                     .owner
                     .execution_environment()
                     .ok_or_else(denied)?;
@@ -192,7 +192,7 @@ impl SessionExecutionAuthority {
             SessionEffectTarget::Provider(_) => {}
         }
         let Some(session_remaining) = realization
-            .execution
+            .execution()
             .authority
             .remaining_for(&self.asserted)
         else {
@@ -207,7 +207,11 @@ impl SessionExecutionAuthority {
         // Provider conversion anchors BOOTTIME before this callback, so a
         // wait for either mutex cannot mint additional physical lifetime.
         effect(
-            realization.execution.authority.lease().ok_or_else(denied)?,
+            realization
+                .execution()
+                .authority
+                .lease()
+                .ok_or_else(denied)?,
             remaining,
         )
     }
@@ -226,7 +230,7 @@ impl ExecutionAuthority {
         &self.sessions
     }
 
-    /// Lock order: Worker proof -> Session slots -> synchronous provider grant.
+    /// Lock order: Worker proof -> installed Sessions -> synchronous provider grant.
     /// No async owner lock or external I/O may be held by this callback.
     /// A denial is a [`RealizationError`]; the effect keeps its own error type.
     pub fn authorize_worker_effect<T, E: From<RealizationError>>(
@@ -269,8 +273,8 @@ impl ExecutionAuthority {
             worker: self.worker.clone(),
             sessions: self.sessions.downgrade(),
             session: session.into(),
-            realization: realization.execution.phase.clone(),
-            lifecycle: realization.environment.lifecycle.clone(),
+            realization: realization.execution().phase.clone(),
+            lifecycle: realization.environment().lifecycle.clone(),
             asserted: asserted.clone(),
             target,
         }
@@ -285,7 +289,7 @@ impl ExecutionAuthority {
         initial: &SandboxEffectFence,
     ) -> Result<impl CurrentExecutionAuthority + use<>, RealizationError> {
         let mut capture = Some(|realization: &SessionRealization| {
-            let lease = realization.execution.authority.lease().ok_or_else(|| {
+            let lease = realization.execution().authority.lease().ok_or_else(|| {
                 RealizationError::authority_lost(
                     AuthorityLoss::Closed,
                     "Session realization proof is no longer live",
@@ -332,7 +336,7 @@ impl ExecutionAuthority {
         if !scoped.needs_execution_authority() {
             return Ok(());
         }
-        let Some(asserted) = realization.execution.authority.lease() else {
+        let Some(asserted) = realization.execution().authority.lease() else {
             return Ok(());
         };
         scoped
@@ -359,10 +363,11 @@ impl ExecutionAuthority {
     {
         let (realization, environment_fingerprint) = self
             .sessions
-            .modify_session(thread, |slot| {
+            .modify_session(thread, |installed| {
                 (
-                    slot.realization.execution.authority.lease().cloned(),
-                    slot.inputs
+                    installed.realization.execution().authority.lease().cloned(),
+                    installed
+                        .inputs
                         .baseline
                         .as_ref()
                         .map(|baseline| baseline.environment.config_fingerprint.0.clone()),

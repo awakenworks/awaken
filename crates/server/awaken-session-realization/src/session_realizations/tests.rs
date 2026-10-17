@@ -6,7 +6,7 @@ use awaken_session_configuration_contract::resource as session_resource;
 #[test]
 fn realization_authority_close_and_renewal_have_one_projection() {
     // Component split: the authority and phase lock live in ExecutionAuthority,
-    // cancellation lives in ResourceStaging, and the original slot mutex still
+    // cancellation lives in ResourceStaging, and the original installed Session lock still
     // linearizes their joint close/renewal. These rows cover that cross-role
     // boundary without another lease, lock, or cached ownership decision.
     // Decision table: C1 absent/live/closed; C2 expected exact/stale/none;
@@ -17,7 +17,7 @@ fn realization_authority_close_and_renewal_have_one_projection() {
     // Q1 absent+exact rejects; Q2 absent+none closes; Q3 live+stale rejects;
     // Q4 live+exact closes; Q5 closed+exact retry succeeds; Q6-Q8 exact
     // renewal crosses the three expiry partitions; Q9 stale reply rejects.
-    let base = crate::test_support::runtime_unix_now_ms() + 60_000;
+    let base = crate::test_support::wall_clock_now_ms() + 60_000;
     let lease = session_resource::SessionRealizationLease {
         owner: "worker".into(),
         runtime_incarnation: "worker/1".into(),
@@ -35,7 +35,7 @@ fn realization_authority_close_and_renewal_have_one_projection() {
     let mut stale = lease.clone();
     stale.expires_at_unix_ms -= 1;
     let cancellation = Arc::new(awaken_runtime_contract::CancellationToken::new());
-    realization.staging.preparation = Some(cancellation.clone());
+    realization.staging_mut().preparation = Some(cancellation.clone());
     assert!(!realization.close_authority(Some(&stale)), "Q3");
     assert!(!cancellation.is_cancelled(), "Q3");
     assert!(realization.close_authority(Some(&lease)), "Q4");
@@ -50,7 +50,7 @@ fn realization_authority_close_and_renewal_have_one_projection() {
         );
         realization.install_lease(test_observed_lease(renewed.clone()));
         assert!(
-            realization.execution.authority.lease().is_none(),
+            realization.execution().authority.lease().is_none(),
             "Q5 closed assertion"
         );
         let mut live = SessionRealization::default();
@@ -61,7 +61,7 @@ fn realization_authority_close_and_renewal_have_one_projection() {
             "Q6-Q8"
         );
         assert_eq!(
-            live.execution.authority.lease(),
+            live.execution().authority.lease(),
             Some(if expiry >= base + 100 {
                 &renewed
             } else {
@@ -77,7 +77,7 @@ fn realization_authority_close_and_renewal_have_one_projection() {
     next.epoch += 1;
     realization.install_lease(test_observed_lease(next.clone()));
     assert_eq!(
-        realization.execution.authority.lease(),
+        realization.execution().authority.lease(),
         Some(&next),
         "fresh Control generation"
     );
@@ -98,7 +98,7 @@ fn generation_close_accepts_only_the_original_phase_and_its_monotonic_renewal() 
         owner: "local".into(),
         runtime_incarnation: "boot".into(),
         epoch: 2,
-        expires_at_unix_ms: crate::test_support::runtime_unix_now_ms() + 300_000,
+        expires_at_unix_ms: crate::test_support::wall_clock_now_ms() + 300_000,
     };
     for rule in [
         "exact",
@@ -141,7 +141,7 @@ fn generation_close_accepts_only_the_original_phase_and_its_monotonic_renewal() 
         let phase = if rule == "phase" {
             Arc::new(tokio::sync::Mutex::new(()))
         } else {
-            realization.execution.phase.clone()
+            realization.execution().phase.clone()
         };
         let before = SessionRealizationRevocationSelection::from_realization(&realization);
         let selected = SessionRealizationRevocationSelection::close_generation(
@@ -153,7 +153,7 @@ fn generation_close_accepts_only_the_original_phase_and_its_monotonic_renewal() 
         assert_eq!(selected.is_some(), should_close, "decision row {rule}");
         match selected {
             Some(selected) => assert!(
-                selected.matches(&realization) && realization.execution.authority.is_closed(),
+                selected.matches(&realization) && realization.execution().authority.is_closed(),
                 "{rule}: the selection names the root it closed"
             ),
             None => assert!(
@@ -304,7 +304,7 @@ async fn only_the_install_path_installs_a_session() {
         .unwrap();
     view.retain_publication("t", None).unwrap();
     assert_eq!(view.session_ids().unwrap(), ["s", "t"], "I1/I2");
-    view.update_realization("s", |r| r.staging.effect_key = Some("k".into()))
+    view.update_realization("s", |r| r.staging_mut().effect_key = Some("k".into()))
         .unwrap();
     view.enter_session_dispatch("s").unwrap();
     drop(view.lock_lifecycle("s").await.unwrap());

@@ -47,7 +47,7 @@ pub fn environment_free_inference(
 
 /// One ephemeral, complete input snapshot for projecting a Session's physical
 /// Sandbox layout. It is assembled at the caller's single projection point and
-/// consumed immediately; the frozen Session and process-local slot remain the
+/// consumed immediately; the frozen Session and process-local installed Session remain the
 /// authorities for every field.
 pub struct ProjectedSandboxLayout<'a> {
     pub resource_mounts: Vec<pc::MountRequirement>,

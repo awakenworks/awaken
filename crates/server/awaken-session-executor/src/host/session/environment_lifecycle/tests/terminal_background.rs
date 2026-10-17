@@ -29,7 +29,7 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
         .build()
         .expect("validated Host dependencies");
     host.installed_sessions.install_realization(thread, |r| {
-        r.environment.owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
+        r.environment_mut().owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
             identity: BoundSessionEnvironmentIdentity::Durable {
                 effect_id: format!("effect-{thread}"),
                 generation: durable_generation.clone(),
@@ -102,7 +102,7 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
     host.installed_sessions
         .realizations()
         .update_realization(thread, |r| {
-            let SessionEnvironmentOwner::Resident(owned) = &mut r.environment.owner else {
+            let SessionEnvironmentOwner::Resident(owned) = &mut r.environment_mut().owner else {
                 panic!("O1 Resident")
             };
             let BoundSessionEnvironmentIdentity::Durable { effect_id, .. } = &mut owned.identity
@@ -129,7 +129,7 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
     host.installed_sessions
         .realizations()
         .update_realization(thread, |r| {
-            let SessionEnvironmentOwner::Resident(owned) = &mut r.environment.owner else {
+            let SessionEnvironmentOwner::Resident(owned) = &mut r.environment_mut().owner else {
                 panic!("O3 Resident")
             };
             owned.identity = BoundSessionEnvironmentIdentity::LegacyDirect(
@@ -201,7 +201,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             owner: format!("terminal-background-worker-{thread}"),
             runtime_incarnation: format!("terminal-background-worker-{thread}:incarnation"),
             epoch: 1,
-            expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
+            expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms()
                 + 60_000,
         };
         let create_fence = lease
@@ -260,7 +260,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
         host.installed_sessions
             .realizations()
             .update_realization(thread, |r| {
-                r.environment.owner = SessionEnvironmentOwner::Resident(owned.clone());
+                r.environment_mut().owner = SessionEnvironmentOwner::Resident(owned.clone());
             })
             .expect("installed Sessions");
 
@@ -317,7 +317,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             let lifecycle = host
                 .installed_sessions
                 .realizations()
-                .read_realization(thread, |r| r.environment.lifecycle.clone())
+                .read_realization(thread, |r| r.environment().lifecycle.clone())
                 .expect("installed Sessions")
                 .unwrap();
             let _lifecycle = lifecycle.lock().await;
@@ -495,7 +495,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
         let retained = host
             .installed_sessions
             .realizations()
-            .read_realization(thread, |r| r.environment.owner.clone())
+            .read_realization(thread, |r| r.environment().owner.clone())
             .expect("installed Sessions")
             .unwrap();
         assert!(
@@ -664,8 +664,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         owner: "terminal-worker".into(),
         runtime_incarnation: "terminal-worker:boot".into(),
         epoch: 1,
-        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
-            + 60_000,
+        expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms() + 60_000,
     };
     // U1 requires the fresh root's original admission before physical I/O;
     // historical omission remains the explicit negative row in the cold table.
@@ -744,7 +743,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     let retained = host
         .installed_sessions
         .realizations()
-        .read_realization(thread, |r| r.environment.owner.clone())
+        .read_realization(thread, |r| r.environment().owner.clone())
         .expect("installed Sessions")
         .unwrap();
     let SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
@@ -780,7 +779,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     for wrong in &rejected_owners {
         host.installed_sessions
             .realizations()
-            .update_realization(thread, |r| r.environment.owner = wrong.clone())
+            .update_realization(thread, |r| r.environment_mut().owner = wrong.clone())
             .expect("installed Sessions");
         awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
                     &crate::ManagedHost::new(host.clone()),
@@ -795,7 +794,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     }
     host.installed_sessions
         .realizations()
-        .update_realization(thread, |r| r.environment.owner = retained.clone())
+        .update_realization(thread, |r| r.environment_mut().owner = retained.clone())
         .expect("installed Sessions");
     let mut stale = effect.clone();
     stale.lease.epoch += 1;
@@ -825,7 +824,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     let same_owner = || {
         host.installed_sessions
             .realizations()
-            .read_realization(thread, |r| match &r.environment.owner {
+            .read_realization(thread, |r| match &r.environment().owner {
                 SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
                     owned: RetiringEnvironmentOwner::Unbound(current),
                     ..
@@ -874,7 +873,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     for wrong in rejected_owners.drain(..) {
         host.installed_sessions
             .realizations()
-            .update_realization(thread, |r| r.environment.owner = wrong)
+            .update_realization(thread, |r| r.environment_mut().owner = wrong)
             .expect("installed Sessions");
         host.realization_executor
             .effects()
@@ -885,7 +884,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     }
     host.installed_sessions
         .realizations()
-        .update_realization(thread, |r| r.environment.owner = retained.clone())
+        .update_realization(thread, |r| r.environment_mut().owner = retained.clone())
         .expect("installed Sessions");
     let mut stale_disposal = disposal.clone();
     stale_disposal.lease.epoch += 1;

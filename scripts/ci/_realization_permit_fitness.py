@@ -35,7 +35,7 @@ REALIZATION_PERMIT_MINTERS = {
     # Test support only: the realization crate's in-memory installed-Session
     # registry, whose own slot allocation is the identity, exactly as the host's.
     "crates/server/awaken-session-realization/src/test_support.rs": (
-        "slot.realization.execution.phase"
+        "installed.realization.execution().phase"
     ),
 }
 # The only two entry points that may reach the application-owned phase driver,
@@ -200,7 +200,7 @@ pub(crate) struct LocalRealizationLocks();
 SessionRealizationPermit::acquire(session_id, || registry.entry(session_id.to_string()), admit)
 """,
         "crates/server/awaken-session-realization/src/test_support.rs": """
-SessionRealizationPermit::acquire(session, || slot.realization.execution.phase.clone(), admit)
+SessionRealizationPermit::acquire(session, || installed.realization.execution().phase.clone(), admit)
 """,
         "crates/server/awaken-session-executor/src/application/worker_projection.rs": """
 let realization = host.sessions().acquire_realization(session_id).await;

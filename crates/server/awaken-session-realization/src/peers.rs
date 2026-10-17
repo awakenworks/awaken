@@ -44,13 +44,16 @@ pub trait EnvironmentPeer: Send + Sync {
     fn publication(&self) -> &crate::session_publication::SessionPublicationSelection;
     async fn install_bound_environment_under_lifecycle(
         &self,
+        lifecycle: crate::session_realizations::LifecycleHeld<'_>,
         peers: Peers<'_>,
         installation: TerminalEnvironmentInstallation<'_>,
         resident: Option<Arc<crate::session_environment::SessionEnvironment>>,
         mode: BoundEnvironmentPreparationMode,
     ) -> Result<Option<(Arc<crate::session_environment::SessionEnvironment>, bool)>, RealizationError>;
+    #[allow(clippy::too_many_arguments)]
     async fn prepare_bound_environment_for_effect_under_lifecycle(
         &self,
+        lifecycle: crate::session_realizations::LifecycleHeld<'_>,
         peers: Peers<'_>,
         thread: &str,
         binding: &str,
@@ -101,7 +104,7 @@ pub trait StagingPeer: Send + Sync {
     fn fetches_resources_upstream(&self) -> bool;
     fn memory_reference_encoder(
         &self,
-    ) -> Option<&Arc<dyn crate::memory_binding::RuntimeMemoryReferenceEncoder>>;
+    ) -> Option<&Arc<dyn crate::memory_binding::SessionMemoryReferenceEncoder>>;
     fn sandbox_spec_for_provider(
         &self,
         thread: &str,
@@ -125,6 +128,7 @@ pub trait StagingPeer: Send + Sync {
     fn thread_resources_snapshot(&self, thread: &str) -> Result<StagedResources, RealizationError>;
     async fn apply_session_inputs_under_lifecycle(
         &self,
+        lifecycle: crate::session_realizations::LifecycleHeld<'_>,
         peers: Peers<'_>,
         thread: &str,
         transition: &session_resource::SessionResourceTransition,

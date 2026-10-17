@@ -512,8 +512,8 @@ impl crate::host::SharedHost {
         let realizations = self.installed_sessions.realizations();
         realizations
             .update_realization(thread, |r| {
-                r.staging.memory_bindings = bindings;
-                r.staging.memory = None;
+                r.staging_mut().memory_bindings = bindings;
+                r.staging_mut().memory = None;
             })
             .expect("installed Sessions");
     }
@@ -521,7 +521,7 @@ impl crate::host::SharedHost {
     pub(crate) fn memory_for_thread(&self, thread: &str) -> Option<BoundMemory> {
         let realizations = self.installed_sessions.realizations();
         realizations
-            .read_realization(thread, |r| r.staging.memory.clone())
+            .read_realization(thread, |r| r.staging().memory.clone())
             .expect("session runtime slots mutex poisoned")
             .flatten()
             .map(|binding| self.resources.memory.bound(binding))
@@ -553,11 +553,11 @@ impl crate::host::SharedHost {
                 .read_realization(session_thread, |r| {
                     let mut bindings: Vec<Arc<MemoryBinding>> = Vec::new();
                     for memory in r
-                        .staging
+                        .staging()
                         .memory_bindings
                         .values()
                         .cloned()
-                        .chain(r.staging.memory.iter().cloned())
+                        .chain(r.staging().memory.iter().cloned())
                     {
                         if !bindings
                             .iter()

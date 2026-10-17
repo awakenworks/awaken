@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 impl crate::terminal_effects::TerminalEffects {
     /// Revalidate the one aggregate-owned terminal assignment cached in the
-    /// root Session slot. Preparation and disposal both consume this decision;
+    /// root installed Session. Preparation and disposal both consume this decision;
     /// each then lowers its own closed effect type exactly once.
     pub fn authorize_lease(
         &self,
@@ -34,7 +34,7 @@ impl crate::terminal_effects::TerminalEffects {
         self
             .sessions
             .read_realization(session_id.as_str(), |r| {
-                let current = r.execution.authority.lease().ok_or_else(|| {
+                let current = r.execution().authority.lease().ok_or_else(|| {
                     RealizationError::pending(
                         PendingState::TerminalCleanupProjectionMissing,
                         "terminal cleanup has no installed realization generation",
@@ -46,7 +46,7 @@ impl crate::terminal_effects::TerminalEffects {
                         "terminal cleanup realization generation was replaced",
                     ));
                 }
-                if r.execution.authority.remaining_for(lease).is_none() {
+                if r.execution().authority.remaining_for(lease).is_none() {
                     return Err(RealizationError::authority_lost(
                         AuthorityLoss::CleanupEffectExpired,
                         "terminal cleanup generation has no current live renewal at its physical boundary",
@@ -72,7 +72,7 @@ impl crate::terminal_effects::TerminalEffects {
     ) -> Result<bool, RealizationError> {
         Ok(self
             .sessions
-            .read_realization(thread, |r| match &r.environment.owner {
+            .read_realization(thread, |r| match &r.environment().owner {
                 SessionEnvironmentOwner::Retiring(retirement)
                     if matches!(
                         retirement.cause,
@@ -95,7 +95,7 @@ impl crate::terminal_effects::TerminalEffects {
         effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
     ) -> Result<awaken_provisioning_contract::SandboxDisposalAuthorization, RealizationError> {
         let current = self.authorize_lease(&effect.command.session_id, &effect.lease)?;
-        // The same slot proof already authorized preparation and disposal.
+        // The same installed Session proof already authorized preparation and disposal.
         // Lowering preserves its Control-clock fence bytes; comparing them to
         // Worker UTC would invent a second, incompatible expiry decision.
         // This projection is not a grant for a later asynchronous effect.
@@ -132,7 +132,9 @@ impl crate::terminal_effects::TerminalEffects {
     ) -> Result<TerminalMemoryPlan, RealizationError> {
         let transition = self
             .sessions
-            .read_realization(&effect.command.thread_id, |r| r.staging.transition.clone())?
+            .read_realization(&effect.command.thread_id, |r| {
+                r.staging().transition.clone()
+            })?
             .flatten()
             .ok_or_else(|| {
                 RealizationError::invariant(
@@ -180,28 +182,28 @@ impl crate::terminal_effects::TerminalEffects {
     /// Recover the root Session's exact physical Environment for terminal
     /// harvest without writing an ordinary Environment Adopt receipt. The
     /// terminal command and realization generation are the only authority;
-    /// this method publishes an Arc only into the process-local teardown slot.
+    /// this method publishes an Arc only into the process-local teardown installed Session.
     /// The result owns its state projection; the complete immutable projection
     /// remains available for original-history queries.
     pub(super) async fn prepare_terminal_environment_under_lifecycle(
         &self,
+        lifecycle: crate::session_realizations::LifecycleHeld<'_>,
         peers: crate::peers::Peers<'_>,
         thread: &str,
         effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
         mode: BoundEnvironmentPreparationMode,
     ) -> Result<TerminalEnvironmentPreparation, RealizationError> {
         let environments = peers.environments;
-        let realizer = environments;
         let (assignment, owner, previous_resources, workspace_id, checkpoint_policy) = self
             .sessions
-            .modify_session(thread, |slot| {
-                let baseline = slot.inputs.baseline.as_ref();
-                let r = &slot.realization;
+            .modify_session(thread, |installed| {
+                let baseline = installed.inputs.baseline.as_ref();
+                let r = &installed.realization;
                 (
-                    r.effects.assignment.clone(),
-                    r.environment.owner.clone(),
+                    r.effects().assignment.clone(),
+                    r.environment().owner.clone(),
                     r.previous_resources(),
-                    slot.inputs.workspace.clone(),
+                    installed.inputs.workspace.clone(),
                     baseline.map(|baseline| baseline.environment.idle_retention.clone()),
                 )
             })?
@@ -347,15 +349,16 @@ impl crate::terminal_effects::TerminalEffects {
                 .projection
                 .original_create_fence(thread)
                 .map_err(RealizationError::Run)?;
-            let provider = realizer.projected_session_environment_provider(thread, None)?;
-            let spec = realizer.session_environment_adoption_spec(
+            let provider = environments.projected_session_environment_provider(thread, None)?;
+            let spec = environments.session_environment_adoption_spec(
                 peers,
                 thread,
                 provider,
                 previous_resources.as_ref(),
             )?;
-            let environment = realizer
+            let environment = environments
                 .install_bound_environment_under_lifecycle(
+                    lifecycle,
                     peers,
                     TerminalEnvironmentInstallation {
                         thread,
@@ -398,8 +401,9 @@ impl crate::terminal_effects::TerminalEffects {
                 "terminal Runtime owner conflicts with the frozen aggregate binding",
             ));
         }
-        let environment = realizer
+        let environment = environments
             .prepare_bound_environment_for_effect_under_lifecycle(
+                lifecycle,
                 peers,
                 thread,
                 binding,

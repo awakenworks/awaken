@@ -469,7 +469,7 @@ impl SharedHost {
                     // this one slot snapshot; child admission neither publishes
                     // nor reconstructs physical active truth.
                     slot.realization
-                        .staging
+                        .staging()
                         .run_manifest(slot.run.session_dispatch),
                     slot.inputs.published_snapshot.clone(),
                 )
@@ -1238,8 +1238,8 @@ mod tests {
                     // not evidence of an unrestricted parent.
                     next.tools = Some(Default::default());
                 });
-                slot.realization.staging.manifest = active.clone();
-                slot.realization.staging.transition = transition;
+                slot.realization.staging_mut().manifest = active.clone();
+                slot.realization.staging_mut().transition = transition;
             });
             let mut snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent-a")
                 .model(awaken_runtime_contract::resolved::ModelBinding::new(

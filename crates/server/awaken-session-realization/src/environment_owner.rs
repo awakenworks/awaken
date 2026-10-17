@@ -98,7 +98,7 @@ impl UnboundSessionEnvironment {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 // These variants are the exact in-memory ownership proof retained across a
-// fallible adoption. There is one per Session slot; heap-indirecting only the
+// fallible adoption. There is one per installed Session; heap-indirecting only the
 // durable identity would obscure its value semantics without changing wire or
 // persistence size.
 #[allow(clippy::large_enum_variant)]
@@ -145,7 +145,7 @@ impl BoundSessionEnvironment {
 #[derive(Clone)]
 // AwaitingAdoption deliberately retains the complete durable identity while
 // Candidate retains the exact Arc. Both are mutually exclusive phases of the
-// single Session slot owner, not elements of a retained collection.
+// single installed Session owner, not elements of a retained collection.
 #[allow(clippy::large_enum_variant)]
 pub enum SessionEnvironmentPreparation {
     AwaitingAdoption {
@@ -191,7 +191,7 @@ impl RetiringSessionEnvironment {
 #[derive(Clone)]
 // Retirement must carry either the exact unpublished Candidate or the exact
 // published owner across cancellation and response loss. The enum is a single
-// slot phase, so preserving direct value ownership is preferable to a second
+// installed Session phase, so preserving direct value ownership is preferable to a second
 // heap-owned identity wrapper.
 #[allow(clippy::large_enum_variant)]
 pub enum RetiringEnvironmentOwner {

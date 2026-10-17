@@ -523,7 +523,7 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         host.installed_sessions
             .realizations()
             .read_realization("session-artifacts", |r| {
-                r.environment.owner.terminal_bound_environment().is_some()
+                r.environment().owner.terminal_bound_environment().is_some()
             })
             .unwrap()
             .unwrap_or(false),
@@ -674,7 +674,7 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
     host.installed_sessions
         .realizations()
         .update_realization("artifact-response-loss", |r| {
-            r.environment.owner = crate::environment_owner::SessionEnvironmentOwner::Vacant;
+            r.environment_mut().owner = crate::environment_owner::SessionEnvironmentOwner::Vacant;
         })
         .unwrap();
     let recovered = host
@@ -695,7 +695,7 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
         .delete(
             "workspace-a",
             &terminal.receipts[0].record.id,
-            awaken_session_realization::test_support::runtime_unix_now_ms(),
+            awaken_session_realization::test_support::wall_clock_now_ms(),
         )
         .await
         .expect("H3 logical delete");
@@ -1311,7 +1311,7 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
         host.installed_sessions
             .realizations()
             .read_realization("session-harvest-failure", |r| {
-                r.environment.owner.terminal_bound_environment().is_some()
+                r.environment().owner.terminal_bound_environment().is_some()
             })
             .unwrap()
             .unwrap_or(false),

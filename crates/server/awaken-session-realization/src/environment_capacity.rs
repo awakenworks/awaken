@@ -156,7 +156,7 @@ impl EnvironmentProviders {
     }
 
     /// Dispose never-used warm capacity after claim admission and in-flight work
-    /// have drained. Active Session environments remain owned by their slots.
+    /// have drained. Active Session environments remain owned by their installed Sessions.
     pub async fn shutdown_environment_capacity(&self) {
         self.session_provider.capacity().shutdown_capacity().await;
     }

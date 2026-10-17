@@ -37,6 +37,7 @@ pub(super) struct ContextResources {
 
 pub(super) async fn acquire(
     host: &SharedHost,
+    lifecycle: crate::session_realizations::LifecycleHeld<'_>,
     thread: &str,
     plan: ContextPlan,
     requested_purpose: RuntimeContextPurpose,
@@ -73,13 +74,13 @@ pub(super) async fn acquire(
     }
     let retained = realization
         .sessions()
-        .read_realization(thread, |r| r.environment.owner.resident())?
+        .read_realization(thread, |r| r.environment().owner.resident())?
         .flatten();
     let environment_owner_is_vacant = exec.session_environment_owner_is_vacant(thread)?;
     let environment_owner_has_unpublished_candidate = realization
         .sessions()
         .read_realization(thread, |r| {
-            r.environment.owner.unpublished_candidate().is_some()
+            r.environment().owner.unpublished_candidate().is_some()
         })?
         .unwrap_or(false);
     if a2a_only && !environment_owner_is_vacant {
@@ -178,6 +179,7 @@ pub(super) async fn acquire(
             let provider = exec.session_environment_provider_for_thread(thread, provisioning)?;
             Some(
                 exec.create_reserved_session_environment_under_lifecycle(
+                    lifecycle,
                     realization.peers(),
                     thread,
                     provider,
@@ -189,6 +191,7 @@ pub(super) async fn acquire(
     let env = match env {
         Some(environment) => Some(
             exec.ensure_published_environment_reconciled_under_lifecycle(
+                lifecycle,
                 realization.peers(),
                 thread,
                 environment,

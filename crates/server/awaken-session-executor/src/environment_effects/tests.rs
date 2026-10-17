@@ -121,7 +121,7 @@ impl SessionEnvironmentBindingSink for Sink {
     }
 }
 
-async fn detached_realizer() -> (
+async fn detached_executor() -> (
     crate::realization_executor::RealizationExecutor,
     Arc<crate::installed_session::InstalledSessions>,
 ) {
@@ -158,18 +158,18 @@ async fn detached_realizer_binds_only_the_original_claim_and_preserves_failure_c
     // operation. Missing claims cause no I/O, missing roles fail closed, and
     // fenced versus unavailable transports retain different failure codes.
     for row in ["direct", "applied", "fenced", "unavailable", "missing_role"] {
-        let (mut realizer, sessions) = detached_realizer().await;
+        let (mut executor, sessions) = detached_executor().await;
         let selected = Arc::new(Execution {
             outcome: row,
             bindings: Mutex::new(Vec::new()),
         });
-        realizer.environments_mut().replace_dispatch_execution(
+        executor.environments_mut().replace_dispatch_execution(
             (row != "missing_role").then(|| selected.clone() as Arc<dyn DispatchExecution>),
         );
         if row != "direct" {
             sessions.update_run("session", |run| run.dispatch_claim = Some(claim()));
         }
-        let result = realizer
+        let result = executor
             .environments()
             .bind_deferred_dispatch_before_publish("session", "exact-binding")
             .await;
@@ -208,19 +208,19 @@ async fn detached_realizer_keeps_committed_identity_and_never_rebinds_resource_r
     // generation for candidate recovery; P2 reservation never touches dispatch;
     // P3 uncertain Store response carries no invented committed identity.
     for row in ["committed_then_fenced", "reservation", "response_lost"] {
-        let (mut realizer, sessions) = detached_realizer().await;
+        let (mut executor, sessions) = detached_executor().await;
         let selected = Arc::new(Execution {
             outcome: "fenced",
             bindings: Mutex::new(Vec::new()),
         });
-        realizer
+        executor
             .environments_mut()
             .replace_dispatch_execution(Some(selected.clone()));
         let sink = Arc::new(Sink {
             response_lost: row == "response_lost",
             persists: AtomicUsize::new(0),
         });
-        realizer
+        executor
             .environments()
             .install_environment_binding_sink(sink.clone());
         sessions.update_run("session", |run| {
@@ -234,7 +234,7 @@ async fn detached_realizer_keeps_committed_identity_and_never_rebinds_resource_r
         } else {
             SessionEnvironmentEffectKind::Create
         };
-        let intent = realizer
+        let intent = executor
             .authority()
             .new_environment_effect_intent(
                 "session",
@@ -242,15 +242,15 @@ async fn detached_realizer_keeps_committed_identity_and_never_rebinds_resource_r
                 (row == "reservation").then_some("original-binding"),
             )
             .expect("installed Sessions");
-        let effect = realizer
+        let effect = executor
             .environments()
-            .authorize_environment_effect_before_io(realizer.peers(), "session", &intent)
+            .authorize_environment_effect_before_io(executor.peers(), "session", &intent)
             .await
             .unwrap();
-        let result = realizer
+        let result = executor
             .environments()
             .persist_authorized_environment_binding(
-                realizer.peers(),
+                executor.peers(),
                 "session",
                 "next-binding".into(),
                 &effect,

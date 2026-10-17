@@ -42,14 +42,15 @@ pub struct InstalledProjection {
 /// exact claim (same Run and owner) with a live, matching lease proof. Read
 /// during the claim's atomic admission, never after it.
 pub fn claimed_realization_continuation(
-    slot: &SessionRealizationAccess<'_>,
+    installed: &SessionRealizationAccess<'_>,
     claim: &RunClaim,
 ) -> Option<SessionRealizationLease> {
-    slot.run
+    installed
+        .run
         .dispatch_claim()
         .filter(|previous| previous.run_id == claim.run_id && previous.owner == claim.owner)
-        .and_then(|_| slot.realization.execution.authority.remaining())
-        .and_then(|_| slot.realization.execution.authority.lease())
+        .and_then(|_| installed.realization.execution().authority.remaining())
+        .and_then(|_| installed.realization.execution().authority.lease())
         .filter(|lease| lease.runtime_incarnation == claim.owner)
         .cloned()
 }
@@ -62,18 +63,25 @@ impl SessionRealizations {
         session: &str,
     ) -> Result<InstalledDispatchInputs, RealizationError> {
         Ok(self
-            .modify_session(session, |slot| {
+            .modify_session(session, |installed| {
                 let runtime_projection =
-                    slot.inputs.environment_snapshot.clone().map(|environment| {
-                        SessionRuntimeProjection {
+                    installed
+                        .inputs
+                        .environment_snapshot
+                        .clone()
+                        .map(|environment| SessionRuntimeProjection {
                             environment,
-                            tools: slot.inputs.tools.clone(),
-                            mcp_stages: Some(slot.realization.staging.mcp.active_stage_requests()),
-                        }
-                    });
-                let session_dispatch = slot.run.session_dispatch();
+                            tools: installed.inputs.tools.clone(),
+                            mcp_stages: Some(
+                                installed.realization.staging().mcp.active_stage_requests(),
+                            ),
+                        });
+                let session_dispatch = installed.run.session_dispatch();
                 InstalledDispatchInputs {
-                    resources: slot.realization.staging.run_manifest(session_dispatch),
+                    resources: installed
+                        .realization
+                        .staging()
+                        .run_manifest(session_dispatch),
                     runtime_projection,
                     session_dispatch,
                 }
@@ -91,8 +99,8 @@ impl SessionRealizations {
         awaken_session_realization_contract::SessionRealizationPermit,
         Option<SessionRealizationLease>,
     ) {
-        self.acquire_realization_with(session, |slot| {
-            claimed_realization_continuation(&slot, claim)
+        self.acquire_realization_with(session, |installed| {
+            claimed_realization_continuation(&installed, claim)
         })
         .await
     }
@@ -102,10 +110,10 @@ impl SessionRealizations {
         &self,
         session: &str,
     ) -> Result<Option<InstalledProjection>, RealizationError> {
-        self.modify_session(session, |slot| InstalledProjection {
-            session_dispatch: slot.run.session_dispatch(),
-            has_frozen_baseline: slot.inputs.baseline.is_some(),
-            installation: slot.realization.execution.phase.clone(),
+        self.modify_session(session, |installed| InstalledProjection {
+            session_dispatch: installed.run.session_dispatch(),
+            has_frozen_baseline: installed.inputs.baseline.is_some(),
+            installation: installed.realization.execution().phase.clone(),
         })
     }
 
@@ -121,12 +129,13 @@ impl SessionRealizations {
         claim: RunClaim,
     ) -> Result<bool, RealizationError> {
         Ok(self
-            .modify_session(session, |slot| {
-                let unchanged = Arc::ptr_eq(observed, &slot.realization.execution.phase)
+            .modify_session(session, |installed| {
+                let unchanged = Arc::ptr_eq(observed, &installed.realization.execution().phase)
                     && (!require_installed_projection
-                        || (slot.run.session_dispatch() && slot.inputs.baseline.is_some()));
+                        || (installed.run.session_dispatch()
+                            && installed.inputs.baseline.is_some()));
                 if unchanged {
-                    slot.run.install_dispatch_claim(claim);
+                    installed.run.install_dispatch_claim(claim);
                 }
                 unchanged
             })?

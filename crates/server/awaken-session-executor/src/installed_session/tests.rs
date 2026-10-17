@@ -40,15 +40,11 @@ fn dispatch_resource_manifest_has_one_session_generation_selector() {
             )
             .expect("test transition belongs to one Workspace")
         });
+        let mut realization = SessionRealization::default();
+        realization.staging_mut().manifest = active.clone();
+        realization.staging_mut().transition = transition;
         let slot = InstalledSession {
-            realization: SessionRealization {
-                staging: crate::realization_state::ResourceStagingState {
-                    manifest: active.clone(),
-                    transition,
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
+            realization,
             run: SessionRunBinding {
                 session_dispatch,
                 ..Default::default()
@@ -58,7 +54,7 @@ fn dispatch_resource_manifest_has_one_session_generation_selector() {
 
         assert_eq!(
             slot.realization
-                .staging
+                .staging()
                 .run_manifest(slot.run.session_dispatch)
                 .unwrap_or_else(|| panic!("{rule} selected manifest"))
                 .revision,
@@ -66,7 +62,8 @@ fn dispatch_resource_manifest_has_one_session_generation_selector() {
             "{rule} selection",
         );
         assert_eq!(
-            slot.realization.staging.manifest, active,
+            slot.realization.staging().manifest,
+            active,
             "{rule}/E5 active is unchanged"
         );
     }
@@ -80,13 +77,13 @@ fn environment_only_session_lease_remains_supervised() {
     // the durable fence expire before the Environment receipt can commit.
     let slots = Arc::new(InstalledSessions::default());
     slots.install_realization("environment-only", |r| {
-        assert!(!r.staging.mcp.has_frozen_attachment(), "C2");
-        r.execution.authority = crate::realization_state::SessionRealizationAuthority::Live(
+        assert!(!r.staging().mcp.has_frozen_attachment(), "C2");
+        r.execution_mut().authority = crate::realization_state::SessionRealizationAuthority::Live(
             test_observed_lease(crate::session_resource::SessionRealizationLease {
                 owner: "worker".into(),
                 runtime_incarnation: "worker/incarnation".into(),
                 epoch: 1,
-                expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
+                expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms()
                     + 30_000,
             }),
         );
@@ -264,7 +261,7 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
     };
     assert!(
         !slots.update("mcp-admission", |slot| {
-            slot.realization.environment.owner = SessionEnvironmentOwner::Preparing(
+            slot.realization.environment_mut().owner = SessionEnvironmentOwner::Preparing(
                 SessionEnvironmentPreparation::AwaitingAdoption {
                     identity: BoundSessionEnvironmentIdentity::Durable {
                         effect_id: "source-effect".into(),
@@ -295,7 +292,7 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
     };
     assert!(
         !slots.update("mcp-admission", |slot| {
-            slot.realization.environment.owner = SessionEnvironmentOwner::Preparing(
+            slot.realization.environment_mut().owner = SessionEnvironmentOwner::Preparing(
                 SessionEnvironmentPreparation::AwaitingAdoption {
                     identity: BoundSessionEnvironmentIdentity::Durable {
                         effect_id: "restore-effect".into(),
@@ -320,7 +317,7 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
     };
     assert!(
         slots.update("mcp-admission", |slot| {
-            slot.realization.environment.owner = SessionEnvironmentOwner::Preparing(
+            slot.realization.environment_mut().owner = SessionEnvironmentOwner::Preparing(
                 SessionEnvironmentPreparation::AwaitingAdoption {
                     identity: BoundSessionEnvironmentIdentity::Durable {
                         effect_id: "restore-effect".into(),
@@ -351,7 +348,7 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
         .unwrap();
     assert!(
         !slots.update("mcp-admission", |slot| {
-            slot.realization.environment.owner = SessionEnvironmentOwner::Preparing(
+            slot.realization.environment_mut().owner = SessionEnvironmentOwner::Preparing(
                 SessionEnvironmentPreparation::AwaitingAdoption {
                     identity: BoundSessionEnvironmentIdentity::Durable {
                         effect_id: fence.source_effect_id.clone(),
@@ -370,7 +367,7 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
     );
     assert!(
         slots.update("mcp-admission", |slot| {
-            slot.realization.environment.owner = SessionEnvironmentOwner::Vacant;
+            slot.realization.environment_mut().owner = SessionEnvironmentOwner::Vacant;
             slot.realization
                 .reopen_mcp_realization_admission_from_projection(
                     &awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
@@ -457,7 +454,7 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
     crate::host::tests::bind_test_memory(&host, "present", "poison-memory", true);
     let slots = &host.installed_sessions;
     let memory = slots
-        .read("present", |slot| slot.realization.staging.memory.clone())
+        .read("present", |slot| slot.realization.staging().memory.clone())
         .flatten()
         .unwrap();
     let input = crate::session_resource::ResolvedInput {
@@ -522,13 +519,13 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
     };
     slots.update("present", |slot| {
         slot.replace_frozen_with(|next| next.workspace = Some("original-workspace".into()));
-        slot.realization.staging.resources = resources.clone();
+        slot.realization.staging_mut().resources = resources.clone();
         slot.realization
-            .staging
+            .staging_mut()
             .memory_bindings
             .insert("original-binding".into(), memory.clone());
-        slot.realization.staging.skills = Some(vec![skill.clone()]);
-        slot.realization.staging.effect_key = Some("original-key".into());
+        slot.realization.staging_mut().skills = Some(vec![skill.clone()]);
+        slot.realization.staging_mut().effect_key = Some("original-key".into());
         slot.run.dispatch_claim = Some(claim.clone());
         slot.run.session_dispatch = true;
     });
@@ -536,9 +533,9 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
     let phase_locks = slots
         .read("present", |slot| {
             (
-                slot.realization.execution.phase.clone(),
-                slot.realization.environment.lifecycle.clone(),
-                slot.realization.staging.projection.clone(),
+                slot.realization.execution().phase.clone(),
+                slot.realization.environment().lifecycle.clone(),
+                slot.realization.staging().projection.clone(),
             )
         })
         .unwrap();
@@ -689,34 +686,40 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
     let slot = &poisoned_guard["present"];
     assert!(Arc::ptr_eq(&slot.inputs, &frozen), "S4/E5 whole Frozen Arc");
     assert_eq!(slot.inputs.workspace.as_deref(), Some("original-workspace"));
-    assert_eq!(slot.realization.staging.resources.mounts, resources.mounts);
     assert_eq!(
-        slot.realization.staging.resources.prompts,
+        slot.realization.staging().resources.mounts,
+        resources.mounts
+    );
+    assert_eq!(
+        slot.realization.staging().resources.prompts,
         resources.prompts
     );
     assert_eq!(
-        format!("{:?}", slot.realization.staging.resources.resource_prompts),
+        format!(
+            "{:?}",
+            slot.realization.staging().resources.resource_prompts
+        ),
         format!("{:?}", resources.resource_prompts)
     );
-    assert_eq!(slot.realization.staging.resources.binding_checks.len(), 1);
+    assert_eq!(slot.realization.staging().resources.binding_checks.len(), 1);
     assert!(
-        matches!(&slot.realization.staging.resources.binding_checks[0], ResourceBindingCheck::MemoryStore {
+        matches!(&slot.realization.staging().resources.binding_checks[0], ResourceBindingCheck::MemoryStore {
         memory_store_id, config_version,
     } if memory_store_id == "poison-memory" && config_version.0 == 3)
     );
-    assert!(slot.realization.staging.resources.repositories == resources.repositories);
-    assert_eq!(slot.realization.staging.memory_bindings.len(), 1);
+    assert!(slot.realization.staging().resources.repositories == resources.repositories);
+    assert_eq!(slot.realization.staging().memory_bindings.len(), 1);
     assert!(Arc::ptr_eq(
-        &slot.realization.staging.memory_bindings["original-binding"],
+        &slot.realization.staging().memory_bindings["original-binding"],
         &memory
     ));
     assert!(Arc::ptr_eq(
-        slot.realization.staging.memory.as_ref().unwrap(),
+        slot.realization.staging().memory.as_ref().unwrap(),
         &memory
     ));
-    assert_eq!(slot.realization.staging.skills, Some(vec![skill]));
+    assert_eq!(slot.realization.staging().skills, Some(vec![skill]));
     assert_eq!(
-        slot.realization.staging.effect_key.as_deref(),
+        slot.realization.staging().effect_key.as_deref(),
         Some("original-key")
     );
     assert!(
@@ -726,15 +729,15 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
     assert_eq!(slot.run.dispatch_claim, Some(claim));
     assert!(slot.run.session_dispatch);
     assert!(Arc::ptr_eq(
-        &slot.realization.execution.phase,
+        &slot.realization.execution().phase,
         &phase_locks.0
     ));
     assert!(Arc::ptr_eq(
-        &slot.realization.environment.lifecycle,
+        &slot.realization.environment().lifecycle,
         &phase_locks.1
     ));
     assert!(Arc::ptr_eq(
-        &slot.realization.staging.projection,
+        &slot.realization.staging().projection,
         &phase_locks.2
     ));
 }

@@ -381,7 +381,7 @@ mod tests {
                 owner: "worker-a".into(),
                 runtime_incarnation: "worker-a/boot-1".into(),
                 epoch: 1,
-                expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
+                expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms()
                     + 60_000,
             };
         awaken_session_execution_contract::RealizationRuntime::install_session_projection(
@@ -539,8 +539,8 @@ mod tests {
             host.installed_sessions
                 .realizations()
                 .read_realization(thread, |r| {
-                    r.environment.owner.resident().or_else(|| {
-                        r.environment
+                    r.environment().owner.resident().or_else(|| {
+                        r.environment()
                             .owner
                             .unpublished_candidate()
                             .map(|candidate| candidate.environment.clone())
@@ -648,7 +648,7 @@ mod tests {
         let lifecycle = host
             .installed_sessions
             .realizations()
-            .read_realization(thread, |r| r.environment.lifecycle.clone())
+            .read_realization(thread, |r| r.environment().lifecycle.clone())
             .expect("installed Sessions")
             .expect("DH1 lifecycle owner");
         if revoke {
@@ -675,7 +675,7 @@ mod tests {
                 || host
                     .installed_sessions
                     .read(thread, |slot| slot.run.context.is_none()
-                        && !slot.realization.environment.owner.is_resident())
+                        && !slot.realization.environment().owner.is_resident())
                     .unwrap_or(false),
             "DH1/C2 revocation clears R1 and hides Retiring A"
         );
@@ -701,7 +701,7 @@ mod tests {
             owner: claim.owner.clone(),
             runtime_incarnation: "worker-a/boot-2".into(),
             epoch: 2,
-            expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
+            expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms()
                 + 60_000,
         };
         let directive = awaken_session_realization_contract::SessionRealizationDirective {
@@ -827,11 +827,16 @@ mod tests {
             );
             host.installed_sessions
                 .read(thread, |slot| {
-                    assert!(matches!(&slot.realization.environment.owner,
+                    assert!(matches!(&slot.realization.environment().owner,
                     crate::environment_owner::SessionEnvironmentOwner::Retiring(retiring)
                     if Arc::ptr_eq(&retiring.owned.environment(), &original)));
                     assert_eq!(
-                        slot.realization.execution.authority.lease().unwrap().epoch,
+                        slot.realization
+                            .execution()
+                            .authority
+                            .lease()
+                            .unwrap()
+                            .epoch,
                         1
                     );
                     assert!(slot.run.context.is_none());
@@ -1102,7 +1107,7 @@ mod tests {
                 .read(thread, |slot| slot.run.context.as_ref().is_some_and(
                     |runtime| {
                         Arc::ptr_eq(runtime, &fresh_runtime)
-                            && slot.realization.environment.owner.is_resident()
+                            && slot.realization.environment().owner.is_resident()
                     }
                 ))
                 .unwrap_or(false),
@@ -1219,7 +1224,7 @@ mod tests {
         let lifecycle = host
             .installed_sessions
             .realizations()
-            .read_realization(thread, |r| r.environment.lifecycle.clone())
+            .read_realization(thread, |r| r.environment().lifecycle.clone())
             .expect("installed Sessions")
             .expect("legacy lifecycle owner");
         {
@@ -1310,7 +1315,7 @@ mod tests {
             expires_at_unix_ms: u64::MAX,
         };
         let error = WorkerProjectionSynchronizer {
-            host: host.as_ref(),
+            execution: host.as_ref(),
             claim: Some(&claim),
             published_snapshot: Some(&snapshot),
             rebuild_unavailable_environment: true,
@@ -1349,12 +1354,12 @@ mod tests {
             "CR1/E3"
         );
         host.installed_sessions.realizations().read_realization(thread, |r| {
-            assert!(matches!(&r.environment.owner,
+            assert!(matches!(&r.environment().owner,
                 crate::environment_owner::SessionEnvironmentOwner::Preparing(
                     crate::environment_owner::SessionEnvironmentPreparation::AwaitingAdoption { binding, .. }
                 ) if binding == &raw_binding), "CR1/E3 only exact projected binding remains");
-            assert!(r.environment.owner.unpublished_candidate().is_none(), "CR1/E3 no Candidate");
-            assert_eq!(r.execution.authority.lease(), Some(&lease), "CR1 C2 remains Managed");
+            assert!(r.environment().owner.unpublished_candidate().is_none(), "CR1/E3 no Candidate");
+            assert_eq!(r.execution().authority.lease(), Some(&lease), "CR1 C2 remains Managed");
         }).expect("installed Sessions").unwrap();
         assert_eq!(
             sink.requested_kinds.lock().unwrap().as_slice(),
@@ -1421,7 +1426,7 @@ mod tests {
                 assert!(!slot.run.session_dispatch, "OR1 C3 ordinary Run");
                 assert!(
                     matches!(
-                        &slot.realization.execution.authority,
+                        &slot.realization.execution().authority,
                         crate::realization_state::SessionRealizationAuthority::Uninstalled
                     ),
                     "OR1 C3 no fabricated realization lease"
@@ -1476,7 +1481,7 @@ mod tests {
             host.installed_sessions
                 .realizations()
                 .read_realization(thread, |r| r
-                    .environment
+                    .environment()
                     .owner
                     .resident()
                     .is_some_and(|owned| Arc::ptr_eq(&owned, rebuilt)))
@@ -1559,12 +1564,12 @@ mod tests {
             .read(thread, |slot| {
                 (
                     slot.inputs.published_snapshot.clone(),
-                    slot.realization.execution.authority.lease().cloned(),
+                    slot.realization.execution().authority.lease().cloned(),
                     slot.inputs
                         .environment_projection
                         .as_ref()
                         .map(|projection| projection.fingerprint.clone()),
-                    slot.realization.staging.mcp.projection_count(),
+                    slot.realization.staging().mcp.projection_count(),
                 )
             })
             .expect("RA1 retained slot caches");
@@ -1638,7 +1643,7 @@ mod tests {
             host.installed_sessions.realizations()
                 .read_realization(thread, |r| {
                     matches!(
-                        &r.environment.owner,
+                        &r.environment().owner,
                         crate::environment_owner::SessionEnvironmentOwner::Retiring(current)
                             if current.cause
                                 == crate::environment_owner::SessionEnvironmentRetirementCause::RealizationRevocation
@@ -1652,12 +1657,12 @@ mod tests {
             host.installed_sessions.read(thread, |slot| {
                 (
                     slot.inputs.published_snapshot.clone(),
-                    slot.realization.execution.authority.lease().cloned(),
+                    slot.realization.execution().authority.lease().cloned(),
                     slot.inputs
                         .environment_projection
                         .as_ref()
                         .map(|projection| projection.fingerprint.clone()),
-                    slot.realization.staging.mcp.projection_count(),
+                    slot.realization.staging().mcp.projection_count(),
                 )
             }),
             Some(cached),

@@ -17,7 +17,7 @@ use awaken_session_types::RunError;
 use crate::realization_executor::RealizationExecutor;
 
 impl RealizationExecutor {
-    /// All continuation effects read the same Session slot admission decision.
+    /// All continuation effects read the same installed Session admission decision.
     /// The returned fence remains in Control coordinates; provider validation
     /// is a separate boundary, not a reason to reinterpret expiry locally.
     fn continuation_current_lease(
@@ -29,10 +29,10 @@ impl RealizationExecutor {
         let realizations = self.sessions.clone();
         let (current, live) = realizations
             .read_realization(thread, |r| {
-                r.execution.authority.lease().map(|current| {
+                r.execution().authority.lease().map(|current| {
                     (
                         current.clone(),
-                        r.execution.authority.remaining_for(asserted).is_some(),
+                        r.execution().authority.remaining_for(asserted).is_some(),
                     )
                 })
             })?
@@ -244,12 +244,13 @@ impl RealizationExecutor {
                     error.to_string(),
                 )
             })?;
-        let _lifecycle = self.sessions.lock_lifecycle(thread).await?;
+        let lifecycle = self.sessions.lock_lifecycle(thread).await?;
         self.continuation_preparation_effect_fence(thread, preparation)?;
         let effect_fence = self.continuation_preparation_effect_fence(thread, preparation)?;
         let prepared = self
             .environments
             .prepare_bound_environment_for_effect_under_lifecycle(
+                lifecycle.held(),
                 self.peers(),
                 thread,
                 source_binding,

@@ -525,7 +525,7 @@ mod acp_context_tests {
         // Construction happens before the claim-fenced frozen projection is
         // accepted; realization installs the one authoritative slot later.
         slots.install_realization("session-1", |r| {
-            r.staging.resources.prompts = vec!["frozen session prompt".into()];
+            r.staging_mut().resources.prompts = vec!["frozen session prompt".into()];
         });
         let durable = activation("genai");
         let mut context = awaken_runtime_contract::RuntimeRunContext::default();
@@ -590,7 +590,7 @@ mod acp_context_tests {
             awaken_time::system_clock(),
         );
         slots.install_realization("session-1", |r| {
-            r.staging.resources.prompts = vec!["resource revision one".into()]
+            r.staging_mut().resources.prompts = vec!["resource revision one".into()]
         });
         let durable = activation("genai");
         let mut first = awaken_runtime_contract::RuntimeRunContext::default();
@@ -607,7 +607,7 @@ mod acp_context_tests {
         slots
             .realizations()
             .update_realization("session-1", |r| {
-                r.staging.resources.prompts = vec!["resource revision two".into()]
+                r.staging_mut().resources.prompts = vec!["resource revision two".into()]
             })
             .expect("installed Sessions");
         let mut second = awaken_runtime_contract::RuntimeRunContext::default();
@@ -641,7 +641,7 @@ mod acp_context_tests {
         // the reader starts only after the writer owns the publication lock.
         let slots = Arc::new(crate::installed_session::InstalledSessions::default());
         slots.install_realization("session-1", |r| {
-            r.staging.resources.prompts = vec!["r1-a".into(), "r1-b".into()]
+            r.staging_mut().resources.prompts = vec!["r1-a".into(), "r1-b".into()]
         });
         let executor = Arc::new(SessionContextAttemptExecutor::new(
             Arc::new(UnusedExecutor),
@@ -657,7 +657,8 @@ mod acp_context_tests {
             writer_slots.update("session-1", |slot| {
                 writer_locked_tx.send(()).unwrap();
                 writer_release.wait();
-                slot.realization.staging.resources.prompts = vec!["r2-a".into(), "r2-b".into()];
+                slot.realization.staging_mut().resources.prompts =
+                    vec!["r2-a".into(), "r2-b".into()];
             });
         });
         writer_locked_rx.recv().unwrap();

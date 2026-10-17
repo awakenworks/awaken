@@ -347,7 +347,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     assert_eq!(
         host.installed_sessions
             .realizations()
-            .read_realization("mcp-exact", |r| r.staging.mcp.projection_count())
+            .read_realization("mcp-exact", |r| r.staging().mcp.projection_count())
             .expect("installed Sessions"),
         Some(1),
         "H22 no duplicate tombstone"
@@ -441,7 +441,10 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     assert_eq!(
         host.installed_sessions
             .realizations()
-            .read_realization("mcp-removed-renewal", |r| r.staging.mcp.projection_count())
+            .read_realization("mcp-removed-renewal", |r| r
+                .staging()
+                .mcp
+                .projection_count())
             .expect("installed Sessions"),
         Some(1),
         "H28 one projection"
@@ -454,9 +457,9 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     host.installed_sessions
         .realizations()
         .modify_realization("mcp-exact", |r| {
-            r.staging.mcp.projections_mut()[0].state =
+            r.staging_mut().mcp.projections_mut()[0].state =
                 awaken_session_mcp::McpProjectionState::Staging;
-            r.staging.mcp.projections_mut()[0].staging =
+            r.staging_mut().mcp.projections_mut()[0].staging =
                 Some(awaken_session_mcp::McpStagingActivity::default());
         })
         .expect("installed Sessions");
@@ -472,9 +475,9 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     host.installed_sessions
         .realizations()
         .modify_realization("mcp-exact", |r| {
-            r.staging.mcp.projections_mut()[0].state =
+            r.staging_mut().mcp.projections_mut()[0].state =
                 awaken_session_mcp::McpProjectionState::Staged;
-            r.staging.mcp.projections_mut()[0].staging = None;
+            r.staging_mut().mcp.projections_mut()[0].staging = None;
         })
         .expect("installed Sessions");
     let mut expired = request("mcp-expired", "workspace-a", 1);
@@ -528,7 +531,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     assert_eq!(
         host.installed_sessions
             .realizations()
-            .read_realization("mcp-conflict", |r| r.staging.mcp.projection_count())
+            .read_realization("mcp-conflict", |r| r.staging().mcp.projection_count())
             .expect("installed Sessions"),
         Some(1),
         "H10"

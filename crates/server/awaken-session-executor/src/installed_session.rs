@@ -56,10 +56,7 @@ impl InstalledSession {
     // Run after releasing the original slot mutex, before destroying a removed
     // slot. Ordinary removal and exact retirement share these same effects.
     fn cancel_preparation_and_notify_removal(&self) {
-        if let Some(preparation) = &self.realization.staging.preparation {
-            preparation.cancel();
-        }
-        self.realization.execution.changed.notify_waiters();
+        self.realization.end_on_removal();
     }
 }
 
@@ -191,7 +188,7 @@ impl crate::session_realizations::SessionRealizationSource for InstalledSessions
             }
             use awaken_session_realization::environment_owner::SessionEnvironmentOwner;
             if matches!(
-                slot.realization.environment.owner,
+                slot.realization.environment().owner,
                 SessionEnvironmentOwner::Vacant
             ) {
                 (slots.remove(session), None)
@@ -245,11 +242,11 @@ impl crate::session_realizations::SessionRealizationSource for InstalledSessions
             slot.realization
                 .validate_preparation_publication(asserted)?;
             slot.replace_frozen_with(|next| next.workspace = Some(workspace.to_owned()));
-            slot.realization.staging.resources = compiled.staged;
-            slot.realization.staging.memory_bindings = compiled.memory_bindings;
-            slot.realization.staging.memory = None;
-            slot.realization.staging.skills = Some(versions);
-            slot.realization.staging.effect_key = Some(effect_key);
+            slot.realization.staging_mut().resources = compiled.staged;
+            slot.realization.staging_mut().memory_bindings = compiled.memory_bindings;
+            slot.realization.staging_mut().memory = None;
+            slot.realization.staging_mut().skills = Some(versions);
+            slot.realization.staging_mut().effect_key = Some(effect_key);
             Ok::<_, RealizationError>(())
         })
         .map_err(|_| RealizationLock::InstalledSessions)?
@@ -385,7 +382,7 @@ impl InstalledSessions {
             .lock()
             .expect("session runtime slots mutex poisoned")
             .values()
-            .filter_map(|slot| slot.realization.environment.owner.execution_environment())
+            .filter_map(|slot| slot.realization.environment().owner.execution_environment())
             .filter(|environment| environment.scoped_execution().is_some())
             .cloned()
             .collect()
@@ -397,7 +394,7 @@ impl InstalledSessions {
         &self.slots
     }
 
-    /// The realizer's view of these Sessions.
+    /// The realization executor's view of these Sessions.
     pub(crate) fn realizations(
         self: &Arc<Self>,
     ) -> crate::session_realizations::SessionRealizations {
@@ -414,7 +411,7 @@ impl InstalledSessions {
     ) -> Option<ClosedSessionRealization> {
         self.modify(session, |slot| {
             if expected.is_some_and(|(_, realization)| {
-                !Arc::ptr_eq(&slot.realization.execution.phase, realization)
+                !Arc::ptr_eq(&slot.realization.execution().phase, realization)
             }) {
                 return None;
             }
@@ -573,7 +570,7 @@ impl InstalledSessions {
             .iter()
             .filter_map(|(session_id, slot)| {
                 slot.realization
-                    .execution
+                    .execution()
                     .authority
                     .proof()
                     .cloned()

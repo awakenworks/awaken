@@ -90,8 +90,8 @@ async fn mount_projection_reads_current_resource_and_frozen_inputs_without_retai
     staging
         .sessions()
         .update_realization(thread, |r| {
-            r.staging.resources.mounts = vec![resource.clone(), resource_memory.clone()];
-            r.staging.content_delivery = Some(ManagedContentDelivery::ManagedFilesystem);
+            r.staging_mut().resources.mounts = vec![resource.clone(), resource_memory.clone()];
+            r.staging_mut().content_delivery = Some(ManagedContentDelivery::ManagedFilesystem);
         })
         .expect("installed Sessions");
     assert_eq!(
@@ -109,7 +109,7 @@ async fn mount_projection_reads_current_resource_and_frozen_inputs_without_retai
     staging
         .sessions()
         .update_realization(thread, |r| {
-            r.staging.content_delivery = Some(ManagedContentDelivery::SemanticTools);
+            r.staging_mut().content_delivery = Some(ManagedContentDelivery::SemanticTools);
         })
         .expect("installed Sessions");
     assert_eq!(
@@ -136,7 +136,7 @@ async fn mount_projection_reads_current_resource_and_frozen_inputs_without_retai
     staging
         .sessions()
         .update_realization(thread, |r| {
-            r.staging.resources.mounts = vec![replacement.clone()]
+            r.staging_mut().resources.mounts = vec![replacement.clone()]
         })
         .expect("installed Sessions");
     assert_eq!(

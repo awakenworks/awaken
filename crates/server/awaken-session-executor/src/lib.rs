@@ -327,7 +327,7 @@ impl awaken_session_execution_contract::RealizationRuntime for ManagedHost {
             .authorize_worker_effect(|| {
                 Ok::<_, crate::realization_error::RealizationError>(realizations
             .modify_realization(thread, |r| {
-                let current = r.execution.authority.lease().cloned().ok_or_else(missing)?;
+                let current = r.execution().authority.lease().cloned().ok_or_else(missing)?;
                 if !r.renew_lease(&current, lease) {
                     return Err(RunError::classified(
                         "session_realization_lease_conflict",

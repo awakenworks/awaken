@@ -1,7 +1,7 @@
 // @formal surface requirement=session.lifecycle.session_state
 // @formal reason: Installers of the Session environment providers the Session lifecycle realizes through;
 // @formal reason: classified against its product requirement; this link is not a formal-proof claim.
-//! The sandbox providers the Session realizer realizes through: the
+//! The sandbox providers the realization executor realizes Sessions through: the
 //! Session-owned environment provider, the trusted-host BackendOwned provider,
 //! deliberately fresh housekeeping sandboxes, checkpoint custody, CacheVolume
 //! preparation, and the Memory mount adapter every provider shares.
