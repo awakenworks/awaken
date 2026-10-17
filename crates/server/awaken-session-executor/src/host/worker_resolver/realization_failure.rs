@@ -63,20 +63,22 @@ mod tests {
         // class); C2 the path that observes it: P1 the realization driver
         // (synchronizer -> RunError -> FailSessionRealization + drive error)
         // or P2 the claim resolver (HostError -> map_admission_error).
-        // Effects: the claim outcome (the dispatch pool defers every
-        // non-terminal outcome request-locally with the claim's backoff and
-        // keeps its retry budget; `absorb` settles the Run), and the
-        // FailSessionRealization report, which decides the Session state
-        // (session-application `failure_budget` table):
+        // Effects: the claim outcome (with the claim's backoff the dispatch
+        // pool returns a `relinquish` through `retry_claim`, spending one
+        // dispatch attempt, and a `defer` through `defer_claim`, keeping the
+        // budget; `absorb` settles the Run), and the FailSessionRealization
+        // report, which decides the Session state (session-application
+        // `failure_budget` table):
         // | Rule | class | claim (P1 = P2) | report (retryable, capacity) | Session state | Session budget consumed? | dispatch budget consumed? |
-        // | X1 | Transient: NotReady/Transport/Timeout/Backend | relinquish (request-local defer) | (true, false) | Preparing; ActivationFailed once the budget is spent | yes, one attempt | no |
+        // | X1 | Transient: NotReady/Transport/Timeout/Backend | relinquish (retry_claim) | (true, false) | Preparing; ActivationFailed once the budget is spent | yes, one attempt | yes, one attempt; Ended(Indeterminate) once spent |
         // | X2 | CapacityUnavailable | defer (request-local) | (true, true) | Preparing, never ActivationFailed | no, attempt refunded | no |
         // | X3 | Permanent: NotFound/Gone/Unauthorized/FenceRejected/Invalid/Unsupported/Conflict | absorb (TerminalResolution) | (false, false) | ActivationFailed | n/a (absorbing) | n/a (Run settled) |
         // Session-state and budget columns are proven on the durable aggregate by
         // session-application `capacity_budget` and the contract's
         // `capacity_failures_retry_without_consuming_and_others_keep_the_budget`;
-        // the dispatch column by the pool's ClaimDeferred path (defer_claim keeps
-        // attempt_count, run_ingress obligations).
+        // the dispatch column by the pool's `Error::claim_release` table and
+        // the dispatch conformance rule
+        // `failed_attempts_spend_the_budget_and_exhaust_like_a_crash`.
         use awaken_provisioning_contract::SandboxError;
         let rows = [
             (

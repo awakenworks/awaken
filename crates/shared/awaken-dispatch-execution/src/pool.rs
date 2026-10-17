@@ -1300,7 +1300,14 @@ async fn claim_and_drive<S: Dispatch + 'static>(
                     .await
             }
             Err(error) => {
-                defer_failed_claim(store.as_ref(), &claim, retry_after_ms).await?;
+                release_failed_claim(
+                    store.as_ref(),
+                    &claim,
+                    retry_after_ms,
+                    admission.max_attempts,
+                    &error,
+                )
+                .await?;
                 return Err(ClaimAndDriveFailure::ClaimDeferred(error, retry_after));
             }
         }
@@ -1308,12 +1315,20 @@ async fn claim_and_drive<S: Dispatch + 'static>(
     let settled = match settled {
         Ok(settled) => settled,
         Err(error) => {
-            // Exact-claim deferral releases the mutation lease and retains an
+            // Exact-claim release returns the mutation lease and retains an
             // independent physical-attempt fence. Conflict, pending Session
-            // observation, and other claim-local failures therefore share one
-            // retry path; a stale claim is fenced by the same store operation.
+            // observation, and other claim-local failures defer; a failed
+            // attempt spends one attempt of the retry budget. A stale claim is
+            // fenced by the same store operation.
             let request_local = claim_failure_is_request_local(&error);
-            defer_failed_claim(store.as_ref(), &claim, retry_after_ms).await?;
+            release_failed_claim(
+                store.as_ref(),
+                &claim,
+                retry_after_ms,
+                admission.max_attempts,
+                &error,
+            )
+            .await?;
             return Err(if request_local {
                 ClaimAndDriveFailure::ClaimDeferred(error, retry_after)
             } else {
@@ -1328,6 +1343,36 @@ async fn claim_and_drive<S: Dispatch + 'static>(
         sink.settled(&run_id, &state);
     }
     Ok(true)
+}
+
+/// Return one claim whose attempt could not settle, as its failure class
+/// decides: a deferral keeps the retry budget, a failed attempt spends one
+/// attempt and the one that exhausts it is terminalized like a crash.
+async fn release_failed_claim<S: awaken_dispatch_contract::DispatchExecution + 'static>(
+    store: &S,
+    claim: &crate::RunClaim,
+    retry_after_ms: u64,
+    max_attempts: u64,
+    error: &Error,
+) -> Result<(), Error> {
+    match error.claim_release() {
+        crate::error::ClaimRelease::Defer => defer_failed_claim(store, claim, retry_after_ms).await,
+        crate::error::ClaimRelease::Retry => {
+            let outcome = store
+                .retry_claim(claim, retry_after_ms, max_attempts)
+                .await?;
+            tracing::debug!(
+                run_id = %claim.run_id.0,
+                owner = %claim.owner,
+                epoch = claim.epoch,
+                retry_after_ms,
+                max_attempts,
+                applied = outcome == crate::SettleOutcome::Applied,
+                "returned the failed dispatch claim within its retry budget"
+            );
+            Ok(())
+        }
+    }
 }
 
 pub(crate) async fn defer_failed_claim<

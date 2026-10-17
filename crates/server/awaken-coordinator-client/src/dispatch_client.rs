@@ -81,6 +81,10 @@ struct RelinquishCommand<'a> {
     claim: &'a RunClaim,
     #[serde(skip_serializing_if = "Option::is_none")]
     retry_after_ms: Option<u64>,
+    /// The released claim ended a failed attempt, which spends one attempt of
+    /// the Coordinator's retry budget.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    attempt_failed: bool,
     identity: &'a WorkerIdentity,
 }
 
@@ -787,6 +791,7 @@ impl awaken_dispatch_contract::DispatchExecution for HttpDispatchQueue {
                 &RelinquishCommand {
                     claim,
                     retry_after_ms: None,
+                    attempt_failed: false,
                     identity: &self.worker_identity,
                 },
                 self.worker_id(),
@@ -809,27 +814,18 @@ impl awaken_dispatch_contract::DispatchExecution for HttpDispatchQueue {
         claim: &RunClaim,
         retry_after_ms: u64,
     ) -> Result<SettleOutcome, DispatchError> {
-        let v = self
-            .post_idempotent(
-                "/v1/worker/dispatch/relinquish",
-                &RelinquishCommand {
-                    claim,
-                    retry_after_ms: Some(retry_after_ms),
-                    identity: &self.worker_identity,
-                },
-                self.worker_id(),
-            )
-            .await?;
-        Ok(
-            if v.get("relinquished")
-                .and_then(|value| value.as_bool())
-                .unwrap_or(false)
-            {
-                SettleOutcome::Applied
-            } else {
-                SettleOutcome::Fenced
-            },
-        )
+        self.release_after(claim, retry_after_ms, false).await
+    }
+
+    async fn retry_claim(
+        &self,
+        claim: &RunClaim,
+        retry_after_ms: u64,
+        _max_attempts: u64,
+    ) -> Result<SettleOutcome, DispatchError> {
+        // The retry limit is control-side policy, as for retry exhaustion: the
+        // Coordinator spends the attempt against its own `max_attempts`.
+        self.release_after(claim, retry_after_ms, true).await
     }
 }
 
@@ -1010,5 +1006,37 @@ impl HttpDispatchQueue {
             self.worker_id(),
         )
         .await
+    }
+
+    /// Release one exact claim behind the store's retry deadline; a failed
+    /// attempt also spends one attempt of the Coordinator's retry budget.
+    async fn release_after(
+        &self,
+        claim: &RunClaim,
+        retry_after_ms: u64,
+        attempt_failed: bool,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let v = self
+            .post_idempotent(
+                "/v1/worker/dispatch/relinquish",
+                &RelinquishCommand {
+                    claim,
+                    retry_after_ms: Some(retry_after_ms),
+                    attempt_failed,
+                    identity: &self.worker_identity,
+                },
+                self.worker_id(),
+            )
+            .await?;
+        Ok(
+            if v.get("relinquished")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+            {
+                SettleOutcome::Applied
+            } else {
+                SettleOutcome::Fenced
+            },
+        )
     }
 }

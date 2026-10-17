@@ -202,7 +202,16 @@ fn each_failure_class_has_one_disposition_on_the_synchronizer_and_driver_paths()
     // | D10 Repository binding | by verifier class; a concurrent authority change retries |
     // Retry consumes one attempt of the caller's budget (the report is
     // retryable and not a capacity refusal); its exhaustion is the contract's
-    // `conflict_and_unclassified_internal_retry_until_the_realization_budget_is_spent`.
+    // `conflict_and_unclassified_internal_retry_until_the_realization_budget_is_spent`
+    // and, on the claim, the dispatch retry budget (`retry_claim`, ADR-0015).
+    // D5 pending stays Retry, not Defer: Defer is only for a wait whose owner
+    // guarantees it resolves or expires, and no owner holds a deadline over
+    // these states. They are observations of provider or evidence state (a
+    // failed or indeterminate observation, a sandbox the provider still
+    // reports Provisioning, a closed candidate). A Pod left Pending by a dead
+    // creator, or a provider that keeps failing to answer, never settles on
+    // its own; the realization lease expires for the claimant, not for the
+    // observed sandbox.
     for (rule, error, expected) in decision_table() {
         let code = error.code().into_owned();
         assert_eq!(error.disposition(), expected, "{rule} P1 {error}");

@@ -7,7 +7,8 @@ use super::{execution_error, terminal_resolution_error};
 pub enum SessionRealizationWorkerEffect {
     /// Keep the claim parked while the Session Work slot is occupied.
     Defer,
-    /// Relinquish the claim through the retryable execution-failure path.
+    /// Relinquish the claim through the failed-attempt path, which spends one
+    /// attempt of the dispatch retry budget (ADR-0015).
     Relinquish,
     /// Settle the still-current claim with an absorbing Run failure.
     Absorb,

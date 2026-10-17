@@ -336,7 +336,7 @@ impl awaken_dispatch_contract::DispatchExecution for MemoryDispatchStore {
     async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
-        release_claim(&mut state, claim, None)
+        release_claim(&mut state, claim, None, ReleasedAttempt::Unspent)
     }
 
     async fn defer_claim(
@@ -353,6 +353,26 @@ impl awaken_dispatch_contract::DispatchExecution for MemoryDispatchStore {
                 self.clock.now_ms(),
                 retry_after_ms,
             )),
+            ReleasedAttempt::Unspent,
+        )
+    }
+
+    async fn retry_claim(
+        &self,
+        claim: &RunClaim,
+        retry_after_ms: u64,
+        max_attempts: u64,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let _authority = self.authority.lock().await;
+        let mut state = lock(&self.state)?;
+        release_claim(
+            &mut state,
+            claim,
+            Some(crate::clock::deadline_millis(
+                self.clock.now_ms(),
+                retry_after_ms,
+            )),
+            ReleasedAttempt::Failed { max_attempts },
         )
     }
 }

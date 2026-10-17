@@ -466,6 +466,7 @@ impl PostgresDispatchStore {
     }
 }
 
+include!("postgres/release_claim.rs");
 include!("postgres/dispatch_queue.rs");
 include!("postgres/summaries.rs");
 include!("postgres/message_ports.rs");

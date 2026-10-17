@@ -8,6 +8,7 @@
 // @formal entrypoint remote_worker.single_live_claim_owner
 // @formal entrypoint remote_worker.stale_epoch_never_mutates_truth
 // @formal entrypoint run_ingress.dispatch_transition_is_claim_fenced_exact_terminal_and_cancel_absorbing
+// @formal entrypoint run_ingress.failed_attempt_release_spends_one_attempt_and_exhausts_through_retry_exhaustion
 // @formal entrypoint run_ingress.relinquish_requires_exact_current_claim_and_preserves_retry_budget
 // @formal entrypoint run_ingress.renewal_projects_cancel_only_to_exact_physical_attempt
 // @formal entrypoint run_ingress.request_local_resolution_retry_honors_persisted_deadline
@@ -65,8 +66,8 @@ use crate::{
 };
 use awaken_dispatch_contract::{
     CancelTransition, CommitEpochAdmission, DispatchTransition, DispatchTransitionError,
-    GuardedTransition, PhysicalAttemptSlot, PhysicalAttemptTransition, RelinquishTransition,
-    RunDispatch, classify_commit_epoch_admission,
+    GuardedTransition, PhysicalAttemptSlot, PhysicalAttemptTransition, ReleasedAttempt,
+    RelinquishTransition, RunDispatch, classify_commit_epoch_admission,
 };
 
 mod credential_binding;
@@ -762,6 +763,7 @@ fn release_claim(
     state: &mut State,
     claim: &RunClaim,
     retry_not_before_ms: Option<u64>,
+    attempt: ReleasedAttempt,
 ) -> Result<SettleOutcome, DispatchError> {
     let transition = state
         .rows
@@ -779,6 +781,7 @@ fn release_claim(
                     .is_some_and(|lease| lease.owner() == claim.owner),
                 slot,
                 row.attempt_count,
+                attempt,
             )
         });
     match transition {

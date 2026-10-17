@@ -4,6 +4,7 @@
 // @formal entrypoint remote_worker.pending_signal_is_consumed_by_commit
 // @formal entrypoint remote_worker.single_live_claim_owner
 // @formal entrypoint run_ingress.dispatch_transition_is_claim_fenced_exact_terminal_and_cancel_absorbing
+// @formal entrypoint run_ingress.failed_attempt_release_spends_one_attempt_and_exhausts_through_retry_exhaustion
 // @formal entrypoint run_ingress.relinquish_requires_exact_current_claim_and_preserves_retry_budget
 // @formal entrypoint run_ingress.renewal_projects_cancel_only_to_exact_physical_attempt
 // @formal entrypoint run_ingress.request_local_resolution_retry_honors_persisted_deadline
@@ -872,7 +873,15 @@ impl awaken_dispatch_contract::DispatchExecution for SqliteDispatchStore {
         let claim = claim.clone();
         let now_ms = self.clock.now_ms();
         let (_authority, mut conn) = self.with_conn().await?;
-        release_claim_transaction(&mut conn, NS, claim, None, now_ms).await
+        release_claim_transaction(
+            &mut conn,
+            NS,
+            claim,
+            None,
+            awaken_dispatch_contract::ReleasedAttempt::Unspent,
+            now_ms,
+        )
+        .await
     }
 
     async fn defer_claim(
@@ -887,7 +896,39 @@ impl awaken_dispatch_contract::DispatchExecution for SqliteDispatchStore {
             crate::clock::deadline_millis(now_ms, retry_after_ms),
         )?;
         let (_authority, mut conn) = self.with_conn().await?;
-        release_claim_transaction(&mut conn, NS, claim, Some(retry_not_before), now_ms).await
+        release_claim_transaction(
+            &mut conn,
+            NS,
+            claim,
+            Some(retry_not_before),
+            awaken_dispatch_contract::ReleasedAttempt::Unspent,
+            now_ms,
+        )
+        .await
+    }
+
+    async fn retry_claim(
+        &self,
+        claim: &RunClaim,
+        retry_after_ms: u64,
+        max_attempts: u64,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let claim = claim.clone();
+        let now_ms = self.clock.now_ms();
+        let retry_not_before = durable_i64(
+            "dispatch failed-attempt retry deadline",
+            crate::clock::deadline_millis(now_ms, retry_after_ms),
+        )?;
+        let (_authority, mut conn) = self.with_conn().await?;
+        release_claim_transaction(
+            &mut conn,
+            NS,
+            claim,
+            Some(retry_not_before),
+            awaken_dispatch_contract::ReleasedAttempt::Failed { max_attempts },
+            now_ms,
+        )
+        .await
     }
 }
 

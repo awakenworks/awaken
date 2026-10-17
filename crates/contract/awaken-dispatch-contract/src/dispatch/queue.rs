@@ -1,6 +1,7 @@
 // @formal entrypoint ingress.pending_input_exactly_once
 // @formal entrypoint ingress.settle_fence
 // @formal entrypoint remote_worker.maintenance_scheduler_respects_adapter_ownership
+// @formal entrypoint run_ingress.failed_attempt_release_spends_one_attempt_and_exhausts_through_retry_exhaustion
 // @formal entrypoint run_ingress.relinquish_requires_exact_current_claim_and_preserves_retry_budget
 // @formal entrypoint session_run.recovery_claim_is_admission_only
 // @formal entrypoint session_run.reservation_precedes_activity
@@ -314,7 +315,10 @@ pub trait DispatchExecution: Send + Sync {
     /// Return one exact current claim to `pending` and make it ineligible for
     /// ordinary claim until the store's clock reaches `retry_after_ms` from now.
     ///
-    /// This is a request-local resolution retry, not a Worker-wide failure gate.
+    /// This is a request-local resolution retry, not a Worker-wide failure gate,
+    /// and not a failed attempt: the claim waited on capacity or on a busy
+    /// subordinate authority. A failed attempt uses
+    /// [`retry_claim`](Self::retry_claim) instead.
     /// Implementations preserve request bytes, priority, retry budget, pending
     /// input and any independent physical-attempt slot. Cancellation and terminal
     /// recovery must bypass the delay. The store owns both the current time and
@@ -323,6 +327,27 @@ pub trait DispatchExecution: Send + Sync {
         &self,
         _claim: &RunClaim,
         _retry_after_ms: u64,
+    ) -> Result<SettleOutcome, DispatchError>;
+
+    /// Return one exact current claim after a classified failed attempt,
+    /// spending one attempt of the dispatch retry budget (ADR-0015 D1).
+    ///
+    /// The fence, physical-slot rule, retry deadline and preserved request,
+    /// priority and pending input are those of
+    /// [`defer_claim`](Self::defer_claim). Below `max_attempts` the row
+    /// returns to `pending` with one more attempt. The attempt that reaches
+    /// `max_attempts` leaves the row `running` under an already expired lease,
+    /// so [`DispatchClaims::claim_retry_exhausted`] terminalizes it exactly as
+    /// it does a crashed attempt; the retry deadline still holds back ordinary
+    /// claims. Behind a predecessor's occupied slot the row stays in recovery,
+    /// and that recovery re-claim spends the attempt. `max_attempts` is the
+    /// caller's retry policy, as for `claim_retry_exhausted`; a remote
+    /// transport applies its Coordinator's own policy instead.
+    async fn retry_claim(
+        &self,
+        _claim: &RunClaim,
+        _retry_after_ms: u64,
+        _max_attempts: u64,
     ) -> Result<SettleOutcome, DispatchError>;
 
     /// Persist secret-free proof that the exact claim-epoch credential binding

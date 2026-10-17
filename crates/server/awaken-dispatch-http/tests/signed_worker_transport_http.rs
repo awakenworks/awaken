@@ -2716,6 +2716,50 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             .applied(),
         "T22"
     );
+    // T23: a failed attempt spends one attempt of the Coordinator's retry
+    // budget (default 5); the Worker-supplied limit is ignored, so a limit of
+    // one cannot exhaust the Run from the Worker side.
+    let failed_claim = awaken_dispatch::RunClaim::from(&replacement.lease);
+    assert!(
+        queue
+            .retry_claim(&failed_claim, 0, 1)
+            .await
+            .expect("signed failed-attempt release")
+            .applied(),
+        "T23"
+    );
+    let attempts = |dispatch: Arc<MemoryDispatchStore>, run: RunId| async move {
+        let row = dispatch
+            .list_dispatches()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|row| row.run_id == run)
+            .expect("T23 the Run is retained");
+        (row.state, row.attempt_count)
+    };
+    assert_eq!(
+        attempts(dispatch.clone(), failed_claim.run_id.clone()).await,
+        (awaken_dispatch::DispatchState::Pending, 1),
+        "T23 one attempt spent against the Coordinator's limit"
+    );
+    let replacement = queue
+        .claim(
+            &registered.snapshot.identity.lease_owner(),
+            30_000,
+            &Default::default(),
+        )
+        .await
+        .expect("reclaim the retried Run")
+        .expect("the retried Run is due after its zero delay");
+    assert!(
+        !queue
+            .retry_claim(&failed_claim, 0, 1)
+            .await
+            .expect("stale failed-attempt release is a fenced no-op")
+            .applied(),
+        "T23"
+    );
     let replacement_claim = awaken_dispatch::RunClaim::from(&replacement.lease);
     assert!(
         queue
@@ -2724,6 +2768,11 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             .expect("signed request-local deferral")
             .applied(),
         "the authenticated internal Worker transport preserves request-local retry"
+    );
+    assert_eq!(
+        attempts(dispatch.clone(), replacement_claim.run_id.clone()).await,
+        (awaken_dispatch::DispatchState::Pending, 1),
+        "T23 a deferral keeps the budget"
     );
 
     // FMECA T21: graceful restart can begin after the committed answer becomes
