@@ -47,31 +47,6 @@ pub struct SessionRealizationRevocation {
     )>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RenewalFailureDisposition {
-    /// Control proves that this exact local owner may no longer execute.
-    RevokeImmediately,
-    /// The old lease remains the proof; retry until its durable expiry.
-    RetryWhileLeaseLive,
-}
-
-fn realization_renewal_failure_disposition(
-    error: &awaken_session_realization_contract::SessionRealizationControlFailure,
-) -> RenewalFailureDisposition {
-    if error.proves_current_realization_cannot_continue() {
-        RenewalFailureDisposition::RevokeImmediately
-    } else {
-        RenewalFailureDisposition::RetryWhileLeaseLive
-    }
-}
-
-fn failed_realization_invalidates_projection(
-    current: &crate::session_resource::SessionRealizationLease,
-    failed: &crate::session_resource::SessionRealizationLease,
-) -> bool {
-    awaken_session_realization_contract::realization_lease_generation_authorizes(current, failed)
-}
-
 fn terminal_cleanup_drive_error(
     session_id: &str,
     error: awaken_session_realization_contract::SessionRealizationDriveError,
@@ -109,20 +84,13 @@ fn session_realization_renewal_failure_disposition_is_total_exact_and_fail_close
     // this consumer. Terminal Control truth plus explicit StaleOwnership prove
     // loss; NotReady, Conflict, and Unavailable retain the retry path.
     let expected_retirement = matches!(selector, 0 | 2 | 3 | 4 | 6);
-    let disposition = realization_renewal_failure_disposition(&error);
+    let revokes = error.proves_current_realization_cannot_continue();
 
-    assert_eq!(
-        disposition == RenewalFailureDisposition::RevokeImmediately,
-        expected_retirement
-    );
-    if !expected_retirement {
-        assert_eq!(disposition, RenewalFailureDisposition::RetryWhileLeaseLive);
-    }
+    assert_eq!(revokes, expected_retirement);
 }
 
 #[cfg(test)]
 mod realization_renewal_tests {
-    use super::*;
     use awaken_session_realization_contract::SessionRealizationControlFailure;
 
     #[test]
@@ -137,26 +105,18 @@ mod realization_renewal_tests {
             SessionRealizationControlFailure::Terminal,
             SessionRealizationControlFailure::Invalid("bad target".into()),
         ] {
-            assert_eq!(
-                realization_renewal_failure_disposition(&error),
-                RenewalFailureDisposition::RevokeImmediately
-            );
+            assert!(error.proves_current_realization_cannot_continue());
         }
         for error in [
             SessionRealizationControlFailure::NotReady,
             SessionRealizationControlFailure::Conflict,
             SessionRealizationControlFailure::Unavailable("network unavailable".into()),
         ] {
-            assert_eq!(
-                realization_renewal_failure_disposition(&error),
-                RenewalFailureDisposition::RetryWhileLeaseLive
-            );
+            assert!(!error.proves_current_realization_cannot_continue());
         }
-        assert_eq!(
-            realization_renewal_failure_disposition(
-                &SessionRealizationControlFailure::StaleOwnership
-            ),
-            RenewalFailureDisposition::RevokeImmediately
+        assert!(
+            SessionRealizationControlFailure::StaleOwnership
+                .proves_current_realization_cannot_continue()
         );
     }
 
@@ -209,7 +169,9 @@ mod realization_renewal_tests {
             ),
         ] {
             assert_eq!(
-                failed_realization_invalidates_projection(&current, &failed),
+                awaken_session_realization_contract::realization_lease_generation_authorizes(
+                    &current, &failed
+                ),
                 expected,
                 "{rule}"
             );
@@ -253,11 +215,11 @@ impl crate::SharedHost {
     ) {
         let realizations = self.installed_sessions.realizations();
         realizations.modify_realization(session_id, |r| {
-            if r.execution
-                .authority
-                .lease()
-                .is_some_and(|current| failed_realization_invalidates_projection(current, failed))
-            {
+            if r.execution.authority.lease().is_some_and(|current| {
+                awaken_session_realization_contract::realization_lease_generation_authorizes(
+                    current, failed,
+                )
+            }) {
                 r.close_authority(None);
             }
         });

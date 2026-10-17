@@ -2,7 +2,6 @@
 // @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 //! Lease-only scheduling and response application for the canonical Session slot.
 
-use super::{RenewalFailureDisposition, realization_renewal_failure_disposition};
 use awaken_lease_contract::authority::AuthorityLeaseTiming;
 use awaken_session_realization_contract::ObservedSessionRealizationLease;
 use awaken_session_realization_contract::SessionRealizationControl as _;
@@ -64,11 +63,11 @@ impl crate::SharedHost {
             return Ok(false);
         };
         let renewal: Result<ObservedSessionRealizationLease, (crate::HostError, bool)> = async {
-            let control_failure = |error| {
-                let revoke = realization_renewal_failure_disposition(&error)
-                    == RenewalFailureDisposition::RevokeImmediately;
-                (crate::HostError::internal(error.to_string()), revoke)
-            };
+            let control_failure =
+                |error: awaken_session_realization_contract::SessionRealizationControlFailure| {
+                    let revoke = error.proves_current_realization_cannot_continue();
+                    (crate::HostError::internal(error.to_string()), revoke)
+                };
             let request_started = awaken_authority_clock::authority_proof_started()
                 .map_err(|error| (crate::HostError::internal(error.to_string()), true))?;
             control
