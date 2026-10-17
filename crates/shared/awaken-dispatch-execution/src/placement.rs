@@ -191,10 +191,15 @@ pub fn remote_worker_placement(
     placement.required_credentials = required_credentials;
     placement.required_acp_capabilities = worker_acp_capabilities(models);
     placement.required_sandbox_tool_recovery =
-        awaken_ext_builtin_tools::selected_hand_recovery_modes(&models.tool_descriptors)
-            .into_iter()
-            .filter(|mode| *mode != awaken_tool_contract::tool::ToolRecoveryMode::NeverReplay)
-            .collect();
+        awaken_session_configuration_contract::hand_recovery_modes(
+            models
+                .tool_descriptors
+                .iter()
+                .map(|tool| (tool.id.as_str(), &tool.recovery_policy)),
+        )
+        .into_iter()
+        .filter(|mode| *mode != awaken_tool_contract::tool::ToolRecoveryMode::NeverReplay)
+        .collect();
     let requires_local_environment = requires_local_environment(models);
     let requires_opaque_process =
         awaken_session_realization_contract::model_candidates_require_opaque_process(
@@ -251,8 +256,8 @@ fn apply_session_physical_placement(
         } else {
             environment.map_or_else(
                 || {
-                    awaken_session_realization::provisioning::session_sandbox_projection(
-                        &awaken_session_realization::provisioning::default_session_sandbox_spec(
+                    awaken_provisioning_contract::session_sandbox_projection(
+                        &awaken_session_configuration_contract::environment_projection::default_session_sandbox_spec(
                             "worker-placement",
                         ),
                         has_repository,
@@ -261,7 +266,7 @@ fn apply_session_physical_placement(
                     .1
                 },
                 |environment| {
-                    awaken_session_realization::provisioning::sandbox_requirements(
+                    awaken_session_configuration_contract::environment_projection::sandbox_requirements(
                         environment,
                         has_repository,
                         requires_opaque_process,
@@ -275,7 +280,7 @@ fn apply_session_physical_placement(
         }
         if let Some(environment) = environment {
             placement.resources =
-                awaken_session_realization::provisioning::sandbox_resource_requests(environment);
+                awaken_session_configuration_contract::environment_projection::sandbox_resource_requests(environment);
         }
     }
     if resources.is_some() {
@@ -400,7 +405,7 @@ mod preparation_tests {
             let required = session_preparation_placement(&environment, &resources, opaque);
             assert_eq!(
                 required.sandbox,
-                awaken_session_realization::provisioning::sandbox_requirements(
+                awaken_session_configuration_contract::environment_projection::sandbox_requirements(
                     &environment,
                     false,
                     opaque

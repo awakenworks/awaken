@@ -9,6 +9,7 @@ mod agent_config;
 mod application_origin;
 mod baseline;
 mod dispatched_runtime;
+pub mod environment_projection;
 mod execution_context;
 pub mod mcp;
 mod mcp_probe;
@@ -29,8 +30,9 @@ use {crate::mcp::McpAttachmentOrigin, awaken_agent_contract::McpTarget};
 pub use agent_config::{
     AGENT_TOOLSET_TOOL_IDS, AgentPermissionPreset, AgentPermissionPresetTarget,
     BuiltinToolsetMember, agent_toolset_members, apply_agent_permission_preset,
-    ensure_typed_mcp_toolset_policies, is_agent_toolset_member, is_controlled_modification_member,
-    preserve_runtime_agent_overrides, toolset_default_policy, validate_mcp_toolset_pairing,
+    ensure_typed_mcp_toolset_policies, hand_recovery_modes, is_agent_toolset_member,
+    is_controlled_modification_member, is_hand_member, preserve_runtime_agent_overrides,
+    toolset_default_policy, validate_mcp_toolset_pairing,
 };
 pub use application_origin::{ApplicationOriginBinding, ApplicationOriginBindingError};
 pub use baseline::{

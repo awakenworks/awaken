@@ -1908,4 +1908,48 @@ mod tests {
             "a malformed section is rejected before publish"
         );
     }
+
+    #[test]
+    fn builtin_hand_catalog_is_the_versioned_hand_toolset() {
+        // Composition of the built-in tool catalog with the versioned Hand
+        // membership placement reads. C1 the descriptor belongs to the Hand
+        // catalog; C2 another canonical family; C3 its policy is durable.
+        // R1 C1+C3 => DurableRequest is projected; R2 C2+C3 => no Hand mode;
+        // R3 the catalog's Hand ids are exactly the versioned Hand members.
+        use awaken_tool_contract::tool::{ToolRecoveryMode, ToolRecoveryPolicy};
+        let builtins = builtin_tools();
+        let catalog = builtins
+            .iter()
+            .filter(|tool| tool.toolset() == Toolset::Hand)
+            .map(|tool| tool.descriptor().id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(
+            catalog
+                .iter()
+                .all(|id| awaken_session_configuration_contract::is_hand_member(id))
+                && catalog.len() == 6,
+            "R3 {catalog:?}"
+        );
+        let durable = |toolset: Toolset| {
+            builtins
+                .iter()
+                .find(|tool| tool.toolset() == toolset)
+                .expect("canonical family is non-empty")
+                .descriptor()
+                .clone()
+                .with_recovery(ToolRecoveryPolicy::durable_request())
+        };
+        let selected = |tool: &ToolDescriptor| {
+            awaken_session_configuration_contract::hand_recovery_modes([(
+                tool.id.as_str(),
+                &tool.recovery_policy,
+            )])
+        };
+        assert_eq!(
+            selected(&durable(Toolset::Hand)),
+            [ToolRecoveryMode::DurableRequest].into_iter().collect(),
+            "R1"
+        );
+        assert!(selected(&durable(Toolset::Delegation)).is_empty(), "R2");
+    }
 }

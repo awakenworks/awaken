@@ -18,6 +18,7 @@ pub(crate) mod attempt_context;
 mod realization_renewal;
 mod resource_transition;
 
+use awaken_session_configuration_contract::environment_projection;
 use std::sync::Arc;
 
 use futures_util::StreamExt as _;
@@ -652,7 +653,7 @@ impl crate::SharedHost {
         thread: &str,
         init: &awaken_session_configuration_contract::SessionInit,
     ) -> Result<(), crate::HostError> {
-        let environment = crate::provisioning::project_environment(&init.environment);
+        let environment = environment_projection::project_environment(&init.environment);
         self.installed_sessions.update(thread, |slot| {
             slot.inputs.validate_environment(thread, &environment)?;
             slot.replace_frozen_with(|next| next.lower_session_init(init, environment));
@@ -730,7 +731,7 @@ impl crate::SharedHost {
             .map_err(|error| crate::HostError::internal(error.to_string()))?;
         let baseline = projection.baseline.clone();
         let init = projection.session_init();
-        let environment_projection = crate::provisioning::project_environment(&init.environment);
+        let environment_projection = environment_projection::project_environment(&init.environment);
         // Complete projection installation owns the Resource suffix lock from
         // the first comparison through publication of every correlated fact.
         // Desired-only staging and physical reconciliation therefore cannot
@@ -1044,7 +1045,7 @@ impl crate::SharedHost {
         thread: &str,
         environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
     ) -> Result<(), crate::HostError> {
-        let projection = crate::provisioning::project_environment(environment);
+        let projection = environment_projection::project_environment(environment);
         self.installed_sessions.update(thread, |slot| {
             slot.inputs.validate_environment(thread, &projection)?;
             slot.replace_frozen_with(|next| next.lower_environment(environment, projection));
@@ -1147,7 +1148,10 @@ mod network_policy_tests {
             credential_realization:
                 awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
         };
-        let projected = crate::provisioning::project_environment(&environment);
+        let projected =
+            awaken_session_configuration_contract::environment_projection::project_environment(
+                &environment,
+            );
         assert_eq!(
             projected.packages.managers,
             [
@@ -1165,7 +1169,10 @@ mod network_policy_tests {
 
         let mut prepared = environment;
         prepared.prepared_image = Some("registry/awaken@sha256:prepared".into());
-        let projected = crate::provisioning::project_environment(&prepared);
+        let projected =
+            awaken_session_configuration_contract::environment_projection::project_environment(
+                &prepared,
+            );
         assert!(projected.packages.is_empty(), "R2");
         assert!(matches!(
             projected.sandbox.and_then(|value| value.environment),

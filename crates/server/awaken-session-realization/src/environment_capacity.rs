@@ -3,6 +3,7 @@
 //! disposal. Every operation enters through the installed Session provider.
 
 use crate::environment_providers::EnvironmentProviders;
+use awaken_session_configuration_contract::environment_projection;
 
 impl EnvironmentProviders {
     /// The exact capacity shape of one Environment under this provider's
@@ -10,9 +11,9 @@ impl EnvironmentProviders {
     fn capacity_projection(
         &self,
         environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
-    ) -> crate::provisioning::EnvironmentCapacityProjection {
+    ) -> environment_projection::EnvironmentCapacityProjection {
         let isolation = self.session_provider.realizer().capabilities();
-        crate::provisioning::environment_capacity_projection(
+        environment_projection::environment_capacity_projection(
             environment,
             isolation.network_isolation,
         )
@@ -34,7 +35,7 @@ impl EnvironmentProviders {
         &self,
         environments: &[awaken_session_configuration_contract::EnvironmentSnapshot],
     ) -> Result<(), awaken_provisioning_contract::SandboxError> {
-        let mut specs = vec![crate::provisioning::default_session_sandbox_spec(
+        let mut specs = vec![environment_projection::default_session_sandbox_spec(
             "image-warmup",
         )];
         specs.extend(
@@ -61,7 +62,7 @@ impl EnvironmentProviders {
         self.session_provider
             .capacity()
             .prewarm(
-                &crate::provisioning::default_session_sandbox_spec("environment-warmup"),
+                &environment_projection::default_session_sandbox_spec("environment-warmup"),
                 target,
             )
             .await
@@ -72,7 +73,7 @@ impl EnvironmentProviders {
         &self,
     ) -> awaken_provisioning_contract::SandboxCapacityShapeId {
         awaken_provisioning_contract::SandboxCapacityShapeId::from_spec(
-            &crate::provisioning::default_session_sandbox_spec("environment-warmup"),
+            &environment_projection::default_session_sandbox_spec("environment-warmup"),
         )
         .expect("default Environment capacity spec is mount-less")
     }
@@ -80,7 +81,7 @@ impl EnvironmentProviders {
     pub async fn discard_default_environment_capacity(&self) {
         self.session_provider
             .capacity()
-            .discard_capacity(&crate::provisioning::default_session_sandbox_spec(
+            .discard_capacity(&environment_projection::default_session_sandbox_spec(
                 "environment-warmup",
             ))
             .await;

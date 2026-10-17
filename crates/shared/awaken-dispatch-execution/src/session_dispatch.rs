@@ -213,7 +213,7 @@ impl<'a> DispatchPreparation<'a> {
             // the frozen network policy. Derive the preference from the same
             // canonical SandboxSpec identity used by Worker pool receipts.
             let preferred_shape =
-                awaken_session_realization::provisioning::environment_capacity_projection(
+                awaken_session_configuration_contract::environment_projection::environment_capacity_projection(
                     &projection.environment,
                     true,
                 )

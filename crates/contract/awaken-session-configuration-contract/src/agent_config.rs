@@ -55,6 +55,16 @@ impl BuiltinToolsetMember {
     pub const fn controlled_modification(self) -> bool {
         matches!(self, Self::Bash | Self::Write | Self::Edit)
     }
+
+    /// Whether the capability executes inside the Session Environment: the
+    /// Hand toolset, whose recovery modes are a Worker claim axis.
+    #[must_use]
+    pub const fn hand(self) -> bool {
+        matches!(
+            self,
+            Self::Bash | Self::Read | Self::Write | Self::Edit | Self::Glob | Self::Grep
+        )
+    }
 }
 
 const AGENT_TOOLSET_MEMBERS: [BuiltinToolsetMember; 8] = [
@@ -144,6 +154,36 @@ pub fn preserve_runtime_agent_overrides(
             overrides: opaque,
         });
     }
+}
+
+/// Whether `name` is a member of the Hand toolset (see [`BuiltinToolsetMember::hand`]).
+#[must_use]
+pub fn is_hand_member(name: &str) -> bool {
+    AGENT_TOOLSET_MEMBERS
+        .iter()
+        .copied()
+        .find(|member| member.as_str() == name)
+        .is_some_and(BuiltinToolsetMember::hand)
+}
+
+/// Recovery modes frozen on the selected Hand tools: the one Hand membership
+/// rule Worker placement and publication admission share. Callers pass every
+/// selected `(tool id, recovery policy)` pair and keep their own policy
+/// decision over the result.
+#[must_use]
+pub fn hand_recovery_modes<'a>(
+    selected: impl IntoIterator<
+        Item = (
+            &'a str,
+            &'a awaken_runtime_contract::tool::ToolRecoveryPolicy,
+        ),
+    >,
+) -> std::collections::BTreeSet<awaken_runtime_contract::tool::ToolRecoveryMode> {
+    selected
+        .into_iter()
+        .filter(|(id, _)| is_hand_member(id))
+        .map(|(_, policy)| policy.mode())
+        .collect()
 }
 
 #[must_use]
@@ -645,6 +685,46 @@ mod tests {
             (tool_ids, toolsets, plugin_ids, plugin_config),
             stable,
             "E5"
+        );
+    }
+
+    #[test]
+    fn hand_recovery_projects_only_the_selected_hand_members() {
+        // Causes: C1 the selected tool is a Hand member (one of the six
+        // Environment-executed capabilities); C2 its policy is durable.
+        // Effects: R1 C1+C2 projects DurableRequest; R2 a non-Hand member
+        // (web_fetch) or an unknown id with the same policy projects nothing;
+        // R3 a Hand member keeps its own NeverReplay mode for the caller to
+        // filter. This single projection keeps placement and publication
+        // admission from maintaining parallel concrete tool-id filters.
+        use awaken_runtime_contract::tool::{ToolRecoveryMode, ToolRecoveryPolicy};
+        let durable = ToolRecoveryPolicy::durable_request();
+        let never = ToolRecoveryPolicy::default();
+        let hand = AGENT_TOOLSET_MEMBERS
+            .iter()
+            .filter(|member| member.hand())
+            .map(|member| member.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            hand,
+            ["bash", "edit", "glob", "grep", "read", "write"]
+                .into_iter()
+                .collect(),
+            "the Hand toolset"
+        );
+        assert_eq!(
+            hand_recovery_modes([("bash", &durable)]),
+            [ToolRecoveryMode::DurableRequest].into_iter().collect(),
+            "R1"
+        );
+        assert!(
+            hand_recovery_modes([("web_fetch", &durable), ("agent_run", &durable)]).is_empty(),
+            "R2"
+        );
+        assert_eq!(
+            hand_recovery_modes([("read", &never)]),
+            [ToolRecoveryMode::NeverReplay].into_iter().collect(),
+            "R3"
         );
     }
 }
