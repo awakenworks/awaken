@@ -13,6 +13,7 @@ use crate::host::tests::ManagedSessionRootFixture;
 use awaken_dispatch_contract as ingress;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshotId};
+use awaken_session_realization::peers::EnvironmentPeer as _;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -1669,8 +1670,8 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
     }
     let active_thread = "active-previous-transition";
     host.installed_sessions.install(active_thread);
-    host.realizer
-        .staging
+    host.realization_executor
+        .staging()
         .register_thread_resource_manifest(active_thread, revision_one.clone())
         .unwrap();
     let mut active_projection =
@@ -1694,9 +1695,8 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
         .expect("R1 exact transition projection");
     assert_eq!(exact_before.previous(), &revision_one, "R1/C1 previous");
     assert_eq!(exact_before.desired(), &revision_one, "R1/C1 desired");
-    host.realizer
-        .staging
-        .install_dispatched_resources(&host.realizer, "exact-cold-transition", &revision_one, None)
+    host.realization_executor
+        .install_dispatched_resources("exact-cold-transition", &revision_one, None)
         .await
         .expect("R1/E1 exact desired-only consumer");
     assert_eq!(
@@ -1726,9 +1726,8 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
         "R2/C1 previous"
     );
     assert_eq!(active_transition.desired(), &revision_two, "R2/C1 desired");
-    host.realizer
-        .staging
-        .install_dispatched_resources(&host.realizer, active_thread, &revision_two, None)
+    host.realization_executor
+        .install_dispatched_resources(active_thread, &revision_two, None)
         .await
         .expect("R2/E1 exact desired consumer with active previous");
     assert_eq!(
@@ -1759,9 +1758,8 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
         })
         .expect("R3 producer slot");
     let error = host
-        .realizer
-        .staging
-        .install_dispatched_resources(&host.realizer, mismatched_thread, &revision_two, None)
+        .realization_executor
+        .install_dispatched_resources(mismatched_thread, &revision_two, None)
         .await
         .expect_err("R3/E2 mismatched desired-only consumer");
     assert_eq!(error.code, "session_resource_transition_conflict", "R3/E2");
@@ -1808,9 +1806,8 @@ async fn complete_projection_resource_guard_excludes_desired_only_staging() {
         let host = host.clone();
         let manifest = manifest.clone();
         async move {
-            host.realizer
-                .staging
-                .install_dispatched_resources(&host.realizer, thread, &manifest, None)
+            host.realization_executor
+                .install_dispatched_resources(thread, &manifest, None)
                 .await
         }
     });
@@ -1940,8 +1937,8 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
         Default::default(),
     );
     host.installed_sessions.install(foreign_thread);
-    host.realizer
-        .staging
+    host.realization_executor
+        .staging()
         .register_thread_resource_manifest(foreign_thread, foreign.clone())
         .unwrap();
     host.installed_sessions.update(foreign_thread, |slot| {
@@ -1955,10 +1952,10 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
         .await
         .unwrap();
     let error = host
-        .realizer
-        .staging
+        .realization_executor
+        .staging()
         .stage_prevalidated_resource_transition_under_resource_projection(
-            &host.realizer,
+            host.realization_executor.peers(),
             foreign_thread,
             &transition,
             None,
@@ -1989,10 +1986,10 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
         .lock_resource_projection(bound_thread)
         .await
         .unwrap();
-    host.realizer
-        .staging
+    host.realization_executor
+        .staging()
         .stage_prevalidated_resource_transition_under_resource_projection(
-            &host.realizer,
+            host.realization_executor.peers(),
             bound_thread,
             &transition,
             None,
@@ -2092,13 +2089,12 @@ async fn cold_worker_file_staging_uses_only_the_claim_bound_source() {
         epoch: 7,
     };
 
-    host.realizer
-        .staging
-        .install_dispatched_resources(&host.realizer, "remote-file-ok", &manifest, Some(&claim))
+    host.realization_executor
+        .install_dispatched_resources("remote-file-ok", &manifest, Some(&claim))
         .await
         .expect("W1");
     let mount = host
-        .realizer
+        .realization_executor
         .sandbox_spec("remote-file-ok")
         .mounts
         .into_iter()
@@ -2118,21 +2114,19 @@ async fn cold_worker_file_staging_uses_only_the_claim_bound_source() {
     );
     managed
         .host
-        .realizer
-        .staging
-        .validate_thread_resource_bindings(&managed.host.realizer, "remote-file-ok")
+        .realization_executor
+        .validate_thread_resource_bindings("remote-file-ok")
         .await
         .expect("W1 has no redundant local File catalog check");
 
     let error = host
-        .realizer
-        .staging
-        .install_dispatched_resources(&host.realizer, "remote-file-no-claim", &manifest, None)
+        .realization_executor
+        .install_dispatched_resources("remote-file-no-claim", &manifest, None)
         .await
         .expect_err("W2");
     assert!(error.to_string().contains("not found"), "W2: {error}");
     assert!(
-        host.realizer
+        host.realization_executor
             .sandbox_spec("remote-file-no-claim")
             .mounts
             .is_empty(),
@@ -2145,11 +2139,15 @@ async fn sandbox_binding_is_validated_before_provider_adoption() {
     let storage = tempfile::tempdir().expect("storage");
     let host = adoption_host_at(storage.path()).await;
     assert!(
-        host.realizer
+        host.realization_executor
             .adopt_bound_session_environment(
                 "thread-a",
                 Some("not-json"),
-                &host.realizer.env.session_provider,
+                &host
+                    .realization_executor
+                    .environments()
+                    .providers()
+                    .session_provider,
                 None,
                 false
             )
@@ -2162,11 +2160,15 @@ async fn sandbox_binding_is_validated_before_provider_adoption() {
     ))
     .unwrap();
     assert!(
-        host.realizer
+        host.realization_executor
             .adopt_bound_session_environment(
                 "thread-a",
                 Some(&wrong),
-                &host.realizer.env.session_provider,
+                &host
+                    .realization_executor
+                    .environments()
+                    .providers()
+                    .session_provider,
                 None,
                 false
             )
@@ -2276,11 +2278,15 @@ async fn recovery_mode_controls_the_production_adoption_seam() {
     );
     let source_generation_id = current_missing.environment.generation().map(|g| g.id());
     let refusal = replacement
-        .realizer
+        .realization_executor
         .adopt_bound_session_environment(
             missing_thread,
             Some(&missing),
-            &replacement.realizer.env.session_provider,
+            &replacement
+                .realization_executor
+                .environments()
+                .providers()
+                .session_provider,
             source_generation_id,
             true,
         )
@@ -2655,21 +2661,35 @@ async fn an_aba_replacement_with_the_same_handle_survives_stale_discard() {
         .await
         .expect("observed owner");
     let spec = host
-        .realizer
-        .staging
+        .realization_executor
+        .staging()
         .sandbox_spec_for_resolved_resources_and_provider(
             thread,
             &projection.resources,
-            &host.realizer.env.session_provider,
+            &host
+                .realization_executor
+                .environments()
+                .providers()
+                .session_provider,
         )
         .unwrap();
     let spec = host
-        .realizer
-        .validate_session_environment_capabilities(&host.realizer.env.session_provider, &spec)
+        .realization_executor
+        .environments()
+        .validate_session_environment_capabilities(
+            host.realization_executor.peers(),
+            &host
+                .realization_executor
+                .environments()
+                .providers()
+                .session_provider,
+            &spec,
+        )
         .expect("C2 exact adoption spec");
     let replacement = Arc::new(
-        host.realizer
-            .env
+        host.realization_executor
+            .environments()
+            .providers()
             .session_provider
             .adopt(&spec, &observed.lifecycle().handle())
             .await
@@ -2941,8 +2961,8 @@ fn active_manifest(
     host: &SharedHost,
     thread: &str,
 ) -> Option<crate::session_resource::SessionResourceManifest> {
-    host.realizer
-        .staging
+    host.realization_executor
+        .staging()
         .thread_resource_manifest(thread)
         .unwrap()
 }

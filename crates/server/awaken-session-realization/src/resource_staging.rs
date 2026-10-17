@@ -18,17 +18,18 @@ use awaken_session_configuration_contract::resource as session_resource;
 use awaken_session_realization_contract::ResourceOperationFence;
 use std::sync::Arc;
 
+mod dispatched;
+mod peer;
 pub mod preparation;
+pub mod projection;
 pub mod repository_activation;
 pub mod skills;
 pub use preparation::ResourcePreparation;
 
-/// Stages one installed Session's Resources into its Environment spec; its only
-/// state is the installed Sessions' realization layer it reads and records into.
-/// Its exact Skill byte source is selected before construction, without catalog writes.
-#[derive(Clone)]
-pub struct ResourceStaging {
-    pub sessions: crate::session_realizations::SessionRealizations,
+/// The Resource sources and verifiers staging reads through, selected once by
+/// the process composition. Its exact Skill byte source is selected before
+/// construction, without catalog writes.
+pub struct ResourceSources {
     /// Exact immutable bytes only; this grants no catalog/authoring access.
     pub bundle_source: Option<Arc<dyn SkillBundleSource<ResourceOperationFence>>>,
     pub file_content_source:
@@ -39,14 +40,86 @@ pub struct ResourceStaging {
         Arc<dyn awaken_resource_contract::RepositoryBindingVerifier<ResourceOperationFence>>,
     >,
     pub fetches_resources_upstream: bool,
-    /// The same exact materializer selected for the Host, used only at a Git effect.
+    /// The same exact materializer selected for the process, used only at a Git effect.
     pub credential_materializer:
         Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
     pub memory_reference_encoder:
         Option<Arc<dyn crate::memory_binding::RuntimeMemoryReferenceEncoder>>,
 }
 
+/// Stages one installed Session's Resources into its Environment spec; its only
+/// state is the Resource staging state of the installed Sessions.
+#[derive(Clone)]
+pub struct ResourceStaging {
+    sessions: crate::session_realizations::SessionRealizations,
+    bundle_source: Option<Arc<dyn SkillBundleSource<ResourceOperationFence>>>,
+    file_content_source:
+        Arc<dyn awaken_resource_contract::FileContentSource<ResourceOperationFence>>,
+    memory: awaken_resource_contract::MemoryExecutionContent,
+    resource_validator: Option<Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>>,
+    repository_binding_verifier: Option<
+        Arc<dyn awaken_resource_contract::RepositoryBindingVerifier<ResourceOperationFence>>,
+    >,
+    fetches_resources_upstream: bool,
+    credential_materializer: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
+    memory_reference_encoder: Option<Arc<dyn crate::memory_binding::RuntimeMemoryReferenceEncoder>>,
+}
+
 impl ResourceStaging {
+    /// Stage Resources of the installed Sessions through the selected sources.
+    pub fn new(
+        sessions: crate::session_realizations::SessionRealizations,
+        sources: ResourceSources,
+    ) -> Self {
+        let ResourceSources {
+            bundle_source,
+            file_content_source,
+            memory,
+            resource_validator,
+            repository_binding_verifier,
+            fetches_resources_upstream,
+            credential_materializer,
+            memory_reference_encoder,
+        } = sources;
+        Self {
+            sessions,
+            bundle_source,
+            file_content_source,
+            memory,
+            resource_validator,
+            repository_binding_verifier,
+            fetches_resources_upstream,
+            credential_materializer,
+            memory_reference_encoder,
+        }
+    }
+
+    /// The installed Sessions this staging records into.
+    pub fn sessions(&self) -> &crate::session_realizations::SessionRealizations {
+        &self.sessions
+    }
+
+    /// The repository binding verifier of a test fixture.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn repository_binding_verifier(
+        &self,
+    ) -> Option<&Arc<dyn awaken_resource_contract::RepositoryBindingVerifier<ResourceOperationFence>>>
+    {
+        self.repository_binding_verifier.as_ref()
+    }
+
+    /// Whether Resource bytes are fetched upstream rather than read locally.
+    pub fn fetches_resources_upstream(&self) -> bool {
+        self.fetches_resources_upstream
+    }
+
+    /// The Memory reference encoder Memory effects publish through.
+    pub fn memory_reference_encoder(
+        &self,
+    ) -> Option<&Arc<dyn crate::memory_binding::RuntimeMemoryReferenceEncoder>> {
+        self.memory_reference_encoder.as_ref()
+    }
+
     pub fn thread_session_mounts(
         &self,
         thread: &str,
@@ -205,7 +278,7 @@ impl ResourceStaging {
         )
     }
 
-    pub fn sandbox_spec_for_mount_layout_with_network(
+    pub(crate) fn sandbox_spec_for_mount_layout_with_network(
         &self,
         thread: &str,
         resource_mounts: Vec<pc::MountRequirement>,

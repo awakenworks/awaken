@@ -185,7 +185,8 @@ async fn pinned_reads_during_concurrent_first_hand_calls_do_not_join_sandbox_sta
         "B1 read while creation pending"
     );
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("skill-race")
             .await
             .expect("installed Sessions")
@@ -312,7 +313,8 @@ async fn cold_resource_replacement_and_revocation_never_return_old_skill_bytes()
         "B4 revoked bytes unavailable"
     );
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("skill-change")
             .await
             .expect("installed Sessions")
@@ -413,7 +415,8 @@ async fn read_disabled_or_awaiting_permission_never_leaks_pinned_content() {
             );
         }
         assert!(
-            host.realizer
+            host.realization_executor
+                .environments()
                 .session_environment("skill-policy")
                 .await
                 .expect("installed Sessions")
@@ -447,7 +450,8 @@ async fn read_disabled_or_awaiting_permission_never_leaks_pinned_content() {
             assert_eq!(leaked, allow, "B7/B8 only allow discloses content");
         }
         assert!(
-            host.realizer
+            host.realization_executor
+                .environments()
                 .session_environment("skill-policy")
                 .await
                 .expect("installed Sessions")
@@ -533,7 +537,8 @@ async fn failed_skill_file_write_blocks_tools_and_repaired_pin_reuses_environmen
         );
     }
     let environment = host
-        .realizer
+        .realization_executor
+        .environments()
         .session_environment("skill-write-fault")
         .await
         .expect("installed Sessions")
@@ -580,7 +585,8 @@ async fn failed_skill_file_write_blocks_tools_and_repaired_pin_reuses_environmen
     assert!(Arc::ptr_eq(
         &environment,
         &host
-            .realizer
+            .realization_executor
+            .environments()
             .session_environment("skill-write-fault")
             .await
             .expect("installed Sessions")
@@ -651,7 +657,8 @@ async fn managed_on_tool_use_reads_instruction_and_reference_before_reply_withou
     .await
     .unwrap();
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("brain-first")
             .await
             .expect("installed Sessions")
@@ -791,7 +798,8 @@ async fn pinned_read_path_and_text_decision_table() {
             ),
         }
         assert!(
-            host.realizer
+            host.realization_executor
+                .environments()
                 .session_environment("text-table")
                 .await
                 .expect("installed Sessions")
@@ -918,7 +926,8 @@ async fn cold_skill_read_keeps_pin_after_catalog_update_and_rejects_stale_projec
             "P8 {mismatch}"
         );
         assert!(
-            host.realizer
+            host.realization_executor
+                .environments()
                 .session_environment("cold")
                 .await
                 .expect("installed Sessions")
@@ -959,7 +968,8 @@ async fn cold_skill_read_keeps_pin_after_catalog_update_and_rejects_stale_projec
         "P9"
     );
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("cold")
             .await
             .expect("installed Sessions")
@@ -1037,7 +1047,8 @@ async fn lazy_skill_installation_reloads_exact_bytes_and_reuses_environment() {
         "P10 canonical bytes replace stale projection"
     );
     let environment = host
-        .realizer
+        .realization_executor
+        .environments()
         .session_environment("install-retry")
         .await
         .expect("installed Sessions")
@@ -1051,7 +1062,8 @@ async fn lazy_skill_installation_reloads_exact_bytes_and_reuses_environment() {
         Arc::ptr_eq(
             &environment,
             &host
-                .realizer
+                .realization_executor
+                .environments()
                 .session_environment("install-retry")
                 .await
                 .expect("installed Sessions")

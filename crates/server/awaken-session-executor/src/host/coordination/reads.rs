@@ -13,6 +13,7 @@
 //! same authority's narrower read port; this module has no cache or write path.
 
 use super::*;
+use awaken_session_realization::peers::EnvironmentPeer as _;
 
 impl SharedHost {
     pub(crate) async fn coordinated_threads(
@@ -32,8 +33,9 @@ impl SharedHost {
         // identity; current publication only enriches its model label. Managed
         // can recover an empty label from the Session's already-frozen profile.
         let advisor_model = self
-            .realizer
-            .publication
+            .realization_executor
+            .environments()
+            .publication()
             .resolve_session_publication(session_id, None, delivered)
             .ok()
             .and_then(|(_, _, publication, _)| publication)
@@ -878,7 +880,8 @@ mod tests {
         );
         for thread in [session_id, child_id.0.as_str()] {
             assert!(
-                host.realizer
+                host.realization_executor
+                    .environments()
                     .session_environment(thread)
                     .await
                     .expect("installed Sessions")

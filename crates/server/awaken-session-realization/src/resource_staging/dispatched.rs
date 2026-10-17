@@ -6,7 +6,7 @@ use std::sync::Arc;
 impl crate::resource_staging::ResourceStaging {
     pub async fn install_dispatched_resources(
         &self,
-        executor: &crate::realization_executor::RealizationExecutor,
+        peers: crate::peers::Peers<'_>,
         thread: &str,
         manifest: &awaken_session_configuration_contract::resource::SessionResourceManifest,
         claim: Option<&awaken_dispatch_contract::RunClaim>,
@@ -23,7 +23,7 @@ impl crate::resource_staging::ResourceStaging {
         let _resource_projection = resource_projection.lock().await;
         let staging = self;
         let active = staging.thread_resource_manifest(thread)?;
-        let live_environment = executor.session_environment(thread).await?;
+        let live_environment = peers.environments.session_environment(thread).await?;
         let (expected_binding, projected_transition) = realization_view
             .read_realization(thread, |r| {
                 (
@@ -45,7 +45,7 @@ impl crate::resource_staging::ResourceStaging {
             // Empty→desired transition or a no-op effect identity.
             return self
                 .stage_prevalidated_resource_transition_under_resource_projection(
-                    executor,
+                    peers,
                     thread,
                     &projected_transition,
                     claim,
@@ -70,7 +70,7 @@ impl crate::resource_staging::ResourceStaging {
             // republishes completion.
             return self
                 .stage_resource_manifest(
-                    executor,
+                    peers,
                     thread,
                     &manifest.workspace_id,
                     manifest.revision,
@@ -99,7 +99,7 @@ impl crate::resource_staging::ResourceStaging {
             )
             .map_err(|error| RunError::bad_request(error.to_string()))?;
         self.stage_prevalidated_resource_transition_under_resource_projection(
-            executor,
+            peers,
             thread,
             &proven_transition,
             claim,

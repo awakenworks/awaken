@@ -299,7 +299,9 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
     let physical = host
         .test_local_provider()
         .create_sandbox_for_effect(
-            &host.realizer.sandbox_spec("remote-terminal-worker"),
+            &host
+                .realization_executor
+                .sandbox_spec("remote-terminal-worker"),
             &create_fence,
             None,
             &awaken_provisioning_contract::test_support::EffectAuthority::new(&create_fence),
@@ -329,8 +331,14 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
         idle_since_unix_ms: None,
     };
     let candidate = host
-        .realizer
-        .begin_session_environment_preparation("remote-terminal-worker", environment.clone(), None)
+        .realization_executor
+        .environments()
+        .begin_session_environment_preparation(
+            host.realization_executor.peers(),
+            "remote-terminal-worker",
+            environment.clone(),
+            None,
+        )
         .expect("R1 retain the exact Worker-local candidate");
     host.install_session_environment_owner_projection(
         "remote-terminal-worker",
@@ -338,7 +346,8 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
         &projection.environment,
     )
     .expect("R1 project the durable Worker-local Environment identity");
-    host.realizer
+    host.realization_executor
+        .environments()
         .publish_prepared_session_environment(
             "remote-terminal-worker",
             &candidate,

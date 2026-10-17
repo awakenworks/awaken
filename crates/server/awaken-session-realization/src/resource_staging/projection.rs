@@ -49,7 +49,7 @@ impl crate::resource_staging::ResourceStaging {
     /// defaults or selects a newer mutable-resource configuration.
     pub async fn stage_resource_manifest(
         &self,
-        environments: &crate::environment_holding::EnvironmentHolding,
+        peers: crate::peers::Peers<'_>,
         thread: &str,
         workspace: &str,
         resource_revision: u64,
@@ -59,7 +59,7 @@ impl crate::resource_staging::ResourceStaging {
         // Full-manifest preflight must precede even process-local Workspace or
         // Skill projection writes. Per-item validation below remains the final
         // effect-edge fence for defense in depth.
-        self.validate_effective_resource_layout(environments, thread, resources)?;
+        self.validate_effective_resource_layout(peers, thread, resources)?;
 
         let desired = session_resource::SessionResourceManifest::at_revision(
             workspace,
@@ -87,13 +87,14 @@ impl crate::resource_staging::ResourceStaging {
     /// fingerprint lets later physical realization reuse this compilation.
     pub async fn stage_prevalidated_resource_transition_under_resource_projection(
         &self,
-        environments: &crate::environment_holding::EnvironmentHolding,
+        peers: crate::peers::Peers<'_>,
         thread: &str,
         transition: &session_resource::SessionResourceTransition,
         claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization_lease: Option<&session_resource::SessionRealizationLease>,
         prospective_environment_binding: bool,
     ) -> Result<(), RunError> {
+        let environments = peers.environments;
         let staging = self;
         let realizations = &staging.sessions;
         let installed = staging.thread_resource_manifest(thread)?;
@@ -151,9 +152,10 @@ impl crate::resource_staging::ResourceStaging {
 
     pub async fn validate_thread_resource_bindings(
         &self,
-        environments: &crate::environment_holding::EnvironmentHolding,
+        peers: crate::peers::Peers<'_>,
         thread: &str,
     ) -> Result<(), RunError> {
+        let environments = peers.environments;
         let realizations = self.sessions.clone();
         use crate::staged_resources::ResourceBindingCheck;
 
@@ -167,7 +169,7 @@ impl crate::resource_staging::ResourceStaging {
         if checks.is_empty() {
             return Ok(());
         }
-        let workspace = environments.publication.workspace(thread)?;
+        let workspace = environments.publication().workspace(thread)?;
         for check in checks {
             match check {
                 ResourceBindingCheck::MemoryStore {
@@ -206,7 +208,7 @@ impl crate::resource_staging::ResourceStaging {
 
     pub async fn apply_session_inputs_with_context(
         &self,
-        environments: &crate::environment_holding::EnvironmentHolding,
+        peers: crate::peers::Peers<'_>,
         thread: &str,
         transition: &session_resource::SessionResourceTransition,
         claim: Option<&awaken_dispatch_contract::RunClaim>,
@@ -215,7 +217,7 @@ impl crate::resource_staging::ResourceStaging {
         let realizations = self.sessions.clone();
         let _lifecycle = realizations.lock_lifecycle(thread).await?;
         self.apply_session_inputs_under_lifecycle(
-            environments,
+            peers,
             thread,
             transition,
             claim,
@@ -231,7 +233,7 @@ impl crate::resource_staging::ResourceStaging {
     /// introduced.
     pub async fn apply_session_inputs_under_lifecycle(
         &self,
-        environments: &crate::environment_holding::EnvironmentHolding,
+        peers: crate::peers::Peers<'_>,
         thread: &str,
         transition: &session_resource::SessionResourceTransition,
         claim: Option<&awaken_dispatch_contract::RunClaim>,
@@ -239,7 +241,7 @@ impl crate::resource_staging::ResourceStaging {
     ) -> Result<(), RunError> {
         let realizations = self.sessions.clone();
         let _resource_projection = realizations.lock_resource_projection(thread).await?;
-        self.apply_session_inputs_body(environments, thread, transition, claim, realization_lease)
+        self.apply_session_inputs_body(peers, thread, transition, claim, realization_lease)
             .await
     }
 
@@ -252,12 +254,13 @@ impl crate::resource_staging::ResourceStaging {
     /// desired-only staging is deliberately unable to reach it.
     async fn apply_session_inputs_body(
         &self,
-        environments: &crate::environment_holding::EnvironmentHolding,
+        peers: crate::peers::Peers<'_>,
         thread: &str,
         transition: &session_resource::SessionResourceTransition,
         claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization_lease: Option<&session_resource::SessionRealizationLease>,
     ) -> Result<(), RunError> {
+        let environments = peers.environments;
         let staging = self;
         let sessions = &staging.sessions;
         let previous_manifest = transition.previous();
@@ -267,7 +270,7 @@ impl crate::resource_staging::ResourceStaging {
         // fence excludes a concurrent projection install. Validation still
         // precedes every Workspace, Skill, File, Repository, cache, or provider
         // effect below.
-        self.validate_effective_resource_layout(environments, thread, inputs)?;
+        self.validate_effective_resource_layout(peers, thread, inputs)?;
         sessions.update_realization(thread, |r| {
             r.staging.transition = Some(transition.clone());
         })?;
@@ -464,9 +467,9 @@ impl crate::resource_staging::ResourceStaging {
                 Vec::new()
             };
             if !reserved_paths.is_empty() {
-                let effect = environments.authorize_environment_effect_before_io(
+                let effect = environments.authorize_environment_effect_before_io(peers,
                         thread,
-                        &environments.execution.new_environment_effect_intent(thread, awaken_session_state_contract::SessionEnvironmentEffectKind::ResourceProjectionReservation {
+                        &peers.authority.new_environment_effect_intent(thread, awaken_session_state_contract::SessionEnvironmentEffectKind::ResourceProjectionReservation {
                             transition_fingerprint: transition.operation_fingerprint(),
                         },
                         Some(&source_binding))?,
@@ -494,7 +497,7 @@ impl crate::resource_staging::ResourceStaging {
                         }
                         let binding = serde_json::to_string(&environment.lifecycle().handle())
                             .map_err(crate::realization_error::RealizationError::from)?;
-                        environments.persist_authorized_environment_binding(thread, binding, &effect)
+                        environments.persist_authorized_environment_binding(peers, thread, binding, &effect)
                             .await
                             .map_err(|failure| {
                                 awaken_session_types::RunError::from(failure.error)
@@ -660,7 +663,7 @@ impl crate::resource_staging::ResourceStaging {
                             staging
                                 .realize_repository_activation(
                                     thread,
-                                    environments.publication.local_workspace(),
+                                    environments.publication().local_workspace(),
                                     repository,
                                     &new.binding_checks,
                                     environment.repositories().as_ref(),
@@ -1461,14 +1464,15 @@ impl crate::resource_staging::ResourceStaging {
 impl crate::resource_staging::ResourceStaging {
     pub fn validate_prospective_session_layout(
         &self,
-        environments: &crate::environment_holding::EnvironmentHolding,
+        peers: crate::peers::Peers<'_>,
         thread: &str,
         layout: &awaken_session_configuration_contract::SessionSandboxLayout,
     ) -> Result<(), awaken_session_types::RunError> {
+        let environments = peers.environments;
         let staging = self;
         let environment = environment_projection::project_environment(&layout.environment);
         let (_, candidate) = environments
-            .publication
+            .publication()
             .resolve_canonical_session_projection(
                 &layout.workspace_id,
                 awaken_session_realization_contract::CanonicalSessionProjection::Layout(layout),
@@ -1510,10 +1514,11 @@ impl crate::resource_staging::ResourceStaging {
 
     pub fn validate_effective_resource_layout(
         &self,
-        environments: &crate::environment_holding::EnvironmentHolding,
+        peers: crate::peers::Peers<'_>,
         thread: &str,
         resources: &session_resource::ResolvedSessionResources,
     ) -> Result<(), awaken_session_types::RunError> {
+        let environments = peers.environments;
         let staging = self;
         let provider = environments
             .projected_session_environment_provider(thread, None)

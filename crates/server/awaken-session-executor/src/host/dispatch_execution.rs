@@ -16,6 +16,7 @@ use awaken_dispatch_contract::{Claimed, RunClaim, RunDispatch};
 use awaken_runtime_contract::{
     ExecutableAgentSnapshot, RuntimeRunContext, StaticPublishedAgentSnapshots,
 };
+use awaken_session_realization::peers::EnvironmentPeer as _;
 use awaken_session_realization::realization_error::RealizationError;
 use awaken_session_realization::worker_projection::SessionProjectionExecution;
 use awaken_session_realization_contract::{
@@ -30,7 +31,7 @@ pub(crate) fn session_worker_resolver(
     host: &Arc<SharedHost>,
 ) -> Result<SessionWorkerResolver, HostError> {
     let queue = host.dispatch_store()?;
-    let clock = host.realizer.clock.clone();
+    let clock = host.realization_executor.clock().clone();
     let assembly = Arc::new(ClaimedRunAssembly::new(host));
     let terminal_state = host.dispatch.terminal_reconciliation.clone();
     // Only a Coordinator-owned durable authority holds committed truth; it
@@ -92,10 +93,11 @@ pub(crate) async fn adopt_bound_sandbox(
     recovery: awaken_dispatch_contract::WorkerRecoveryMode,
 ) -> Result<crate::session_environment::SessionEnvironmentAdoptionDisposition, Error> {
     let provider = host
-        .realizer
+        .realization_executor
+        .environments()
         .session_environment_provider_for_thread(expected_sandbox_id, provisioning)
         .map_err(|error| map_admission_error(admission_error(error)))?;
-    host.realizer
+    host.realization_executor
         .adopt_bound_session_environment(
             expected_sandbox_id,
             encoded,
@@ -130,8 +132,13 @@ impl ClaimedRunAssembly {
     fn new(host: &Arc<SharedHost>) -> Self {
         Self {
             host: Arc::downgrade(host),
-            sessions: host.realizer.environments.sessions.clone(),
-            local_workspace: host.realizer.publication.local_workspace().to_owned(),
+            sessions: host.realization_executor.sessions().clone(),
+            local_workspace: host
+                .realization_executor
+                .environments()
+                .publication()
+                .local_workspace()
+                .to_owned(),
         }
     }
 
@@ -188,9 +195,8 @@ impl ClaimedSessionInstallation for ClaimedRunAssembly {
             .host
             .upgrade()
             .ok_or_else(|| awaken_session_types::RunError::unavailable(HOST_DROPPED))?;
-        host.realizer
-            .staging
-            .install_dispatched_resources(&host.realizer, session, manifest, Some(claim))
+        host.realization_executor
+            .install_dispatched_resources(session, manifest, Some(claim))
             .await
     }
 
@@ -232,7 +238,8 @@ impl ClaimedSessionInstallation for ClaimedRunAssembly {
 
     fn durable_environment_binding(&self, session: &str) -> Result<Option<String>, AdmissionError> {
         self.admitting_host()?
-            .realizer
+            .realization_executor
+            .environments()
             .durable_environment_binding(session)
             .map_err(admission_error)
     }
@@ -461,10 +468,10 @@ impl SessionProjectionExecution for SharedHost {
     fn sessions(&self) -> crate::session_realizations::SessionRealizations {
         // Projection execution consumes the constructor-bound view of the same
         // original slots as realization, publication, staging, and terminal cleanup.
-        self.realizer.environments.sessions.clone()
+        self.realization_executor.sessions().clone()
     }
-    fn realizer(&self) -> &crate::realization_executor::RealizationExecutor {
-        &self.realizer
+    fn realization_executor(&self) -> &crate::realization_executor::RealizationExecutor {
+        &self.realization_executor
     }
     async fn ensure_session_substrate(
         &self,

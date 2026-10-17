@@ -184,9 +184,8 @@ impl SessionRuntime for ManagedHost {
         content: Vec<ContentBlock>,
     ) -> Result<StepOutcome, RunError> {
         self.host
-            .realizer
-            .staging
-            .validate_thread_resource_bindings(&self.host.realizer, thread)
+            .realization_executor
+            .validate_thread_resource_bindings(thread)
             .await?;
         let result = self
             .host
@@ -202,9 +201,8 @@ impl SessionRuntime for ManagedHost {
         decision: ToolPermissionDecision,
     ) -> Result<StepOutcome, RunError> {
         self.host
-            .realizer
-            .staging
-            .validate_thread_resource_bindings(&self.host.realizer, thread)
+            .realization_executor
+            .validate_thread_resource_bindings(thread)
             .await?;
         let result = self
             .host
@@ -221,9 +219,8 @@ impl SessionRuntime for ManagedHost {
         is_error: bool,
     ) -> Result<StepOutcome, RunError> {
         self.host
-            .realizer
-            .staging
-            .validate_thread_resource_bindings(&self.host.realizer, thread)
+            .realization_executor
+            .validate_thread_resource_bindings(thread)
             .await?;
         let result = self
             .host
@@ -273,9 +270,8 @@ impl awaken_session_execution_contract::RealizationRuntime for ManagedHost {
         layout: &awaken_session_configuration_contract::SessionSandboxLayout,
     ) -> Result<(), RunError> {
         self.host
-            .realizer
-            .staging
-            .validate_prospective_session_layout(&self.host.realizer, thread, layout)
+            .realization_executor
+            .validate_prospective_session_layout(thread, layout)
     }
 
     async fn install_session_projection(
@@ -327,7 +323,7 @@ impl awaken_session_execution_contract::RealizationRuntime for ManagedHost {
                 "cannot renew a Session realization lease that is not installed",
             )
         };
-        self.host.realizer.execution
+        self.host.realization_executor.authority()
             .authorize_worker_effect(|| {
                 Ok::<_, crate::realization_error::RealizationError>(realizations
             .modify_realization(thread, |r| {
@@ -384,9 +380,8 @@ impl awaken_session_execution_contract::CoordinationRuntime for ManagedHost {
             .installed_sessions
             .install(command.session_id.as_str());
         self.host
-            .realizer
-            .staging
-            .validate_thread_resource_bindings(&self.host.realizer, command.session_id.as_str())
+            .realization_executor
+            .validate_thread_resource_bindings(command.session_id.as_str())
             .await?;
         let ctx = self
             .host
@@ -486,7 +481,8 @@ impl awaken_session_execution_contract::CoordinationRuntime for ManagedHost {
         .await;
         if reservation_context_is_ephemeral {
             self.host
-                .realizer
+                .realization_executor
+                .environments()
                 .evict_session_for_rebuild(session_id.as_str())
                 .await?;
         }
@@ -798,9 +794,8 @@ impl awaken_session_execution_contract::StreamingRunRuntime for ManagedHost {
         data_subject_id: Option<String>,
     ) -> Result<StepOutcome, RunError> {
         self.host
-            .realizer
-            .staging
-            .validate_thread_resource_bindings(&self.host.realizer, thread)
+            .realization_executor
+            .validate_thread_resource_bindings(thread)
             .await?;
         let result = self
             .host
@@ -822,9 +817,8 @@ impl awaken_session_execution_contract::StreamingRunRuntime for ManagedHost {
         sink: std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>,
     ) -> Result<StepOutcome, RunError> {
         self.host
-            .realizer
-            .staging
-            .validate_thread_resource_bindings(&self.host.realizer, thread)
+            .realization_executor
+            .validate_thread_resource_bindings(thread)
             .await?;
         // Same committed Run as `run`; `sink` mirrors in-flight `stream::Kind` so
         // the Managed adapter can project live `agent.message` previews.
@@ -844,9 +838,8 @@ impl awaken_session_execution_contract::StreamingRunRuntime for ManagedHost {
         sink: std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>,
     ) -> Result<StepOutcome, RunError> {
         self.host
-            .realizer
-            .staging
-            .validate_thread_resource_bindings(&self.host.realizer, thread)
+            .realization_executor
+            .validate_thread_resource_bindings(thread)
             .await?;
         let result = self
             .host
@@ -872,7 +865,11 @@ impl awaken_session_execution_contract::StreamingRunRuntime for ManagedHost {
         // Run rebuilds with the newly resolved executor (native switch is O(1); an
         // ACP thread's cached context relaunches its CLI on rebuild).
         self.host.register_thread_model(thread, model);
-        self.host.realizer.evict_session_for_rebuild(thread).await?;
+        self.host
+            .realization_executor
+            .environments()
+            .evict_session_for_rebuild(thread)
+            .await?;
         Ok(())
     }
 
@@ -897,7 +894,11 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ManagedHost {
         self.host
             .installed_sessions
             .replace_frozen_with(thread, |next| next.tools = Some(tools));
-        self.host.realizer.evict_session_for_rebuild(thread).await?;
+        self.host
+            .realization_executor
+            .environments()
+            .evict_session_for_rebuild(thread)
+            .await?;
         Ok(())
     }
 
@@ -914,12 +915,13 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ManagedHost {
         // turn corrupt or deleted Session authority into a replacement sandbox.
         let provider = self
             .host
-            .realizer
+            .realization_executor
+            .environments()
             .projected_session_environment_provider(thread, Some(agent))
             .map_err(RunError::from)?;
         let disposition = self
             .host
-            .realizer
+            .realization_executor
             .adopt_bound_session_environment(thread, Some(binding), provider, None, false)
             .await
             .map_err(RunError::from)?;
@@ -961,7 +963,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ManagedHost {
         request: awaken_session_state_contract::SandboxCheckpointRequest,
     ) -> Result<awaken_session_state_contract::CheckpointReceipt, RunError> {
         self.host
-            .realizer
+            .realization_executor
             .checkpoint_environment_continuation(thread, request)
             .await
     }
@@ -974,7 +976,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ManagedHost {
         source_binding: &str,
     ) -> Result<awaken_session_state_contract::SourceReleasePreparedReceipt, RunError> {
         self.host
-            .realizer
+            .realization_executor
             .prepare_environment_continuation_source_release(
                 thread,
                 preparation,
@@ -990,7 +992,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ManagedHost {
         disposal: &awaken_session_state_contract::SourceReleaseDisposal,
     ) -> Result<awaken_session_state_contract::SourceDisposedReceipt, RunError> {
         self.host
-            .realizer
+            .realization_executor
             .dispose_prepared_environment_continuation_source(thread, disposal)
             .await
     }
@@ -1000,7 +1002,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ManagedHost {
         request: awaken_session_state_contract::SandboxRestoreRequest,
     ) -> Result<awaken_session_state_contract::RestoreReceipt, RunError> {
         self.host
-            .realizer
+            .realization_executor
             .restore_environment_continuation(request)
             .await
     }
@@ -1011,7 +1013,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ManagedHost {
         checkpoint: &awaken_session_state_contract::SandboxCheckpointRef,
     ) -> Result<(), RunError> {
         self.host
-            .realizer
+            .realization_executor
             .delete_environment_continuation_checkpoint(checkpoint)
             .await
     }
@@ -1038,9 +1040,8 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ManagedHost {
         transition: &crate::session_resource::SessionResourceTransition,
     ) -> Result<(), RunError> {
         self.host
-            .realizer
-            .staging
-            .apply_session_inputs_with_context(&self.host.realizer, thread, transition, None, None)
+            .realization_executor
+            .apply_session_inputs(thread, transition, None, None)
             .await
     }
 }
@@ -1145,9 +1146,9 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ManagedHost {
         lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<awaken_session_state_contract::SessionRepositoryPublicationEffect, RunError> {
         self.host
-            .realizer
-            .cleanup
-            .publish_terminal_repository(&self.host.realizer, command, lease)
+            .realization_executor
+            .effects()
+            .publish_terminal_repository(self.host.realization_executor.peers(), command, lease)
             .await
     }
 
@@ -1157,10 +1158,10 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ManagedHost {
         authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
     ) -> Result<awaken_session_state_contract::SessionCleanupPreparation, RunError> {
         self.host
-            .realizer
-            .cleanup
+            .realization_executor
+            .effects()
             .prepare_terminal_cleanup_effect(
-                &self.host.realizer,
+                self.host.realization_executor.peers(),
                 effect,
                 authorization,
                 |thread| {
@@ -1194,8 +1195,8 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ManagedHost {
         effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
     ) {
         self.host
-            .realizer
-            .cleanup
+            .realization_executor
+            .effects()
             .acknowledge_terminal_cleanup_preparation(&self.host.mcp, effect)
             .await;
     }
@@ -1205,9 +1206,9 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ManagedHost {
         effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
     ) -> Result<awaken_session_state_contract::SessionCleanupDisposalReceipt, RunError> {
         self.host
-            .realizer
-            .cleanup
-            .dispose_terminal_cleanup_effect(&self.host.realizer, effect)
+            .realization_executor
+            .effects()
+            .dispose_terminal_cleanup_effect(self.host.realization_executor.peers(), effect)
             .await
             .map_err(RunError::from)
     }
@@ -1217,8 +1218,8 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ManagedHost {
         effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
     ) {
         self.host
-            .realizer
-            .cleanup
+            .realization_executor
+            .effects()
             .acknowledge_terminal_cleanup_disposal(&self.host.mcp, effect)
             .await;
     }
@@ -1232,8 +1233,8 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ManagedHost {
         // retirement leaves it for the next completed-cleanup readback.
         if let Err(error) = self
             .host
-            .realizer
-            .cleanup
+            .realization_executor
+            .effects()
             .retire_completed_terminal_cleanup_projection(
                 &self.host.mcp,
                 session_id.as_str(),
@@ -1409,10 +1410,11 @@ pub(crate) use awaken_session_configuration_contract::resource as session_resour
 #[cfg(test)]
 use awaken_session_realization::environment_owner;
 use awaken_session_realization::{
-    artifact_harvest, cache_volume, environment_holding, environment_providers, frozen_inputs,
-    managed_input_layout, memory_binding, realization_error, realization_executor,
-    realization_state, resource_staging, sandbox_projection, session_environment,
-    session_publication, session_realizations, skill_delivery, staged_resources, terminal_cleanup,
+    artifact_harvest, cache_volume, environment_holding, environment_providers,
+    execution_authority, frozen_inputs, managed_input_layout, memory_binding, realization_error,
+    realization_executor, realization_state, resource_staging, sandbox_projection,
+    session_environment, session_publication, session_realizations, skill_delivery,
+    staged_resources, terminal_effects,
 };
 #[cfg(test)]
 #[path = "realization_composed_tests/mod.rs"]

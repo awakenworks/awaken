@@ -71,7 +71,8 @@ impl awaken_session_mcp::McpStagingSession for ManagedHost {
     fn supports_secret_egress_without_bypass(&self, session: &str) -> Result<bool, RunError> {
         let provider = self
             .host
-            .realizer
+            .realization_executor
+            .environments()
             .projected_session_environment_provider(session, None)
             .map_err(RunError::from)?;
         Ok(provider
@@ -110,7 +111,8 @@ impl awaken_session_mcp::McpStagingSession for ManagedHost {
         session: &str,
     ) -> Option<Arc<crate::session_environment::SessionEnvironment>> {
         self.host
-            .realizer
+            .realization_executor
+            .environments()
             .session_environment(session)
             .await
             .expect("session runtime slots mutex poisoned")

@@ -1,5 +1,6 @@
 // @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 use super::*;
+use awaken_session_realization::peers::EnvironmentPeer as _;
 use awaken_session_execution_contract::RealizationRuntime as _;
 
 // B1-B4: after the synchronous close, remove/recreate the SAME Session id with
@@ -362,10 +363,11 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                     "E1"
                 );
                 assert!(
-                    host.realizer
-                        .authorize_environment_effect_before_io(
+                    host.realization_executor
+                        .environments()
+                        .authorize_environment_effect_before_io(host.realization_executor.peers(),
                             SESSION,
-                            &host.realizer.execution.new_environment_effect_intent(
+                            &host.realization_executor.authority().new_environment_effect_intent(
                                 SESSION,
                                 awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
                                 None
@@ -710,8 +712,8 @@ impl StagingFixture {
         );
         assert!(
             self.host
-                .realizer
-                .staging
+                .realization_executor
+                .staging()
                 .thread_resource_manifest(SESSION)
                 .expect("installed Sessions")
                 .is_none()
@@ -994,8 +996,9 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
     host.install_session_realization_lease(SESSION, lease.clone())
         .unwrap();
     let provider = host
-        .realizer
-        .env
+        .realization_executor
+        .environments()
+        .providers()
         .backend_owned_session_provider
         .as_ref()
         .unwrap();
@@ -1036,13 +1039,25 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
     assert!(sandbox.spawn(command()).await.is_err());
     assert!(sandbox.spawn_agent(command()).await.is_err());
     let first = host
-        .realizer
-        .begin_session_environment_preparation(SESSION, environment.clone(), None)
+        .realization_executor
+        .environments()
+        .begin_session_environment_preparation(
+            host.realization_executor.peers(),
+            SESSION,
+            environment.clone(),
+            None,
+        )
         .unwrap();
     assert!(!sandbox.needs_execution_authority());
     let retry = host
-        .realizer
-        .begin_session_environment_preparation(SESSION, environment.clone(), None)
+        .realization_executor
+        .environments()
+        .begin_session_environment_preparation(
+            host.realization_executor.peers(),
+            SESSION,
+            environment.clone(),
+            None,
+        )
         .unwrap();
     assert!(Arc::ptr_eq(&first.environment, &retry.environment));
     let process = sandbox.spawn(command()).await.unwrap();
@@ -1773,8 +1788,8 @@ async fn cold_staging_renews_for_ten_ttls_with_mixed_control_latency() {
     assert_eq!(f.control.renewals_active.load(Ordering::SeqCst), 0);
     assert!(
         f.host
-            .realizer
-            .staging
+            .realization_executor
+            .staging()
             .thread_resource_manifest("soak-00")
             .expect("installed Sessions")
             .is_none()

@@ -180,7 +180,8 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
     .await
     .unwrap();
     let environment = host
-        .realizer
+        .realization_executor
+        .environments()
         .session_environment(thread)
         .await
         .expect("installed Sessions")
@@ -221,15 +222,8 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
             .unwrap();
     managed
         .host
-        .realizer
-        .staging
-        .apply_session_inputs_with_context(
-            &managed.host.realizer,
-            thread,
-            &transition,
-            None,
-            Some(&lease),
-        )
+        .realization_executor
+        .apply_session_inputs(thread, &transition, None, Some(&lease))
         .await
         .expect("R1 adoption must not replay the main-branch initialization");
     let status = environment.sandbox_environment().run_test_command(pc::Command::new([
@@ -241,8 +235,8 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
     ])).await.unwrap();
     assert_eq!(status.code, Some(0), "R1 branch/commit/WIP preserved");
     assert_eq!(
-        host.realizer
-            .staging
+        host.realization_executor
+            .staging()
             .thread_resource_manifest(thread)
             .expect("installed Sessions"),
         Some(manifest)
@@ -250,7 +244,10 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
     // Retention provider rules: R2 an exact owned writable tree preserves
     // changed refs; R3 readonly mismatch, R4 foreign origin, R5 absent path,
     // R6 symlink refuse before clone/reset. All refusal rows preserve bytes.
-    let plan = host.realizer.staging.thread_repository_activations(thread)[0]
+    let plan = host
+        .realization_executor
+        .staging()
+        .thread_repository_activations(thread)[0]
         .plan
         .clone();
     let mut readonly = plan.clone();

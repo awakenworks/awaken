@@ -16,7 +16,7 @@ use awaken_session_execution_contract::McpAttachmentRealizer;
 #[async_trait::async_trait]
 pub trait SessionProjectionExecution: Send + Sync {
     fn sessions(&self) -> SessionRealizations;
-    fn realizer(&self) -> &RealizationExecutor;
+    fn realization_executor(&self) -> &RealizationExecutor;
     async fn ensure_session_substrate(
         &self,
         thread: &str,

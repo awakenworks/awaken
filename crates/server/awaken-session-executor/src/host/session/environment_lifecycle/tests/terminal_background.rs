@@ -39,7 +39,8 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
         });
     });
     let (activity_generation, origin) = host
-        .realizer
+        .realization_executor
+        .environments()
         .resident_environment_activity_identity(thread, &environment)
         .expect("C1 exact Resident activity projection");
     assert_eq!(activity_generation, durable_generation.id(), "E1");
@@ -112,13 +113,15 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
         })
         .expect("installed Sessions");
     let (_, after_adopt) = host
-        .realizer
+        .realization_executor
+        .environments()
         .resident_environment_activity_identity(thread, &environment)
         .unwrap();
     assert_eq!(after_adopt, origin, "O1 original generation survives Adopt");
     let foreign = super::environment(&provider, "foreign-origin").await;
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .resident_environment_activity_identity(thread, &foreign)
             .is_err(),
         "O2 exact Resident Arc required"
@@ -138,7 +141,8 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
         })
         .expect("installed Sessions");
     let (legacy_activity, unknown_origin) = host
-        .realizer
+        .realization_executor
+        .environments()
         .resident_environment_activity_identity(thread, &environment)
         .unwrap();
     assert_eq!(legacy_activity, physical_id, "O3 old activity key");
@@ -203,7 +207,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
         let create_fence = lease
             .sandbox_effect_fence(format!("terminal-background-create-{thread}"))
             .expect("C1 create exact durable Sandbox fence");
-        let spec = host.realizer.sandbox_spec(thread);
+        let spec = host.realization_executor.sandbox_spec(thread);
         let physical = host
             .test_local_provider()
             .create_sandbox_for_effect(
@@ -318,7 +322,8 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
                 .unwrap();
             let _lifecycle = lifecycle.lock().await;
             assert!(
-                host.realizer
+                host.realization_executor
+                    .environments()
                     .retire_session_environment_for_revocation(
                         thread,
                         (&host.mcp, host.installed_sessions.as_ref()),
@@ -564,8 +569,8 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
                 Some(repository_preparation),
             )
             .expect("C5 durably admit exact Preparation");
-        host.realizer
-            .cleanup
+        host.realization_executor
+            .effects()
             .acknowledge_terminal_cleanup_preparation(&host.mcp, &effect)
             .await;
         let disposal_command = match aggregate
@@ -584,9 +589,12 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
                 lease.clone(),
             );
         let disposal_receipt = host
-            .realizer
-            .cleanup
-            .dispose_terminal_cleanup_effect(&host.realizer, disposal_effect.clone())
+            .realization_executor
+            .effects()
+            .dispose_terminal_cleanup_effect(
+                host.realization_executor.peers(),
+                disposal_effect.clone(),
+            )
             .await
             .expect("C5 aggregate-authorized physical Disposal");
         assert_eq!(
@@ -606,8 +614,8 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
                 "terminal background test cleanup",
             )
             .expect("C5 durably admit exact Disposal receipt");
-        host.realizer
-            .cleanup
+        host.realization_executor
+            .effects()
             .acknowledge_terminal_cleanup_disposal(&host.mcp, &disposal_effect)
             .await;
         assert!(
@@ -680,7 +688,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     )
     .for_environment(projection.baseline.environment.config_fingerprint.0.clone());
     let fence = lease.sandbox_effect_fence(intent.effect_id()).unwrap();
-    let spec = host.realizer.sandbox_spec(thread);
+    let spec = host.realization_executor.sandbox_spec(thread);
     let physical = host
         .test_local_provider()
         .create_sandbox_for_effect(
@@ -751,7 +759,8 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         "U1 no fabricated receipt"
     );
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment(thread)
             .await
             .expect("installed Sessions")
@@ -846,8 +855,8 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
             ),
         )
         .unwrap();
-    host.realizer
-        .cleanup
+    host.realization_executor
+        .effects()
         .acknowledge_terminal_cleanup_preparation(&host.mcp, &effect)
         .await;
     let awaken_session_state_contract::SessionTerminalCleanupAction::Dispose { command } =
@@ -867,9 +876,9 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
             .realizations()
             .update_realization(thread, |r| r.environment.owner = wrong)
             .expect("installed Sessions");
-        host.realizer
-            .cleanup
-            .dispose_terminal_cleanup_effect(&host.realizer, disposal.clone())
+        host.realization_executor
+            .effects()
+            .dispose_terminal_cleanup_effect(host.realization_executor.peers(), disposal.clone())
             .await
             .expect_err("U6 wrong ownership cannot dispose");
         assert!(output.exists(), "U6 rejected Disposal keeps physical bytes");
@@ -880,25 +889,25 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         .expect("installed Sessions");
     let mut stale_disposal = disposal.clone();
     stale_disposal.lease.epoch += 1;
-    host.realizer
-        .cleanup
-        .dispose_terminal_cleanup_effect(&host.realizer, stale_disposal)
+    host.realization_executor
+        .effects()
+        .dispose_terminal_cleanup_effect(host.realization_executor.peers(), stale_disposal)
         .await
         .expect_err("U6 foreign realization cannot dispose");
     assert!(same_owner(), "U6 denied effects retain original owner");
     assert!(output.exists(), "U6 stale Disposal keeps physical bytes");
     let first_disposal = host
-        .realizer
-        .cleanup
-        .dispose_terminal_cleanup_effect(&host.realizer, disposal.clone())
+        .realization_executor
+        .effects()
+        .dispose_terminal_cleanup_effect(host.realization_executor.peers(), disposal.clone())
         .await
         .expect("U3 exact aggregate-authorized Unbound disposal");
     assert!(!output.exists(), "U3 real physical bytes removed");
     assert!(same_owner(), "U3 retain until durable acknowledgement");
     let receipt = host
-        .realizer
-        .cleanup
-        .dispose_terminal_cleanup_effect(&host.realizer, disposal.clone())
+        .realization_executor
+        .effects()
+        .dispose_terminal_cleanup_effect(host.realization_executor.peers(), disposal.clone())
         .await
         .expect("U4 replay physical Disposal after response loss");
     assert_eq!(first_disposal, receipt, "U4 stable disposal receipt");
@@ -911,8 +920,8 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
             "unmaterialized replay",
         )
         .unwrap();
-    host.realizer
-        .cleanup
+    host.realization_executor
+        .effects()
         .acknowledge_terminal_cleanup_disposal(&host.mcp, &disposal)
         .await;
     assert!(
@@ -955,8 +964,10 @@ async fn cold_checkpoint_disposal_cannot_seed_an_owner_without_preparation() {
     );
     let authorization = source_disposal_authorization(&operation.effect_id);
     let error = host
-        .realizer
+        .realization_executor
+        .environments()
         .dispose_prepared_checkpoint_source_environment(
+            host.realization_executor.peers(),
             thread,
             &operation,
             &generation,
@@ -970,7 +981,8 @@ async fn cold_checkpoint_disposal_cannot_seed_an_owner_without_preparation() {
         "R20/E1: {error}"
     );
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment_owner_is_vacant(thread)
             .expect("installed Sessions"),
         "R20/E2"

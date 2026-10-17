@@ -207,7 +207,8 @@ async fn published_agent_receives_managed_filesystem_skill_discovery() {
         );
     }
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("published-skill-thread")
             .await
             .expect("installed Sessions")
@@ -264,7 +265,8 @@ async fn published_agent_receives_managed_filesystem_skill_discovery() {
     assert!(!missing_system.contains("release-signal"), "S2");
     assert!(
         missing_host
-            .realizer
+            .realization_executor
+            .environments()
             .session_environment("selected-without-delivery")
             .await
             .expect("installed Sessions")
@@ -379,7 +381,8 @@ async fn direct_on_tool_use_brain_skill_adapter_keeps_the_environment_absent() {
         "L2/E2 canonical Skill catalog: {tool_results:?}"
     );
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment(thread)
             .await
             .expect("installed Sessions")
@@ -504,7 +507,8 @@ async fn managed_session_ignores_unbound_host_skill_sources() {
         "A1/E1 no unbound filesystem Skill prompt"
     );
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("managed-no-frozen-skill")
             .await
             .expect("installed Sessions")
@@ -560,7 +564,8 @@ async fn on_tool_use_runtime_hand_call_materializes_before_tool_execution() {
     .await
     .unwrap();
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("deferred-runtime-hand")
             .await
             .expect("installed Sessions")
@@ -693,7 +698,8 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         .expect("L10/E2 exact pinned read");
     assert_eq!(read.text().as_bytes(), version.skill_md().unwrap());
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("deferred-managed-filesystem-skill")
             .await
             .expect("installed Sessions")
@@ -712,7 +718,8 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         "L11 executes the pinned script after materialization"
     );
     let environment = host
-        .realizer
+        .realization_executor
+        .environments()
         .session_environment("deferred-managed-filesystem-skill")
         .await
         .expect("installed Sessions")
@@ -770,8 +777,8 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         "L12 marker must leave the pinned Skill read-only"
     );
     let active = host
-        .realizer
-        .staging
+        .realization_executor
+        .staging()
         .thread_resource_manifest("deferred-managed-filesystem-skill")
         .expect("installed Sessions")
         .unwrap();
@@ -897,7 +904,8 @@ async fn on_tool_use_legacy_delivered_filesystem_skill_forces_an_eager_environme
         "L8 unselected catalog remains deferred"
     );
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("deferred-legacy-delivered-skill")
             .await
             .expect("installed Sessions")

@@ -1,5 +1,6 @@
 //! Original projection and recovery integration tests.
 use super::*;
+use awaken_session_realization::peers::EnvironmentPeer as _;
 #[cfg(test)]
 mod tests {
     use super::super::tests::{RecoveryControl, RecoveryEnvironmentBindingSink, frozen_projection};
@@ -398,7 +399,7 @@ mod tests {
         .expect("DH1 install complete durable projection");
         if !successor_cancellations.is_empty() {
             assert_eq!(
-                host.realizer.sandbox_spec(thread).mounts.len(),
+                host.realization_executor.sandbox_spec(thread).mounts.len(),
                 1,
                 "MC-M complete frozen projection stages the Memory requirement before Create"
             );
@@ -455,12 +456,14 @@ mod tests {
                 .await
                 .expect("installed Sessions");
             let effect = host
-                .realizer
+                .realization_executor
+                .environments()
                 .authorize_environment_effect_before_io(
+                    host.realization_executor.peers(),
                     thread,
                     &host
-                        .realizer
-                        .execution
+                        .realization_executor
+                        .authority()
                         .new_environment_effect_intent(
                             thread,
                             awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
@@ -472,17 +475,18 @@ mod tests {
                 .unwrap();
             let fence = effect.provider_fence.as_ref().unwrap();
             let authority = host
-                .realizer
-                .execution
+                .realization_executor
+                .authority()
                 .provider_effect_authority(thread, fence)
                 .unwrap();
             let environment = Arc::new(
-                host.realizer
-                    .env
+                host.realization_executor
+                    .environments()
+                    .providers()
                     .session_provider
                     .realizer()
                     .create_effective_for_effect(
-                        &host.realizer.sandbox_spec(thread),
+                        &host.realization_executor.sandbox_spec(thread),
                         crate::session_environment::ProviderEffect::Fenced {
                             fence,
                             authority: &authority,
@@ -494,8 +498,10 @@ mod tests {
                     .unwrap(),
             );
             let candidate = host
-                .realizer
+                .realization_executor
+                .environments()
                 .begin_session_environment_preparation(
+                    host.realization_executor.peers(),
                     thread,
                     environment,
                     Some(effect.authorization.intent()),
@@ -505,11 +511,13 @@ mod tests {
                 .persist_environment_before_publish(thread, &candidate)
                 .await
                 .unwrap();
-            host.realizer
+            host.realization_executor
+                .environments()
                 .retain_committed_session_environment_candidate(thread, &candidate, identity)
                 .unwrap();
             assert!(
-                host.realizer
+                host.realization_executor
+                    .environments()
                     .session_environment(thread)
                     .await
                     .expect("installed Sessions")
@@ -594,7 +602,8 @@ mod tests {
             .unwrap();
             assert!(Arc::ptr_eq(&original, &owned_environment()));
             assert_eq!(
-                host.realizer
+                host.realization_executor
+                    .environments()
                     .session_environment(thread)
                     .await
                     .expect("installed Sessions")
@@ -648,7 +657,8 @@ mod tests {
             // the same Candidate; it is not permission to delete its root.
             for _ in 0..2 {
                 assert!(
-                    host.realizer
+                    host.realization_executor
+                        .environments()
                         .retire_session_environment_for_revocation(
                             thread,
                             (&host.mcp, host.installed_sessions.as_ref()),
@@ -758,7 +768,8 @@ mod tests {
                 );
                 assert!(Arc::ptr_eq(&original, &owned_environment()));
                 assert_eq!(
-                    host.realizer
+                    host.realization_executor
+                        .environments()
                         .session_environment(thread)
                         .await
                         .expect("installed Sessions")
@@ -886,7 +897,7 @@ mod tests {
                     if projection.environment.binding().is_none() {
                         // UC1 has no invented dispatch binding: ordinary lazy
                         // Tool entry recovers the retained physical owner.
-                        host.realizer
+                        host.realization_executor
                             .ensure_session_environment_for_tool(thread)
                             .await
                             .expect("UC1/MC ordinary lazy Environment recovery");
@@ -932,7 +943,8 @@ mod tests {
                     .prepared_session_environment(thread)
                     .expect("MC cancelled successor retains Candidate");
                 assert!(
-                    host.realizer
+                    host.realization_executor
+                        .environments()
                         .session_environment(thread)
                         .await
                         .expect("installed Sessions")
@@ -972,7 +984,8 @@ mod tests {
         }
 
         let rebuilt = host
-            .realizer
+            .realization_executor
+            .environments()
             .session_environment(thread)
             .await
             .expect("installed Sessions")
@@ -1168,17 +1181,19 @@ mod tests {
         String,
         std::path::PathBuf,
     ) {
-        let staging = &host.realizer.staging;
+        let staging = host.realization_executor.staging();
         let provider = host
-            .realizer
+            .realization_executor
+            .environments()
             .projected_session_environment_provider(thread, None)
             .expect("select frozen provider for LegacyDirect fixture");
         let spec = staging
             .sandbox_spec_for_provider(thread, provider)
             .expect("installed Sessions");
         let environment = Arc::new(
-            host.realizer
-                .create_session_environment(provider, &spec)
+            host.realization_executor
+                .environments()
+                .create_session_environment(host.realization_executor.peers(), provider, &spec)
                 .await
                 .expect("create marker-free LegacyDirect V1 owner"),
         );
@@ -1210,7 +1225,8 @@ mod tests {
         {
             let _lifecycle = lifecycle.lock().await;
             assert!(
-                host.realizer
+                host.realization_executor
+                    .environments()
                     .retire_session_environment_for_revocation(
                         thread,
                         (&host.mcp, host.installed_sessions.as_ref()),
@@ -1324,7 +1340,8 @@ mod tests {
             "CR1/E1 old owner is closed and no successor exists"
         );
         assert!(
-            host.realizer
+            host.realization_executor
+                .environments()
                 .session_environment(thread)
                 .await
                 .expect("installed Sessions")
@@ -1391,8 +1408,9 @@ mod tests {
         managed.install_test_environment_binding_sink(sink.clone());
         let snapshot = test_activation(thread, run).snapshot;
         host.register_thread_agent_projection(thread, snapshot.root_agent_id.0.as_str());
-        host.realizer
-            .publication
+        host.realization_executor
+            .environments()
+            .publication()
             .retain_session_publication(thread, Some(&snapshot))
             .unwrap();
         host.install_environment_projection(thread, &eager_environment())
@@ -1551,8 +1569,8 @@ mod tests {
             })
             .expect("RA1 retained slot caches");
         let cached_resources = host
-            .realizer
-            .staging
+            .realization_executor
+            .staging()
             .thread_resource_manifest(thread)
             .expect("installed Sessions");
 
@@ -1646,8 +1664,8 @@ mod tests {
             "RA1/E2 publication, lease, Environment, and MCP caches are unchanged"
         );
         assert_eq!(
-            host.realizer
-                .staging
+            host.realization_executor
+                .staging()
                 .thread_resource_manifest(thread)
                 .expect("installed Sessions"),
             cached_resources,

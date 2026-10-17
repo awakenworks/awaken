@@ -268,8 +268,8 @@ async fn retire_component_current(
     host: &crate::SharedHost,
     session: &str,
 ) -> Result<bool, crate::realization_error::RealizationError> {
-    host.realizer
-        .environments
+    host.realization_executor
+        .environments()
         .retire_session_environment_for_revocation(
             session,
             (&host.mcp, host.installed_sessions.as_ref()),
@@ -323,9 +323,8 @@ async fn successful_retirement_cannot_remove_a_successor_session_relay_route() {
         canonical.install(session);
         assert!(Arc::ptr_eq(
             &host
-                .realizer
-                .environments
-                .sessions
+                .realization_executor
+                .sessions()
                 .realization_lock(session)
                 .expect("installed Session"),
             &canonical

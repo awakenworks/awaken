@@ -58,13 +58,14 @@ async fn install_test_session_init_mounts_an_effective_memory_resource() {
         .install_test_session_init("t-bound", bare("a"))
         .await
         .unwrap();
-    let dump = serde_json::to_string(&host.realizer.sandbox_spec("t-bound").mounts).unwrap();
+    let dump =
+        serde_json::to_string(&host.realization_executor.sandbox_spec("t-bound").mounts).unwrap();
     assert!(
         dump.contains("mnt/memory"),
         "the bound memory store is mounted at its path: {dump}"
     );
     assert_eq!(
-        memory_mount_store_id(&host.realizer.sandbox_spec("t-bound").mounts[0]),
+        memory_mount_store_id(&host.realization_executor.sandbox_spec("t-bound").mounts[0]),
         store_id
     );
 
@@ -81,7 +82,7 @@ async fn install_test_session_init_mounts_an_effective_memory_resource() {
         .await
         .unwrap();
     assert_eq!(
-        host.realizer.sandbox_spec("t-read-only").mounts[0].access,
+        host.realization_executor.sandbox_spec("t-read-only").mounts[0].access,
         awaken_provisioning_contract::MountAccess::ReadOnly
     );
 
@@ -90,7 +91,8 @@ async fn install_test_session_init_mounts_an_effective_memory_resource() {
         .install_test_session_init("t-unbound", bare("no-bindings"))
         .await
         .unwrap();
-    let empty = serde_json::to_string(&host.realizer.sandbox_spec("t-unbound").mounts).unwrap();
+    let empty =
+        serde_json::to_string(&host.realization_executor.sandbox_spec("t-unbound").mounts).unwrap();
     assert!(
         !empty.contains("BANANA-42"),
         "an unbound agent mounts nothing extra: {empty}"
@@ -233,7 +235,8 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         .unwrap();
 
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("semantic-memory")
             .await
             .expect("installed Sessions")
@@ -241,7 +244,7 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         "M1/E1"
     );
     assert!(
-        host.realizer
+        host.realization_executor
             .sandbox_spec("semantic-memory")
             .mounts
             .is_empty(),
@@ -273,7 +276,8 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         "M1/E1 fail closed"
     );
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("semantic-memory")
             .await
             .expect("installed Sessions")
@@ -311,7 +315,8 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         "M1/E3 model descriptor reaches the bound executor through host.run"
     );
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("semantic-memory")
             .await
             .expect("installed Sessions")
@@ -343,7 +348,8 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         runtime_fetch.new_messages
     );
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("semantic-memory")
             .await
             .expect("installed Sessions")
@@ -472,7 +478,8 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         "M6 preserves the Session-owned semantic Memory tools"
     );
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("semantic-memory")
             .await
             .expect("installed Sessions")
@@ -544,7 +551,12 @@ async fn activation_applies_current_resource_state_as_a_deny_only_overlay() {
         .unwrap_err();
 
     assert!(error.message.contains("not active"));
-    assert!(host.realizer.sandbox_spec("t-suspended").mounts.is_empty());
+    assert!(
+        host.realization_executor
+            .sandbox_spec("t-suspended")
+            .mounts
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -601,7 +613,7 @@ async fn memory_activation_enforces_catalog_workspace_without_iam_policy_logic()
         .unwrap_err();
     assert!(error.message.contains("not found"));
     assert!(
-        host.realizer
+        host.realization_executor
             .sandbox_spec("wrong-workspace")
             .mounts
             .is_empty()
@@ -679,7 +691,7 @@ async fn install_test_session_init_mounts_effective_file_and_stages_effective_re
 
     // The exact bytes and their content identity cross the neutral mount contract;
     // no UTF-8 conversion can corrupt binary input.
-    let spec = host.realizer.sandbox_spec("t-multi");
+    let spec = host.realization_executor.sandbox_spec("t-multi");
     let mount = &spec.mounts[0];
     assert_eq!(mount.mount_path, "/mnt/session/uploads/mnt/files/notes.txt");
     assert_eq!(mount.access, MountAccess::ReadOnly);
@@ -695,8 +707,8 @@ async fn install_test_session_init_mounts_effective_file_and_stages_effective_re
 
     // The repo is staged for a host-side clone (not a byte mount).
     let repositories = host
-        .realizer
-        .staging
+        .realization_executor
+        .staging()
         .thread_repository_activations("t-multi");
     assert_eq!(
         repositories.len(),
@@ -773,21 +785,21 @@ async fn complete_projection_preserves_the_canonical_repository_path_without_rel
         .await
         .expect("compile the exact cold Repository transition");
     let activations = host
-        .realizer
-        .staging
+        .realization_executor
+        .staging()
         .thread_repository_activations("canonical-repository-path");
     assert_eq!(activations.len(), 1, "one exact Repository activation");
     assert_eq!(activations[0].plan.mount_path, "/workspace/repo");
     assert!(
-        host.realizer
-            .staging
+        host.realization_executor
+            .staging()
             .thread_resource_manifest("canonical-repository-path")
             .expect("installed Sessions")
             .is_none(),
         "staging is not physical completion"
     );
     assert!(
-        host.realizer
+        host.realization_executor
             .sandbox_spec("canonical-repository-path")
             .mounts
             .is_empty(),
@@ -995,7 +1007,8 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             error.message
         );
         assert!(
-            host.realizer
+            host.realization_executor
+                .environments()
                 .session_environment(session_id)
                 .await
                 .expect("installed Sessions")
@@ -1015,7 +1028,8 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     }
     realization.expect("P1 realize Session Environment");
     let environment = host
-        .realizer
+        .realization_executor
+        .environments()
         .session_environment(session_id)
         .await
         .expect("installed Sessions")
@@ -1211,7 +1225,8 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             slot.run.context = None;
         });
         assert!(
-            host.realizer
+            host.realization_executor
+                .environments()
                 .session_environment(session_id)
                 .await
                 .expect("installed Sessions")
@@ -1229,9 +1244,10 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             .sandbox_effect_fence(command.effect_id.clone())
             .unwrap();
         let ordinary = host
-            .realizer
+            .realization_executor
+            .environments()
             .prepare_bound_environment_for_effect_under_lifecycle(
-                &host.realizer.cleanup,
+                host.realization_executor.peers(),
                 session_id,
                 binding,
                 &publication_fence,
@@ -1295,7 +1311,8 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             "P7 exact physical target"
         );
         assert!(
-            host.realizer
+            host.realization_executor
+                .environments()
                 .session_environment(session_id)
                 .await
                 .expect("installed Sessions")
@@ -1355,7 +1372,8 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     git(&divergent, &["commit", "-am", "remote changed"]);
     git(&divergent, &["push", "origin", "awf/work"]);
     assert_eq!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment(session_id)
             .await
             .expect("installed Sessions")
@@ -1475,7 +1493,8 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     );
     assert!(
         replacement_host
-            .realizer
+            .realization_executor
+            .environments()
             .session_environment(session_id)
             .await
             .expect("installed Sessions")
@@ -1537,7 +1556,8 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     );
     assert!(
         replacement_host
-            .realizer
+            .realization_executor
+            .environments()
             .session_environment(session_id)
             .await
             .expect("installed Sessions")

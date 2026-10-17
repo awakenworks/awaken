@@ -180,8 +180,8 @@ async fn file_staging_passes_one_exact_prepared_fence_to_one_source_read() {
         let result = (dependencies)
             .build()
             .expect("validated Host dependencies")
-            .realizer
-            .staging
+            .realization_executor
+            .staging()
             .stage_resolved_input(
                 "workspace",
                 &input,
@@ -256,8 +256,8 @@ async fn terminal_repository_guard_rejects_file_before_any_source_read() {
     );
     let error = match runtime
         .host
-        .realizer
-        .staging
+        .realization_executor
+        .staging()
         .stage_terminal_repository_publication_input(
             "workspace",
             &command,

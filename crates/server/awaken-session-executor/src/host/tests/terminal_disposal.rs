@@ -73,12 +73,12 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     // Stage representative resource/config projections before realizing the
     // exact durable V2 Sandbox. Terminal cleanup must erase all of them so
     // reusing the opaque thread id cannot inherit stale scope or model state.
-    host.realizer
-        .staging
+    host.realization_executor
+        .staging()
         .register_thread_memory("t-end", None)
         .expect("installed Sessions");
-    host.realizer
-        .staging
+    host.realization_executor
+        .staging()
         .register_thread_resources("t-end", crate::staged_resources::StagedResources::default());
     host.register_thread_model("t-end", "private-model");
     let mut lease = crate::session_resource::SessionRealizationLease {
@@ -94,7 +94,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     let physical = host
         .test_local_provider()
         .create_sandbox_for_effect(
-            &host.realizer.sandbox_spec("t-end"),
+            &host.realization_executor.sandbox_spec("t-end"),
             &create_fence,
             None,
             &awaken_provisioning_contract::test_support::EffectAuthority::new(&create_fence),
@@ -122,8 +122,14 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         idle_since_unix_ms: None,
     };
     let candidate = host
-        .realizer
-        .begin_session_environment_preparation("t-end", env.clone(), None)
+        .realization_executor
+        .environments()
+        .begin_session_environment_preparation(
+            host.realization_executor.peers(),
+            "t-end",
+            env.clone(),
+            None,
+        )
         .expect("retain the exact terminal-test candidate");
     host.install_session_environment_owner_projection(
         "t-end",
@@ -137,7 +143,8 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     };
     match initial {
         "resident" => {
-            host.realizer
+            host.realization_executor
+                .environments()
                 .publish_prepared_session_environment("t-end", &candidate, identity)
                 .expect("publish the exact terminal-test Environment owner");
             host.ctx_for("t-end", None)
@@ -145,7 +152,8 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
                 .expect("cache the Runtime");
         }
         "committed-hidden" | "committed-conflict" => {
-            host.realizer
+            host.realization_executor
+                .environments()
                 .retain_committed_session_environment_candidate("t-end", &candidate, identity)
                 .expect("retain actual Store-read identity without publication");
         }
@@ -234,7 +242,8 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
             .expect("installed Sessions")
             .unwrap();
         let _lifecycle = lifecycle.lock().await;
-        host.realizer
+        host.realization_executor
+            .environments()
             .retire_session_environment_for_revocation(
                 "t-end",
                 (&host.mcp, host.installed_sessions.as_ref()),
@@ -293,7 +302,8 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
             "U4 no physical delete"
         );
         assert!(
-            host.realizer
+            host.realization_executor
+                .environments()
                 .session_environment("t-end")
                 .await
                 .expect("installed Sessions")
@@ -326,7 +336,8 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         "T1/E2 exact owner is hidden from tools but retained for Disposal"
     );
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("t-end")
             .await
             .expect("installed Sessions")
@@ -367,7 +378,8 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         "terminal cleanup evicts the cached ctx"
     );
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment("t-end")
             .await
             .expect("installed Sessions")
@@ -585,8 +597,8 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
 
         let disposal_effect = terminal_disposal_effect(preparation, lease.clone(), &projection);
         let expected_authorization = host
-            .realizer
-            .cleanup
+            .realization_executor
+            .effects()
             .disposal_authorization(&disposal_effect)
             .unwrap();
 
@@ -770,7 +782,7 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
         host.installed_sessions
             .realizations()
             .update_realization(child, |r| {
-                r.cleanup.root = Some(session_id.into());
+                r.effects.root = Some(session_id.into());
             })
             .expect("installed Sessions");
     }
@@ -779,7 +791,7 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
     host.installed_sessions
         .realizations()
         .update_realization(foreign, |r| {
-            r.cleanup.root = Some("replacement-root".into());
+            r.effects.root = Some("replacement-root".into());
         })
         .expect("installed Sessions");
 
@@ -806,16 +818,16 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
             .unwrap(),
         lease.clone(),
     );
-    host.realizer
-        .cleanup
+    host.realization_executor
+        .effects()
         .acknowledge_terminal_cleanup_preparation(&host.mcp, &completed_child)
         .await;
     assert!(
         !host.installed_sessions.contains("terminal-retire-done"),
         "P1/E1"
     );
-    host.realizer
-        .cleanup
+    host.realization_executor
+        .effects()
         .acknowledge_terminal_cleanup_preparation(&host.mcp, &completed_child)
         .await;
     assert!(
@@ -835,8 +847,8 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
             .unwrap(),
         lease.clone(),
     );
-    host.realizer
-        .cleanup
+    host.realization_executor
+        .effects()
         .acknowledge_terminal_cleanup_preparation(&host.mcp, &stale_foreign)
         .await;
     assert!(host.installed_sessions.contains(foreign), "P3/E3");
@@ -850,13 +862,13 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
             .unwrap(),
         lease,
     );
-    host.realizer
-        .cleanup
+    host.realization_executor
+        .effects()
         .acknowledge_terminal_cleanup_preparation(&host.mcp, &root)
         .await;
     assert!(host.installed_sessions.contains(session_id), "P4/E4");
-    host.realizer
-        .cleanup
+    host.realization_executor
+        .effects()
         .retire_completed_terminal_cleanup_projection(&host.mcp, session_id, &root.lease)
         .await
         .expect("installed Sessions");
@@ -959,7 +971,8 @@ async fn terminal_quiescence_rejects_an_unstarted_cancelled_reservation_without_
         "T1/E1+E2"
     );
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment(&session.0)
             .await
             .expect("installed Sessions")
@@ -1305,7 +1318,8 @@ async fn coordinator_terminal_quiescence_waits_for_remote_parent_and_child_settl
         "Q2/E2"
     );
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment(&parent.0)
             .await
             .expect("installed Sessions")
@@ -1387,7 +1401,10 @@ async fn checkpoint_source_disposal_separates_preparation_and_current_authority(
                 expires_at_unix_ms: 20_000,
             }
         };
-        let handle = terminal_fixture_container_handle(thread, &host.realizer.sandbox_spec(thread));
+        let handle = terminal_fixture_container_handle(
+            thread,
+            &host.realization_executor.sandbox_spec(thread),
+        );
         let (state, preparation, prepared) =
             disposing_terminal_environment(thread, &prepared_lease, &handle, "durable-checkpoint");
         let mut session = awaken_session_state_contract::PersistedSession::frozen_with_budget(
@@ -1413,14 +1430,15 @@ async fn checkpoint_source_disposal_separates_preparation_and_current_authority(
         assert_eq!(authorization.effect_fence().owner(), current_lease.owner);
         assert_eq!(authorization.effect_fence().epoch(), current_lease.epoch);
         let environment_provider = host
-            .realizer
+            .realization_executor
+            .environments()
             .projected_session_environment_provider(thread, None)
             .unwrap();
         let environment = Arc::new(
             environment_provider
                 .terminal()
                 .prepare_terminal_effective_for_effect(
-                    &host.realizer.sandbox_spec(thread),
+                    &host.realization_executor.sandbox_spec(thread),
                     Some(&handle),
                     None,
                     &preparation.sandbox_effect_fence().unwrap(),
@@ -1578,7 +1596,8 @@ async fn checkpoint_source_disposal_separates_preparation_and_current_authority(
             assert_eq!(receipt.source_binding, disposal.source_binding());
             assert!(receipt.terminated);
             assert!(
-                host.realizer
+                host.realization_executor
+                    .environments()
                     .session_environment_owner_is_vacant(thread)
                     .expect("installed Sessions")
             );

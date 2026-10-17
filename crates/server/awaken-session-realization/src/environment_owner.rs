@@ -394,3 +394,34 @@ impl SessionEnvironmentOwner {
         }
     }
 }
+
+/// Borrowed inputs for one terminal Environment installation phase. The
+/// aggregate effect fence, provider spec, handle, and optional restore fence
+/// remain their canonical value objects; this context owns no lifecycle fact.
+pub struct TerminalEnvironmentInstallation<'a> {
+    pub thread: &'a str,
+    pub binding: Option<&'a str>,
+    pub committed_candidate: Option<&'a UnboundSessionEnvironment>,
+    pub provider: &'a crate::session_environment::SessionEnvironmentProvider,
+    pub spec: &'a awaken_provisioning_contract::SandboxSpec,
+    pub handle: Option<&'a awaken_provisioning_contract::SandboxHandle>,
+    pub expected_effect_fence: Option<&'a awaken_provisioning_contract::SandboxEffectFence>,
+    pub effect_fence: &'a awaken_provisioning_contract::SandboxEffectFence,
+}
+
+pub struct EnvironmentBindingPersistenceError {
+    pub error: RealizationError,
+    /// Store-read proof that the root binding committed before a later
+    /// derivative dispatch-cache edge failed. The lifecycle owner consumes
+    /// this only to retain the same hidden Candidate under durable identity.
+    pub committed_identity: Option<BoundSessionEnvironmentIdentity>,
+}
+
+impl From<RealizationError> for EnvironmentBindingPersistenceError {
+    fn from(error: RealizationError) -> Self {
+        Self {
+            error,
+            committed_identity: None,
+        }
+    }
+}

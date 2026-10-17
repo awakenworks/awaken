@@ -5,6 +5,7 @@
 use super::*;
 use awaken_session_configuration_contract::mcp as session_mcp;
 use awaken_session_configuration_contract::resource as session_resource;
+use awaken_session_realization::peers::EnvironmentPeer as _;
 
 async fn install_active_worker_relay(
     host: &SharedHost,
@@ -99,7 +100,8 @@ async fn conflicting_revocation_preserves_active_worker_relay_until_compatible_d
     let (relay, mcp_generation) = install_active_worker_relay(&host, thread).await;
     let route_before = relay.route_url(&mcp_generation).unwrap();
     let terminal = host
-        .realizer
+        .realization_executor
+        .environments()
         .retire_current_environment(
             thread,
             SessionEnvironmentRetirementCause::Terminal {
@@ -187,13 +189,15 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
     host.installed_sessions.replace_frozen_with(thread, |next| {
         next.published_snapshot = Some(snapshot.clone())
     });
-    host.realizer.staging.register_thread_resources(
-        thread,
-        crate::staged_resources::StagedResources {
-            mounts: vec![retry_input_mount()],
-            ..Default::default()
-        },
-    );
+    host.realization_executor
+        .staging()
+        .register_thread_resources(
+            thread,
+            crate::staged_resources::StagedResources {
+                mounts: vec![retry_input_mount()],
+                ..Default::default()
+            },
+        );
     let environment_projection = awaken_session_configuration_contract::EnvironmentSnapshot {
         environment_id: thread.into(),
         revision: awaken_environment_contract::EnvironmentRevision(1),
@@ -225,7 +229,7 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
     .expect("C1 pending owner");
     let (relay, mcp_generation) = install_active_worker_relay(&host, thread).await;
     let route_before = relay.route_url(&mcp_generation).unwrap();
-    let spec_before = host.realizer.sandbox_spec(thread);
+    let spec_before = host.realization_executor.sandbox_spec(thread);
     let lifecycle = host
         .installed_sessions
         .realizations()
@@ -234,7 +238,8 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
         .unwrap();
     let _lifecycle = lifecycle.lock().await;
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .retire_session_environment_for_revocation(
                 thread,
                 (&host.mcp, host.installed_sessions.as_ref()),
@@ -245,7 +250,8 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
         "R19/E1"
     );
     assert_eq!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .durable_environment_binding(thread)
             .expect("installed Sessions")
             .as_deref(),
@@ -253,7 +259,7 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
         "R20/E2"
     );
     assert_eq!(
-        host.realizer.sandbox_spec(thread),
+        host.realization_executor.sandbox_spec(thread),
         spec_before,
         "R20/E3 mounts/projection"
     );
@@ -327,13 +333,15 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
     host.installed_sessions.replace_frozen_with(thread, |next| {
         next.published_snapshot = Some(snapshot.clone())
     });
-    host.realizer.staging.register_thread_resources(
-        thread,
-        crate::staged_resources::StagedResources {
-            mounts: vec![retry_input_mount()],
-            ..Default::default()
-        },
-    );
+    host.realization_executor
+        .staging()
+        .register_thread_resources(
+            thread,
+            crate::staged_resources::StagedResources {
+                mounts: vec![retry_input_mount()],
+                ..Default::default()
+            },
+        );
     host.install_test_resident_session_environment(thread, environment.clone());
     let generation = awaken_session_state_contract::SandboxGeneration::new(
         &awaken_session_types::SessionId::from(thread),
@@ -361,7 +369,7 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
         .realizations()
         .close_mcp_realization_admission(thread, fence.clone())
         .unwrap();
-    let spec_before = host.realizer.sandbox_spec(thread);
+    let spec_before = host.realization_executor.sandbox_spec(thread);
     let lifecycle = host
         .installed_sessions
         .realizations()
@@ -369,7 +377,8 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
         .expect("installed Sessions")
         .unwrap();
     let _lifecycle = lifecycle.lock().await;
-    host.realizer
+    host.realization_executor
+        .environments()
         .retire_session_environment_for_revocation(
             thread,
             (&host.mcp, host.installed_sessions.as_ref()),
@@ -405,7 +414,7 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
         "E1"
     );
     assert_eq!(
-        host.realizer.sandbox_spec(thread),
+        host.realization_executor.sandbox_spec(thread),
         spec_before,
         "E2 SandboxSpec"
     );
@@ -560,11 +569,15 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
         let host = host.clone();
         let binding = binding.clone();
         tokio::spawn(async move {
-            host.realizer
+            host.realization_executor
                 .adopt_bound_session_environment(
                     thread,
                     Some(&binding),
-                    &host.realizer.env.session_provider,
+                    &host
+                        .realization_executor
+                        .environments()
+                        .providers()
+                        .session_provider,
                     None,
                     false,
                 )
@@ -587,7 +600,8 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
         .prepared_session_environment(thread)
         .expect("R19/E1 hidden Candidate before cancellation");
     assert!(
-        host.realizer
+        host.realization_executor
+            .environments()
             .session_environment(thread)
             .await
             .expect("installed Sessions")
@@ -608,10 +622,14 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
     sink.unblock();
     let disposition = tokio::time::timeout(
         std::time::Duration::from_secs(2),
-        host.realizer.adopt_bound_session_environment(
+        host.realization_executor.adopt_bound_session_environment(
             thread,
             Some(&binding),
-            &host.realizer.env.session_provider,
+            &host
+                .realization_executor
+                .environments()
+                .providers()
+                .session_provider,
             None,
             false,
         ),
@@ -625,7 +643,8 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
         "R20/E3 no by-value duplicate or rebuild path"
     );
     let resident = host
-        .realizer
+        .realization_executor
+        .environments()
         .session_environment(thread)
         .await
         .expect("installed Sessions")

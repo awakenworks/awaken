@@ -23,7 +23,7 @@ pub(super) async fn assemble(
     mut resources: ContextResources,
     requested_purpose: RuntimeContextPurpose,
 ) -> Result<PreparedContext, HostError> {
-    let realizations = &host.realizer.environments.sessions;
+    let realizations = host.realization_executor.sessions();
     let env = &resources.env;
     let authorization = &resources.authorization;
     let has_published_multiagent = resources.has_published_multiagent;
@@ -349,7 +349,7 @@ pub(super) async fn assemble(
     let attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
         Arc::new(crate::run_exec::ArtifactHarvestAttemptExecutor::new(
             attempt_executor,
-            Arc::downgrade(&host.realizer.cleanup.artifacts),
+            Arc::downgrade(host.realization_executor.effects().artifacts()),
         ));
     // The foreground delivery seam (slice C/D): a Run's execution goes through
     // the selected delivery path rather than calling the Runtime loop directly. Direct
@@ -406,7 +406,8 @@ pub(super) async fn assemble(
     let workspace_id = host.thread_workspace(thread).to_owned();
     let (environment_generation, resource_origin) = match env.as_ref() {
         Some(environment) => host
-            .realizer
+            .realization_executor
+            .environments()
             .resident_environment_activity_identity(thread, environment)?,
         None => ("brain".to_string(), None),
     };
