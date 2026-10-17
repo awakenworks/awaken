@@ -124,7 +124,7 @@ impl SessionRecoveryInterests {
                     }
                 )));
         let local_realization = !session.is_terminal()
-            && realization::environment_admits_realization_effects(&session.environment)
+            && session.environment.admits_realization_effects()
             && !session.requires_external_environment_owner();
         let dispatch_projection = !session.is_terminal()
             && session.needs_initial_realization_recovery()
