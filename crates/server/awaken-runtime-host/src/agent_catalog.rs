@@ -15,13 +15,17 @@
 //! `ExecutableAgentSnapshot::builder` or `awaken-config-store::compile`). It never reaches
 //! a store, a model, or the kernel — the sub-run driver reads it to resolve an id.
 
-#[cfg(test)]
-use awaken_dispatch_execution::run_publications::{
-    exact_run_publication_source, freeze_run_publications,
-};
 use std::collections::HashMap;
 
+use awaken_runtime_contract::auxiliary_agents::{AuxiliaryAgentDeclaration, RunPublicationClosure};
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
+
+/// The publication closure of every Run this executor runs: the auxiliary
+/// Agents of the plugins it composes, declared by those plugins.
+pub(crate) const RUN_PUBLICATIONS: RunPublicationClosure<'static> = RunPublicationClosure::new(&[
+    &awaken_ext_memory::MemoryAuxiliaryAgents as &dyn AuxiliaryAgentDeclaration,
+    &awaken_ext_compact::CompactAuxiliaryAgents,
+]);
 
 /// Resolve one auxiliary Agent through the same Coordinator publication source
 /// as a foreground Session. The built-in snapshot is only the absent-publication
@@ -266,7 +270,8 @@ mod tests {
             .model(ModelBinding::new("default", "stub", "default"))
             .build();
         assert!(
-            freeze_run_publications(&defaults, None, "workspace")
+            RUN_PUBLICATIONS
+                .freeze(&defaults, None, "workspace")
                 .expect("default auxiliary Agents have deterministic built-ins")
                 .is_empty(),
             "P1/E1"
@@ -300,7 +305,8 @@ mod tests {
         let source =
             awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new(publications.clone())
                 .expect("three exact auxiliary publications");
-        let frozen = freeze_run_publications(&custom, Some(&source), "workspace")
+        let frozen = RUN_PUBLICATIONS
+            .freeze(&custom, Some(&source), "workspace")
             .expect("all explicit auxiliary publications are available");
         assert_eq!(
             frozen
@@ -319,7 +325,8 @@ mod tests {
                     .cloned(),
             )
             .expect("remaining publications are complete snapshots");
-            let error = freeze_run_publications(&custom, Some(&incomplete), "workspace")
+            let error = RUN_PUBLICATIONS
+                .freeze(&custom, Some(&incomplete), "workspace")
                 .expect_err("a custom auxiliary publication cannot fall back");
             assert!(error.contains(missing), "P3/E3: {error}");
         }
@@ -353,7 +360,7 @@ mod tests {
                 .plugin_config([(plugin_id.to_string(), plugin_config)])
                 .model(ModelBinding::new("default", "stub", "default"))
                 .build();
-            let error = match freeze_run_publications(&root_self, None, "workspace") {
+            let error = match RUN_PUBLICATIONS.freeze(&root_self, None, "workspace") {
                 Ok(frozen) => panic!("P4/E4 {role} self unexpectedly froze {frozen:?}"),
                 Err(error) => error,
             };
@@ -389,7 +396,8 @@ mod tests {
             awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([delegate.clone()])
                 .expect("one delegate owner publication");
         assert_eq!(
-            freeze_run_publications(&root_to_delegate, Some(&source), "workspace")
+            RUN_PUBLICATIONS
+                .freeze(&root_to_delegate, Some(&source), "workspace")
                 .expect("a different owner may fill a compatible auxiliary role"),
             vec![delegate],
             "P5/E5 root to delegate"
@@ -422,7 +430,8 @@ mod tests {
         let source =
             awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([delegate_self])
                 .expect("delegate self publication");
-        let error = freeze_run_publications(&root, Some(&source), "workspace")
+        let error = RUN_PUBLICATIONS
+            .freeze(&root, Some(&source), "workspace")
             .expect_err("a delegated owner cannot select itself as auxiliary");
         assert!(
             error.contains("delegate-self") && error.contains("select itself"),
@@ -453,7 +462,8 @@ mod tests {
         let source =
             awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([delegate_to_root])
                 .expect("delegate back-edge publication");
-        let error = freeze_run_publications(&root, Some(&source), "workspace")
+        let error = RUN_PUBLICATIONS
+            .freeze(&root, Some(&source), "workspace")
             .expect_err("the activation root cannot enter the non-root source");
         assert!(
             error.contains("activation root"),
@@ -493,7 +503,8 @@ mod tests {
             delegate_b.clone(),
         ])
         .expect("two compatible delegate publications");
-        let frozen = freeze_run_publications(&root, Some(&source), "workspace")
+        let frozen = RUN_PUBLICATIONS
+            .freeze(&root, Some(&source), "workspace")
             .expect("one delegate may fill another compatible auxiliary role");
         assert_eq!(
             frozen
@@ -536,9 +547,9 @@ mod tests {
             .model(ModelBinding::new("default", "stub", "default"))
             .build();
 
-        let source =
-            exact_run_publication_source(&root, std::slice::from_ref(&auxiliary), "workspace")
-                .expect("H1 exact non-root closure");
+        let source = RUN_PUBLICATIONS
+            .exact_source(&root, std::slice::from_ref(&auxiliary), "workspace")
+            .expect("H1 exact non-root closure");
         use awaken_runtime_contract::PublishedAgentSnapshotSource as _;
         assert!(
             source.current("workspace", &root.root_agent_id).is_none(),
@@ -550,20 +561,24 @@ mod tests {
             "H1/E1"
         );
         assert!(
-            exact_run_publication_source(&root, &[], "workspace").is_err(),
+            RUN_PUBLICATIONS
+                .exact_source(&root, &[], "workspace")
+                .is_err(),
             "H2/E2"
         );
         assert!(
-            exact_run_publication_source(
-                &root,
-                &[auxiliary.clone(), config("extra", "extra")],
-                "workspace",
-            )
-            .is_err(),
+            RUN_PUBLICATIONS
+                .exact_source(
+                    &root,
+                    &[auxiliary.clone(), config("extra", "extra")],
+                    "workspace",
+                )
+                .is_err(),
             "H3/E2"
         );
         assert!(
-            exact_run_publication_source(&root, &[auxiliary.clone(), auxiliary], "workspace",)
+            RUN_PUBLICATIONS
+                .exact_source(&root, &[auxiliary.clone(), auxiliary], "workspace",)
                 .is_err(),
             "H4/E2"
         );

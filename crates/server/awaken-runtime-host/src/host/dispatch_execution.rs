@@ -16,6 +16,15 @@ use awaken_session_realization_contract::{
     FrozenSessionProjection, ObservedSessionRealizationLease,
 };
 
+/// The one construction of this Host's claimed-run resolver. The local pool
+/// and the Coordinator-only terminal reconciler both resolve through it.
+pub(crate) fn session_worker_resolver(host: &Arc<SharedHost>) -> SessionWorkerResolver<SharedHost> {
+    SessionWorkerResolver {
+        host: Arc::downgrade(host),
+        publication_closure: crate::agent_catalog::RUN_PUBLICATIONS,
+    }
+}
+
 #[async_trait::async_trait]
 impl SessionDispatch for SharedHost {
     async fn drive_claimed_projection(

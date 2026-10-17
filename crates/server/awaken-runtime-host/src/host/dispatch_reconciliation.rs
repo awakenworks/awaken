@@ -816,9 +816,7 @@ mod tests {
                     )
                     .unwrap();
                 }
-                let resolver = SessionWorkerResolver {
-                    host: Arc::downgrade(&host),
-                };
+                let resolver = crate::host::session_worker_resolver(&host);
                 let completed = reconcile_committed_terminals(&resolver, 8).await.unwrap();
                 if ["nonterminal", "live", "unbound-source"].contains(&rule) {
                     assert!(completed.is_empty(), "{rule}");
@@ -1137,9 +1135,7 @@ mod tests {
         coordinator.execution.local = crate::LocalExecution::RemoteWorkersOnly;
         let coordinator = (coordinator).build().expect("validated Host dependencies");
         let host = coordinator;
-        let resolver = SessionWorkerResolver {
-            host: Arc::downgrade(&host),
-        };
+        let resolver = crate::host::session_worker_resolver(&host);
 
         let parked = claim(
             &store,
@@ -1289,9 +1285,7 @@ mod tests {
             .await
             .expect("special claim")
             .expect("exhausted row claims");
-        let resolver = SessionWorkerResolver {
-            host: Arc::downgrade(&host),
-        };
+        let resolver = crate::host::session_worker_resolver(&host);
         assert_eq!(
             resolver
                 .worker_for_retry_exhausted(&claimed)
@@ -1400,9 +1394,7 @@ mod tests {
         .await
         .expect("commit logical child in parent partition");
 
-        let resolver = SessionWorkerResolver {
-            host: Arc::downgrade(&host),
-        };
+        let resolver = crate::host::session_worker_resolver(&host);
         let reconciled = reconcile_committed_terminals(&resolver, 8)
             .await
             .expect("reconcile child");

@@ -67,7 +67,7 @@ pub(super) async fn prepare(
         let frozen = installed
             .as_ref()
             .map(|root| {
-                awaken_dispatch_execution::run_publications::freeze_run_publications(
+                crate::agent_catalog::RUN_PUBLICATIONS.freeze(
                     root,
                     host.agent.agent_publications.as_deref(),
                     &workspace,

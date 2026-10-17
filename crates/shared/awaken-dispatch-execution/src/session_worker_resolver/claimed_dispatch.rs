@@ -401,17 +401,19 @@ where
                 })
                 .map_err(map_admission_error)?;
         }
-        let claimed_source = crate::run_publications::exact_run_publication_source(
-            &claimed.request.activation.snapshot,
-            &claimed.request.agent_publications,
-            publication_workspace,
-        )
-        .map_err(|error| {
-            execution_error(format!(
-                "run {} has an invalid Agent publication closure: {error}",
-                claimed.lease.run_id().0
-            ))
-        })?;
+        let claimed_source = self
+            .publication_closure
+            .exact_source(
+                &claimed.request.activation.snapshot,
+                &claimed.request.agent_publications,
+                publication_workspace,
+            )
+            .map_err(|error| {
+                execution_error(format!(
+                    "run {} has an invalid Agent publication closure: {error}",
+                    claimed.lease.run_id().0
+                ))
+            })?;
         let (canonical_session_realization, dispatched_mcp_stages) =
             Self::install_claimed_dispatch(host.as_ref(), claimed).await?;
         // A complete frozen Session projection owns MCP realization regardless

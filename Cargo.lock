@@ -1080,8 +1080,6 @@ dependencies = [
  "awaken-credential-contract",
  "awaken-dispatch-erasure",
  "awaken-environment-contract",
- "awaken-ext-compact",
- "awaken-ext-memory",
  "awaken-lease-contract",
  "awaken-lease-testkit",
  "awaken-observability",

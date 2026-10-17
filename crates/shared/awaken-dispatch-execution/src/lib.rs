@@ -78,7 +78,6 @@ pub use execution_recovery::{
 
 pub mod model_capability;
 pub mod placement;
-pub mod run_publications;
 pub mod session_envelope;
 pub mod session_execution;
 pub mod session_reconciliation;

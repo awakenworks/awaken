@@ -140,9 +140,8 @@ impl SharedHost {
             // this Host owns only its process-local claimer.
             return Ok(());
         };
-        let resolver: Arc<dyn WorkerResolver<AnyDispatchStore>> = Arc::new(SessionWorkerResolver {
-            host: Arc::downgrade(self),
-        });
+        let resolver: Arc<dyn WorkerResolver<AnyDispatchStore>> =
+            Arc::new(crate::host::session_worker_resolver(self));
         let config = self.dispatch.execution.dispatch_service_config();
         let concurrency = sizing.slots().get();
         // On the Postgres backend with a typed PgNotify or NATS wake selection,
@@ -258,9 +257,7 @@ impl SharedHost {
             return false;
         };
         let resolver: Arc<dyn awaken_dispatch_execution::WorkerResolver<AnyDispatchStore>> =
-            Arc::new(SessionWorkerResolver {
-                host: Arc::downgrade(self),
-            });
+            Arc::new(crate::host::session_worker_resolver(self));
         let wake = self
             .authority
             .dispatch_wake()

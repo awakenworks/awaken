@@ -110,6 +110,7 @@ mod completion;
 mod coordination;
 mod credential_capabilities;
 mod dispatch_execution;
+pub(crate) use dispatch_execution::session_worker_resolver;
 #[cfg(test)]
 mod dispatch_reconciliation;
 mod foreground_run;

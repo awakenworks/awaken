@@ -42,8 +42,8 @@ impl SharedHost {
             .execution_scope
             .as_ref()
             .map_or_else(|| self.local_workspace(), |scope| scope.0.0.as_str());
-        let frozen_publications =
-            awaken_dispatch_execution::run_publications::exact_run_publication_source(
+        let frozen_publications = crate::agent_catalog::RUN_PUBLICATIONS
+            .exact_source(
                 &dispatch.activation.snapshot,
                 &dispatch.agent_publications,
                 workspace,

@@ -215,6 +215,20 @@ pub type awaken_runtime_contract::attempt_termination::ActiveNativeAttemptCovera
 pub const awaken_runtime_contract::attempt_termination::ActiveNativeAttemptCoverage::KEY: &'static str
 pub const awaken_runtime_contract::attempt_termination::ActiveNativeAttemptCoverage::MERGE: awaken_agent_contract::agent::state::MergePolicy
 pub const awaken_runtime_contract::attempt_termination::ActiveNativeAttemptCoverage::SCOPE: awaken_agent_contract::agent::state::Scope
+pub mod awaken_runtime_contract::auxiliary_agents
+pub struct awaken_runtime_contract::auxiliary_agents::AuxiliaryAgentSelection
+pub awaken_runtime_contract::auxiliary_agents::AuxiliaryAgentSelection::agent_id: alloc::string::String
+pub awaken_runtime_contract::auxiliary_agents::AuxiliaryAgentSelection::default_agent_id: &'static str
+impl awaken_runtime_contract::auxiliary_agents::AuxiliaryAgentSelection
+pub fn awaken_runtime_contract::auxiliary_agents::AuxiliaryAgentSelection::is_custom(&self) -> bool
+pub struct awaken_runtime_contract::auxiliary_agents::RunPublicationClosure<'a>
+impl<'a> awaken_runtime_contract::auxiliary_agents::RunPublicationClosure<'a>
+pub fn awaken_runtime_contract::auxiliary_agents::RunPublicationClosure<'a>::exact_source(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, &[awaken_runtime_contract::snapshot::ExecutableAgentSnapshot], &str) -> core::result::Result<alloc::sync::Arc<awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots>, alloc::string::String>
+pub fn awaken_runtime_contract::auxiliary_agents::RunPublicationClosure<'a>::freeze(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, core::option::Option<&dyn awaken_runtime_contract::resolver::PublishedAgentSnapshotSource>, &str) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, alloc::string::String>
+pub const fn awaken_runtime_contract::auxiliary_agents::RunPublicationClosure<'a>::new(&'a [&'a dyn awaken_runtime_contract::auxiliary_agents::AuxiliaryAgentDeclaration]) -> Self
+pub trait awaken_runtime_contract::auxiliary_agents::AuxiliaryAgentDeclaration: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::auxiliary_agents::AuxiliaryAgentDeclaration::auxiliary_agents(&self, core::option::Option<&serde_json::value::Value>) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::auxiliary_agents::AuxiliaryAgentSelection>, alloc::string::String>
+pub fn awaken_runtime_contract::auxiliary_agents::AuxiliaryAgentDeclaration::plugin_id(&self) -> &'static str
 pub mod awaken_runtime_contract::boundary
 pub enum awaken_runtime_contract::boundary::BoundaryOutcome
 pub awaken_runtime_contract::boundary::BoundaryOutcome::Await

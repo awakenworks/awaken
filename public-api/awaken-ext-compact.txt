@@ -38,6 +38,10 @@ pub fn awaken_ext_compact::fold::fold_point(usize, usize, bool) -> core::option:
 pub fn awaken_ext_compact::fold::prefetch_fold_point(usize, u64, u32, f64, usize) -> core::option::Option<usize>
 pub fn awaken_ext_compact::fold::token_fold_point(u64, u32, usize, usize) -> core::option::Option<usize>
 pub mod awaken_ext_compact::plugin
+pub struct awaken_ext_compact::plugin::CompactAuxiliaryAgents
+impl awaken_runtime_contract::auxiliary_agents::AuxiliaryAgentDeclaration for awaken_ext_compact::plugin::CompactAuxiliaryAgents
+pub fn awaken_ext_compact::plugin::CompactAuxiliaryAgents::auxiliary_agents(&self, core::option::Option<&serde_json::value::Value>) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::auxiliary_agents::AuxiliaryAgentSelection>, alloc::string::String>
+pub fn awaken_ext_compact::plugin::CompactAuxiliaryAgents::plugin_id(&self) -> &'static str
 pub struct awaken_ext_compact::plugin::CompactPlugin
 impl awaken_ext_compact::plugin::CompactPlugin
 pub fn awaken_ext_compact::plugin::CompactPlugin::new(awaken_ext_compact::config::CompactConfig) -> Self
@@ -53,6 +57,10 @@ pub awaken_ext_compact::CompactArtifact::covered_messages: usize
 pub awaken_ext_compact::CompactArtifact::key: alloc::string::String
 pub awaken_ext_compact::CompactArtifact::scope: alloc::string::String
 pub awaken_ext_compact::CompactArtifact::summary: alloc::string::String
+pub struct awaken_ext_compact::CompactAuxiliaryAgents
+impl awaken_runtime_contract::auxiliary_agents::AuxiliaryAgentDeclaration for awaken_ext_compact::plugin::CompactAuxiliaryAgents
+pub fn awaken_ext_compact::plugin::CompactAuxiliaryAgents::auxiliary_agents(&self, core::option::Option<&serde_json::value::Value>) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::auxiliary_agents::AuxiliaryAgentSelection>, alloc::string::String>
+pub fn awaken_ext_compact::plugin::CompactAuxiliaryAgents::plugin_id(&self) -> &'static str
 pub struct awaken_ext_compact::CompactConfig
 pub awaken_ext_compact::CompactConfig::agent_id: alloc::string::String
 pub awaken_ext_compact::CompactConfig::agent_instructions: core::option::Option<alloc::string::String>

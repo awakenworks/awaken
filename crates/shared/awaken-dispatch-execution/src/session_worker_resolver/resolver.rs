@@ -11,6 +11,9 @@ use super::{
 /// pool's drains idle out.
 pub struct SessionWorkerResolver<T> {
     pub host: std::sync::Weak<T>,
+    /// The publication closure every claimed Run's carried publications must match.
+    pub publication_closure:
+        awaken_runtime_contract::auxiliary_agents::RunPublicationClosure<'static>,
 }
 
 impl<T> SessionWorkerResolver<T>

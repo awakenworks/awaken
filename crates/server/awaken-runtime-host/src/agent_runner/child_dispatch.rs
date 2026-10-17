@@ -42,12 +42,9 @@ pub(crate) fn child_dispatch_request(
             ));
         }
     };
-    let child_publications = awaken_dispatch_execution::run_publications::freeze_run_publications(
-        &activation.snapshot,
-        publication_source,
-        workspace,
-    )
-    .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
+    let child_publications = crate::agent_catalog::RUN_PUBLICATIONS
+        .freeze(&activation.snapshot, publication_source, workspace)
+        .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
     let inference_holder =
         awaken_dispatch_execution::placement::self_hosted_inference_holder(&activation)
             .map_err(|error| AgentRunError::Configuration(error.to_string()))?;

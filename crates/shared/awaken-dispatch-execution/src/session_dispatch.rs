@@ -15,6 +15,7 @@ pub struct DispatchPreparation<'a> {
     sessions: awaken_session_realization::session_realizations::SessionRealizations,
     local_workspace: &'a str,
     agent_publications: Option<&'a dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
+    publication_closure: awaken_runtime_contract::auxiliary_agents::RunPublicationClosure<'static>,
     local_execution: bool,
     model_configured: bool,
 }
@@ -51,6 +52,9 @@ impl<'a> DispatchPreparation<'a> {
         sessions: awaken_session_realization::session_realizations::SessionRealizations,
         local_workspace: &'a str,
         agent_publications: Option<&'a dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
+        publication_closure: awaken_runtime_contract::auxiliary_agents::RunPublicationClosure<
+            'static,
+        >,
         local_execution: bool,
         model_configured: bool,
     ) -> Self {
@@ -59,6 +63,7 @@ impl<'a> DispatchPreparation<'a> {
             sessions,
             local_workspace,
             agent_publications,
+            publication_closure,
             local_execution,
             model_configured,
         }
@@ -131,16 +136,18 @@ impl<'a> DispatchPreparation<'a> {
         }
         let thread = self.activation.thread_id.0.clone();
         let workspace = self.sessions.workspace(&thread, self.local_workspace)?;
-        let agent_publications = crate::run_publications::freeze_run_publications(
-            &self.activation.snapshot,
-            self.agent_publications,
-            &workspace,
-        )
-        .map_err(|error| {
-            AdmissionError::rejected(format!(
-                "cannot freeze Agent execution publications: {error}"
-            ))
-        })?;
+        let agent_publications = self
+            .publication_closure
+            .freeze(
+                &self.activation.snapshot,
+                self.agent_publications,
+                &workspace,
+            )
+            .map_err(|error| {
+                AdmissionError::rejected(format!(
+                    "cannot freeze Agent execution publications: {error}"
+                ))
+            })?;
         let (resources, runtime_projection, is_session_dispatch) =
             self.installed_dispatch(&thread)?;
         let activation = self.activation;
