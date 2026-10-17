@@ -38,6 +38,7 @@ import _cancel_safety_fitness
 import _context_map_fitness
 import _contract_map_fitness
 import _crate_separation_fitness
+import _dispatch_boundary_fitness
 import _dependency_use_fitness
 import _modularity_fitness
 import _module_layer_fitness
@@ -1753,6 +1754,7 @@ def check() -> int:
     _managed_protocol_boundary.selftest()
     _provider_env_fitness.selftest()
     _realization_error_fitness.selftest()
+    _dispatch_boundary_fitness.selftest()
     _realization_permit_fitness.selftest()
     _ownership_fence_fitness.selftest()
     _wire_closure_fitness.selftest()
@@ -1798,6 +1800,7 @@ def check() -> int:
         + _cancel_safety_fitness.check_all(REPO_ROOT, CRATES)
         + _provider_env_fitness.check_all(REPO_ROOT, CRATES)
         + _realization_error_fitness.check_all(REPO_ROOT)
+        + _dispatch_boundary_fitness.check_all()
         + _realization_permit_fitness.check_all(REPO_ROOT)
         + _ownership_fence_fitness.check_all(REPO_ROOT)
         + _arch_fitness.check_all(architecture_fitness_specs())
