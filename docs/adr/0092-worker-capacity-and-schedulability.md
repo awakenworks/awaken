@@ -88,7 +88,9 @@ manifest cannot receive work; but it sits in the registry until its lease expire
 Workdir, Docker and Podman advertise capabilities no probe established.
 
 The dispatch side already has the return path this record needs. A claim whose
-resolution fails without a terminal class is deferred with `defer_claim`
+resolution reports pressure rather than a failure is deferred with `defer_claim`
+(since 2026-10-18 a classified failed attempt instead spends one attempt through
+`retry_claim`, ADR-0015 amendment)
 (`awaken-dispatch-execution/src/pool.rs:1201`): the exact claim returns to pending until
 a store-owned deadline, with request bytes, priority, retry budget and any physical
 attempt slot preserved (`run-ingress-contract/src/dispatch/queue.rs:230`), and the pool

@@ -4,7 +4,8 @@
 - Date: 2026-06-30
 - Depends on: ADR-0009, ADR-0011
 - Amends: ADR-0018 D4 (a poison run is no longer dead-lettered automatically; recorded 2026-10-09)
-- Amended: 2026-10-09 (records that D2/D3 and the title were revised in place)
+- Amended: 2026-10-09 (records that D2/D3 and the title were revised in place);
+  2026-10-18 (D1 also counts classified failed attempts)
 
 ## Context
 
@@ -92,3 +93,34 @@ Quarantine is dispatch operations state, not a terminal Run outcome.
 - Stale text elsewhere that still assumes automatic dead-lettering: the
   `DispatchState::DeadLetter` comment (`.../dispatch/model.rs:383`) and
   [ADR-0018](0018-priority-dedupe-gc.md) D4.
+
+## Amendment 2026-10-18: classified failed attempts spend the same budget
+
+A failure classified once as `Retry` (a conflict, an unclassified internal
+fault, an unavailable dependency, lost or pending authority) used to return
+its claim through `defer_claim`, which keeps the budget, so it was retried
+every backoff period forever. D1 now reads: `attempt_count` counts crashed
+attempts **and** classified failed attempts, and the budget still resets on
+`settle(Awaiting)`.
+
+- `DispatchExecution::retry_claim(claim, retry_after_ms, max_attempts)` is the
+  release after a failed attempt. It spends one attempt behind the same retry
+  deadline as `defer_claim`. Below `max_attempts` the row returns to `pending`.
+  The attempt that reaches it leaves the row `running` under an expired lease,
+  so D2's `claim_retry_exhausted` commits `Ended(Indeterminate)` exactly as for
+  a crash. There is no second budget and no automatic dead letter. Behind a
+  predecessor's occupied slot the row stays in recovery, whose re-claim spends
+  the attempt, so it is never counted twice. The Worker transport applies the
+  Coordinator's own `max_attempts`.
+- `defer_claim` stays budget-free and means "not a failure, try later":
+  capacity refusals (ADR-0092), a busy Session Work slot, a fenced claim, a
+  pending settlement observation and queue-storage faults.
+- The pool chooses the release from the failure class alone
+  (`awaken-dispatch-execution` `Error::claim_release`): `Execution` → `retry_claim`;
+  `ResolutionNotReady`, `SettlementObservationPending` and `Dispatch` →
+  `defer_claim`; `TerminalResolution` before execution is still absorbed.
+- An Idle Session's failed re-realization keeps the Session Idle and spends no
+  realization budget. Its bound is this dispatch budget: the Run ends
+  `Indeterminate` and the Session stays usable.
+- The "returns a terminal error" consequence is unchanged: such a Run still
+  settles `Done` at once.
