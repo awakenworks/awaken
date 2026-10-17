@@ -14,6 +14,7 @@ mod effect_intent;
 mod generation;
 mod materialization;
 mod receipt_admission;
+mod transition;
 
 use crate::SessionId;
 pub use continuation::{
@@ -36,6 +37,12 @@ use receipt_admission::reservation_binding_is_monotonic;
 pub use receipt_admission::{
     SessionEnvironmentReceiptError, SessionEnvironmentReceiptRecoveryAction,
     SessionEnvironmentTransitionError,
+};
+pub use transition::{
+    MaterializationKind, RealizationLeaseStanding, SessionEnvironmentDecision,
+    SessionEnvironmentEvent, SessionEnvironmentFacts, SessionEnvironmentInstruction,
+    SessionEnvironmentRejection, SessionEnvironmentStep, SessionTerminality,
+    transition_environment,
 };
 
 /// Stable effect identity. Recovery always reuses this value rather than

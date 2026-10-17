@@ -1,0 +1,9 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = []
+production_entrypoints = []
+
+[[bounds]]
+text = '''Every step change decided by the production transition_environment kernel over its complete closed fact and event domain is one declared edge, and Resident is entered only from Unmaterialized by a materialization receipt or the legacy claim binding, or from Restoring by its restore receipt; Suspending and Hibernated never reach Resident without Restoring. Receipt identity and generation checks remain with the existing receipt-admission proofs.'''
