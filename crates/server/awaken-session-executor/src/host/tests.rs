@@ -2577,4 +2577,7 @@ use awaken_dispatch_contract::{
     DispatchClaims as _, DispatchEnqueue as _, DispatchSettlement as _, InboxRead as _,
 };
 
+mod close_edge_selection;
 mod interruption_selection;
+
+mod terminal_recovery_selection;

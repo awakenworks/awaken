@@ -212,8 +212,8 @@ async fn interrupt_with_admission_suspended(
     let ctx = host.ctx_for(thread, None).await.expect("resident Session");
     assert!(
         !ctx.delivery.is_durable()
-            && ctx.active_run.lock().unwrap().is_none()
-            && ctx.cancel.lock().unwrap().is_none(),
+            && !ctx.foreground.has_run().unwrap()
+            && ctx.foreground.observe().unwrap().cancellation.is_none(),
         "C3 Managed Event execution has no foreground control hint"
     );
     let interrupted = InterruptedManagedRun {

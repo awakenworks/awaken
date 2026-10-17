@@ -24,8 +24,9 @@ use crate::store::HostCommit;
 /// recovery, restrictions, and parsing remain in `awaken-ext-goal`.
 pub(crate) struct HostAgentGrader<'a> {
     pub(crate) host: &'a SharedHost,
-    pub(crate) worker_cancel:
-        Arc<std::sync::Mutex<Option<awaken_runtime_contract::CancellationToken>>>,
+    /// The foreground record of the Outcome's Session, which interrupting
+    /// that Session signals; the grader lends its attempt signal to it.
+    pub(crate) session_foreground: Arc<crate::host::ForegroundRunRecord>,
 }
 
 #[async_trait::async_trait]
@@ -70,7 +71,7 @@ impl Grader for HostAgentGrader<'_> {
         .map_err(|error| GraderError::Execution(error.to_string()))?;
         tracing::debug!(thread = %thread.0, "Outcome grader context ready");
         let executor = BoundRunExecutor::new(self.host, context.clone())
-            .with_cancellation_mirror(self.worker_cancel.clone());
+            .lending_cancellation_to(self.session_foreground.clone());
         AgentGrader::new(&executor, context.commit.as_ref(), RuntimeRunContext::new())
             .grade(snapshot, input)
             .await
@@ -273,7 +274,7 @@ mod tests {
         let thread = grader_thread_id(&input.outcome_id, input.iteration);
         let grade = HostAgentGrader {
             host: host.as_ref(),
-            worker_cancel: Arc::new(std::sync::Mutex::new(None)),
+            session_foreground: Arc::default(),
         }
         .grade(&snapshot, &input)
         .await
@@ -339,7 +340,7 @@ mod tests {
             .expect("literal model reference");
         let result = HostAgentGrader {
             host: host.as_ref(),
-            worker_cancel: Arc::new(std::sync::Mutex::new(None)),
+            session_foreground: Arc::default(),
         }
         .grade(&snapshot, &input)
         .await;

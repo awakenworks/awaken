@@ -151,7 +151,7 @@ impl crate::session_realizations::SessionRealizationSource for InstalledSessions
     fn finish_realization_revocation(
         &self,
         session: &str,
-        selected: &SessionRealizationRevocationSelection,
+        selected: &crate::session_realizations::SessionRealizationRevocationSelection,
         expected_owner: &awaken_session_realization::environment_owner::SessionEnvironmentOwner,
         disposed: bool,
     ) -> bool {
@@ -267,7 +267,75 @@ pub(crate) struct InstalledSessions {
     slots: Mutex<HashMap<String, InstalledSession>>,
 }
 
-pub(crate) use crate::session_realizations::SessionRealizationRevocationSelection;
+/// One closed root and the original local Run controls selected with it in
+/// the same slot mutation. This ephemeral value carries no durable or global
+/// cancellation authority; an unreadable foreground record is kept as its
+/// refusal so only a caller that must signal the Run is denied.
+pub(crate) struct ClosedSessionRealization {
+    pub(crate) root: crate::session_realizations::SessionRealizationRevocationSelection,
+    pub(crate) run: Result<
+        Option<awaken_dispatch_execution::SelectedAttemptInterruption>,
+        crate::host::ForegroundRunPoisoned,
+    >,
+    #[cfg(test)]
+    pub(crate) after_check: Option<Box<dyn FnOnce() + Send>>,
+}
+
+impl ClosedSessionRealization {
+    /// Close the root through `close` and capture its local Run controls
+    /// inside the caller's slot mutation, without another read.
+    fn select(
+        slot: &mut InstalledSession,
+        close: impl FnOnce(
+            &mut SessionRealization,
+        )
+            -> Option<crate::session_realizations::SessionRealizationRevocationSelection>,
+    ) -> Option<Self> {
+        Some(Self {
+            root: close(&mut slot.realization)?,
+            run: slot
+                .run
+                .select_interruption()
+                .map(|selected| selected.local),
+            #[cfg(test)]
+            after_check: None,
+        })
+    }
+}
+
+/// The immutable controls of one observed Run, selected before any await.
+#[derive(Default)]
+pub(crate) struct SelectedRunInterruption {
+    pub(crate) resident: Option<Arc<crate::host::SessionCtx>>,
+    pub(crate) local: Option<awaken_dispatch_execution::SelectedAttemptInterruption>,
+}
+
+impl SessionRunBinding {
+    /// Called under the original Slot lock. Lock order is Slot, foreground
+    /// record, Runtime registry; no await occurs inside it. The foreground
+    /// identity and signal are one observed value, so the selection can never
+    /// pair one Run with another attempt's signal.
+    pub(crate) fn select_interruption(
+        &self,
+    ) -> Result<SelectedRunInterruption, crate::host::ForegroundRunPoisoned> {
+        let local = match &self.context {
+            Some(ctx) => Some(
+                awaken_dispatch_execution::LiveAttemptControl::new(ctx.runtime.clone())
+                    .select_interruption(
+                        ctx.foreground.observe()?,
+                        self.dispatch_claim
+                            .as_ref()
+                            .map(|claim| claim.run_id.clone()),
+                    ),
+            ),
+            None => None,
+        };
+        Ok(SelectedRunInterruption {
+            resident: self.context.clone(),
+            local,
+        })
+    }
+}
 
 impl InstalledSessions {
     fn visit_slot<R>(
@@ -320,26 +388,47 @@ impl InstalledSessions {
             &crate::session_resource::SessionRealizationLease,
             &Arc<tokio::sync::Mutex<()>>,
         )>,
-    ) -> Option<SessionRealizationRevocationSelection> {
+    ) -> Option<ClosedSessionRealization> {
         self.modify(session, |slot| {
             if expected.is_some_and(|(_, realization)| {
                 !Arc::ptr_eq(&slot.realization.execution.phase, realization)
             }) {
                 return None;
             }
-            SessionRealizationRevocationSelection::close(
-                &mut slot.realization,
-                expected.map(|(lease, _)| lease),
-            )
+            ClosedSessionRealization::select(slot, |realization| {
+                crate::session_realizations::SessionRealizationRevocationSelection::close(
+                    realization,
+                    expected.map(|(lease, _)| lease),
+                )
+            })
+        })
+        .flatten()
+    }
+
+    /// Close this original root's generation through the realization's own
+    /// terminal-absence law and capture its local Run controls inside this
+    /// same slot mutation.
+    pub(crate) fn close_realization_generation(
+        &self,
+        session: &str,
+        lease: &crate::session_resource::SessionRealizationLease,
+        phase: &Arc<tokio::sync::Mutex<()>>,
+    ) -> Option<ClosedSessionRealization> {
+        self.modify(session, |slot| {
+            ClosedSessionRealization::select(slot, |realization| {
+                crate::session_realizations::SessionRealizationRevocationSelection::close_generation(
+                    realization,
+                    lease,
+                    phase,
+                )
+            })
         })
         .flatten()
     }
 
     /// One linearization point closes every currently installed projection
     /// before any caller may wait for an async lifecycle lock or drain.
-    pub(crate) fn close_all_realizations(
-        &self,
-    ) -> Vec<(String, SessionRealizationRevocationSelection)> {
+    pub(crate) fn close_all_realizations(&self) -> Vec<(String, ClosedSessionRealization)> {
         self.slots
             .lock()
             .expect("session runtime slots mutex poisoned")
@@ -347,8 +436,13 @@ impl InstalledSessions {
             .map(|(id, slot)| {
                 (
                     id.clone(),
-                    SessionRealizationRevocationSelection::close(&mut slot.realization, None)
-                        .expect("unconditional close always selects the current slot"),
+                    ClosedSessionRealization::select(slot, |realization| {
+                        crate::session_realizations::SessionRealizationRevocationSelection::close(
+                            realization,
+                            None,
+                        )
+                    })
+                    .expect("unconditional close always selects the current slot"),
                 )
             })
             .collect()

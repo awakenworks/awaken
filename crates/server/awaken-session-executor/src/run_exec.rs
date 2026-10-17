@@ -33,14 +33,10 @@ struct LocalAttemptAuthority {
 
 impl LocalAttemptAuthority {
     fn is_current(&self) -> bool {
-        self.session.upgrade().is_some_and(|session| {
-            session
-                .active_run
-                .lock()
-                .expect("active run mutex poisoned")
-                .as_ref()
-                == Some(&self.run_id)
-        })
+        // An unreadable foreground record cannot prove ownership: deny.
+        self.session
+            .upgrade()
+            .is_some_and(|session| session.foreground.is_current(&self.run_id).unwrap_or(false))
     }
 }
 
@@ -73,8 +69,7 @@ struct ActivationOptions {
     supersede: bool,
     associate_prepared_session: bool,
     sink: Option<Arc<dyn StreamSink>>,
-    cancellation_mirror:
-        Option<Arc<std::sync::Mutex<Option<awaken_runtime_contract::CancellationToken>>>>,
+    lends_cancellation_to: Option<Arc<crate::host::ForegroundRunRecord>>,
 }
 
 /// Persist Sandbox outputs after every completed attempt, independently of
@@ -280,8 +275,7 @@ pub(crate) struct BoundRunExecutor<'a> {
     ctx: Arc<SessionCtx>,
     supersede: bool,
     sink: Option<Arc<dyn StreamSink>>,
-    cancellation_mirror:
-        Option<Arc<std::sync::Mutex<Option<awaken_runtime_contract::CancellationToken>>>>,
+    lends_cancellation_to: Option<Arc<crate::host::ForegroundRunRecord>>,
     release_active_on_return: bool,
     associate_prepared_session: bool,
 }
@@ -293,7 +287,7 @@ impl<'a> BoundRunExecutor<'a> {
             ctx,
             supersede: false,
             sink: None,
-            cancellation_mirror: None,
+            lends_cancellation_to: None,
             release_active_on_return: true,
             associate_prepared_session: true,
         }
@@ -317,11 +311,13 @@ impl<'a> BoundRunExecutor<'a> {
         self
     }
 
-    pub(crate) fn with_cancellation_mirror(
+    /// Make this auxiliary attempt interruptible through the Session it
+    /// serves: its signal is lent to that Session's foreground record.
+    pub(crate) fn lending_cancellation_to(
         mut self,
-        mirror: Arc<std::sync::Mutex<Option<awaken_runtime_contract::CancellationToken>>>,
+        session: Arc<crate::host::ForegroundRunRecord>,
     ) -> Self {
-        self.cancellation_mirror = Some(mirror);
+        self.lends_cancellation_to = Some(session);
         self
     }
 
@@ -348,11 +344,10 @@ impl RunExecutor for BoundRunExecutor<'_> {
         }
         let activation = self.host.bind_fresh_root_tool_configuration(activation);
         let run_id = activation.run_id.clone();
-        *self
-            .ctx
-            .active_run
-            .lock()
-            .expect("active run mutex poisoned") = Some(run_id.clone());
+        let refused = |error: crate::host::ForegroundRunPoisoned| {
+            ExecutionError::Execution(HostError::from(error).to_string())
+        };
+        self.ctx.foreground.begin(run_id.clone()).map_err(refused)?;
         let result = self
             .host
             .execute_activation(
@@ -362,20 +357,13 @@ impl RunExecutor for BoundRunExecutor<'_> {
                     supersede: self.supersede,
                     associate_prepared_session: self.associate_prepared_session,
                     sink: self.sink.clone(),
-                    cancellation_mirror: self.cancellation_mirror.clone(),
+                    lends_cancellation_to: self.lends_cancellation_to.clone(),
                 },
             )
             .await
             .map_err(|error| ExecutionError::Execution(error.to_string()));
         if self.release_active_on_return {
-            let mut active_run = self
-                .ctx
-                .active_run
-                .lock()
-                .expect("active run mutex poisoned");
-            if active_run.as_ref() == Some(&run_id) {
-                *active_run = None;
-            }
+            self.ctx.foreground.release(&run_id).map_err(refused)?;
         }
         result
     }
@@ -427,7 +415,7 @@ impl SharedHost {
         ctx: &Arc<SessionCtx>,
         activation: &RunActivation,
     ) -> Result<RuntimeRunContext, HostError> {
-        let mut context = ctx.context();
+        let mut context = ctx.context(&activation.run_id)?;
         let candidates = activation
             .snapshot
             .resolved_spec
@@ -562,11 +550,16 @@ impl SharedHost {
             // The direct attempt driver opens the exact attempt scope and creates
             // a fresh LiveInbox only when the selected executor consumes one.
             let mut context = self.native_attempt_context(ctx, &activation).await?;
-            if let (Some(mirror), Some(token)) = (
-                options.cancellation_mirror.as_ref(),
+            if let (Some(session), Some(token)) = (
+                options.lends_cancellation_to.as_ref(),
                 context.cancellation.clone(),
-            ) {
-                *mirror.lock().expect("cancel mirror mutex poisoned") = Some(token);
+            ) && !session.lend_auxiliary(token)?
+            {
+                // An auxiliary attempt runs only while its Session has no
+                // foreground Run, so Session interruption always reaches it.
+                return Err(HostError::conflict(
+                    "auxiliary attempt cannot start while its Session drives a foreground Run",
+                ));
             }
             if let Some(sink) = options.sink {
                 context = context.with_stream_sink(sink);
