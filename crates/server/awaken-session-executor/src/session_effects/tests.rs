@@ -1,6 +1,6 @@
 //! Exercise the two constructor-bound MCP roles, including injected failures.
 use super::*;
-use awaken_dispatch_execution::session_execution::SessionDispatch;
+use awaken_dispatch_execution::session_execution::RunMcpAttachments as _;
 use awaken_session_realization::worker_projection::SessionProjectionExecution;
 use awaken_session_execution_contract::McpAttachmentRealizer;
 use std::sync::Mutex;
@@ -31,7 +31,7 @@ async fn ordinary_run_and_managed_session_use_distinct_mcp_admission() {
             .unwrap();
     let (url, seen) = crate::test_mcp::start(None).await;
     let stage = request("constructor-mcp-admission", &url);
-    let run = SessionDispatch::run_mcp_attachments(host.as_ref());
+    let run = &host.dispatch.run_mcp_effects;
     let session = SessionProjectionExecution::mcp_effects(host.as_ref());
     assert_eq!(host.mcp_generation_root_authority(&stage.generation), None);
     assert_eq!(
@@ -146,7 +146,7 @@ async fn configured_realizer_is_exclusive_for_both_mcp_roles() {
             .unwrap();
     let (url, seen) = crate::test_mcp::start(None).await;
     let stage = request("configured-mcp-admission", &url);
-    let run = SessionDispatch::run_mcp_attachments(host.as_ref());
+    let run = &host.dispatch.run_mcp_effects;
     let session = SessionProjectionExecution::mcp_effects(host.as_ref());
     for effects in [session, run as &dyn McpAttachmentRealizer] {
         let error = effects

@@ -1,5 +1,6 @@
 //! Integration tests for the dispatch-owned claim laws.
 use super::*;
+use crate::session_realizations::claimed_realization_continuation;
 use awaken_dispatch_execution::session_worker_resolver::claimed_session::*;
 #[cfg(test)]
 mod tests {

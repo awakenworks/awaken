@@ -5,6 +5,7 @@
 //! layout, validation mounts and prompt fragments. Provisioning and the Host's
 //! resource projection both read it; it reads neither.
 
+use awaken_session_configuration_contract::environment_projection;
 use awaken_session_configuration_contract::resource as session_resource;
 mod resource_prompt;
 
@@ -54,7 +55,7 @@ impl ManagedMountMetadata {
 
     pub fn validation_requirement(
         self,
-        environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
+        environment: Option<&environment_projection::FrozenEnvironmentInputs>,
     ) -> awaken_provisioning_contract::MountRequirement {
         let source = match &self.validation_source {
             ManagedMountValidationSource::File => {
@@ -67,10 +68,11 @@ impl ManagedMountMetadata {
                 awaken_provisioning_contract::MountSource::MemoryStore {
                     store_id: store_id.clone(),
                     materialization_reference: None,
-                    write_consistency: projected_memory_write_consistency(
-                        self.access,
-                        environment.map(|projection| &projection.idle_retention),
-                    ),
+                    write_consistency:
+                        awaken_provisioning_contract::projected_memory_write_consistency(
+                            self.access,
+                            environment.map(|projection| &projection.idle_retention),
+                        ),
                 }
             }
         };
@@ -200,7 +202,7 @@ pub fn resolved_input_effect_path(input: &session_resource::ResolvedInput) -> St
 
 pub fn resolved_input_validation_mount(
     input: &session_resource::ResolvedInput,
-    environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
+    environment: Option<&environment_projection::FrozenEnvironmentInputs>,
 ) -> Option<awaken_provisioning_contract::MountRequirement> {
     match resolved_input_layout_projection(input) {
         ManagedLayoutProjection::Mount(mount) => Some(mount.validation_requirement(environment)),
@@ -226,24 +228,4 @@ pub fn binding_layout_projection(
         mount_path: &input.mount_path,
         access: input.access,
     })
-}
-
-/// The one pure Memory consistency decision shared by validation, effectful
-/// staging, and final Sandbox assembly. Checkpoint-and-release may proceed only
-/// when writable Memory is already write-through; read-only mounts and
-/// Resident environments retain provider defaults.
-pub fn projected_memory_write_consistency(
-    access: awaken_provisioning_contract::MountAccess,
-    idle_retention: Option<&awaken_provisioning_contract::SandboxIdleRetentionPolicy>,
-) -> awaken_provisioning_contract::MemoryWriteConsistency {
-    if access == awaken_provisioning_contract::MountAccess::ReadWrite
-        && idle_retention.is_some_and(|policy| {
-            policy.mode
-                == awaken_provisioning_contract::SandboxIdleRetentionMode::CheckpointAndRelease
-        })
-    {
-        awaken_provisioning_contract::MemoryWriteConsistency::WriteThroughRequired
-    } else {
-        awaken_provisioning_contract::MemoryWriteConsistency::ProviderDefault
-    }
 }

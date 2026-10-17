@@ -89,12 +89,12 @@ impl SharedHost {
                     // accelerator as an explicit interrupt. Child/cold/remote
                     // attempts retain the durable claim path without a second
                     // process-local registry.
-                    let live_runtime = resident
+                    let live = resident
                         .as_ref()
                         .filter(|_| dispatch.thread_id == thread_id)
-                        .map(|ctx| ctx.runtime.as_ref());
-                    self.persist_dispatch_cancellation(&dispatch.run_id, live_runtime)
-                        .await?;
+                        .map(|ctx| ctx.live_control());
+                    let control = self.durable_run_control()?;
+                    control.persist_cancellation(&dispatch.run_id, live).await?;
                     if action == TerminalDispatchAction::CancelAndRejectReservation {
                         // The surrounding Session terminal transition is the
                         // absorbing authority. A still-Reserved row has no Run

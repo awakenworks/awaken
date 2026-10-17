@@ -7,6 +7,7 @@
 
 use crate::realization_error::{PendingState, RealizationError};
 use crate::staged_resources::{RepositoryActivation, ResourceBindingCheck, StagedResources};
+use awaken_session_configuration_contract::environment_projection;
 use awaken_session_configuration_contract::resource as session_resource;
 use awaken_session_realization_contract::ResourceOperationFence;
 use std::sync::Arc;
@@ -33,191 +34,6 @@ fn artifact_registry_denied(error: RealizationError) -> ArtifactPublicationError
 /// File mounts use the canonical late-attach port.
 pub fn resource_mount_is_create_time(mount: &pc::MountRequirement) -> bool {
     matches!(mount.source, pc::MountSource::MemoryStore { .. })
-}
-
-/// Apply the canonical per-mount decision after the Environment Sandbox
-/// overlay so authored mounts cannot bypass the same consistency policy.
-fn project_memory_write_consistency(
-    mounts: &mut [pc::MountRequirement],
-    environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
-) {
-    for mount in mounts {
-        if let pc::MountSource::MemoryStore {
-            write_consistency, ..
-        } = &mut mount.source
-        {
-            *write_consistency = crate::managed_input_layout::projected_memory_write_consistency(
-                mount.access,
-                environment.map(|projection| &projection.idle_retention),
-            );
-        }
-    }
-}
-
-/// Canonical projection from the frozen Session Environment into neutral
-/// provisioning vocabulary. Admission and realization both consume this value,
-/// so a Worker cannot claim requirements different from those it materializes.
-pub fn project_environment(
-    environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
-) -> crate::frozen_inputs::FrozenEnvironmentInputs {
-    let network = match &environment.network {
-        awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted => {
-            pc::NetworkPolicy::Unrestricted
-        }
-        awaken_session_configuration_contract::SessionNetworkPolicy::Allowlist { hosts } => {
-            pc::NetworkPolicy::Allowlist {
-                hosts: hosts.clone(),
-            }
-        }
-        awaken_session_configuration_contract::SessionNetworkPolicy::None => {
-            pc::NetworkPolicy::None
-        }
-    };
-    let packages = environment.prepared_image.as_ref().map_or_else(
-        || awaken_environment_contract::PackageRequirements {
-            managers: environment
-                .packages
-                .manager_packages()
-                .into_iter()
-                .filter(|(_, packages)| !packages.is_empty())
-                .map(|(manager, packages)| (manager.to_owned(), packages.to_vec()))
-                .collect(),
-            resolution_id: Some(format!(
-                "{}:{}",
-                environment.environment_id, environment.revision.0
-            )),
-        },
-        |_| awaken_environment_contract::PackageRequirements::default(),
-    );
-    let mut sandbox = environment.sandbox.clone();
-    // EnvironmentSnapshot.network is the sole reachability authority. The
-    // authoring overlay cannot become a second, late widening decision.
-    sandbox.network = None;
-    if let Some(image) = &environment.prepared_image {
-        sandbox.environment = Some(pc::EnvironmentKind::Image {
-            reference: image.clone(),
-        });
-    }
-    crate::frozen_inputs::FrozenEnvironmentInputs {
-        fingerprint: environment.config_fingerprint.clone(),
-        network,
-        packages,
-        sandbox: (!sandbox.is_empty()).then_some(sandbox),
-        provisioning: environment.sandbox_provisioning,
-        idle_retention: environment.idle_retention.clone(),
-    }
-}
-
-/// Project every Session path cause once into the two neutral views consumed by
-/// physical realization and Worker admission. The provisioning contract's
-/// [`pc::SandboxRequirements::from_spec`] remains the sole owner of concrete
-/// isolation/tool-transparency/path-fidelity fields; this Host projection only
-/// supplies the complete cause and the matching effective spec.
-#[must_use]
-pub fn session_sandbox_projection(
-    spec: &pc::SandboxSpec,
-    has_repository: bool,
-    opaque_process: bool,
-) -> (pc::SandboxSpec, pc::SandboxRequirements) {
-    let mut effective_spec = spec.clone();
-    if has_repository {
-        effective_spec
-            .control_services
-            .insert(awaken_sandbox_control::SandboxControlServiceKind::RepositoryGitCredential);
-    }
-    let requires_path_fidelity =
-        has_repository || opaque_process || spec.isolation >= pc::IsolationClass::Namespace;
-    let requirements = pc::SandboxRequirements::from_spec(&effective_spec, requires_path_fidelity);
-    // Copy the contract-owned isolation decision into the provider-visible
-    // physical spec; do not reconstruct the Namespace upgrade in the Host.
-    effective_spec.isolation = requirements.isolation;
-    (effective_spec, requirements)
-}
-
-/// Exact admission vector derived from the same canonical projection used by
-/// Session realization. Repository presence is the frozen typed resource fact;
-/// `opaque_process` distinguishes projected ACP from cooperative Native
-/// execution. All callers use this complete signature so no compatibility
-/// overload can omit one Session path cause.
-pub fn sandbox_requirements(
-    environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
-    has_repository: bool,
-    opaque_process: bool,
-) -> pc::SandboxRequirements {
-    let projection = project_environment(environment);
-    let spec = sandbox_spec_from_projection(
-        &environment.environment_id,
-        Vec::new(),
-        Vec::new(),
-        Some(&projection),
-        true,
-    );
-    session_sandbox_projection(&spec, has_repository, opaque_process).1
-}
-
-/// Scheduling demand projected through the same Environment overlay used for
-/// capability admission and eventual sandbox creation.
-pub fn sandbox_resource_requests(
-    environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
-) -> pc::ResourceRequests {
-    let projection = project_environment(environment);
-    sandbox_spec_from_projection(
-        &environment.environment_id,
-        Vec::new(),
-        Vec::new(),
-        Some(&projection),
-        true,
-    )
-    .requests
-}
-
-/// Canonical mount/env-independent Environment projection used by both Session
-/// creation and proactive capacity. Callers supply per-Session mounts and env;
-/// an empty pair therefore yields the exact poolable shape, not a second warmup
-/// approximation.
-fn sandbox_spec_from_projection(
-    scope: &str,
-    mounts: Vec<pc::MountRequirement>,
-    env: Vec<pc::EnvVar>,
-    environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
-    provider_enforces_network_isolation: bool,
-) -> pc::SandboxSpec {
-    let projected_network = environment
-        .map(|projection| projection.network.clone())
-        .unwrap_or(pc::NetworkPolicy::Unrestricted);
-    // Workdir can enforce denial only for spawned tools via its wrapper. Stronger
-    // providers retain the exact frozen policy for admission and enforcement.
-    let network = if projected_network.is_restricted() && !provider_enforces_network_isolation {
-        pc::NetworkPolicy::Unrestricted
-    } else {
-        projected_network
-    };
-    let deny_tool_egress = environment.is_some_and(|projection| projection.network.is_restricted());
-    let base = pc::SandboxSpec {
-        process_tree_supervision: false,
-        scope: scope.to_owned(),
-        isolation: pc::IsolationClass::Workdir,
-        environment: None,
-        command: Vec::new(),
-        deny_tool_egress,
-        mounts,
-        env,
-        packages: environment
-            .map(|projection| projection.packages.clone())
-            .unwrap_or_default(),
-        network,
-        outputs_path: pc::WorkspaceLayout::OUTPUTS_ROOT.to_owned(),
-        requests: pc::ResourceRequests::default(),
-        limits: pc::ResourceLimits::default(),
-        filesystem_continuity: pc::FilesystemContinuity::Retained,
-        control_services: Default::default(),
-        lease_ttl_secs: None,
-    };
-    let mut spec = environment
-        .and_then(|projection| projection.sandbox.clone())
-        .map_or(base.clone(), |sandbox| sandbox.apply(base));
-    project_memory_write_consistency(&mut spec.mounts, environment);
-    spec
 }
 
 /// An inference-only execution can omit a physical Environment only when its complete immutable
@@ -250,19 +66,6 @@ pub fn environment_free_inference(
             })
 }
 
-/// Canonical mount-less durable Session shape used by cold creation and the
-/// capacity planner. It is intentionally Retained; a concrete warm-pool owner
-/// will return zero because durable Session filesystems cannot be transferred
-/// by rebinding an in-process scope.
-pub fn default_session_sandbox_spec(scope: &str) -> pc::SandboxSpec {
-    sandbox_spec_from_projection(scope, Vec::new(), Vec::new(), None, true)
-}
-
-pub struct EnvironmentCapacityProjection {
-    pub spec: pc::SandboxSpec,
-    pub shape_id: pc::SandboxCapacityShapeId,
-}
-
 /// One ephemeral, complete input snapshot for projecting a Session's physical
 /// Sandbox layout. It is assembled at the caller's single projection point and
 /// consumed immediately; the frozen Session and process-local slot remain the
@@ -273,28 +76,8 @@ pub struct ProjectedSandboxLayout<'a> {
     pub baseline_mounts: Option<&'a [pc::MountRequirement]>,
     pub baseline_env: Option<&'a [pc::EnvVar]>,
     pub content_delivery: Option<crate::frozen_inputs::ManagedContentDelivery>,
-    pub environment: Option<&'a crate::frozen_inputs::FrozenEnvironmentInputs>,
+    pub environment: Option<&'a environment_projection::FrozenEnvironmentInputs>,
     pub network_isolation: bool,
-}
-
-/// Project one frozen Environment into both the creation request and its
-/// canonical capacity identity. Keeping them in one value prevents placement,
-/// heartbeat receipts, and pool checkout from recomputing parallel identities.
-pub fn environment_capacity_projection(
-    environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
-    provider_enforces_network_isolation: bool,
-) -> EnvironmentCapacityProjection {
-    let projection = project_environment(environment);
-    let spec = sandbox_spec_from_projection(
-        "environment-warmup",
-        Vec::new(),
-        Vec::new(),
-        Some(&projection),
-        provider_enforces_network_isolation,
-    );
-    let shape_id = pc::SandboxCapacityShapeId::from_spec(&spec)
-        .expect("Environment capacity projection is mount-less");
-    EnvironmentCapacityProjection { spec, shape_id }
 }
 
 fn mime_type_for_path(path: &str) -> &'static str {
@@ -1181,7 +964,7 @@ impl crate::resource_staging::ResourceStaging {
             .baseline_env
             .map(<[pc::EnvVar]>::to_vec)
             .map_or_else(|| self.thread_session_env(thread), Ok)?;
-        let spec = sandbox_spec_from_projection(
+        let spec = environment_projection::sandbox_spec_from_projection(
             thread,
             mounts,
             env,
@@ -1201,7 +984,7 @@ impl crate::resource_staging::ResourceStaging {
                 // every requested capability against the exact Workdir provider.
                 spec
             } else {
-                session_sandbox_projection(&spec, projection.has_repositories, false).0
+                pc::session_sandbox_projection(&spec, projection.has_repositories, false).0
             },
         )
     }

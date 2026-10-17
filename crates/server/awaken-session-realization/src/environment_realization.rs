@@ -358,7 +358,7 @@ impl crate::environment_holding::EnvironmentHolding {
                 )
             })?
             .unwrap_or(false);
-        let (spec, required) = crate::provisioning::session_sandbox_projection(
+        let (spec, required) = awaken_provisioning_contract::session_sandbox_projection(
             &spec,
             !repository_paths.is_empty(),
             opaque_process,

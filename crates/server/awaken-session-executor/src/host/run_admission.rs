@@ -39,9 +39,12 @@ impl SharedHost {
         let configured = activation.effective_model_ref() != crate::UNCONFIGURED_MODEL_REF;
         awaken_dispatch_execution::session_dispatch::DispatchPreparation::new(
             activation,
-            self.installed_sessions.realizations(),
+            Box::new(super::dispatch_execution::InstalledSessionReads(
+                self.installed_sessions.realizations(),
+            )),
             self.local_workspace(),
             self.agent.agent_publications.as_deref(),
+            crate::agent_catalog::RUN_PUBLICATIONS,
             self.runs_local_dispatch_pool(),
             configured,
         )
@@ -112,12 +115,15 @@ mod tests {
                     let denied = admitted
                         .expect("R4 a poisoned slot owner denies without unwinding")
                         .expect_err("R4 retains the original fail-closed slot owner");
+                    let poisoned_code = crate::realization_error::RealizationError::Poisoned(
+                        crate::realization_error::RealizationLock::InstalledSessions,
+                    )
+                    .code();
                     assert!(
                         matches!(
-                            denied,
-                            awaken_dispatch_execution::AdmissionError::Realization(
-                                crate::realization_error::RealizationError::Poisoned(_)
-                            )
+                            &denied,
+                            awaken_dispatch_execution::AdmissionError::Run(error)
+                                if error.code == poisoned_code.as_ref()
                         ),
                         "R4 {denied}"
                     );

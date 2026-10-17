@@ -22,4 +22,7 @@ pub use agent::{
 pub use backend::{CompactArtifact, CompactBackend, CompactRequest};
 pub use config::CompactConfig;
 pub use fold::fold_point;
-pub use plugin::{COMPACT_PLUGIN_ID, CompactPlugin, config_schema as compact_config_schema};
+pub use plugin::{
+    COMPACT_PLUGIN_ID, CompactAuxiliaryAgents, CompactPlugin,
+    config_schema as compact_config_schema,
+};

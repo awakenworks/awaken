@@ -321,13 +321,13 @@ async fn prepared_image_is_the_only_environment_to_container_image_conversion() 
     )
     .into_session_provider();
     let unprepared =
-        crate::provisioning::environment_capacity_projection(&snapshot(None), true).spec;
+        awaken_session_configuration_contract::environment_projection::environment_capacity_projection(&snapshot(None), true).spec;
     let environment = environments.create(&unprepared).await.unwrap();
     environment.lifecycle().dispose().await.unwrap();
 
     let digest = "registry.example/awaken@sha256:0123456789abcdef";
     let prepared =
-        crate::provisioning::environment_capacity_projection(&snapshot(Some(digest.into())), true)
+        awaken_session_configuration_contract::environment_projection::environment_capacity_projection(&snapshot(Some(digest.into())), true)
             .spec;
     let environment = environments.create(&prepared).await.unwrap();
     environment.lifecycle().dispose().await.unwrap();

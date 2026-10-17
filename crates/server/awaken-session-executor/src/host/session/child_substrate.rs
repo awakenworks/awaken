@@ -213,12 +213,11 @@ mod tests {
             .await
             .expect("claim S1")
             .expect("S1 available");
-        SessionWorkerResolver {
-            host: Arc::downgrade(&host),
-        }
-        .worker_for_claimed(&claimed)
-        .await
-        .expect("S1/E1 child resolve");
+        crate::host::session_worker_resolver(&host)
+            .expect("Host dispatch resolver")
+            .worker_for_claimed(&claimed)
+            .await
+            .expect("S1/E1 child resolve");
         let physical = host
             .installed_sessions
             .read(parent_thread, |slot| {

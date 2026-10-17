@@ -644,9 +644,7 @@ async fn claimed_child_terminal_memory_uses_parent_physical_commit_partition() {
                 .is_some(),
             "C1/C3 frozen child Memory publication and parent binding produce an observer"
         );
-        let resolver = SessionWorkerResolver {
-            host: Arc::downgrade(&host),
-        };
+        let resolver = crate::host::session_worker_resolver(&host).expect("Host dispatch resolver");
         let worker = resolver
             .worker_for_claimed(&claimed)
             .await

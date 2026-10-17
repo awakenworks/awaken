@@ -44,6 +44,22 @@ pub enum Error {
     Dispatch(String),
 }
 
+impl Error {
+    /// Classify one delivery to a Runtime's current attempt. Wake and pause are
+    /// live-only: an inactive attempt has no subscriber, never a durable
+    /// fallback. Every current-attempt control classifies through this one map.
+    pub fn of_attempt_delivery(
+        correlation_id: &str,
+        delivered: Result<(), ControlError>,
+    ) -> Result<(), Self> {
+        match delivered {
+            Ok(()) => Ok(()),
+            Err(ControlError::NotActive) => Err(Self::NoSubscriber(correlation_id.to_owned())),
+            Err(error) => Err(Self::Dispatch(error.to_string())),
+        }
+    }
+}
+
 /// Fail-closed live-control service (G18).
 ///
 /// Routes `Cancel`, `Pause` and `Wake` to the run identified by a correlation identifier
@@ -138,9 +154,14 @@ impl<S: Dispatch + 'static> LiveRunControlService<S> {
     /// next safe boundary. Pause is live-only: once accepted, the executor commits
     /// a durable `ManualPause` ticket that may be resumed after process replacement.
     pub async fn pause(&self, correlation_id: &str) -> Result<(), Error> {
-        LiveAttemptControl::new(self.worker.runtime().clone())
-            .pause(correlation_id)
-            .await
+        let run_id = RunId(correlation_id.to_owned());
+        Error::of_attempt_delivery(
+            correlation_id,
+            self.worker
+                .runtime()
+                .deliver_to_current_attempt(LiveCommand::Pause { run_id })
+                .await,
+        )
     }
 
     /// Deliver a `PendingBoundaryWake` nudge to the run identified by
@@ -151,9 +172,17 @@ impl<S: Dispatch + 'static> LiveRunControlService<S> {
     /// rather than silently succeeding (G5: durable-only absent on direct
     /// ingress means fail-closed, not silent-drop).
     pub async fn wake(&self, correlation_id: &str) -> Result<(), Error> {
-        LiveAttemptControl::new(self.worker.runtime().clone())
-            .wake(correlation_id)
-            .await
+        let run_id = RunId(correlation_id.to_owned());
+        Error::of_attempt_delivery(
+            correlation_id,
+            self.worker
+                .runtime()
+                .deliver_to_current_attempt(LiveCommand::Wake {
+                    run_id,
+                    reason: "live-wake".to_owned(),
+                })
+                .await,
+        )
     }
 }
 
@@ -173,101 +202,6 @@ impl LiveRunControlService<AnyDispatchStore> {
             administration: owner,
             clock,
         })
-    }
-}
-
-/// Control only the current local attempt; no durable queue mutation authority is required.
-pub struct LiveAttemptControl {
-    runtime: Arc<awaken_runtime::Runtime>,
-}
-impl LiveAttemptControl {
-    pub fn new(runtime: Arc<awaken_runtime::Runtime>) -> Self {
-        Self { runtime }
-    }
-    /// Select the original controls of one observed foreground. `foreground`
-    /// is a value the caller read under its own lock; this call takes no
-    /// Session lock and performs no await, so a caller may run it inside that
-    /// same critical section. The Runtime registration is captured now: a
-    /// later registration for the same Run cannot be signalled through it.
-    pub fn select_interruption(
-        self,
-        foreground: ForegroundRun,
-        installed_claim: Option<RunId>,
-    ) -> SelectedAttemptInterruption {
-        let registered_cancellation = foreground
-            .run
-            .as_ref()
-            .or(installed_claim.as_ref())
-            .and_then(|run| self.runtime.registered_attempt_cancellation(run));
-        SelectedAttemptInterruption {
-            foreground,
-            registered_cancellation,
-        }
-    }
-
-    pub async fn wake(&self, correlation_id: &str) -> Result<(), Error> {
-        let run_id = RunId(correlation_id.to_owned());
-        match self
-            .runtime
-            .deliver_to_current_attempt(LiveCommand::Wake {
-                run_id,
-                reason: "live-wake".to_owned(),
-            })
-            .await
-        {
-            Ok(()) => Ok(()),
-            Err(ControlError::NotActive) => Err(Error::NoSubscriber(correlation_id.to_owned())),
-            Err(e) => Err(Error::Dispatch(e.to_string())),
-        }
-    }
-    pub async fn pause(&self, correlation_id: &str) -> Result<(), Error> {
-        let run_id = RunId(correlation_id.to_owned());
-        match self
-            .runtime
-            .deliver_to_current_attempt(LiveCommand::Pause { run_id })
-            .await
-        {
-            Ok(()) => Ok(()),
-            Err(ControlError::NotActive) => Err(Error::NoSubscriber(correlation_id.to_owned())),
-            Err(error) => Err(Error::Dispatch(error.to_string())),
-        }
-    }
-}
-
-/// One observation of the foreground Run a Session drives and the signal that
-/// interrupts it. Both fields come from the same write of the observer's
-/// record, so the signal always belongs to the attempt that installed it: to
-/// `run` when present, or to an auxiliary attempt that has no Run of this
-/// Session. Holding the value grants no lock and is never re-read.
-#[derive(Clone, Debug, Default)]
-pub struct ForegroundRun {
-    pub run: Option<RunId>,
-    pub cancellation: Option<tokio_util::sync::CancellationToken>,
-}
-
-/// Immutable local controls selected for one original attempt. It carries no
-/// Dispatch administration or durable cancellation authority, and cannot
-/// reselect another attempt when its operation is delivered after an await.
-pub struct SelectedAttemptInterruption {
-    foreground: ForegroundRun,
-    registered_cancellation: Option<tokio_util::sync::CancellationToken>,
-}
-
-impl SelectedAttemptInterruption {
-    /// Original foreground identity; absent for a claim-only attempt.
-    pub fn active_run(&self) -> Option<&RunId> {
-        self.foreground.run.as_ref()
-    }
-
-    /// Signal only the captured original registration and direct/ACP tokens.
-    /// A signal is not confirmation that a process or external effect stopped.
-    pub fn interrupt(&self) {
-        if let Some(token) = &self.registered_cancellation {
-            token.cancel();
-        }
-        if let Some(token) = &self.foreground.cancellation {
-            token.cancel();
-        }
     }
 }
 
@@ -354,70 +288,6 @@ mod tests {
             self.release.notified().await;
             Ok(())
         }
-    }
-
-    #[test]
-    fn selected_local_interruption_cannot_cancel_a_replacement_registration_for_the_same_run() {
-        selected_interruption_preserves_registration_successor(true, true);
-    }
-
-    #[test]
-    fn selected_claim_interruption_keeps_its_original_registered_cancellation() {
-        selected_interruption_preserves_registration_successor(true, false);
-    }
-
-    #[test]
-    fn absent_registered_interruption_cannot_cancel_a_later_registration() {
-        selected_interruption_preserves_registration_successor(false, false);
-    }
-
-    fn selected_interruption_preserves_registration_successor(
-        originally_registered: bool,
-        direct_token: bool,
-    ) {
-        use awaken_agent_contract::agent::thread::Id as ThreadId;
-        use awaken_runtime_contract::execution::LiveInput;
-        use tokio_util::sync::CancellationToken;
-
-        // C1 real Runtime registration A or absence; C2 capture original local
-        // controls; C3 end A and register B for the very same Run ID; C4 signal
-        // C2. E1 B stays live; E2 an existing A receives its captured signal.
-        // R1 direct + A => E1+E2; R2 claim-only + A => E1+E2;
-        // R3 claim-only + absent A => E1. No registry, epoch or token is assigned
-        // through private test fields: both scopes use Runtime's public SDK API.
-        let runtime = Arc::new(Runtime::new());
-        let run = RunId("selected-local-attempt".into());
-        let thread = ThreadId("selected-local-attempt-thread".into());
-        let original = CancellationToken::new();
-        let first = originally_registered.then(|| {
-            runtime.begin_active_attempt(
-                &run,
-                &thread,
-                RuntimeRunContext::new().with_cancellation(original.clone()),
-                LiveInput::None,
-            )
-        });
-        let foreground = ForegroundRun {
-            run: direct_token.then(|| run.clone()),
-            cancellation: direct_token.then(|| original.clone()),
-        };
-        let selected = LiveAttemptControl::new(runtime.clone())
-            .select_interruption(foreground, Some(run.clone()));
-        drop(first);
-        let successor = CancellationToken::new();
-        let _second = runtime.begin_active_attempt(
-            &run,
-            &thread,
-            RuntimeRunContext::new().with_cancellation(successor.clone()),
-            LiveInput::None,
-        );
-        assert!(!original.is_cancelled() && !successor.is_cancelled());
-        selected.interrupt();
-        assert!(
-            !successor.is_cancelled(),
-            "selected local interruption reselected the successor registration for the same Run ID"
-        );
-        assert_eq!(original.is_cancelled(), originally_registered);
     }
 
     #[tokio::test]

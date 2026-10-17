@@ -48,10 +48,7 @@ pub use control_dispatch::{ControlDispatch, LocalWorkerDispatch, TerminalRecover
 pub use coordination_activation::{coordinated_activation_matches, coordinated_run_activation};
 pub use error::Error;
 pub use fenced_checkpoint::FencedStreamCheckpointStore;
-pub use live_control::{
-    Error as LiveRunControlError, ForegroundRun, LiveAttemptControl, LiveRunControlService,
-    SelectedAttemptInterruption,
-};
+pub use live_control::{Error as LiveRunControlError, LiveRunControlService};
 pub use pool::{CompletionSink, DispatchPool, DispatchReconciler, PoolDrainFence, WorkerResolver};
 pub use reconciliation::TerminalReconciliationScan;
 pub use recovery_projection::{RecoveryProjection, RecoveryProjectionError};
@@ -78,7 +75,6 @@ pub use execution_recovery::{
 
 pub mod model_capability;
 pub mod placement;
-pub mod run_publications;
 pub mod session_envelope;
 pub mod session_execution;
 pub mod session_reconciliation;

@@ -8,8 +8,8 @@ use super::test_support::{
     prepare_deferred_session, test_activation, with_empty_session_resources,
 };
 use super::*;
+use crate::host::dispatch_execution::adopt_bound_sandbox;
 use crate::host::tests::ManagedSessionRootFixture;
-use awaken_dispatch_execution::session_worker_resolver::claimed_dispatch::adopt_bound_sandbox;
 use awaken_dispatch_contract as ingress;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshotId};
@@ -84,12 +84,11 @@ async fn session_run_reservation_repair_skips_execution_realization() {
         .with_ephemeral_dispatch(store))
     .build()
     .expect("validated Host dependencies");
-    SessionWorkerResolver {
-        host: Arc::downgrade(&host),
-    }
-    .worker_for_claimed(&claimed)
-    .await
-    .expect("R1/E2 environment-free worker");
+    crate::host::session_worker_resolver(&host)
+        .expect("Host dispatch resolver")
+        .worker_for_claimed(&claimed)
+        .await
+        .expect("R1/E2 environment-free worker");
     assert!(!has_environment(&host, session_id).await, "R1/E3");
 }
 
@@ -171,9 +170,7 @@ async fn ephemeral_parent_routes_a_coordinated_child_through_the_boundary_worker
         .await
         .expect("E1 claim")
         .expect("E1 child work");
-    let resolver = SessionWorkerResolver {
-        host: Arc::downgrade(&host),
-    };
+    let resolver = crate::host::session_worker_resolver(&host).expect("Host dispatch resolver");
 
     resolver
         .worker_for_claimed(&claimed)
@@ -265,9 +262,8 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
         .await
         .expect("R1 claim root continuation")
         .expect("R1 root continuation is runnable");
-    let ephemeral_resolver = SessionWorkerResolver {
-        host: Arc::downgrade(&ephemeral),
-    };
+    let ephemeral_resolver =
+        crate::host::session_worker_resolver(&ephemeral).expect("Host dispatch resolver");
     let worker = ephemeral_resolver
         .worker_for_claimed(&claimed)
         .await
@@ -311,9 +307,8 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
         .await
         .expect("R2 durable context");
     assert!(durable_ctx.delivery.is_durable(), "R2 precondition");
-    let durable_resolver = SessionWorkerResolver {
-        host: Arc::downgrade(&durable),
-    };
+    let durable_resolver =
+        crate::host::session_worker_resolver(&durable).expect("Host dispatch resolver");
     let resolved = durable_resolver
         .worker_for(&durable_thread, None)
         .await
@@ -343,9 +338,8 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
         &clock,
     )
     .await;
-    let coordinator_resolver = SessionWorkerResolver {
-        host: Arc::downgrade(&coordinator),
-    };
+    let coordinator_resolver =
+        crate::host::session_worker_resolver(&coordinator).expect("Host dispatch resolver");
     let error = match coordinator_resolver
         .worker_for_claimed(&coordinator_claim)
         .await
@@ -403,9 +397,7 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
         .build()
         .expect("validated Root-backed Host dependencies");
     let managed = managed_test_host(host.clone());
-    let resolver = SessionWorkerResolver {
-        host: Arc::downgrade(&host),
-    };
+    let resolver = crate::host::session_worker_resolver(&host).expect("Host dispatch resolver");
     let child = awaken_runtime_contract::ExecutableAgentSnapshot::builder("researcher")
         .model(ModelBinding::new("test", "model", "native"))
         .fingerprint("researcher-v2")
@@ -498,9 +490,8 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
     );
     let missing_host = adoption_host_over(missing_store.clone()).await;
     let _missing_managed = crate::ManagedHost::new(missing_host.clone());
-    let missing_resolver = SessionWorkerResolver {
-        host: Arc::downgrade(&missing_host),
-    };
+    let missing_resolver =
+        crate::host::session_worker_resolver(&missing_host).expect("Host dispatch resolver");
     missing_store
         .enqueue(with_empty_session_resources(
             ingress::RunDispatch::new(delegated(
@@ -638,9 +629,7 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
         &claimed.request.agent_publications,
         claimed.request.activation.effective_model_ref(),
     );
-    let resolver = SessionWorkerResolver {
-        host: Arc::downgrade(&host),
-    };
+    let resolver = crate::host::session_worker_resolver(&host).expect("Host dispatch resolver");
     resolver
         .worker_for_claimed(&claimed)
         .await
@@ -743,9 +732,7 @@ async fn durable_deferred_sandbox_publication_decision_table() {
     let managed = prepare_deferred_session(host.clone(), "durable-lazy").await;
     managed.install_test_environment_binding_sink(sink.clone());
     let claimed = claim(&store, "durable-lazy", "run-lazy", "worker-a", now, &clock).await;
-    let resolver = SessionWorkerResolver {
-        host: Arc::downgrade(&host),
-    };
+    let resolver = crate::host::session_worker_resolver(&host).expect("Host dispatch resolver");
     resolver
         .worker_for_claimed(&claimed)
         .await
@@ -814,9 +801,8 @@ async fn durable_deferred_sandbox_publication_decision_table() {
         &clock,
     )
     .await;
-    let loss_resolver = SessionWorkerResolver {
-        host: Arc::downgrade(&loss_host),
-    };
+    let loss_resolver =
+        crate::host::session_worker_resolver(&loss_host).expect("Host dispatch resolver");
     loss_resolver
         .worker_for_claimed(&loss_claim)
         .await
@@ -1055,12 +1041,11 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
         .expect("claim")
         .expect("claimed Run");
 
-    SessionWorkerResolver {
-        host: Arc::downgrade(&host),
-    }
-    .worker_for_claimed(&claimed)
-    .await
-    .expect("S1 cold stdio recovery");
+    crate::host::session_worker_resolver(&host)
+        .expect("Host dispatch resolver")
+        .worker_for_claimed(&claimed)
+        .await
+        .expect("S1 cold stdio recovery");
 
     assert_eq!(
         realizer.calls.lock().unwrap().as_slice(),
@@ -1357,12 +1342,11 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
     let frozen = projection.lock().unwrap().take();
     for _ in 0..2 {
         assert!(
-            SessionWorkerResolver {
-                host: Arc::downgrade(&host)
-            }
-            .worker_for_claimed(&claimed)
-            .await
-            .is_err(),
+            crate::host::session_worker_resolver(&host)
+                .expect("Host dispatch resolver")
+                .worker_for_claimed(&claimed)
+                .await
+                .is_err(),
             "CR1 unavailable projection"
         );
         assert_eq!(
@@ -1375,12 +1359,11 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
     }
     assert_eq!(*continuations.lock().unwrap(), vec![None, None], "CR1");
     *projection.lock().unwrap() = frozen;
-    SessionWorkerResolver {
-        host: Arc::downgrade(&host),
-    }
-    .worker_for_claimed(&claimed)
-    .await
-    .expect("O1 canonical realization");
+    crate::host::session_worker_resolver(&host)
+        .expect("Host dispatch resolver")
+        .worker_for_claimed(&claimed)
+        .await
+        .expect("O1 canonical realization");
 
     assert_eq!(resume_calls.load(Ordering::SeqCst), 3, "O1/E1+CR1");
     let installed = host
@@ -1395,12 +1378,11 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
         })
         .flatten()
         .expect("CR2 installed lease");
-    SessionWorkerResolver {
-        host: Arc::downgrade(&host),
-    }
-    .worker_for_claimed(&claimed)
-    .await
-    .expect("CR3 same-Run retry");
+    crate::host::session_worker_resolver(&host)
+        .expect("Host dispatch resolver")
+        .worker_for_claimed(&claimed)
+        .await
+        .expect("CR3 same-Run retry");
     assert_eq!(
         *continuations.lock().unwrap(),
         vec![None, None, None, Some(installed)],
@@ -1450,12 +1432,11 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
         .await
         .expect("O5 claim")
         .expect("O5 claimed Run");
-    SessionWorkerResolver {
-        host: Arc::downgrade(&host),
-    }
-    .worker_for_claimed(&claimed)
-    .await
-    .expect("O5 ordinary Run bypasses Session realization");
+    crate::host::session_worker_resolver(&host)
+        .expect("Host dispatch resolver")
+        .worker_for_claimed(&claimed)
+        .await
+        .expect("O5 ordinary Run bypasses Session realization");
     assert_eq!(resume_calls.load(Ordering::SeqCst), 4, "O5");
 }
 
@@ -1527,11 +1508,10 @@ async fn claimed_resource_conflict_is_terminal_before_realization() {
             .await
             .unwrap()
             .unwrap();
-        let result = SessionWorkerResolver {
-            host: Arc::downgrade(&host),
-        }
-        .worker_for_claimed(&claimed)
-        .await;
+        let result = crate::host::session_worker_resolver(&host)
+            .expect("Host dispatch resolver")
+            .worker_for_claimed(&claimed)
+            .await;
         let error = match result {
             Ok(_) => panic!("{rule}: incompatible resources must not execute"),
             Err(error) => error,
@@ -1586,9 +1566,7 @@ async fn resource_manifest_must_match_the_durable_execution_scope() {
         sandbox: None,
         assignment: None,
     };
-    let resolver = SessionWorkerResolver {
-        host: Arc::downgrade(&host),
-    };
+    let resolver = crate::host::session_worker_resolver(&host).expect("Host dispatch resolver");
 
     let error = match resolver.worker_for_claimed(&claimed).await {
         Ok(_) => panic!("scope mismatch must fail closed"),
@@ -1632,9 +1610,7 @@ async fn malformed_resource_manifest_is_rejected_before_sandbox_creation() {
         sandbox: None,
         assignment: None,
     };
-    let resolver = SessionWorkerResolver {
-        host: Arc::downgrade(&host),
-    };
+    let resolver = crate::host::session_worker_resolver(&host).expect("Host dispatch resolver");
 
     let error = match resolver.worker_for_claimed(&claimed).await {
         Ok(_) => panic!("malformed manifest must fail closed"),
@@ -2803,9 +2779,7 @@ async fn cancellation_resolution_does_not_touch_an_invalid_sandbox_binding() {
         sandbox: Some("this is deliberately not a sandbox handle".to_string()),
         assignment: None,
     };
-    let resolver = SessionWorkerResolver {
-        host: Arc::downgrade(&host),
-    };
+    let resolver = crate::host::session_worker_resolver(&host).expect("Host dispatch resolver");
 
     resolver
         .worker_for_claimed(&claimed)
@@ -2882,11 +2856,10 @@ async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session
             }))
             .unwrap(),
         );
-        let result = SessionWorkerResolver {
-            host: Arc::downgrade(&host),
-        }
-        .worker_for_claimed(&claimed)
-        .await;
+        let result = crate::host::session_worker_resolver(&host)
+            .expect("Host dispatch resolver")
+            .worker_for_claimed(&claimed)
+            .await;
         if invalid_receipt {
             assert!(result.is_err());
             assert!(host.resident_session_environment(&thread).await.is_none());

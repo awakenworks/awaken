@@ -9,12 +9,41 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_dispatch_contract::RunDispatch;
 use awaken_runtime_contract::RunActivation;
 
+/// One correlated read of the installed inputs a dispatch envelope carries.
+#[derive(Default)]
+pub struct InstalledDispatchInputs {
+    pub resources: Option<awaken_session_configuration_contract::resource::SessionResourceManifest>,
+    pub runtime_projection: Option<awaken_session_configuration_contract::SessionRuntimeProjection>,
+    /// The Session entered through the Session application.
+    pub session_dispatch: bool,
+}
+
+/// The installed Session as dispatch admission reads it: the existing Session
+/// slot, never another registry or authority.
+pub trait DispatchAdmissionReads: Send + Sync {
+    /// The registered execution Workspace, or `fallback` for flat protocols.
+    fn execution_workspace(&self, thread: &str, fallback: &str) -> Result<String, AdmissionError>;
+    /// The registered execution Workspace; an unknown Thread has none.
+    fn registered_workspace(&self, thread: &str) -> Result<Option<String>, AdmissionError>;
+    /// The credential profile of the frozen Environment.
+    fn credential_realization(
+        &self,
+        thread: &str,
+    ) -> Result<Option<awaken_credential_contract::CredentialRealizationProfile>, AdmissionError>;
+    /// One correlated read of Resources, Session identity and Runtime/MCP inputs.
+    fn installed_dispatch_inputs(
+        &self,
+        thread: &str,
+    ) -> Result<InstalledDispatchInputs, AdmissionError>;
+}
+
 /// Values read from the existing Session slot, never another registry or authority.
 pub struct DispatchPreparation<'a> {
     activation: RunActivation,
-    sessions: awaken_session_realization::session_realizations::SessionRealizations,
+    sessions: Box<dyn DispatchAdmissionReads + 'a>,
     local_workspace: &'a str,
     agent_publications: Option<&'a dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
+    publication_closure: awaken_runtime_contract::auxiliary_agents::RunPublicationClosure<'static>,
     local_execution: bool,
     model_configured: bool,
 }
@@ -48,9 +77,12 @@ impl<'a> DispatchPreparation<'a> {
     /// read order below; notably an unconfigured model never probes the registry.
     pub fn new(
         activation: RunActivation,
-        sessions: awaken_session_realization::session_realizations::SessionRealizations,
+        sessions: Box<dyn DispatchAdmissionReads + 'a>,
         local_workspace: &'a str,
         agent_publications: Option<&'a dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
+        publication_closure: awaken_runtime_contract::auxiliary_agents::RunPublicationClosure<
+            'static,
+        >,
         local_execution: bool,
         model_configured: bool,
     ) -> Self {
@@ -59,41 +91,10 @@ impl<'a> DispatchPreparation<'a> {
             sessions,
             local_workspace,
             agent_publications,
+            publication_closure,
             local_execution,
             model_configured,
         }
-    }
-
-    /// One correlated read of Resources, Session identity and Runtime/MCP inputs.
-    fn installed_dispatch(
-        &self,
-        thread: &str,
-    ) -> Result<
-        (
-            Option<awaken_session_configuration_contract::resource::SessionResourceManifest>,
-            Option<awaken_session_configuration_contract::SessionRuntimeProjection>,
-            bool,
-        ),
-        AdmissionError,
-    > {
-        Ok(self
-            .sessions
-            .modify_session(thread, |slot| {
-                let projection = slot.inputs.environment_snapshot.clone().map(|environment| {
-                    awaken_session_configuration_contract::SessionRuntimeProjection {
-                        environment,
-                        tools: slot.inputs.tools.clone(),
-                        mcp_stages: Some(slot.realization.staging.mcp.active_stage_requests()),
-                    }
-                });
-                let session_dispatch = slot.run.session_dispatch();
-                (
-                    slot.realization.staging.run_manifest(session_dispatch),
-                    projection,
-                    session_dispatch,
-                )
-            })?
-            .unwrap_or_default())
     }
 
     pub fn fresh(self) -> Result<RunDispatch, AdmissionError> {
@@ -130,19 +131,26 @@ impl<'a> DispatchPreparation<'a> {
             ));
         }
         let thread = self.activation.thread_id.0.clone();
-        let workspace = self.sessions.workspace(&thread, self.local_workspace)?;
-        let agent_publications = crate::run_publications::freeze_run_publications(
-            &self.activation.snapshot,
-            self.agent_publications,
-            &workspace,
-        )
-        .map_err(|error| {
-            AdmissionError::rejected(format!(
-                "cannot freeze Agent execution publications: {error}"
-            ))
-        })?;
-        let (resources, runtime_projection, is_session_dispatch) =
-            self.installed_dispatch(&thread)?;
+        let workspace = self
+            .sessions
+            .execution_workspace(&thread, self.local_workspace)?;
+        let agent_publications = self
+            .publication_closure
+            .freeze(
+                &self.activation.snapshot,
+                self.agent_publications,
+                &workspace,
+            )
+            .map_err(|error| {
+                AdmissionError::rejected(format!(
+                    "cannot freeze Agent execution publications: {error}"
+                ))
+            })?;
+        let InstalledDispatchInputs {
+            resources,
+            runtime_projection,
+            session_dispatch: is_session_dispatch,
+        } = self.sessions.installed_dispatch_inputs(&thread)?;
         let activation = self.activation;
         let activation = if fresh_activation {
             crate::placement::bind_root_tool_configuration_format(activation, is_session_dispatch)
@@ -160,7 +168,7 @@ impl<'a> DispatchPreparation<'a> {
             .as_ref()
             .map(|projection| &projection.environment);
         let inference_holder = inference_plaintext_holder(&activation, || {
-            Ok(self.sessions.credential_realization(&thread)?)
+            self.sessions.credential_realization(&thread)
         })?;
         // A mixed deployment may have both the local pool and remote workers.
         // Any carried manifest still needs capability admission: an explicit empty
@@ -213,7 +221,7 @@ impl<'a> DispatchPreparation<'a> {
             // the frozen network policy. Derive the preference from the same
             // canonical SandboxSpec identity used by Worker pool receipts.
             let preferred_shape =
-                awaken_session_realization::provisioning::environment_capacity_projection(
+                awaken_session_configuration_contract::environment_projection::environment_capacity_projection(
                     &projection.environment,
                     true,
                 )

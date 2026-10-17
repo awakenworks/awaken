@@ -3,9 +3,8 @@
 //! Claim-bound dispatch realization and worker selection.
 
 use super::{
-    AnyDispatchStore, Arc, DispatchWorker, Error, RunId, RunState, RunWorkerFactory,
-    SessionDispatch, SessionProjectionExecution, SessionWorkerResolver, TerminalRecovery,
-    WorkerResolver, execution_error, install_claimed_session_projection, map_admission_error,
+    AnyDispatchStore, Arc, ClaimedExecution, DispatchWorker, Error, RunId, RunMcpAttachments,
+    RunState, SessionWorkerResolver, WorkerResolver, execution_error, map_admission_error,
     terminal_resolution_error,
 };
 
@@ -20,38 +19,6 @@ const fn canonical_session_projection_is_installed(
     has_frozen_baseline: bool,
 ) -> bool {
     has_session_projection_authority && session_dispatch && has_frozen_baseline
-}
-
-pub async fn adopt_bound_sandbox<T: SessionProjectionExecution>(
-    host: &T,
-    encoded: Option<&str>,
-    expected_sandbox_id: &str,
-    run_id: &RunId,
-    provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
-    recovery: awaken_dispatch_contract::WorkerRecoveryMode,
-) -> Result<
-    awaken_session_realization::session_environment::SessionEnvironmentAdoptionDisposition,
-    Error,
-> {
-    let provider = host
-        .realizer()
-        .session_environment_provider_for_thread(expected_sandbox_id, provisioning)
-        .map_err(map_admission_error)?;
-    host.realizer()
-        .adopt_bound_session_environment(
-            expected_sandbox_id,
-            encoded,
-            provider,
-            None,
-            recovery == awaken_dispatch_contract::WorkerRecoveryMode::RebuildFromCommittedTruth,
-        )
-        .await
-        .map_err(|error| {
-            super::claim_outcome(
-                error.disposition().contract_class(),
-                format!("run {}: {error}", run_id.0),
-            )
-        })
 }
 
 /// The frozen projection a claimed dispatch carries. Bytes that do not decode
@@ -70,16 +37,14 @@ fn decode_dispatched_projection(
         })
 }
 
-impl<T> SessionWorkerResolver<T>
-where
-    T: SessionDispatch + RunWorkerFactory + SessionProjectionExecution + TerminalRecovery,
-{
-    pub async fn reconcile_dispatched_mcp(
-        host: &T,
-        session_id: &str,
-        stages: Vec<awaken_session_configuration_contract::mcp::StageMcpAttachment>,
-    ) -> Result<(), Error> {
-        let effects = host.run_mcp_attachments();
+/// Stage and publish a compatibility dispatch's MCP generations, draining the
+/// ones it no longer carries; a failed stage drains what this call staged.
+pub async fn reconcile_dispatched_mcp(
+    effects: &dyn RunMcpAttachments,
+    session_id: &str,
+    stages: Vec<awaken_session_configuration_contract::mcp::StageMcpAttachment>,
+) -> Result<(), Error> {
+    {
         let existing = effects
             .active_stages(session_id)
             .map_err(|error| execution_error(format!("dispatched MCP lookup failed: {error}")))?;
@@ -148,13 +113,11 @@ where
     }
 }
 
-impl<T> SessionWorkerResolver<T>
-where
-    T: SessionDispatch + RunWorkerFactory + SessionProjectionExecution + TerminalRecovery,
-{
+impl SessionWorkerResolver {
     /// Install and publish only the admitted claim's canonical projection.
     async fn install_claimed_dispatch(
-        host: &T,
+        &self,
+        execution: &ClaimedExecution,
         claimed: &awaken_dispatch_contract::Claimed,
     ) -> Result<
         (
@@ -163,34 +126,33 @@ where
         ),
         Error,
     > {
-        let sessions = host.sessions();
+        let installation = execution.installation.as_ref();
         let thread_id = claimed.request.session_thread_id();
         let run_thread_id = claimed.request.thread_id();
+        let has_authority = super::claimed_session::has_session_projection_authority(claimed);
         let dispatched_resources =
             crate::session_envelope::decode_dispatched_resource_manifest(&claimed.request)
                 .map_err(execution_error)?;
         let dispatched_mcp_stages = if let Some(envelope) = &claimed.request.session_runtime {
             let projection = decode_dispatched_projection(envelope, claimed.lease.run_id())?;
             let stages = projection.mcp_stages.clone();
-            host.install_runtime_projection(&thread_id.0, projection)
+            execution
+                .preparation
+                .install_runtime_projection(&thread_id.0, projection)
                 .map_err(map_admission_error)?;
             stages
         } else {
             None
         };
-        install_claimed_session_projection(host, claimed, thread_id, dispatched_resources.as_ref())
-            .await?;
-        let Some((canonical_session_realization, selected_phase)) = sessions
-            .modify_session(&thread_id.0, |slot| {
-                (
-                    canonical_session_projection_is_installed(
-                        super::claimed_session::has_session_projection_authority(claimed),
-                        slot.run.session_dispatch(),
-                        slot.inputs.baseline.is_some(),
-                    ),
-                    slot.realization.execution.phase.clone(),
-                )
-            })
+        self.install_claimed_session_projection(
+            execution,
+            claimed,
+            thread_id,
+            dispatched_resources.as_ref(),
+        )
+        .await?;
+        let Some(observed) = installation
+            .observe_projection(&thread_id.0)
             .map_err(map_admission_error)?
         else {
             return Err(Error::ResolutionNotReady(format!(
@@ -198,9 +160,12 @@ where
                 claimed.lease.run_id().0
             )));
         };
-        if super::claimed_session::has_session_projection_authority(claimed)
-            && !canonical_session_realization
-        {
+        let canonical_session_realization = canonical_session_projection_is_installed(
+            has_authority,
+            observed.session_dispatch,
+            observed.has_frozen_baseline,
+        );
+        if has_authority && !canonical_session_realization {
             return Err(Error::ResolutionNotReady(format!(
                 "run {} lost its canonical Session projection before MCP effects",
                 claimed.lease.run_id().0
@@ -214,19 +179,11 @@ where
         // into the queue's existing delivery cache under this exact claim.
         if canonical_session_realization
             && run_thread_id == thread_id
-            && let Some(binding) = host
-                .realizer()
+            && let Some(binding) = installation
                 .durable_environment_binding(&thread_id.0)
                 .map_err(map_admission_error)?
         {
-            let outcome = host
-                .dispatch_binding()
-                .ok_or_else(|| {
-                    execution_error("database-less Worker requires an injected dispatch binding")
-                })?
-                .queue()
-                .bind_sandbox(&claim, &binding)
-                .await?;
+            let outcome = self.queue.bind_sandbox(&claim, &binding).await?;
             if !outcome.applied() {
                 return Err(execution_error(format!(
                     "run {} lost ownership before Session Sandbox cache synchronization",
@@ -234,24 +191,15 @@ where
                 )));
             }
         }
-        let bound = sessions
-            .modify_session(&thread_id.0, |slot| {
-                if !Arc::ptr_eq(&selected_phase, &slot.realization.execution.phase)
-                    || (super::claimed_session::has_session_projection_authority(claimed)
-                        && !canonical_session_projection_is_installed(
-                            true,
-                            slot.run.session_dispatch(),
-                            slot.inputs.baseline.is_some(),
-                        ))
-                {
-                    return false;
-                }
-                slot.run.install_dispatch_claim(claim.clone());
-                true
-            })
+        if !installation
+            .bind_claim_if_projection_unchanged(
+                &thread_id.0,
+                &observed.installation,
+                has_authority,
+                claim,
+            )
             .map_err(map_admission_error)?
-            .unwrap_or(false);
-        if !bound {
+        {
             return Err(Error::ResolutionNotReady(format!(
                 "run {} lost its original Session projection before claim binding",
                 claimed.lease.run_id().0
@@ -262,7 +210,7 @@ where
 
     /// Keep physical admission before MCP effects and before root/child plugins.
     async fn prepare_claimed_environment(
-        host: &T,
+        execution: &ClaimedExecution,
         claimed: &awaken_dispatch_contract::Claimed,
         canonical_session_realization: bool,
         dispatched_mcp_stages: Option<
@@ -271,30 +219,29 @@ where
     ) -> Result<(), Error> {
         let thread_id = claimed.request.session_thread_id();
         let run_thread_id = claimed.request.thread_id();
-        host.ensure_deferred_executor(&thread_id.0);
-        let _adoption = if canonical_session_realization {
-            // The Control synchronizer merged projection + claim binding before
-            // applying the Resource transition. Re-adopting the stale claim
-            // handle here would create a second owner and rejects a legitimate
-            // RebuildFromCommittedTruth replacement in the same resolve.
-            awaken_session_realization::session_environment::SessionEnvironmentAdoptionDisposition::NoBinding
-        } else {
-            adopt_bound_sandbox(
-                host,
-                claimed.sandbox.as_deref(),
-                &thread_id.0,
-                claimed.lease.run_id(),
-                claimed
-                    .request
-                    .activation
-                    .snapshot
-                    .resolved_spec
-                    .model_binding
-                    .provisioning(),
-                claimed.request.placement.recovery,
-            )
-            .await?
-        };
+        execution.preparation.bind_deferred_executor(&thread_id.0);
+        // The Control synchronizer merged projection + claim binding before
+        // applying the Resource transition. Re-adopting the stale claim handle
+        // here would create a second owner and rejects a legitimate
+        // RebuildFromCommittedTruth replacement in the same resolve.
+        if !canonical_session_realization {
+            execution
+                .installation
+                .adopt_bound_environment(
+                    &thread_id.0,
+                    claimed.sandbox.as_deref(),
+                    claimed.lease.run_id(),
+                    claimed
+                        .request
+                        .activation
+                        .snapshot
+                        .resolved_spec
+                        .model_binding
+                        .provisioning(),
+                    claimed.request.placement.recovery,
+                )
+                .await?;
+        }
         let requires_sandbox_stdio_environment =
             dispatched_mcp_stages.as_ref().is_some_and(|stages| {
                 stages
@@ -308,32 +255,41 @@ where
             // final root/child resolver below.
             let frozen_parent =
                 (run_thread_id == thread_id).then_some(&claimed.request.activation.snapshot);
-            host.ensure_session_substrate(&thread_id.0, frozen_parent)
+            execution
+                .preparation
+                .ensure_session_substrate(&thread_id.0, frozen_parent)
                 .await
                 .map_err(map_admission_error)?;
         }
         Ok(())
     }
+
+    /// An Environment-free Worker at the claim's commit boundary.
+    async fn boundary_worker(
+        &self,
+        claimed: &awaken_dispatch_contract::Claimed,
+        install_cancellation_executor: bool,
+    ) -> Result<DispatchWorker<AnyDispatchStore>, Error> {
+        self.commits
+            .open_commit(claimed.request.session_thread_id())
+            .await?
+            .boundary_worker(claimed, None, install_cancellation_executor)
+            .await
+    }
 }
 
 #[async_trait::async_trait]
-impl<T> WorkerResolver<AnyDispatchStore> for SessionWorkerResolver<T>
-where
-    T: SessionDispatch + RunWorkerFactory + SessionProjectionExecution + TerminalRecovery,
-{
+impl WorkerResolver<AnyDispatchStore> for SessionWorkerResolver {
     fn dispatch_store(&self) -> Result<Arc<AnyDispatchStore>, Error> {
-        self.host()?
-            .dispatch_binding()
-            .map(|binding| binding.queue())
-            .ok_or_else(|| execution_error("dispatch backend is not initialized"))
+        Ok(self.queue.clone())
     }
 
     fn credential_realization_capabilities(
         &self,
     ) -> awaken_credential_contract::CredentialRealizationCapabilities {
-        self.host
-            .upgrade()
-            .map(|host| host.credential_capabilities())
+        self.execution
+            .as_ref()
+            .map(|execution| execution.runs.credential_capabilities())
             .unwrap_or_default()
     }
 
@@ -342,78 +298,66 @@ where
         thread_id: &awaken_agent_contract::agent::thread::Id,
         agent_id: Option<&str>,
     ) -> Result<Arc<DispatchWorker<AnyDispatchStore>>, Error> {
-        let host = self.host()?;
-        Self::require_local_execution(&host)?;
-        host.root_worker(
-            thread_id,
-            agent_id.filter(|id| !id.is_empty()),
-            None,
-            None,
-            None,
-        )
-        .await
+        self.execution()?
+            .runs
+            .root_worker(
+                thread_id,
+                agent_id.filter(|id| !id.is_empty()),
+                None,
+                None,
+                None,
+            )
+            .await
     }
 
     async fn worker_for_claimed(
         &self,
         claimed: &awaken_dispatch_contract::Claimed,
     ) -> Result<Arc<DispatchWorker<AnyDispatchStore>>, Error> {
-        let host = self.host()?;
-        let sessions = host.sessions();
-        Self::require_local_execution(&host)?;
+        let execution = self.execution()?;
         // Reservation repair owns no executable Run yet. It needs only the
         // parent commit boundary, queue fence, and Session admission observer;
         // resolving publications, credentials, Sandbox, MCP, or Environment
         // here can both block repair and create effects before admission.
         if claimed.session_activity_admission_required {
-            let thread_id = claimed.request.session_thread_id();
-            let commit = host.open_commit(thread_id).await?;
-            return Ok(Arc::new(
-                host.boundary_worker(claimed, commit, None, false).await?,
-            ));
+            return Ok(Arc::new(self.boundary_worker(claimed, false).await?));
         }
         if claimed.cancellation_requested {
-            return self.cancellation_worker(host.as_ref(), claimed).await;
+            return Ok(Arc::new(self.boundary_worker(claimed, true).await?));
         }
+        let installation = execution.installation.as_ref();
         let thread_id = claimed.request.session_thread_id();
         let run_thread_id = claimed.request.thread_id();
         let agent_id = claimed.request.activation.snapshot.root_agent_id.0.as_str();
         let agent_id = (!agent_id.is_empty()).then_some(agent_id);
         let publication_workspace = claimed.request.execution_scope.as_ref().map_or_else(
-            || host.realizer().publication.local_workspace(),
+            || installation.local_workspace(),
             |scope| scope.0.0.as_str(),
         );
-        if let Some(scope) = &claimed.request.execution_scope {
-            if sessions
-                .frozen(&thread_id.0)
+        if let Some(scope) = &claimed.request.execution_scope
+            && !installation
+                .bind_execution_workspace(&thread_id.0, scope.0.as_str())
                 .map_err(map_admission_error)?
-                .workspace
-                .clone()
-                .is_some_and(|existing| existing != scope.0.as_str())
-            {
-                return Err(execution_error(
-                    "claimed Thread Workspace conflicts with its dispatch",
-                ));
-            }
-            sessions
-                .replace_frozen_with(&thread_id.0, |next| {
-                    next.workspace = Some(scope.0.as_str().to_owned())
-                })
-                .map_err(map_admission_error)?;
+        {
+            return Err(execution_error(
+                "claimed Thread Workspace conflicts with its dispatch",
+            ));
         }
-        let claimed_source = crate::run_publications::exact_run_publication_source(
-            &claimed.request.activation.snapshot,
-            &claimed.request.agent_publications,
-            publication_workspace,
-        )
-        .map_err(|error| {
-            execution_error(format!(
-                "run {} has an invalid Agent publication closure: {error}",
-                claimed.lease.run_id().0
-            ))
-        })?;
+        let claimed_source = execution
+            .publication_closure
+            .exact_source(
+                &claimed.request.activation.snapshot,
+                &claimed.request.agent_publications,
+                publication_workspace,
+            )
+            .map_err(|error| {
+                execution_error(format!(
+                    "run {} has an invalid Agent publication closure: {error}",
+                    claimed.lease.run_id().0
+                ))
+            })?;
         let (canonical_session_realization, dispatched_mcp_stages) =
-            Self::install_claimed_dispatch(host.as_ref(), claimed).await?;
+            self.install_claimed_dispatch(execution, claimed).await?;
         // A complete frozen Session projection owns MCP realization regardless
         // of whether it arrived through remote Control or was installed by the
         // co-located Runtime. The dispatch envelope remains a compatibility
@@ -425,13 +369,10 @@ where
             dispatched_mcp_stages
         };
         if let Some(stages) = dispatched_mcp_stages.as_ref() {
-            sessions
-                .replace_frozen_with(&thread_id.0, |next| {
-                    next.agent_id = Some(agent_id.unwrap_or("assistant").to_owned())
-                })
-                .map_err(map_admission_error)?;
-            sessions.replace_frozen_with(&thread_id.0, |next| {
-                next.backend_ref = awaken_session_realization::frozen_inputs::backend_projection(
+            installation
+                .pin_dispatched_identity(
+                    &thread_id.0,
+                    agent_id.unwrap_or("assistant"),
                     claimed
                         .request
                         .activation
@@ -440,28 +381,25 @@ where
                         .model_binding
                         .identity()
                         .2,
+                    stages.first().map(|stage| stage.workspace_id.as_str()),
                 )
-            }).map_err(map_admission_error)?;
-            if let Some(workspace) = stages.first().map(|stage| stage.workspace_id.as_str()) {
-                sessions
-                    .replace_frozen_with(&thread_id.0, |next| {
-                        next.workspace = Some(workspace.to_owned())
-                    })
-                    .map_err(map_admission_error)?;
-            }
+                .map_err(map_admission_error)?;
         }
         Self::prepare_claimed_environment(
-            host.as_ref(),
+            execution,
             claimed,
             canonical_session_realization,
             dispatched_mcp_stages.as_deref(),
         )
         .await?;
         if let Some(stages) = dispatched_mcp_stages {
-            Self::reconcile_dispatched_mcp(host.as_ref(), &thread_id.0, stages).await?;
+            reconcile_dispatched_mcp(execution.mcp.as_ref(), &thread_id.0, stages).await?;
         }
         if run_thread_id != thread_id {
-            return host.child_worker(claimed, thread_id, claimed_source).await;
+            return execution
+                .runs
+                .child_worker(claimed, thread_id, claimed_source)
+                .await;
         }
         // Complete Session projection installation has already validated the
         // delivered Run coordinates and retained the immutable publication in
@@ -475,14 +413,15 @@ where
         // execution closure. Compatibility dispatch without a complete frozen
         // projection still uses the delivered root as its sole authority.
         let immutable_publication = if canonical_session_realization {
-            sessions
+            installation
                 .published_snapshot(&thread_id.0)
                 .map_err(map_admission_error)?
                 .unwrap_or_else(|| claimed.request.activation.snapshot.clone())
         } else {
             claimed.request.activation.snapshot.clone()
         };
-        let worker = host
+        execution
+            .runs
             .root_worker(
                 thread_id,
                 agent_id,
@@ -490,8 +429,7 @@ where
                 Some(&claimed.request),
                 Some(claimed_source),
             )
-            .await?;
-        Ok(worker)
+            .await
     }
 
     async fn settle_claimed_resolution_failure(
@@ -499,11 +437,8 @@ where
         claimed: &awaken_dispatch_contract::Claimed,
         error: Error,
     ) -> Result<Option<(RunId, RunState)>, Error> {
-        let host = self.host()?;
-        let thread_id = claimed.request.session_thread_id();
-        let commit = host.open_commit(thread_id).await?;
-        let worker = host.boundary_worker(claimed, commit, None, false).await?;
-        worker
+        self.boundary_worker(claimed, false)
+            .await?
             .fail_claimed_before_execution(claimed, "dispatch_resolution_failed", error.to_string())
             .await
     }
@@ -512,22 +447,18 @@ where
         &self,
         claimed: &awaken_dispatch_contract::Claimed,
     ) -> Result<Arc<DispatchWorker<AnyDispatchStore>>, Error> {
-        let host = self.host()?;
-        let thread_id = claimed.request.session_thread_id();
-        let commit = host.open_commit(thread_id).await?;
-        let worker = host.boundary_worker(claimed, commit, None, false).await?;
-        Ok(Arc::new(worker))
+        Ok(Arc::new(self.boundary_worker(claimed, false).await?))
     }
 
     async fn reconcile_committed_terminals(
         &self,
         limit: usize,
     ) -> Result<Vec<(RunId, RunState)>, Error> {
-        crate::session_reconciliation::reconcile_committed_terminals(self, limit).await
+        self.reconcile_committed_terminal_runs(limit).await
     }
 
     async fn reconcile_worker_evidence(&self) -> Result<(), Error> {
-        crate::session_reconciliation::reconcile_worker_evidence(self.host()?.as_ref()).await
+        self.release_closed_worker_evidence().await
     }
 }
 
