@@ -4,7 +4,7 @@
 //! Recover the exact bound Environment for one authorized physical effect.
 //!
 //! Provider observation, adoption and terminal reconstruction share the original
-//! Session slot and lifecycle guard. This executor owns no additional state.
+//! installed Session and lifecycle guard. This executor owns no additional state.
 
 use crate::environment_holding::EnvironmentHolding;
 use crate::environment_owner::{
@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 impl EnvironmentHolding {
     /// Re-open one exact terminal substrate into the process-local teardown
-    /// slot. This helper deliberately writes no ordinary Environment receipt:
+    /// installed Session. This helper deliberately writes no ordinary Environment receipt:
     /// the surrounding terminal command is the sole durable effect authority.
     pub async fn install_bound_environment_under_lifecycle(
         &self,
@@ -353,7 +353,7 @@ impl EnvironmentHolding {
     /// Resolve one durable binding into the process-local teardown owner under
     /// an already-authorized physical effect. Terminal cleanup and continuation
     /// source disposal share this path so provider observation, exact-absence
-    /// proof, terminal physical disposal, and slot publication cannot drift.
+    /// proof, terminal physical disposal, and installed Session publication cannot drift.
     #[allow(clippy::too_many_arguments)]
     pub async fn prepare_bound_environment_for_effect_under_lifecycle(
         &self,

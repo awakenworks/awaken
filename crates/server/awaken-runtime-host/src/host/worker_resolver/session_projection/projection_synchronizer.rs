@@ -381,7 +381,7 @@ mod tests {
                 owner: "worker-a".into(),
                 runtime_incarnation: "worker-a/boot-1".into(),
                 epoch: 1,
-                expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
+                expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms()
                     + 60_000,
             };
         awaken_session_runtime_contract::RealizationRuntime::install_session_projection(
@@ -701,7 +701,7 @@ mod tests {
             owner: claim.owner.clone(),
             runtime_incarnation: "worker-a/boot-2".into(),
             epoch: 2,
-            expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
+            expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms()
                 + 60_000,
         };
         let directive = awaken_session_realization_contract::SessionRealizationDirective {
@@ -1310,7 +1310,7 @@ mod tests {
             expires_at_unix_ms: u64::MAX,
         };
         let error = WorkerProjectionSynchronizer {
-            host: host.as_ref(),
+            execution: host.as_ref(),
             claim: Some(&claim),
             published_snapshot: Some(&snapshot),
             rebuild_unavailable_environment: true,

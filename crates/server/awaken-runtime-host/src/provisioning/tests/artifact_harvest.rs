@@ -695,7 +695,7 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
         .delete(
             "workspace-a",
             &terminal.receipts[0].record.id,
-            awaken_session_realization::test_support::runtime_unix_now_ms(),
+            awaken_session_realization::test_support::wall_clock_now_ms(),
         )
         .await
         .expect("H3 logical delete");

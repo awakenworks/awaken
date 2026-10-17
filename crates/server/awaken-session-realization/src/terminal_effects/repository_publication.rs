@@ -40,7 +40,7 @@ impl TerminalEffects {
         // Worker restart. Hold the existing realization/lifecycle lock order
         // across exact Environment recovery and publication so root cleanup
         // cannot dispose the source between adoption and its durable receipt.
-        // Lease renewal may still update the process-local slot while these
+        // Lease renewal may still update the process-local installed Session while these
         // effect locks are held; every boundary therefore re-reads the current
         // same-generation lease rather than extending the asserted value.
         let _realization = self

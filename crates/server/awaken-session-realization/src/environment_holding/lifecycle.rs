@@ -4,7 +4,7 @@
 //! Session Environment publication, adoption, fencing, and retirement.
 //!
 //! This module is the sole writer of [`SessionEnvironmentOwner`]. Durable
-//! lifecycle truth remains in the Session aggregate; the slot machine retains
+//! lifecycle truth remains in the Session aggregate; the installed Session machine retains
 //! each physical wrapper across every fallible or cancellable provider call.
 
 use crate::environment_owner::{
@@ -46,7 +46,7 @@ type ValidatedSessionEnvironmentAdoption = (
 
 /// Borrowed inputs for the single unavailable-observation phase under the
 /// Session lifecycle lock. Every authority remains in its existing typed value;
-/// this transient view neither mirrors the slot nor survives the call.
+/// this transient view neither mirrors the installed Session nor survives the call.
 struct UnavailableEnvironmentRecovery<'a> {
     thread: &'a str,
     binding: &'a str,
@@ -86,7 +86,7 @@ enum ClosedEnvironmentRecoveryOwnerClass {
 }
 
 /// The only closed-observation recovery plan. `Consume` retains the exact
-/// owner fence through the subsequent slot mutation; `Retain` is fail-closed.
+/// owner fence through the subsequent installed Session mutation; `Retain` is fail-closed.
 enum ClosedEnvironmentRecoveryPlan<'a> {
     Consume {
         observation: ValidatedClosedEnvironmentObservation<'a>,
@@ -668,14 +668,14 @@ impl crate::environment_holding::EnvironmentHolding {
         selection: RetirementSelection<'_>,
     ) -> Result<Option<LocalRetirementTransition>, RealizationError> {
         self.sessions
-            .modify_session(thread, |slot| {
-                let retirement = slot
+            .modify_session(thread, |installed| {
+                let retirement = installed
                     .realization
                     .environment
                     .owner
                     .begin_retirement(cause, selection)?;
                 Ok(retirement.map(|owner| {
-                    slot.run.drop_context();
+                    installed.run.drop_context();
                     LocalRetirementTransition { owner }
                 }))
             })?
@@ -745,7 +745,7 @@ impl crate::environment_holding::EnvironmentHolding {
     /// continuation disposal, and terminal takeover. A terminal projection
     /// supplies the previous Resource endpoint because that is what the exact
     /// physical substrate contains; no continuation path may reconstruct a
-    /// second layout from ambient slot state.
+    /// second layout from ambient installed Session state.
     pub fn session_environment_adoption_spec(
         &self,
         peers: crate::peers::Peers<'_>,
@@ -914,7 +914,7 @@ impl crate::environment_holding::EnvironmentHolding {
         // may be driven by an aggregate-authorized higher-epoch successor B;
         // requiring A to remain current here would make failover unrecoverable.
         // The canonical authorization validates A -> B, and the physical effect
-        // authority captured below checks B against the current Session slot.
+        // authority captured below checks B against the current installed Session.
         authorization
             .validate()
             .map_err(RealizationError::terminal_effect_pending)?;
@@ -979,7 +979,7 @@ impl crate::environment_holding::EnvironmentHolding {
     /// Resolve an opaque durable binding through the one Session lifecycle
     /// owner. Pure decode/layout validation precedes aggregate authorization;
     /// effect-free provider observation, exact adoption, root receipt, delivery
-    /// cache, slot publication, and Resource convergence then execute under one
+    /// cache, installed Session publication, and Resource convergence then execute under one
     /// process-local lifecycle lock. `rebuild_unavailable` only admits typed,
     /// exact-incarnation unavailability; provider errors remain retryable.
     pub async fn adopt_bound_session_environment(
@@ -1025,8 +1025,7 @@ impl crate::environment_holding::EnvironmentHolding {
         unavailable_policy: SessionEnvironmentUnavailablePolicy,
         preauthorized: Option<&AuthorizedSessionEnvironmentEffect>,
     ) -> Result<SessionEnvironmentAdoptionDisposition, RealizationError> {
-        let realizer = self;
-        let exec = realizer;
+        let exec = self;
         if exec.holds_unpublished_retirement(thread)? {
             return Err(RealizationError::invariant(
                 "unpublished terminal or cleanup ownership cannot resume ordinary adoption",
@@ -1057,7 +1056,7 @@ impl crate::environment_holding::EnvironmentHolding {
         let effect = match preauthorized {
             Some(effect) => effect,
             None => {
-                authorized = realizer
+                authorized = exec
                     .authorize_environment_effect_before_io(
                         peers,
                         thread,
@@ -1163,7 +1162,7 @@ impl crate::environment_holding::EnvironmentHolding {
         match observation {
             awaken_provisioning_contract::SandboxObservation::Ready => {
                 if revoked_owner.is_some() {
-                    // Keep the Retiring owner in its slot until a fresh wrapper
+                    // Keep the Retiring owner in its installed Session until a fresh wrapper
                     // exists. Failure/cancellation must preserve the only local
                     // create-attempt and cleanup participants for a later retry.
                     resident = None;
@@ -1248,7 +1247,7 @@ impl crate::environment_holding::EnvironmentHolding {
                 // A pending Managed Rebuild must retain that exact owner;
                 // unowned direct Threads keep the original recovery policy.
                 if unavailable_policy == SessionEnvironmentUnavailablePolicy::Rebuild {
-                    realizer.authorize_environment_effect_before_io(peers,
+                    exec.authorize_environment_effect_before_io(peers,
                         thread,
                         &peers.authority.new_environment_effect_intent(thread, awaken_session_state_contract::SessionEnvironmentEffectKind::Rebuild {
                             source_generation_id: source_generation_id.map(str::to_owned),
@@ -1284,7 +1283,7 @@ impl crate::environment_holding::EnvironmentHolding {
     /// authority cannot follow that new generation. Reuse the sole retirement
     /// transition; failure/cancellation leaves its exact owner available to retry.
     #[cfg(target_os = "linux")]
-    pub async fn retire_replaced_scoped_execution<S: awaken_session_mcp::McpSessionSlots>(
+    pub async fn retire_replaced_scoped_execution<S: awaken_session_mcp::SessionMcpStates>(
         &self,
         peers: crate::peers::Peers<'_>,
         thread: &str,
@@ -1346,7 +1345,7 @@ impl crate::environment_holding::EnvironmentHolding {
     /// Join the exact selected local root, verify it after its owner locks,
     /// signal its captured local controls, and retire it through the original
     /// physical owner. The callback grants no durable cancellation authority.
-    pub async fn retire_selected_session_environment<S: awaken_session_mcp::McpSessionSlots>(
+    pub async fn retire_selected_session_environment<S: awaken_session_mcp::SessionMcpStates>(
         &self,
         thread: &str,
         mcp: (&awaken_session_mcp::McpSessions, &S),
@@ -1372,7 +1371,7 @@ impl crate::environment_holding::EnvironmentHolding {
     /// Sandbox is live or its outcome is unknown; a later authorized adoption
     /// may reactivate the same exact durable owner.
     pub async fn retire_session_environment_for_revocation<
-        S: awaken_session_mcp::McpSessionSlots,
+        S: awaken_session_mcp::SessionMcpStates,
     >(
         &self,
         thread: &str,
@@ -1381,15 +1380,15 @@ impl crate::environment_holding::EnvironmentHolding {
             &crate::session_realizations::SessionRealizationRevocationSelection,
         >,
     ) -> Result<bool, RealizationError> {
-        let (mcp, mcp_slots) = mcp;
+        let (mcp, mcp_states) = mcp;
         let realizations = &self.sessions;
-        let projected = realizations.modify_session(thread, |slot| {
-            let r = slot.realization;
+        let projected = realizations.modify_session(thread, |installed| {
+            let r = installed.realization;
             if expected_selection.is_some_and(|selected| !selected.matches(r)) {
                 return Ok::<_, RealizationError>(None);
             }
             // Preserve the original Managed-vs-legacy retirement policy, while
-            // binding physical transition and MCP selection to this same slot.
+            // binding physical transition and MCP selection to this same installed Session.
             let retained = matches!(
                 &r.execution.authority,
                 crate::realization_state::SessionRealizationAuthority::Live(_)
@@ -1405,7 +1404,7 @@ impl crate::environment_holding::EnvironmentHolding {
                 RetirementSelection::Current,
             )?;
             if retirement.is_some() {
-                slot.run.drop_context();
+                installed.run.drop_context();
             } else if matches!(&original_owner,
                 SessionEnvironmentOwner::Preparing(crate::environment_owner::SessionEnvironmentPreparation::AwaitingAdoption { .. })
             ) {
@@ -1427,18 +1426,18 @@ impl crate::environment_holding::EnvironmentHolding {
             residual_routes,
         )) = projected
         else {
-            // Absence is not a reusable identity. Do not reselect a new slot,
+            // Absence is not a reusable identity. Do not reselect a new installed Session,
             // physical owner, projection, or a later Vacant owner by Thread.
             return Ok(false);
         };
 
         // Some owner phases have no local physical wrapper. In particular an
-        // exact pending restore is retained, not treated as an empty slot.
+        // exact pending restore is retained, not treated as an empty installed Session.
         let expected_owner = retirement.as_ref().map_or(original_owner, |retirement| {
             SessionEnvironmentOwner::Retiring(retirement.clone())
         });
         let (projections, residual) = tokio::join!(
-            mcp.drain_selected_projections(mcp_slots, &selected_projections),
+            mcp.drain_selected_projections(mcp_states, &selected_projections),
             residual_routes,
         );
         projections?;

@@ -901,7 +901,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         owner: "terminal-publication-worker".into(),
         runtime_incarnation: "terminal-publication-worker:incarnation".into(),
         epoch: 1,
-        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
+        expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms()
             .saturating_add(60_000),
     };
     // Reuse the Environment-binding test authority so the exact realization

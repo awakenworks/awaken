@@ -14,11 +14,11 @@ use crate::installed_session::InstalledSessions;
 use crate::{HostError, SharedHost};
 use awaken_session_mcp::{
     McpError, McpGenerationAuthority, McpInputHost, McpInputRecipients, McpQuiescenceProof,
-    McpSessionSlots,
+    SessionMcpStates,
 };
 use awaken_session_mcp::{McpGenerationProjection, SessionMcpState};
 
-impl McpSessionSlots for InstalledSessions {
+impl SessionMcpStates for InstalledSessions {
     type Runtime = Arc<crate::host::SessionCtx>;
 
     fn read_mcp<R>(&self, session: &str, read: impl FnOnce(&SessionMcpState) -> R) -> Option<R> {

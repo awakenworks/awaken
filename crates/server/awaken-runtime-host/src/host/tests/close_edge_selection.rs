@@ -65,8 +65,7 @@ async fn rebuilt_successor_is_not_interrupted(original_run_active: bool) {
         owner: "local".into(),
         runtime_incarnation: "boot".into(),
         epoch: 1,
-        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
-            + 300_000,
+        expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms() + 300_000,
     };
     host.install_session_realization_lease(thread, original.clone())
         .unwrap();

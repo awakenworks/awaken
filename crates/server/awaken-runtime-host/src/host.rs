@@ -201,7 +201,7 @@ pub struct SharedHost {
     /// ACP backend, attempt decoration, and the credential/session-blob
     /// adapters the attempt executors share.
     pub(crate) exec: capability::AttemptBackends,
-    /// The Session realizer and the sandbox providers it realizes through.
+    /// The realization executor and the sandbox providers it realizes through.
     pub(crate) realization_executor: crate::realization_executor::RealizationExecutor,
     /// Tool, Skill, plugin, and gate offering installed on every thread.
     pub(crate) tools: capability::ToolOffering,

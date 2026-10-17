@@ -1,6 +1,6 @@
 // @formal evidence session_environment.terminal_fence_admits_only_inflight_binding_receipts
 // Static owner: Runtime-host transition adapter over the single process-local Environment
-// owner retained in the Session slot. Dynamic path: preparation, durable adoption, and
+// owner retained in the installed Session. Dynamic path: preparation, durable adoption, and
 // publication all execute inside installed_sessions.update and delegate to that one owner; only
 // its hidden prepared candidate can be published after the aggregate binding sink returns
 // exact Store-read authority, while cleanup retry only consumes the owner's retirement
@@ -59,16 +59,16 @@ impl crate::environment_holding::EnvironmentHolding {
                 "candidate intent names another Session",
             ));
         }
-        self.sessions.update_session(thread, |slot| {
-            let candidate =
-                slot.realization
-                    .environment
-                    .owner
-                    .begin_preparing(environment, kind, intent)?;
+        self.sessions.update_session(thread, |installed| {
+            let candidate = installed.realization.environment.owner.begin_preparing(
+                environment,
+                kind,
+                intent,
+            )?;
             #[cfg(target_os = "linux")]
             peers
                 .authority
-                .bind(thread, slot.realization, &candidate.environment)?;
+                .bind(thread, installed.realization, &candidate.environment)?;
             Ok(candidate)
         })?
     }
@@ -172,15 +172,16 @@ impl crate::environment_holding::EnvironmentHolding {
             ));
         }
         let (claimed_ordinary_run, managed_projection, closed) = realizations
-            .modify_session(thread, |slot| {
-                let managed = slot.inputs.baseline.is_some() || slot.run.session_dispatch();
-                let ordinary = slot.realization.execution.authority.lease().is_none()
-                    && slot.run.dispatch_claim().is_some()
+            .modify_session(thread, |installed| {
+                let managed =
+                    installed.inputs.baseline.is_some() || installed.run.session_dispatch();
+                let ordinary = installed.realization.execution.authority.lease().is_none()
+                    && installed.run.dispatch_claim().is_some()
                     && !managed;
                 (
                     ordinary,
                     managed,
-                    slot.realization.execution.authority.is_closed(),
+                    installed.realization.execution.authority.is_closed(),
                 )
             })?
             .unwrap_or_default();
@@ -311,7 +312,7 @@ impl crate::environment_holding::EnvironmentHolding {
             .current_environment_receipt(binding.clone(), effect)?;
         // A Resource reservation extends the already-published Environment
         // handle under the Session root. It is not a Run placement and must not
-        // rewrite `RunDispatch.sandbox`: the slot can legitimately retain the
+        // rewrite `RunDispatch.sandbox`: the installed Session can legitimately retain the
         // preceding settled attempt's claim while an idle Session accepts a
         // live Resource generation. Create/Adopt/Rebuild remain the only raw
         // dispatch-cache writers and retain their exact claim fence below.
@@ -379,7 +380,7 @@ impl crate::environment_holding::EnvironmentHolding {
     ) -> Result<bool, RealizationError> {
         let claim = self
             .sessions
-            .modify_session(thread, |slot| slot.run.dispatch_claim().cloned())?
+            .modify_session(thread, |installed| installed.run.dispatch_claim().cloned())?
             .flatten();
         let Some(claim) = claim else {
             return Ok(false);

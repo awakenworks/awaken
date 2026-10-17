@@ -1100,7 +1100,7 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
 /// | A8 | yes | yes | no OR C4=no | any | E2 |
 #[tokio::test]
 async fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epoch_renewal() {
-    let base = awaken_session_realization::test_support::runtime_unix_now_ms() + 60_000;
+    let base = awaken_session_realization::test_support::wall_clock_now_ms() + 60_000;
     let generation = crate::test_mcp::mcp_fence(
         "mcp-effect-authority",
         "browser",

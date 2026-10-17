@@ -1,9 +1,9 @@
 // @formal surface obligation=session_resources.repository_rotation_requires_original_live_generation
 // @formal surface obligation=session_resources.external_io_requires_durable_prepared_state
-// @formal reason: Secret-free staged resource values (mounts, liveness checks, Repository activations) held by the Session slot.
+// @formal reason: Secret-free staged resource values (mounts, liveness checks, Repository activations) held by the installed Session.
 //! The resources staged for one Session thread: neutral mount requirements,
 //! prompt fragments, liveness checks and Repository activations. Provisioning
-//! produces them and the Session slot holds them.
+//! produces them and the installed Session holds them.
 
 use awaken_provisioning_contract as pc;
 use awaken_session_configuration_contract::resource as session_resource;

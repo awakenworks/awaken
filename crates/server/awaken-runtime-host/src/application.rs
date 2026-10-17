@@ -241,7 +241,7 @@ impl crate::SharedHost {
         now_unix_ms: u64,
     ) -> bool {
         self.mcp_generation_root_authority(generation)
-            // Direct realizer callers can present a live Control assertion
+            // Direct realization executor callers can present a live Control assertion
             // before installing a complete local Session projection. A relay
             // capability, by contrast, always requires the current root.
             .unwrap_or_else(|| {

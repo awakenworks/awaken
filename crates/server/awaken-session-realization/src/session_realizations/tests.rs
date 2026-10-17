@@ -6,7 +6,7 @@ use awaken_session_configuration_contract::resource as session_resource;
 #[test]
 fn realization_authority_close_and_renewal_have_one_projection() {
     // Component split: the authority and phase lock live in ExecutionAuthority,
-    // cancellation lives in ResourceStaging, and the original slot mutex still
+    // cancellation lives in ResourceStaging, and the original installed Session lock still
     // linearizes their joint close/renewal. These rows cover that cross-role
     // boundary without another lease, lock, or cached ownership decision.
     // Decision table: C1 absent/live/closed; C2 expected exact/stale/none;
@@ -17,7 +17,7 @@ fn realization_authority_close_and_renewal_have_one_projection() {
     // Q1 absent+exact rejects; Q2 absent+none closes; Q3 live+stale rejects;
     // Q4 live+exact closes; Q5 closed+exact retry succeeds; Q6-Q8 exact
     // renewal crosses the three expiry partitions; Q9 stale reply rejects.
-    let base = crate::test_support::runtime_unix_now_ms() + 60_000;
+    let base = crate::test_support::wall_clock_now_ms() + 60_000;
     let lease = session_resource::SessionRealizationLease {
         owner: "worker".into(),
         runtime_incarnation: "worker/1".into(),
@@ -98,7 +98,7 @@ fn generation_close_accepts_only_the_original_phase_and_its_monotonic_renewal() 
         owner: "local".into(),
         runtime_incarnation: "boot".into(),
         epoch: 2,
-        expires_at_unix_ms: crate::test_support::runtime_unix_now_ms() + 300_000,
+        expires_at_unix_ms: crate::test_support::wall_clock_now_ms() + 300_000,
     };
     for rule in [
         "exact",

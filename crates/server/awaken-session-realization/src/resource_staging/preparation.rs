@@ -1,5 +1,5 @@
 // @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
-//! Scoped Resource I/O preparation over the canonical realization slot.
+//! Scoped Resource I/O preparation over the installed Session.
 //!
 //! Worker authorization encloses the original synchronous lease installation.
 //! The scope retains no Host or scheduler, and can only remove its own token
@@ -14,7 +14,7 @@ use awaken_session_realization_contract::ObservedSessionRealizationLease;
 use std::sync::Arc;
 
 /// Scoped preparation, not another lease manager. The existing scheduler sees
-/// the canonical slot before Resource I/O; this guard only bounds that I/O's
+/// the installed Session before Resource I/O; this guard only bounds that I/O's
 /// lifetime and removes a newly introduced, unpublished lease on failure/drop.
 pub struct ResourcePreparation<'a> {
     sessions: SessionRealizations,

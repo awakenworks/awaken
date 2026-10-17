@@ -41,7 +41,7 @@ impl crate::terminal_effects::TerminalEffects {
             > + Send,
         B: FnOnce(String, String) -> BF + Send,
         BF: std::future::Future<Output = bool> + Send,
-        S: awaken_session_mcp::McpSessionSlots,
+        S: awaken_session_mcp::SessionMcpStates,
     {
         let cleanup = self;
         let sessions = &cleanup.sessions;
@@ -136,7 +136,7 @@ impl crate::terminal_effects::TerminalEffects {
             &effect.command.thread_id,
             |session| {
                 Ok(sessions
-                    .modify_session(session, |slot| slot.run.has_active_run())?
+                    .modify_session(session, |installed| installed.run.has_active_run())?
                     .unwrap_or(false))
             },
             delegated(effect.command.thread_id.to_string()),
@@ -328,7 +328,6 @@ impl crate::terminal_effects::TerminalEffects {
         effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
     ) -> Result<SessionCleanupDisposalReceipt, RealizationError> {
         let environments = peers.environments;
-        let realizer = environments;
         let sessions = &self.sessions;
         let session_id = &effect.command.session_id;
         let root_realization = sessions
@@ -384,12 +383,12 @@ impl crate::terminal_effects::TerminalEffects {
                 ),
                 Some(expected),
             ) if &request == expected => {
-                let provider =
-                    realizer.projected_session_environment_provider(session_id.as_str(), None)?;
+                let provider = environments
+                    .projected_session_environment_provider(session_id.as_str(), None)?;
                 let previous_resources = sessions
                     .read_realization(session_id.as_str(), |r| r.previous_resources())?
                     .flatten();
-                let spec = realizer.session_environment_adoption_spec(
+                let spec = environments.session_environment_adoption_spec(
                     peers,
                     session_id.as_str(),
                     provider,

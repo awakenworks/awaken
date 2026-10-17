@@ -921,7 +921,7 @@ mod tests {
             expires_at_unix_ms: u64::MAX,
         };
         let synchronizer = WorkerProjectionSynchronizer {
-            host: host.as_ref(),
+            execution: host.as_ref(),
             claim: None,
             published_snapshot: None,
             rebuild_unavailable_environment: false,
@@ -956,7 +956,7 @@ mod tests {
         );
 
         let cold = WorkerProjectionSynchronizer {
-            host: host.as_ref(),
+            execution: host.as_ref(),
             claim: None,
             published_snapshot: None,
             rebuild_unavailable_environment: false,
@@ -1024,7 +1024,7 @@ mod tests {
             expires_at_unix_ms: u64::MAX,
         };
         WorkerProjectionSynchronizer {
-            host: host.as_ref(),
+            execution: host.as_ref(),
             claim: None,
             published_snapshot: None,
             rebuild_unavailable_environment: false,
@@ -1043,7 +1043,7 @@ mod tests {
         let mut compatibility_renewal = projection.clone();
         compatibility_renewal.agent_publication = None;
         WorkerProjectionSynchronizer {
-            host: host.as_ref(),
+            execution: host.as_ref(),
             claim: None,
             published_snapshot: None,
             rebuild_unavailable_environment: false,
@@ -1079,7 +1079,7 @@ mod tests {
             .recompute_fingerprint()
             .expect("Session overlay remains a valid snapshot");
         WorkerProjectionSynchronizer {
-            host: host.as_ref(),
+            execution: host.as_ref(),
             claim: None,
             published_snapshot: Some(&effective),
             rebuild_unavailable_environment: false,
@@ -1107,7 +1107,7 @@ mod tests {
         let mut foreign = effective;
         foreign.metadata.source.revision += 1;
         let error = WorkerProjectionSynchronizer {
-            host: host.as_ref(),
+            execution: host.as_ref(),
             claim: None,
             published_snapshot: Some(&foreign),
             rebuild_unavailable_environment: false,
@@ -1127,7 +1127,7 @@ mod tests {
         let mut missing = projection.clone();
         missing.agent_publication = None;
         let error = WorkerProjectionSynchronizer {
-            host: host.as_ref(),
+            execution: host.as_ref(),
             claim: None,
             published_snapshot: None,
             rebuild_unavailable_environment: false,
@@ -1170,7 +1170,7 @@ mod tests {
                 }
             }
             let error = WorkerProjectionSynchronizer {
-                host: host.as_ref(),
+                execution: host.as_ref(),
                 claim: None,
                 published_snapshot: None,
                 rebuild_unavailable_environment: false,
@@ -1206,8 +1206,7 @@ mod tests {
     #[tokio::test]
     async fn heartbeat_renewal_does_not_duplicate_an_in_flight_realization_driver() {
         let thread = "renew-during-stage";
-        let initial_expiry =
-            awaken_session_realization::test_support::runtime_unix_now_ms() + 5_000;
+        let initial_expiry = awaken_session_realization::test_support::wall_clock_now_ms() + 5_000;
         let renewed_expiry = initial_expiry + 10_000;
         let (projection, lease, stage) = renewal_stage_fixture(thread, initial_expiry);
         let control = Arc::new(RenewalDuringStageControl {
@@ -1326,7 +1325,7 @@ mod tests {
         let thread = "sustained-renewal-progress";
         let (projection, lease, stage) = renewal_stage_fixture(
             thread,
-            awaken_session_realization::test_support::runtime_unix_now_ms() + 60_000,
+            awaken_session_realization::test_support::wall_clock_now_ms() + 60_000,
         );
         let control = Arc::new(RenewalDuringStageControl {
             projection: projection.clone(),
@@ -1373,7 +1372,7 @@ mod tests {
         let thread = "repeated-renewal-directive";
         let (projection, lease, stage) = renewal_stage_fixture(
             thread,
-            awaken_session_realization::test_support::runtime_unix_now_ms() + 60_000,
+            awaken_session_realization::test_support::wall_clock_now_ms() + 60_000,
         );
         let control = Arc::new(RenewalDuringStageControl {
             projection: projection.clone(),

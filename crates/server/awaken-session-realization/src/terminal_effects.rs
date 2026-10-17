@@ -18,7 +18,7 @@ pub mod repository_publication;
 /// One process-local teardown projection derived from the frozen aggregate
 /// Environment state. It carries no authority of its own; keeping the state and
 /// optional physical owner together prevents terminal checkpoint and Sandbox
-/// cleanup from re-reading or independently interpreting the slot.
+/// cleanup from re-reading or independently interpreting the installed Session.
 pub(crate) struct TerminalEnvironmentPreparation {
     state: awaken_session_state_contract::SessionEnvironmentState,
     environment: PreparedBoundEnvironment,

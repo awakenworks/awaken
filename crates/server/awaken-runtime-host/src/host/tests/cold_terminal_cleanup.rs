@@ -290,8 +290,7 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
         owner: "remote-worker".into(),
         runtime_incarnation: "remote-worker:incarnation".into(),
         epoch: 3,
-        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
-            + 60_000,
+        expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms() + 60_000,
     };
     let create_fence = lease
         .sandbox_effect_fence("remote-terminal-create")
@@ -472,7 +471,7 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
     .build()
     .expect("validated Host dependencies");
     let managed = crate::ManagedHost::new(host.clone());
-    let now_unix_ms = awaken_session_realization::test_support::runtime_unix_now_ms();
+    let now_unix_ms = awaken_session_realization::test_support::wall_clock_now_ms();
     let expiring_unix_ms = now_unix_ms.saturating_add(5_000);
     // Renewal extends the asserted Control coordinate by one renewal interval;
     // the Worker never supplies its own wall-clock epoch.
@@ -652,8 +651,7 @@ fn completed_terminal_test_lease() -> crate::session_resource::SessionRealizatio
         owner: "remote-worker".into(),
         runtime_incarnation: "remote-worker:incarnation".into(),
         epoch: 3,
-        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
-            + 60_000,
+        expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms() + 60_000,
     }
 }
 
@@ -1000,8 +998,7 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
         owner: "remote-worker".into(),
         runtime_incarnation: "remote-worker:replacement".into(),
         epoch: 4,
-        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
-            + 60_000,
+        expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms() + 60_000,
     };
     let mut projection = remote_terminal_cleanup_projection();
     projection.resource_revision = 1;

@@ -295,12 +295,12 @@ impl crate::resource_staging::ResourceStaging {
                 .unwrap_or(false);
         let (baseline_is_staged, session_dispatch, reconciliation, environment_projection) =
             sessions
-                .modify_session(thread, |slot| {
+                .modify_session(thread, |installed| {
                     (
-                        slot.inputs.baseline.is_some(),
-                        slot.run.session_dispatch(),
-                        slot.realization.staging.reconciliation,
-                        slot.inputs.environment_projection.clone(),
+                        installed.inputs.baseline.is_some(),
+                        installed.run.session_dispatch(),
+                        installed.realization.staging.reconciliation,
+                        installed.inputs.environment_projection.clone(),
                     )
                 })?
                 .unwrap_or_default();
@@ -753,7 +753,7 @@ impl crate::resource_staging::ResourceStaging {
 
     /// Compile the one Memory-specific leaf shared by ordinary Session staging
     /// and post-commit recovery from a frozen dispatch. The caller owns Resource
-    /// selection and may install the result into a resident Session slot; this
+    /// selection and may install the result into a resident installed Session; this
     /// leaf only binds one already-resolved input and never opens an Environment.
     pub async fn compile_memory_binding(
         &self,
@@ -887,7 +887,7 @@ impl crate::resource_staging::ResourceStaging {
         };
 
         // Publish only after every fallible Resource/Skill read has succeeded.
-        // The slot then exposes one complete set of cold requirements; failed
+        // The installed Session then exposes one complete set of cold requirements; failed
         // compilation leaves no Workspace, prompt, binding, or active-manifest
         // residue. Only the exact physical transition publishes the manifest.
         realizations.publish_resource_requirements(
@@ -1307,12 +1307,12 @@ impl crate::resource_staging::ResourceStaging {
     ) -> Result<(), RealizationError> {
         let (resident_baseline, content_delivery, resident_environment, live_environment) = self
             .sessions
-            .modify_session(thread, |slot| {
+            .modify_session(thread, |installed| {
                 (
-                    slot.inputs.baseline.clone(),
-                    slot.realization.staging.content_delivery,
-                    slot.inputs.environment_projection.clone(),
-                    slot.realization.environment.owner.resident(),
+                    installed.inputs.baseline.clone(),
+                    installed.realization.staging.content_delivery,
+                    installed.inputs.environment_projection.clone(),
+                    installed.realization.environment.owner.resident(),
                 )
             })?
             .unwrap_or_default();

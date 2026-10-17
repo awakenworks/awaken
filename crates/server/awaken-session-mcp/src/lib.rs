@@ -13,8 +13,8 @@ pub mod test_mcp;
 
 pub use mcp::{
     ExtMcpProbe, McpCredentialMaterialization, McpError, McpErrorKind, McpGenerationAuthority,
-    McpInputHost, McpInputRecipients, McpQuiescenceProof, McpSessionSlots, McpSessions,
-    McpStagingSession, project_mcp_session_transport,
+    McpInputHost, McpInputRecipients, McpQuiescenceProof, McpSessions, McpStagingSession,
+    SessionMcpStates, project_mcp_session_transport,
 };
 pub use mcp_material::{
     McpGenerationProjection, McpProjectionState, McpQuiescenceAdmissionFence, McpRefreshMaterial,

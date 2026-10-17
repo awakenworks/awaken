@@ -1,5 +1,5 @@
 // @formal surface requirement=session.lifecycle.session_state
-// @formal reason: Resource staging owns the original projection mutex and cancellation/cache fields under the canonical installed-slot lock; publication still checks the existing realization proof.
+// @formal reason: Resource staging owns the original projection mutex and cancellation/cache fields under the canonical installed Session lock; publication still checks the existing realization proof.
 //! Resource staging of the realization executor: the frozen Session Resources
 //! as the Environment receives them. It projects the provider-effective sandbox
 //! spec, registers the staged Resources and the active manifest, and validates
@@ -44,7 +44,7 @@ pub struct ResourceSources {
     pub credential_materializer:
         Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
     pub memory_reference_encoder:
-        Option<Arc<dyn crate::memory_binding::RuntimeMemoryReferenceEncoder>>,
+        Option<Arc<dyn crate::memory_binding::SessionMemoryReferenceEncoder>>,
 }
 
 /// Stages one installed Session's Resources into its Environment spec; its only
@@ -62,7 +62,7 @@ pub struct ResourceStaging {
     >,
     fetches_resources_upstream: bool,
     credential_materializer: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
-    memory_reference_encoder: Option<Arc<dyn crate::memory_binding::RuntimeMemoryReferenceEncoder>>,
+    memory_reference_encoder: Option<Arc<dyn crate::memory_binding::SessionMemoryReferenceEncoder>>,
 }
 
 impl ResourceStaging {
@@ -116,7 +116,7 @@ impl ResourceStaging {
     /// The Memory reference encoder Memory effects publish through.
     pub fn memory_reference_encoder(
         &self,
-    ) -> Option<&Arc<dyn crate::memory_binding::RuntimeMemoryReferenceEncoder>> {
+    ) -> Option<&Arc<dyn crate::memory_binding::SessionMemoryReferenceEncoder>> {
         self.memory_reference_encoder.as_ref()
     }
 
@@ -126,14 +126,15 @@ impl ResourceStaging {
     ) -> Result<Vec<awaken_provisioning_contract::MountRequirement>, RealizationError> {
         Ok(self
             .sessions
-            .modify_session(thread, |slot| {
+            .modify_session(thread, |installed| {
                 crate::sandbox_projection::project_session_mounts(
-                    slot.realization.staging.resources.mounts.clone(),
-                    slot.inputs
+                    installed.realization.staging.resources.mounts.clone(),
+                    installed
+                        .inputs
                         .baseline
                         .as_ref()
                         .map(|baseline| baseline.mounts.as_slice()),
-                    slot.realization.staging.content_delivery,
+                    installed.realization.staging.content_delivery,
                 )
             })?
             .unwrap_or_default())
@@ -287,11 +288,11 @@ impl ResourceStaging {
     ) -> Result<pc::SandboxSpec, RealizationError> {
         let (baseline, content_delivery, environment) = self
             .sessions
-            .modify_session(thread, |slot| {
+            .modify_session(thread, |installed| {
                 (
-                    slot.inputs.baseline.clone(),
-                    slot.realization.staging.content_delivery,
-                    slot.inputs.environment_projection.clone(),
+                    installed.inputs.baseline.clone(),
+                    installed.realization.staging.content_delivery,
+                    installed.inputs.environment_projection.clone(),
                 )
             })?
             .unwrap_or_default();
@@ -413,8 +414,9 @@ impl ResourceStaging {
     ) -> Result<Vec<awaken_provisioning_contract::EnvVar>, RealizationError> {
         Ok(self
             .sessions
-            .modify_session(thread, |slot| {
-                slot.inputs
+            .modify_session(thread, |installed| {
+                installed
+                    .inputs
                     .baseline
                     .as_ref()
                     .map(|baseline| baseline.env.clone())

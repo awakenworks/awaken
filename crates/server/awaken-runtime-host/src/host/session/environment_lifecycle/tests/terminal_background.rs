@@ -201,7 +201,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             owner: format!("terminal-background-worker-{thread}"),
             runtime_incarnation: format!("terminal-background-worker-{thread}:incarnation"),
             epoch: 1,
-            expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
+            expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms()
                 + 60_000,
         };
         let create_fence = lease
@@ -664,8 +664,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         owner: "terminal-worker".into(),
         runtime_incarnation: "terminal-worker:boot".into(),
         epoch: 1,
-        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
-            + 60_000,
+        expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms() + 60_000,
     };
     // U1 requires the fresh root's original admission before physical I/O;
     // historical omission remains the explicit negative row in the cold table.

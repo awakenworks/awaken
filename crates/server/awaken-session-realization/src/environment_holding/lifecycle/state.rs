@@ -278,7 +278,7 @@ const fn durable_projection_identity_decision(
 
 impl SessionEnvironmentOwner {
     /// Stage only the rebuildable owner coordinates. No physical owner is
-    /// retired or published until the caller commits under this same slot lock.
+    /// retired or published until the caller commits under this same installed Session lock.
     pub fn after_projection(
         &self,
         thread: &str,

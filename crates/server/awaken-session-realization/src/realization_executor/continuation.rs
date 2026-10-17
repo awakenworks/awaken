@@ -17,7 +17,7 @@ use awaken_session_types::RunError;
 use crate::realization_executor::RealizationExecutor;
 
 impl RealizationExecutor {
-    /// All continuation effects read the same Session slot admission decision.
+    /// All continuation effects read the same installed Session admission decision.
     /// The returned fence remains in Control coordinates; provider validation
     /// is a separate boundary, not a reason to reinterpret expiry locally.
     fn continuation_current_lease(

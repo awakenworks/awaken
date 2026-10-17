@@ -35,7 +35,7 @@ mod sessions;
 pub use attachment::{McpCredentialMaterialization, McpStagingSession};
 pub use error::{McpError, McpErrorKind};
 pub use input::{McpInputHost, McpInputRecipients};
-pub use sessions::{McpGenerationAuthority, McpQuiescenceProof, McpSessionSlots, McpSessions};
+pub use sessions::{McpGenerationAuthority, McpQuiescenceProof, McpSessions, SessionMcpStates};
 
 /// Native Worker-side MCP calls may legitimately outlive control-plane
 /// discovery. This policy is deliberately private runtime composition, not

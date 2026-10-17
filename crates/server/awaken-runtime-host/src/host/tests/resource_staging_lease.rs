@@ -284,7 +284,7 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                     ))
                 .build()
                 .expect("validated Host dependencies");
-                let now = awaken_session_realization::test_support::runtime_unix_now_ms();
+                let now = awaken_session_realization::test_support::wall_clock_now_ms();
                 let lease = crate::session_resource::SessionRealizationLease {
                     owner: "worker".into(),
                     runtime_incarnation: "worker/1".into(),
@@ -617,7 +617,7 @@ impl StagingFixture {
             initial_branch: None,
             initial_commit: None,
         }]);
-        let now = awaken_session_realization::test_support::runtime_unix_now_ms();
+        let now = awaken_session_realization::test_support::wall_clock_now_ms();
         let lease = crate::session_resource::SessionRealizationLease {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a/boot-1".into(),
@@ -825,7 +825,7 @@ async fn local_runtime_renewal_port_selects_exact_owner_without_requiring_mcp_or
         .build()
         .expect("validated Host dependencies");
     let control = Arc::new(RemoteTerminalCleanupControl::default());
-    let now = awaken_session_realization::test_support::runtime_unix_now_ms();
+    let now = awaken_session_realization::test_support::wall_clock_now_ms();
     let mut initial = Vec::new();
     for rule in ["L1", "L2", "L3", "L4", "L5", "L6"] {
         let lease = crate::session_resource::SessionRealizationLease {
@@ -910,8 +910,7 @@ async fn missing_control_is_required_only_for_due_leases_without_skipping_refres
         owner: "worker".into(),
         runtime_incarnation: "boot".into(),
         epoch: 1,
-        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
-            + 90_000,
+        expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms() + 90_000,
     };
     host.install_session_realization_lease(SESSION, lease.clone())
         .unwrap();
@@ -1729,7 +1728,7 @@ async fn cold_staging_renews_for_ten_ttls_with_mixed_control_latency() {
     for index in 0..16 {
         let session = format!("soak-{index:02}");
         f.lease.expires_at_unix_ms =
-            awaken_session_realization::test_support::runtime_unix_now_ms() + ttl;
+            awaken_session_realization::test_support::wall_clock_now_ms() + ttl;
         f.control
             .renewals
             .lock()

@@ -813,7 +813,7 @@ async fn provider_fence_source_is_wired_across_preparation_and_provider_awaits()
                 if matches!(rule, "provider_renewed" | "provider_unfenced") {
                     "projection probe finished"
                 } else if rule.ends_with("_aba") {
-                    "slot was replaced"
+                    "installed Session was replaced"
                 } else {
                     "proof is no longer live"
                 }

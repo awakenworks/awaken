@@ -55,8 +55,7 @@ async fn missing_terminal_work_preserves_successor(delayed: bool) {
         owner: "local".into(),
         runtime_incarnation: "boot".into(),
         epoch: 1,
-        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
-            + 300_000,
+        expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms() + 300_000,
     };
     host.install_session_realization_lease(thread, original.clone())
         .expect("original Control-observed lease");
@@ -198,8 +197,7 @@ async fn missing_current_terminal_work_retires_original(renew: bool) {
         owner: "local".into(),
         runtime_incarnation: "boot".into(),
         epoch: 1,
-        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
-            + 300_000,
+        expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms() + 300_000,
     };
     host.install_session_realization_lease(thread, original.clone())
         .unwrap();
@@ -320,8 +318,7 @@ async fn completed_terminal_projection_not_found_cancels_its_original_real_run()
         owner: "local".into(),
         runtime_incarnation: "boot".into(),
         epoch: 1,
-        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
-            + 300_000,
+        expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms() + 300_000,
     };
     host.install_session_realization_lease(thread, original.clone())
         .unwrap();
@@ -407,7 +404,7 @@ fn terminal_absence_selection_requires_the_complete_generation_and_original_phas
             owner: "local".into(),
             runtime_incarnation: "boot".into(),
             epoch: 2,
-            expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
+            expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms()
                 + 300_000,
         };
         let mut expected = current.clone();

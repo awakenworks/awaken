@@ -85,8 +85,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         owner: "terminal-test-worker".into(),
         runtime_incarnation: "terminal-test-worker:incarnation".into(),
         epoch: 1,
-        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
-            + 60_000,
+        expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms() + 60_000,
     };
     let create_fence = lease
         .sandbox_effect_fence("terminal-test-create")
@@ -436,7 +435,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
             owner: "terminal-test-worker".into(),
             runtime_incarnation: "terminal-test-worker:incarnation".into(),
             epoch: 1,
-            expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
+            expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms()
                 + 60_000,
         },
     );
@@ -764,8 +763,7 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
         owner: "terminal-retire-worker".into(),
         runtime_incarnation: "terminal-retire-worker:incarnation".into(),
         epoch: 7,
-        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
-            + 60_000,
+        expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms() + 60_000,
     };
     host.install_test_terminal_cleanup_projection(
         &awaken_session_realization_contract::SessionTerminalCleanupAssignment {

@@ -98,7 +98,7 @@ impl CurrentExecutionAuthority for SessionExecutionAuthority {
 }
 
 impl SessionExecutionAuthority {
-    /// Original composed tests exercise the actual slot, Worker proof and
+    /// Original composed tests exercise the actual installed Session, Worker proof and
     /// Environment Arc. This helper installs no registry or authority.
     #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
     pub fn for_test(
@@ -173,7 +173,7 @@ impl SessionExecutionAuthority {
         {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                "Session realization slot was replaced",
+                "installed Session was replaced",
             ));
         }
         match &self.target {
@@ -226,7 +226,7 @@ impl ExecutionAuthority {
         &self.sessions
     }
 
-    /// Lock order: Worker proof -> Session slots -> synchronous provider grant.
+    /// Lock order: Worker proof -> installed Sessions -> synchronous provider grant.
     /// No async owner lock or external I/O may be held by this callback.
     /// A denial is a [`RealizationError`]; the effect keeps its own error type.
     pub fn authorize_worker_effect<T, E: From<RealizationError>>(
@@ -359,10 +359,11 @@ impl ExecutionAuthority {
     {
         let (realization, environment_fingerprint) = self
             .sessions
-            .modify_session(thread, |slot| {
+            .modify_session(thread, |installed| {
                 (
-                    slot.realization.execution.authority.lease().cloned(),
-                    slot.inputs
+                    installed.realization.execution.authority.lease().cloned(),
+                    installed
+                        .inputs
                         .baseline
                         .as_ref()
                         .map(|baseline| baseline.environment.config_fingerprint.0.clone()),

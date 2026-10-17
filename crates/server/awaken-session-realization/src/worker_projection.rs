@@ -1,5 +1,5 @@
 // @formal surface requirement=session.lifecycle.session_state
-// @formal reason: Original frozen projection and MCP effects use the canonical realization driver and existing slots.
+// @formal reason: Original frozen projection and MCP effects use the canonical realization driver and existing installed Sessions.
 //! Realizes an already-authorized frozen Session projection. Dispatch and Run execution supply the same projection effect role.
 use crate::{
     realization_error::RealizationError, realization_executor::RealizationExecutor,

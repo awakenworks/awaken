@@ -161,7 +161,7 @@ impl crate::environment_holding::EnvironmentHolding {
         intent: awaken_session_environment_contract::EnvironmentRealizationKind,
     ) -> Result<crate::session_environment::SessionEnvironment, RealizationError> {
         let spec = self.validate_session_environment_capabilities(peers, provider, spec)?;
-        // Capture before any preparation await. A same-byte replacement slot
+        // Capture before any preparation await. A same-byte replacement installed Session
         // must not lend its proof to this in-flight creation or its retries.
         let current_fence = match (effect_fence, authority) {
             (Some(_), Some(authority)) => Some(authority),
@@ -330,10 +330,10 @@ impl crate::environment_holding::EnvironmentHolding {
         // re-resolve a mutable catalog head while choosing physical isolation.
         let opaque_process = self
             .sessions
-            .modify_session(&spec.scope, |slot| {
+            .modify_session(&spec.scope, |installed| {
                 awaken_session_realization_contract::frozen_session_requires_opaque_process(
-                    slot.inputs.published_snapshot.as_ref(),
-                    slot.inputs.baseline.as_ref(),
+                    installed.inputs.published_snapshot.as_ref(),
+                    installed.inputs.baseline.as_ref(),
                 )
             })?
             .unwrap_or(false);
@@ -360,14 +360,14 @@ impl crate::environment_holding::EnvironmentHolding {
     /// [`Self::prepare_terminal_cleanup_effect`] and [`Self::dispose_terminal_cleanup_effect`].
     pub async fn evict_session_for_rebuild(&self, thread: &str) -> Result<(), RealizationError> {
         self.sessions
-            .modify_session(thread, |slot| slot.run.drop_context())?;
+            .modify_session(thread, |installed| installed.run.drop_context())?;
         Ok(())
     }
 }
 
 impl crate::environment_holding::EnvironmentHolding {
     /// Atomically publish one created/adopted Environment into the existing
-    /// durable binding authority and the process-local slot. Every lifecycle
+    /// durable binding authority and the process-local installed Session. Every lifecycle
     /// entry point uses this owner so the reconciliation flag cannot drift from
     /// the handle that was persisted.
     pub async fn publish_session_environment_under_lifecycle(
@@ -542,10 +542,10 @@ impl crate::environment_holding::EnvironmentHolding {
                 )
             })?;
         let (claim, realization_lease) = realizations
-            .modify_session(thread, |slot| {
+            .modify_session(thread, |installed| {
                 (
-                    slot.run.dispatch_claim().cloned(),
-                    slot.realization.execution.authority.lease().cloned(),
+                    installed.run.dispatch_claim().cloned(),
+                    installed.realization.execution.authority.lease().cloned(),
                 )
             })?
             .unwrap_or_default();
@@ -701,10 +701,10 @@ impl crate::environment_holding::EnvironmentHolding {
             return Ok(environment);
         }
         let (claim, realization_lease) = realizations
-            .modify_session(thread, |slot| {
+            .modify_session(thread, |installed| {
                 (
-                    slot.run.dispatch_claim().cloned(),
-                    slot.realization.execution.authority.lease().cloned(),
+                    installed.run.dispatch_claim().cloned(),
+                    installed.realization.execution.authority.lease().cloned(),
                 )
             })?
             .unwrap_or_default();

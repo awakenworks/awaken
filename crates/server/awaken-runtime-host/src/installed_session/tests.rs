@@ -86,7 +86,7 @@ fn environment_only_session_lease_remains_supervised() {
                 owner: "worker".into(),
                 runtime_incarnation: "worker/incarnation".into(),
                 epoch: 1,
-                expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
+                expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms()
                     + 30_000,
             }),
         );

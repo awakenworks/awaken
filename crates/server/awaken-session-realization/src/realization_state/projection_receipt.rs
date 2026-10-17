@@ -1,5 +1,5 @@
 // @formal entrypoint session_environment.stale_projection_never_rolls_back_or_relabels_resident_or_retiring_owner
-//! Admission of complete aggregate snapshots at the existing slot boundary.
+//! Admission of complete aggregate snapshots at the existing installed Session boundary.
 use super::SessionRealization;
 use crate::realization_error::{AuthorityLoss, RealizationError};
 use awaken_session_realization_contract::FrozenSessionProjection;

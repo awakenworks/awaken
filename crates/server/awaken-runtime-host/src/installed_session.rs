@@ -397,7 +397,7 @@ impl InstalledSessions {
         &self.slots
     }
 
-    /// The realizer's view of these Sessions.
+    /// The realization executor's view of these Sessions.
     pub(crate) fn realizations(
         self: &Arc<Self>,
     ) -> crate::session_realizations::SessionRealizations {

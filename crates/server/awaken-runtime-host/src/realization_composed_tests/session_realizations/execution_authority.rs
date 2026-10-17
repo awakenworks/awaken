@@ -55,7 +55,7 @@ mod tests {
                 owner: "worker".into(),
                 runtime_incarnation: "incarnation".into(),
                 epoch: 1,
-                expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
+                expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms()
                     + 60_000,
             };
             slots.install("session");
@@ -150,7 +150,7 @@ mod tests {
                     .expires_at_unix_ms = if rule == "expired" {
                     0
                 } else {
-                    awaken_session_realization::test_support::runtime_unix_now_ms() + 5_000
+                    awaken_session_realization::test_support::wall_clock_now_ms() + 5_000
                 };
             }
             match rule {

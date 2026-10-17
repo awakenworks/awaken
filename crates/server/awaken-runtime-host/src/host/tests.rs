@@ -2216,8 +2216,7 @@ pub(super) fn terminal_recovery_effect(
         owner: owner.into(),
         runtime_incarnation: format!("{owner}:incarnation"),
         epoch: 1,
-        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
-            + 60_000,
+        expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms() + 60_000,
     };
     let mut cleanup = awaken_session_state_contract::SessionCleanupOperation::default();
     assert!(cleanup.request(&awaken_session_types::SessionId::from(thread)));

@@ -13,7 +13,7 @@ pub fn test_lease_receipt(
 ) -> awaken_session_realization_contract::SessionRealizationLeaseReceipt {
     awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
         lease,
-        runtime_unix_now_ms(),
+        wall_clock_now_ms(),
     )
     .expect("live Control-clock fixture lease")
 }
@@ -74,9 +74,9 @@ pub fn create_session_environment<'a>(
         )
 }
 
-/// Fixture composition samples the canonical wall-clock port. Production
+/// The current wall-clock time in Unix milliseconds, for fixtures: they sample the canonical wall-clock port. Production
 /// realization continues to read the Host-selected clock already injected.
-pub fn runtime_unix_now_ms() -> u64 {
+pub fn wall_clock_now_ms() -> u64 {
     use awaken_time::WallClockExt as _;
     let clock = awaken_time::system_clock();
     clock.now_ms()
@@ -189,8 +189,8 @@ impl crate::session_realizations::SessionRealizationSource for InMemorySessionRe
                 &awaken_session_types::SessionId::from(session),
                 || {
                     let mut registry = self.registry().expect("permit fixture registry is healthy");
-                    let slot = registry.entry(session.to_owned()).or_default();
-                    let phase = slot.realization.execution.phase.clone();
+                    let installed = registry.entry(session.to_owned()).or_default();
+                    let phase = installed.realization.execution.phase.clone();
                     async move {
                         let owner = phase.clone().lock_owned().await;
                         (phase, owner)
@@ -198,14 +198,16 @@ impl crate::session_realizations::SessionRealizationSource for InMemorySessionRe
                 },
                 |identity| {
                     let mut registry = self.registry().expect("permit fixture registry is healthy");
-                    let slot = registry.get_mut(session)?;
-                    std::sync::Arc::ptr_eq(&slot.realization.execution.phase, identity).then(|| {
-                        admit(crate::session_realizations::SessionRealizationAccess {
-                            inputs: &slot.inputs,
-                            realization: &mut slot.realization,
-                            run: &mut slot.run,
-                        })
-                    })
+                    let installed = registry.get_mut(session)?;
+                    std::sync::Arc::ptr_eq(&installed.realization.execution.phase, identity).then(
+                        || {
+                            admit(crate::session_realizations::SessionRealizationAccess {
+                                inputs: &installed.inputs,
+                                realization: &mut installed.realization,
+                                run: &mut installed.run,
+                            })
+                        },
+                    )
                 },
             )
             .await
@@ -224,13 +226,13 @@ impl crate::session_realizations::SessionRealizationSource for InMemorySessionRe
         visit: &mut dyn FnMut(crate::session_realizations::SessionRealizationAccess<'_>),
     ) -> Result<bool, crate::realization_error::RealizationLock> {
         let mut registry = self.registry()?;
-        let Some(slot) = registry.get_mut(session) else {
+        let Some(installed) = registry.get_mut(session) else {
             return Ok(false);
         };
         visit(crate::session_realizations::SessionRealizationAccess {
-            inputs: &slot.inputs,
-            realization: &mut slot.realization,
-            run: &mut slot.run,
+            inputs: &installed.inputs,
+            realization: &mut installed.realization,
+            run: &mut installed.run,
         });
         Ok(true)
     }
@@ -245,8 +247,8 @@ impl crate::session_realizations::SessionRealizationSource for InMemorySessionRe
         let Ok(mut registry) = self.registry() else {
             return false;
         };
-        let completed = registry.get(session).is_some_and(|slot| {
-            selected.matches_completion(&slot.realization, expected_owner, disposed)
+        let completed = registry.get(session).is_some_and(|installed| {
+            selected.matches_completion(&installed.realization, expected_owner, disposed)
         });
         if completed {
             registry.remove(session);
@@ -260,10 +262,10 @@ impl crate::session_realizations::SessionRealizationSource for InMemorySessionRe
         update: &mut dyn FnMut(&mut crate::frozen_inputs::FrozenSessionInputs),
     ) -> Result<(), crate::realization_error::RealizationLock> {
         let mut registry = self.registry()?;
-        let slot = registry.entry(session.to_owned()).or_default();
-        let mut next = slot.inputs.as_ref().clone();
+        let installed = registry.entry(session.to_owned()).or_default();
+        let mut next = installed.inputs.as_ref().clone();
         update(&mut next);
-        slot.inputs = std::sync::Arc::new(next);
+        installed.inputs = std::sync::Arc::new(next);
         Ok(())
     }
 
@@ -273,12 +275,12 @@ impl crate::session_realizations::SessionRealizationSource for InMemorySessionRe
         publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
     ) -> Result<(), crate::realization_error::RealizationError> {
         let mut registry = self.registry()?;
-        let slot = registry.entry(session.to_owned()).or_default();
-        slot.inputs.validate_publication(publication)?;
+        let installed = registry.entry(session.to_owned()).or_default();
+        installed.inputs.validate_publication(publication)?;
         if let Some(publication) = publication {
-            let mut next = slot.inputs.as_ref().clone();
+            let mut next = installed.inputs.as_ref().clone();
             next.published_snapshot = Some(publication.clone());
-            slot.inputs = std::sync::Arc::new(next);
+            installed.inputs = std::sync::Arc::new(next);
         }
         Ok(())
     }
@@ -293,18 +295,19 @@ impl crate::session_realizations::SessionRealizationSource for InMemorySessionRe
         effect_key: String,
     ) -> Result<(), crate::realization_error::RealizationError> {
         let mut registry = self.registry()?;
-        let slot = registry
+        let installed = registry
             .get_mut(session)
             .ok_or_else(|| crate::realization_error::RealizationError::session_absent(session))?;
-        slot.realization
+        installed
+            .realization
             .validate_preparation_publication(asserted)?;
-        let mut next = slot.inputs.as_ref().clone();
+        let mut next = installed.inputs.as_ref().clone();
         next.workspace = Some(workspace.to_owned());
-        slot.inputs = std::sync::Arc::new(next);
-        slot.realization.staging.resources = compiled.staged;
-        slot.realization.staging.memory_bindings = compiled.memory_bindings;
-        slot.realization.staging.skills = Some(versions);
-        slot.realization.staging.effect_key = Some(effect_key);
+        installed.inputs = std::sync::Arc::new(next);
+        installed.realization.staging.resources = compiled.staged;
+        installed.realization.staging.memory_bindings = compiled.memory_bindings;
+        installed.realization.staging.skills = Some(versions);
+        installed.realization.staging.effect_key = Some(effect_key);
         Ok(())
     }
 }

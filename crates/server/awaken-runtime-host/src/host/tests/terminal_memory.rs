@@ -894,8 +894,7 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
         owner: "source-cleanup-worker".into(),
         runtime_incarnation: "source-cleanup-worker:incarnation".into(),
         epoch: 1,
-        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
-            + 60_000,
+        expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms() + 60_000,
     };
     host.install_session_environment_owner_projection(
         thread,
@@ -1124,7 +1123,7 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
         .build()
         .expect("validated Host dependencies");
     let session_id = "terminal-renewed-provider-fence";
-    let now_unix_ms = awaken_session_realization::test_support::runtime_unix_now_ms();
+    let now_unix_ms = awaken_session_realization::test_support::wall_clock_now_ms();
     let expired_lease = crate::session_resource::SessionRealizationLease {
         owner: "terminal-worker".into(),
         runtime_incarnation: "terminal-worker:boot".into(),

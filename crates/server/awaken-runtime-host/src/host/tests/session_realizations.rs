@@ -1,10 +1,10 @@
-//! The realizer's `SessionRealizations` view over the installed Sessions.
+//! The realization executor's `SessionRealizations` view over the installed Sessions.
 
 use super::*;
 
 #[tokio::test]
 async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow_run_query() {
-    // Decision table over one installed Session as the realizer sees it.
+    // Decision table over one installed Session as the realization executor sees it.
     // C1 the Session is installed / absent; C2 the access is `modify` (only an
     // installed Session) or `update` (installs an empty one first); C3 which
     // layer is touched. The view's types allow nothing else: frozen inputs are
@@ -603,8 +603,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         owner: "view-worker".into(),
         runtime_incarnation: "view-worker/boot".into(),
         epoch: 1,
-        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
-            + 30_000,
+        expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms() + 30_000,
     };
     for rule in ["missing", "foreign", "closed", "cancelled", "expired"] {
         let token = Arc::new(awaken_runtime_contract::CancellationToken::new());

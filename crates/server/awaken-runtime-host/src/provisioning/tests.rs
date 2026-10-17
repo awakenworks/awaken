@@ -147,8 +147,7 @@ fn terminal_cleanup_test_lease() -> session_resource::SessionRealizationLease {
         owner: "terminal-provisioning-test".into(),
         runtime_incarnation: "terminal-provisioning-test/incarnation".into(),
         epoch: 1,
-        expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
-            + 60_000,
+        expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms() + 60_000,
     }
 }
 

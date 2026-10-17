@@ -44,7 +44,7 @@ impl SessionRealizationAuthority {
     }
 
     /// One local admission rule: exact aggregate generation and a still-live
-    /// request-relative observation. Callers hold the existing slot mutex;
+    /// request-relative observation. Callers hold the existing installed Session lock;
     /// neither wall time nor a retained Closed lease grants authority.
     pub fn remaining_for(
         &self,
@@ -69,7 +69,7 @@ impl SessionRealizationAuthority {
         matches!(self, Self::Closed(_))
     }
 
-    /// Called under the Session slot mutex used for renewal application. The
+    /// Called under the installed Session lock used for renewal application. The
     /// pending provider GO callback must hold this same mutex through its grant.
     /// A retry may select the retained closed identity; a stale revoker cannot.
     pub fn close(&mut self, expected: Option<&session_resource::SessionRealizationLease>) -> bool {
@@ -99,7 +99,7 @@ pub struct SessionRealization {
 }
 
 impl SessionRealization {
-    /// The original canonical MCP root rule, read under the Session slot lock.
+    /// The original canonical MCP root rule, read under the installed Session lock.
     /// Absence remains explicit and Closed never grants continuing admission.
     pub fn mcp_generation_root_authority(
         &self,
@@ -142,7 +142,7 @@ impl SessionRealization {
     }
 
     /// What revocation keeps while an Environment owner is still retained:
-    /// the slot's lock identities, the closed authority, the owner itself and
+    /// the installed Session's lock identities, the closed authority, the owner itself and
     /// the content it was staged with. Everything else is rebuilt.
     pub fn take_retained_on_revocation(&mut self) -> Self {
         Self {
@@ -274,7 +274,7 @@ impl SessionRealization {
 }
 
 impl SessionRealization {
-    /// Install a projected Environment owner and, in the same slot lock, let
+    /// Install a projected Environment owner and, in the same installed Session lock, let
     /// the canonical projection reopen MCP admission when the run layer holds
     /// no local effect.
     pub fn install_owner(
@@ -360,7 +360,7 @@ impl SessionRealization {
     }
 }
 
-/// Per-Session state held under the canonical installed-slot mutex.
+/// Per-Session state held under the installed Session lock.
 #[derive(Default)]
 pub struct EnvironmentHoldingState {
     /// Serializes first materialization/rebuild for this Session without a
@@ -377,7 +377,7 @@ pub struct EnvironmentHoldingState {
     pub rebuild_source: Option<(String, Option<String>)>,
 }
 
-/// Per-Session state held under the canonical installed-slot mutex.
+/// Per-Session state held under the installed Session lock.
 #[derive(Default)]
 pub struct ResourceStagingState {
     /// Serializes one complete Resource-generation compare/realize/publish
@@ -452,7 +452,7 @@ impl ResourceStagingState {
     }
 }
 
-/// Per-Session state held under the canonical installed-slot mutex.
+/// Per-Session state held under the installed Session lock.
 #[derive(Default)]
 pub struct TerminalEffectsState {
     /// One complete Control-issued terminal assignment. Its Environment state
@@ -466,7 +466,7 @@ pub struct TerminalEffectsState {
     pub root: Option<String>,
 }
 
-/// Per-Session state held under the canonical installed-slot mutex.
+/// Per-Session state held under the installed Session lock.
 #[derive(Default)]
 pub struct ExecutionAuthorityState {
     /// Serializes the canonical realization phase driver for this Session.
