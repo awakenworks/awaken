@@ -610,15 +610,13 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         let token = Arc::new(awaken_runtime_contract::CancellationToken::new());
         host.installed_sessions.update(thread, |slot| {
             slot.realization.execution.authority =
-                crate::session_realizations::SessionRealizationAuthority::Live(
-                    if rule == "expired" {
-                        awaken_session_realization::test_support::test_expired_observed_lease(
-                            lease.clone(),
-                        )
-                    } else {
-                        awaken_session_realization::test_support::test_observed_lease(lease.clone())
-                    },
-                );
+                crate::realization_state::SessionRealizationAuthority::Live(if rule == "expired" {
+                    awaken_session_realization::test_support::test_expired_observed_lease(
+                        lease.clone(),
+                    )
+                } else {
+                    awaken_session_realization::test_support::test_observed_lease(lease.clone())
+                });
             slot.realization.staging.preparation = Some(token.clone());
             slot.realization.staging.memory = Some(memory.clone());
             if rule == "closed" {
@@ -697,7 +695,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
     }
     host.installed_sessions.update(thread, |slot| {
         slot.realization.execution.authority =
-            crate::session_realizations::SessionRealizationAuthority::Live(
+            crate::realization_state::SessionRealizationAuthority::Live(
                 awaken_session_realization::test_support::test_observed_lease(lease.clone()),
             );
         slot.realization.staging.preparation =

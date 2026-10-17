@@ -1842,7 +1842,7 @@ mod tests {
             assert!(
                 matches!(
                     host.installed_sessions.realizations().read_realization(thread, |r| r.execution.authority.clone()).expect("installed Sessions"),
-                    Some(crate::session_realizations::SessionRealizationAuthority::Closed(Some(ref closed)))
+                    Some(crate::realization_state::SessionRealizationAuthority::Closed(Some(ref closed)))
                         if closed == &recovery_authority.lease
                 ),
                 "R9 closes the failed generation"

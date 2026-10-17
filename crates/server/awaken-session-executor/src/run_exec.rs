@@ -76,20 +76,20 @@ struct ActivationOptions {
 /// whether delivery was direct, durable, or recovered by another claim.
 pub(crate) struct ArtifactHarvestAttemptExecutor {
     inner: Arc<dyn RunAttemptExecutor>,
-    harvester: std::sync::Weak<crate::provisioning::ArtifactHarvester>,
+    harvester: std::sync::Weak<crate::artifact_harvest::ArtifactHarvester>,
 }
 
 impl ArtifactHarvestAttemptExecutor {
     /// The physical cleanup owner outlives attempts; the resident cache only borrows it.
     pub(crate) fn new(
         inner: Arc<dyn RunAttemptExecutor>,
-        harvester: std::sync::Weak<crate::provisioning::ArtifactHarvester>,
+        harvester: std::sync::Weak<crate::artifact_harvest::ArtifactHarvester>,
     ) -> Self {
         Self { inner, harvester }
     }
 
     async fn finish<T>(
-        harvester: &crate::provisioning::ArtifactHarvester,
+        harvester: &crate::artifact_harvest::ArtifactHarvester,
         thread: &str,
         claim: Option<awaken_dispatch_contract::RunClaim>,
         result: ExecutionResult<T>,
@@ -1016,7 +1016,7 @@ pub(crate) mod tests {
             run.dispatch_claim = Some(expected_claim.clone());
         });
         host.register_thread_workspace(thread, "workspace-a");
-        let spec = crate::provisioning::agent_run_sandbox_spec(thread);
+        let spec = crate::sandbox_projection::agent_run_sandbox_spec(thread);
         assert_eq!(
             spec.outputs_path, "/mnt/session/outputs",
             "Managed Agents writes deliverables at its documented path"

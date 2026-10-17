@@ -14,10 +14,23 @@ use crate::environment_owner::{
 use crate::realization_error::{AuthorityLoss, PendingState, ProjectionConflict, RealizationError};
 use crate::session_environment::{
     BoundEnvironmentPreparationMode, PreparedBoundEnvironment, TerminalEffectMode,
-    TerminalEnvironmentInstallation,
 };
 use awaken_session_configuration_contract::resource as session_resource;
 use std::sync::Arc;
+
+/// Borrowed inputs for one terminal Environment installation phase. The
+/// aggregate effect fence, provider spec, handle, and optional restore fence
+/// remain their canonical value objects; this context owns no lifecycle fact.
+pub struct TerminalEnvironmentInstallation<'a> {
+    pub thread: &'a str,
+    pub binding: Option<&'a str>,
+    pub committed_candidate: Option<&'a crate::environment_owner::UnboundSessionEnvironment>,
+    pub provider: &'a crate::session_environment::SessionEnvironmentProvider,
+    pub spec: &'a awaken_provisioning_contract::SandboxSpec,
+    pub handle: Option<&'a awaken_provisioning_contract::SandboxHandle>,
+    pub expected_effect_fence: Option<&'a awaken_provisioning_contract::SandboxEffectFence>,
+    pub effect_fence: &'a awaken_provisioning_contract::SandboxEffectFence,
+}
 
 impl EnvironmentHolding {
     /// Re-open one exact terminal substrate into the process-local teardown

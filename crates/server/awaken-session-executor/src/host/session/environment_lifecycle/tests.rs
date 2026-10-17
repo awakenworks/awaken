@@ -42,7 +42,7 @@ async fn environment(
         provider
             .realizer()
             .create_effective_for_effect(
-                &crate::provisioning::agent_run_sandbox_spec(thread),
+                &crate::sandbox_projection::agent_run_sandbox_spec(thread),
                 crate::session_environment::ProviderEffect::Fenced {
                     fence: &effect_fence,
                     authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(

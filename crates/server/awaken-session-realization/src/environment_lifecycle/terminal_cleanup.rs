@@ -196,7 +196,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
         let artifact_capture_mode = root_environment
             .as_ref()
             .map(TerminalEnvironmentPreparation::artifact_capture_mode)
-            .unwrap_or(Some(crate::provisioning::ArtifactCaptureMode::Live));
+            .unwrap_or(Some(crate::artifact_harvest::ArtifactCaptureMode::Live));
         let artifact_receipts = if let Some(capture_mode) = artifact_capture_mode {
             let harvester = self.artifacts.clone();
             let fence = Some(
@@ -216,7 +216,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
                     .filter(|prepared| prepared.environment.permits_live_io())
                     .and_then(|prepared| prepared.environment.environment.as_ref()),
             ) {
-                (crate::provisioning::ArtifactCaptureMode::Live, Some((environment, _))) => {
+                (crate::artifact_harvest::ArtifactCaptureMode::Live, Some((environment, _))) => {
                     harvester
                         .harvest_with_environment_and_fence(
                             &effect.command.thread_id,

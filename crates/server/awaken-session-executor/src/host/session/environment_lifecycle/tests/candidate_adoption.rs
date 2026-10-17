@@ -878,7 +878,7 @@ async fn candidate_revocation_and_projection_preserve_exact_commit_evidence() {
         provider
             .adoption()
             .rebind_retained(
-                &crate::provisioning::agent_run_sandbox_spec("candidate-evidence"),
+                &crate::sandbox_projection::agent_run_sandbox_spec("candidate-evidence"),
                 &owned.lifecycle().handle(),
                 &owned,
                 crate::session_environment::ProviderEffect::Unattached,

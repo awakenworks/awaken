@@ -6,14 +6,14 @@ use awaken_session_configuration_contract::resource::SessionRealizationLease;
 use std::sync::Arc;
 use std::{io, time::Duration};
 
-use awaken_session_realization::session_realizations::execution_authority::*;
+use awaken_session_realization::execution_authority::*;
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use crate::environment_owner::*;
     use crate::installed_session::InstalledSessions;
-    use crate::session_realizations::SessionRealizationAuthority;
+    use crate::realization_state::SessionRealizationAuthority;
     use awaken_session_environment::SandboxEnvironment;
     use awaken_session_environment::test_support::SandboxEnvironmentAccess as _;
     use std::sync::Mutex;

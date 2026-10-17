@@ -864,7 +864,7 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
     host.installed_sessions
         .realizations()
         .update_realization(thread, |r| {
-            r.execution.authority = crate::session_realizations::SessionRealizationAuthority::Live(
+            r.execution.authority = crate::realization_state::SessionRealizationAuthority::Live(
                 awaken_session_realization::test_support::test_observed_lease(lease.clone()),
             );
         })
@@ -1118,7 +1118,7 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
 
     host.installed_sessions
         .install_realization(session_id, |r| {
-            r.execution.authority = crate::session_realizations::SessionRealizationAuthority::Live(
+            r.execution.authority = crate::realization_state::SessionRealizationAuthority::Live(
                 awaken_session_realization::test_support::test_observed_lease(
                     renewed_lease.clone(),
                 ),
@@ -1155,7 +1155,7 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
         .realizations()
         .update_realization(session_id, |r| {
             r.execution.authority =
-                crate::session_realizations::SessionRealizationAuthority::Live(skewed_proof);
+                crate::realization_state::SessionRealizationAuthority::Live(skewed_proof);
         })
         .expect("installed Sessions");
     assert_eq!(
@@ -1176,7 +1176,7 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
     host.installed_sessions
         .realizations()
         .update_realization(session_id, |r| {
-            r.execution.authority = crate::session_realizations::SessionRealizationAuthority::Live(
+            r.execution.authority = crate::realization_state::SessionRealizationAuthority::Live(
                 awaken_session_realization::test_support::test_expired_observed_lease(
                     renewed_lease.clone(),
                 ),
@@ -1192,10 +1192,8 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
         "R5"
     );
     for closed in [
-        crate::session_realizations::SessionRealizationAuthority::Closed(Some(
-            renewed_lease.clone(),
-        )),
-        crate::session_realizations::SessionRealizationAuthority::Uninstalled,
+        crate::realization_state::SessionRealizationAuthority::Closed(Some(renewed_lease.clone())),
+        crate::realization_state::SessionRealizationAuthority::Uninstalled,
     ] {
         host.installed_sessions
             .realizations()
@@ -1214,7 +1212,7 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
     host.installed_sessions
         .realizations()
         .update_realization(session_id, |r| {
-            r.execution.authority = crate::session_realizations::SessionRealizationAuthority::Live(
+            r.execution.authority = crate::realization_state::SessionRealizationAuthority::Live(
                 awaken_session_realization::test_support::test_expired_observed_lease(
                     expired_lease.clone(),
                 ),
@@ -1241,7 +1239,7 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
     host.installed_sessions
         .realizations()
         .update_realization(session_id, |r| {
-            r.execution.authority = crate::session_realizations::SessionRealizationAuthority::Live(
+            r.execution.authority = crate::realization_state::SessionRealizationAuthority::Live(
                 awaken_session_realization::test_support::test_observed_lease(successor),
             );
         })

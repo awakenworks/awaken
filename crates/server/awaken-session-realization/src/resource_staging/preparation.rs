@@ -5,10 +5,10 @@
 //! The scope retains no Host or scheduler, and can only remove its own token
 //! and a lease it introduced, never a replacement preparation or generation.
 
-use super::{
-    ExecutionAuthority, SessionRealization, SessionRealizationAuthority, SessionRealizations,
-};
+use crate::execution_authority::ExecutionAuthority;
 use crate::realization_error::RealizationError;
+use crate::realization_state::{SessionRealization, SessionRealizationAuthority};
+use crate::session_realizations::SessionRealizations;
 use awaken_session_configuration_contract::resource::SessionRealizationLease;
 use awaken_session_realization_contract::ObservedSessionRealizationLease;
 use std::sync::Arc;

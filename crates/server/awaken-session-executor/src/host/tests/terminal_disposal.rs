@@ -623,7 +623,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
                 .realizations()
                 .update_realization(thread, |r| {
                     r.execution.authority =
-                        crate::session_realizations::SessionRealizationAuthority::Closed(Some(
+                        crate::realization_state::SessionRealizationAuthority::Closed(Some(
                             lease.clone(),
                         ));
                 })
@@ -638,7 +638,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
                     }
                     next.expires_at_unix_ms += 10_000;
                     r.execution.authority =
-                        crate::session_realizations::SessionRealizationAuthority::Live(
+                        crate::realization_state::SessionRealizationAuthority::Live(
                             awaken_session_realization::test_support::test_observed_lease(next),
                         );
                 })
@@ -676,12 +676,9 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         host.installed_sessions
             .realizations()
             .update_realization(thread, |r| {
-                r.execution.authority =
-                    crate::session_realizations::SessionRealizationAuthority::Live(
-                        awaken_session_realization::test_support::test_observed_lease(
-                            lease.clone(),
-                        ),
-                    );
+                r.execution.authority = crate::realization_state::SessionRealizationAuthority::Live(
+                    awaken_session_realization::test_support::test_observed_lease(lease.clone()),
+                );
             })
             .expect("installed Sessions");
         probe.restored_release.notify_one();
@@ -1329,7 +1326,7 @@ async fn checkpoint_source_disposal_separates_preparation_and_current_authority(
         BoundSessionEnvironment, BoundSessionEnvironmentIdentity, RetiringEnvironmentOwner,
         RetiringSessionEnvironment, SessionEnvironmentOwner, SessionEnvironmentRetirementCause,
     };
-    use crate::session_realizations::SessionRealizationAuthority as Authority;
+    use crate::realization_state::SessionRealizationAuthority as Authority;
     use awaken_session_realization_contract::SessionRealizationLeaseReceipt;
     use awaken_session_execution_contract::EnvironmentRuntime as _;
 

@@ -15,7 +15,7 @@ mod tests {
         // no continuation, so ordinary fenced assignment remains authoritative.
         // In particular Work retirement must never reopen its Closed lease.
         use crate::installed_session::InstalledSession;
-        use crate::session_realizations::SessionRealizationAuthority as A;
+        use crate::realization_state::SessionRealizationAuthority as A;
         let claim = awaken_dispatch_contract::RunClaim {
             run_id: awaken_agent_contract::agent::run::Id("run".into()),
             owner: "worker:incarnation".into(),
@@ -73,8 +73,8 @@ mod tests {
             ] {
                 let expected = exact_claim && live_exact_proof;
                 let mut slot = InstalledSession {
-                    realization: crate::session_realizations::SessionRealization {
-                        execution: crate::session_realizations::ExecutionAuthorityState {
+                    realization: crate::realization_state::SessionRealization {
+                        execution: crate::realization_state::ExecutionAuthorityState {
                             authority,
                             ..Default::default()
                         },

@@ -1404,7 +1404,7 @@ mod tests {
                 assert!(
                     matches!(
                         &slot.realization.execution.authority,
-                        crate::session_realizations::SessionRealizationAuthority::Uninstalled
+                        crate::realization_state::SessionRealizationAuthority::Uninstalled
                     ),
                     "OR1 C3 no fabricated realization lease"
                 );

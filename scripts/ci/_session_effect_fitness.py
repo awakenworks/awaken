@@ -104,7 +104,7 @@ WORKER_CONTROL_CLIENT = (
     "crates/server/awaken-coordinator-client/src/worker_control_client.rs"
 )
 WORKER_RUNTIME = "crates/bin/awaken-worker/src/lib.rs"
-ARTIFACT_HARVEST = "crates/server/awaken-session-realization/src/provisioning.rs"
+ARTIFACT_HARVEST = "crates/server/awaken-session-realization/src/artifact_harvest.rs"
 ARTIFACT_TRANSPORT = (
     "crates/resources/awaken-resource-worker-http/src/artifact_publication_http.rs"
 )

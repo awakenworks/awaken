@@ -6,7 +6,7 @@ mod tests {
 
     #[tokio::test]
     async fn continuation_fence_keeps_control_coordinates_but_requires_current_local_proof() {
-        use crate::session_realizations::SessionRealizationAuthority as Authority;
+        use crate::realization_state::SessionRealizationAuthority as Authority;
         use awaken_session_configuration_contract::resource::SessionRealizationLease;
         use awaken_session_realization_contract::SessionRealizationLeaseReceipt;
         // F1 exact live receipt with Control expiry older than local wall time
@@ -83,7 +83,7 @@ mod tests {
 
     #[tokio::test]
     async fn continuation_preparation_retains_aggregate_fence_and_uses_injected_process_clock() {
-        use crate::session_realizations::SessionRealizationAuthority as Authority;
+        use crate::realization_state::SessionRealizationAuthority as Authority;
         use awaken_session_configuration_contract::resource::SessionRealizationLease;
 
         // P1 a current preparation lowers its persisted aggregate fence.

@@ -2,6 +2,7 @@
 //! Canonical Session resource realization effects (ADR-0089).
 //! Durable truth stays in Session; only process-local handles and projections live here.
 
+pub mod artifact_harvest;
 pub mod bound_environment;
 pub mod cache_volume;
 pub mod environment_capacity;
@@ -11,14 +12,16 @@ pub mod environment_lifecycle;
 pub mod environment_owner;
 pub mod environment_providers;
 pub mod environment_realization;
+pub mod execution_authority;
 pub mod frozen_inputs;
 pub mod managed_input_layout;
 pub mod managed_resource_projection;
 pub mod memory_binding;
-pub mod provisioning;
 pub mod realization_error;
 pub mod realization_executor;
+pub mod realization_state;
 pub mod resource_staging;
+pub mod sandbox_projection;
 pub mod session_environment;
 pub mod session_publication;
 pub mod session_realizations;
