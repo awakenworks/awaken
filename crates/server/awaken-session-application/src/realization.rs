@@ -289,8 +289,8 @@ impl SessionApplication {
         trigger: SessionRecoveryTrigger,
     ) -> SessionRecoveryCycle {
         let cycle_started = awaken_time::mono::Stopwatch::start();
-        let candidates = match super::scan_recovery_candidates(
-            self.session_repository(),
+        let candidates = match super::recovery_scan::recovery_candidates(
+            &self,
             trigger == SessionRecoveryTrigger::Scheduled,
         )
         .await
@@ -745,18 +745,17 @@ impl SessionApplication {
     /// same canonical realization driver used by create/update, not a restart-only
     /// environment or MCP path. Terminal and Worker-owned Sessions remain untouched.
     pub async fn reconcile_session_realizations(&self) -> SessionReconciliation {
-        let candidates =
-            match super::scan_recovery_candidates(self.session_repository(), true).await {
-                Ok(candidates) => candidates,
-                Err(error) => {
-                    let mut report = SessionReconciliation::default();
-                    report.failures.push(SessionReconciliationFailure {
-                        session_id: "<repository>".to_string(),
-                        message: error.to_string(),
-                    });
-                    return report;
-                }
-            };
+        let candidates = match super::recovery_scan::recovery_candidates(self, true).await {
+            Ok(candidates) => candidates,
+            Err(error) => {
+                let mut report = SessionReconciliation::default();
+                report.failures.push(SessionReconciliationFailure {
+                    session_id: "<repository>".to_string(),
+                    message: error.to_string(),
+                });
+                return report;
+            }
+        };
         self.reconcile_session_realizations_from(&candidates).await
     }
 

@@ -618,54 +618,48 @@ impl SessionApplication {
                     "Session is not terminal".into(),
                 ));
             }
-            let repository_preparation = if let Some(durable) =
-                session.terminal_cleanup.repository_preparation().cloned()
-            {
-                // A delayed child or root retry may arrive after the last
-                // preparation CAS already entered Disposing. Every exact replay
-                // reuses the same aggregate-owned Repository proof.
-                Some(durable)
-            } else if preparation.effect.command.thread_id == session_id {
-                // Root preparation is projected only after every child and
-                // optional publication barrier. Run the canonical
-                // Repository/Vault participant owner before admitting this
-                // last preparation; its receipt and the Runtime receipt
-                // enter Disposing in the same root CAS.
-                let _inherited_provider_disposal = session
-                    .authorize_terminal_cleanup_effect(&preparation.effect)
-                    .map_err(|error| match error {
-                        awaken_session_state_contract::SessionCleanupError::RealizationMismatch => {
-                            SessionRealizationControlFailure::StaleOwnership
+            let repository_preparation =
+                if let Some(durable) = session.terminal_cleanup.repository_preparation().cloned() {
+                    // A delayed child or root retry may arrive after the last
+                    // preparation CAS already entered Disposing. Every exact replay
+                    // reuses the same aggregate-owned Repository proof.
+                    Some(durable)
+                } else if preparation.effect.command.thread_id == session_id {
+                    // Root preparation is projected only after every child and
+                    // optional publication barrier. Run the canonical
+                    // Repository/Vault participant owner before admitting this
+                    // last preparation; its receipt and the Runtime receipt
+                    // enter Disposing in the same root CAS.
+                    let _inherited_provider_disposal = session
+                        .authorize_terminal_cleanup_effect(&preparation.effect)
+                        .map_err(terminal_cleanup_authorization_failure)?;
+                    let prepared = self
+                        .prepare_terminal_repository_participants(&owner_scope, session)
+                        .await;
+                    let (next_session, receipt) = match prepared {
+                        Ok(prepared) => prepared,
+                        Err(SessionPreparationError::Conflict)
+                            if attempt + 1 < Self::ROOT_CAS_ATTEMPTS =>
+                        {
+                            continue;
                         }
-                        error => SessionRealizationControlFailure::Invalid(error.to_string()),
-                    })?;
-                let prepared = self
-                    .prepare_terminal_repository_participants(&owner_scope, session)
-                    .await;
-                let (next_session, receipt) = match prepared {
-                    Ok(prepared) => prepared,
-                    Err(SessionPreparationError::Conflict)
-                        if attempt + 1 < Self::ROOT_CAS_ATTEMPTS =>
-                    {
-                        continue;
-                    }
-                    Err(SessionPreparationError::Conflict) => {
-                        return Err(SessionRealizationControlFailure::Conflict);
-                    }
-                    Err(SessionPreparationError::NotFound) => {
-                        return Err(SessionRealizationControlFailure::NotFound);
-                    }
-                    Err(error) => {
-                        return Err(SessionRealizationControlFailure::Unavailable(
-                            error.to_string(),
-                        ));
-                    }
+                        Err(SessionPreparationError::Conflict) => {
+                            return Err(SessionRealizationControlFailure::Conflict);
+                        }
+                        Err(SessionPreparationError::NotFound) => {
+                            return Err(SessionRealizationControlFailure::NotFound);
+                        }
+                        Err(error) => {
+                            return Err(SessionRealizationControlFailure::Unavailable(
+                                error.to_string(),
+                            ));
+                        }
+                    };
+                    session = next_session;
+                    Some(receipt)
+                } else {
+                    None
                 };
-                session = next_session;
-                Some(receipt)
-            } else {
-                None
-            };
             let changed = session
                 .cleanup()
                 .record_terminal_cleanup_preparation(
@@ -674,12 +668,7 @@ impl SessionApplication {
                     preparation.clone(),
                     repository_preparation,
                 )
-                .map_err(|error| match error {
-                    awaken_session_state_contract::SessionCleanupError::RealizationMismatch => {
-                        SessionRealizationControlFailure::StaleOwnership
-                    }
-                    error => SessionRealizationControlFailure::Invalid(error.to_string()),
-                })?;
+                .map_err(terminal_cleanup_authorization_failure)?;
             if !changed {
                 self.wake_lifecycle_supervisor();
                 return Ok(());
@@ -730,12 +719,7 @@ impl SessionApplication {
                     receipt.clone(),
                     "Session terminated before activation completed",
                 )
-                .map_err(|error| match error {
-                    awaken_session_state_contract::SessionCleanupError::RealizationMismatch => {
-                        SessionRealizationControlFailure::StaleOwnership
-                    }
-                    error => SessionRealizationControlFailure::Invalid(error.to_string()),
-                })?;
+                .map_err(terminal_cleanup_authorization_failure)?;
             if !changed {
                 self.wake_lifecycle_supervisor();
                 return Ok(());
@@ -1187,18 +1171,17 @@ impl SessionApplication {
 
     /// Reconcile every local durable Resource projection requiring convergence.
     pub async fn reconcile_resource_activations(&self) -> SessionReconciliation {
-        let candidates =
-            match super::scan_recovery_candidates(self.session_repository(), true).await {
-                Ok(candidates) => candidates,
-                Err(error) => {
-                    let mut report = SessionReconciliation::default();
-                    report.failures.push(SessionReconciliationFailure {
-                        session_id: "<repository>".to_string(),
-                        message: error.to_string(),
-                    });
-                    return report;
-                }
-            };
+        let candidates = match super::recovery_scan::recovery_candidates(self, true).await {
+            Ok(candidates) => candidates,
+            Err(error) => {
+                let mut report = SessionReconciliation::default();
+                report.failures.push(SessionReconciliationFailure {
+                    session_id: "<repository>".to_string(),
+                    message: error.to_string(),
+                });
+                return report;
+            }
+        };
         self.reconcile_resource_activations_from(&candidates).await
     }
 

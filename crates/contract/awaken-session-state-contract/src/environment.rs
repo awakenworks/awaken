@@ -12,6 +12,7 @@
 mod continuation;
 mod effect_intent;
 mod generation;
+mod legacy_binding;
 mod materialization;
 mod receipt_admission;
 mod transition;
@@ -340,12 +341,7 @@ impl SessionEnvironmentState {
     }
 
     pub fn set_resident(&mut self, binding: impl Into<String>) {
-        *self = Self::Resident {
-            binding: binding.into(),
-            effect_id: None,
-            generation: None,
-            idle_since_unix_ms: None,
-        };
+        *self = Self::legacy_resident(binding);
     }
 
     /// Authorize one Environment effect before a provider performs I/O. This is

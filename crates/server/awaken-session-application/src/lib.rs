@@ -21,6 +21,7 @@ use awaken_session_configuration_contract::{
 };
 use awaken_session_repository_contract::SessionRepository;
 use awaken_session_execution_contract::{McpAttachmentRealizer, SessionEnvironmentBindingSink};
+use awaken_session_state_contract::SessionEnvironmentFacts;
 #[cfg(test)]
 use awaken_session_state_contract::SessionExecutionState;
 use awaken_session_types::RunError;
@@ -109,20 +110,10 @@ impl SessionRecoveryInterests {
     /// A true hint still requires the phase's ordinary fresh root read before
     /// any effect. A concurrent transition after this prefix retains its wake
     /// permit and is reconsidered by the next cycle.
-    fn from_session(session: &PersistedSession, audit_resource_references: bool) -> Self {
-        let environment_continuation = !session.is_terminal()
-            && (matches!(
-                session.environment,
-                awaken_session_state_contract::SessionEnvironmentState::Suspending { .. }
-            ) || (session.execution
-                == awaken_session_state_contract::SessionExecutionState::Idle
-                && matches!(
-                    session.environment,
-                    awaken_session_state_contract::SessionEnvironmentState::Resident {
-                        idle_since_unix_ms: Some(_),
-                        ..
-                    }
-                )));
+    /// The continuation hint is the aggregate's `AdvanceContinuation`
+    /// decision at the scan's `now`.
+    fn from_session(session: &PersistedSession, audit_resource_references: bool, now: u64) -> Self {
+        let environment_continuation = SessionEnvironmentFacts::continuation_due(session, now);
         let local_realization = !session.is_terminal()
             && session.environment.admits_realization_effects()
             && !session.requires_external_environment_owner();
@@ -148,12 +139,13 @@ struct SessionRecoveryCandidates {
 }
 
 impl SessionRecoveryCandidates {
-    fn append_page(&mut self, scan: SessionScan, audit_resource_references: bool) {
+    fn append_page(&mut self, scan: SessionScan, audit_resource_references: bool, now: u64) {
         self.sessions
             .extend(scan.sessions.into_iter().map(|scoped| {
                 let interests = SessionRecoveryInterests::from_session(
                     &scoped.session,
                     audit_resource_references,
+                    now,
                 );
                 SessionRecoveryCandidate {
                     workspace_id: scoped.workspace_id,

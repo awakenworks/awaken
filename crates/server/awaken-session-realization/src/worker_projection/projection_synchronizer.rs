@@ -84,25 +84,6 @@ where
     }
 }
 
-/// Merge the one historical claim-first delivery fact without weakening the
-/// Session aggregate. A missing binding is not sufficient evidence: suspended
-/// continuation phases also omit one, but remain authoritative durable state.
-pub fn merge_legacy_claimed_environment_binding(
-    environment: &mut awaken_session_state_contract::SessionEnvironmentState,
-    claimed_environment_binding: Option<&str>,
-) {
-    if let (awaken_session_state_contract::SessionEnvironmentState::Unmaterialized, Some(binding)) =
-        (&*environment, claimed_environment_binding)
-    {
-        *environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
-            binding: binding.to_string(),
-            effect_id: None,
-            generation: None,
-            idle_since_unix_ms: None,
-        };
-    }
-}
-
 #[async_trait::async_trait]
 impl<T> awaken_session_realization_contract::SessionProjectionSynchronizer
     for WorkerProjectionSynchronizer<'_, T>
@@ -232,13 +213,13 @@ where
         // command accepted between Runs cannot leave a warm installed Session stale.
         let mut projection = projection.clone();
         // The aggregate is authoritative after any Environment transition.
-        // RunDispatch.sandbox is only a raw-handle delivery cache; the helper
-        // below admits its single legacy repair and ignores every root-owned
-        // resident or continuation phase.
-        merge_legacy_claimed_environment_binding(
-            &mut projection.environment,
-            self.claimed_environment_binding,
-        );
+        // RunDispatch.sandbox is only a raw-handle delivery cache; the
+        // aggregate's `LegacyBindingDelivered` decision admits its single
+        // legacy repair and keeps every root-owned resident or continuation
+        // step.
+        projection
+            .environment
+            .deliver_legacy_binding(self.claimed_environment_binding);
         if projection.agent_publication.is_none() {
             projection.agent_publication = published_snapshot.cloned();
         }

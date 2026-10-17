@@ -78,15 +78,15 @@ fn resource_reference_audit_is_periodic_while_new_work_is_immediate() {
     assert!(!stable.needs_resource_reconciliation(), "R1 precondition");
     assert!(stable.resources.has_references(), "R1 precondition");
     assert!(
-        !SessionRecoveryInterests::from_session(&stable, false).resources,
+        !SessionRecoveryInterests::from_session(&stable, false, 0).resources,
         "R1"
     );
     assert!(
-        !SessionRecoveryInterests::from_session(&stable, false).resource_activation,
+        !SessionRecoveryInterests::from_session(&stable, false, 0).resource_activation,
         "R1"
     );
     assert!(
-        SessionRecoveryInterests::from_session(&stable, true).resources,
+        SessionRecoveryInterests::from_session(&stable, true, 0).resources,
         "R2"
     );
     stable
@@ -98,18 +98,18 @@ fn resource_reference_audit_is_periodic_while_new_work_is_immediate() {
         .unwrap();
     assert!(stable.needs_resource_reconciliation(), "R3 precondition");
     assert!(
-        SessionRecoveryInterests::from_session(&stable, false).resources,
+        SessionRecoveryInterests::from_session(&stable, false, 0).resources,
         "R3"
     );
     assert!(
-        SessionRecoveryInterests::from_session(&stable, false).resource_activation,
+        SessionRecoveryInterests::from_session(&stable, false, 0).resource_activation,
         "R3"
     );
     let mut terminal = persisted("resource-terminal", true, "activation_failed");
     terminal.resources = awaken_session_state_contract::SessionResourceState::from_active(
         file_resources("terminal"),
     );
-    let terminal_interests = SessionRecoveryInterests::from_session(&terminal, true);
+    let terminal_interests = SessionRecoveryInterests::from_session(&terminal, true, 0);
     assert!(terminal_interests.resources, "R4 cleanup remains scheduled");
     assert!(
         !terminal_interests.resource_activation,
@@ -123,7 +123,7 @@ fn resource_reference_audit_is_periodic_while_new_work_is_immediate() {
             skill_resources("pending-skill"),
         )
         .unwrap();
-    let preparing_interests = SessionRecoveryInterests::from_session(&preparing, false);
+    let preparing_interests = SessionRecoveryInterests::from_session(&preparing, false, 0);
     assert!(
         preparing.needs_initial_realization_recovery(),
         "R5 precondition"
@@ -619,4 +619,44 @@ async fn recovery_sweeps_retain_read_failures_and_missing_root_semantics() {
         );
         assert_eq!(observed.observed_gets.lock().unwrap().len(), 4);
     }
+}
+
+#[test]
+fn continuation_hint_is_the_aggregates_advance_projection() {
+    // The continuation hint is `AdvanceContinuation` decided over the scanned
+    // root at the scan's `now`: true exactly when the aggregate instructs an
+    // effect. Decision table H2:
+    // | Rule | root                                                       | now   | hint  |
+    // | H2a  | idle Resident, checkpoint-and-release, deadline reached     | 2_000 | true  |
+    // | H2b  | the same root before its deadline (nothing to instruct)     | 500   | false |
+    // | H2c  | the same root while a Run executes                          | 2_000 | false |
+    // | H2d  | the same root once terminal (the aggregate refuses)         | 2_000 | false |
+    // | H2e  | never materialized                                          | 2_000 | false |
+    let due = super::continuation::generated_session("hint-due");
+    assert!(
+        SessionRecoveryInterests::from_session(&due, false, 2_000).environment_continuation,
+        "H2a"
+    );
+    assert!(
+        !SessionRecoveryInterests::from_session(&due, false, 500).environment_continuation,
+        "H2b"
+    );
+    let mut running = due.clone();
+    running.execution = awaken_session_state_contract::SessionExecutionState::Running;
+    assert!(
+        !SessionRecoveryInterests::from_session(&running, false, 2_000).environment_continuation,
+        "H2c"
+    );
+    let mut terminal = due;
+    terminal.execution = awaken_session_state_contract::SessionExecutionState::Terminated;
+    assert!(
+        !SessionRecoveryInterests::from_session(&terminal, false, 2_000).environment_continuation,
+        "H2d"
+    );
+    let unmaterialized = persisted("hint-unmaterialized", true, "idle");
+    assert!(
+        !SessionRecoveryInterests::from_session(&unmaterialized, false, 2_000)
+            .environment_continuation,
+        "H2e"
+    );
 }
