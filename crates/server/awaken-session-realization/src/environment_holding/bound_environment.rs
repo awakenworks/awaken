@@ -430,9 +430,9 @@ impl EnvironmentHolding {
         if mode.requires_live_source() {
             match &observation {
                 awaken_provisioning_contract::SandboxObservation::Ready => {}
-                awaken_provisioning_contract::SandboxObservation::Provisioning { .. } => {
-                    return Err(RealizationError::pending(
-                        PendingState::LiveSourceProvisioning,
+                awaken_provisioning_contract::SandboxObservation::Provisioning { deadline } => {
+                    return Err(RealizationError::provisioning(
+                        *deadline,
                         "Session Environment live source is still provisioning",
                     ));
                 }
@@ -478,9 +478,9 @@ impl EnvironmentHolding {
                     committed_candidate,
                 )
             }
-            awaken_provisioning_contract::SandboxObservation::Provisioning { .. } => {
-                return Err(RealizationError::pending(
-                    PendingState::EffectProvisioning,
+            awaken_provisioning_contract::SandboxObservation::Provisioning { deadline } => {
+                return Err(RealizationError::provisioning(
+                    deadline,
                     "Session Environment is still provisioning",
                 ));
             }
