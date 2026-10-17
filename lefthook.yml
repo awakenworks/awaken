@@ -432,3 +432,11 @@ pre-push:
 
     frontend-quick:
       run: scripts/ci/check-frontend.sh --quick
+
+# main stays linear: every update is a fast-forward of single-parent commits
+# (plan v4 D10). Checked before any ref moves, whatever command moves it.
+reference-transaction:
+  commands:
+    main-linear:
+      run: python3 scripts/ci/check_main_linear.py {1}
+      use_stdin: true

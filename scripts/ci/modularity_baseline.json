@@ -380,7 +380,7 @@
   "crate-budget": {
     "awaken-protocol-managed": {
       "deps": 35,
-      "lines": 24749,
+      "lines": 24750,
       "reason": "W20 (plan 9.11): Session lifecycle and deployment decisions move to their application services; the adapter keeps protocol translation only"
     },
     "awaken-session-executor": {
