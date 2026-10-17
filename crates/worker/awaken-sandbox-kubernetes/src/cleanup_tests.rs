@@ -1850,8 +1850,7 @@ async fn wait_fixture_incarnation(
                 .await
         }
         None => {
-            runtime
-                .await_exact_pod_deleted("awaken-cleanup", "pod-uid", admit)
+            super::lifecycle::await_exact_pod_deleted(runtime, "awaken-cleanup", "pod-uid", admit)
                 .await
         }
     }

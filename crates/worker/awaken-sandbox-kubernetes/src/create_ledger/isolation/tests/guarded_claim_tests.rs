@@ -1,6 +1,6 @@
 use super::*;
 use crate::K8sRuntime;
-use crate::runtime_contract::{
+use crate::guarded_claim::{
     GuardedClaimPhysical, guarded_claim_physical_state, remove_guarded_claim,
 };
 use awaken_provisioning_contract as pc;
