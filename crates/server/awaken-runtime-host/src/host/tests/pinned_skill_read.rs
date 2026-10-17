@@ -188,12 +188,14 @@ async fn pinned_reads_during_concurrent_first_hand_calls_do_not_join_sandbox_sta
         host.realizer
             .session_environment("skill-race")
             .await
+            .expect("installed Sessions")
             .is_none()
     );
     assert!(
         host.installed_sessions
             .realizations()
             .read_realization("skill-race", |r| r.staging.manifest.is_none())
+            .expect("installed Sessions")
             .unwrap()
     );
     assert!(!first.is_finished() && !second.is_finished());
@@ -313,12 +315,14 @@ async fn cold_resource_replacement_and_revocation_never_return_old_skill_bytes()
         host.realizer
             .session_environment("skill-change")
             .await
+            .expect("installed Sessions")
             .is_none()
     );
     assert!(
         host.installed_sessions
             .realizations()
             .read_realization("skill-change", |r| r.staging.manifest.is_none())
+            .expect("installed Sessions")
             .unwrap()
     );
 }
@@ -412,6 +416,7 @@ async fn read_disabled_or_awaiting_permission_never_leaks_pinned_content() {
             host.realizer
                 .session_environment("skill-policy")
                 .await
+                .expect("installed Sessions")
                 .is_none()
         );
         if enabled {
@@ -445,6 +450,7 @@ async fn read_disabled_or_awaiting_permission_never_leaks_pinned_content() {
             host.realizer
                 .session_environment("skill-policy")
                 .await
+                .expect("installed Sessions")
                 .is_none()
         );
     }
@@ -522,6 +528,7 @@ async fn failed_skill_file_write_blocks_tools_and_repaired_pin_reuses_environmen
             host.installed_sessions
                 .realizations()
                 .read_realization("skill-write-fault", |r| r.staging.manifest.is_none())
+                .expect("installed Sessions")
                 .unwrap()
         );
     }
@@ -529,6 +536,7 @@ async fn failed_skill_file_write_blocks_tools_and_repaired_pin_reuses_environmen
         .realizer
         .session_environment("skill-write-fault")
         .await
+        .expect("installed Sessions")
         .unwrap();
     let mut v2 = frozen_skill_version(
         "write-fault",
@@ -575,6 +583,7 @@ async fn failed_skill_file_write_blocks_tools_and_repaired_pin_reuses_environmen
             .realizer
             .session_environment("skill-write-fault")
             .await
+            .expect("installed Sessions")
             .unwrap()
     ));
     assert_eq!(
@@ -645,6 +654,7 @@ async fn managed_on_tool_use_reads_instruction_and_reference_before_reply_withou
         host.realizer
             .session_environment("brain-first")
             .await
+            .expect("installed Sessions")
             .is_none(),
         "P1/E3"
     );
@@ -784,6 +794,7 @@ async fn pinned_read_path_and_text_decision_table() {
             host.realizer
                 .session_environment("text-table")
                 .await
+                .expect("installed Sessions")
                 .is_none()
         );
     }
@@ -806,6 +817,7 @@ async fn pinned_read_path_and_text_decision_table() {
         host.installed_sessions
             .realizations()
             .read_realization("text-table", |r| r.staging.manifest.is_none())
+            .expect("installed Sessions")
             .unwrap(),
         "no physical completion invented"
     );
@@ -905,7 +917,13 @@ async fn cold_skill_read_keeps_pin_after_catalog_update_and_rejects_stale_projec
                 .is_err(),
             "P8 {mismatch}"
         );
-        assert!(host.realizer.session_environment("cold").await.is_none());
+        assert!(
+            host.realizer
+                .session_environment("cold")
+                .await
+                .expect("installed Sessions")
+                .is_none()
+        );
     }
     host.installed_sessions.update("cold", |slot| {
         slot.realization.staging.skills = Some(vec![v1.clone()]);
@@ -940,7 +958,13 @@ async fn cold_skill_read_keeps_pin_after_catalog_update_and_rejects_stale_projec
             .is_err(),
         "P9"
     );
-    assert!(host.realizer.session_environment("cold").await.is_none());
+    assert!(
+        host.realizer
+            .session_environment("cold")
+            .await
+            .expect("installed Sessions")
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -989,7 +1013,8 @@ async fn lazy_skill_installation_reloads_exact_bytes_and_reuses_environment() {
             r.staging.skills.as_mut().unwrap()[0].files[0]
                 .content
                 .push(b'!')
-        });
+        })
+        .expect("installed Sessions");
     let executor =
         crate::lazy_sandbox::DeferredSandboxExecutor::new(Arc::downgrade(&host), "install-retry");
     let call = ToolCall {
@@ -1015,6 +1040,7 @@ async fn lazy_skill_installation_reloads_exact_bytes_and_reuses_environment() {
         .realizer
         .session_environment("install-retry")
         .await
+        .expect("installed Sessions")
         .unwrap();
     let output = executor.invoke(&call).await.unwrap();
     assert!(
@@ -1028,6 +1054,7 @@ async fn lazy_skill_installation_reloads_exact_bytes_and_reuses_environment() {
                 .realizer
                 .session_environment("install-retry")
                 .await
+                .expect("installed Sessions")
                 .unwrap()
         ),
         "P11 one Environment"
@@ -1036,6 +1063,7 @@ async fn lazy_skill_installation_reloads_exact_bytes_and_reuses_environment() {
         host.installed_sessions
             .realizations()
             .read_realization("install-retry", |r| r.staging.manifest.is_some())
+            .expect("installed Sessions")
             .unwrap(),
         "P11 physical completion"
     );

@@ -249,6 +249,7 @@ async fn managed_multi_memory_mounts_are_backend_neutral_pairwise() {
             .read_realization(&thread, |r| {
                 (r.staging.memory_bindings.len(), r.staging.memory.is_none())
             })
+            .expect("installed Sessions")
             .unwrap();
         assert_eq!(binding_count, count, "{} E1 bindings", case.rule);
         assert!(automatic_absent, "{} E3", case.rule);
@@ -265,6 +266,7 @@ async fn managed_multi_memory_mounts_are_backend_neutral_pairwise() {
                     );
                 }
             })
+            .expect("installed Sessions")
             .unwrap();
     }
 }
@@ -733,6 +735,7 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
         .realizer
         .session_environment("skill-revoke")
         .await
+        .expect("installed Sessions")
         .expect("resident Skill environment");
     assert!(
         environment
@@ -747,6 +750,7 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
         .realizer
         .staging
         .thread_resource_manifest("skill-revoke")
+        .expect("installed Sessions")
         .expect("installed manifest");
 
     managed

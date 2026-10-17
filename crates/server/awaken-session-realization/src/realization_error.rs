@@ -238,6 +238,8 @@ pub enum EvidenceFault {
     SessionInput(#[from] awaken_session_configuration_contract::resource::SessionInputError),
     #[error(transparent)]
     MemoryReference(#[from] awaken_resource_contract::MemoryMaterializationReferenceError),
+    #[error(transparent)]
+    TerminalCleanup(#[from] awaken_session_state_contract::SessionCleanupError),
 }
 
 /// Each evidence source converts through [`EvidenceFault`].
@@ -257,6 +259,7 @@ evidence_sources!(
     awaken_agent_contract::CanonicalJsonHashError,
     awaken_session_configuration_contract::resource::SessionInputError,
     awaken_resource_contract::MemoryMaterializationReferenceError,
+    awaken_session_state_contract::SessionCleanupError,
 );
 
 impl From<EvidenceFault> for RealizationError {
@@ -322,6 +325,9 @@ pub enum RealizationError {
     /// Credential material could not be resolved for an effect.
     #[error(transparent)]
     Credential(#[from] awaken_credential_contract::CredentialMaterialError),
+    /// A selected File's content could not be read for a projection.
+    #[error(transparent)]
+    FileContent(#[from] awaken_resource_contract::FileContentSourceError),
     /// A CacheVolume could not be prepared before the provider binds it.
     #[error(transparent)]
     CacheVolume(#[from] crate::cache_volume::CacheVolumeError),
@@ -407,6 +413,12 @@ impl RealizationError {
             }
             Self::Credential(_) => Disposition::Terminal,
             Self::CacheVolume(error) => error.disposition(),
+            // An unknown read may succeed later; a digest mismatch or a purged
+            // source never will.
+            Self::FileContent(
+                awaken_resource_contract::FileContentSourceError::Indeterminate { .. },
+            ) => Disposition::Retry,
+            Self::FileContent(_) => Disposition::Terminal,
             Self::Mcp(error) => Disposition::of_run_error(&mcp_run_error(error)),
             Self::Run(error) => Disposition::of_run_error(error),
             Self::InvalidRequest(_) => Disposition::Rejected,
@@ -426,13 +438,15 @@ impl RealizationError {
             Self::Run(error) => Cow::Borrowed(error.code.as_str()),
             Self::InvalidRequest(_) => Cow::Borrowed("invalid_request"),
             Self::Poisoned(_) => Cow::Borrowed(POISONED_CODE),
-            Self::Credential(_) | Self::CacheVolume(_) | Self::Evidence(_) | Self::Invariant(_) => {
-                Cow::Borrowed(match self.disposition() {
-                    Disposition::Retry | Disposition::Defer => "unavailable",
-                    Disposition::Rejected => "invalid_request",
-                    Disposition::Terminal => "internal",
-                })
-            }
+            Self::Credential(_)
+            | Self::FileContent(_)
+            | Self::CacheVolume(_)
+            | Self::Evidence(_)
+            | Self::Invariant(_) => Cow::Borrowed(match self.disposition() {
+                Disposition::Retry | Disposition::Defer => "unavailable",
+                Disposition::Rejected => "invalid_request",
+                Disposition::Terminal => "internal",
+            }),
         }
     }
 }

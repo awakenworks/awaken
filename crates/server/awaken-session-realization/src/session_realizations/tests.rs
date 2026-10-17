@@ -1,4 +1,5 @@
 use super::*;
+use crate::realization_error::{RealizationError, RealizationLock};
 use crate::test_support::test_observed_lease;
 use awaken_session_configuration_contract::resource as session_resource;
 
@@ -160,5 +161,217 @@ fn generation_close_accepts_only_the_original_phase_and_its_monotonic_renewal() 
                 "{rule}: a rejected input leaves the root unchanged"
             ),
         }
+    }
+}
+
+fn in_memory_view() -> (
+    Arc<crate::test_support::InMemorySessionRealizations>,
+    SessionRealizations,
+) {
+    let source = Arc::new(crate::test_support::InMemorySessionRealizations::default());
+    let view = SessionRealizations::new(source.clone());
+    (source, view)
+}
+
+fn is_session_absent(error: &RealizationError) -> bool {
+    matches!(
+        error,
+        RealizationError::AuthorityLost {
+            cause: crate::realization_error::AuthorityLoss::SessionAbsent,
+            ..
+        }
+    )
+}
+
+fn is_poisoned(error: &RealizationError) -> bool {
+    matches!(
+        error,
+        RealizationError::Poisoned(RealizationLock::InstalledSessions)
+    )
+}
+
+fn denied<T>(result: Result<T, RealizationError>) -> RealizationError {
+    match result {
+        Err(error) => error,
+        Ok(_) => panic!("the operation must be denied"),
+    }
+}
+
+fn compiled() -> crate::staged_resources::CompiledEffectiveInputs {
+    crate::staged_resources::CompiledEffectiveInputs {
+        staged: Default::default(),
+        memory_bindings: Default::default(),
+    }
+}
+
+#[tokio::test]
+async fn absent_session_read_write_and_lock_paths_never_install_it() {
+    // Decision table: cause = a view operation on a Session not installed in
+    // this process; effect = its typed absent outcome, and in every row the
+    // registry still holds no Session afterwards (only the install path
+    // installs, so terminal cleanup after retirement cannot resurrect one).
+    // | Row | operation                        | absent outcome            |
+    // | A1  | read/modify realization, session | Ok(None)                  |
+    // | A2  | update realization, session      | Err(AuthorityLost Absent) |
+    // | A3  | lock lifecycle/resource lock     | Err(AuthorityLost Absent) |
+    // | A4  | lock lifecycle if installed      | Ok(None)                  |
+    // | A5  | drop context, end disposal       | Ok(()) nothing to end     |
+    // | A6  | enter dispatch                   | Err(AuthorityLost Absent) |
+    // | A7  | frozen-input reads, claim, prompt| empty projection          |
+    // | A8  | publish resource requirements    | Err(AuthorityLost Absent) |
+    let (_source, view) = in_memory_view();
+    let absent = "absent";
+    assert!(
+        view.read_realization(absent, |_| ()).unwrap().is_none(),
+        "A1"
+    );
+    assert!(
+        view.modify_realization(absent, |_| ()).unwrap().is_none(),
+        "A1"
+    );
+    assert!(view.modify_session(absent, |_| ()).unwrap().is_none(), "A1");
+    assert!(
+        is_session_absent(&view.update_realization(absent, |_| ()).unwrap_err()),
+        "A2"
+    );
+    assert!(
+        is_session_absent(&view.update_session(absent, |_| ()).unwrap_err()),
+        "A2"
+    );
+    assert!(
+        is_session_absent(&view.lock_lifecycle(absent).await.unwrap_err()),
+        "A3"
+    );
+    assert!(
+        is_session_absent(&view.lock_resource_projection(absent).await.unwrap_err()),
+        "A3"
+    );
+    assert!(
+        view.lock_lifecycle_if_installed(absent)
+            .await
+            .unwrap()
+            .is_none(),
+        "A4"
+    );
+    view.drop_run_context(absent).unwrap();
+    view.end_terminal_disposal(absent).unwrap();
+    assert!(
+        is_session_absent(&view.enter_session_dispatch(absent).unwrap_err()),
+        "A6"
+    );
+    assert!(view.frozen(absent).unwrap().workspace.is_none(), "A7");
+    assert!(view.published_snapshot(absent).unwrap().is_none(), "A7");
+    assert!(view.registered_workspace(absent).unwrap().is_none(), "A7");
+    assert!(view.credential_realization(absent).unwrap().is_none(), "A7");
+    assert_eq!(
+        view.workspace(absent, "fallback").unwrap(),
+        "fallback",
+        "A7"
+    );
+    assert!(view.dispatch_claim(absent).unwrap().is_none(), "A7");
+    assert!(
+        view.prompts(absent, None, false, true).unwrap().is_empty(),
+        "A7"
+    );
+    assert!(
+        is_session_absent(
+            &view
+                .publish_resource_requirements(
+                    absent,
+                    "workspace",
+                    None,
+                    compiled(),
+                    Vec::new(),
+                    "key".into()
+                )
+                .unwrap_err()
+        ),
+        "A8"
+    );
+    assert!(
+        view.session_ids().unwrap().is_empty(),
+        "no row installed a Session"
+    );
+}
+
+#[tokio::test]
+async fn only_the_install_path_installs_a_session() {
+    // Decision table: I1 frozen-input replacement installs; I2 retaining a
+    // publication installs; I3 every realization write on an installed Session
+    // then succeeds; I4 removal makes it absent again and writes fail typed.
+    let (_source, view) = in_memory_view();
+    view.replace_frozen_with("s", |inputs| inputs.workspace = Some("w".into()))
+        .unwrap();
+    view.retain_publication("t", None).unwrap();
+    assert_eq!(view.session_ids().unwrap(), ["s", "t"], "I1/I2");
+    view.update_realization("s", |r| r.staging.effect_key = Some("k".into()))
+        .unwrap();
+    view.enter_session_dispatch("s").unwrap();
+    drop(view.lock_lifecycle("s").await.unwrap());
+    drop(view.lock_resource_projection("s").await.unwrap());
+    assert!(
+        view.lock_lifecycle_if_installed("s")
+            .await
+            .unwrap()
+            .is_some(),
+        "I3"
+    );
+    assert_eq!(
+        view.registered_workspace("s").unwrap().as_deref(),
+        Some("w"),
+        "I3"
+    );
+    assert!(view.remove_session("s").unwrap(), "I4");
+    assert!(
+        is_session_absent(&view.update_realization("s", |_| ()).unwrap_err()),
+        "I4"
+    );
+    assert_eq!(view.session_ids().unwrap(), ["t"], "I4 no resurrection");
+}
+
+#[tokio::test]
+async fn poisoned_registry_denies_every_view_path_without_panicking() {
+    // Decision table: cause = the registry lock is poisoned (a writer panicked
+    // while holding it); effect = every read, write, lock and install path
+    // returns the typed Poisoned denial, which retries on a healthy owner,
+    // and no path unwinds.
+    let (source, view) = in_memory_view();
+    view.replace_frozen_with("s", |_| ()).unwrap();
+    source.poison();
+    let refusals = [
+        denied(view.read_realization("s", |_| ())),
+        denied(view.modify_realization("s", |_| ())),
+        denied(view.update_realization("s", |_| ())),
+        denied(view.modify_session("s", |_| ())),
+        denied(view.update_session("s", |_| ())),
+        denied(view.lock_lifecycle("s").await),
+        denied(view.lock_resource_projection("s").await),
+        denied(view.lock_lifecycle_if_installed("s").await),
+        denied(view.drop_run_context("s")),
+        denied(view.end_terminal_disposal("s")),
+        denied(view.enter_session_dispatch("s")),
+        denied(view.frozen("s")),
+        denied(view.workspace("s", "fallback")),
+        denied(view.dispatch_claim("s")),
+        denied(view.prompts("s", None, false, true)),
+        denied(view.session_ids()),
+        denied(view.remove_session("s")),
+        denied(view.replace_frozen_with("s", |_| ())),
+        denied(view.retain_publication("s", None)),
+        denied(view.publish_resource_requirements(
+            "s",
+            "workspace",
+            None,
+            compiled(),
+            Vec::new(),
+            "key".into(),
+        )),
+    ];
+    for error in &refusals {
+        assert!(is_poisoned(error), "denied with the typed lock: {error}");
+        assert_eq!(
+            error.disposition(),
+            crate::realization_error::Disposition::Retry
+        );
     }
 }

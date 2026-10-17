@@ -203,6 +203,7 @@ async fn worker_authority_loss_interrupts_active_session_before_revocation() {
             host.installed_sessions
                 .realizations()
                 .read_realization(id, |r| r.execution.authority.is_closed())
+                .expect("installed Sessions")
                 .unwrap()
         }),
         "E3 before asynchronous interruption"

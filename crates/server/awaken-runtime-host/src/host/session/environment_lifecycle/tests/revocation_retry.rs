@@ -118,7 +118,7 @@ async fn conflicting_revocation_preserves_active_worker_relay_until_compatible_d
     assert!(
         matches!(
             host.installed_sessions.realizations()
-                .read_realization(thread, |r| r.environment.owner.clone()),
+                .read_realization(thread, |r| r.environment.owner.clone()).expect("installed Sessions"),
             Some(SessionEnvironmentOwner::Retiring(current))
                 if current.exact_matches(&terminal.owner)
         ),
@@ -230,6 +230,7 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
         .installed_sessions
         .realizations()
         .read_realization(thread, |r| r.environment.lifecycle.clone())
+        .expect("installed Sessions")
         .unwrap();
     let _lifecycle = lifecycle.lock().await;
     assert!(
@@ -244,7 +245,10 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
         "R19/E1"
     );
     assert_eq!(
-        host.realizer.durable_environment_binding(thread).as_deref(),
+        host.realizer
+            .durable_environment_binding(thread)
+            .expect("installed Sessions")
+            .as_deref(),
         Some("not-a-sandbox-handle"),
         "R20/E2"
     );
@@ -257,6 +261,7 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
         host.installed_sessions
             .realizations()
             .published_snapshot(thread)
+            .expect("installed Sessions")
             .map(|snapshot| snapshot.id),
         Some(snapshot.id),
         "R20/E3 provider publication"
@@ -361,6 +366,7 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
         .installed_sessions
         .realizations()
         .read_realization(thread, |r| r.environment.lifecycle.clone())
+        .expect("installed Sessions")
         .unwrap();
     let _lifecycle = lifecycle.lock().await;
     host.realizer
@@ -374,7 +380,8 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
     assert_eq!(
         host.installed_sessions
             .realizations()
-            .read_realization(thread, |r| r.execution.authority.clone()),
+            .read_realization(thread, |r| r.execution.authority.clone())
+            .expect("installed Sessions"),
         Some(crate::session_realizations::SessionRealizationAuthority::Closed(Some(lease.clone()))),
         "E4"
     );
@@ -389,7 +396,7 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
     assert!(
         matches!(
             host.installed_sessions.realizations()
-                .read_realization(thread, |r| r.environment.owner.clone()),
+                .read_realization(thread, |r| r.environment.owner.clone()).expect("installed Sessions"),
             Some(SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
                 cause: SessionEnvironmentRetirementCause::RealizationRevocation,
                 owned: RetiringEnvironmentOwner::Bound(owned),
@@ -406,6 +413,7 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
         host.installed_sessions
             .realizations()
             .published_snapshot(thread)
+            .expect("installed Sessions")
             .map(|current| current.id),
         Some(snapshot.id),
         "E2 provider publication"
@@ -413,7 +421,8 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
     assert_eq!(
         host.installed_sessions
             .realizations()
-            .read_realization(thread, |r| r.staging.mcp.quiescence_fence().cloned()),
+            .read_realization(thread, |r| r.staging.mcp.quiescence_fence().cloned())
+            .expect("installed Sessions"),
         Some(Some(fence)),
         "E3 revocation is not a quiescence-fence reopen authority"
     );
@@ -498,6 +507,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
             SessionEnvironmentOwner::Resident(owned) => owned.identity.clone(),
             _ => panic!("first committed resident"),
         })
+        .expect("installed Sessions")
         .unwrap();
     let BoundSessionEnvironmentIdentity::Durable {
         effect_id,
@@ -577,7 +587,11 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
         .prepared_session_environment(thread)
         .expect("R19/E1 hidden Candidate before cancellation");
     assert!(
-        host.realizer.session_environment(thread).await.is_none(),
+        host.realizer
+            .session_environment(thread)
+            .await
+            .expect("installed Sessions")
+            .is_none(),
         "R19/E1"
     );
     adoption.abort();
@@ -614,6 +628,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
         .realizer
         .session_environment(thread)
         .await
+        .expect("installed Sessions")
         .expect("R20/E3 published Resident");
     assert!(Arc::ptr_eq(&candidate.environment, &resident), "R20/E3");
     assert_eq!(sink.calls(), 2, "R19/R20 sink retries");

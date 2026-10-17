@@ -95,7 +95,7 @@ impl crate::environment_holding::EnvironmentHolding {
     ) -> Result<&crate::session_environment::SessionEnvironmentProvider, RealizationError> {
         let sandbox = self
             .sessions
-            .frozen(thread)
+            .frozen(thread)?
             .environment_projection
             .as_ref()
             .and_then(|environment| environment.sandbox.as_ref())
@@ -229,7 +229,7 @@ impl crate::environment_holding::EnvironmentHolding {
         provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
     ) -> Result<(), RealizationError> {
         let provider = self.session_environment_provider_for_thread(thread, provisioning)?;
-        let spec = self.staging.sandbox_spec_for_provider(thread, provider);
+        let spec = self.staging.sandbox_spec_for_provider(thread, provider)?;
         self.validate_session_environment_capabilities(provider, &spec)
             .map(|_| ())
     }
@@ -239,7 +239,7 @@ impl crate::environment_holding::EnvironmentHolding {
         provider: &crate::session_environment::SessionEnvironmentProvider,
         spec: &awaken_provisioning_contract::SandboxSpec,
     ) -> Result<awaken_provisioning_contract::SandboxSpec, RealizationError> {
-        let resources = self.staging.thread_resources_snapshot(&spec.scope);
+        let resources = self.staging.thread_resources_snapshot(&spec.scope)?;
         let repository_paths = resources
             .repositories
             .iter()
@@ -296,7 +296,7 @@ impl crate::environment_holding::EnvironmentHolding {
                             .map(|repository| repository.plan.mount_path.clone())
                             .collect()
                     })
-            })
+            })?
             .unwrap_or_default();
         let layout = provider
             .adoption()
@@ -338,11 +338,11 @@ impl crate::environment_holding::EnvironmentHolding {
             &spec,
             historical_owned_paths,
         )
-        .map_err(|error| RealizationError::invalid_request(error.to_string()))?;
+        .map_err(crate::realization_error::InvalidRequest::EnvironmentLayout)?;
         let capabilities = provider.realizer().capabilities();
         if provider.realizer().supports_host_identity() {
             awaken_provisioning_contract::prepare_trusted_host_environment(&spec, &capabilities)
-                .map_err(|error| RealizationError::invalid_request(error.to_string()))?;
+                .map_err(crate::realization_error::InvalidRequest::from)?;
             return Ok(spec);
         }
         let base = awaken_provisioning_contract::SandboxRequirements::from_spec(&spec, false);
@@ -356,7 +356,7 @@ impl crate::environment_holding::EnvironmentHolding {
                     slot.inputs.published_snapshot.as_ref(),
                     slot.inputs.baseline.as_ref(),
                 )
-            })
+            })?
             .unwrap_or(false);
         let (spec, required) = crate::provisioning::session_sandbox_projection(
             &spec,
@@ -371,7 +371,7 @@ impl crate::environment_holding::EnvironmentHolding {
             )));
         }
         awaken_provisioning_contract::prepare_environment(&spec, &capabilities)
-            .map_err(|error| RealizationError::invalid_request(error.to_string()))?;
+            .map_err(crate::realization_error::InvalidRequest::from)?;
         Ok(spec)
     }
 
@@ -379,9 +379,10 @@ impl crate::environment_holding::EnvironmentHolding {
     /// independently-owned Session environment and its live resource projection.
     /// Terminal cleanup remains the single two-stage responsibility of
     /// [`Self::prepare_terminal_cleanup_effect`] and [`Self::dispose_terminal_cleanup_effect`].
-    pub async fn evict_session_for_rebuild(&self, thread: &str) {
+    pub async fn evict_session_for_rebuild(&self, thread: &str) -> Result<(), RealizationError> {
         self.sessions
-            .modify_session(thread, |slot| slot.run.drop_context());
+            .modify_session(thread, |slot| slot.run.drop_context())?;
+        Ok(())
     }
 }
 
@@ -437,7 +438,7 @@ impl crate::environment_holding::EnvironmentHolding {
             exec.publish_prepared_session_environment(thread, &candidate, identity)?;
         realizations.update_realization(thread, |r| {
             r.staging.reconciliation = reconciliation;
-        });
+        })?;
         Ok(environment)
     }
 
@@ -460,7 +461,7 @@ impl crate::environment_holding::EnvironmentHolding {
                     _ => Ok(None),
                 },
             _ => Ok(None),
-        }).unwrap_or(Ok(None))?;
+        })?.unwrap_or(Ok(None))?;
         if let Some(binding) = revoked_binding {
             // A Candidate can own physical effects without a returned root
             // receipt. Reuse ordinary authorized adoption, including for an
@@ -477,7 +478,7 @@ impl crate::environment_holding::EnvironmentHolding {
             .await?;
             return exec
                 .session_environment(thread)
-                .await
+                .await?
                 .map(Some)
                 .ok_or_else(|| {
                     RealizationError::invariant(
@@ -488,7 +489,7 @@ impl crate::environment_holding::EnvironmentHolding {
         let candidate = realizations
             .read_realization(thread, |r| {
                 r.environment.owner.unpublished_candidate().cloned()
-            })
+            })?
             .flatten();
         let Some(candidate) = candidate else {
             return Ok(None);
@@ -525,7 +526,7 @@ impl crate::environment_holding::EnvironmentHolding {
             exec.publish_prepared_session_environment(thread, &candidate, identity)?;
         realizations.update_realization(thread, |r| {
             r.staging.reconciliation = reconciliation;
-        });
+        })?;
         Ok(Some(environment))
     }
 
@@ -541,7 +542,7 @@ impl crate::environment_holding::EnvironmentHolding {
         let realizations = self.sessions.clone();
         let staging = &self.staging;
         let transition = realizations
-            .read_realization(thread, |r| r.staging.transition.clone())
+            .read_realization(thread, |r| r.staging.transition.clone())?
             .flatten()
             .ok_or_else(|| {
                 RealizationError::invariant(
@@ -554,10 +555,10 @@ impl crate::environment_holding::EnvironmentHolding {
                     slot.run.dispatch_claim().cloned(),
                     slot.realization.execution.authority.lease().cloned(),
                 )
-            })
+            })?
             .unwrap_or_default();
         let rebuild_source = realizations
-            .read_realization(thread, |r| r.environment.rebuild_source.clone())
+            .read_realization(thread, |r| r.environment.rebuild_source.clone())?
             .flatten();
         let (kind, source_binding) = match &rebuild_source {
             Some((source_binding, source_generation_id)) => (
@@ -576,7 +577,7 @@ impl crate::environment_holding::EnvironmentHolding {
                 thread,
                 &self
                     .execution
-                    .new_environment_effect_intent(thread, kind, source_binding),
+                    .new_environment_effect_intent(thread, kind, source_binding)?,
             )
             .await?;
         if let awaken_session_state_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
@@ -604,7 +605,7 @@ impl crate::environment_holding::EnvironmentHolding {
             )
             .await
             .map_err(RealizationError::from)?;
-        let spec = staging.sandbox_substrate_spec_for_provider(thread, provider);
+        let spec = staging.sandbox_substrate_spec_for_provider(thread, provider)?;
         let environment = Arc::new(
             self.create_session_environment_for_effect(provider, &spec, &effect)
                 .await?,
@@ -626,7 +627,7 @@ impl crate::environment_holding::EnvironmentHolding {
             .await?;
         realizations.update_realization(thread, |r| {
             r.environment.rebuild_source = None;
-        });
+        })?;
         self.ensure_published_environment_reconciled_under_lifecycle(thread, environment)
             .await
     }
@@ -656,7 +657,7 @@ impl crate::environment_holding::EnvironmentHolding {
                 "root-committed Session Environment was not ready during receipt replay",
             ));
         }
-        self.session_environment(thread).await.ok_or_else(|| {
+        self.session_environment(thread).await?.ok_or_else(|| {
             RealizationError::invariant(
                 "root-committed Session Environment was not published after adoption",
             )
@@ -675,17 +676,17 @@ impl crate::environment_holding::EnvironmentHolding {
     ) -> Result<Arc<crate::session_environment::SessionEnvironment>, RealizationError> {
         let realizations = self.sessions.clone();
         let reconciliation = realizations
-            .read_realization(thread, |r| r.staging.reconciliation)
+            .read_realization(thread, |r| r.staging.reconciliation)?
             .unwrap_or_default();
         let transition = realizations
-            .read_realization(thread, |r| r.staging.transition.clone())
+            .read_realization(thread, |r| r.staging.transition.clone())?
             .flatten()
             .ok_or_else(|| {
                 RealizationError::invariant(
                     "published Session Environment lacks its Resource transition",
                 )
             })?;
-        let installed = self.staging.thread_resource_manifest(thread);
+        let installed = self.staging.thread_resource_manifest(thread)?;
         if reconciliation == crate::staged_resources::EnvironmentResourceReconciliation::None
             && installed.as_ref() == Some(transition.desired())
         {
@@ -697,7 +698,7 @@ impl crate::environment_holding::EnvironmentHolding {
                     slot.run.dispatch_claim().cloned(),
                     slot.realization.execution.authority.lease().cloned(),
                 )
-            })
+            })?
             .unwrap_or_default();
         self.staging
             .apply_session_inputs_under_lifecycle(
@@ -720,7 +721,7 @@ impl crate::environment_holding::EnvironmentHolding {
         thread: &str,
     ) -> Result<Arc<crate::session_environment::SessionEnvironment>, RealizationError> {
         let realizations = self.sessions.clone();
-        let _lifecycle = realizations.lock_lifecycle(thread).await;
+        let _lifecycle = realizations.lock_lifecycle(thread).await?;
         if let Some(environment) = self
             .retry_session_environment_candidate_under_lifecycle(thread)
             .await?
@@ -730,7 +731,7 @@ impl crate::environment_holding::EnvironmentHolding {
                 .await;
         }
         if let Some(environment) = realizations
-            .read_realization(thread, |r| r.environment.owner.resident())
+            .read_realization(thread, |r| r.environment.owner.resident())?
             .flatten()
         {
             return self
@@ -738,7 +739,7 @@ impl crate::environment_holding::EnvironmentHolding {
                 .await;
         }
         let provider = self.projected_session_environment_provider(thread, None)?;
-        if let Some(binding) = self.durable_environment_binding(thread) {
+        if let Some(binding) = self.durable_environment_binding(thread)? {
             let disposition = self
                 .adopt_bound_session_environment_under_lifecycle(
                     thread,
@@ -754,7 +755,7 @@ impl crate::environment_holding::EnvironmentHolding {
                     "durable Session Environment did not become Resident",
                 ));
             }
-            return self.session_environment(thread).await.ok_or_else(|| {
+            return self.session_environment(thread).await?.ok_or_else(|| {
                 RealizationError::invariant(
                     "durable Session Environment adoption published no owner",
                 )

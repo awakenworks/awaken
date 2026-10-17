@@ -154,7 +154,7 @@ impl SessionExecutionAuthority {
         let sessions = self.sessions.upgrade().ok_or_else(denied)?;
         let mut outcome = Err(denied());
         sessions
-            .visit(&self.session, false, &mut |access| {
+            .visit(&self.session, &mut |access| {
                 outcome = self.effect_under_lock(access.realization, effect, worker_remaining);
             })
             .map_err(|_| denied())?;
@@ -297,16 +297,9 @@ impl ExecutionAuthority {
             ))
         });
         let mut outcome = None;
-        self.sessions
-            .0
-            .visit(session, false, &mut |access| {
-                outcome = capture.take().map(|capture| capture(access.realization));
-            })
-            .map_err(|_| {
-                RealizationError::Poisoned(
-                    crate::realization_error::RealizationLock::InstalledSessions,
-                )
-            })?;
+        self.sessions.0.visit(session, &mut |access| {
+            outcome = capture.take().map(|capture| capture(access.realization));
+        })?;
         outcome.ok_or_else(|| RealizationError::session_absent(session))?
     }
 
@@ -368,7 +361,8 @@ impl ExecutionAuthority {
         thread: &str,
         kind: awaken_session_state_contract::SessionEnvironmentEffectKind,
         source_binding: Option<&str>,
-    ) -> awaken_session_state_contract::SessionEnvironmentEffectIntent {
+    ) -> Result<awaken_session_state_contract::SessionEnvironmentEffectIntent, RealizationError>
+    {
         let (realization, environment_fingerprint) = self
             .sessions
             .modify_session(thread, |slot| {
@@ -379,14 +373,16 @@ impl ExecutionAuthority {
                         .as_ref()
                         .map(|baseline| baseline.environment.config_fingerprint.0.clone()),
                 )
-            })
+            })?
             .unwrap_or_default();
-        awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
-            thread,
-            kind,
-            realization,
+        Ok(
+            awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+                thread,
+                kind,
+                realization,
+            )
+            .for_frozen_coordinates(source_binding.map(str::to_owned), environment_fingerprint),
         )
-        .for_frozen_coordinates(source_binding.map(str::to_owned), environment_fingerprint)
     }
 
     /// Re-enter current authority after I/O while preserving the Root's exact

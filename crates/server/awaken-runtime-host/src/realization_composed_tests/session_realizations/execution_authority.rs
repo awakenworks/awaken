@@ -58,22 +58,28 @@ mod tests {
                 expires_at_unix_ms: awaken_session_realization::test_support::runtime_unix_now_ms()
                     + 60_000,
             };
-            let authority = slots.realizations().update_realization("session", |r| {
-                r.execution.authority = SessionRealizationAuthority::Live(
-                    awaken_session_realization::test_support::test_observed_lease(asserted.clone()),
-                );
-                r.environment.owner = Self::candidate(environment.clone());
-                Arc::new(SessionExecutionAuthority::for_test(
-                    &ExecutionAuthority {
-                        sessions: slots.realizations(),
-                        worker: Some(worker.clone()),
-                    },
-                    "session",
-                    r,
-                    asserted,
-                    &environment,
-                ))
-            });
+            slots.install("session");
+            let authority = slots
+                .realizations()
+                .update_realization("session", |r| {
+                    r.execution.authority = SessionRealizationAuthority::Live(
+                        awaken_session_realization::test_support::test_observed_lease(
+                            asserted.clone(),
+                        ),
+                    );
+                    r.environment.owner = Self::candidate(environment.clone());
+                    Arc::new(SessionExecutionAuthority::for_test(
+                        &ExecutionAuthority {
+                            sessions: slots.realizations(),
+                            worker: Some(worker.clone()),
+                        },
+                        "session",
+                        r,
+                        asserted,
+                        &environment,
+                    ))
+                })
+                .expect("installed Sessions");
             Self {
                 slots,
                 environment,
@@ -159,7 +165,7 @@ mod tests {
                 }
                 "slot_aba" => {
                     let old = f.slots.remove("session").unwrap();
-                    f.slots.realizations().update_realization("session", |r| {
+                    f.slots.install_realization("session", |r| {
                         r.execution.authority = old.realization.execution.authority;
                         r.environment.owner = old.realization.environment.owner;
                     });
@@ -244,7 +250,7 @@ mod tests {
                         } else {
                             awaken_session_realization::test_support::test_observed_lease(lease)
                         });
-                }),
+                }).expect("installed Sessions"),
             }
             let mut calls = 0;
             let result = f.authority.with_current(&mut |remaining| {
@@ -371,9 +377,12 @@ mod tests {
         });
         assert_eq!(failure.unwrap_err().to_string(), "provider effect failed");
         assert_eq!(calls, 1);
-        f.slots.realizations().update_realization("session", |r| {
-            r.environment.owner = SessionEnvironmentOwner::Vacant
-        });
+        f.slots
+            .realizations()
+            .update_realization("session", |r| {
+                r.environment.owner = SessionEnvironmentOwner::Vacant
+            })
+            .expect("installed Sessions");
         assert!(f.current().is_err());
         assert_eq!(provider.current_effect_fence(&initial).unwrap(), initial);
         provider

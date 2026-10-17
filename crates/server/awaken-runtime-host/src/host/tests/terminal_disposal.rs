@@ -73,7 +73,10 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     // Stage representative resource/config projections before realizing the
     // exact durable V2 Sandbox. Terminal cleanup must erase all of them so
     // reusing the opaque thread id cannot inherit stale scope or model state.
-    host.realizer.staging.register_thread_memory("t-end", None);
+    host.realizer
+        .staging
+        .register_thread_memory("t-end", None)
+        .expect("installed Sessions");
     host.realizer
         .staging
         .register_thread_resources("t-end", crate::staged_resources::StagedResources::default());
@@ -160,7 +163,8 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
                     };
                     current.origin =
                         crate::environment_owner::UnboundSessionEnvironmentOrigin::Adoption;
-                });
+                })
+                .expect("installed Sessions");
         }
         "uncommitted" | "lost-response" => {}
         _ => panic!("unknown terminal test row"),
@@ -227,6 +231,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
             .installed_sessions
             .realizations()
             .read_realization("t-end", |r| r.environment.lifecycle.clone())
+            .expect("installed Sessions")
             .unwrap();
         let _lifecycle = lifecycle.lock().await;
         host.realizer
@@ -288,7 +293,11 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
             "U4 no physical delete"
         );
         assert!(
-            host.realizer.session_environment("t-end").await.is_none(),
+            host.realizer
+                .session_environment("t-end")
+                .await
+                .expect("installed Sessions")
+                .is_none(),
             "U4 no publication"
         );
         return;
@@ -312,12 +321,16 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
                 matches!(&r.environment.owner, crate::environment_owner::SessionEnvironmentOwner::Retiring(retiring)
                     if Arc::ptr_eq(&retiring.owned.environment(), &env)
                         && retiring.owned.environment().lifecycle().handle() == env.lifecycle().handle())
-            })
+            }).expect("installed Sessions")
             .unwrap_or(false),
         "T1/E2 exact owner is hidden from tools but retained for Disposal"
     );
     assert!(
-        host.realizer.session_environment("t-end").await.is_none(),
+        host.realizer
+            .session_environment("t-end")
+            .await
+            .expect("installed Sessions")
+            .is_none(),
         "U no terminal publication"
     );
     if initial == "uncommitted" || initial == "lost-response" {
@@ -326,7 +339,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
             crate::environment_owner::SessionEnvironmentOwner::Retiring(crate::environment_owner::RetiringSessionEnvironment {
                 owned: crate::environment_owner::RetiringEnvironmentOwner::Unbound(candidate), ..
             }) if candidate.durable_identity().is_none()
-        )).unwrap(), "U retains missing ordinary commit evidence");
+        )).expect("installed Sessions").unwrap(), "U retains missing ordinary commit evidence");
     }
     managed
         .acknowledge_terminal_cleanup_preparation(&effect)
@@ -354,7 +367,11 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         "terminal cleanup evicts the cached ctx"
     );
     assert!(
-        host.realizer.session_environment("t-end").await.is_none(),
+        host.realizer
+            .session_environment("t-end")
+            .await
+            .expect("installed Sessions")
+            .is_none(),
         "terminal end removes the independent environment owner"
     );
     // ... and the sandbox is ACTUALLY disposed: its workspace dir was reaped, so a
@@ -560,7 +577,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         );
         assert!(matches!(
             host.installed_sessions.realizations()
-                .read_realization(thread, |r| r.environment.owner.clone()),
+                .read_realization(thread, |r| r.environment.owner.clone()).expect("installed Sessions"),
             Some(crate::environment_owner::SessionEnvironmentOwner::Restoring(
                 crate::environment_owner::SessionEnvironmentRestoration::Awaiting { request }
             )) if request == restore_target
@@ -601,31 +618,31 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
             "worker-expire" => {
                 worker.current.lock().unwrap().as_mut().unwrap().1 = std::time::Duration::ZERO
             }
-            "session-revoke" => {
-                host.installed_sessions
-                    .realizations()
-                    .update_realization(thread, |r| {
-                        r.execution.authority =
-                            crate::session_realizations::SessionRealizationAuthority::Closed(Some(
-                                lease.clone(),
-                            ));
-                    })
-            }
-            "replace" | "renew" => {
-                host.installed_sessions
-                    .realizations()
-                    .update_realization(thread, |r| {
-                        let mut next = lease.clone();
-                        if change == "replace" {
-                            next.epoch += 1;
-                        }
-                        next.expires_at_unix_ms += 10_000;
-                        r.execution.authority =
-                            crate::session_realizations::SessionRealizationAuthority::Live(
-                                awaken_session_realization::test_support::test_observed_lease(next),
-                            );
-                    })
-            }
+            "session-revoke" => host
+                .installed_sessions
+                .realizations()
+                .update_realization(thread, |r| {
+                    r.execution.authority =
+                        crate::session_realizations::SessionRealizationAuthority::Closed(Some(
+                            lease.clone(),
+                        ));
+                })
+                .expect("installed Sessions"),
+            "replace" | "renew" => host
+                .installed_sessions
+                .realizations()
+                .update_realization(thread, |r| {
+                    let mut next = lease.clone();
+                    if change == "replace" {
+                        next.epoch += 1;
+                    }
+                    next.expires_at_unix_ms += 10_000;
+                    r.execution.authority =
+                        crate::session_realizations::SessionRealizationAuthority::Live(
+                            awaken_session_realization::test_support::test_observed_lease(next),
+                        );
+                })
+                .expect("installed Sessions"),
             _ => {}
         }
         if change == "cancel" {
@@ -639,7 +656,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
             );
         }
         assert!(
-            matches!(host.installed_sessions.realizations().read_realization(thread, |r| r.environment.owner.clone()),
+            matches!(host.installed_sessions.realizations().read_realization(thread, |r| r.environment.owner.clone()).expect("installed Sessions"),
         Some(crate::environment_owner::SessionEnvironmentOwner::Restoring(
             crate::environment_owner::SessionEnvironmentRestoration::Awaiting { request }
         )) if request == restore_target),
@@ -665,7 +682,8 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
                             lease.clone(),
                         ),
                     );
-            });
+            })
+            .expect("installed Sessions");
         probe.restored_release.notify_one();
         let first = managed
             .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
@@ -692,7 +710,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         assert!(
             matches!(
                 host.installed_sessions.realizations()
-                    .read_realization(thread, |r| r.environment.owner.clone()),
+                    .read_realization(thread, |r| r.environment.owner.clone()).expect("installed Sessions"),
                 Some(crate::environment_owner::SessionEnvironmentOwner::Restoring(
                     crate::environment_owner::SessionEnvironmentRestoration::Awaiting { request }
                 )) if request == restore_target
@@ -756,7 +774,8 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
             .realizations()
             .update_realization(child, |r| {
                 r.cleanup.root = Some(session_id.into());
-            });
+            })
+            .expect("installed Sessions");
     }
     let foreign = "terminal-retire-foreign";
     host.register_thread_workspace(foreign, "foreign-workspace");
@@ -764,7 +783,8 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
         .realizations()
         .update_realization(foreign, |r| {
             r.cleanup.root = Some("replacement-root".into());
-        });
+        })
+        .expect("installed Sessions");
 
     let mut cleanup = awaken_session_state_contract::SessionCleanupOperation::default();
     assert!(cleanup.request(&awaken_session_types::SessionId::from(session_id)));
@@ -841,7 +861,8 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
     host.realizer
         .cleanup
         .retire_completed_terminal_cleanup_projection(&host.mcp, session_id, &root.lease)
-        .await;
+        .await
+        .expect("installed Sessions");
     assert!(!host.installed_sessions.contains(session_id), "P5/E5");
     assert!(
         !host.installed_sessions.contains("terminal-retire-pending"),
@@ -944,6 +965,7 @@ async fn terminal_quiescence_rejects_an_unstarted_cancelled_reservation_without_
         host.realizer
             .session_environment(&session.0)
             .await
+            .expect("installed Sessions")
             .is_none(),
         "T1/E3"
     );
@@ -1286,7 +1308,11 @@ async fn coordinator_terminal_quiescence_waits_for_remote_parent_and_child_settl
         "Q2/E2"
     );
     assert!(
-        host.realizer.session_environment(&parent.0).await.is_none(),
+        host.realizer
+            .session_environment(&parent.0)
+            .await
+            .expect("installed Sessions")
+            .is_none(),
         "Q2/E4"
     );
 }
@@ -1418,8 +1444,10 @@ async fn checkpoint_source_disposal_separates_preparation_and_current_authority(
                             .unwrap()
                             .observed(awaken_authority_clock::authority_proof_started().unwrap()),
                     );
-                });
+                })
+                .expect("installed Sessions");
         };
+        host.installed_sessions.install(thread);
         host.installed_sessions
             .realizations()
             .update_realization(thread, |r| {
@@ -1438,7 +1466,8 @@ async fn checkpoint_source_disposal_separates_preparation_and_current_authority(
                             environment: environment.clone(),
                         }),
                     });
-            });
+            })
+            .expect("installed Sessions");
         install_current(current_lease.clone());
         host.installed_sessions
             .realizations()
@@ -1479,7 +1508,8 @@ async fn checkpoint_source_disposal_separates_preparation_and_current_authority(
                     }
                     _ => {}
                 }
-            });
+            })
+            .expect("installed Sessions");
         let retained_before = host
             .installed_sessions
             .realizations()
@@ -1489,6 +1519,7 @@ async fn checkpoint_source_disposal_separates_preparation_and_current_authority(
                 };
                 retained.clone()
             })
+            .expect("installed Sessions")
             .unwrap();
         clock.set(prepared_lease.expires_at_unix_ms);
         events.lock().unwrap().clear();
@@ -1498,7 +1529,8 @@ async fn checkpoint_source_disposal_separates_preparation_and_current_authority(
                 host.installed_sessions
                     .realizations()
                     .lock_lifecycle(thread)
-                    .await,
+                    .await
+                    .expect("installed Sessions"),
             )
         } else {
             None
@@ -1548,11 +1580,15 @@ async fn checkpoint_source_disposal_separates_preparation_and_current_authority(
             assert_eq!(receipt.effect_id, disposal.operation().effect_id);
             assert_eq!(receipt.source_binding, disposal.source_binding());
             assert!(receipt.terminated);
-            assert!(host.realizer.session_environment_owner_is_vacant(thread));
+            assert!(
+                host.realizer
+                    .session_environment_owner_is_vacant(thread)
+                    .expect("installed Sessions")
+            );
         } else {
             assert!(
                 matches!(
-                    host.installed_sessions.realizations().read_realization(thread, |r| r.environment.owner.clone()),
+                    host.installed_sessions.realizations().read_realization(thread, |r| r.environment.owner.clone()).expect("installed Sessions"),
                     Some(SessionEnvironmentOwner::Retiring(retained))
                         if retained.exact_matches(&retained_before)
                 ),

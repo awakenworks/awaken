@@ -37,8 +37,8 @@ impl SessionPublicationSelection {
 
     /// Workspace carried by the current frozen Session, with the process's
     /// selected fallback for genuinely unregistered flat-protocol Sessions.
-    pub fn workspace(&self, session: &str) -> String {
-        self.workspace_for(&self.sessions.frozen(session))
+    pub fn workspace(&self, session: &str) -> Result<String, RealizationError> {
+        Ok(self.workspace_for(self.sessions.frozen(session)?.as_ref()))
     }
 
     pub fn local_workspace(&self) -> &str {
@@ -168,7 +168,7 @@ impl SessionPublicationSelection {
         RealizationError,
     > {
         let realizations = &self.sessions;
-        let frozen = realizations.frozen(thread);
+        let frozen = realizations.frozen(thread)?;
         let workspace = self.workspace_for(&frozen);
         let projected_agent = frozen.agent_id.as_deref();
         if let (Some(asserted), Some(projected)) = (agent, projected_agent)
@@ -196,7 +196,7 @@ impl SessionPublicationSelection {
                     .transition
                     .as_ref()
                     .map(|transition| transition.desired().resources.skills().to_vec())
-            })
+            })?
             .flatten();
         let coordinates = frozen.baseline.as_ref().map_or(
             CanonicalSessionProjection::LegacyAgent(selected_agent),
@@ -250,7 +250,7 @@ impl SessionPublicationSelection {
         agent: Option<&str>,
     ) -> Result<awaken_runtime_contract::resolved::ModelProvisioning, RealizationError> {
         let realizations = &self.sessions;
-        let delivered = realizations.published_snapshot(thread);
+        let delivered = realizations.published_snapshot(thread)?;
         let (_, _, _, model_candidate) =
             self.resolve_session_publication(thread, agent, delivered)?;
         Ok(model_candidate

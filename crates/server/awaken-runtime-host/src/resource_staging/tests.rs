@@ -42,7 +42,13 @@ async fn mount_projection_reads_current_resource_and_frozen_inputs_without_retai
     .expect("validated Host dependencies");
     let staging = host.realizer.staging.clone();
     let thread = "mount-view";
-    assert!(staging.thread_session_mounts(thread).is_empty(), "M1");
+    assert!(
+        staging
+            .thread_session_mounts(thread)
+            .expect("installed Sessions")
+            .is_empty(),
+        "M1"
+    );
     assert!(host.installed_sessions.read(thread, |_| ()).is_none(), "M1");
     let resource = mount("resource", false);
     let resource_memory = mount("resource-memory", true);
@@ -81,12 +87,17 @@ async fn mount_projection_reads_current_resource_and_frozen_inputs_without_retai
     });
     host.installed_sessions
         .replace_frozen_with(thread, |next| next.baseline = Some(baseline));
-    staging.sessions.update_realization(thread, |r| {
-        r.staging.resources.mounts = vec![resource.clone(), resource_memory.clone()];
-        r.staging.content_delivery = Some(ManagedContentDelivery::ManagedFilesystem);
-    });
+    staging
+        .sessions
+        .update_realization(thread, |r| {
+            r.staging.resources.mounts = vec![resource.clone(), resource_memory.clone()];
+            r.staging.content_delivery = Some(ManagedContentDelivery::ManagedFilesystem);
+        })
+        .expect("installed Sessions");
     assert_eq!(
-        staging.thread_session_mounts(thread),
+        staging
+            .thread_session_mounts(thread)
+            .expect("installed Sessions"),
         vec![
             resource.clone(),
             resource_memory,
@@ -95,17 +106,25 @@ async fn mount_projection_reads_current_resource_and_frozen_inputs_without_retai
         ],
         "M2"
     );
-    staging.sessions.update_realization(thread, |r| {
-        r.staging.content_delivery = Some(ManagedContentDelivery::SemanticTools);
-    });
+    staging
+        .sessions
+        .update_realization(thread, |r| {
+            r.staging.content_delivery = Some(ManagedContentDelivery::SemanticTools);
+        })
+        .expect("installed Sessions");
     assert_eq!(
-        staging.thread_session_mounts(thread),
+        staging
+            .thread_session_mounts(thread)
+            .expect("installed Sessions"),
         vec![resource, baseline_mount],
         "M3"
     );
     host.installed_sessions.remove(thread);
     assert!(
-        staging.thread_session_mounts(thread).is_empty(),
+        staging
+            .thread_session_mounts(thread)
+            .expect("installed Sessions")
+            .is_empty(),
         "M4 removed"
     );
     assert!(
@@ -113,11 +132,17 @@ async fn mount_projection_reads_current_resource_and_frozen_inputs_without_retai
         "M4 no resurrection"
     );
     let replacement = mount("replacement", false);
-    staging.sessions.update_realization(thread, |r| {
-        r.staging.resources.mounts = vec![replacement.clone()]
-    });
+    host.installed_sessions.install(thread);
+    staging
+        .sessions
+        .update_realization(thread, |r| {
+            r.staging.resources.mounts = vec![replacement.clone()]
+        })
+        .expect("installed Sessions");
     assert_eq!(
-        staging.thread_session_mounts(thread),
+        staging
+            .thread_session_mounts(thread)
+            .expect("installed Sessions"),
         vec![replacement],
         "M4 recreated"
     );

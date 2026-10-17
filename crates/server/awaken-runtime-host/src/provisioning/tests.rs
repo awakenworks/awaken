@@ -290,6 +290,7 @@ async fn root_terminal_cleanup_effect(
         .installed_sessions
         .realizations()
         .read_realization(session_id, |r| r.environment.owner.resident())
+        .unwrap()
         .flatten()
         .expect("terminal test requires a resident Environment");
     let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
@@ -297,6 +298,7 @@ async fn root_terminal_cleanup_effect(
         .installed_sessions
         .realizations()
         .frozen(session_id)
+        .unwrap()
         .workspace
         .clone()
         .expect("terminal test requires a root Workspace projection");
@@ -463,18 +465,22 @@ async fn projected_sandbox_layout_preserves_one_complete_input_snapshot() {
     environment.network = awaken_session_configuration_contract::SessionNetworkPolicy::None;
     let environment = project_environment(&environment);
 
-    let spec = host.realizer.staging.sandbox_spec_for_projected_layout(
-        "complete-layout",
-        ProjectedSandboxLayout {
-            resource_mounts: vec![resource.clone()],
-            has_repositories: true,
-            baseline_mounts: Some(&baseline_mounts),
-            baseline_env: Some(&baseline_env),
-            content_delivery: Some(crate::frozen_inputs::ManagedContentDelivery::SemanticTools),
-            environment: Some(&environment),
-            network_isolation: false,
-        },
-    );
+    let spec = host
+        .realizer
+        .staging
+        .sandbox_spec_for_projected_layout(
+            "complete-layout",
+            ProjectedSandboxLayout {
+                resource_mounts: vec![resource.clone()],
+                has_repositories: true,
+                baseline_mounts: Some(&baseline_mounts),
+                baseline_env: Some(&baseline_env),
+                content_delivery: Some(crate::frozen_inputs::ManagedContentDelivery::SemanticTools),
+                environment: Some(&environment),
+                network_isolation: false,
+            },
+        )
+        .unwrap();
 
     assert_eq!(spec.mounts, vec![resource, baseline], "L1/E1");
     assert_eq!(spec.env, baseline_env, "L1/E2");
@@ -572,10 +578,14 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
             ..Default::default()
         },
     );
-    let fresh = host.realizer.staging.sandbox_substrate_spec_for_provider(
-        "checkpoint-memory",
-        &host.realizer.env.session_provider,
-    );
+    let fresh = host
+        .realizer
+        .staging
+        .sandbox_substrate_spec_for_provider(
+            "checkpoint-memory",
+            &host.realizer.env.session_provider,
+        )
+        .unwrap();
     assert_eq!(fresh.mounts.len(), 1, "M3/E3");
     assert_eq!(
         consistency(&fresh),
@@ -655,7 +665,8 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
             "checkpoint-memory",
             &resolved,
             &host.realizer.env.session_provider,
-        );
+        )
+        .unwrap();
     assert_eq!(cold.mounts.len(), 1, "M4/E3");
     assert_eq!(
         consistency(&cold),
@@ -668,18 +679,22 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
         "M4/E4"
     );
 
-    let readonly = host.realizer.staging.sandbox_spec_for_projected_layout(
-        "readonly-memory",
-        ProjectedSandboxLayout {
-            resource_mounts: vec![memory_mount(pc::MountAccess::ReadOnly, None)],
-            has_repositories: false,
-            baseline_mounts: None,
-            baseline_env: None,
-            content_delivery: None,
-            environment: Some(&strict_projection),
-            network_isolation: true,
-        },
-    );
+    let readonly = host
+        .realizer
+        .staging
+        .sandbox_spec_for_projected_layout(
+            "readonly-memory",
+            ProjectedSandboxLayout {
+                resource_mounts: vec![memory_mount(pc::MountAccess::ReadOnly, None)],
+                has_repositories: false,
+                baseline_mounts: None,
+                baseline_env: None,
+                content_delivery: None,
+                environment: Some(&strict_projection),
+                network_isolation: true,
+            },
+        )
+        .unwrap();
     assert_eq!(
         consistency(&readonly),
         pc::MemoryWriteConsistency::ProviderDefault,
@@ -689,18 +704,22 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
     let mut resident_environment = environment;
     resident_environment.idle_retention = Default::default();
     let resident_projection = project_environment(&resident_environment);
-    let resident = host.realizer.staging.sandbox_spec_for_projected_layout(
-        "resident-memory",
-        ProjectedSandboxLayout {
-            resource_mounts: vec![memory_mount(pc::MountAccess::ReadWrite, None)],
-            has_repositories: false,
-            baseline_mounts: None,
-            baseline_env: None,
-            content_delivery: None,
-            environment: Some(&resident_projection),
-            network_isolation: true,
-        },
-    );
+    let resident = host
+        .realizer
+        .staging
+        .sandbox_spec_for_projected_layout(
+            "resident-memory",
+            ProjectedSandboxLayout {
+                resource_mounts: vec![memory_mount(pc::MountAccess::ReadWrite, None)],
+                has_repositories: false,
+                baseline_mounts: None,
+                baseline_env: None,
+                content_delivery: None,
+                environment: Some(&resident_projection),
+                network_isolation: true,
+            },
+        )
+        .unwrap();
     assert_eq!(
         consistency(&resident),
         pc::MemoryWriteConsistency::ProviderDefault,
@@ -892,18 +911,22 @@ async fn trusted_host_repository_projection_preserves_the_exact_tier() {
                 pc::HostAccessPolicy::Isolated
             };
             let environment = project_environment(&environment);
-            let spec = host.realizer.staging.sandbox_spec_for_projected_layout(
-                "trust-matrix",
-                ProjectedSandboxLayout {
-                    resource_mounts: Vec::new(),
-                    has_repositories: repository,
-                    baseline_mounts: None,
-                    baseline_env: None,
-                    content_delivery: None,
-                    environment: Some(&environment),
-                    network_isolation: false,
-                },
-            );
+            let spec = host
+                .realizer
+                .staging
+                .sandbox_spec_for_projected_layout(
+                    "trust-matrix",
+                    ProjectedSandboxLayout {
+                        resource_mounts: Vec::new(),
+                        has_repositories: repository,
+                        baseline_mounts: None,
+                        baseline_env: None,
+                        content_delivery: None,
+                        environment: Some(&environment),
+                        network_isolation: false,
+                    },
+                )
+                .unwrap();
             assert_eq!(
                 spec.isolation,
                 if repository && !trusted {
@@ -1799,6 +1822,7 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         .installed_sessions
         .realizations()
         .frozen("session-artifacts")
+        .unwrap()
         .workspace
         .clone()
         .expect("R4 frozen aggregate Repository inputs");
@@ -1813,6 +1837,7 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
             .read_realization("session-artifacts", |r| {
                 r.environment.owner.terminal_bound_environment().is_some()
             })
+            .unwrap()
             .unwrap_or(false),
         "R3 exact owner remains Retiring until aggregate-authorized Disposal"
     );
@@ -1848,8 +1873,7 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         .await
         .unwrap();
     assert!(
-        host.realizer
-            .session_environment("session-artifacts")
+        host.resident_session_environment("session-artifacts")
             .await
             .is_none()
     );
@@ -1961,7 +1985,8 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
         .realizations()
         .update_realization("artifact-response-loss", |r| {
             r.environment.owner = crate::environment_owner::SessionEnvironmentOwner::Vacant;
-        });
+        })
+        .unwrap();
     let recovered = host
         .realizer
         .cleanup
@@ -2596,6 +2621,7 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
             .read_realization("session-harvest-failure", |r| {
                 r.environment.owner.terminal_bound_environment().is_some()
             })
+            .unwrap()
             .unwrap_or(false),
         "R4 exact terminal owner remains hidden and retryable"
     );

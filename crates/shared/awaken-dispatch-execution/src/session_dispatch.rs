@@ -21,13 +21,16 @@ pub struct DispatchPreparation<'a> {
 
 pub fn inference_plaintext_holder(
     activation: &RunActivation,
-    profile: impl FnOnce() -> Option<awaken_credential_contract::CredentialRealizationProfile>,
+    profile: impl FnOnce() -> Result<
+        Option<awaken_credential_contract::CredentialRealizationProfile>,
+        AdmissionError,
+    >,
 ) -> Result<Option<awaken_runtime_contract::PlaintextHolder>, AdmissionError> {
     Ok(match inference_plaintext_holder_decision(activation)? {
         InferencePlaintextHolderDecision::NotRequired => None,
         InferencePlaintextHolderDecision::Exact(holder) => Some(holder),
         InferencePlaintextHolderDecision::Boundary(boundary) => {
-            let holder = profile().map_or_else(
+            let holder = profile()?.map_or_else(
                 || self_hosted_holder_for_boundary(boundary),
                 |p| p.inference_holder,
             );
@@ -65,12 +68,16 @@ impl<'a> DispatchPreparation<'a> {
     fn installed_dispatch(
         &self,
         thread: &str,
-    ) -> (
-        Option<awaken_session_configuration_contract::resource::SessionResourceManifest>,
-        Option<awaken_session_configuration_contract::SessionRuntimeProjection>,
-        bool,
-    ) {
-        self.sessions
+    ) -> Result<
+        (
+            Option<awaken_session_configuration_contract::resource::SessionResourceManifest>,
+            Option<awaken_session_configuration_contract::SessionRuntimeProjection>,
+            bool,
+        ),
+        AdmissionError,
+    > {
+        Ok(self
+            .sessions
             .modify_session(thread, |slot| {
                 let projection = slot.inputs.environment_snapshot.clone().map(|environment| {
                     awaken_session_configuration_contract::SessionRuntimeProjection {
@@ -85,8 +92,8 @@ impl<'a> DispatchPreparation<'a> {
                     projection,
                     session_dispatch,
                 )
-            })
-            .unwrap_or_default()
+            })?
+            .unwrap_or_default())
     }
 
     pub fn fresh(self) -> Result<RunDispatch, AdmissionError> {
@@ -123,7 +130,7 @@ impl<'a> DispatchPreparation<'a> {
             ));
         }
         let thread = self.activation.thread_id.0.clone();
-        let workspace = self.sessions.workspace(&thread, self.local_workspace);
+        let workspace = self.sessions.workspace(&thread, self.local_workspace)?;
         let agent_publications = crate::run_publications::freeze_run_publications(
             &self.activation.snapshot,
             self.agent_publications,
@@ -134,7 +141,8 @@ impl<'a> DispatchPreparation<'a> {
                 "cannot freeze Agent execution publications: {error}"
             ))
         })?;
-        let (resources, runtime_projection, is_session_dispatch) = self.installed_dispatch(&thread);
+        let (resources, runtime_projection, is_session_dispatch) =
+            self.installed_dispatch(&thread)?;
         let activation = self.activation;
         let activation = if fresh_activation {
             crate::placement::bind_root_tool_configuration_format(activation, is_session_dispatch)
@@ -152,7 +160,7 @@ impl<'a> DispatchPreparation<'a> {
             .as_ref()
             .map(|projection| &projection.environment);
         let inference_holder = inference_plaintext_holder(&activation, || {
-            self.sessions.credential_realization(&thread)
+            Ok(self.sessions.credential_realization(&thread)?)
         })?;
         // A mixed deployment may have both the local pool and remote workers.
         // Any carried manifest still needs capability admission: an explicit empty
@@ -177,7 +185,7 @@ impl<'a> DispatchPreparation<'a> {
             .with_agent_publications(agent_publications);
         // Thread ownership survives an environment-free auxiliary Run. A
         // resource envelope is one carrier of Scope, not a prerequisite for it.
-        if let Some(scope) = self.sessions.registered_workspace(&thread) {
+        if let Some(scope) = self.sessions.registered_workspace(&thread)? {
             if resources
                 .as_ref()
                 .is_some_and(|resources| resources.workspace_id != scope)

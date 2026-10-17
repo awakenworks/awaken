@@ -68,21 +68,21 @@ pub(super) async fn acquire(
     }
     let retained = exec
         .sessions
-        .read_realization(thread, |r| r.environment.owner.resident())
+        .read_realization(thread, |r| r.environment.owner.resident())?
         .flatten();
-    let environment_owner_is_vacant = exec.session_environment_owner_is_vacant(thread);
+    let environment_owner_is_vacant = exec.session_environment_owner_is_vacant(thread)?;
     let environment_owner_has_unpublished_candidate = exec
         .sessions
         .read_realization(thread, |r| {
             r.environment.owner.unpublished_candidate().is_some()
-        })
+        })?
         .unwrap_or(false);
     if a2a_only && !environment_owner_is_vacant {
         return Err(HostError::bad_request(
             "remote A2A execution cannot bind a local Session Environment",
         ));
     }
-    let expected_binding = exec.durable_environment_binding(thread);
+    let expected_binding = exec.durable_environment_binding(thread)?;
     // Recovery cause/effect decision table: C1 durable binding exists; C2 a
     // matching lifecycle-owned environment is resident. R1 !C1 may create
     // the first environment; R2 C1+C2 reuses it; R3 C1+!C2 fails
@@ -237,7 +237,7 @@ pub(super) async fn acquire(
         .as_ref()
         .map(|snapshot| snapshot.resolved_spec.plugin_config.agent.toolsets.clone())
         .unwrap_or_default();
-    let session_tools = exec.sessions.frozen(thread).tools.clone();
+    let session_tools = exec.sessions.frozen(thread)?.tools.clone();
     let toolsets = session_tools
         .as_ref()
         .map(|tools| tools.toolsets.clone())

@@ -49,7 +49,11 @@ impl SharedHost {
         tool: &str,
     ) -> bool {
         let realizations = self.installed_sessions.realizations();
-        let session_tools = realizations.frozen(thread).tools.clone();
+        let session_tools = realizations
+            .frozen(thread)
+            .expect("session runtime slots mutex poisoned")
+            .tools
+            .clone();
         let toolsets = session_tools
             .as_ref()
             .map(|tools| tools.toolsets.as_slice())
@@ -158,6 +162,7 @@ impl SharedHost {
                     })
                     .collect::<Vec<_>>()
             })
+            .expect("session runtime slots mutex poisoned")
             .unwrap_or_default();
         if !managed_session {
             roots.push(authored_skills_subdir.to_string());
@@ -231,7 +236,7 @@ impl SharedHost {
         // a restricted Outcome grader or delegate must reuse that immutable
         // choice instead of trying to re-author the Session's mounts/tools.
         if let Some(existing) = realizations
-            .read_realization(thread, |r| r.staging.content_delivery)
+            .read_realization(thread, |r| r.staging.content_delivery)?
             .flatten()
         {
             if managed_has_skill
@@ -261,7 +266,7 @@ impl SharedHost {
                         .resource_prompts
                         .iter()
                         .any(crate::managed_input_layout::ResourcePromptProjection::requires_filesystem_delivery)
-                })
+                })?
                 .unwrap_or(false)
         {
             return Err(HostError::bad_request(
@@ -290,7 +295,7 @@ impl SharedHost {
                 ));
             }
         }
-        realizations.update_realization(thread, |r| r.staging.content_delivery = Some(delivery));
+        realizations.update_realization(thread, |r| r.staging.content_delivery = Some(delivery))?;
         Ok(delivery)
     }
 
@@ -451,14 +456,14 @@ impl SharedHost {
                 )
                 .is_acp()
             });
-        let selected_backend_is_acp =
-            realizations
-                .frozen(thread)
-                .backend_ref
-                .clone()
-                .is_some_and(|backend_ref| {
-                    awaken_runtime_contract::resolved::Backend::from_ref(&backend_ref).is_acp()
-                });
+        let selected_backend_is_acp = realizations
+            .frozen(thread)
+            .expect("session runtime slots mutex poisoned")
+            .backend_ref
+            .clone()
+            .is_some_and(|backend_ref| {
+                awaken_runtime_contract::resolved::Backend::from_ref(&backend_ref).is_acp()
+            });
         // Delegation itself is a Sandbox capability: the child must inherit the
         // exact parent environment and its lifecycle fence. Keep that fact in the
         // sole eager-vs-deferred classifier instead of accepting deferral here and

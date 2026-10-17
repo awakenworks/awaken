@@ -27,7 +27,7 @@ impl ManagedHost {
             .realizer
             .continuation_effect_fence(thread, operation)?;
         let _realization = sessions.acquire_realization_with(thread, |_| ()).await.0;
-        let _lifecycle = realization_view.lock_lifecycle(thread).await;
+        let _lifecycle = realization_view.lock_lifecycle(thread).await?;
         let environment = self
             .host
             .realizer
@@ -53,13 +53,13 @@ impl ManagedHost {
         if crate::session_realizations::primary_or_delegated_run_active(
             thread,
             |session| {
-                sessions
+                Ok(sessions
                     .read_run(session, |run| {
                         run.context
                             .as_ref()
                             .is_some_and(|runtime| runtime.has_active_run())
                     })
-                    .unwrap_or(false)
+                    .unwrap_or(false))
             },
             self.host.delegated_runs_under_lifecycle(thread),
         )

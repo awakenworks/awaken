@@ -55,7 +55,7 @@ impl RealizationExecutor {
                         r.execution.authority.remaining_for(asserted).is_some(),
                     )
                 })
-            })
+            })?
             .flatten()
             .ok_or_else(|| {
                 RunError::unavailable_classified(
@@ -94,7 +94,9 @@ impl RealizationExecutor {
         )?;
         current
             .sandbox_effect_fence(&operation.effect_id)
-            .map_err(|error| RunError::internal(error.to_string()))
+            .map_err(|error| {
+                RunError::from(crate::realization_error::RealizationError::from(error))
+            })
     }
 
     /// Revalidate the exact aggregate-owned preparation effect against the
@@ -113,7 +115,7 @@ impl RealizationExecutor {
         )?;
         let effect_fence = preparation
             .sandbox_effect_fence()
-            .map_err(|error| RunError::internal(error.to_string()))?;
+            .map_err(crate::realization_error::RealizationError::from)?;
         effect_fence
             .validate_live_at(awaken_time::WallClockExt::now_ms(self.clock.as_ref()))
             .map_err(|error| RunError::unavailable(error.to_string()))?;
@@ -162,7 +164,7 @@ impl RealizationExecutor {
             .execution
             .provider_effect_authority(thread, &effect_fence)
             .map_err(awaken_session_types::RunError::from)?;
-        let _lifecycle = realizations.lock_lifecycle(thread).await;
+        let _lifecycle = realizations.lock_lifecycle(thread).await?;
         let environment = self
             .resident_checkpoint_source_environment(
                 thread,
@@ -213,7 +215,7 @@ impl RealizationExecutor {
     ) -> Result<awaken_session_state_contract::SourceReleasePreparedReceipt, RunError> {
         let exec = &self.environments;
         self.continuation_preparation_effect_fence(thread, preparation)?;
-        let Some(resources) = exec.staging.thread_resource_manifest(thread) else {
+        let Some(resources) = exec.staging.thread_resource_manifest(thread)? else {
             return Err(RunError::unavailable_classified(
                 "session_environment_continuation_resources_missing",
                 "Checkpoint source preparation has no frozen active Resource manifest",
@@ -260,7 +262,7 @@ impl RealizationExecutor {
                     error.to_string(),
                 )
             })?;
-        let _lifecycle = exec.sessions.lock_lifecycle(thread).await;
+        let _lifecycle = exec.sessions.lock_lifecycle(thread).await?;
         self.continuation_preparation_effect_fence(thread, preparation)?;
         let effect_fence = self.continuation_preparation_effect_fence(thread, preparation)?;
         let prepared = self
@@ -365,7 +367,7 @@ impl RealizationExecutor {
         let generation = disposal.generation();
         let source_binding = disposal.source_binding();
         self.continuation_source_disposal_authorization(thread, disposal)?;
-        let _lifecycle = realizations.lock_lifecycle(thread).await;
+        let _lifecycle = realizations.lock_lifecycle(thread).await?;
         let provider_authorization =
             self.continuation_source_disposal_authorization(thread, disposal)?;
         self.dispose_prepared_checkpoint_source_environment(
@@ -396,7 +398,7 @@ impl RealizationExecutor {
             .validate()
             .map_err(|error| RunError::unavailable(error.to_string()))?;
         let thread = request.session_id.clone();
-        let _lifecycle = realizations.lock_lifecycle(&thread).await;
+        let _lifecycle = realizations.lock_lifecycle(&thread).await?;
         exec.retry_unpublished_session_environment_cleanup(&thread)
             .await
             .map_err(awaken_session_types::RunError::from)?;
@@ -428,14 +430,14 @@ impl RealizationExecutor {
         let provider = exec
             .session_environment_provider_for_thread(&thread, provisioning)
             .map_err(awaken_session_types::RunError::from)?;
-        let spec = self.staging.sandbox_spec_for_provider(&thread, provider);
+        let spec = self.staging.sandbox_spec_for_provider(&thread, provider)?;
         let handle = provider
             .terminal()
             .restore(&spec, &request, store.as_ref())
             .await
             .map_err(|error| RunError::unavailable(error.to_string()))?;
         let binding = serde_json::to_string(&handle)
-            .map_err(|error| RunError::internal(error.to_string()))?;
+            .map_err(crate::realization_error::RealizationError::from)?;
         Ok(awaken_session_state_contract::RestoreReceipt {
             effect_id: request.effect_id,
             generation_id: request.generation_id,

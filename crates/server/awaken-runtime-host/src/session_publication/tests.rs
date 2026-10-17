@@ -145,7 +145,10 @@ fn publication_selection_uses_frozen_coordinates_and_selected_workspace_without_
             _ => None,
         };
         let asserted = (rule == "agent").then_some("other-agent");
-        let before = sessions.realizations().frozen("session");
+        let before = sessions
+            .realizations()
+            .frozen("session")
+            .expect("installed Sessions");
         let result = selection.resolve_session_publication("session", asserted, delivered);
         let admitted = matches!(
             rule,
@@ -153,7 +156,13 @@ fn publication_selection_uses_frozen_coordinates_and_selected_workspace_without_
         );
         assert_eq!(result.is_ok(), admitted, "{rule}: {result:?}");
         assert!(
-            Arc::ptr_eq(&before, &sessions.realizations().frozen("session")),
+            Arc::ptr_eq(
+                &before,
+                &sessions
+                    .realizations()
+                    .frozen("session")
+                    .expect("installed Sessions")
+            ),
             "{rule}: a read never publishes"
         );
         if let Ok((workspace, agent, selected, candidate)) = result {
@@ -244,7 +253,10 @@ fn publication_retention_is_one_atomic_slot_write_and_rejects_competing_candidat
     selection
         .retain_session_publication("session", None)
         .unwrap();
-    let frozen = sessions.realizations().frozen("session");
+    let frozen = sessions
+        .realizations()
+        .frozen("session")
+        .expect("installed Sessions");
     assert_eq!(frozen.published_snapshot.as_ref(), Some(winner));
     assert_eq!(frozen.workspace.as_deref(), Some("tenant"));
     assert_eq!(

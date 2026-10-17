@@ -636,6 +636,7 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
         view.modify_session(thread, |slot| {
             (slot.run.holds_context(), slot.run.has_active_run())
         })
+        .expect("installed Sessions")
     };
     assert_eq!(query("mcp-missing-query"), None, "RQ0 no callback");
     assert!(
@@ -937,7 +938,8 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
         !host
             .installed_sessions
             .realizations()
-            .mcp_realization_admitted("mcp-staging-quiescence"),
+            .mcp_realization_admitted("mcp-staging-quiescence")
+            .expect("installed Sessions"),
         "S5 residual staging owner keeps expiry projection closed"
     );
     let mut late_projection = projection.clone();
@@ -1068,7 +1070,8 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
     assert!(
         host.installed_sessions
             .realizations()
-            .mcp_realization_admitted("mcp-staging-quiescence"),
+            .mcp_realization_admitted("mcp-staging-quiescence")
+            .expect("installed Sessions"),
         "S5 exact source-free projection reopens only after residual cleanup"
     );
     assert!(
@@ -1167,13 +1170,11 @@ async fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epo
             } else {
                 awaken_session_realization::test_support::test_observed_lease(lease)
             };
-            host.installed_sessions.realizations().update_realization(
-                expired.session_id().as_str(),
-                |r| {
+            host.installed_sessions
+                .install_realization(expired.session_id().as_str(), |r| {
                     r.execution.authority =
                         crate::session_realizations::SessionRealizationAuthority::Live(proof);
-                },
-            );
+                });
         }
         assert_eq!(
             host.mcp_generation_is_authorized_at(&expired, base + 100),
@@ -1267,7 +1268,8 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
                 .realizations()
                 .modify_realization(old_generation.session_id().as_str(), |r| {
                     r.staging.mcp.projections_mut()[0].state = live_state
-                });
+                })
+                .expect("installed Sessions");
             assert!(
                 !host.forget_replayable_removed_mcp_projection(&renewed),
                 "R6 {live_state:?}"
@@ -1281,7 +1283,8 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
             .realizations()
             .modify_realization(old_generation.session_id().as_str(), |r| {
                 r.staging.mcp.projections_mut()[0].state = state
-            });
+            })
+            .expect("installed Sessions");
         host.install_session_realization_lease(
             old_generation.session_id().as_str(),
             crate::session_resource::SessionRealizationLease {
@@ -1314,7 +1317,8 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
                 .realizations()
                 .read_realization(renewed.generation.session_id().as_str(), |r| {
                     r.staging.mcp.projection_count()
-                }),
+                })
+                .expect("installed Sessions"),
             Some(1),
             "{rule}/E2"
         );

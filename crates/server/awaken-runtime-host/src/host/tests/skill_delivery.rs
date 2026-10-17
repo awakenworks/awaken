@@ -210,6 +210,7 @@ async fn published_agent_receives_managed_filesystem_skill_discovery() {
         host.realizer
             .session_environment("published-skill-thread")
             .await
+            .expect("installed Sessions")
             .expect("S1 sandbox")
             .skills()
             .scan_skill_dir(crate::skill_delivery::DELIVERED_SKILLS_SUBDIR)
@@ -266,6 +267,7 @@ async fn published_agent_receives_managed_filesystem_skill_discovery() {
             .realizer
             .session_environment("selected-without-delivery")
             .await
+            .expect("installed Sessions")
             .is_none(),
         "S2 fails before exposing a partial Environment"
     );
@@ -377,7 +379,11 @@ async fn direct_on_tool_use_brain_skill_adapter_keeps_the_environment_absent() {
         "L2/E2 canonical Skill catalog: {tool_results:?}"
     );
     assert!(
-        host.realizer.session_environment(thread).await.is_none(),
+        host.realizer
+            .session_environment(thread)
+            .await
+            .expect("installed Sessions")
+            .is_none(),
         "L2/E3"
     );
 }
@@ -492,6 +498,7 @@ async fn managed_session_ignores_unbound_host_skill_sources() {
                 .staging
                 .skill_prompt
                 .clone())
+            .expect("installed Sessions")
             .flatten(),
         None,
         "A1/E1 no unbound filesystem Skill prompt"
@@ -500,6 +507,7 @@ async fn managed_session_ignores_unbound_host_skill_sources() {
         host.realizer
             .session_environment("managed-no-frozen-skill")
             .await
+            .expect("installed Sessions")
             .is_none(),
         "A1/E2"
     );
@@ -555,6 +563,7 @@ async fn on_tool_use_runtime_hand_call_materializes_before_tool_execution() {
         host.realizer
             .session_environment("deferred-runtime-hand")
             .await
+            .expect("installed Sessions")
             .is_some()
     );
 }
@@ -627,6 +636,7 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         .read_realization("deferred-managed-filesystem-skill", |r| {
             r.staging.skill_prompt.clone()
         })
+        .expect("installed Sessions")
         .flatten()
         .expect("L9/E1 projected Skill metadata");
     let provisional_prompt = provisional_metadata
@@ -686,6 +696,7 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         host.realizer
             .session_environment("deferred-managed-filesystem-skill")
             .await
+            .expect("installed Sessions")
             .is_none()
     );
     let script = deferred
@@ -704,6 +715,7 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         .realizer
         .session_environment("deferred-managed-filesystem-skill")
         .await
+        .expect("installed Sessions")
         .expect("L11/E3 materialized Environment");
     let files = environment
         .skills()
@@ -724,6 +736,7 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
             .read_realization("deferred-managed-filesystem-skill", |r| {
                 r.staging.skill_prompt.clone()
             })
+            .expect("installed Sessions")
             .flatten(),
         Some(provisional_metadata),
         "L10/E2 execution retains metadata while projecting its realized path"
@@ -760,6 +773,7 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         .realizer
         .staging
         .thread_resource_manifest("deferred-managed-filesystem-skill")
+        .expect("installed Sessions")
         .unwrap();
     managed
         .apply_session_inputs(
@@ -886,6 +900,7 @@ async fn on_tool_use_legacy_delivered_filesystem_skill_forces_an_eager_environme
         host.realizer
             .session_environment("deferred-legacy-delivered-skill")
             .await
+            .expect("installed Sessions")
             .is_none(),
         "L8 no ambient Skill materialization"
     );

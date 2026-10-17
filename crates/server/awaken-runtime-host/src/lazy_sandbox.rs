@@ -71,6 +71,7 @@ impl ToolExecutor for DeferredSandboxExecutor {
                 host.installed_sessions
                     .realizations()
                     .read_realization(&self.thread, |r| r.environment.owner.resident())
+                    .expect("session runtime slots mutex poisoned")
                     .flatten()
             })
             .map_or(ToolRecoveryCapability::NonRecoverable, |environment| {

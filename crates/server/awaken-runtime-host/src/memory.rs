@@ -290,7 +290,9 @@ impl BoundMemory {
     }
 
     async fn bind_recovery(&self, commit: Arc<HostCommit>) -> Result<bool, MemoryExtractionError> {
-        self.binding.attach_extraction_commit(commit);
+        self.binding
+            .attach_extraction_commit(commit)
+            .map_err(|error| MemoryExtractionError::Storage(error.to_string()))?;
         self.reconcile().await
     }
 
@@ -324,7 +326,12 @@ impl BoundMemory {
     /// rehydration, so a process crash cannot lose a delegated child's remaining
     /// extraction/store/receipt work.
     pub async fn reconcile(&self) -> Result<bool, MemoryExtractionError> {
-        if self.binding.extraction_commit().is_none() {
+        if self
+            .binding
+            .extraction_commit()
+            .map_err(|error| MemoryExtractionError::Storage(error.to_string()))?
+            .is_none()
+        {
             return Ok(false);
         }
         let controller = self.runtime.extraction_controller();
@@ -378,8 +385,13 @@ impl BoundMemory {
         };
         let tool = erase(WriteMemoryTool::from_handle(capture.clone()));
         let commit = match self.binding.extraction_commit() {
-            Some(commit) => commit,
-            None => {
+            Ok(Some(commit)) => commit,
+            Err(error) => {
+                return MemoryExtractionOutcome::Retryable {
+                    reason: error.to_string(),
+                };
+            }
+            Ok(None) => {
                 return MemoryExtractionOutcome::Retryable {
                     reason: "Memory extraction is waiting for the Session commit/history binding"
                         .to_string(),
@@ -496,17 +508,21 @@ impl crate::host::SharedHost {
         thread: &str,
         bindings: std::collections::HashMap<String, Arc<MemoryBinding>>,
     ) {
+        self.installed_sessions.install(thread);
         let realizations = self.installed_sessions.realizations();
-        realizations.update_realization(thread, |r| {
-            r.staging.memory_bindings = bindings;
-            r.staging.memory = None;
-        });
+        realizations
+            .update_realization(thread, |r| {
+                r.staging.memory_bindings = bindings;
+                r.staging.memory = None;
+            })
+            .expect("installed Sessions");
     }
 
     pub(crate) fn memory_for_thread(&self, thread: &str) -> Option<BoundMemory> {
         let realizations = self.installed_sessions.realizations();
         realizations
             .read_realization(thread, |r| r.staging.memory.clone())
+            .expect("session runtime slots mutex poisoned")
             .flatten()
             .map(|binding| self.resources.memory.bound(binding))
     }
@@ -551,7 +567,7 @@ impl crate::host::SharedHost {
                         }
                     }
                     bindings
-                })
+                })?
                 .unwrap_or_default();
             let mut scheduled = 0;
             for binding in bindings {
@@ -601,9 +617,13 @@ impl crate::host::SharedHost {
             config,
             writable,
         );
+        // The embedder seam installs the Session it binds (the host's install
+        // path); the realization view then only changes the installed slot.
+        self.installed_sessions.update(thread, |_| ());
         self.realizer
             .staging
-            .register_thread_memory(thread, Some(Arc::new(binding)));
+            .register_thread_memory(thread, Some(Arc::new(binding)))
+            .expect("session runtime slots mutex poisoned");
     }
 }
 

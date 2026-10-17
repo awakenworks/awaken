@@ -452,16 +452,21 @@ mod tests {
                 .installed_sessions
                 .realizations()
                 .lock_lifecycle(thread)
-                .await;
+                .await
+                .expect("installed Sessions");
             let effect = host
                 .realizer
                 .authorize_environment_effect_before_io(
                     thread,
-                    &host.realizer.execution.new_environment_effect_intent(
-                        thread,
-                        awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
-                        None,
-                    ),
+                    &host
+                        .realizer
+                        .execution
+                        .new_environment_effect_intent(
+                            thread,
+                            awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+                            None,
+                        )
+                        .expect("installed Sessions"),
                 )
                 .await
                 .unwrap();
@@ -504,7 +509,11 @@ mod tests {
                 .retain_committed_session_environment_candidate(thread, &candidate, identity)
                 .unwrap();
             assert!(
-                host.realizer.session_environment(thread).await.is_none(),
+                host.realizer
+                    .session_environment(thread)
+                    .await
+                    .expect("installed Sessions")
+                    .is_none(),
                 "SC1 still hidden"
             );
             None
@@ -529,6 +538,7 @@ mod tests {
                             .map(|candidate| candidate.environment.clone())
                     })
                 })
+                .expect("installed Sessions")
                 .flatten()
                 .expect("DH1/SC1 exact owned Environment A")
         };
@@ -584,7 +594,11 @@ mod tests {
             .unwrap();
             assert!(Arc::ptr_eq(&original, &owned_environment()));
             assert_eq!(
-                host.realizer.session_environment(thread).await.is_none(),
+                host.realizer
+                    .session_environment(thread)
+                    .await
+                    .expect("installed Sessions")
+                    .is_none(),
                 committed_candidate,
                 "SR4/SC2 renewal preserves publication phase"
             );
@@ -626,6 +640,7 @@ mod tests {
             .installed_sessions
             .realizations()
             .read_realization(thread, |r| r.environment.lifecycle.clone())
+            .expect("installed Sessions")
             .expect("DH1 lifecycle owner");
         if revoke {
             let _lifecycle = lifecycle.lock().await;
@@ -743,7 +758,11 @@ mod tests {
                 );
                 assert!(Arc::ptr_eq(&original, &owned_environment()));
                 assert_eq!(
-                    host.realizer.session_environment(thread).await.is_none(),
+                    host.realizer
+                        .session_environment(thread)
+                        .await
+                        .expect("installed Sessions")
+                        .is_none(),
                     committed_candidate,
                     "SR5/SC2 foreign projection preserves publication phase"
                 );
@@ -913,7 +932,11 @@ mod tests {
                     .prepared_session_environment(thread)
                     .expect("MC cancelled successor retains Candidate");
                 assert!(
-                    host.realizer.session_environment(thread).await.is_none(),
+                    host.realizer
+                        .session_environment(thread)
+                        .await
+                        .expect("installed Sessions")
+                        .is_none(),
                     "MC hidden owner"
                 );
                 assert_eq!(candidate.environment.lifecycle().handle(), original_handle);
@@ -952,6 +975,7 @@ mod tests {
             .realizer
             .session_environment(thread)
             .await
+            .expect("installed Sessions")
             .expect("DH1/E1-E2 fresh Resident Environment B");
         let rebuilt_hand = rebuilt.agent_tools().tool_executor();
         if !successor_cancellations.is_empty() {
@@ -1149,7 +1173,9 @@ mod tests {
             .realizer
             .projected_session_environment_provider(thread, None)
             .expect("select frozen provider for LegacyDirect fixture");
-        let spec = staging.sandbox_spec_for_provider(thread, provider);
+        let spec = staging
+            .sandbox_spec_for_provider(thread, provider)
+            .expect("installed Sessions");
         let environment = Arc::new(
             host.realizer
                 .create_session_environment(provider, &spec)
@@ -1179,6 +1205,7 @@ mod tests {
             .installed_sessions
             .realizations()
             .read_realization(thread, |r| r.environment.lifecycle.clone())
+            .expect("installed Sessions")
             .expect("legacy lifecycle owner");
         {
             let _lifecycle = lifecycle.lock().await;
@@ -1297,7 +1324,11 @@ mod tests {
             "CR1/E1 old owner is closed and no successor exists"
         );
         assert!(
-            host.realizer.session_environment(thread).await.is_none(),
+            host.realizer
+                .session_environment(thread)
+                .await
+                .expect("installed Sessions")
+                .is_none(),
             "CR1/E3"
         );
         host.installed_sessions.realizations().read_realization(thread, |r| {
@@ -1307,7 +1338,7 @@ mod tests {
                 ) if binding == &raw_binding), "CR1/E3 only exact projected binding remains");
             assert!(r.environment.owner.unpublished_candidate().is_none(), "CR1/E3 no Candidate");
             assert_eq!(r.execution.authority.lease(), Some(&lease), "CR1 C2 remains Managed");
-        }).unwrap();
+        }).expect("installed Sessions").unwrap();
         assert_eq!(
             sink.requested_kinds.lock().unwrap().as_slice(),
             &[awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt],
@@ -1431,6 +1462,7 @@ mod tests {
                     .owner
                     .resident()
                     .is_some_and(|owned| Arc::ptr_eq(&owned, rebuilt)))
+                .expect("installed Sessions")
                 .unwrap(),
             "OR1/E1 one published owner"
         );
@@ -1518,7 +1550,11 @@ mod tests {
                 )
             })
             .expect("RA1 retained slot caches");
-        let cached_resources = host.realizer.staging.thread_resource_manifest(thread);
+        let cached_resources = host
+            .realizer
+            .staging
+            .thread_resource_manifest(thread)
+            .expect("installed Sessions");
 
         let remote_snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent-a")
             .model(awaken_runtime_contract::resolved::ModelBinding::new(
@@ -1590,7 +1626,7 @@ mod tests {
                                 == crate::environment_owner::SessionEnvironmentRetirementCause::RealizationRevocation
                                 && Arc::ptr_eq(&current.owned.environment(), &retiring)
                     )
-                })
+                }).expect("installed Sessions")
                 .unwrap_or(false),
             "RA1/E2 exact Retiring owner remains fenced"
         );
@@ -1610,7 +1646,10 @@ mod tests {
             "RA1/E2 publication, lease, Environment, and MCP caches are unchanged"
         );
         assert_eq!(
-            host.realizer.staging.thread_resource_manifest(thread),
+            host.realizer
+                .staging
+                .thread_resource_manifest(thread)
+                .expect("installed Sessions"),
             cached_resources,
             "RA1/E2 Resource projection is unchanged"
         );

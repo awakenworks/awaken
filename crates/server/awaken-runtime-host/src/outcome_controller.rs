@@ -148,7 +148,7 @@ impl SharedHost {
         // physical Environment on every Outcome projection read.
         let worker_placement =
             realizations
-                .frozen(thread)
+                .frozen(thread)?
                 .baseline
                 .as_ref()
                 .is_some_and(|baseline| {

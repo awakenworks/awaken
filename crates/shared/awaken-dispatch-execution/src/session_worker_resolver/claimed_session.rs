@@ -8,7 +8,7 @@
 use super::claim_failure::{SessionRealizationWorkerEffect, session_realization_worker_effect};
 use super::{
     Arc, RunWorkerFactory, SessionDispatch, SessionProjectionExecution, TerminalRecovery,
-    execution_error, terminal_resolution_error,
+    execution_error, map_admission_error, terminal_resolution_error,
 };
 
 /// Session projection authority is independent from the Run's admission shape.
@@ -109,9 +109,11 @@ where
         } else if let Some(scope) = claimed.request.execution_scope.as_ref() {
             // Model-only ordinary Runs still belong to the frozen execution
             // Workspace; they need no fabricated Resource manifest to carry it.
-            sessions.replace_frozen_with(&thread_id.0, |next| {
-                next.workspace = Some(scope.0.0.clone())
-            });
+            sessions
+                .replace_frozen_with(&thread_id.0, |next| {
+                    next.workspace = Some(scope.0.0.clone())
+                })
+                .map_err(map_admission_error)?;
         }
         return Ok(());
     }
@@ -123,6 +125,7 @@ where
                     slot.run.session_dispatch(),
                 )
             })
+            .map_err(map_admission_error)?
             .unwrap_or(false);
         if !projection_ready {
             return Err(crate::Error::ResolutionNotReady(format!(

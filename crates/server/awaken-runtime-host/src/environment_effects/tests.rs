@@ -228,11 +228,14 @@ async fn detached_realizer_keeps_committed_identity_and_never_rebinds_resource_r
         } else {
             SessionEnvironmentEffectKind::Create
         };
-        let intent = realizer.execution.new_environment_effect_intent(
-            "session",
-            kind,
-            (row == "reservation").then_some("original-binding"),
-        );
+        let intent = realizer
+            .execution
+            .new_environment_effect_intent(
+                "session",
+                kind,
+                (row == "reservation").then_some("original-binding"),
+            )
+            .expect("installed Sessions");
         let effect = realizer
             .authorize_environment_effect_before_io("session", &intent)
             .await

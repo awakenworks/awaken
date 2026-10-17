@@ -228,6 +228,7 @@ mod tests {
             host.installed_sessions
                 .realizations()
                 .frozen("t")
+                .expect("installed Sessions")
                 .backend_ref
                 .clone()
                 .as_deref(),
@@ -238,6 +239,7 @@ mod tests {
             host.installed_sessions
                 .realizations()
                 .frozen("unstaged-thread")
+                .expect("installed Sessions")
                 .backend_ref
                 .clone(),
             None,

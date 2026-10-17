@@ -121,7 +121,7 @@ impl EnvironmentHolding {
                         Some(retiring.clone())
                     }
                     _ => None,
-                })
+                })?
                 .flatten()
         {
             let admit = || {
@@ -178,7 +178,7 @@ impl EnvironmentHolding {
                     },
                 )?;
                 Ok::<_, RealizationError>(())
-            })?;
+            })??;
             environment = fresh;
             adopted = false;
         }
@@ -188,7 +188,7 @@ impl EnvironmentHolding {
                 .read_realization(thread, |r| match &r.environment.owner {
                     SessionEnvironmentOwner::Retiring(retiring) => Some(retiring.clone()),
                     _ => None,
-                })
+                })?
                 .flatten()
         {
             // Primary absence still requires the Provider's auxiliary/total
@@ -237,7 +237,7 @@ impl EnvironmentHolding {
                                     && current.lifecycle().handle()
                                         == environment.lifecycle().handle()
                             })
-                        })
+                        })?
                         .unwrap_or(false);
                     // A response-lost terminal preparation keeps the bound Arc
                     // behind the existing retirement fence. Only the terminal
@@ -245,7 +245,7 @@ impl EnvironmentHolding {
                     // live adoption cannot reopen it for tools/checkpoint work.
                     let retained_terminal = mode
                         == BoundEnvironmentPreparationMode::TerminalRepositoryPublication
-                        && cleanup.retained_preparation_owner(thread, &environment);
+                        && cleanup.retained_preparation_owner(thread, &environment)?;
                     if !still_resident && !retained_terminal {
                         return Err(RealizationError::pending(
                             PendingState::LiveOwnerNotResident,
@@ -271,11 +271,11 @@ impl EnvironmentHolding {
                     sessions.update_realization(thread, |r| {
                         let owner = &mut r.environment.owner;
                         owner.begin_retirement_with_committed_candidate(candidate, cause)
-                    })?;
+                    })??;
                 } else if adopted {
                     if let Some(binding) = binding {
                         let (identity, pending_binding) =
-                            exec.pending_environment_adoption(thread).ok_or_else(|| {
+                            exec.pending_environment_adoption(thread)?.ok_or_else(|| {
                                 RealizationError::invariant(
                                     "terminal bound Environment has no pending durable owner",
                                 )
@@ -292,7 +292,7 @@ impl EnvironmentHolding {
                                 environment.clone(),
                                 cause,
                             )
-                        })?;
+                        })??;
                     } else {
                         // A provider may prove and reconstruct an incomplete
                         // pre-publication realization by the terminal Session
@@ -315,7 +315,7 @@ impl EnvironmentHolding {
                 } else {
                     let retained_terminal_preparation = mode
                         == BoundEnvironmentPreparationMode::TerminalDisposal
-                        && cleanup.retained_preparation_owner(thread, &environment);
+                        && cleanup.retained_preparation_owner(thread, &environment)?;
                     if !retained_terminal_preparation {
                         exec.retire_exact_environment(
                             thread,
@@ -329,7 +329,7 @@ impl EnvironmentHolding {
                 sessions.update_realization(thread, |r| {
                     r.staging.reconciliation =
                         crate::staged_resources::EnvironmentResourceReconciliation::None;
-                });
+                })?;
             }
         }
         Ok(Some((environment, adopted)))
@@ -362,7 +362,7 @@ impl EnvironmentHolding {
                             ..
                         })
                     )
-                })
+                })?
                 .unwrap_or(false)
         {
             return Err(RealizationError::pending(
@@ -480,11 +480,11 @@ impl EnvironmentHolding {
                         realizations.update_realization(thread, |r| {
                             r.environment.owner
                                 .begin_retirement_with_committed_candidate(candidate, cause)
-                        })?;
+                        })??;
                     } else {
                         let retained_terminal_preparation = mode
                             == BoundEnvironmentPreparationMode::TerminalDisposal
-                            && cleanup.retained_preparation_owner(thread, &environment);
+                            && cleanup.retained_preparation_owner(thread, &environment)?;
                         if !retained_terminal_preparation {
                             exec.retire_exact_environment(thread, cause, &environment, AuthorityLoss::EffectFenceLost, "lost the exact unavailable Environment owner")?;
                         }

@@ -51,7 +51,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
         })?;
         let workspace_id = self
             .sessions
-            .frozen(effect.command.session_id.as_str())
+            .frozen(effect.command.session_id.as_str())?
             .workspace
             .clone()
             .ok_or_else(|| {
@@ -69,7 +69,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
         let root_realization = sessions
             .read_realization(effect.command.session_id.as_str(), |r| {
                 r.execution.phase.clone()
-            })
+            })?
             .ok_or_else(|| {
                 RealizationError::pending(
                     PendingState::TerminalCleanupProjectionMissing,
@@ -77,7 +77,10 @@ impl crate::terminal_cleanup::TerminalCleanup {
                 )
             })?;
         let _root_realization = root_realization.lock().await;
-        let _lifecycle = sessions.lock_lifecycle(&effect.command.thread_id).await;
+        // A cold child has no lifecycle here, and cleanup never installs one.
+        let _lifecycle = sessions
+            .lock_lifecycle_if_installed(&effect.command.thread_id)
+            .await?;
         let effect_fence = self.effect_fence(&effect)?;
 
         let root_environment = if effect.command.thread_id == effect.command.session_id {
@@ -114,16 +117,16 @@ impl crate::terminal_cleanup::TerminalCleanup {
             .map(|root| cleanup.memory_plan(&effect, &root.environment))
             .transpose()?;
 
-        sessions.update_realization(&effect.command.thread_id, |r| {
+        sessions.modify_realization(&effect.command.thread_id, |r| {
             r.cleanup.root = Some(effect.command.session_id.to_string());
-        });
+        })?;
 
         if crate::session_realizations::primary_or_delegated_run_active(
             &effect.command.thread_id,
             |session| {
-                sessions
-                    .modify_session(session, |slot| slot.run.has_active_run())
-                    .unwrap_or(false)
+                Ok(sessions
+                    .modify_session(session, |slot| slot.run.has_active_run())?
+                    .unwrap_or(false))
             },
             delegated(effect.command.thread_id.to_string()),
         )
@@ -137,7 +140,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
         if let Some(owned) = sessions
             .read_realization(&effect.command.thread_id, |r| {
                 r.environment.owner.terminal_bound_environment()
-            })
+            })?
             .flatten()
         {
             let generation_id = owned.activity_generation_id();
@@ -156,7 +159,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
                 .read_realization(&effect.command.thread_id, |r| {
                     let current = r.environment.owner.terminal_bound_environment();
                     current.is_some_and(|current| current.exact_matches(&owned))
-                })
+                })?
                 .unwrap_or(false);
             if !retained {
                 return Err(RealizationError::authority_lost(
@@ -317,7 +320,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
         let sessions = &self.sessions;
         let session_id = &effect.command.session_id;
         let root_realization = sessions
-            .read_realization(session_id.as_str(), |r| r.execution.phase.clone())
+            .read_realization(session_id.as_str(), |r| r.execution.phase.clone())?
             .ok_or_else(|| {
                 RealizationError::pending(
                     PendingState::TerminalCleanupProjectionMissing,
@@ -326,7 +329,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
             })?;
         let _root_realization = root_realization.lock().await;
         self.disposal_authorization(&effect)?;
-        let _lifecycle = sessions.lock_lifecycle(session_id.as_str()).await;
+        let _lifecycle = sessions.lock_lifecycle(session_id.as_str()).await?;
         let authorization = self.disposal_authorization(&effect)?;
         let prepared_environment = if effect.command.restore_target.is_none() {
             // Disposal decision table TD0. Causes: C1 the aggregate has
@@ -354,7 +357,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
             .as_ref()
             .is_some_and(|prepared| prepared.environment.environment.is_none());
         let owner = sessions
-            .read_realization(session_id.as_str(), |r| r.environment.owner.clone())
+            .read_realization(session_id.as_str(), |r| r.environment.owner.clone())?
             .ok_or_else(|| {
                 RealizationError::pending(
                     PendingState::TerminalCleanupProjectionMissing,
@@ -371,13 +374,13 @@ impl crate::terminal_cleanup::TerminalCleanup {
                 let provider =
                     realizer.projected_session_environment_provider(session_id.as_str(), None)?;
                 let previous_resources = sessions
-                    .read_realization(session_id.as_str(), |r| r.previous_resources())
+                    .read_realization(session_id.as_str(), |r| r.previous_resources())?
                     .flatten();
                 let spec = realizer.session_environment_adoption_spec(
                     session_id.as_str(),
                     provider,
                     previous_resources.as_ref(),
-                );
+                )?;
                 let authority = realizer
                     .execution
                     .provider_effect_authority(session_id.as_str(), authorization.effect_fence())?;
@@ -466,7 +469,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
                 ));
             }
         }
-        sessions.end_terminal_disposal(session_id.as_str());
+        sessions.end_terminal_disposal(session_id.as_str())?;
         self.disposal_authorization(&effect)?;
         Ok(awaken_session_state_contract::SessionCleanupDisposalReceipt::new(&effect.command))
     }
@@ -481,13 +484,19 @@ impl crate::terminal_cleanup::TerminalCleanup {
         if effect.command.thread_id == effect.command.session_id {
             return;
         }
-        self.retire_terminal_projection_for_generation(
-            mcp,
-            effect.command.session_id.as_str(),
-            &effect.lease,
-            Some(&effect.command.thread_id),
-        )
-        .await;
+        // Retirement only forgets a local projection Control already settled;
+        // a denied retirement leaves it for the next acknowledgement replay.
+        if let Err(error) = self
+            .retire_terminal_projection_for_generation(
+                mcp,
+                effect.command.session_id.as_str(),
+                &effect.lease,
+                Some(&effect.command.thread_id),
+            )
+            .await
+        {
+            tracing::warn!(%error, "terminal cleanup child projection retained");
+        }
     }
 
     /// Forget the exact root teardown projection only after Control durably
@@ -497,13 +506,17 @@ impl crate::terminal_cleanup::TerminalCleanup {
         mcp: &awaken_session_mcp::McpSessions,
         effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
     ) {
-        self.retire_terminal_projection_for_generation(
-            mcp,
-            effect.command.session_id.as_str(),
-            &effect.lease,
-            None,
-        )
-        .await;
+        if let Err(error) = self
+            .retire_terminal_projection_for_generation(
+                mcp,
+                effect.command.session_id.as_str(),
+                &effect.lease,
+                None,
+            )
+            .await
+        {
+            tracing::warn!(%error, "terminal cleanup root projection retained");
+        }
     }
 
     /// Retire a retained terminal projection after Control reports that the
@@ -515,13 +528,13 @@ impl crate::terminal_cleanup::TerminalCleanup {
         mcp: &awaken_session_mcp::McpSessions,
         session_id: &str,
         lease: &session_resource::SessionRealizationLease,
-    ) -> bool {
+    ) -> Result<bool, RealizationError> {
         let realizations = self.sessions.clone();
         let projected_terminal = realizations
-            .read_realization(session_id, |r| r.cleanup.assignment.is_some())
+            .read_realization(session_id, |r| r.cleanup.assignment.is_some())?
             .unwrap_or(false);
         if !projected_terminal {
-            return false;
+            return Ok(false);
         }
         self.retire_terminal_projection_for_generation(mcp, session_id, lease, None)
             .await
@@ -533,12 +546,12 @@ impl crate::terminal_cleanup::TerminalCleanup {
         session_id: &str,
         lease: &session_resource::SessionRealizationLease,
         target: Option<&str>,
-    ) -> bool {
+    ) -> Result<bool, RealizationError> {
         let realizations = self.sessions.clone();
         let Some(root_realization) =
-            realizations.read_realization(session_id, |r| r.execution.phase.clone())
+            realizations.read_realization(session_id, |r| r.execution.phase.clone())?
         else {
-            return false;
+            return Ok(false);
         };
         let _root_realization = root_realization.lock().await;
         let authorized = realizations
@@ -548,35 +561,35 @@ impl crate::terminal_cleanup::TerminalCleanup {
                         current, lease,
                     )
                 })
-            })
+            })?
             .unwrap_or(false);
         if !authorized {
-            return false;
+            return Ok(false);
         }
 
-        let mut targets = if target.is_none() || target == Some(session_id) {
-            self.sessions
-                .session_ids()
-                .into_iter()
-                .filter(|thread_id| {
-                    thread_id == session_id
-                        || realizations
-                            .read_realization(thread_id, |r| {
-                                r.cleanup.root.as_deref() == Some(session_id)
-                            })
-                            .unwrap_or(false)
-                })
-                .collect::<Vec<_>>()
+        let mut targets = Vec::new();
+        if target.is_none() || target == Some(session_id) {
+            for thread_id in self.sessions.session_ids()? {
+                if thread_id == session_id
+                    || realizations
+                        .read_realization(&thread_id, |r| {
+                            r.cleanup.root.as_deref() == Some(session_id)
+                        })?
+                        .unwrap_or(false)
+                {
+                    targets.push(thread_id);
+                }
+            }
         } else {
-            target.map(str::to_owned).into_iter().collect()
-        };
+            targets.extend(target.map(str::to_owned));
+        }
         // Remove the root last so its realization generation remains available
         // as the exact fence while every child projection is retired.
         targets.sort_by_key(|thread_id| thread_id == session_id);
         let mut removed = false;
         for thread_id in targets {
             let target_lifecycle =
-                realizations.read_realization(&thread_id, |r| r.environment.lifecycle.clone());
+                realizations.read_realization(&thread_id, |r| r.environment.lifecycle.clone())?;
             let _target_lifecycle = match target_lifecycle {
                 Some(lifecycle) => Some(lifecycle.lock_owned().await),
                 None => None,
@@ -588,23 +601,23 @@ impl crate::terminal_cleanup::TerminalCleanup {
                             current, lease,
                         )
                     })
-                })
+                })?
                 .unwrap_or(false);
             if !authorized {
-                return removed;
+                return Ok(removed);
             }
             let belongs_to_operation = thread_id == session_id
                 || realizations
                     .read_realization(&thread_id, |r| {
                         r.cleanup.root.as_deref() == Some(session_id)
-                    })
+                    })?
                     .unwrap_or(false);
             if !belongs_to_operation {
                 continue;
             }
             mcp.remove_relay_routes(&thread_id);
-            removed |= self.sessions.remove_session(&thread_id);
+            removed |= self.sessions.remove_session(&thread_id)?;
         }
-        removed
+        Ok(removed)
     }
 }

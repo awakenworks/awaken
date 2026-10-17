@@ -164,6 +164,7 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
             .realizer
             .session_environment("thread-cold-resource")
             .await
+            .expect("installed Sessions")
             .expect("F3 resident environment")
             .harvest()
             .list_frozen_mount_files("/mnt/session/uploads")
@@ -195,6 +196,7 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         host.realizer
             .session_environment("thread-cold-resource")
             .await
+            .expect("installed Sessions")
             .expect("resident environment")
             .harvest()
             .list_frozen_mount_files("/mnt/session/uploads")
@@ -363,6 +365,7 @@ async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
         .realizer
         .session_environment("thread-generation-fence")
         .await
+        .expect("installed Sessions")
         .expect("R0 physically resident File owner");
     let initial_files = environment
         .harvest()

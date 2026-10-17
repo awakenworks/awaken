@@ -191,8 +191,9 @@ impl crate::environment_holding::EnvironmentHolding {
 
     /// An unpublished terminal or cleanup retirement holds the Environment;
     /// ordinary adoption may not resume over it.
-    pub fn holds_unpublished_retirement(&self, thread: &str) -> bool {
-        self.sessions
+    pub fn holds_unpublished_retirement(&self, thread: &str) -> Result<bool, RealizationError> {
+        Ok(self
+            .sessions
             .read_realization(thread, |r| {
                 matches!(
                     &r.environment.owner,
@@ -200,8 +201,8 @@ impl crate::environment_holding::EnvironmentHolding {
                         cause, owned: RetiringEnvironmentOwner::Unbound(_),
                     }) if *cause != SessionEnvironmentRetirementCause::RealizationRevocation
                 )
-            })
-            .unwrap_or(false)
+            })?
+            .unwrap_or(false))
     }
 
     pub fn begin_session_environment_restore(
@@ -210,7 +211,7 @@ impl crate::environment_holding::EnvironmentHolding {
         request: &awaken_session_state_contract::SandboxRestoreRequest,
     ) -> Result<(), RealizationError> {
         self.sessions
-            .update_realization(thread, |r| r.environment.owner.begin_restore(request))
+            .update_realization(thread, |r| r.environment.owner.begin_restore(request))?
     }
 
     fn closed_environment_recovery_plan<'a>(
@@ -221,7 +222,7 @@ impl crate::environment_holding::EnvironmentHolding {
         revoked: Option<&'a RetiringSessionEnvironment>,
         resident: Option<&'a Arc<crate::session_environment::SessionEnvironment>>,
         pending: Option<&'a (BoundSessionEnvironmentIdentity, String)>,
-    ) -> ClosedEnvironmentRecoveryPlan<'a> {
+    ) -> Result<ClosedEnvironmentRecoveryPlan<'a>, RealizationError> {
         let (owner_class, exact_owner) = self
             .sessions
             .read_realization(thread, |r| {
@@ -293,12 +294,12 @@ impl crate::environment_holding::EnvironmentHolding {
                 } else {
                     (ClosedEnvironmentRecoveryOwnerClass::ProtectedOrStale, None)
                 }
-            })
+            })?
             .unwrap_or((ClosedEnvironmentRecoveryOwnerClass::ProtectedOrStale, None));
         if !closed_environment_recovery_admission(policy, owner_class) {
-            return ClosedEnvironmentRecoveryPlan::Retain;
+            return Ok(ClosedEnvironmentRecoveryPlan::Retain);
         }
-        match owner_class {
+        Ok(match owner_class {
             ClosedEnvironmentRecoveryOwnerClass::Revoked
             | ClosedEnvironmentRecoveryOwnerClass::RecoveryDiscard
             | ClosedEnvironmentRecoveryOwnerClass::Resident
@@ -312,19 +313,20 @@ impl crate::environment_holding::EnvironmentHolding {
             ClosedEnvironmentRecoveryOwnerClass::ProtectedOrStale => {
                 ClosedEnvironmentRecoveryPlan::Retain
             }
-        }
+        })
     }
 
     fn confirm_terminated_retirement(
         &self,
         thread: &str,
         retirement: &RetiringSessionEnvironment,
-    ) -> bool {
-        self.sessions
+    ) -> Result<bool, RealizationError> {
+        Ok(self
+            .sessions
             .modify_realization(thread, |r| {
                 r.environment.owner.confirm_terminated(retirement)
-            })
-            .unwrap_or(false)
+            })?
+            .unwrap_or(false))
     }
 
     /// Consume only the closed provider evidence validated immediately above.
@@ -334,13 +336,13 @@ impl crate::environment_holding::EnvironmentHolding {
         &self,
         thread: &str,
         expected: &Arc<crate::session_environment::SessionEnvironment>,
-    ) -> bool {
+    ) -> Result<bool, RealizationError> {
         let Ok(Some(retirement)) = self.retire_current_environment(
             thread,
             SessionEnvironmentRetirementCause::RecoveryDiscard,
             RetirementSelection::Exact(expected),
         ) else {
-            return false;
+            return Ok(false);
         };
         self.confirm_terminated_retirement(thread, &retirement.owner)
     }
@@ -356,7 +358,7 @@ impl crate::environment_holding::EnvironmentHolding {
             .dispose()
             .await
             .map_err(RealizationError::from)?;
-        if !self.confirm_terminated_retirement(thread, retirement) {
+        if !self.confirm_terminated_retirement(thread, retirement)? {
             return Err(RealizationError::invariant(
                 "retired Session Environment owner changed after physical disposal",
             ));
@@ -364,26 +366,31 @@ impl crate::environment_holding::EnvironmentHolding {
         Ok(())
     }
 
-    pub fn durable_environment_binding(&self, thread: &str) -> Option<String> {
-        self.sessions
+    pub fn durable_environment_binding(
+        &self,
+        thread: &str,
+    ) -> Result<Option<String>, RealizationError> {
+        Ok(self
+            .sessions
             .read_realization(thread, |r| {
                 r.environment.owner.durable_binding().map(str::to_owned)
-            })
-            .flatten()
+            })?
+            .flatten())
     }
 
     pub fn pending_environment_adoption(
         &self,
         thread: &str,
-    ) -> Option<(BoundSessionEnvironmentIdentity, String)> {
-        self.sessions
+    ) -> Result<Option<(BoundSessionEnvironmentIdentity, String)>, RealizationError> {
+        Ok(self
+            .sessions
             .read_realization(thread, |r| match &r.environment.owner {
                 SessionEnvironmentOwner::Preparing(
                     SessionEnvironmentPreparation::AwaitingAdoption { identity, binding },
                 ) => Some((identity.clone(), binding.clone())),
                 _ => None,
-            })
-            .flatten()
+            })?
+            .flatten())
     }
 
     /// Retire the process-local Environment retained when a prior realization
@@ -416,14 +423,14 @@ impl crate::environment_holding::EnvironmentHolding {
                     Some(retiring.clone())
                 }
                 _ => None,
-            })
+            })?
             .flatten();
         let Some(retiring) = retiring else {
             return Ok(());
         };
         let environment = retiring.owned.environment();
         let handle = environment.lifecycle().handle();
-        let neutral_spec = self.session_environment_adoption_spec(thread, provider, None);
+        let neutral_spec = self.session_environment_adoption_spec(thread, provider, None)?;
         let spec = provider
             .adoption()
             .effective_adoption_layout(&neutral_spec, &handle)
@@ -471,7 +478,7 @@ impl crate::environment_holding::EnvironmentHolding {
                             error.to_string(),
                         )
                     })?;
-                if !self.confirm_terminated_retirement(thread, &retiring) {
+                if !self.confirm_terminated_retirement(thread, &retiring)? {
                     return Err(RealizationError::invariant(
                         "terminated legacy recovery owner lost its exact Retiring fence",
                     ));
@@ -545,7 +552,7 @@ impl crate::environment_holding::EnvironmentHolding {
             revoked_durable,
             resident,
             pending_adoption.as_ref(),
-        );
+        )?;
         match plan {
             ClosedEnvironmentRecoveryPlan::Retain => Err(RealizationError::invariant(format!(
                 "Session sandbox {} is unavailable or terminal, or its exact recovery owner is protected",
@@ -555,10 +562,10 @@ impl crate::environment_holding::EnvironmentHolding {
                 let _validated_observation = observation.0;
                 let consumed = match owner {
                     ClosedEnvironmentRecoveryOwner::Retiring(retiring) => {
-                        self.confirm_terminated_retirement(thread, &retiring)
+                        self.confirm_terminated_retirement(thread, &retiring)?
                     }
                     ClosedEnvironmentRecoveryOwner::Resident(environment) => {
-                        self.discard_observed_session_environment(thread, &environment)
+                        self.discard_observed_session_environment(thread, &environment)?
                     }
                     ClosedEnvironmentRecoveryOwner::Pending(pending) => self
                         .sessions
@@ -566,7 +573,7 @@ impl crate::environment_holding::EnvironmentHolding {
                             r.environment
                                 .owner
                                 .discard_closed_pending_adoption(&pending.0, &pending.1)
-                        })
+                        })?
                         .unwrap_or(false),
                     ClosedEnvironmentRecoveryOwner::Vacant => true,
                 };
@@ -580,7 +587,7 @@ impl crate::environment_holding::EnvironmentHolding {
                         binding.to_string(),
                         source_generation_id.map(str::to_string),
                     ));
-                });
+                })?;
                 Ok(SessionEnvironmentAdoptionDisposition::RebuildRequired)
             }
         }
@@ -608,7 +615,7 @@ impl crate::environment_holding::EnvironmentHolding {
                     Some(owned.environment.clone())
                 }
                 _ => None,
-            })
+            })?
             .flatten()
             .ok_or_else(|| {
                 RealizationError::invariant(
@@ -628,7 +635,7 @@ impl crate::environment_holding::EnvironmentHolding {
         self.sessions
             .read_realization(thread, |r| {
                 r.environment.owner.resident_activity_identity(environment)
-            })
+            })?
             .flatten()
             .ok_or_else(|| {
                 RealizationError::invariant(
@@ -705,7 +712,7 @@ impl crate::environment_holding::EnvironmentHolding {
                     slot.run.drop_context();
                     LocalRetirementTransition { owner }
                 }))
-            })
+            })?
             .transpose()
             .map(Option::flatten)
     }
@@ -721,8 +728,9 @@ impl crate::environment_holding::EnvironmentHolding {
         thread: &str,
         binding: &str,
         source_generation_id: Option<&str>,
-    ) -> Option<RetiringSessionEnvironment> {
-        self.sessions
+    ) -> Result<Option<RetiringSessionEnvironment>, RealizationError> {
+        Ok(self
+            .sessions
             .read_realization(thread, |r| match &r.environment.owner {
                 SessionEnvironmentOwner::Retiring(retiring)
                     if retiring.cause
@@ -753,17 +761,18 @@ impl crate::environment_holding::EnvironmentHolding {
                     matches.then(|| retiring.clone())
                 }
                 _ => None,
-            })
-            .flatten()
+            })?
+            .flatten())
     }
 
     pub async fn session_environment(
         &self,
         thread: &str,
-    ) -> Option<Arc<crate::session_environment::SessionEnvironment>> {
-        self.sessions
-            .read_realization(thread, |r| r.environment.owner.resident())
-            .flatten()
+    ) -> Result<Option<Arc<crate::session_environment::SessionEnvironment>>, RealizationError> {
+        Ok(self
+            .sessions
+            .read_realization(thread, |r| r.environment.owner.resident())?
+            .flatten())
     }
 
     /// Compile the one provider-effective spec used by active adoption,
@@ -776,14 +785,14 @@ impl crate::environment_holding::EnvironmentHolding {
         thread: &str,
         provider: &crate::session_environment::SessionEnvironmentProvider,
         resolved_resources: Option<&session_resource::ResolvedSessionResources>,
-    ) -> awaken_provisioning_contract::SandboxSpec {
-        match resolved_resources {
+    ) -> Result<awaken_provisioning_contract::SandboxSpec, RealizationError> {
+        Ok(match resolved_resources {
             Some(resources) => self
                 .staging
-                .sandbox_spec_for_resolved_resources_and_provider(thread, resources, provider),
+                .sandbox_spec_for_resolved_resources_and_provider(thread, resources, provider)?,
             None => self
                 .sessions
-                .read_realization(thread, |r| r.staging.transition.clone())
+                .read_realization(thread, |r| r.staging.transition.clone())?
                 .flatten()
                 .map_or_else(
                     || self.staging.sandbox_spec_for_provider(thread, provider),
@@ -795,16 +804,20 @@ impl crate::environment_holding::EnvironmentHolding {
                                 provider,
                             )
                     },
-                ),
-        }
+                )?,
+        })
     }
 
-    pub fn session_environment_owner_is_vacant(&self, thread: &str) -> bool {
-        self.sessions
+    pub fn session_environment_owner_is_vacant(
+        &self,
+        thread: &str,
+    ) -> Result<bool, RealizationError> {
+        Ok(self
+            .sessions
             .read_realization(thread, |r| {
                 matches!(r.environment.owner, SessionEnvironmentOwner::Vacant)
-            })
-            .unwrap_or(true)
+            })?
+            .unwrap_or(true))
     }
 
     pub fn validate_suspend_operation(
@@ -825,7 +838,7 @@ impl crate::environment_holding::EnvironmentHolding {
                     r.execution.authority,
                     crate::session_realizations::SessionRealizationAuthority::Uninstalled
                 ),
-            })
+            })?
             .unwrap_or(operation.realization.is_none());
         if !authorized {
             return Err(RealizationError::invariant(
@@ -851,7 +864,7 @@ impl crate::environment_holding::EnvironmentHolding {
                 handle.sandbox_id
             )));
         }
-        let spec = self.session_environment_adoption_spec(thread, provider, resolved_resources);
+        let spec = self.session_environment_adoption_spec(thread, provider, resolved_resources)?;
         let spec = self.validate_session_environment_adoption(provider, &spec, &handle)?;
         let (retained, candidate) = self
             .sessions
@@ -872,13 +885,13 @@ impl crate::environment_holding::EnvironmentHolding {
                         .map(|owned| (owned.binding, owned.environment)),
                     None,
                 ),
-            })
+            })?
             .unwrap_or_default();
         let resident = retained
             .map(|(binding, environment)| {
                 if binding != encoded {
                     let successor = self
-                        .revoked_owner_for_binding(thread, encoded, source_generation_id)
+                        .revoked_owner_for_binding(thread, encoded, source_generation_id)?
                         .is_some_and(|retiring| {
                             matches!(retiring.owned, RetiringEnvironmentOwner::Bound(_))
                         });
@@ -943,7 +956,7 @@ impl crate::environment_holding::EnvironmentHolding {
             .read_realization(thread, |r| match &r.environment.owner {
                 SessionEnvironmentOwner::Retiring(retirement) => Some(retirement.clone()),
                 _ => None,
-            })
+            })?
             .flatten()
             .ok_or_else(|| {
                 RealizationError::pending(
@@ -980,13 +993,13 @@ impl crate::environment_holding::EnvironmentHolding {
             .dispose_for_effect(authorization, &authority)
             .await
             .map_err(RealizationError::terminal_effect_pending)?;
-        if !self.confirm_terminated_retirement(thread, &retirement) {
+        if !self.confirm_terminated_retirement(thread, &retirement)? {
             return Err(RealizationError::authority_lost(
                 AuthorityLoss::CheckpointSourceOwnerChanged,
                 "checkpoint source owner changed after exact physical Disposal",
             ));
         }
-        self.sessions.drop_run_context(thread);
+        self.sessions.drop_run_context(thread)?;
         Ok(())
     }
 }
@@ -1010,7 +1023,7 @@ impl crate::environment_holding::EnvironmentHolding {
         let Some(encoded) = encoded else {
             return Ok(SessionEnvironmentAdoptionDisposition::NoBinding);
         };
-        let _lifecycle = realizations.lock_lifecycle(thread).await;
+        let _lifecycle = realizations.lock_lifecycle(thread).await?;
         self.adopt_bound_session_environment_under_lifecycle(
             thread,
             encoded,
@@ -1037,7 +1050,7 @@ impl crate::environment_holding::EnvironmentHolding {
     ) -> Result<SessionEnvironmentAdoptionDisposition, RealizationError> {
         let realizer = self;
         let exec = realizer;
-        if exec.holds_unpublished_retirement(thread) {
+        if exec.holds_unpublished_retirement(thread)? {
             return Err(RealizationError::invariant(
                 "unpublished terminal or cleanup ownership cannot resume ordinary adoption",
             ));
@@ -1056,11 +1069,12 @@ impl crate::environment_holding::EnvironmentHolding {
         // commit response requires aggregate adoption authority. LegacyDirect is
         // excluded: its claimed recovery owns physical disposal and same-id
         // creation instead.
-        let revoked_owner = exec.revoked_owner_for_binding(thread, encoded, source_generation_id);
+        let revoked_owner =
+            exec.revoked_owner_for_binding(thread, encoded, source_generation_id)?;
         // Capture the exact pending identity before provider I/O. Closed
         // observation may clear only this value; a same-binding aggregate ABA
         // installed while observation is in flight must survive.
-        let pending_adoption = exec.pending_environment_adoption(thread);
+        let pending_adoption = exec.pending_environment_adoption(thread)?;
         let authorized;
         let effect = match preauthorized {
             Some(effect) => effect,
@@ -1072,7 +1086,7 @@ impl crate::environment_holding::EnvironmentHolding {
                             thread,
                             awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt,
                             Some(encoded),
-                        ),
+                        )?,
                     )
                     .await?;
                 &authorized
@@ -1207,7 +1221,7 @@ impl crate::environment_holding::EnvironmentHolding {
                             exec.sessions.update_realization(thread, |r| {
                                 r.environment.owner
                                     .prepare_retiring_realization_adoption(retiring, environment.clone(), Some(effect.authorization.intent()))
-                            })?;
+                            })??;
                         }
                         self.publish_session_environment_under_lifecycle(
                             thread,
@@ -1227,7 +1241,7 @@ impl crate::environment_holding::EnvironmentHolding {
                     .await?;
                 exec.sessions.update_realization(thread, |r| {
                     r.environment.rebuild_source = None;
-                });
+                })?;
                 Ok(SessionEnvironmentAdoptionDisposition::Ready)
             }
             awaken_provisioning_contract::SandboxObservation::Provisioning => {
@@ -1260,7 +1274,7 @@ impl crate::environment_holding::EnvironmentHolding {
                         &realizer.execution.new_environment_effect_intent(thread, awaken_session_state_contract::SessionEnvironmentEffectKind::Rebuild {
                             source_generation_id: source_generation_id.map(str::to_owned),
                         },
-                        Some(encoded)),
+                        Some(encoded))?,
                     ).await?;
                 }
                 exec.record_unavailable_session_environment_under_lifecycle(
@@ -1326,7 +1340,7 @@ impl crate::environment_holding::EnvironmentHolding {
                     || awaken_session_realization_contract::realization_lease_generation_authorizes(&incoming.lease, old)
                 });
                 (!same_generation).then(|| environment.clone())
-            }).flatten();
+            })?.flatten();
             let Some(environment) = selected else { return Ok(None) };
             if environment.scoped_execution().is_none() {
                 return Ok(None);
@@ -1363,7 +1377,7 @@ impl crate::environment_holding::EnvironmentHolding {
         let _lifecycle = selected.lifecycle.lock().await;
         if !self
             .sessions
-            .read_realization(thread, |r| selected.matches(r))
+            .read_realization(thread, |r| selected.matches(r))?
             .unwrap_or(false)
         {
             return Ok(false);
@@ -1423,7 +1437,7 @@ impl crate::environment_holding::EnvironmentHolding {
             let selected_projections = r.staging.mcp.select_projections_for_drain();
             let residual_routes = mcp.drain_existing_relay_routes(thread);
             Ok(Some((retained, selected, original_owner, retirement, selected_projections, residual_routes)))
-        }).transpose()?.flatten();
+        })?.transpose()?.flatten();
         let Some((
             retained_realization_owner,
             selected,

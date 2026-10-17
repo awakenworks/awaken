@@ -286,9 +286,11 @@ impl awaken_session_runtime_contract::RealizationRuntime for ManagedHost {
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
     ) -> Result<(), RunError> {
         let realizations = self.host.installed_sessions.realizations();
-        // Every Environment-owner projection, including lease-only recovery,
-        // crosses the same lifecycle guard as physical publication/retirement.
-        let _lifecycle = realizations.lock_lifecycle(thread).await;
+        // Installing the frozen projection is the install path. Every
+        // Environment-owner projection, including lease-only recovery, crosses
+        // the same lifecycle guard as physical publication/retirement.
+        self.host.installed_sessions.install(thread);
+        let _lifecycle = realizations.lock_lifecycle(thread).await?;
         if mode.prepares_session() {
             // Cause/effect rule P2: an unprotected active Runtime rejects before
             // any frozen coordinate is published. The same lifecycle mutex also
@@ -338,7 +340,7 @@ impl awaken_session_runtime_contract::RealizationRuntime for ManagedHost {
                     ));
                 }
                 Ok(())
-            })
+            })?
             .unwrap_or_else(|| Err(missing())))
             })
             .map_err(|error: crate::realization_error::RealizationError| RunError::from(error))?
@@ -377,6 +379,11 @@ impl awaken_session_runtime_contract::CoordinationRuntime for ManagedHost {
         // projection can change the delivery payload reconstructed by a retry.
         let command_fingerprint = command.command_fingerprint();
         let input = command.messages.clone();
+        // The Session application's Run reservation enters this host for the
+        // Session: its install path, so the Session-dispatch mark has a slot.
+        self.host
+            .installed_sessions
+            .install(command.session_id.as_str());
         self.host
             .realizer
             .staging
@@ -482,7 +489,7 @@ impl awaken_session_runtime_contract::CoordinationRuntime for ManagedHost {
             self.host
                 .realizer
                 .evict_session_for_rebuild(session_id.as_str())
-                .await;
+                .await?;
         }
         reservation
     }
@@ -866,7 +873,7 @@ impl awaken_session_runtime_contract::StreamingRunRuntime for ManagedHost {
         // Run rebuilds with the newly resolved executor (native switch is O(1); an
         // ACP thread's cached context relaunches its CLI on rebuild).
         self.host.register_thread_model(thread, model);
-        self.host.realizer.evict_session_for_rebuild(thread).await;
+        self.host.realizer.evict_session_for_rebuild(thread).await?;
         Ok(())
     }
 
@@ -891,7 +898,7 @@ impl awaken_session_runtime_contract::EnvironmentRuntime for ManagedHost {
         self.host
             .installed_sessions
             .replace_frozen_with(thread, |next| next.tools = Some(tools));
-        self.host.realizer.evict_session_for_rebuild(thread).await;
+        self.host.realizer.evict_session_for_rebuild(thread).await?;
         Ok(())
     }
 
@@ -1222,7 +1229,10 @@ impl awaken_session_runtime_contract::TerminalCleanupRuntime for ManagedHost {
         session_id: &awaken_session_types::SessionId,
         lease: &crate::session_resource::SessionRealizationLease,
     ) {
-        self.host
+        // Forgetting a settled local projection is best effort: a denied
+        // retirement leaves it for the next completed-cleanup readback.
+        if let Err(error) = self
+            .host
             .realizer
             .cleanup
             .retire_completed_terminal_cleanup_projection(
@@ -1230,7 +1240,10 @@ impl awaken_session_runtime_contract::TerminalCleanupRuntime for ManagedHost {
                 session_id.as_str(),
                 lease,
             )
-            .await;
+            .await
+        {
+            tracing::warn!(%error, "completed terminal cleanup projection retained");
+        }
     }
 
     async fn install_terminal_cleanup_assignment(

@@ -13,6 +13,7 @@
 //! runs an auxiliary agent over a binding stays in the host (`memory`), which
 //! wraps a binding with its process-wide `MemoryRuntime`.
 
+use crate::realization_error::{RealizationError, RealizationLock};
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
@@ -72,18 +73,28 @@ impl MemoryBinding {
         }
     }
 
-    pub fn attach_extraction_commit(&self, commit: Arc<dyn MemoryExtractionCommit>) {
+    /// Attach the Session's extraction commit. A poisoned context denies.
+    pub fn attach_extraction_commit(
+        &self,
+        commit: Arc<dyn MemoryExtractionCommit>,
+    ) -> Result<(), RealizationError> {
         *self
             .extraction_commit
             .write()
-            .expect("Memory execution context lock poisoned") = Some(commit);
+            .map_err(|_| RealizationLock::MemoryExecutionContext)? = Some(commit);
+        Ok(())
     }
 
-    pub fn extraction_commit(&self) -> Option<Arc<dyn MemoryExtractionCommit>> {
-        self.extraction_commit
+    /// The attached extraction commit; a poisoned context denies the read
+    /// instead of reporting that no commit is attached.
+    pub fn extraction_commit(
+        &self,
+    ) -> Result<Option<Arc<dyn MemoryExtractionCommit>>, RealizationError> {
+        Ok(self
+            .extraction_commit
             .read()
-            .expect("Memory execution context lock poisoned")
-            .clone()
+            .map_err(|_| RealizationLock::MemoryExecutionContext)?
+            .clone())
     }
 
     pub fn matches_intent(&self, intent: &MemoryExtractionIntent) -> bool {

@@ -572,6 +572,7 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
                     .lease()
                     .map(|lease| lease.expires_at_unix_ms)
             })
+            .expect("installed Sessions")
             .flatten(),
         Some(requested_expiry_unix_ms),
         "R1/E2"
@@ -585,6 +586,7 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
                     .lease()
                     .map(|lease| lease.expires_at_unix_ms)
             })
+            .expect("installed Sessions")
             .flatten(),
         Some(requested_expiry_unix_ms),
         "R1/E2 terminal slot installs authoritative renewal readback"
@@ -1047,6 +1049,7 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
         host.installed_sessions
             .realizations()
             .frozen(session_id)
+            .expect("installed Sessions")
             .baseline
             .clone()
             .expect("C1/E1 frozen baseline")
@@ -1058,6 +1061,7 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
         host.installed_sessions
             .realizations()
             .read_realization(session_id, |r| r.staging.resources.mounts.is_empty())
+            .expect("installed Sessions")
             .unwrap_or(false),
         "C1/E1 terminal installation must not materialize active Resources"
     );
@@ -1065,6 +1069,7 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
         host.installed_sessions
             .realizations()
             .read_realization(session_id, |r| r.execution.authority.lease().cloned())
+            .expect("installed Sessions")
             .flatten(),
         Some(lease.clone()),
         "C1/E1"

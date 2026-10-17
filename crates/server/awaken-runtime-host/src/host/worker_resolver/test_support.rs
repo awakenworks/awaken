@@ -278,11 +278,15 @@ pub(crate) async fn available_local_environment_binding(
     thread: &str,
     projection: &awaken_session_realization_contract::FrozenSessionProjection,
 ) -> String {
-    let intent = host.realizer.execution.new_environment_effect_intent(
-        thread,
-        awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
-        None,
-    );
+    let intent = host
+        .realizer
+        .execution
+        .new_environment_effect_intent(
+            thread,
+            awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+            None,
+        )
+        .expect("installed Sessions");
     let effect = host
         .realizer
         .authorize_environment_effect_before_io(thread, &intent)
@@ -312,7 +316,8 @@ pub(crate) async fn available_local_environment_binding(
                     thread,
                     &projection.resources,
                     provider,
-                );
+                )
+                .expect("installed Sessions");
             let spec = host
                 .realizer
                 .validate_session_environment_capabilities(provider, &spec)

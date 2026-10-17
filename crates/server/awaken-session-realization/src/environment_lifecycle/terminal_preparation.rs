@@ -48,7 +48,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
                     ));
                 }
                 Ok(current.clone())
-            })
+            })?
             .unwrap_or_else(|| Err(
                 RealizationError::pending(
                     PendingState::TerminalCleanupProjectionMissing,
@@ -64,8 +64,9 @@ impl crate::terminal_cleanup::TerminalCleanup {
         &self,
         thread: &str,
         environment: &Arc<crate::session_environment::SessionEnvironment>,
-    ) -> bool {
-        self.sessions
+    ) -> Result<bool, RealizationError> {
+        Ok(self
+            .sessions
             .read_realization(thread, |r| match &r.environment.owner {
                 SessionEnvironmentOwner::Retiring(retirement)
                     if matches!(
@@ -78,8 +79,8 @@ impl crate::terminal_cleanup::TerminalCleanup {
                         && current.lifecycle().handle() == environment.lifecycle().handle()
                 }
                 _ => false,
-            })
-            .unwrap_or(false)
+            })?
+            .unwrap_or(false))
     }
 
     /// Lower the aggregate's durable preparation predecessor and current
@@ -126,7 +127,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
     ) -> Result<TerminalMemoryPlan, RealizationError> {
         let transition = self
             .sessions
-            .read_realization(&effect.command.thread_id, |r| r.staging.transition.clone())
+            .read_realization(&effect.command.thread_id, |r| r.staging.transition.clone())?
             .flatten()
             .ok_or_else(|| {
                 RealizationError::invariant(
@@ -197,7 +198,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
                     slot.inputs.workspace.clone(),
                     baseline.map(|baseline| baseline.environment.idle_retention.clone()),
                 )
-            })
+            })?
             .ok_or_else(|| {
                 RealizationError::pending(
                     PendingState::TerminalCleanupProjectionMissing,
@@ -345,7 +346,7 @@ impl crate::terminal_cleanup::TerminalCleanup {
                 thread,
                 provider,
                 previous_resources.as_ref(),
-            );
+            )?;
             let environment = realizer
                 .install_bound_environment_under_lifecycle(
                     self,

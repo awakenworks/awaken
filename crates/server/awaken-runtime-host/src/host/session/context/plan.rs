@@ -111,7 +111,7 @@ pub(super) async fn prepare(
             if r.staging.transition.is_none() {
                 r.staging.transition = Some(transition);
             }
-        });
+        })?;
     }
     // Legacy direct Session manifests carry no frozen Skill list. Refresh
     // their canonical delivered catalog before deciding whether
@@ -119,22 +119,25 @@ pub(super) async fn prepare(
     // wiring can classify a cold cache as instruction-only and then discover
     // support files after the sandbox-free decision has already been made.
     let frozen_skill_versions = realizations
-        .read_realization(thread, |r| r.staging.skills.clone())
+        .read_realization(thread, |r| r.staging.skills.clone())?
         .flatten();
     // Reservation is metadata-only on a cold Coordinator. The aggregate
     // Resource transition already owns the exact immutable Skill pins,
     // while the claim-owning Worker remains the sole reader/validator of
     // bundle bytes after Environment adoption.
-    let deferred_skill_bindings = (force_defer_environment && frozen_skill_versions.is_none())
-        .then(|| {
+    let deferred_skill_bindings = if force_defer_environment && frozen_skill_versions.is_none() {
+        Some(
             realizations
                 .read_realization(thread, |r| {
                     let transition = r.staging.transition.as_ref()?;
                     Some(transition.desired().resources.skills().to_vec())
-                })
+                })?
                 .flatten()
-                .unwrap_or_default()
-        });
+                .unwrap_or_default(),
+        )
+    } else {
+        None
+    };
     if !session_dispatch && frozen_skill_versions.is_none() {
         host.tools
             .skills

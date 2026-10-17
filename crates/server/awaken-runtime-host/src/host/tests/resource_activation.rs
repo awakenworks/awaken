@@ -236,6 +236,7 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         host.realizer
             .session_environment("semantic-memory")
             .await
+            .expect("installed Sessions")
             .is_none(),
         "M1/E1"
     );
@@ -275,6 +276,7 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         host.realizer
             .session_environment("semantic-memory")
             .await
+            .expect("installed Sessions")
             .is_none(),
         "M1/E1 rejected file call cannot awaken Sandbox"
     );
@@ -312,6 +314,7 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         host.realizer
             .session_environment("semantic-memory")
             .await
+            .expect("installed Sessions")
             .is_none(),
         "M1/E1 semantic Runtime execution remains Sandbox-free"
     );
@@ -343,6 +346,7 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         host.realizer
             .session_environment("semantic-memory")
             .await
+            .expect("installed Sessions")
             .is_none(),
         "M7/E5 rejected WebFetch remains Sandbox-free"
     );
@@ -351,6 +355,7 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         .installed_sessions
         .realizations()
         .read_realization("semantic-memory", |r| r.staging.memory_bindings.clone())
+        .expect("installed Sessions")
         .unwrap();
     let tools = crate::session_memory_tools::SessionMemoryTools::new(bindings).unwrap();
     let invoke = |tool_id: &str, arguments: serde_json::Value| {
@@ -452,6 +457,7 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         host.installed_sessions
             .realizations()
             .read_realization("semantic-memory", |r| r.staging.content_delivery)
+            .expect("installed Sessions")
             .flatten(),
         Some(crate::frozen_inputs::ManagedContentDelivery::SemanticTools),
         "M6 keeps one delivery path"
@@ -469,6 +475,7 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         host.realizer
             .session_environment("semantic-memory")
             .await
+            .expect("installed Sessions")
             .is_none(),
         "M6 does not materialize a Sandbox while rebuilding"
     );
@@ -775,6 +782,7 @@ async fn complete_projection_preserves_the_canonical_repository_path_without_rel
         host.realizer
             .staging
             .thread_resource_manifest("canonical-repository-path")
+            .expect("installed Sessions")
             .is_none(),
         "staging is not physical completion"
     );
@@ -990,6 +998,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             host.realizer
                 .session_environment(session_id)
                 .await
+                .expect("installed Sessions")
                 .is_none(),
             "P0 rejection happens before a publishable environment is exposed"
         );
@@ -1009,6 +1018,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         .realizer
         .session_environment(session_id)
         .await
+        .expect("installed Sessions")
         .expect("P1 retained Environment");
     let status = environment
         .sandbox_environment()
@@ -1094,6 +1104,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         .read_realization(session_id, |r| {
             r.environment.owner.terminal_bound_environment()
         })
+        .expect("installed Sessions")
         .flatten()
         .expect("P1 retained exact Environment identity");
     let crate::environment_owner::BoundSessionEnvironmentIdentity::Durable {
@@ -1203,6 +1214,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             host.realizer
                 .session_environment(session_id)
                 .await
+                .expect("installed Sessions")
                 .is_none(),
             "P5 ordinary execution remains closed"
         );
@@ -1240,13 +1252,14 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             } else {
                 panic!("P7 retained owner");
             }
-        });
+        }).expect("installed Sessions");
         let before = host
             .installed_sessions
             .realizations()
             .read_realization(session_id, |r| {
                 r.environment.owner.terminal_bound_environment().unwrap()
             })
+            .expect("installed Sessions")
             .unwrap();
         managed
             .execute_terminal_repository_publication_for_lease(command.clone(), &lease)
@@ -1265,6 +1278,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
                 );
                 r.environment.owner.terminal_bound_environment().unwrap()
             })
+            .expect("installed Sessions")
             .unwrap();
         assert!(
             !Arc::ptr_eq(&before.environment, &after.environment),
@@ -1284,6 +1298,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             host.realizer
                 .session_environment(session_id)
                 .await
+                .expect("installed Sessions")
                 .is_none(),
             "P7 ordinary execution stays closed"
         );
@@ -1343,6 +1358,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         host.realizer
             .session_environment(session_id)
             .await
+            .expect("installed Sessions")
             .is_some(),
         !retained_terminal,
         "P1-P2/P5 publication preserves ordinary residency or retirement",
@@ -1353,6 +1369,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             .read_realization(session_id, |r| {
                 r.environment.owner.terminal_bound_environment().is_some()
             })
+            .expect("installed Sessions")
             .unwrap_or(false),
         "P1-P2/P5 exact physical source survives until root cleanup"
     );
@@ -1461,6 +1478,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             .realizer
             .session_environment(session_id)
             .await
+            .expect("installed Sessions")
             .is_none(),
         "P4 replacement starts without a resident Environment wrapper"
     );
@@ -1522,6 +1540,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             .realizer
             .session_environment(session_id)
             .await
+            .expect("installed Sessions")
             .is_none(),
         "P4 physical disposal runs only after publication and both durable preparations"
     );

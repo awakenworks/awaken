@@ -140,6 +140,38 @@ fn decision_table() -> Vec<(&'static str, RealizationError, Disposition)> {
             Disposition::Retry,
         ));
     }
+    for (error, disposition) in [
+        (
+            awaken_resource_contract::FileContentSourceError::Indeterminate { detail: "x".into() },
+            Disposition::Retry,
+        ),
+        (
+            awaken_resource_contract::FileContentSourceError::Integrity {
+                file_id: "f".into(),
+                expected: "a".into(),
+                actual: "b".into(),
+            },
+            Disposition::Terminal,
+        ),
+    ] {
+        rows.push((
+            "D12 File content",
+            RealizationError::FileContent(error),
+            disposition,
+        ));
+    }
+    rows.push((
+        "D13 malformed evidence",
+        RealizationError::from(awaken_session_state_contract::SessionCleanupError::ReceiptMismatch),
+        Disposition::Terminal,
+    ));
+    rows.push((
+        "D4 receipt fenced by another owner",
+        RealizationError::from(
+            awaken_session_state_contract::SessionEnvironmentReceiptError::RealizationStale,
+        ),
+        Disposition::Retry,
+    ));
     rows
 }
 

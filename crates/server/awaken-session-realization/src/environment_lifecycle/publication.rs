@@ -16,7 +16,7 @@
 //! the Session lifecycle guard.
 
 use super::{SessionEnvironmentOwner, SessionEnvironmentRetirementCause};
-use crate::realization_error::{AuthorityLoss, PendingState, RealizationError};
+use crate::realization_error::{AuthorityLoss, PendingState, RealizationError, RealizationLock};
 use std::sync::Arc;
 
 use crate::environment_owner::{
@@ -68,7 +68,7 @@ impl crate::environment_holding::EnvironmentHolding {
             self.execution
                 .bind(thread, slot.realization, &candidate.environment)?;
             Ok(candidate)
-        })
+        })?
     }
 
     pub fn begin_session_environment_preparation(
@@ -96,7 +96,7 @@ impl crate::environment_holding::EnvironmentHolding {
     ) -> Result<Arc<crate::session_environment::SessionEnvironment>, RealizationError> {
         self.sessions.update_realization(thread, |r| {
             r.environment.owner.publish_prepared(candidate, identity)
-        })
+        })?
     }
 
     pub fn retain_committed_session_environment_candidate(
@@ -109,7 +109,7 @@ impl crate::environment_holding::EnvironmentHolding {
             r.environment
                 .owner
                 .retain_committed_candidate(candidate, identity)
-        })
+        })?
     }
 
     /// Finish a previously interrupted unpublished cleanup before any caller
@@ -129,7 +129,7 @@ impl crate::environment_holding::EnvironmentHolding {
                     Some(retiring.clone())
                 }
                 _ => None,
-            })
+            })?
             .flatten();
         if let Some(retirement) = retirement {
             self.dispose_and_confirm_retirement(thread, &retirement)
@@ -177,7 +177,7 @@ impl crate::environment_holding::EnvironmentHolding {
                     managed,
                     slot.realization.execution.authority.is_closed(),
                 )
-            })
+            })?
             .unwrap_or_default();
         if closed {
             return Err(RealizationError::authority_lost(
@@ -188,7 +188,7 @@ impl crate::environment_holding::EnvironmentHolding {
         let sink = self
             .environment_binding_sink
             .read()
-            .expect("environment binding sink lock poisoned")
+            .map_err(|_| RealizationError::Poisoned(RealizationLock::EnvironmentBindingSink))?
             .clone();
         // A claimed ordinary Run and a Managed Session already have distinct
         // durable owners. The former fences its local Environment through the
@@ -331,7 +331,7 @@ impl crate::environment_holding::EnvironmentHolding {
         let sink = self
             .environment_binding_sink
             .read()
-            .expect("environment binding sink lock poisoned")
+            .map_err(|_| RealizationError::Poisoned(RealizationLock::EnvironmentBindingSink))?
             .clone()
             .ok_or_else(|| {
                 RealizationError::invariant(
@@ -366,7 +366,7 @@ impl crate::environment_holding::EnvironmentHolding {
     ) -> Result<bool, RealizationError> {
         let claim = self
             .sessions
-            .modify_session(thread, |slot| slot.run.dispatch_claim().cloned())
+            .modify_session(thread, |slot| slot.run.dispatch_claim().cloned())?
             .flatten();
         let Some(claim) = claim else {
             return Ok(false);
