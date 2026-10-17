@@ -9,8 +9,13 @@ use kube::Api;
 use kube::api::AttachParams;
 use tokio::io::AsyncReadExt;
 
-use super::backend;
+use super::{EXEC_SEQUENCE, K8sRuntime, backend, channel};
+use awaken_agent_channel::{AgentChannel, SplitChannel};
+use awaken_connection_plan::{ChannelFactory as _, ConnectionPlan, TokioChannelFactory};
+use awaken_sandbox_container::RuntimeAgentProcess;
 use awaken_sandbox_container::RuntimeError;
+use std::sync::atomic::Ordering;
+use tokio::io::AsyncWriteExt as _;
 
 pub(super) struct K8sExecState {
     pub(super) completion: Option<tokio::task::JoinHandle<Option<Status>>>,
@@ -255,4 +260,183 @@ impl pc::ProcessHandle for K8sExecProcess {
             ))
         }
     }
+}
+
+pub(super) async fn spawn_exec(
+    runtime: &K8sRuntime,
+    admitted: awaken_sandbox_container::AdmittedExec,
+    command: pc::MaterializedCommand,
+) -> Result<Box<dyn pc::ProcessHandle>, RuntimeError> {
+    let container_id = admitted.container_id();
+    if command.stdio == pc::Stdio::Piped {
+        return Err(backend(
+            "piped container exec requires the agent-channel capability",
+        ));
+    }
+    let id = format!(
+        "k8s-exec-{}-{}",
+        std::process::id(),
+        EXEC_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    );
+    let execution = k8s_exec_argv(&id, command)?;
+    let pods = runtime.streaming_pods();
+    let mut attached = pods
+        .exec(
+            container_id,
+            execution.argv,
+            &AttachParams::default()
+                .container("agent")
+                .stdin(!execution.secret_stdin.is_empty())
+                // kube requires at least one attached stdio stream. Keep stdout
+                // attached and drain it in the completion task so a noisy command
+                // cannot block before the remote status frame is delivered.
+                .stdout(true)
+                .stderr(false),
+        )
+        .await
+        .map_err(backend)?;
+    let mut secret_input = None;
+    if !execution.secret_stdin.is_empty() {
+        let mut stdin = attached
+            .stdin()
+            .ok_or_else(|| backend("k8s secret prelude has no stdin"))?;
+        for secret in execution.secret_stdin {
+            stdin
+                .write_all(secret.expose().as_bytes())
+                .await
+                .map_err(backend)?;
+        }
+        // The prelude consumes exact byte lengths, not EOF. Keep this
+        // writer until status so a v4 connection cannot close prematurely.
+        stdin.flush().await.map_err(backend)?;
+        secret_input = Some(stdin);
+    }
+    let mut stdout = attached
+        .stdout()
+        .ok_or_else(|| backend("k8s exec has no stdout"))?;
+    let status = attached
+        .take_status()
+        .ok_or_else(|| backend("k8s exec has no completion status"))?;
+    let completion = tokio::spawn(super::process::observe_attached_completion(
+        attached,
+        async move {
+            let mut ignored = Vec::new();
+            let (_, status) = tokio::join!(stdout.read_to_end(&mut ignored), status);
+            drop(secret_input);
+            status
+        },
+    ));
+    Ok(Box::new(K8sExecProcess {
+        id,
+        pod: container_id.to_string(),
+        pid_file: execution.pid_file,
+        pods,
+        state: tokio::sync::Mutex::new(K8sExecState {
+            completion: Some(completion),
+            outcome: None,
+        }),
+    }))
+}
+
+pub(super) async fn spawn_agent(
+    runtime: &K8sRuntime,
+    admitted: awaken_sandbox_container::AdmittedExec,
+    command: pc::MaterializedCommand,
+) -> Result<RuntimeAgentProcess, RuntimeError> {
+    let container_id = admitted.container_id();
+    let id = format!(
+        "k8s-agent-exec-{}-{}",
+        std::process::id(),
+        EXEC_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    );
+    let execution = k8s_exec_argv(&id, command)?;
+    let pods = runtime.streaming_pods();
+    let mut attached = pods
+        .exec(
+            container_id,
+            execution.argv,
+            &AttachParams::default()
+                .container("agent")
+                .stdin(true)
+                .stdout(true)
+                .stderr(false),
+        )
+        .await
+        .map_err(backend)?;
+    let stdin = attached
+        .stdin()
+        .ok_or_else(|| backend("k8s agent exec has no stdin"))?;
+    let mut stdin = stdin;
+    for secret in execution.secret_stdin {
+        stdin
+            .write_all(secret.expose().as_bytes())
+            .await
+            .map_err(backend)?;
+    }
+    stdin.flush().await.map_err(backend)?;
+    let stdout = attached
+        .stdout()
+        .ok_or_else(|| backend("k8s agent exec has no stdout"))?;
+    let completion = attached
+        .take_status()
+        .ok_or_else(|| backend("k8s agent exec has no completion status"))?;
+    Ok(RuntimeAgentProcess {
+        process: Box::new(K8sExecProcess {
+            id,
+            pod: container_id.to_string(),
+            pid_file: execution.pid_file,
+            pods,
+            state: tokio::sync::Mutex::new(K8sExecState {
+                completion: Some(tokio::spawn(super::process::observe_attached_completion(
+                    attached, completion,
+                ))),
+                outcome: None,
+            }),
+        }),
+        channel: Box::new(SplitChannel::new(stdout, stdin)),
+    })
+}
+
+pub(super) async fn open_agent_channel(
+    runtime: &K8sRuntime,
+    container_id: &str,
+) -> Result<Box<dyn AgentChannel>, RuntimeError> {
+    if let Some(port) = runtime.pod_channel_port {
+        return channel::open_pod_channel(&runtime.streaming_pods(), container_id, port).await;
+    }
+    match runtime.rendezvous {
+        // Reverse-dial: the host listens, the egress-fenced Pod dials out to us.
+        Some(addr) => channel::accept_reverse(addr).await,
+        // Direct-dial the agent's stdio over its published Service.
+        None => TokioChannelFactory
+            .connect(&ConnectionPlan::tcp_dial(runtime.agent_addr.to_string()))
+            .await
+            .map_err(backend),
+    }
+}
+
+pub(super) async fn read_live_file(
+    runtime: &K8sRuntime,
+    container_id: &str,
+    path: &str,
+) -> Result<Option<Vec<u8>>, RuntimeError> {
+    let mut attached = runtime
+        .streaming_pods()
+        .exec(
+            container_id,
+            vec!["cat", "--", path],
+            &AttachParams::default().container("agent").stderr(false),
+        )
+        .await
+        .map_err(backend)?;
+    let mut stdout = attached
+        .stdout()
+        .ok_or_else(|| backend("k8s credential harvest has no stdout"))?;
+    let status = attached
+        .take_status()
+        .ok_or_else(|| backend("k8s credential harvest has no completion status"))?;
+    let mut bytes = Vec::new();
+    let (read, status) = tokio::join!(stdout.read_to_end(&mut bytes), status);
+    read.map_err(backend)?;
+    k8s_live_file_result(status, bytes)
 }

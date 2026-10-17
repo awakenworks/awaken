@@ -756,9 +756,7 @@ pub(super) async fn finish_released_bound_disposal(
         admit,
     )
     .await?;
-    runtime
-        .await_exact_pod_deleted(container_id, pod_uid, admit)
-        .await?;
+    super::lifecycle::await_exact_pod_deleted(runtime, container_id, pod_uid, admit).await?;
     finish_after_absent_pod(runtime, container_id, claim_uid, projected, admit).await
 }
 

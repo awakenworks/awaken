@@ -51,7 +51,7 @@ pub(super) async fn prepare(
         rebuild_claim_admission(&observed, &expected.claim_uid)?;
         Some(observed)
     } else {
-        runtime.create_or_recover_claim(context, plan).await?
+        super::existing_realization::create_or_recover_claim(runtime, context, plan).await?
     };
     let claim_uid = claim_outcome
         .as_ref()
@@ -277,13 +277,12 @@ pub(super) async fn dispose_unscheduled_pod(
     let projected = participants::retained(&pod)?
         .ok_or_else(|| backend("unscheduled Pod has no original projected-object set"))?;
     participants::finish_projected(runtime, &projected, name, true, admit).await?;
-    runtime
-        .begin_exact_pod_delete(&pod, uid, &version, Some(attempt), admit)
+    super::lifecycle::begin_exact_pod_delete(runtime, &pod, uid, &version, Some(attempt), admit)
         .await?;
     if create_ledger::original_guard_release_required(Some(&pod), true)? {
         create_ledger::release_original_guard(&runtime.pods(), name, uid, admit).await?;
     }
-    runtime.await_exact_pod_deleted(name, uid, admit).await?;
+    super::lifecycle::await_exact_pod_deleted(runtime, name, uid, admit).await?;
     participants::finish_projected(runtime, &projected, name, false, admit).await
 }
 
