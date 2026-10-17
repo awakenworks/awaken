@@ -6,7 +6,12 @@ use awaken_tool_contract::tool::{RawTool, ToolCall, ToolError};
 use std::sync::Arc;
 
 fn tool(id: &str) -> Arc<dyn RawTool> {
-    tool_at(id, std::path::Path::new(std::path::MAIN_SEPARATOR_STR))
+    // Temporary fixtures may live on another drive or behind a junction.
+    let temp_dir = std::env::temp_dir().canonicalize().expect("temp dir");
+    tool_at(
+        id,
+        temp_dir.ancestors().last().expect("temp filesystem root"),
+    )
 }
 
 fn tool_at(id: &str, root: &std::path::Path) -> Arc<dyn RawTool> {
