@@ -361,7 +361,9 @@ mod mutation_tests {
                 &receipt("late-environment-requested"),
                 1,
             ),
-            Err(crate::SessionEnvironmentReceiptError::WrongPhase),
+            Err(crate::SessionEnvironmentReceiptError::Rejected(
+                crate::SessionEnvironmentRejection::Terminal
+            )),
             "terminal+Requested/E2"
         );
     }
@@ -1047,11 +1049,11 @@ mod mutation_tests {
         ] {
             let mut candidate = base.clone();
             assert!(
-                candidate.record_source_release_prepared(first).unwrap(),
+                candidate.record_source_release_prepared(first, 1).unwrap(),
                 "{rule}/E1"
             );
             assert_eq!(
-                candidate.record_source_release_prepared(second),
+                candidate.record_source_release_prepared(second, 1),
                 Err(crate::SessionEnvironmentReceiptError::Mismatch),
                 "{rule}/E2",
             );
@@ -1179,7 +1181,7 @@ mod mutation_tests {
         .unwrap();
         assert!(
             aggregate
-                .record_source_release_prepared(&source_receipt)
+                .record_source_release_prepared(&source_receipt, 1)
                 .unwrap(),
             "X2 source preparation becomes durable"
         );

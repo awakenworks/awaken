@@ -32,7 +32,7 @@
     },
     "awaken-session-application::SessionApplication": {
       "files": 28,
-      "methods": 295,
+      "methods": 294,
       "reason": "W21: one application service per use case, composed by a facade"
     },
     "awaken-session-state-contract::PersistedSession": {
@@ -337,7 +337,6 @@
     "awaken-sandbox-local::provider.rs::create_sandbox_inner": 213,
     "awaken-sandbox-local::realization_marker.rs::begin": 244,
     "awaken-session-application::activity.rs::settle_activity_observed_for_event": 167,
-    "awaken-session-application::continuation.rs::advance_environment_continuation": 187,
     "awaken-session-application::coordination.rs::send_session_agent_message": 156,
     "awaken-session-application::creation.rs::create_session_with_completion": 241,
     "awaken-session-application::creation_request.rs::create_requested_session": 497,

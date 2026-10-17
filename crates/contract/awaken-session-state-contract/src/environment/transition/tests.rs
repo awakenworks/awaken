@@ -1,10 +1,11 @@
 //! Decision tables of the Environment transition function.
 //!
 //! Table T1 fixes every step × event cell under the ready facts (an active,
-//! fenced, idle Session whose suspend is due and whose evidence, generation and
-//! checkpoint are all valid). Tables T2–T7 vary one qualifier at a time and
-//! cover every fail-closed row. Table T8 sweeps the complete finite domain
-//! against the three safety laws that the Kani harnesses prove.
+//! fenced, idle Session whose suspend is due, whose evidence, generation and
+//! checkpoint are all valid, whose topology supports continuation and whose
+//! Memory evidence admits a suspend). Tables T2–T7 and T9 vary one qualifier at
+//! a time and cover every fail-closed row. Table T8 sweeps the complete finite
+//! domain against the three safety laws that the Kani harnesses prove.
 
 use super::laws::{
     EVENT_COUNT, STEPS, effects_require_current_lease, event, steps_follow_declared_edges,
@@ -38,6 +39,8 @@ fn ready(step: S) -> SessionEnvironmentFacts {
         suspend_evidence_consistent: true,
         generation_live: true,
         checkpoint_live: true,
+        continuation_topology_supported: true,
+        suspend_memory_admitted: true,
     }
 }
 
@@ -189,7 +192,7 @@ fn t1_every_step_and_event_under_ready_facts() {
             admit(K::Rebuild, true),
             [
                 No(X::RequiresResident),
-                Stay,
+                No(X::MaterializationPending),
                 CONT,
                 CONT,
                 CONT,
@@ -714,7 +717,7 @@ fn t8_complete_domain_satisfies_the_safety_laws() {
     for step in STEPS {
         for terminality in terminalities {
             for lease in leases {
-                for bits in 0_u8..128 {
+                for bits in 0_u16..512 {
                     let facts = SessionEnvironmentFacts {
                         step,
                         terminality,
@@ -726,6 +729,8 @@ fn t8_complete_domain_satisfies_the_safety_laws() {
                         suspend_evidence_consistent: bits & 16 != 0,
                         generation_live: bits & 32 != 0,
                         checkpoint_live: bits & 64 != 0,
+                        continuation_topology_supported: bits & 128 != 0,
+                        suspend_memory_admitted: bits & 256 != 0,
                     };
                     for index in 0..EVENT_COUNT {
                         let event = event(index);
@@ -748,5 +753,124 @@ fn t8_complete_domain_satisfies_the_safety_laws() {
             }
         }
     }
-    assert_eq!(cases, 8 * 3 * 3 * 128 * EVENT_COUNT);
+    assert_eq!(cases, 8 * 3 * 3 * 512 * EVENT_COUNT);
+}
+
+#[test]
+fn t9_frozen_topology_and_memory_evidence_guard_the_continuation() {
+    // P1 a frozen topology without a continuation transport refuses both
+    // continuation commands in every step, after terminality and before the
+    // lease; P2 it leaves realization, receipts and terminal cleanup alone.
+    // M1 a due Resident whose Memory evidence does not admit a suspend
+    // refuses the suspend intent before activities and generation; M2 the
+    // Memory fact is read only by the suspend intent (every other step and
+    // a not-due Resident are unaffected).
+    for step in STEPS {
+        let unsupported = SessionEnvironmentFacts {
+            continuation_topology_supported: false,
+            ..ready(step)
+        };
+        let refused = No(X::UnsupportedContinuationTopology);
+        check_row("P1 advance", unsupported, E::AdvanceContinuation, refused);
+        check_row("P1 require", unsupported, E::RequireResident, refused);
+        let stale = SessionEnvironmentFacts {
+            lease: RealizationLeaseStanding::Stale,
+            ..unsupported
+        };
+        check_row("P1 before lease", stale, E::AdvanceContinuation, refused);
+        let terminal = SessionEnvironmentFacts {
+            terminality: SessionTerminality::Terminal,
+            ..unsupported
+        };
+        check_row(
+            "P1 after terminality",
+            terminal,
+            E::RequireResident,
+            No(X::Terminal),
+        );
+        for event in [
+            E::BeginRealization,
+            E::RenewRealization,
+            materialized(K::Adopt, false),
+            E::Quiesced,
+            E::EffectFailed,
+        ] {
+            assert_eq!(
+                transition_environment(unsupported, event),
+                transition_environment(ready(step), event),
+                "P2 {step:?} {event:?}"
+            );
+        }
+        check_row(
+            "P2 retire",
+            terminal,
+            E::RetireForCleanup,
+            DoHere(I::Retire),
+        );
+    }
+    let unproven = |suspend_due, activities_open, resident_generated| SessionEnvironmentFacts {
+        suspend_memory_admitted: false,
+        suspend_due,
+        activities_open,
+        resident_generated,
+        ..ready(R)
+    };
+    let refused = No(X::MemoryEvidenceUnproven);
+    check_row(
+        "M1 due",
+        unproven(true, false, true),
+        E::AdvanceContinuation,
+        refused,
+    );
+    check_row(
+        "M1 first",
+        unproven(true, true, false),
+        E::AdvanceContinuation,
+        refused,
+    );
+    check_row(
+        "M2 not due",
+        unproven(false, false, true),
+        E::AdvanceContinuation,
+        Stay,
+    );
+    check_row(
+        "M2 require",
+        unproven(true, false, true),
+        E::RequireResident,
+        Stay,
+    );
+    for step in [SQ, SU, SR, SD, H, RS] {
+        let facts = SessionEnvironmentFacts {
+            suspend_memory_admitted: false,
+            ..ready(step)
+        };
+        for event in [E::AdvanceContinuation, E::RequireResident] {
+            assert_eq!(
+                transition_environment(facts, event),
+                transition_environment(ready(step), event),
+                "M2 {step:?} {event:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn t10_the_count_phase_is_the_steps_projection() {
+    // G2 every step projects onto exactly the durable phase whose
+    // SessionEnvironmentState variant it refines; the four suspend sub-phases
+    // share Suspending.
+    use super::super::SessionEnvironmentPhase as P;
+    for (step, phase) in [
+        (U, P::Unmaterialized),
+        (R, P::Resident),
+        (SQ, P::Suspending),
+        (SU, P::Suspending),
+        (SR, P::Suspending),
+        (SD, P::Suspending),
+        (H, P::Hibernated),
+        (RS, P::Restoring),
+    ] {
+        assert_eq!(step.phase(), phase, "G2 {step:?}");
+    }
 }

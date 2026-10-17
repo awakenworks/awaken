@@ -17,18 +17,13 @@ use awaken_session_state_contract::{
 };
 use awaken_time::WallClockExt;
 use awaken_tool_contract::ToolConfigurationCompiler;
-/// Reject a frozen topology whose idle policy would require Coordinator-local
-/// continuation effects against a Worker-owned Environment. External Workers
-/// have one realization/terminal-cleanup claim path, but no claim-fenced
-/// nonterminal quiesce, checkpoint, disposal, or restore transport.
+/// Reject a layout whose idle policy its placement cannot honour
+/// ([`awaken_session_state_contract::SessionPlacementClass::supports_idle_retention`]).
 fn validate_environment_continuation_topology(
     placement: awaken_session_state_contract::SessionPlacementClass,
     idle_retention: &awaken_session_configuration_contract::EnvironmentIdleRetentionPolicy,
 ) -> Result<(), RunError> {
-    if placement.requires_external_environment_owner()
-        && idle_retention.mode
-            == awaken_session_configuration_contract::EnvironmentIdleRetentionMode::CheckpointAndRelease
-    {
+    if !placement.supports_idle_retention(idle_retention) {
         return Err(RunError::bad_request(
             "checkpoint_and_release idle retention is unsupported for external Worker placement",
         ));
@@ -1006,7 +1001,9 @@ impl RepositoryEnvironmentBindingSink {
                 let code = if matches!(
                     error,
                     SessionEnvironmentReceiptError::MaterializationUnknown
-                        | SessionEnvironmentReceiptError::MaterializationPending
+                        | SessionEnvironmentReceiptError::Rejected(
+                            awaken_session_state_contract::SessionEnvironmentRejection::MaterializationPending
+                        )
                 ) {
                     "session_environment_materialization_pending"
                 } else if matches!(error, SessionEnvironmentReceiptError::RealizationStale) {

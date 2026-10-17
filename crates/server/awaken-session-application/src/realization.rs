@@ -22,8 +22,9 @@ use awaken_session_realization_contract::{
 };
 use awaken_session_execution_contract::RealizationRuntime;
 use awaken_session_state_contract::{
-    ManagedLifecycleFact, PersistedSession, SessionEnvironmentState, SessionExecutionState,
-    SessionRepositoryError, session_has_terminal_no_create_evidence,
+    ManagedLifecycleFact, PersistedSession, SessionEnvironmentEvent, SessionEnvironmentFacts,
+    SessionEnvironmentState, SessionExecutionState, SessionRepositoryError,
+    session_has_terminal_no_create_evidence, transition_environment,
 };
 use awaken_session_types::RunError;
 
