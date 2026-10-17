@@ -17,6 +17,7 @@ use crate::realization_error::RealizationError;
 use crate::realization_error::{AuthorityLoss, PendingState, ProjectionConflict};
 use crate::session_environment::{
     BoundEnvironmentPreparationMode, PreparedBoundEnvironment, TerminalEffectMode,
+    TerminalSourceObservation,
 };
 use awaken_session_configuration_contract::resource as session_resource;
 use awaken_session_state_contract::{SessionEnvironmentState, SuspendPhase};
@@ -319,7 +320,7 @@ impl crate::terminal_effects::TerminalEffects {
                 environment: PreparedBoundEnvironment::new(
                     None,
                     None,
-                    TerminalEffectMode::RecoverOnlyUnprepared,
+                    TerminalSourceObservation::RestoreAwaiting,
                 ),
                 pending_checkpoint,
             });
@@ -339,7 +340,7 @@ impl crate::terminal_effects::TerminalEffects {
                     environment: PreparedBoundEnvironment::new(
                         None,
                         None,
-                        TerminalEffectMode::LiveUnprepared,
+                        TerminalSourceObservation::Unbound,
                     )
                     .with_definitive_absence(),
                     pending_checkpoint,
@@ -381,7 +382,7 @@ impl crate::terminal_effects::TerminalEffects {
             let prepared = PreparedBoundEnvironment::new(
                 environment,
                 durable_handle,
-                TerminalEffectMode::LiveUnprepared,
+                TerminalSourceObservation::Unbound,
             );
             return Ok(TerminalEnvironmentPreparation {
                 state,

@@ -2364,6 +2364,8 @@ fn terminal_test_session(
     );
     session.environment = projection.environment.clone();
     session.realization = Some(lease);
+    // Terminal cleanup retires only a terminal Session (`RetireForCleanup`).
+    session.execution = awaken_session_state_contract::SessionExecutionState::Terminated;
     // Import exactly the selected Control snapshot's existing fact. Known
     // fixtures saved it before I/O; an omitted historical field stays omitted.
     // This is fixture decoding, not a new admission or history-repair command.

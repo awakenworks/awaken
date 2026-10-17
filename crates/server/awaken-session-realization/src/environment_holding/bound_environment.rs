@@ -14,7 +14,7 @@ use crate::environment_owner::{
 };
 use crate::realization_error::{AuthorityLoss, PendingState, ProjectionConflict, RealizationError};
 use crate::session_environment::{
-    BoundEnvironmentPreparationMode, PreparedBoundEnvironment, TerminalEffectMode,
+    BoundEnvironmentPreparationMode, PreparedBoundEnvironment, TerminalSourceObservation,
 };
 use awaken_session_configuration_contract::resource as session_resource;
 use std::sync::Arc;
@@ -470,11 +470,11 @@ impl EnvironmentHolding {
                 }
             }
         }
-        let (resident, effect_mode, committed_candidate) = match observation {
+        let (resident, source_observation, committed_candidate) = match observation {
             awaken_provisioning_contract::SandboxObservation::Ready => {
                 (
                     resident,
-                    TerminalEffectMode::LiveUnprepared,
+                    TerminalSourceObservation::Ready,
                     committed_candidate,
                 )
             }
@@ -520,7 +520,7 @@ impl EnvironmentHolding {
                 // the durable handle. Re-enter the same terminal-preparation
                 // seam used by live/terminal observations; it returns `None`
                 // for total absence or a non-executable exact cleanup owner.
-                (None, TerminalEffectMode::RecoverOnlyUnprepared, None)
+                (None, TerminalSourceObservation::DefinitivelyUnavailable, None)
             }
             observation @ awaken_provisioning_contract::SandboxObservation::Terminal { .. } => {
                 provider
@@ -528,9 +528,9 @@ impl EnvironmentHolding {
                     .map_err(RealizationError::from)?;
                 (
                     resident,
-                    TerminalEffectMode::for_terminal_source(
-                        provider.terminal().terminal_data_is_readable(),
-                    ),
+                    TerminalSourceObservation::Terminal {
+                        data_readable: provider.terminal().terminal_data_is_readable(),
+                    },
                     committed_candidate,
                 )
             }
@@ -546,7 +546,7 @@ impl EnvironmentHolding {
                 // the physical cleanup owner and never reuse a live-I/O wrapper.
                 (
                     resident,
-                    TerminalEffectMode::RecoverOnlyAlreadyPrepared,
+                    TerminalSourceObservation::Disposing,
                     committed_candidate,
                 )
             }
@@ -578,7 +578,7 @@ impl EnvironmentHolding {
         Ok(PreparedBoundEnvironment::new(
             environment,
             Some(handle),
-            effect_mode,
+            source_observation,
         ))
     }
 }

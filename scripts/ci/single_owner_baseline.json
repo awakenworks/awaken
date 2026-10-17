@@ -3,7 +3,6 @@
   "state-construction": {
     "awaken-protocol-managed::SessionExecutionState": 1,
     "awaken-session-application::SessionExecutionState": 2,
-    "awaken-session-store::SessionEnvironmentState": 2,
     "awaken-store-conformance::SessionEnvironmentState": 2,
     "awaken-store-conformance::SessionExecutionState": 11
   },
@@ -12,9 +11,9 @@
     "awaken-executable-environment-contract": 327,
     "awaken-protocol-managed": 32,
     "awaken-dispatch-http": 793,
-    "awaken-session-executor": 274,
+    "awaken-session-executor": 273,
     "awaken-scenario-host": 78,
-    "awaken-session-application": 2940,
+    "awaken-session-application": 2930,
     "awaken-session-configuration-contract": 84,
     "awaken-session-environment": 76,
     "awaken-session-environment-contract": 253,

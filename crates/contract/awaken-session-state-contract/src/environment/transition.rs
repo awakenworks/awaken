@@ -474,10 +474,10 @@ const fn materialized(
     enter(SessionEnvironmentStep::Resident)
 }
 
-/// projection_synchronizer `merge_legacy_claimed_environment_binding`: only an
-/// Unmaterialized projection accepts the historical claim-first binding. The
-/// merge itself never consults terminality; a terminal Session refuses it here
-/// because a claim is not an in-flight receipt the cleanup join must admit.
+/// `SessionEnvironmentState::deliver_legacy_binding`, the realization's
+/// claim-first repair: only an Unmaterialized projection accepts the
+/// historical binding. A terminal Session refuses it because a claim is not an
+/// in-flight receipt the cleanup join must admit.
 const fn legacy_binding_delivered(facts: SessionEnvironmentFacts) -> Outcome {
     if !is_active(facts) {
         return Err(SessionEnvironmentRejection::Terminal);
@@ -813,6 +813,63 @@ impl SessionEnvironmentFacts {
             _ => None,
         };
         Self::project(session, now_unix_ms, asserted)
+    }
+
+    /// The lifecycle supervisor's continuation hint, read from the
+    /// aggregate's own decision: whether `AdvanceContinuation`, projected at
+    /// `now`, instructs an effect. A refusal is not work; the root re-enters
+    /// the hint in the cycle its facts admit the effect.
+    #[must_use]
+    pub fn continuation_due(session: &crate::PersistedSession, now_unix_ms: u64) -> bool {
+        matches!(
+            transition_environment(
+                Self::project_continuation(session, now_unix_ms),
+                SessionEnvironmentEvent::AdvanceContinuation,
+            ),
+            Ok(decision) if decision.instruction().is_some()
+        )
+    }
+
+    /// Project the facts of a terminal cleanup event (`RetireForCleanup`,
+    /// `CleanedUp`). Terminal cleanup acts under the root's own lease
+    /// generation, so the event asserts no lease, and both rows read only the
+    /// terminality and the lease standing: no time-dependent fact can change
+    /// their decision (table T11), so the projection needs no clock.
+    pub(crate) fn project_terminal_cleanup(session: &crate::PersistedSession) -> Self {
+        Self::project(session, 0, None)
+    }
+
+    /// Project the facts of a realization directive's frozen Environment
+    /// state, for the one event a directive's projection receives
+    /// (`LegacyBindingDelivered`). Session-application issues a directive only
+    /// under `BeginRealization`'s admission, which refuses a terminal Session,
+    /// and the directive carries the lease it was issued under: the projection
+    /// stands Active and Fenced. It is a copy, not the live aggregate, so it
+    /// asserts no execution, activity, time or placement fact and admits no
+    /// continuation.
+    pub(crate) fn project_realization_directive(environment: &SessionEnvironmentState) -> Self {
+        let resident_generated = matches!(
+            environment,
+            SessionEnvironmentState::Resident {
+                effect_id: Some(_),
+                generation: Some(_),
+                ..
+            }
+        );
+        Self {
+            step: environment.step(),
+            terminality: SessionTerminality::Active,
+            execution_idle: false,
+            activities_open: false,
+            lease: RealizationLeaseStanding::Fenced,
+            resident_generated,
+            suspend_due: false,
+            suspend_evidence_consistent: environment.suspend_evidence_is_consistent(),
+            generation_live: false,
+            checkpoint_live: false,
+            continuation_topology_supported: false,
+            suspend_memory_admitted: false,
+        }
     }
 }
 

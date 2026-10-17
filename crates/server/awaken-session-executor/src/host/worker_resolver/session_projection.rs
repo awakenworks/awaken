@@ -2,7 +2,6 @@
 use super::*;
 use awaken_session_realization::worker_projection::WorkerProjectionSynchronizer;
 mod projection_synchronizer;
-use awaken_session_realization::worker_projection::projection_synchronizer::merge_legacy_claimed_environment_binding;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -14,106 +13,6 @@ mod tests {
     use awaken_dispatch_contract::DispatchClaims;
     use awaken_dispatch_contract::DispatchEnqueue;
     use std::sync::{Arc, Mutex};
-
-    /// Legacy raw-claim merge cause/effect graph: C1 the durable Environment
-    /// phase; C2 a raw RunDispatch sandbox cache is present. E1 only a genuinely
-    /// legacy Unmaterialized root is upgraded to Resident; E2 every resident or
-    /// continuation phase remains byte-for-byte root-owned; E3 absence is a no-op.
-    ///
-    /// | Rule | C1 | C2 | Effect |
-    /// |---|---|---|---|
-    /// | L1 | Unmaterialized | present | E1 |
-    /// | L2 | Resident/Suspending | present | E2 |
-    /// | L3 | Hibernated/Restoring | present | E2; never resurrect source |
-    /// | L4 | any | absent | E3 |
-    #[test]
-    fn legacy_raw_claim_only_repairs_an_unmaterialized_environment() {
-        let generation = awaken_session_state_contract::SandboxGeneration::new(
-            &awaken_session_types::SessionId::from("legacy-claim"),
-            1,
-            u64::MAX,
-            "environment",
-            "image",
-        );
-        let operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
-            "workspace",
-            &awaken_session_types::SessionId::from("legacy-claim"),
-            "suspend",
-            &generation,
-            1,
-            None,
-            None,
-        );
-        let checkpoint = awaken_provisioning_contract::SandboxCheckpointRef {
-            id: "checkpoint".into(),
-            format: "awaken-fs-v1".into(),
-            digest: "digest".into(),
-            size_bytes: 1,
-            created_at_unix_ms: 1,
-            expires_at_unix_ms: u64::MAX,
-            environment_fingerprint: "environment".into(),
-            base_image_fingerprint: "image".into(),
-            excluded_mounts: Vec::new(),
-            suspend_effect_id: operation.effect_id.clone(),
-        };
-        let root_binding = "{\"provider_kind\":\"root\"}";
-        let raw_claim = "{\"provider_kind\":\"claim\"}";
-
-        let mut legacy = awaken_session_state_contract::SessionEnvironmentState::Unmaterialized;
-        merge_legacy_claimed_environment_binding(&mut legacy, Some(raw_claim));
-        assert!(
-            matches!(
-                legacy,
-                awaken_session_state_contract::SessionEnvironmentState::Resident {
-                    ref binding,
-                    effect_id: None,
-                    generation: None,
-                    idle_since_unix_ms: None,
-                } if binding == raw_claim
-            ),
-            "L1"
-        );
-
-        let protected = [
-            awaken_session_state_contract::SessionEnvironmentState::Resident {
-                binding: root_binding.into(),
-                effect_id: Some("effect".into()),
-                generation: Some(generation.clone()),
-                idle_since_unix_ms: None,
-            },
-            awaken_session_state_contract::SessionEnvironmentState::Suspending {
-                operation: operation.clone(),
-                source_effect_id: Box::new("source-effect".into()),
-                source_binding: root_binding.into(),
-                generation: generation.clone(),
-                suspend_phase: awaken_session_state_contract::SuspendPhase::Quiescing,
-                checkpoint: None,
-                source_release_preparation: None,
-            },
-            awaken_session_state_contract::SessionEnvironmentState::Hibernated {
-                checkpoint: checkpoint.clone(),
-                generation: generation.clone(),
-            },
-            awaken_session_state_contract::SessionEnvironmentState::Restoring {
-                operation,
-                checkpoint,
-                generation,
-            },
-        ];
-        for expected in protected {
-            let mut actual = expected.clone();
-            merge_legacy_claimed_environment_binding(&mut actual, Some(raw_claim));
-            assert_eq!(actual, expected, "L2/L3");
-        }
-
-        let mut absent = awaken_session_state_contract::SessionEnvironmentState::Unmaterialized;
-        merge_legacy_claimed_environment_binding(&mut absent, None);
-        assert_eq!(
-            absent,
-            awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
-            "L4"
-        );
-    }
 
     /// Ordinary cold-worker cause/effect table: C1 a real Queue claim has no
     /// Session Work authority; C2 its activation carries the exact publication;

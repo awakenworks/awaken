@@ -338,6 +338,7 @@ async fn root_terminal_cleanup_effect(
     );
     session.environment = projection.environment.clone();
     session.realization = Some(lease.clone());
+    session.execution = awaken_session_state_contract::SessionExecutionState::Terminated;
     assert!(session.ensure_terminal_cleanup_fence());
     session
         .freeze_terminal_cleanup_targets(std::iter::empty(), 0, 0)

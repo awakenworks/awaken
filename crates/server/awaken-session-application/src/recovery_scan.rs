@@ -64,12 +64,13 @@ where
 pub(super) async fn scan_recovery_candidates(
     repository: &dyn SessionRepository,
     audit_resource_references: bool,
+    now_unix_ms: u64,
 ) -> Result<SessionRecoveryCandidates, SessionRepositoryError> {
     let (mut candidates, quarantined) = fold_reconcilable_sessions(
         repository,
         SessionRecoveryCandidates::default(),
         |mut candidates, page| async move {
-            candidates.append_page(page, audit_resource_references);
+            candidates.append_page(page, audit_resource_references, now_unix_ms);
             Ok(candidates)
         },
         std::convert::identity,
@@ -77,4 +78,19 @@ pub(super) async fn scan_recovery_candidates(
     .await?;
     candidates.quarantined = quarantined;
     Ok(candidates)
+}
+
+/// The application's recovery scan at its clock's `now`, the instant the
+/// continuation hint is decided at.
+pub(super) async fn recovery_candidates(
+    application: &super::SessionApplication,
+    audit_resource_references: bool,
+) -> Result<SessionRecoveryCandidates, SessionRepositoryError> {
+    let now = application.clock.now().as_epoch_ms();
+    scan_recovery_candidates(
+        application.session_repository(),
+        audit_resource_references,
+        now,
+    )
+    .await
 }

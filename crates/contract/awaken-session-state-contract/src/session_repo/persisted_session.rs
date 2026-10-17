@@ -873,6 +873,12 @@ impl PersistedSession {
             // lost. Completed retains the canonical receipt fingerprint, so an
             // exact no-mutation replay is verifiable without a current lease,
             // Environment, or Resource projection.
+            decide_terminal_cleanup(
+                self,
+                crate::SessionEnvironmentEvent::CleanedUp {
+                    already_recorded: true,
+                },
+            )?;
             return self
                 .terminal_cleanup
                 .record_disposal(&self.session_id, None, receipt);
@@ -884,6 +890,12 @@ impl PersistedSession {
         {
             return Err(crate::SessionCleanupError::RealizationMismatch);
         }
+        let retirement = decide_terminal_cleanup(
+            self,
+            crate::SessionEnvironmentEvent::CleanedUp {
+                already_recorded: false,
+            },
+        )?;
         let provider_disposal = self
             .terminal_provider_disposal_preparation()?
             .ok_or(crate::SessionCleanupError::DisposalNotReady)?;
@@ -902,7 +914,9 @@ impl PersistedSession {
         )?;
         if changed {
             self.resources.complete_terminal_release(release_reason);
-            self.environment = crate::SessionEnvironmentState::Unmaterialized;
+            if retirement.next() == crate::SessionEnvironmentStep::Unmaterialized {
+                self.environment = crate::SessionEnvironmentState::Unmaterialized;
+            }
         }
         Ok(changed)
     }
@@ -926,6 +940,7 @@ impl PersistedSession {
         }) {
             return Err(crate::SessionCleanupError::RealizationMismatch);
         }
+        decide_terminal_cleanup(self, crate::SessionEnvironmentEvent::RetireForCleanup)?;
         if !self
             .terminal_cleanup
             .pending_preparation_commands(&self.session_id)?
@@ -956,6 +971,7 @@ impl PersistedSession {
         }) {
             return Err(crate::SessionCleanupError::RealizationMismatch);
         }
+        decide_terminal_cleanup(self, crate::SessionEnvironmentEvent::RetireForCleanup)?;
         let repository_preparation = self
             .terminal_cleanup
             .repository_preparation()
@@ -1501,6 +1517,21 @@ impl PersistedSession {
             })
             .collect()
     }
+}
+
+/// Decide one terminal cleanup event (`RetireForCleanup`, `CleanedUp`)
+/// through the Environment transition function. The event asserts no lease:
+/// callers have already checked the exact lease generation, so the root's own
+/// lease stands.
+fn decide_terminal_cleanup(
+    session: &PersistedSession,
+    event: crate::SessionEnvironmentEvent,
+) -> Result<crate::SessionEnvironmentDecision, crate::SessionCleanupError> {
+    crate::transition_environment(
+        crate::SessionEnvironmentFacts::project_terminal_cleanup(session),
+        event,
+    )
+    .map_err(crate::SessionCleanupError::from)
 }
 
 #[cfg(test)]

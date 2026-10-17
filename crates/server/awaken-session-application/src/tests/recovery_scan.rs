@@ -153,7 +153,7 @@ async fn work_recovery_reloads_current_truth_after_the_complete_identity_scan() 
             _ => {}
         }
         let environments = RecordingEnvironmentSource::default();
-        let report = reconcile_work_dispatches(&repository, &environments).await;
+        let report = reconcile_work_dispatches(&repository, &environments, 0).await;
         let expected = usize::from(rule == "unchanged");
         assert_eq!(report.pending, 1, "{rule}: complete scan identity count");
         assert_eq!(report.settled, expected, "{rule}");

@@ -68,10 +68,49 @@ impl BoundEnvironmentPreparationMode {
     }
 }
 
-/// Process-local projection of which source effects remain legal after the
-/// provider observation. The provider-owned [`awaken_provisioning_contract::SandboxObservation`] remains the
-/// only physical fact; this mode merely keeps live I/O, source preparation,
-/// and already-prepared recovery from drifting into three independent tests.
+/// What terminal preparation observed about the bound Environment's source:
+/// the physical input of [`TerminalEffectMode`]. The provider-owned
+/// [`awaken_provisioning_contract::SandboxObservation`] stays the only physical
+/// fact; this names which case of it (or of the aggregate's binding) the
+/// preparation reached.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerminalSourceObservation {
+    /// No durable binding: creation never ran, the Hibernated source was
+    /// already released, or the original create fence adopted (or proved
+    /// absent) the owner it installs. Nothing was prepared for release yet.
+    Unbound,
+    /// The provider reports the bound source Ready.
+    Ready,
+    /// The provider reports a terminal marker. `data_readable`: the provider
+    /// keeps direct data access after the marker (filesystem providers); a
+    /// stopped process environment cannot serve Container's attached-exec read.
+    Terminal { data_readable: bool },
+    /// The provider proved the primary source absent.
+    DefinitivelyUnavailable,
+    /// The provider reports Disposing: durable proof that every
+    /// source-durability participant crossed the provider cleanup gate.
+    Disposing,
+    /// The aggregate is Restoring: only the exact restore request exists.
+    RestoreAwaiting,
+    /// A terminal Repository publication found its source closed: negative
+    /// publication evidence only, never Git I/O.
+    ClosedPublicationSource,
+}
+
+/// The aggregate's frozen fact the mode joins: whether the terminal cleanup
+/// authorization inherited a closed continuation's provider disposal
+/// preparation. Once that is durable, total physical absence is a
+/// response-loss recovery, not an excuse to repeat live source effects.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceReleasePredecessor {
+    None,
+    InheritedProviderDisposal,
+}
+
+/// Process-local projection of which source effects remain legal: live I/O,
+/// source preparation, or already-prepared recovery. It is never stored or
+/// written; [`TerminalEffectMode::decide`] derives it, so Artifact, Memory and
+/// provider callers cannot drift into independent observation policies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TerminalEffectMode {
     LiveUnprepared,
@@ -80,14 +119,40 @@ pub enum TerminalEffectMode {
 }
 
 impl TerminalEffectMode {
-    /// A stopped process environment cannot supply the attached-exec file read
-    /// used by Container. Filesystem providers retain direct data access after
-    /// their marker becomes terminal. Neither row proves prior preparation.
-    pub const fn for_terminal_source(data_readable: bool) -> Self {
-        if data_readable {
-            Self::LiveUnprepared
-        } else {
-            Self::RecoverOnlyUnprepared
+    /// The one terminal-effect mode decision (table HT0 in `terminal_effects`).
+    ///
+    /// | Rule | predecessor | observation | mode |
+    /// |---|---|---|---|
+    /// | M1 | inherited disposal | any | RecoverOnlyAlreadyPrepared |
+    /// | M2 | none | Unbound, Ready, readable Terminal | LiveUnprepared |
+    /// | M3 | none | unreadable Terminal, DefinitivelyUnavailable, RestoreAwaiting, ClosedPublicationSource | RecoverOnlyUnprepared |
+    /// | M4 | none | Disposing | RecoverOnlyAlreadyPrepared |
+    pub const fn decide(
+        observation: TerminalSourceObservation,
+        predecessor: SourceReleasePredecessor,
+    ) -> Self {
+        use TerminalSourceObservation as O;
+        match (predecessor, observation) {
+            (SourceReleasePredecessor::InheritedProviderDisposal, _) | (_, O::Disposing) => {
+                Self::RecoverOnlyAlreadyPrepared
+            }
+            (
+                _,
+                O::Unbound
+                | O::Ready
+                | O::Terminal {
+                    data_readable: true,
+                },
+            ) => Self::LiveUnprepared,
+            (
+                _,
+                O::Terminal {
+                    data_readable: false,
+                }
+                | O::DefinitivelyUnavailable
+                | O::RestoreAwaiting
+                | O::ClosedPublicationSource,
+            ) => Self::RecoverOnlyUnprepared,
         }
     }
 }
@@ -98,7 +163,8 @@ impl TerminalEffectMode {
 pub struct PreparedBoundEnvironment {
     pub environment: Option<(Arc<crate::session_environment::SessionEnvironment>, bool)>,
     durable_handle: Option<awaken_provisioning_contract::SandboxHandle>,
-    pub effect_mode: TerminalEffectMode,
+    observation: TerminalSourceObservation,
+    predecessor: SourceReleasePredecessor,
     definitive_absence: bool,
     closed_publication_source: Option<awaken_provisioning_contract::SandboxObservation>,
 }
@@ -107,15 +173,22 @@ impl PreparedBoundEnvironment {
     pub fn new(
         environment: Option<(Arc<crate::session_environment::SessionEnvironment>, bool)>,
         durable_handle: Option<awaken_provisioning_contract::SandboxHandle>,
-        effect_mode: TerminalEffectMode,
+        observation: TerminalSourceObservation,
     ) -> Self {
         Self {
             environment,
             durable_handle,
-            effect_mode,
+            observation,
+            predecessor: SourceReleasePredecessor::None,
             definitive_absence: false,
             closed_publication_source: None,
         }
+    }
+
+    /// The source effects that remain legal, decided once from the
+    /// observation and the frozen predecessor.
+    pub fn effect_mode(&self) -> TerminalEffectMode {
+        TerminalEffectMode::decide(self.observation, self.predecessor)
     }
 
     /// Non-executable publication observation. It retains the original handle
@@ -128,7 +201,7 @@ impl PreparedBoundEnvironment {
         let mut prepared = Self::new(
             None,
             Some(handle),
-            TerminalEffectMode::RecoverOnlyUnprepared,
+            TerminalSourceObservation::ClosedPublicationSource,
         );
         prepared.closed_publication_source = Some(observation);
         prepared
@@ -151,25 +224,37 @@ impl PreparedBoundEnvironment {
     /// total physical absence is a response-loss recovery case rather than an
     /// excuse to repeat live source effects under terminal T.
     pub fn with_preparation_authorization(
-        mut self,
+        self,
         authorization: &awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
     ) -> Self {
-        if authorization.inherited_provider_disposal().is_some() {
-            self.effect_mode = TerminalEffectMode::RecoverOnlyAlreadyPrepared;
-        }
+        self.with_source_release_predecessor(
+            if authorization.inherited_provider_disposal().is_some() {
+                SourceReleasePredecessor::InheritedProviderDisposal
+            } else {
+                SourceReleasePredecessor::None
+            },
+        )
+    }
+
+    /// Record the aggregate's frozen source-release predecessor.
+    pub(crate) fn with_source_release_predecessor(
+        mut self,
+        predecessor: SourceReleasePredecessor,
+    ) -> Self {
+        self.predecessor = predecessor;
         self
     }
 
     pub fn permits_live_io(&self) -> bool {
-        self.effect_mode == TerminalEffectMode::LiveUnprepared
+        self.effect_mode() == TerminalEffectMode::LiveUnprepared
     }
 
     pub fn requires_provider_preparation(&self) -> bool {
-        self.effect_mode != TerminalEffectMode::RecoverOnlyAlreadyPrepared
+        self.effect_mode() != TerminalEffectMode::RecoverOnlyAlreadyPrepared
     }
 
     pub fn source_effects_are_already_prepared(&self) -> bool {
-        self.effect_mode == TerminalEffectMode::RecoverOnlyAlreadyPrepared
+        self.effect_mode() == TerminalEffectMode::RecoverOnlyAlreadyPrepared
     }
 
     pub fn durable_handle(&self) -> Option<&awaken_provisioning_contract::SandboxHandle> {
