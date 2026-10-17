@@ -249,7 +249,7 @@ impl crate::environment_holding::EnvironmentHolding {
         let repository_paths = self
             .sessions
             .read_realization(&spec.scope, |r| {
-                r.staging
+                r.staging()
                     .transition
                     .as_ref()
                     .map(|transition| {
@@ -268,7 +268,7 @@ impl crate::environment_holding::EnvironmentHolding {
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_else(|| {
-                        r.staging
+                        r.staging()
                             .resources
                             .repositories
                             .iter()
@@ -423,7 +423,7 @@ impl crate::environment_holding::EnvironmentHolding {
         let environment =
             exec.publish_prepared_session_environment(thread, &candidate, identity)?;
         realizations.update_realization(thread, |r| {
-            r.staging.reconciliation = reconciliation;
+            r.set_resource_reconciliation(reconciliation);
         })?;
         Ok(environment)
     }
@@ -441,7 +441,7 @@ impl crate::environment_holding::EnvironmentHolding {
     ) -> Result<Option<Arc<crate::session_environment::SessionEnvironment>>, RealizationError> {
         let realizations = self.sessions.clone();
         let exec = &self;
-        let revoked_binding = realizations.read_realization(thread, |r| match &r.environment.owner {
+        let revoked_binding = realizations.read_realization(thread, |r| match &r.environment().owner {
             crate::environment_owner::SessionEnvironmentOwner::Retiring(retiring)
                 if retiring.cause == crate::environment_owner::SessionEnvironmentRetirementCause::RealizationRevocation =>
                 match &retiring.owned {
@@ -478,7 +478,7 @@ impl crate::environment_holding::EnvironmentHolding {
         }
         let candidate = realizations
             .read_realization(thread, |r| {
-                r.environment.owner.unpublished_candidate().cloned()
+                r.environment().owner.unpublished_candidate().cloned()
             })?
             .flatten();
         let Some(candidate) = candidate else {
@@ -515,7 +515,7 @@ impl crate::environment_holding::EnvironmentHolding {
         let environment =
             exec.publish_prepared_session_environment(thread, &candidate, identity)?;
         realizations.update_realization(thread, |r| {
-            r.staging.reconciliation = reconciliation;
+            r.set_resource_reconciliation(reconciliation);
         })?;
         Ok(Some(environment))
     }
@@ -534,7 +534,7 @@ impl crate::environment_holding::EnvironmentHolding {
         let realizations = self.sessions.clone();
         let staging = peers.staging;
         let transition = realizations
-            .read_realization(thread, |r| r.staging.transition.clone())?
+            .read_realization(thread, |r| r.staging().transition.clone())?
             .flatten()
             .ok_or_else(|| {
                 RealizationError::invariant(
@@ -545,12 +545,12 @@ impl crate::environment_holding::EnvironmentHolding {
             .modify_session(thread, |installed| {
                 (
                     installed.run.dispatch_claim().cloned(),
-                    installed.realization.execution.authority.lease().cloned(),
+                    installed.realization.execution().authority.lease().cloned(),
                 )
             })?
             .unwrap_or_default();
         let rebuild_source = realizations
-            .read_realization(thread, |r| r.environment.rebuild_source.clone())?
+            .read_realization(thread, |r| r.environment().rebuild_source.clone())?
             .flatten();
         let (kind, source_binding) = match &rebuild_source {
             Some((source_binding, source_generation_id)) => (
@@ -623,7 +623,7 @@ impl crate::environment_holding::EnvironmentHolding {
             )
             .await?;
         realizations.update_realization(thread, |r| {
-            r.environment.rebuild_source = None;
+            r.environment_mut().rebuild_source = None;
         })?;
         self.ensure_published_environment_reconciled_under_lifecycle(
             lifecycle,
@@ -684,10 +684,10 @@ impl crate::environment_holding::EnvironmentHolding {
     ) -> Result<Arc<crate::session_environment::SessionEnvironment>, RealizationError> {
         let realizations = self.sessions.clone();
         let reconciliation = realizations
-            .read_realization(thread, |r| r.staging.reconciliation)?
+            .read_realization(thread, |r| r.staging().reconciliation)?
             .unwrap_or_default();
         let transition = realizations
-            .read_realization(thread, |r| r.staging.transition.clone())?
+            .read_realization(thread, |r| r.staging().transition.clone())?
             .flatten()
             .ok_or_else(|| {
                 RealizationError::invariant(
@@ -704,7 +704,7 @@ impl crate::environment_holding::EnvironmentHolding {
             .modify_session(thread, |installed| {
                 (
                     installed.run.dispatch_claim().cloned(),
-                    installed.realization.execution.authority.lease().cloned(),
+                    installed.realization.execution().authority.lease().cloned(),
                 )
             })?
             .unwrap_or_default();
@@ -747,7 +747,7 @@ impl crate::environment_holding::EnvironmentHolding {
                 .await;
         }
         if let Some(environment) = realizations
-            .read_realization(thread, |r| r.environment.owner.resident())?
+            .read_realization(thread, |r| r.environment().owner.resident())?
             .flatten()
         {
             return self

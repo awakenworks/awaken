@@ -55,8 +55,8 @@ impl crate::SharedHost {
         let Some(realization) = self
             .installed_sessions
             .read(&session_id, |slot| {
-                (slot.realization.execution.authority.lease() == Some(&lease))
-                    .then(|| slot.realization.execution.phase.clone())
+                (slot.realization.execution().authority.lease() == Some(&lease))
+                    .then(|| slot.realization.execution().phase.clone())
             })
             .flatten()
         else {
@@ -102,7 +102,7 @@ impl crate::SharedHost {
                     .authorize_worker_effect::<_, crate::HostError>(|| {
                         Ok(realizations
                             .modify_realization(&session_id, |state| {
-                                Arc::ptr_eq(&state.execution.phase, &realization)
+                                Arc::ptr_eq(&state.execution().phase, &realization)
                                     && state.renew_lease(&lease, renewed_lease)
                             })?
                             .unwrap_or(false))
@@ -115,9 +115,9 @@ impl crate::SharedHost {
             Ok(false)
                 if realizations
                     .read_realization(&session_id, |state| {
-                        Arc::ptr_eq(&state.execution.phase, &realization)
-                            && state.execution.authority.lease() == Some(&lease)
-                            && state.execution.authority.remaining().is_none()
+                        Arc::ptr_eq(&state.execution().phase, &realization)
+                            && state.execution().authority.lease() == Some(&lease)
+                            && state.execution().authority.remaining().is_none()
                     })?
                     .unwrap_or(false) =>
             {
@@ -129,8 +129,8 @@ impl crate::SharedHost {
             Err(_)
                 if !realizations
                     .read_realization(&session_id, |state| {
-                        Arc::ptr_eq(&state.execution.phase, &realization)
-                            && state.execution.authority.lease() == Some(&lease)
+                        Arc::ptr_eq(&state.execution().phase, &realization)
+                            && state.execution().authority.lease() == Some(&lease)
                     })?
                     .unwrap_or(false) =>
             {
@@ -139,7 +139,7 @@ impl crate::SharedHost {
             Err((error, revoke_immediately))
                 if !revoke_immediately
                     && realizations
-                        .read_realization(&session_id, |r| r.execution.authority.remaining())?
+                        .read_realization(&session_id, |r| r.execution().authority.remaining())?
                         .flatten()
                         .is_some() =>
             {

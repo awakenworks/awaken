@@ -217,7 +217,7 @@ impl crate::session_realizations::SessionRealizationSource for InMemorySessionRe
                 || {
                     let mut registry = self.registry().expect("permit fixture registry is healthy");
                     let installed = registry.entry(session.to_owned()).or_default();
-                    let phase = installed.realization.execution.phase.clone();
+                    let phase = installed.realization.execution().phase.clone();
                     async move {
                         let owner = phase.clone().lock_owned().await;
                         (phase, owner)
@@ -226,7 +226,7 @@ impl crate::session_realizations::SessionRealizationSource for InMemorySessionRe
                 |identity| {
                     let mut registry = self.registry().expect("permit fixture registry is healthy");
                     let installed = registry.get_mut(session)?;
-                    std::sync::Arc::ptr_eq(&installed.realization.execution.phase, identity).then(
+                    std::sync::Arc::ptr_eq(&installed.realization.execution().phase, identity).then(
                         || {
                             admit(crate::session_realizations::SessionRealizationAccess {
                                 inputs: &installed.inputs,
@@ -331,10 +331,10 @@ impl crate::session_realizations::SessionRealizationSource for InMemorySessionRe
         let mut next = installed.inputs.as_ref().clone();
         next.workspace = Some(workspace.to_owned());
         installed.inputs = std::sync::Arc::new(next);
-        installed.realization.staging.resources = compiled.staged;
-        installed.realization.staging.memory_bindings = compiled.memory_bindings;
-        installed.realization.staging.skills = Some(versions);
-        installed.realization.staging.effect_key = Some(effect_key);
+        installed.realization.staging_mut().resources = compiled.staged;
+        installed.realization.staging_mut().memory_bindings = compiled.memory_bindings;
+        installed.realization.staging_mut().skills = Some(versions);
+        installed.realization.staging_mut().effect_key = Some(effect_key);
         Ok(())
     }
 }

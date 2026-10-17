@@ -54,7 +54,7 @@ impl crate::host::SharedHost {
         self.realization_executor
             .sessions()
             .update_session(thread, |slot| {
-                let owner = slot.realization.environment.owner.after_projection(
+                let owner = slot.realization.environment().owner.after_projection(
                     thread,
                     workspace_id,
                     state,
@@ -86,20 +86,21 @@ impl crate::host::SharedHost {
             .update_realization(thread, |r| {
                 // A same-handle ABA test replaces only the process-local Arc. Keep
                 // its existing Root-generated identity instead of downgrading it.
-                if let SessionEnvironmentOwner::Resident(owned) = &mut r.environment.owner
+                if let SessionEnvironmentOwner::Resident(owned) = &mut r.environment_mut().owner
                     && owned.binding == binding
                     && owned.environment.lifecycle().handle() == environment.lifecycle().handle()
                 {
                     owned.environment = environment;
                     return;
                 }
-                r.environment.owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
-                    identity: BoundSessionEnvironmentIdentity::LegacyDirect(
-                        LegacyDirectEnvironmentProvenance::Direct(receipt),
-                    ),
-                    binding,
-                    environment,
-                });
+                r.environment_mut().owner =
+                    SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
+                        identity: BoundSessionEnvironmentIdentity::LegacyDirect(
+                            LegacyDirectEnvironmentProvenance::Direct(receipt),
+                        ),
+                        binding,
+                        environment,
+                    });
             })
             .expect("installed Sessions");
     }
@@ -113,7 +114,7 @@ impl crate::host::SharedHost {
         let realizations = self.realization_executor.sessions().clone();
         match realizations
             .modify_realization(thread, |r| {
-                r.environment
+                r.environment_mut()
                     .owner
                     .observe_retirement_status(retirement, status)
             })
@@ -173,7 +174,7 @@ impl crate::host::SharedHost {
     pub fn prepared_session_environment(&self, thread: &str) -> Option<UnboundSessionEnvironment> {
         let realizations = self.realization_executor.sessions().clone();
         realizations
-            .read_realization(thread, |r| match &r.environment.owner {
+            .read_realization(thread, |r| match &r.environment().owner {
                 SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(
                     candidate,
                 )) => Some(candidate.clone()),

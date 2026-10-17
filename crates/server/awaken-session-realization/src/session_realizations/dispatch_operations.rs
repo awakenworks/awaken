@@ -49,8 +49,8 @@ pub fn claimed_realization_continuation(
         .run
         .dispatch_claim()
         .filter(|previous| previous.run_id == claim.run_id && previous.owner == claim.owner)
-        .and_then(|_| installed.realization.execution.authority.remaining())
-        .and_then(|_| installed.realization.execution.authority.lease())
+        .and_then(|_| installed.realization.execution().authority.remaining())
+        .and_then(|_| installed.realization.execution().authority.lease())
         .filter(|lease| lease.runtime_incarnation == claim.owner)
         .cloned()
 }
@@ -73,12 +73,15 @@ impl SessionRealizations {
                             environment,
                             tools: installed.inputs.tools.clone(),
                             mcp_stages: Some(
-                                installed.realization.staging.mcp.active_stage_requests(),
+                                installed.realization.staging().mcp.active_stage_requests(),
                             ),
                         });
                 let session_dispatch = installed.run.session_dispatch();
                 InstalledDispatchInputs {
-                    resources: installed.realization.staging.run_manifest(session_dispatch),
+                    resources: installed
+                        .realization
+                        .staging()
+                        .run_manifest(session_dispatch),
                     runtime_projection,
                     session_dispatch,
                 }
@@ -110,7 +113,7 @@ impl SessionRealizations {
         self.modify_session(session, |installed| InstalledProjection {
             session_dispatch: installed.run.session_dispatch(),
             has_frozen_baseline: installed.inputs.baseline.is_some(),
-            installation: installed.realization.execution.phase.clone(),
+            installation: installed.realization.execution().phase.clone(),
         })
     }
 
@@ -127,7 +130,7 @@ impl SessionRealizations {
     ) -> Result<bool, RealizationError> {
         Ok(self
             .modify_session(session, |installed| {
-                let unchanged = Arc::ptr_eq(observed, &installed.realization.execution.phase)
+                let unchanged = Arc::ptr_eq(observed, &installed.realization.execution().phase)
                     && (!require_installed_projection
                         || (installed.run.session_dispatch()
                             && installed.inputs.baseline.is_some()));

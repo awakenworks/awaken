@@ -359,7 +359,7 @@ async fn late_renewal_response_cannot_mutate_a_replacement_projection() {
             } else {
                 assert_eq!(
                     host.installed_sessions.read("renew-race", |slot| (
-                        slot.realization.execution.authority.lease().cloned(),
+                        slot.realization.execution().authority.lease().cloned(),
                         slot.run.dispatch_claim.clone(),
                         slot.inputs.workspace.clone()
                     )),
@@ -444,7 +444,7 @@ async fn renewal_revocation_rechecks_authority_after_realization_admission() {
         assert_eq!(
             host.installed_sessions
                 .realizations()
-                .read_realization("renew-revoke", |r| r.execution.authority.lease().cloned())
+                .read_realization("renew-revoke", |r| r.execution().authority.lease().cloned())
                 .expect("installed Sessions")
                 .flatten(),
             replaced.then_some(next),
@@ -499,7 +499,7 @@ async fn temporary_control_failure_retains_only_a_still_live_session_lease() {
         };
         host.installed_sessions
             .install_realization(session_id, |r| {
-                r.execution.authority =
+                r.execution_mut().authority =
                     crate::realization_state::SessionRealizationAuthority::Live(proof);
             });
     }
@@ -690,11 +690,12 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
                 expires_at_unix_ms: now.saturating_add(90_000),
             };
             host.installed_sessions.install_realization(&session, |r| {
-                r.execution.authority = crate::realization_state::SessionRealizationAuthority::Live(
-                    awaken_session_realization::test_support::test_expired_observed_lease(
-                        lease.clone(),
-                    ),
-                );
+                r.execution_mut().authority =
+                    crate::realization_state::SessionRealizationAuthority::Live(
+                        awaken_session_realization::test_support::test_expired_observed_lease(
+                            lease.clone(),
+                        ),
+                    );
             });
             control
                 .renewals
@@ -721,14 +722,14 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
                     let session = format!("deadline-mutex-{index:02}");
                     host.installed_sessions.realizations().read_realization(&session, |r| serde_json::json!({
                     "session": session,
-                    "identity": format!("{:p}", Arc::as_ptr(&r.execution.phase)),
-                    "lease": serde_json::to_string(&match &r.execution.authority {
+                    "identity": format!("{:p}", Arc::as_ptr(&r.execution().phase)),
+                    "lease": serde_json::to_string(&match &r.execution().authority {
                         crate::realization_state::SessionRealizationAuthority::Live(proof) => Some(&proof.lease),
                         crate::realization_state::SessionRealizationAuthority::Closed(lease) => lease.as_ref(),
                         crate::realization_state::SessionRealizationAuthority::Uninstalled => None,
                     }).unwrap(),
-                    "closed": r.execution.authority.is_closed(),
-                    "locked": r.execution.phase.try_lock().is_err(),
+                    "closed": r.execution().authority.is_closed(),
+                    "locked": r.execution().phase.try_lock().is_err(),
                 })).expect("installed Sessions").unwrap_or(serde_json::Value::Null)
                 })
                 .collect::<Vec<_>>()
@@ -780,7 +781,7 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
                     host.installed_sessions
                         .realizations()
                         .read_realization(&format!("deadline-mutex-{index:02}"), |r| {
-                            (r.execution.phase.clone(), r.execution.authority.clone())
+                            (r.execution().phase.clone(), r.execution().authority.clone())
                         })
                         .expect("installed Sessions")
                         .unwrap()
@@ -800,11 +801,12 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
                 host.installed_sessions
                     .read(&format!("deadline-mutex-{index:02}"), |slot| {
                         assert!(
-                            Arc::ptr_eq(&slot.realization.execution.phase, identity),
+                            Arc::ptr_eq(&slot.realization.execution().phase, identity),
                             "M4 exact slot is retained"
                         );
                         assert_eq!(
-                            &slot.realization.execution.authority, lease,
+                            &slot.realization.execution().authority,
+                            lease,
                             "M4 cancellation cannot revoke a waiting projection"
                         );
                     })
@@ -914,11 +916,12 @@ async fn delayed_realization_renewal_cannot_replace_or_revoke_new_projection() {
         };
         if expired {
             host.installed_sessions.install_realization(rule, |r| {
-                r.execution.authority = crate::realization_state::SessionRealizationAuthority::Live(
-                    awaken_session_realization::test_support::test_expired_observed_lease(
-                        old.clone(),
-                    ),
-                );
+                r.execution_mut().authority =
+                    crate::realization_state::SessionRealizationAuthority::Live(
+                        awaken_session_realization::test_support::test_expired_observed_lease(
+                            old.clone(),
+                        ),
+                    );
             });
             control
                 .renewals
@@ -992,7 +995,7 @@ async fn delayed_realization_renewal_cannot_replace_or_revoke_new_projection() {
             .expect("renewal task did not panic");
         let observed = host.installed_sessions.read(rule, |slot| {
             (
-                slot.realization.execution.authority.lease().cloned(),
+                slot.realization.execution().authority.lease().cloned(),
                 slot.run.dispatch_claim.clone(),
             )
         });

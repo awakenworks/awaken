@@ -60,7 +60,7 @@ fn resource_scope_retains_success_and_removes_only_its_unpublished_introduced_le
             assert!(
                 sessions
                     .read_realization("session", |r| Arc::ptr_eq(
-                        r.staging.preparation.as_ref().unwrap(),
+                        r.staging().preparation.as_ref().unwrap(),
                         &token
                     ))
                     .expect("installed Sessions")
@@ -80,9 +80,9 @@ fn resource_scope_retains_success_and_removes_only_its_unpublished_introduced_le
             drop(guard);
             sessions
                 .read_realization("session", |r| {
-                    assert!(r.staging.preparation.is_none());
+                    assert!(r.staging().preparation.is_none());
                     assert_eq!(
-                        r.execution.authority.lease(),
+                        r.execution().authority.lease(),
                         (existing || finished).then_some(&lease(Epoch::FIRST))
                     );
                 })
@@ -130,8 +130,8 @@ async fn resource_scope_cancellation_and_slot_replacement_cannot_erase_a_success
                     .expect("installed Sessions"),
                 "token" => sessions
                     .update_realization("session", |r| {
-                        r.staging.preparation = Some(successor.clone());
-                        r.execution.changed.notify_waiters();
+                        r.staging_mut().preparation = Some(successor.clone());
+                        r.execution().changed.notify_waiters();
                     })
                     .expect("installed Sessions"),
                 "remove" => {
@@ -141,7 +141,7 @@ async fn resource_scope_cancellation_and_slot_replacement_cannot_erase_a_success
                     source.remove_session("session").unwrap();
                     source.install_realization("session", |r| {
                         assert!(r.install_lease(proof(Epoch::FIRST)));
-                        r.staging.preparation = Some(successor.clone());
+                        r.staging_mut().preparation = Some(successor.clone());
                     });
                 }
                 _ => unreachable!(),
@@ -167,18 +167,18 @@ async fn resource_scope_cancellation_and_slot_replacement_cannot_erase_a_success
             "generation" => sessions
                 .read_realization("session", |r| {
                     assert_eq!(
-                        r.execution.authority.lease(),
+                        r.execution().authority.lease(),
                         Some(&lease(Epoch::FIRST.next().expect("second fixture epoch")))
                     );
-                    assert!(r.staging.preparation.is_none());
+                    assert!(r.staging().preparation.is_none());
                 })
                 .expect("installed Sessions")
                 .unwrap(),
             "token" | "slot_aba" => sessions
                 .read_realization("session", |r| {
-                    assert_eq!(r.execution.authority.lease(), Some(&lease(Epoch::FIRST)));
+                    assert_eq!(r.execution().authority.lease(), Some(&lease(Epoch::FIRST)));
                     assert!(Arc::ptr_eq(
-                        r.staging.preparation.as_ref().unwrap(),
+                        r.staging().preparation.as_ref().unwrap(),
                         &successor
                     ));
                     assert!(!successor.is_cancelled());
@@ -187,7 +187,7 @@ async fn resource_scope_cancellation_and_slot_replacement_cannot_erase_a_success
                 .unwrap(),
             "cancel" | "close" => sessions
                 .read_realization("session", |r| {
-                    assert!(r.execution.authority.lease().is_none())
+                    assert!(r.execution().authority.lease().is_none())
                 })
                 .expect("installed Sessions")
                 .unwrap(),
@@ -232,8 +232,8 @@ fn resource_scope_denied_worker_never_installs_or_reopens_a_session() {
     authority
         .sessions()
         .read_realization("session", |r| {
-            assert!(r.execution.authority.is_closed());
-            assert!(r.staging.preparation.is_none());
+            assert!(r.execution().authority.is_closed());
+            assert!(r.staging().preparation.is_none());
         })
         .expect("installed Sessions")
         .unwrap();

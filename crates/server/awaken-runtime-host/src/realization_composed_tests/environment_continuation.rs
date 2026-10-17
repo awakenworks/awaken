@@ -52,7 +52,7 @@ mod tests {
                 ),
             };
             host.installed_sessions
-                .install_realization(rule, |r| r.execution.authority = authority);
+                .install_realization(rule, |r| r.execution_mut().authority = authority);
             let generation = awaken_session_state_contract::SandboxGeneration::new(
                 &awaken_session_types::SessionId::from(rule),
                 1,
@@ -109,7 +109,7 @@ mod tests {
         };
         let install = |lease: SessionRealizationLease| {
             host.installed_sessions.install_realization(thread, |r| {
-                r.execution.authority = Authority::Live(
+                r.execution_mut().authority = Authority::Live(
                     awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
                         lease, 0,
                     )

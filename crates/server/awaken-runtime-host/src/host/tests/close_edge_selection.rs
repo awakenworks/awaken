@@ -71,7 +71,7 @@ async fn rebuilt_successor_is_not_interrupted(original_run_active: bool) {
         .unwrap();
     let phase = host
         .installed_sessions
-        .read(thread, |slot| slot.realization.execution.phase.clone())
+        .read(thread, |slot| slot.realization.execution().phase.clone())
         .unwrap();
     let first_run = if original_run_active {
         let mut run = tokio::spawn({
@@ -208,7 +208,7 @@ async fn rebuilt_successor_is_not_interrupted(original_run_active: bool) {
     let retained = host
         .installed_sessions
         .read(thread, |slot| {
-            slot.realization.execution.authority.lease() == Some(&successor)
+            slot.realization.execution().authority.lease() == Some(&successor)
                 && slot
                     .run
                     .context

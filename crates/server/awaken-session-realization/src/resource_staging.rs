@@ -128,13 +128,13 @@ impl ResourceStaging {
             .sessions
             .modify_session(thread, |installed| {
                 crate::sandbox_projection::project_session_mounts(
-                    installed.realization.staging.resources.mounts.clone(),
+                    installed.realization.staging().resources.mounts.clone(),
                     installed
                         .inputs
                         .baseline
                         .as_ref()
                         .map(|baseline| baseline.mounts.as_slice()),
-                    installed.realization.staging.content_delivery,
+                    installed.realization.staging().content_delivery,
                 )
             })?
             .unwrap_or_default())
@@ -146,8 +146,8 @@ impl ResourceStaging {
         memory: Option<Arc<MemoryBinding>>,
     ) -> Result<(), RealizationError> {
         self.sessions.update_realization(thread, |r| {
-            r.staging.memory_bindings.clear();
-            r.staging.memory = memory;
+            r.staging_mut().memory_bindings.clear();
+            r.staging_mut().memory = memory;
         })?;
         Ok(())
     }
@@ -161,8 +161,8 @@ impl ResourceStaging {
         binding_id: Option<&str>,
     ) -> Result<Option<Arc<MemoryBinding>>, RealizationError> {
         let selected = self.sessions.update_realization(thread, |r| {
-            let selected = binding_id.and_then(|id| r.staging.memory_bindings.get(id).cloned());
-            r.staging.memory = selected.clone();
+            let selected = binding_id.and_then(|id| r.staging().memory_bindings.get(id).cloned());
+            r.staging_mut().memory = selected.clone();
             selected
         })?;
         match (binding_id, selected) {
@@ -203,14 +203,14 @@ impl ResourceStaging {
             .sessions
             .read_realization(thread, |r| {
                 let create_time_mounts = r
-                    .staging
+                    .staging()
                     .resources
                     .mounts
                     .iter()
                     .filter(|mount| resource_mount_is_create_time(mount))
                     .cloned()
                     .collect();
-                let has_repositories = r.staging.transition.as_ref().is_some_and(|transition| {
+                let has_repositories = r.staging().transition.as_ref().is_some_and(|transition| {
                     transition.desired().resources.inputs().iter().any(|input| {
                         matches!(
                             input.source,
@@ -291,7 +291,7 @@ impl ResourceStaging {
             .modify_session(thread, |installed| {
                 (
                     installed.inputs.baseline.clone(),
-                    installed.realization.staging.content_delivery,
+                    installed.realization.staging().content_delivery,
                     installed.inputs.environment_projection.clone(),
                 )
             })?
@@ -359,7 +359,7 @@ impl ResourceStaging {
             .install_session(thread)
             .and_then(|()| {
                 self.sessions
-                    .update_realization(thread, |r| r.staging.resources = staged)
+                    .update_realization(thread, |r| r.staging_mut().resources = staged)
             })
             .expect("test fixture registry is healthy");
     }
@@ -370,7 +370,7 @@ impl ResourceStaging {
         manifest: session_resource::SessionResourceManifest,
     ) -> Result<(), RealizationError> {
         self.sessions
-            .update_realization(thread, |r| r.staging.manifest = Some(manifest))?;
+            .update_realization(thread, |r| r.staging_mut().manifest = Some(manifest))?;
         Ok(())
     }
 
@@ -380,7 +380,7 @@ impl ResourceStaging {
     ) -> Result<Option<session_resource::SessionResourceManifest>, RealizationError> {
         Ok(self
             .sessions
-            .read_realization(thread, |r| r.staging.manifest.clone())?
+            .read_realization(thread, |r| r.staging().manifest.clone())?
             .flatten())
     }
 
@@ -390,7 +390,7 @@ impl ResourceStaging {
     ) -> Result<StagedResources, RealizationError> {
         Ok(self
             .sessions
-            .read_realization(thread, |r| r.staging.resources.clone())?
+            .read_realization(thread, |r| r.staging().resources.clone())?
             .unwrap_or_default())
     }
 
@@ -403,7 +403,7 @@ impl ResourceStaging {
         thread: &str,
     ) -> Vec<crate::staged_resources::RepositoryActivation> {
         self.sessions
-            .read_realization(thread, |r| r.staging.resources.repositories.clone())
+            .read_realization(thread, |r| r.staging().resources.repositories.clone())
             .expect("test fixture registry is healthy")
             .unwrap_or_default()
     }

@@ -100,7 +100,7 @@ pub(super) fn closed_environment_recovery_plan<'a>(
             if let Some(expected) = revoked
                 && expected.cause == SessionEnvironmentRetirementCause::RealizationRevocation
                 && matches!(
-                    &r.environment.owner,
+                    &r.environment().owner,
                     SessionEnvironmentOwner::Retiring(current)
                         if current.exact_matches(expected)
                 )
@@ -112,7 +112,7 @@ pub(super) fn closed_environment_recovery_plan<'a>(
                     ))),
                 )
             } else if let Some(expected) = resident
-                && let SessionEnvironmentOwner::Retiring(current) = &r.environment.owner
+                && let SessionEnvironmentOwner::Retiring(current) = &r.environment().owner
                 && current.cause == SessionEnvironmentRetirementCause::RecoveryDiscard
                 && Arc::ptr_eq(&current.owned.environment(), expected)
                 && current.owned.environment().lifecycle().handle() == expected.lifecycle().handle()
@@ -125,7 +125,7 @@ pub(super) fn closed_environment_recovery_plan<'a>(
                 )
             } else if let Some(expected) = resident
                 && matches!(
-                    &r.environment.owner,
+                    &r.environment().owner,
                     SessionEnvironmentOwner::Resident(current)
                         if Arc::ptr_eq(&current.environment, expected)
                             && current.environment.lifecycle().handle() == expected.lifecycle().handle()
@@ -137,7 +137,7 @@ pub(super) fn closed_environment_recovery_plan<'a>(
                 )
             } else if let Some((identity, binding)) = pending
                 && matches!(
-                    &r.environment.owner,
+                    &r.environment().owner,
                     SessionEnvironmentOwner::Preparing(
                         SessionEnvironmentPreparation::AwaitingAdoption {
                             identity: current_identity,
@@ -156,7 +156,7 @@ pub(super) fn closed_environment_recovery_plan<'a>(
             } else if revoked.is_none()
                 && resident.is_none()
                 && pending.is_none()
-                && matches!(r.environment.owner, SessionEnvironmentOwner::Vacant)
+                && matches!(r.environment().owner, SessionEnvironmentOwner::Vacant)
             {
                 (
                     ClosedEnvironmentRecoveryOwnerClass::Vacant,

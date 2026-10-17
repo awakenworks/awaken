@@ -64,7 +64,7 @@ impl TerminalEffects {
         let (assignment, resolved_resources) = self
             .sessions
             .read_realization(command.session_id.as_str(), |r| {
-                (r.effects.assignment.clone(), r.previous_resources())
+                (r.effects().assignment.clone(), r.previous_resources())
             })?
             .ok_or_else(|| {
                 RunError::unavailable_classified(

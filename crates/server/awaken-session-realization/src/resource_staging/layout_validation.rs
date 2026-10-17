@@ -30,9 +30,9 @@ impl ResourceStaging {
             .modify_session(thread, |installed| {
                 (
                     installed.inputs.baseline.clone(),
-                    installed.realization.staging.content_delivery,
+                    installed.realization.staging().content_delivery,
                     installed.inputs.environment_projection.clone(),
-                    installed.realization.environment.owner.resident(),
+                    installed.realization.environment().owner.resident(),
                 )
             })?
             .unwrap_or_default();

@@ -90,15 +90,60 @@ impl SessionRealizationAuthority {
 /// under which realization lease, and which Resources, memory, Skills and MCP
 /// generations are staged for it. Built while realizing; revocation keeps
 /// only what a retry of a retained Environment owner still needs.
+///
+/// One state per realization component. Each is reached through a shared view
+/// or a mutable view of that one state only; a change that spans states is a
+/// named method of this type, so no caller edits two components' state through
+/// one borrow.
 #[derive(Default)]
 pub struct SessionRealization {
-    pub environment: EnvironmentHoldingState,
-    pub staging: ResourceStagingState,
-    pub effects: TerminalEffectsState,
-    pub execution: ExecutionAuthorityState,
+    environment: EnvironmentHoldingState,
+    staging: ResourceStagingState,
+    effects: TerminalEffectsState,
+    execution: ExecutionAuthorityState,
 }
 
 impl SessionRealization {
+    /// The Environment holding state.
+    pub fn environment(&self) -> &EnvironmentHoldingState {
+        &self.environment
+    }
+
+    /// The Environment holding state, for a change of that state alone.
+    pub fn environment_mut(&mut self) -> &mut EnvironmentHoldingState {
+        &mut self.environment
+    }
+
+    /// The Resource staging state.
+    pub fn staging(&self) -> &ResourceStagingState {
+        &self.staging
+    }
+
+    /// The Resource staging state, for a change of that state alone.
+    pub fn staging_mut(&mut self) -> &mut ResourceStagingState {
+        &mut self.staging
+    }
+
+    /// The terminal effects state.
+    pub fn effects(&self) -> &TerminalEffectsState {
+        &self.effects
+    }
+
+    /// The terminal effects state, for a change of that state alone.
+    pub fn effects_mut(&mut self) -> &mut TerminalEffectsState {
+        &mut self.effects
+    }
+
+    /// The execution authority state.
+    pub fn execution(&self) -> &ExecutionAuthorityState {
+        &self.execution
+    }
+
+    /// The execution authority state, for a change of that state alone.
+    pub fn execution_mut(&mut self) -> &mut ExecutionAuthorityState {
+        &mut self.execution
+    }
+
     /// The original canonical MCP root rule, read under the installed Session lock.
     /// Absence remains explicit and Closed never grants continuing admission.
     pub fn mcp_generation_root_authority(
@@ -166,6 +211,45 @@ impl SessionRealization {
                 ..Default::default()
             },
             effects: Default::default(),
+        }
+    }
+
+    /// The Environment's arrival or disposal decides how Resource staging
+    /// reconciles its Resources with it next.
+    pub fn set_resource_reconciliation(
+        &mut self,
+        reconciliation: crate::staged_resources::EnvironmentResourceReconciliation,
+    ) {
+        self.staging.reconciliation = reconciliation;
+    }
+
+    /// End a Resource preparation scope: release its cancellation and, when the
+    /// scope introduced the current lease generation and nothing published
+    /// under it, withdraw that lease. Another preparation or generation is left
+    /// untouched.
+    pub fn end_resource_preparation(
+        &mut self,
+        cancellation: &Arc<awaken_runtime_contract::CancellationToken>,
+        introduced: Option<&session_resource::SessionRealizationLease>,
+    ) {
+        if !self
+            .staging
+            .preparation
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, cancellation))
+        {
+            return;
+        }
+        self.staging.preparation = None;
+        if introduced.is_some_and(|asserted| {
+            self.execution.authority.lease().is_some_and(|current| {
+                awaken_session_realization_contract::realization_lease_generation_authorizes(
+                    current, asserted,
+                )
+            })
+        }) {
+            self.execution.authority = SessionRealizationAuthority::Uninstalled;
+            self.execution.changed.notify_waiters();
         }
     }
 

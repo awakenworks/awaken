@@ -34,7 +34,7 @@ impl crate::terminal_effects::TerminalEffects {
         self
             .sessions
             .read_realization(session_id.as_str(), |r| {
-                let current = r.execution.authority.lease().ok_or_else(|| {
+                let current = r.execution().authority.lease().ok_or_else(|| {
                     RealizationError::pending(
                         PendingState::TerminalCleanupProjectionMissing,
                         "terminal cleanup has no installed realization generation",
@@ -46,7 +46,7 @@ impl crate::terminal_effects::TerminalEffects {
                         "terminal cleanup realization generation was replaced",
                     ));
                 }
-                if r.execution.authority.remaining_for(lease).is_none() {
+                if r.execution().authority.remaining_for(lease).is_none() {
                     return Err(RealizationError::authority_lost(
                         AuthorityLoss::CleanupEffectExpired,
                         "terminal cleanup generation has no current live renewal at its physical boundary",
@@ -72,7 +72,7 @@ impl crate::terminal_effects::TerminalEffects {
     ) -> Result<bool, RealizationError> {
         Ok(self
             .sessions
-            .read_realization(thread, |r| match &r.environment.owner {
+            .read_realization(thread, |r| match &r.environment().owner {
                 SessionEnvironmentOwner::Retiring(retirement)
                     if matches!(
                         retirement.cause,
@@ -132,7 +132,9 @@ impl crate::terminal_effects::TerminalEffects {
     ) -> Result<TerminalMemoryPlan, RealizationError> {
         let transition = self
             .sessions
-            .read_realization(&effect.command.thread_id, |r| r.staging.transition.clone())?
+            .read_realization(&effect.command.thread_id, |r| {
+                r.staging().transition.clone()
+            })?
             .flatten()
             .ok_or_else(|| {
                 RealizationError::invariant(
@@ -198,8 +200,8 @@ impl crate::terminal_effects::TerminalEffects {
                 let baseline = installed.inputs.baseline.as_ref();
                 let r = &installed.realization;
                 (
-                    r.effects.assignment.clone(),
-                    r.environment.owner.clone(),
+                    r.effects().assignment.clone(),
+                    r.environment().owner.clone(),
                     r.previous_resources(),
                     installed.inputs.workspace.clone(),
                     baseline.map(|baseline| baseline.environment.idle_retention.clone()),

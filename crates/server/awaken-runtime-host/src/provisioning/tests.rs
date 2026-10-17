@@ -299,7 +299,7 @@ async fn root_terminal_cleanup_effect(
     let environment = host
         .installed_sessions
         .realizations()
-        .read_realization(session_id, |r| r.environment.owner.resident())
+        .read_realization(session_id, |r| r.environment().owner.resident())
         .unwrap()
         .flatten()
         .expect("terminal test requires a resident Environment");

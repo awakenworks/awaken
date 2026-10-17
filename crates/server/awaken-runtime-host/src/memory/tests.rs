@@ -980,7 +980,9 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
     recovered_host
         .installed_sessions
         .realizations()
-        .update_realization(parent, |r| r.staging.memory = Some(direct_binding.clone()))
+        .update_realization(parent, |r| {
+            r.staging_mut().memory = Some(direct_binding.clone())
+        })
         .expect("installed Sessions");
     let first_recovery = recovered_host
         .bind_thread_memory_recovery(parent, parent_commit.clone())

@@ -29,10 +29,10 @@ impl RealizationExecutor {
         let realizations = self.sessions.clone();
         let (current, live) = realizations
             .read_realization(thread, |r| {
-                r.execution.authority.lease().map(|current| {
+                r.execution().authority.lease().map(|current| {
                     (
                         current.clone(),
-                        r.execution.authority.remaining_for(asserted).is_some(),
+                        r.execution().authority.remaining_for(asserted).is_some(),
                     )
                 })
             })?

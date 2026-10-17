@@ -112,7 +112,9 @@ impl crate::resource_staging::ResourceStaging {
         let awaiting_adoption = live_environment.is_none()
             && (prospective_environment_binding
                 || realizations
-                    .read_realization(thread, |r| r.environment.owner.durable_binding().is_some())?
+                    .read_realization(thread, |r| {
+                        r.environment().owner.durable_binding().is_some()
+                    })?
                     .unwrap_or(false));
         if awaiting_adoption {
             // The bound provider substrate is the only physical prior
@@ -135,7 +137,7 @@ impl crate::resource_staging::ResourceStaging {
                 .map_err(skill_store_run_error)?;
             realizations.update_realization(thread, |r| {
                 r.validate_preparation_publication(realization_lease)?;
-                r.staging.skills = Some(versions);
+                r.staging_mut().skills = Some(versions);
                 Ok::<_, awaken_session_types::RunError>(())
             })??;
             return Ok(());
@@ -166,7 +168,7 @@ impl crate::resource_staging::ResourceStaging {
         // Worker enters the frozen Session realization path.
         realizations.enter_session_dispatch(thread)?;
         let checks = realizations
-            .read_realization(thread, |r| r.staging.resources.binding_checks.clone())?
+            .read_realization(thread, |r| r.staging().resources.binding_checks.clone())?
             .unwrap_or_default();
         if checks.is_empty() {
             return Ok(());
@@ -281,12 +283,14 @@ impl crate::resource_staging::ResourceStaging {
         // effect below.
         self.validate_effective_resource_layout(peers, thread, inputs)?;
         sessions.update_realization(thread, |r| {
-            r.staging.transition = Some(transition.clone());
+            r.staging_mut().transition = Some(transition.clone());
         })?;
         let live_environment = environments.session_environment(thread).await?;
         let awaiting_adoption = live_environment.is_none()
             && sessions
-                .read_realization(thread, |r| r.environment.owner.durable_binding().is_some())?
+                .read_realization(thread, |r| {
+                    r.environment().owner.durable_binding().is_some()
+                })?
                 .unwrap_or(false);
         let (baseline_is_staged, session_dispatch, reconciliation, environment_projection) =
             sessions
@@ -294,7 +298,7 @@ impl crate::resource_staging::ResourceStaging {
                     (
                         installed.inputs.baseline.is_some(),
                         installed.run.session_dispatch(),
-                        installed.realization.staging.reconciliation,
+                        installed.realization.staging().reconciliation,
                         installed.inputs.environment_projection.clone(),
                     )
                 })?
@@ -603,7 +607,7 @@ impl crate::resource_staging::ResourceStaging {
                 // must not reinstall a second projection after publication.
                 if reconcile_skills {
                     let versions = sessions
-                        .read_realization(thread, |r| r.staging.skills.clone())?
+                        .read_realization(thread, |r| r.staging().skills.clone())?
                         .flatten()
                         .ok_or_else(|| {
                             RunError::internal("compiled pinned Skill bytes are missing")
@@ -693,7 +697,7 @@ impl crate::resource_staging::ResourceStaging {
             update.commit();
         }
         sessions.update_realization(thread, |r| {
-            r.staging.reconciliation = EnvironmentResourceReconciliation::None;
+            r.staging_mut().reconciliation = EnvironmentResourceReconciliation::None;
         })?;
         environments.evict_session_for_rebuild(thread).await?;
         Ok(())
@@ -723,8 +727,8 @@ impl crate::resource_staging::ResourceStaging {
         let (expected_binding, projected_transition) = realization_view
             .read_realization(thread, |r| {
                 (
-                    r.environment.owner.durable_binding().is_some(),
-                    r.staging.transition.clone(),
+                    r.environment().owner.durable_binding().is_some(),
+                    r.staging().transition.clone(),
                 )
             })?
             .unwrap_or_default();
@@ -809,8 +813,8 @@ impl crate::resource_staging::ResourceStaging {
         // rather than inferred from a cache. Persist only the command projection;
         // the active manifest remains absent until physical realization succeeds.
         realization_view.update_realization(thread, |r| {
-            if r.staging.transition.is_none() {
-                r.staging.transition = Some(proven_transition);
+            if r.staging().transition.is_none() {
+                r.staging_mut().transition = Some(proven_transition);
             }
         })?;
         Ok(())

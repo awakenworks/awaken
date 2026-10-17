@@ -46,7 +46,7 @@ pub(crate) fn read_pinned_skill(
     use awaken_provisioning_contract::WorkspaceLayout;
     use std::path::Component;
 
-    if !slot.run.session_dispatch || slot.realization.environment.owner.resident().is_some() {
+    if !slot.run.session_dispatch || slot.realization.environment().owner.resident().is_some() {
         return None;
     }
     let relative = WorkspaceLayout::relative(&args.path).unwrap_or(&args.path);
@@ -74,7 +74,7 @@ pub(crate) fn read_pinned_skill(
         let directory = format!("{DELIVERED_SKILLS_SUBDIR}/{stem}");
         if !slot
             .realization
-            .staging
+            .staging()
             .skill_prompt
             .as_ref()
             .is_some_and(|prompt| prompt.exposes_directory(&directory))
@@ -83,7 +83,7 @@ pub(crate) fn read_pinned_skill(
         }
         let manifest = slot
             .realization
-            .staging
+            .staging()
             .run_manifest(slot.run.session_dispatch)
             .ok_or_else(failure)?;
         if slot.inputs.workspace.as_deref() != Some(manifest.workspace_id.as_str()) {
@@ -100,7 +100,7 @@ pub(crate) fn read_pinned_skill(
         }
         let version = slot
             .realization
-            .staging
+            .staging()
             .skills
             .as_ref()
             .and_then(|versions| {
@@ -855,7 +855,7 @@ mod tests {
         let projection = filesystem_skill_prompt(registry.as_ref()).unwrap().unwrap();
         let slots = Arc::new(crate::installed_session::InstalledSessions::default());
         slots.install_realization("skill-path", |r| {
-            r.staging.skill_prompt = Some(projection.clone())
+            r.staging_mut().skill_prompt = Some(projection.clone())
         });
         assert!(
             slots
@@ -876,16 +876,17 @@ mod tests {
                     LegacyDirectEnvironmentProvenance, LegacyEnvironmentEffect,
                     SessionEnvironmentOwner,
                 };
-                r.environment.owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
-                    binding: "fixture".into(),
-                    environment: env.clone(),
-                    identity: BoundSessionEnvironmentIdentity::LegacyDirect(
-                        LegacyDirectEnvironmentProvenance::DurableBinding {
-                            binding: "fixture".into(),
-                            effect: LegacyEnvironmentEffect::Absent,
-                        },
-                    ),
-                });
+                r.environment_mut().owner =
+                    SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
+                        binding: "fixture".into(),
+                        environment: env.clone(),
+                        identity: BoundSessionEnvironmentIdentity::LegacyDirect(
+                            LegacyDirectEnvironmentProvenance::DurableBinding {
+                                binding: "fixture".into(),
+                                effect: LegacyEnvironmentEffect::Absent,
+                            },
+                        ),
+                    });
             })
             .expect("installed Sessions");
         for cwd in [
@@ -937,7 +938,7 @@ mod tests {
         assert_eq!(
             slots
                 .realizations()
-                .read_realization("skill-path", |r| r.staging.skill_prompt.clone())
+                .read_realization("skill-path", |r| r.staging().skill_prompt.clone())
                 .expect("installed Sessions")
                 .flatten(),
             Some(projection),
@@ -948,7 +949,7 @@ mod tests {
         slots
             .realizations()
             .update_realization("skill-path", |r| {
-                r.staging.skill_prompt = Some(FilesystemSkillPrompt::from_entries(vec![(
+                r.staging_mut().skill_prompt = Some(FilesystemSkillPrompt::from_entries(vec![(
                     "Unsafe".into(),
                     "invalid".into(),
                     "../escape".into(),

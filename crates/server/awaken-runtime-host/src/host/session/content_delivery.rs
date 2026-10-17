@@ -145,7 +145,7 @@ impl SharedHost {
 
         let mut roots = realizations
             .read_realization(thread, |r| {
-                r.staging
+                r.staging()
                     .resources
                     .repositories
                     .iter()
@@ -236,7 +236,7 @@ impl SharedHost {
         // a restricted Outcome grader or delegate must reuse that immutable
         // choice instead of trying to re-author the Session's mounts/tools.
         if let Some(existing) = realizations
-            .read_realization(thread, |r| r.staging.content_delivery)?
+            .read_realization(thread, |r| r.staging().content_delivery)?
             .flatten()
         {
             if managed_has_skill
@@ -262,7 +262,7 @@ impl SharedHost {
         if delivery == crate::frozen_inputs::ManagedContentDelivery::SemanticTools
             && realizations
                 .read_realization(thread, |r| {
-                    r.staging.resources
+                    r.staging().resources
                         .resource_prompts
                         .iter()
                         .any(crate::managed_input_layout::ResourcePromptProjection::requires_filesystem_delivery)
@@ -295,7 +295,9 @@ impl SharedHost {
                 ));
             }
         }
-        realizations.update_realization(thread, |r| r.staging.content_delivery = Some(delivery))?;
+        realizations.update_realization(thread, |r| {
+            r.staging_mut().content_delivery = Some(delivery)
+        })?;
         Ok(delivery)
     }
 
@@ -316,7 +318,7 @@ impl SharedHost {
                 };
                 let frozen_has_selected =
                     slot.realization
-                        .staging
+                        .staging()
                         .skills
                         .as_ref()
                         .is_some_and(|versions| {
@@ -331,7 +333,7 @@ impl SharedHost {
                 let frozen_requires = !slot.run.session_dispatch
                     && slot
                         .realization
-                        .staging
+                        .staging()
                         .skills
                         .as_ref()
                         .is_some_and(|versions| {
@@ -355,12 +357,12 @@ impl SharedHost {
                 let slot_requires = !slot.inputs.delegates.is_empty()
                     || slot
                         .realization
-                        .staging
+                        .staging()
                         .resources
                         .mounts
                         .iter()
                         .any(mount_requires_environment)
-                    || !slot.realization.staging.resources.repositories.is_empty()
+                    || !slot.realization.staging().resources.repositories.is_empty()
                     || baseline_requires
                     || frozen_requires;
                 (
@@ -416,7 +418,7 @@ impl SharedHost {
                         && slot.inputs.environment_snapshot.is_none()
                         && slot
                             .realization
-                            .staging
+                            .staging()
                             .run_manifest(slot.run.session_dispatch)
                             .is_none()
                 })

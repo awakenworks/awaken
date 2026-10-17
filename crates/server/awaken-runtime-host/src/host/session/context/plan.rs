@@ -109,8 +109,8 @@ pub(super) async fn prepare(
             crate::session_resource::SessionResourceTransition::new(empty.clone(), empty)
                 .map_err(|error| HostError::internal(error.to_string()))?;
         realizations.update_realization(thread, |r| {
-            if r.staging.transition.is_none() {
-                r.staging.transition = Some(transition);
+            if r.staging().transition.is_none() {
+                r.staging_mut().transition = Some(transition);
             }
         })?;
     }
@@ -120,7 +120,7 @@ pub(super) async fn prepare(
     // wiring can classify a cold cache as instruction-only and then discover
     // support files after the sandbox-free decision has already been made.
     let frozen_skill_versions = realizations
-        .read_realization(thread, |r| r.staging.skills.clone())?
+        .read_realization(thread, |r| r.staging().skills.clone())?
         .flatten();
     // Reservation is metadata-only on a cold Coordinator. The aggregate
     // Resource transition already owns the exact immutable Skill pins,
@@ -130,7 +130,7 @@ pub(super) async fn prepare(
         Some(
             realizations
                 .read_realization(thread, |r| {
-                    let transition = r.staging.transition.as_ref()?;
+                    let transition = r.staging().transition.as_ref()?;
                     Some(transition.desired().resources.skills().to_vec())
                 })?
                 .flatten()

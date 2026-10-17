@@ -110,7 +110,7 @@ impl ResourceStaging {
         let sessions = &self.sessions;
         let cache_matches = sessions
             .read_realization(thread, |r| {
-                r.staging.effect_key.as_deref() == Some(effect_key)
+                r.staging().effect_key.as_deref() == Some(effect_key)
             })?
             .unwrap_or(false);
         if !cache_matches {
@@ -129,10 +129,10 @@ impl ResourceStaging {
         }
         sessions
             .read_realization(thread, |r| {
-                (r.staging.effect_key.as_deref() == Some(effect_key)).then(|| {
+                (r.staging().effect_key.as_deref() == Some(effect_key)).then(|| {
                     CompiledEffectiveInputs {
-                        staged: r.staging.resources.clone(),
-                        memory_bindings: r.staging.memory_bindings.clone(),
+                        staged: r.staging().resources.clone(),
+                        memory_bindings: r.staging().memory_bindings.clone(),
                     }
                 })
             })?
@@ -222,7 +222,7 @@ impl ResourceStaging {
         if claim.is_none()
             && realizations
                 .read_realization(thread, |r| {
-                    r.staging.effect_key.as_deref() == Some(effect_key.as_str())
+                    r.staging().effect_key.as_deref() == Some(effect_key.as_str())
                 })?
                 .unwrap_or(false)
         {

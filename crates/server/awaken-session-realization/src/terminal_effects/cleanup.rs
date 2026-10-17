@@ -70,7 +70,7 @@ impl crate::terminal_effects::TerminalEffects {
         }
         let root_realization = sessions
             .read_realization(effect.command.session_id.as_str(), |r| {
-                r.execution.phase.clone()
+                r.execution().phase.clone()
             })?
             .ok_or_else(|| {
                 RealizationError::pending(
@@ -129,7 +129,7 @@ impl crate::terminal_effects::TerminalEffects {
             .transpose()?;
 
         sessions.modify_realization(&effect.command.thread_id, |r| {
-            r.effects.root = Some(effect.command.session_id.to_string());
+            r.effects_mut().root = Some(effect.command.session_id.to_string());
         })?;
 
         if crate::session_realizations::primary_or_delegated_run_active(
@@ -150,7 +150,7 @@ impl crate::terminal_effects::TerminalEffects {
         }
         if let Some(owned) = sessions
             .read_realization(&effect.command.thread_id, |r| {
-                r.environment.owner.terminal_bound_environment()
+                r.environment().owner.terminal_bound_environment()
             })?
             .flatten()
         {
@@ -168,7 +168,7 @@ impl crate::terminal_effects::TerminalEffects {
             }
             let retained = sessions
                 .read_realization(&effect.command.thread_id, |r| {
-                    let current = r.environment.owner.terminal_bound_environment();
+                    let current = r.environment().owner.terminal_bound_environment();
                     current.is_some_and(|current| current.exact_matches(&owned))
                 })?
                 .unwrap_or(false);
@@ -331,7 +331,7 @@ impl crate::terminal_effects::TerminalEffects {
         let sessions = &self.sessions;
         let session_id = &effect.command.session_id;
         let root_realization = sessions
-            .read_realization(session_id.as_str(), |r| r.execution.phase.clone())?
+            .read_realization(session_id.as_str(), |r| r.execution().phase.clone())?
             .ok_or_else(|| {
                 RealizationError::pending(
                     PendingState::TerminalCleanupProjectionMissing,
@@ -369,7 +369,7 @@ impl crate::terminal_effects::TerminalEffects {
             .as_ref()
             .is_some_and(|prepared| prepared.environment.environment.is_none());
         let owner = sessions
-            .read_realization(session_id.as_str(), |r| r.environment.owner.clone())?
+            .read_realization(session_id.as_str(), |r| r.environment().owner.clone())?
             .ok_or_else(|| {
                 RealizationError::pending(
                     PendingState::TerminalCleanupProjectionMissing,
@@ -544,7 +544,7 @@ impl crate::terminal_effects::TerminalEffects {
     ) -> Result<bool, RealizationError> {
         let realizations = self.sessions.clone();
         let projected_terminal = realizations
-            .read_realization(session_id, |r| r.effects.assignment.is_some())?
+            .read_realization(session_id, |r| r.effects().assignment.is_some())?
             .unwrap_or(false);
         if !projected_terminal {
             return Ok(false);
@@ -562,14 +562,14 @@ impl crate::terminal_effects::TerminalEffects {
     ) -> Result<bool, RealizationError> {
         let realizations = self.sessions.clone();
         let Some(root_realization) =
-            realizations.read_realization(session_id, |r| r.execution.phase.clone())?
+            realizations.read_realization(session_id, |r| r.execution().phase.clone())?
         else {
             return Ok(false);
         };
         let _root_realization = root_realization.lock().await;
         let authorized = realizations
             .read_realization(session_id, |r| {
-                r.execution.authority.lease().is_some_and(|current| {
+                r.execution().authority.lease().is_some_and(|current| {
                     awaken_session_realization_contract::realization_lease_generation_authorizes(
                         current, lease,
                     )
@@ -586,7 +586,7 @@ impl crate::terminal_effects::TerminalEffects {
                 if thread_id == session_id
                     || realizations
                         .read_realization(&thread_id, |r| {
-                            r.effects.root.as_deref() == Some(session_id)
+                            r.effects().root.as_deref() == Some(session_id)
                         })?
                         .unwrap_or(false)
                 {
@@ -602,14 +602,14 @@ impl crate::terminal_effects::TerminalEffects {
         let mut removed = false;
         for thread_id in targets {
             let target_lifecycle =
-                realizations.read_realization(&thread_id, |r| r.environment.lifecycle.clone())?;
+                realizations.read_realization(&thread_id, |r| r.environment().lifecycle.clone())?;
             let _target_lifecycle = match target_lifecycle {
                 Some(lifecycle) => Some(lifecycle.lock_owned().await),
                 None => None,
             };
             let authorized = realizations
                 .read_realization(session_id, |r| {
-                    r.execution.authority.lease().is_some_and(|current| {
+                    r.execution().authority.lease().is_some_and(|current| {
                         awaken_session_realization_contract::realization_lease_generation_authorizes(
                             current, lease,
                         )
@@ -622,7 +622,7 @@ impl crate::terminal_effects::TerminalEffects {
             let belongs_to_operation = thread_id == session_id
                 || realizations
                     .read_realization(&thread_id, |r| {
-                        r.effects.root.as_deref() == Some(session_id)
+                        r.effects().root.as_deref() == Some(session_id)
                     })?
                     .unwrap_or(false);
             if !belongs_to_operation {

@@ -233,7 +233,7 @@ impl ManagedSessionRootFixture {
             awaken_session_types::RunError::unavailable("fixture assignment is absent")
         })?;
         let closed = source.host.installed_sessions.realizations().read_realization(thread, |r| {
-            matches!(&r.execution.authority, crate::realization_state::SessionRealizationAuthority::Closed(Some(old)) if old == current)
+            matches!(&r.execution().authority, crate::realization_state::SessionRealizationAuthority::Closed(Some(old)) if old == current)
         }).expect("installed Sessions").unwrap_or(false);
         if !closed {
             return Err(awaken_session_types::RunError::unavailable(
@@ -418,9 +418,9 @@ impl ManagedSessionRootFixture {
             .installed_sessions
             .realizations()
             .read_realization(thread, |r| {
-                r.staging.manifest.as_ref() == Some(&prepared)
-                    && r.execution.authority.lease() == Some(lease)
-                    && r.execution.authority.remaining_for(lease).is_some()
+                r.staging().manifest.as_ref() == Some(&prepared)
+                    && r.execution().authority.lease() == Some(lease)
+                    && r.execution().authority.remaining_for(lease).is_some()
             })
             .expect("installed Sessions")
             .unwrap_or(false);

@@ -60,11 +60,11 @@ impl crate::environment_holding::EnvironmentHolding {
             ));
         }
         self.sessions.update_session(thread, |installed| {
-            let candidate = installed.realization.environment.owner.begin_preparing(
-                environment,
-                kind,
-                intent,
-            )?;
+            let candidate = installed
+                .realization
+                .environment_mut()
+                .owner
+                .begin_preparing(environment, kind, intent)?;
             #[cfg(target_os = "linux")]
             peers
                 .authority
@@ -99,7 +99,9 @@ impl crate::environment_holding::EnvironmentHolding {
         identity: BoundSessionEnvironmentIdentity,
     ) -> Result<Arc<crate::session_environment::SessionEnvironment>, RealizationError> {
         self.sessions.update_realization(thread, |r| {
-            r.environment.owner.publish_prepared(candidate, identity)
+            r.environment_mut()
+                .owner
+                .publish_prepared(candidate, identity)
         })?
     }
 
@@ -110,7 +112,7 @@ impl crate::environment_holding::EnvironmentHolding {
         identity: BoundSessionEnvironmentIdentity,
     ) -> Result<UnboundSessionEnvironment, RealizationError> {
         self.sessions.update_realization(thread, |r| {
-            r.environment
+            r.environment_mut()
                 .owner
                 .retain_committed_candidate(candidate, identity)
         })?
@@ -125,7 +127,7 @@ impl crate::environment_holding::EnvironmentHolding {
     ) -> Result<(), RealizationError> {
         let retirement = self
             .sessions
-            .read_realization(thread, |r| match &r.environment.owner {
+            .read_realization(thread, |r| match &r.environment().owner {
                 SessionEnvironmentOwner::Retiring(retiring)
                     if retiring.cause
                         == SessionEnvironmentRetirementCause::UnpublishedCandidate =>
@@ -175,13 +177,18 @@ impl crate::environment_holding::EnvironmentHolding {
             .modify_session(thread, |installed| {
                 let managed =
                     installed.inputs.baseline.is_some() || installed.run.session_dispatch();
-                let ordinary = installed.realization.execution.authority.lease().is_none()
+                let ordinary = installed
+                    .realization
+                    .execution()
+                    .authority
+                    .lease()
+                    .is_none()
                     && installed.run.dispatch_claim().is_some()
                     && !managed;
                 (
                     ordinary,
                     managed,
-                    installed.realization.execution.authority.is_closed(),
+                    installed.realization.execution().authority.is_closed(),
                 )
             })?
             .unwrap_or_default();

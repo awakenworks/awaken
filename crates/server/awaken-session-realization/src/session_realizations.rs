@@ -52,10 +52,10 @@ impl SessionRealizationRevocationSelection {
         expected: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         phase: &Arc<tokio::sync::Mutex<()>>,
     ) -> Option<Self> {
-        if !Arc::ptr_eq(phase, &realization.execution.phase) {
+        if !Arc::ptr_eq(phase, &realization.execution().phase) {
             return None;
         }
-        let current = match &realization.execution.authority {
+        let current = match &realization.execution().authority {
             SessionRealizationAuthority::Live(proof) => &proof.lease,
             SessionRealizationAuthority::Closed(Some(lease)) => lease,
             SessionRealizationAuthority::Uninstalled
@@ -73,9 +73,9 @@ impl SessionRealizationRevocationSelection {
     /// The selection is cleanup identity, not proof of process death.
     pub fn from_realization(realization: &SessionRealization) -> Self {
         Self {
-            realization: realization.execution.phase.clone(),
-            lifecycle: realization.environment.lifecycle.clone(),
-            authority: realization.execution.authority.clone(),
+            realization: realization.execution().phase.clone(),
+            lifecycle: realization.environment().lifecycle.clone(),
+            authority: realization.execution().authority.clone(),
         }
     }
 
@@ -94,7 +94,7 @@ impl SessionRealizationRevocationSelection {
         use crate::environment_owner::{
             RetiringEnvironmentOwner, SessionEnvironmentOwner, SessionEnvironmentRestoration,
         };
-        match (&realization.environment.owner, expected_owner) {
+        match (&realization.environment().owner, expected_owner) {
             (SessionEnvironmentOwner::Vacant, SessionEnvironmentOwner::Vacant) => true,
             (SessionEnvironmentOwner::Vacant, SessionEnvironmentOwner::Retiring(expected)) => {
                 disposed && matches!(&expected.owned, RetiringEnvironmentOwner::Unbound(_))
@@ -117,9 +117,9 @@ impl SessionRealizationRevocationSelection {
 
     /// Require both original lock allocations and the original closed authority.
     pub fn matches(&self, realization: &SessionRealization) -> bool {
-        Arc::ptr_eq(&self.realization, &realization.execution.phase)
-            && Arc::ptr_eq(&self.lifecycle, &realization.environment.lifecycle)
-            && self.authority == realization.execution.authority
+        Arc::ptr_eq(&self.realization, &realization.execution().phase)
+            && Arc::ptr_eq(&self.lifecycle, &realization.environment().lifecycle)
+            && self.authority == realization.execution().authority
     }
 }
 
@@ -395,7 +395,11 @@ impl SessionRealizations {
         fence: awaken_session_mcp::McpQuiescenceAdmissionFence,
     ) -> Result<bool, RealizationError> {
         Ok(self.update_session(session, |installed| {
-            installed.realization.staging.mcp.close_admission(fence)
+            installed
+                .realization
+                .staging_mut()
+                .mcp
+                .close_admission(fence)
         })??)
     }
 
@@ -403,7 +407,7 @@ impl SessionRealizations {
     pub fn mcp_realization_admitted(&self, session: &str) -> Result<bool, RealizationError> {
         Ok(self
             .modify_session(session, |installed| {
-                installed.realization.staging.mcp.admits_realization()
+                installed.realization.staging().mcp.admits_realization()
             })?
             .unwrap_or(true))
     }
@@ -420,9 +424,9 @@ impl SessionRealizations {
         has_native: bool,
     ) -> Result<Vec<String>, RealizationError> {
         self.modify_session(session, |installed| {
-            let mut prompts = installed.realization.staging.resources.prompts.clone();
-            let delivery = installed.realization.staging.content_delivery.unwrap_or_default();
-            let environment = installed.realization.environment.owner.resident();
+            let mut prompts = installed.realization.staging().resources.prompts.clone();
+            let delivery = installed.realization.staging().content_delivery.unwrap_or_default();
+            let environment = installed.realization.environment().owner.resident();
             let path_view = match environment.as_deref() {
                 Some(environment) => environment
                     .agent_tools()
@@ -431,7 +435,7 @@ impl SessionRealizations {
                 None => Default::default(),
             };
             prompts.extend(
-                installed.realization.staging.resources
+                installed.realization.staging().resources
                     .resource_prompts
                     .iter()
                     .map(|prompt| prompt.render(delivery, path_view.clone())),
@@ -441,7 +445,7 @@ impl SessionRealizations {
                     .filter(|prompt| !awaken_session_configuration_contract::SessionContextSeed::is_seed_prompt(prompt))
                     .cloned());
             }
-            if let Some(skill_prompt) = &installed.realization.staging.skill_prompt {
+            if let Some(skill_prompt) = &installed.realization.staging().skill_prompt {
                 prompts.push(
                     skill_prompt
                         .render(&path_view, environment.as_deref())
@@ -456,7 +460,7 @@ impl SessionRealizations {
     /// Hold one installed Session's Environment `lifecycle` lock.
     pub async fn lock_lifecycle(&self, session: &str) -> Result<LifecycleGuard, RealizationError> {
         let lifecycle = self.update_session(session, |installed| {
-            installed.realization.environment.lifecycle.clone()
+            installed.realization.environment().lifecycle.clone()
         })?;
         Ok(LifecycleGuard::new(session, lifecycle.lock_owned().await))
     }
@@ -469,7 +473,7 @@ impl SessionRealizations {
         session: &str,
     ) -> Result<Option<LifecycleGuard>, RealizationError> {
         let lifecycle = self.modify_session(session, |installed| {
-            installed.realization.environment.lifecycle.clone()
+            installed.realization.environment().lifecycle.clone()
         })?;
         Ok(match lifecycle {
             Some(lifecycle) => Some(LifecycleGuard::new(session, lifecycle.lock_owned().await)),
@@ -482,7 +486,7 @@ impl SessionRealizations {
         &self,
         session: &str,
     ) -> Result<ResourceProjectionGuard, RealizationError> {
-        let projection = self.update_realization(session, |r| r.staging.projection.clone())?;
+        let projection = self.update_realization(session, |r| r.staging().projection.clone())?;
         Ok(ResourceProjectionGuard::new(
             session,
             projection.lock_owned().await,
@@ -495,7 +499,7 @@ impl SessionRealizations {
         session: &str,
     ) -> Result<Arc<tokio::sync::Mutex<()>>, RealizationError> {
         self.update_session(session, |installed| {
-            installed.realization.execution.phase.clone()
+            installed.realization.execution().phase.clone()
         })
     }
 
@@ -581,8 +585,9 @@ impl SessionRealizations {
     pub fn end_terminal_disposal(&self, session: &str) -> Result<(), RealizationError> {
         self.modify_session(session, |installed| {
             installed.run.drop_context();
-            installed.realization.staging.reconciliation =
-                crate::staged_resources::EnvironmentResourceReconciliation::None;
+            installed.realization.set_resource_reconciliation(
+                crate::staged_resources::EnvironmentResourceReconciliation::None,
+            );
         })?;
         Ok(())
     }

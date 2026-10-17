@@ -213,7 +213,7 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
     host.installed_sessions
         .realizations()
         .update_realization(thread, |state| {
-            state.staging.reconciliation =
+            state.staging_mut().reconciliation =
                 crate::staged_resources::EnvironmentResourceReconciliation::Adopted;
         })
         .expect("installed Sessions");

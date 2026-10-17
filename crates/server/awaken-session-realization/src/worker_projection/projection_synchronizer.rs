@@ -192,7 +192,7 @@ where
                 .is_some_and(|publication| !requires_local_environment(&publication.resolved_spec));
             let has_local_environment_owner = realizations
                 .read_realization(session_id.as_str(), |r| {
-                    r.environment.owner.has_local_environment()
+                    r.environment().owner.has_local_environment()
                 })?
                 .unwrap_or(false);
             let has_environment_binding = self.claimed_environment_binding.is_some()
@@ -267,7 +267,7 @@ where
         let has_environment_binding = projection.environment.binding().is_some();
         let runtime_authority_resident = realizations
             .modify_session(session_id.as_str(), |held| {
-                held.run.holds_context() || held.realization.environment.owner.is_resident()
+                held.run.holds_context() || held.realization.environment().owner.is_resident()
             })?
             .unwrap_or(false);
         if self.requires_runtime_before_effects

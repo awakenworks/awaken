@@ -26,19 +26,19 @@ impl InstalledSessions {
         session: &str,
         mut on_admit: impl FnMut(&mut InstalledSession) -> R,
     ) -> (SessionRealizationPermit, R) {
-        let slots = self;
+        let installed = self;
         SessionRealizationPermit::acquire(
             &awaken_session_types::SessionId::from(session),
             move || {
-                let phase = slots.update(session, |slot| slot.realization.execution.phase.clone());
+                let phase = installed.update(session, |s| s.realization.execution().phase.clone());
                 async move {
                     let owner = phase.clone().lock_owned().await;
                     (phase, owner)
                 }
             },
             |identity| {
-                self.modify(session, |slot| {
-                    Arc::ptr_eq(&slot.realization.execution.phase, identity).then(|| on_admit(slot))
+                self.modify(session, |s| {
+                    Arc::ptr_eq(&s.realization.execution().phase, identity).then(|| on_admit(s))
                 })
                 .flatten()
             },
@@ -64,12 +64,13 @@ mod tests {
         // allocation. Rules: R1=C1+C2=>E1; R2=C1+C2+C3+C4=>E2.
         let slots = Arc::new(InstalledSessions::default());
         let held = slots.acquire_realization_with("session-a", |_| ()).await.0;
-        let waiting = slots
-            .acquire_realization_with("session-a", |slot| slot.realization.execution.phase.clone());
+        let waiting = slots.acquire_realization_with("session-a", |slot| {
+            slot.realization.execution().phase.clone()
+        });
         let mut waiting = std::pin::pin!(waiting);
         assert!(futures_util::poll!(waiting.as_mut()).is_pending(), "R1/E1");
         slots.remove("session-a");
-        let recreated = slots.install_realization("session-a", |r| r.execution.phase.clone());
+        let recreated = slots.install_realization("session-a", |r| r.execution().phase.clone());
         drop(held);
         let (_permit, admitted) = tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
             .await

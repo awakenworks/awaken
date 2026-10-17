@@ -247,7 +247,10 @@ async fn managed_multi_memory_mounts_are_backend_neutral_pairwise() {
             .installed_sessions
             .realizations()
             .read_realization(&thread, |r| {
-                (r.staging.memory_bindings.len(), r.staging.memory.is_none())
+                (
+                    r.staging().memory_bindings.len(),
+                    r.staging().memory.is_none(),
+                )
             })
             .expect("installed Sessions")
             .unwrap();
@@ -257,7 +260,7 @@ async fn managed_multi_memory_mounts_are_backend_neutral_pairwise() {
             .realizations()
             .read_realization(&thread, |r| {
                 for (index, access) in expected_access.iter().enumerate() {
-                    let binding = &r.staging.memory_bindings[&format!("test-input-{index}")];
+                    let binding = &r.staging().memory_bindings[&format!("test-input-{index}")];
                     assert_eq!(
                         binding.extraction_enabled,
                         *access == ResourceAccess::ReadWrite,

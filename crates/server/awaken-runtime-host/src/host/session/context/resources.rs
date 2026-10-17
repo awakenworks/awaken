@@ -74,13 +74,13 @@ pub(super) async fn acquire(
     }
     let retained = realization
         .sessions()
-        .read_realization(thread, |r| r.environment.owner.resident())?
+        .read_realization(thread, |r| r.environment().owner.resident())?
         .flatten();
     let environment_owner_is_vacant = exec.session_environment_owner_is_vacant(thread)?;
     let environment_owner_has_unpublished_candidate = realization
         .sessions()
         .read_realization(thread, |r| {
-            r.environment.owner.unpublished_candidate().is_some()
+            r.environment().owner.unpublished_candidate().is_some()
         })?
         .unwrap_or(false);
     if a2a_only && !environment_owner_is_vacant {

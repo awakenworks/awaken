@@ -62,12 +62,12 @@ mod tests {
             let authority = slots
                 .realizations()
                 .update_realization("session", |r| {
-                    r.execution.authority = SessionRealizationAuthority::Live(
+                    r.execution_mut().authority = SessionRealizationAuthority::Live(
                         awaken_session_realization::test_support::test_observed_lease(
                             asserted.clone(),
                         ),
                     );
-                    r.environment.owner = Self::candidate(environment.clone());
+                    r.environment_mut().owner = Self::candidate(environment.clone());
                     Arc::new(SessionExecutionAuthority::for_test(
                         &ExecutionAuthority::new(slots.realizations(), Some(worker.clone())),
                         "session",
@@ -163,15 +163,15 @@ mod tests {
                 "slot_aba" => {
                     let old = f.slots.remove("session").unwrap();
                     f.slots.install_realization("session", |r| {
-                        r.execution.authority = old.realization.execution.authority;
-                        r.environment.owner = old.realization.environment.owner;
+                        r.execution_mut().authority = old.realization.execution().authority.clone();
+                        r.environment_mut().owner = old.realization.environment().owner.clone();
                     });
                 }
                 _ => f.slots.realizations().update_realization("session", |r| {
                     let mut lease = f.authority.asserted_for_test().clone();
                     match rule {
                         "uninstalled" => {
-                            r.execution.authority = SessionRealizationAuthority::Uninstalled;
+                            r.execution_mut().authority = SessionRealizationAuthority::Uninstalled;
                             return;
                         }
                         "closed" => {
@@ -186,8 +186,8 @@ mod tests {
                         "renew_session" => lease.expires_at_unix_ms += 10_000,
                         "resident" => {
                             let candidate =
-                                r.environment.owner.unpublished_candidate().unwrap().clone();
-                            r.environment.owner =
+                                r.environment().owner.unpublished_candidate().unwrap().clone();
+                            r.environment_mut().owner =
                                 SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
                                     identity: BoundSessionEnvironmentIdentity::LegacyDirect(
                                         LegacyDirectEnvironmentProvenance::DurableBinding {
@@ -201,8 +201,8 @@ mod tests {
                         }
                         "retiring" => {
                             let candidate =
-                                r.environment.owner.unpublished_candidate().unwrap().clone();
-                            r.environment.owner =
+                                r.environment().owner.unpublished_candidate().unwrap().clone();
+                            r.environment_mut().owner =
                                 SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
                                     cause: SessionEnvironmentRetirementCause::UnpublishedCandidate,
                                     owned: RetiringEnvironmentOwner::Unbound(candidate),
@@ -214,7 +214,7 @@ mod tests {
                             else {
                                 unreachable!()
                             };
-                            r.environment.owner = Fixture::candidate(Arc::new(
+                            r.environment_mut().owner = Fixture::candidate(Arc::new(
                                 SandboxEnvironment::Workdir {
                                     sandbox: sandbox.clone(),
                                     hand: None,
@@ -222,9 +222,9 @@ mod tests {
                                 .into_session_environment(),
                             ));
                         }
-                        "vacant" => r.environment.owner = SessionEnvironmentOwner::Vacant,
+                        "vacant" => r.environment_mut().owner = SessionEnvironmentOwner::Vacant,
                         "pending" => {
-                            r.environment.owner = SessionEnvironmentOwner::Preparing(
+                            r.environment_mut().owner = SessionEnvironmentOwner::Preparing(
                                 SessionEnvironmentPreparation::AwaitingAdoption {
                                     identity: BoundSessionEnvironmentIdentity::LegacyDirect(
                                         LegacyDirectEnvironmentProvenance::DurableBinding {
@@ -239,7 +239,7 @@ mod tests {
                         "ok" | "short_session" => {}
                         _ => unreachable!(),
                     }
-                    r.execution.authority =
+                    r.execution_mut().authority =
                         SessionRealizationAuthority::Live(if rule == "expired" {
                             awaken_session_realization::test_support::test_expired_observed_lease(
                                 lease,
@@ -374,7 +374,7 @@ mod tests {
         f.slots
             .realizations()
             .update_realization("session", |r| {
-                r.environment.owner = SessionEnvironmentOwner::Vacant
+                r.environment_mut().owner = SessionEnvironmentOwner::Vacant
             })
             .expect("installed Sessions");
         assert!(f.current().is_err());
