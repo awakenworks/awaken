@@ -54,6 +54,7 @@ impl SharedHost {
                 self.realization_executor
                     .environments()
                     .create_reserved_session_environment_under_lifecycle(
+                        lifecycle_guard.held(),
                         self.realization_executor.peers(),
                         thread,
                         provider,
@@ -65,6 +66,7 @@ impl SharedHost {
             .realization_executor
             .environments()
             .ensure_published_environment_reconciled_under_lifecycle(
+                lifecycle_guard.held(),
                 self.realization_executor.peers(),
                 thread,
                 environment,

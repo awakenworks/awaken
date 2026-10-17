@@ -244,12 +244,13 @@ impl RealizationExecutor {
                     error.to_string(),
                 )
             })?;
-        let _lifecycle = self.sessions.lock_lifecycle(thread).await?;
+        let lifecycle = self.sessions.lock_lifecycle(thread).await?;
         self.continuation_preparation_effect_fence(thread, preparation)?;
         let effect_fence = self.continuation_preparation_effect_fence(thread, preparation)?;
         let prepared = self
             .environments
             .prepare_bound_environment_for_effect_under_lifecycle(
+                lifecycle.held(),
                 self.peers(),
                 thread,
                 source_binding,

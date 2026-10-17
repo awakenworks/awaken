@@ -47,7 +47,7 @@ impl TerminalEffects {
             .sessions
             .acquire_realization(command.session_id.as_str())
             .await;
-        let _lifecycle = self
+        let lifecycle = self
             .sessions
             .lock_lifecycle(command.session_id.as_str())
             .await?;
@@ -90,7 +90,7 @@ impl TerminalEffects {
         let effect_fence = current_lease
             .sandbox_effect_fence(command.effect_id.clone())
             .map_err(crate::realization_error::RealizationError::from)?;
-        let prepared = environments.prepare_bound_environment_for_effect_under_lifecycle(peers,
+        let prepared = environments.prepare_bound_environment_for_effect_under_lifecycle(lifecycle.held(), peers,
                 command.session_id.as_str(),
                 binding,
                 &effect_fence,

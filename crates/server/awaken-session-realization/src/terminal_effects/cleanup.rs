@@ -80,7 +80,7 @@ impl crate::terminal_effects::TerminalEffects {
             })?;
         let _root_realization = root_realization.lock().await;
         // A cold child has no lifecycle here, and cleanup never installs one.
-        let _lifecycle = sessions
+        let lifecycle = sessions
             .lock_lifecycle_if_installed(&effect.command.thread_id)
             .await?;
         let effect_fence = self.effect_fence(&effect)?;
@@ -88,6 +88,15 @@ impl crate::terminal_effects::TerminalEffects {
         let root_environment = if effect.command.thread_id == effect.command.session_id {
             let mut prepared = self
                 .prepare_terminal_environment_under_lifecycle(
+                    lifecycle
+                        .as_ref()
+                        .ok_or_else(|| {
+                            RealizationError::pending(
+                                PendingState::TerminalCleanupProjectionMissing,
+                                "terminal cleanup has no installed root projection",
+                            )
+                        })?
+                        .held(),
                     peers,
                     &effect.command.thread_id,
                     &effect_fence,
@@ -332,7 +341,7 @@ impl crate::terminal_effects::TerminalEffects {
             })?;
         let _root_realization = root_realization.lock().await;
         self.disposal_authorization(&effect)?;
-        let _lifecycle = sessions.lock_lifecycle(session_id.as_str()).await?;
+        let lifecycle = sessions.lock_lifecycle(session_id.as_str()).await?;
         let authorization = self.disposal_authorization(&effect)?;
         let prepared_environment = if effect.command.restore_target.is_none() {
             // Disposal decision table TD0. Causes: C1 the aggregate has
@@ -346,6 +355,7 @@ impl crate::terminal_effects::TerminalEffects {
             // cold=>E1+E2+E3; absent=>E1+E2 without a guessed delete.
             Some(
                 self.prepare_terminal_environment_under_lifecycle(
+                    lifecycle.held(),
                     peers,
                     session_id.as_str(),
                     authorization.effect_fence(),

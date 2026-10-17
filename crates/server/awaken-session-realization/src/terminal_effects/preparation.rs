@@ -185,6 +185,7 @@ impl crate::terminal_effects::TerminalEffects {
     /// remains available for original-history queries.
     pub(super) async fn prepare_terminal_environment_under_lifecycle(
         &self,
+        lifecycle: crate::session_realizations::LifecycleHeld<'_>,
         peers: crate::peers::Peers<'_>,
         thread: &str,
         effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
@@ -356,6 +357,7 @@ impl crate::terminal_effects::TerminalEffects {
             )?;
             let environment = realizer
                 .install_bound_environment_under_lifecycle(
+                    lifecycle,
                     peers,
                     TerminalEnvironmentInstallation {
                         thread,
@@ -400,6 +402,7 @@ impl crate::terminal_effects::TerminalEffects {
         }
         let environment = realizer
             .prepare_bound_environment_for_effect_under_lifecycle(
+                lifecycle,
                 peers,
                 thread,
                 binding,

@@ -29,6 +29,7 @@ impl crate::peers::EnvironmentPeer for EnvironmentHolding {
 
     async fn install_bound_environment_under_lifecycle(
         &self,
+        lifecycle: crate::session_realizations::LifecycleHeld<'_>,
         peers: crate::peers::Peers<'_>,
         installation: TerminalEnvironmentInstallation<'_>,
         resident: Option<Arc<crate::session_environment::SessionEnvironment>>,
@@ -37,6 +38,7 @@ impl crate::peers::EnvironmentPeer for EnvironmentHolding {
     {
         EnvironmentHolding::install_bound_environment_under_lifecycle(
             self,
+            lifecycle,
             peers,
             installation,
             resident,
@@ -45,8 +47,10 @@ impl crate::peers::EnvironmentPeer for EnvironmentHolding {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn prepare_bound_environment_for_effect_under_lifecycle(
         &self,
+        lifecycle: crate::session_realizations::LifecycleHeld<'_>,
         peers: crate::peers::Peers<'_>,
         thread: &str,
         binding: &str,
@@ -56,6 +60,7 @@ impl crate::peers::EnvironmentPeer for EnvironmentHolding {
     ) -> Result<PreparedBoundEnvironment, RealizationError> {
         EnvironmentHolding::prepare_bound_environment_for_effect_under_lifecycle(
             self,
+            lifecycle,
             peers,
             thread,
             binding,

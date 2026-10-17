@@ -27,6 +27,7 @@ struct PreparedContext {
 
 pub(super) async fn construct(
     host: &SharedHost,
+    lifecycle: crate::session_realizations::LifecycleHeld<'_>,
     thread: &str,
     agent: Option<&str>,
     request: super::SessionOpenRequest,
@@ -49,6 +50,7 @@ pub(super) async fn construct(
     .await?;
     let resources = resources::acquire(
         host,
+        lifecycle,
         thread,
         plan,
         requested_purpose,

@@ -1955,6 +1955,7 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
         .realization_executor
         .staging()
         .stage_prevalidated_resource_transition_under_resource_projection(
+            _guard.held(),
             host.realization_executor.peers(),
             foreign_thread,
             &transition,
@@ -1989,6 +1990,7 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
     host.realization_executor
         .staging()
         .stage_prevalidated_resource_transition_under_resource_projection(
+            _guard.held(),
             host.realization_executor.peers(),
             bound_thread,
             &transition,

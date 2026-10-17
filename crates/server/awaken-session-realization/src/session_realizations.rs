@@ -454,14 +454,11 @@ impl SessionRealizations {
     }
 
     /// Hold one installed Session's Environment `lifecycle` lock.
-    pub async fn lock_lifecycle(
-        &self,
-        session: &str,
-    ) -> Result<tokio::sync::OwnedMutexGuard<()>, RealizationError> {
+    pub async fn lock_lifecycle(&self, session: &str) -> Result<LifecycleGuard, RealizationError> {
         let lifecycle = self.update_session(session, |slot| {
             slot.realization.environment.lifecycle.clone()
         })?;
-        Ok(lifecycle.lock_owned().await)
+        Ok(LifecycleGuard::new(session, lifecycle.lock_owned().await))
     }
 
     /// Hold the Environment `lifecycle` lock of a Session if it is installed.
@@ -470,12 +467,12 @@ impl SessionRealizations {
     pub async fn lock_lifecycle_if_installed(
         &self,
         session: &str,
-    ) -> Result<Option<tokio::sync::OwnedMutexGuard<()>>, RealizationError> {
+    ) -> Result<Option<LifecycleGuard>, RealizationError> {
         let lifecycle = self.modify_session(session, |slot| {
             slot.realization.environment.lifecycle.clone()
         })?;
         Ok(match lifecycle {
-            Some(lifecycle) => Some(lifecycle.lock_owned().await),
+            Some(lifecycle) => Some(LifecycleGuard::new(session, lifecycle.lock_owned().await)),
             None => None,
         })
     }
@@ -484,9 +481,12 @@ impl SessionRealizations {
     pub async fn lock_resource_projection(
         &self,
         session: &str,
-    ) -> Result<tokio::sync::OwnedMutexGuard<()>, RealizationError> {
+    ) -> Result<ResourceProjectionGuard, RealizationError> {
         let projection = self.update_realization(session, |r| r.staging.projection.clone())?;
-        Ok(projection.lock_owned().await)
+        Ok(ResourceProjectionGuard::new(
+            session,
+            projection.lock_owned().await,
+        ))
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -598,6 +598,86 @@ impl SessionRealizations {
         Ok(self
             .modify_session(session, |access| access.run.dispatch_claim().cloned())?
             .flatten())
+    }
+}
+
+/// The per-Session lock hierarchy, in the only order it may be acquired:
+/// `realization` (the realization permit) -> `lifecycle` -> `resource_projection`.
+/// A caller may acquire any suffix of that order but never reverse it. Each
+/// lock is held through a guard; a function that requires a lock is named
+/// `*_under_lifecycle` / `*_under_resource_projection` and takes the matching
+/// held token, which only its guard can lend, so holding the lock is a checked
+/// precondition rather than a comment.
+#[derive(Debug)]
+pub struct LifecycleGuard {
+    session: String,
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl LifecycleGuard {
+    fn new(session: &str, guard: tokio::sync::OwnedMutexGuard<()>) -> Self {
+        Self {
+            session: session.to_owned(),
+            _guard: guard,
+        }
+    }
+
+    /// Lend the proof that this Session's `lifecycle` lock is held.
+    pub fn held(&self) -> LifecycleHeld<'_> {
+        LifecycleHeld {
+            session: &self.session,
+        }
+    }
+}
+
+/// Proof that the caller holds one Session's `lifecycle` lock; only a
+/// [`LifecycleGuard`] lends it, and it cannot outlive the guard.
+#[derive(Clone, Copy)]
+pub struct LifecycleHeld<'a> {
+    session: &'a str,
+}
+
+impl LifecycleHeld<'_> {
+    /// The Session whose lock is held.
+    pub fn session(&self) -> &str {
+        self.session
+    }
+}
+
+/// One Session's held `resource_projection` lock: the innermost of the
+/// hierarchy, so it may be taken under `lifecycle` or alone.
+#[derive(Debug)]
+pub struct ResourceProjectionGuard {
+    session: String,
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl ResourceProjectionGuard {
+    fn new(session: &str, guard: tokio::sync::OwnedMutexGuard<()>) -> Self {
+        Self {
+            session: session.to_owned(),
+            _guard: guard,
+        }
+    }
+
+    /// Lend the proof that this Session's `resource_projection` lock is held.
+    pub fn held(&self) -> ResourceProjectionHeld<'_> {
+        ResourceProjectionHeld {
+            session: &self.session,
+        }
+    }
+}
+
+/// Proof that the caller holds one Session's `resource_projection` lock.
+#[derive(Clone, Copy)]
+pub struct ResourceProjectionHeld<'a> {
+    session: &'a str,
+}
+
+impl ResourceProjectionHeld<'_> {
+    /// The Session whose lock is held.
+    pub fn session(&self) -> &str {
+        self.session
     }
 }
 

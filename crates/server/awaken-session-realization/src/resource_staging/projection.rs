@@ -85,8 +85,10 @@ impl crate::resource_staging::ResourceStaging {
     /// already validated the prospective baseline/Environment/provider layout.
     /// The transition supplies the only exact previous generation and its
     /// fingerprint lets later physical realization reuse this compilation.
+    #[allow(clippy::too_many_arguments)]
     pub async fn stage_prevalidated_resource_transition_under_resource_projection(
         &self,
+        resource_projection: crate::session_realizations::ResourceProjectionHeld<'_>,
         peers: crate::peers::Peers<'_>,
         thread: &str,
         transition: &session_resource::SessionResourceTransition,
@@ -94,6 +96,11 @@ impl crate::resource_staging::ResourceStaging {
         realization_lease: Option<&session_resource::SessionRealizationLease>,
         prospective_environment_binding: bool,
     ) -> Result<(), RunError> {
+        debug_assert_eq!(
+            resource_projection.session(),
+            thread,
+            "resource projection held for another Session"
+        );
         let environments = peers.environments;
         let staging = self;
         let realizations = &staging.sessions;
@@ -215,8 +222,9 @@ impl crate::resource_staging::ResourceStaging {
         realization_lease: Option<&session_resource::SessionRealizationLease>,
     ) -> Result<(), RunError> {
         let realizations = self.sessions.clone();
-        let _lifecycle = realizations.lock_lifecycle(thread).await?;
+        let lifecycle = realizations.lock_lifecycle(thread).await?;
         self.apply_session_inputs_under_lifecycle(
+            lifecycle.held(),
             peers,
             thread,
             transition,
@@ -233,12 +241,18 @@ impl crate::resource_staging::ResourceStaging {
     /// introduced.
     pub async fn apply_session_inputs_under_lifecycle(
         &self,
+        lifecycle: crate::session_realizations::LifecycleHeld<'_>,
         peers: crate::peers::Peers<'_>,
         thread: &str,
         transition: &session_resource::SessionResourceTransition,
         claim: Option<&awaken_run_ingress_contract::RunClaim>,
         realization_lease: Option<&session_resource::SessionRealizationLease>,
     ) -> Result<(), RunError> {
+        debug_assert_eq!(
+            lifecycle.session(),
+            thread,
+            "lifecycle held for another Session"
+        );
         let realizations = self.sessions.clone();
         let _resource_projection = realizations.lock_resource_projection(thread).await?;
         self.apply_session_inputs_body(peers, thread, transition, claim, realization_lease)

@@ -18,9 +18,7 @@ impl crate::resource_staging::ResourceStaging {
         // projection may already hold `lifecycle`, while claimed realization
         // also holds `realization`; this dedicated suffix lock avoids re-entry
         // and keeps compare/realize/publish atomic for every caller.
-        let resource_projection =
-            realization_view.update_realization(thread, |r| r.staging.projection.clone())?;
-        let _resource_projection = resource_projection.lock().await;
+        let resource_projection = realization_view.lock_resource_projection(thread).await?;
         let staging = self;
         let active = staging.thread_resource_manifest(thread)?;
         let live_environment = peers.environments.session_environment(thread).await?;
@@ -45,6 +43,7 @@ impl crate::resource_staging::ResourceStaging {
             // Empty→desired transition or a no-op effect identity.
             return self
                 .stage_prevalidated_resource_transition_under_resource_projection(
+                    resource_projection.held(),
                     peers,
                     thread,
                     &projected_transition,
@@ -99,6 +98,7 @@ impl crate::resource_staging::ResourceStaging {
             )
             .map_err(|error| RunError::bad_request(error.to_string()))?;
         self.stage_prevalidated_resource_transition_under_resource_projection(
+            resource_projection.held(),
             peers,
             thread,
             &proven_transition,

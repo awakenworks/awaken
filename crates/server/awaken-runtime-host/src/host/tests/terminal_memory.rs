@@ -255,6 +255,14 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         .realization_executor
         .staging()
         .stage_prevalidated_resource_transition_under_resource_projection(
+            managed
+                .host
+                .realization_executor
+                .sessions()
+                .lock_resource_projection("realization-memory-session")
+                .await
+                .unwrap()
+                .held(),
             managed.host.realization_executor.peers(),
             "realization-memory-session",
             &transition,
@@ -296,6 +304,14 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         .realization_executor
         .staging()
         .stage_prevalidated_resource_transition_under_resource_projection(
+            managed
+                .host
+                .realization_executor
+                .sessions()
+                .lock_resource_projection("realization-memory-session")
+                .await
+                .unwrap()
+                .held(),
             managed.host.realization_executor.peers(),
             "realization-memory-session",
             &transition,
@@ -315,6 +331,14 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         .realization_executor
         .staging()
         .stage_prevalidated_resource_transition_under_resource_projection(
+            managed
+                .host
+                .realization_executor
+                .sessions()
+                .lock_resource_projection("realization-memory-session")
+                .await
+                .unwrap()
+                .held(),
             managed.host.realization_executor.peers(),
             "realization-memory-session",
             &transition,
@@ -469,11 +493,24 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         "R3 zero revision never reaches encoder"
     );
 
+    // Holding the resource-projection lock requires an installed Session.
+    managed
+        .host
+        .installed_sessions
+        .install("unfenced-realization-memory-session");
     let error = match managed
         .host
         .realization_executor
         .staging()
         .stage_prevalidated_resource_transition_under_resource_projection(
+            managed
+                .host
+                .realization_executor
+                .sessions()
+                .lock_resource_projection("unfenced-realization-memory-session")
+                .await
+                .unwrap()
+                .held(),
             managed.host.realization_executor.peers(),
             "unfenced-realization-memory-session",
             &transition,
@@ -667,6 +704,14 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         .realization_executor
         .staging()
         .stage_prevalidated_resource_transition_under_resource_projection(
+            managed
+                .host
+                .realization_executor
+                .sessions()
+                .lock_resource_projection("awaiting-memory-adoption")
+                .await
+                .unwrap()
+                .held(),
             managed.host.realization_executor.peers(),
             "awaiting-memory-adoption",
             &transition,
@@ -2342,6 +2387,12 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
             host.realization_executor
                 .environments()
                 .prepare_bound_environment_for_effect_under_lifecycle(
+                    host.realization_executor
+                        .sessions()
+                        .lock_lifecycle(&thread)
+                        .await
+                        .unwrap()
+                        .held(),
                     host.realization_executor.peers(),
                     &thread,
                     &binding,
@@ -2482,6 +2533,12 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                 .realization_executor
                 .environments()
                 .prepare_bound_environment_for_effect_under_lifecycle(
+                    host.realization_executor
+                        .sessions()
+                        .lock_lifecycle(&thread)
+                        .await
+                        .unwrap()
+                        .held(),
                     host.realization_executor.peers(),
                     &thread,
                     &binding,

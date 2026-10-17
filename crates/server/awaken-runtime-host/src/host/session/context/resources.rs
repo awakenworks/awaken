@@ -37,6 +37,7 @@ pub(super) struct ContextResources {
 
 pub(super) async fn acquire(
     host: &SharedHost,
+    lifecycle: crate::session_realizations::LifecycleHeld<'_>,
     thread: &str,
     plan: ContextPlan,
     requested_purpose: RuntimeContextPurpose,
@@ -178,6 +179,7 @@ pub(super) async fn acquire(
             let provider = exec.session_environment_provider_for_thread(thread, provisioning)?;
             Some(
                 exec.create_reserved_session_environment_under_lifecycle(
+                    lifecycle,
                     realization.peers(),
                     thread,
                     provider,
@@ -189,6 +191,7 @@ pub(super) async fn acquire(
     let env = match env {
         Some(environment) => Some(
             exec.ensure_published_environment_reconciled_under_lifecycle(
+                lifecycle,
                 realization.peers(),
                 thread,
                 environment,

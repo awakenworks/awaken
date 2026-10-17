@@ -629,10 +629,17 @@ async fn adoption_forwards_original_authority_across_observation_and_provider_wa
                     authorization:
                         awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized { intent: Box::new(intent) },
                 };
+                let lifecycle = host
+                    .realization_executor
+                    .sessions()
+                    .lock_lifecycle("session")
+                    .await
+                    .unwrap();
                 let adopt = host
                     .realization_executor
                     .environments()
                     .adopt_bound_session_environment_under_lifecycle(
+                        lifecycle.held(),
                         host.realization_executor.peers(),
                         "session",
                         &binding,

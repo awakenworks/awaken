@@ -1247,6 +1247,12 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             .realization_executor
             .environments()
             .prepare_bound_environment_for_effect_under_lifecycle(
+                host.realization_executor
+                    .sessions()
+                    .lock_lifecycle(session_id)
+                    .await
+                    .unwrap()
+                    .held(),
                 host.realization_executor.peers(),
                 session_id,
                 binding,

@@ -25,6 +25,7 @@ impl EnvironmentHolding {
     /// the surrounding terminal command is the sole durable effect authority.
     pub async fn install_bound_environment_under_lifecycle(
         &self,
+        lifecycle: crate::session_realizations::LifecycleHeld<'_>,
         peers: crate::peers::Peers<'_>,
         installation: TerminalEnvironmentInstallation<'_>,
         resident: Option<Arc<crate::session_environment::SessionEnvironment>>,
@@ -43,6 +44,11 @@ impl EnvironmentHolding {
             expected_effect_fence,
             effect_fence,
         } = installation;
+        debug_assert_eq!(
+            lifecycle.session(),
+            thread,
+            "lifecycle held for another Session"
+        );
         let mut adopted = resident.is_none();
         let authority = peers
             .authority
@@ -348,8 +354,10 @@ impl EnvironmentHolding {
     /// an already-authorized physical effect. Terminal cleanup and continuation
     /// source disposal share this path so provider observation, exact-absence
     /// proof, terminal physical disposal, and slot publication cannot drift.
+    #[allow(clippy::too_many_arguments)]
     pub async fn prepare_bound_environment_for_effect_under_lifecycle(
         &self,
+        lifecycle: crate::session_realizations::LifecycleHeld<'_>,
         peers: crate::peers::Peers<'_>,
         thread: &str,
         binding: &str,
@@ -550,6 +558,7 @@ impl EnvironmentHolding {
         };
         let environment = self
             .install_bound_environment_under_lifecycle(
+                lifecycle,
                 peers,
                 TerminalEnvironmentInstallation {
                     thread,

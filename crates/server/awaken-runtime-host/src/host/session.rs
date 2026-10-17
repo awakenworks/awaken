@@ -210,7 +210,7 @@ impl SharedHost {
             };
             // Opening a Session context is the host's install path.
             self.installed_sessions.install(thread);
-            let _lifecycle = realizations.lock_lifecycle(thread).await?;
+            let lifecycle = realizations.lock_lifecycle(thread).await?;
             self.realization_executor
                 .environments()
                 .retry_unpublished_session_environment_cleanup(thread)
@@ -218,6 +218,7 @@ impl SharedHost {
             self.realization_executor
                 .environments()
                 .retry_session_environment_candidate_under_lifecycle(
+                    lifecycle.held(),
                     self.realization_executor.peers(),
                     thread,
                 )
@@ -259,6 +260,7 @@ impl SharedHost {
             }
             context::construct(
                 self,
+                lifecycle.held(),
                 thread,
                 agent,
                 SessionOpenRequest {

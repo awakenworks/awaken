@@ -744,7 +744,7 @@ impl crate::SharedHost {
         // interleave a different resources/skills/manifest generation between
         // preflight and the baseline/transition/lease update below.
         self.installed_sessions.install(thread);
-        let _resource_projection = sessions.lock_resource_projection(thread).await?;
+        let resource_projection = sessions.lock_resource_projection(thread).await?;
         let receipt =
             crate::realization_state::FrozenProjectionReceipt::from_projection(&projection)?;
         sessions.update_realization(thread, |r| r.validate_projection_receipt(&receipt))??;
@@ -907,6 +907,7 @@ impl crate::SharedHost {
             let stage = realization
                 .staging()
                 .stage_prevalidated_resource_transition_under_resource_projection(
+                    resource_projection.held(),
                     realization.peers(),
                     thread,
                     &resource_transition,

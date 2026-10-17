@@ -223,6 +223,12 @@ async fn unknown_candidate_retry_never_authorizes_or_relabels_its_owner() {
             .realization_executor
             .environments()
             .retry_session_environment_candidate_under_lifecycle(
+                host.realization_executor
+                    .sessions()
+                    .lock_lifecycle(thread)
+                    .await
+                    .unwrap()
+                    .held(),
                 host.realization_executor.peers(),
                 thread,
             )
@@ -716,6 +722,12 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
             .realization_executor
             .environments()
             .publish_session_environment_under_lifecycle(
+                host.realization_executor
+                    .sessions()
+                    .lock_lifecycle(thread)
+                    .await
+                    .unwrap()
+                    .held(),
                 host.realization_executor.peers(),
                 thread,
                 environment.clone(),
@@ -736,6 +748,12 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
                     .realization_executor
                     .environments()
                     .retry_session_environment_candidate_under_lifecycle(
+                        host.realization_executor
+                            .sessions()
+                            .lock_lifecycle(thread)
+                            .await
+                            .unwrap()
+                            .held(),
                         host.realization_executor.peers(),
                         thread,
                     )
@@ -765,6 +783,12 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
                 .realization_executor
                 .environments()
                 .retry_session_environment_candidate_under_lifecycle(
+                    host.realization_executor
+                        .sessions()
+                        .lock_lifecycle(thread)
+                        .await
+                        .unwrap()
+                        .held(),
                     host.realization_executor.peers(),
                     thread,
                 )

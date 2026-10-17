@@ -481,6 +481,7 @@ impl crate::environment_holding::EnvironmentHolding {
     /// Session may replace its durable binding.
     async fn record_unavailable_session_environment_under_lifecycle(
         &self,
+        lifecycle: crate::session_realizations::LifecycleHeld<'_>,
         recovery: UnavailableEnvironmentRecovery<'_>,
         resident: Option<&Arc<crate::session_environment::SessionEnvironment>>,
     ) -> Result<SessionEnvironmentAdoptionDisposition, RealizationError> {
@@ -495,6 +496,11 @@ impl crate::environment_holding::EnvironmentHolding {
             handle,
             observation,
         } = recovery;
+        debug_assert_eq!(
+            lifecycle.session(),
+            thread,
+            "lifecycle held for another Session"
+        );
         provider
             .adoption()
             .validate_closed_observation(handle, observation)
@@ -989,8 +995,9 @@ impl crate::environment_holding::EnvironmentHolding {
         let Some(encoded) = encoded else {
             return Ok(SessionEnvironmentAdoptionDisposition::NoBinding);
         };
-        let _lifecycle = realizations.lock_lifecycle(thread).await?;
+        let lifecycle = realizations.lock_lifecycle(thread).await?;
         self.adopt_bound_session_environment_under_lifecycle(
+            lifecycle.held(),
             peers,
             thread,
             encoded,
@@ -1009,6 +1016,7 @@ impl crate::environment_holding::EnvironmentHolding {
     #[allow(clippy::too_many_arguments)]
     pub async fn adopt_bound_session_environment_under_lifecycle(
         &self,
+        lifecycle: crate::session_realizations::LifecycleHeld<'_>,
         peers: crate::peers::Peers<'_>,
         thread: &str,
         encoded: &str,
@@ -1163,7 +1171,7 @@ impl crate::environment_holding::EnvironmentHolding {
                 let environment = match (resident, candidate) {
                     (Some(environment), None) => environment,
                     (None, Some(candidate)) => {
-                        self.publish_session_environment_under_lifecycle(peers,
+                        self.publish_session_environment_under_lifecycle(lifecycle, peers,
                             thread,
                             candidate.environment,
                             effect,
@@ -1194,7 +1202,7 @@ impl crate::environment_holding::EnvironmentHolding {
                                     .prepare_retiring_realization_adoption(retiring, environment.clone(), Some(effect.authorization.intent()))
                             })??;
                         }
-                        self.publish_session_environment_under_lifecycle(peers,
+                        self.publish_session_environment_under_lifecycle(lifecycle, peers,
                             thread,
                             environment,
                             effect,
@@ -1208,7 +1216,7 @@ impl crate::environment_holding::EnvironmentHolding {
                         ));
                     }
                 };
-                self.ensure_published_environment_reconciled_under_lifecycle(peers, thread, environment)
+                self.ensure_published_environment_reconciled_under_lifecycle(lifecycle, peers, thread, environment)
                     .await?;
                 exec.sessions.update_realization(thread, |r| {
                     r.environment.rebuild_source = None;
@@ -1248,7 +1256,7 @@ impl crate::environment_holding::EnvironmentHolding {
                         Some(encoded))?,
                     ).await?;
                 }
-                exec.record_unavailable_session_environment_under_lifecycle(
+                exec.record_unavailable_session_environment_under_lifecycle(lifecycle,
                     UnavailableEnvironmentRecovery {
                         thread,
                         binding: encoded,
