@@ -18,12 +18,12 @@ use awaken_session_configuration_contract::resource as session_resource;
 use awaken_session_realization_contract::ResourceOperationFence;
 use std::sync::Arc;
 
-mod dispatched;
+mod layout_validation;
 mod peer;
 pub mod preparation;
 pub mod projection;
 pub mod repository_activation;
-pub mod skills;
+mod requirement_compilation;
 pub use preparation::ResourcePreparation;
 
 /// The Resource sources and verifiers staging reads through, selected once by

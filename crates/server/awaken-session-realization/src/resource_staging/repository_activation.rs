@@ -5,6 +5,7 @@
 //! credential each Git effect receives after authorization, and the terminal
 //! Repository publication.
 
+use super::ResourceStaging;
 use crate::realization_error::{PendingState, RealizationError};
 use crate::staged_resources::RepositoryPublicationActivationError;
 use crate::staged_resources::{RepositoryActivation, ResourceBindingCheck};
@@ -32,7 +33,7 @@ fn repository_http_basic_credential(
     Ok(pc::RepositoryHttpBasicCredential::new(username, password))
 }
 
-impl super::ResourceStaging {
+impl ResourceStaging {
     /// Realize a thread's resolved Repository inputs into its freshly-created
     /// environment. The narrow port receives only a secret-free plan and an ephemeral
     /// transport credential after authorization/config resolution. A failure aborts

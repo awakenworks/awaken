@@ -2,7 +2,9 @@
 use awaken_resource_contract::RepositoryBindingVerifierError;
 use awaken_session_types::RunError;
 
-pub(super) fn repository_binding_run_error(error: RepositoryBindingVerifierError) -> RunError {
+pub(in crate::resource_staging) fn repository_binding_run_error(
+    error: RepositoryBindingVerifierError,
+) -> RunError {
     RunError::from(crate::realization_error::RealizationError::RepositoryBinding(error))
 }
 

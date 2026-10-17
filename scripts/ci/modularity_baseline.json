@@ -363,7 +363,7 @@
     "awaken-session-realization::environment_holding/lifecycle/state.rs::install_projection_with_resource_reservation": 208,
     "awaken-session-realization::realization_executor/continuation.rs::prepare_environment_continuation_source_release": 151,
     "awaken-session-realization::resource_staging/projection.rs::apply_session_inputs_body": 436,
-    "awaken-session-realization::resource_staging/projection.rs::stage_resolved_input_with_resource_authority": 297,
+    "awaken-session-realization::resource_staging/requirement_compilation.rs::stage_resolved_input_with_resource_authority": 297,
     "awaken-session-realization::resource_staging/repository_activation.rs::repository_operation_credential": 195,
     "awaken-session-realization::terminal_effects/cleanup.rs::dispose_terminal_cleanup_effect": 163,
     "awaken-session-realization::terminal_effects/cleanup.rs::prepare_terminal_cleanup_effect": 294,
