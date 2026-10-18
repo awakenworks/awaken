@@ -49,29 +49,6 @@ macro_rules! neutral_role {
                 ))
             }
 
-            /// Validate the exact provider-effective Sandbox layout without publishing
-            /// process-local state or performing provider, cache, Skill, File, Vault,
-            /// Repository, or Git I/O. Session creation and Resource mutation call this
-            /// before their durable/effect boundaries; Runtime repeats it at the final
-            /// realization edge as defense in depth.
-            fn validate_session_sandbox_layout(
-                &self,
-                _thread: &str,
-                layout: &$crate::__macro_support::SessionSandboxLayout,
-            ) -> Result<(), $crate::__macro_support::RunError> {
-                if layout.resources.iter().any(|binding| {
-                    matches!(
-                        binding.target,
-                        awaken_resource_contract::InputResourceId::Repository(_)
-                    )
-                }) {
-                    return Err($crate::__macro_support::RunError::unavailable(
-                        "runtime does not implement Repository Sandbox-layout validation",
-                    ));
-                }
-                Ok(())
-            }
-
             /// Install one complete Control-frozen Session projection. Dispatch and
             /// realization are explicit modes of this single port; callers must never
             /// lower publication, baseline, request context, Environment, or lease
@@ -113,6 +90,142 @@ macro_rules! neutral_role {
             }
 
 
+        }
+    };
+    (RealizationEffects for $ty:ty) => {
+        #[$crate::__macro_support::async_trait::async_trait]
+        impl $crate::RealizationEffects for $ty {
+            /// Validate the exact provider-effective Sandbox layout without publishing
+            /// process-local state or performing provider, cache, Skill, File, Vault,
+            /// Repository, or Git I/O. Session creation and Resource mutation call this
+            /// before their durable/effect boundaries; Runtime repeats it at the final
+            /// realization edge as defense in depth.
+            fn validate_session_sandbox_layout(
+                &self,
+                _thread: &str,
+                layout: &$crate::__macro_support::SessionSandboxLayout,
+            ) -> Result<(), $crate::__macro_support::RunError> {
+                if layout.resources.iter().any(|binding| {
+                    matches!(
+                        binding.target,
+                        awaken_resource_contract::InputResourceId::Repository(_)
+                    )
+                }) {
+                    return Err($crate::__macro_support::RunError::unavailable(
+                        "runtime does not implement Repository Sandbox-layout validation",
+                    ));
+                }
+                Ok(())
+            }
+
+            /// Persist one verified filesystem checkpoint. Replays with the same
+            /// operation id must return the same authoritative object receipt.
+            async fn checkpoint_session_environment(
+                &self,
+                _thread: &str,
+                _request: $crate::__macro_support::SandboxCheckpointRequest,
+            ) -> Result<$crate::__macro_support::CheckpointReceipt, $crate::__macro_support::RunError> {
+                Err($crate::__macro_support::RunError::unavailable_classified(
+                    "session_environment_checkpoint_unsupported",
+                    "Runtime does not implement Session environment checkpointing",
+                ))
+            }
+
+            /// Complete every live source-durability effect without deleting the
+            /// source. The aggregate must durably admit the returned receipt before it
+            /// invokes physical disposal.
+            async fn prepare_checkpoint_source_disposal(
+                &self,
+                _thread: &str,
+                _preparation: &$crate::__macro_support::SourceReleasePreparationEffect,
+                _generation: &$crate::__macro_support::SandboxGeneration,
+                _source_binding: &str,
+            ) -> Result<$crate::__macro_support::SourceReleasePreparedReceipt, $crate::__macro_support::RunError> {
+                Err($crate::__macro_support::RunError::unavailable_classified(
+                    "session_environment_checkpoint_unsupported",
+                    "Runtime does not implement checkpoint source release preparation",
+                ))
+            }
+
+            /// Physically dispose the source only after the aggregate has durably
+            /// committed the exact source-release preparation receipt.
+            async fn dispose_prepared_checkpoint_source(
+                &self,
+                _thread: &str,
+                _disposal: &$crate::__macro_support::SourceReleaseDisposal,
+            ) -> Result<$crate::__macro_support::SourceDisposedReceipt, $crate::__macro_support::RunError> {
+                Err($crate::__macro_support::RunError::unavailable_classified(
+                    "session_environment_checkpoint_unsupported",
+                    "Runtime does not implement prepared checkpoint source disposal",
+                ))
+            }
+
+            /// Restore a distinct environment from the exact durable checkpoint.
+            async fn restore_checkpointed_session_environment(
+                &self,
+                _request: $crate::__macro_support::SandboxRestoreRequest,
+            ) -> Result<$crate::__macro_support::RestoreReceipt, $crate::__macro_support::RunError> {
+                Err($crate::__macro_support::RunError::unavailable_classified(
+                    "session_environment_checkpoint_unsupported",
+                    "Runtime does not implement Session environment restore",
+                ))
+            }
+
+            /// Idempotently delete checkpoint bytes at a terminal edge. It never
+            /// restores the Environment merely to clean it up.
+            async fn delete_session_checkpoint(
+                &self,
+                _thread: &str,
+                _checkpoint: &$crate::__macro_support::SandboxCheckpointRef,
+            ) -> Result<(), $crate::__macro_support::RunError> {
+                Err($crate::__macro_support::RunError::unavailable_classified(
+                    "session_environment_checkpoint_unsupported",
+                    "Runtime does not implement Session environment checkpoint deletion",
+                ))
+            }
+
+            /// Apply one complete, aggregate-authored Resource transition. Live
+            /// add/update/delete, rollback, and restart restoration converge here;
+            /// Runtime never guesses the prior generation from a process-local cache or
+            /// re-resolves Agent defaults/current Resource configuration.
+            async fn apply_session_inputs(
+                &self,
+                _thread: &str,
+                _transition: &$crate::__macro_support::SessionResourceTransition,
+            ) -> Result<(), $crate::__macro_support::RunError> {
+                Ok(())
+            }
+
+            /// Execute terminal Repository publication under the same realization
+            /// generation that owns the cleanup command set and return either its
+            /// secret-free receipt or one permanent compare-and-swap rejection. The
+            /// caller verifies and durably records that outcome before ordinary root
+            /// cleanup may dispose the shared environment. Runtimes must override this
+            /// edge and carry the lease to the Repository transport boundary; falling
+            /// back would erase the terminal ownership proof.
+            async fn execute_terminal_repository_publication_for_lease(
+                &self,
+                _command: $crate::__macro_support::SessionRepositoryPublicationCommand,
+                _lease: &$crate::__macro_support::SessionRealizationLease,
+            ) -> Result<$crate::__macro_support::SessionRepositoryPublicationEffect, $crate::__macro_support::RunError> {
+                Err($crate::__macro_support::RunError::unavailable_classified(
+                    "session_repository_publication_effect_runtime_unsupported",
+                    "runtime does not implement realization-fenced terminal Repository publication",
+                ))
+            }
+
+            /// Execute the one aggregate-wide physical disposal after every
+            /// preparation is durable. The typed effect carries the exact prepared
+            /// predecessor plus the current live successor lease.
+            async fn dispose_terminal_cleanup_for_effect(
+                &self,
+                _effect: $crate::__macro_support::SessionTerminalCleanupDisposalEffect,
+            ) -> Result<$crate::__macro_support::SessionCleanupDisposalReceipt, $crate::__macro_support::RunError> {
+                Err($crate::__macro_support::RunError::unavailable_classified(
+                    "session_terminal_cleanup_disposal_runtime_unsupported",
+                    "runtime does not implement realization-fenced Session cleanup disposal",
+                ))
+            }
         }
     };
     (CoordinationRuntime for $ty:ty) => {
@@ -566,72 +679,6 @@ impl $crate::SessionCoordinationReads for $ty {
                 ))
             }
 
-            /// Persist one verified filesystem checkpoint. Replays with the same
-            /// operation id must return the same authoritative object receipt.
-            async fn checkpoint_session_environment(
-                &self,
-                _thread: &str,
-                _request: $crate::__macro_support::SandboxCheckpointRequest,
-            ) -> Result<$crate::__macro_support::CheckpointReceipt, $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable_classified(
-                    "session_environment_checkpoint_unsupported",
-                    "Runtime does not implement Session environment checkpointing",
-                ))
-            }
-
-            /// Complete every live source-durability effect without deleting the
-            /// source. The aggregate must durably admit the returned receipt before it
-            /// invokes physical disposal.
-            async fn prepare_checkpoint_source_disposal(
-                &self,
-                _thread: &str,
-                _preparation: &$crate::__macro_support::SourceReleasePreparationEffect,
-                _generation: &$crate::__macro_support::SandboxGeneration,
-                _source_binding: &str,
-            ) -> Result<$crate::__macro_support::SourceReleasePreparedReceipt, $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable_classified(
-                    "session_environment_checkpoint_unsupported",
-                    "Runtime does not implement checkpoint source release preparation",
-                ))
-            }
-
-            /// Physically dispose the source only after the aggregate has durably
-            /// committed the exact source-release preparation receipt.
-            async fn dispose_prepared_checkpoint_source(
-                &self,
-                _thread: &str,
-                _disposal: &$crate::__macro_support::SourceReleaseDisposal,
-            ) -> Result<$crate::__macro_support::SourceDisposedReceipt, $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable_classified(
-                    "session_environment_checkpoint_unsupported",
-                    "Runtime does not implement prepared checkpoint source disposal",
-                ))
-            }
-
-            /// Restore a distinct environment from the exact durable checkpoint.
-            async fn restore_checkpointed_session_environment(
-                &self,
-                _request: $crate::__macro_support::SandboxRestoreRequest,
-            ) -> Result<$crate::__macro_support::RestoreReceipt, $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable_classified(
-                    "session_environment_checkpoint_unsupported",
-                    "Runtime does not implement Session environment restore",
-                ))
-            }
-
-            /// Idempotently delete checkpoint bytes at a terminal edge. It never
-            /// restores the Environment merely to clean it up.
-            async fn delete_session_checkpoint(
-                &self,
-                _thread: &str,
-                _checkpoint: &$crate::__macro_support::SandboxCheckpointRef,
-            ) -> Result<(), $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable_classified(
-                    "session_environment_checkpoint_unsupported",
-                    "Runtime does not implement Session environment checkpoint deletion",
-                ))
-            }
-
             /// Resolve the current versions of already-authorized Skill resource ids once
             /// at Session creation. The implementation receives only a trusted Workspace
             /// and resource ids; it performs no principal/role/policy decision.
@@ -643,17 +690,6 @@ impl $crate::SessionCoordinationReads for $ty {
                 Ok(Vec::new())
             }
 
-            /// Apply one complete, aggregate-authored Resource transition. Live
-            /// add/update/delete, rollback, and restart restoration converge here;
-            /// Runtime never guesses the prior generation from a process-local cache or
-            /// re-resolves Agent defaults/current Resource configuration.
-            async fn apply_session_inputs(
-                &self,
-                _thread: &str,
-                _transition: &$crate::__macro_support::SessionResourceTransition,
-            ) -> Result<(), $crate::__macro_support::RunError> {
-                Ok(())
-            }
         }
     };
     (ThreadReadRuntime for $ty:ty) => {
@@ -755,23 +791,6 @@ impl $crate::SessionCoordinationReads for $ty {
     (TerminalCleanupRuntime for $ty:ty) => {
         #[$crate::__macro_support::async_trait::async_trait]
         impl $crate::TerminalCleanupRuntime for $ty {
-            /// Execute terminal Repository publication under the same realization
-            /// generation that owns the cleanup command set and return either its
-            /// secret-free receipt or one permanent compare-and-swap rejection. The
-            /// caller verifies and durably records that outcome before ordinary root
-            /// cleanup may dispose the shared environment. Runtimes must override this
-            /// edge and carry the lease to the Repository transport boundary; falling
-            /// back would erase the terminal ownership proof.
-            async fn execute_terminal_repository_publication_for_lease(
-                &self,
-                _command: $crate::__macro_support::SessionRepositoryPublicationCommand,
-                _lease: &$crate::__macro_support::SessionRealizationLease,
-            ) -> Result<$crate::__macro_support::SessionRepositoryPublicationEffect, $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable_classified(
-                    "session_repository_publication_effect_runtime_unsupported",
-                    "runtime does not implement realization-fenced terminal Repository publication",
-                ))
-            }
 
             /// Make every source-dependent effect durable under the exact aggregate
             /// preparation fence without deleting the physical realization.
@@ -793,19 +812,6 @@ impl $crate::SessionCoordinationReads for $ty {
                 &self,
                 _effect: &$crate::__macro_support::SessionTerminalCleanupEffect,
             ) {
-            }
-
-            /// Execute the one aggregate-wide physical disposal after every
-            /// preparation is durable. The typed effect carries the exact prepared
-            /// predecessor plus the current live successor lease.
-            async fn dispose_terminal_cleanup_for_effect(
-                &self,
-                _effect: $crate::__macro_support::SessionTerminalCleanupDisposalEffect,
-            ) -> Result<$crate::__macro_support::SessionCleanupDisposalReceipt, $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable_classified(
-                    "session_terminal_cleanup_disposal_runtime_unsupported",
-                    "runtime does not implement realization-fenced Session cleanup disposal",
-                ))
             }
 
             /// Retire only the process-local teardown projection after Control has
@@ -1017,6 +1023,7 @@ impl SessionRuntime for NeutralRuntime {
 }
 
 crate::neutral_role!(RealizationRuntime for NeutralRuntime);
+crate::neutral_role!(RealizationEffects for NeutralRuntime);
 crate::neutral_role!(CoordinationRuntime for NeutralRuntime);
 crate::neutral_role!(SessionCoordinationReads for NeutralRuntime);
 crate::neutral_role!(BudgetRuntime for NeutralRuntime);

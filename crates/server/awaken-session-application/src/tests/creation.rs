@@ -95,18 +95,6 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingCreateRu
             .await
     }
 
-    fn validate_session_sandbox_layout(
-        &self,
-        _thread: &str,
-        _layout: &awaken_session_configuration_contract::SessionSandboxLayout,
-    ) -> Result<(), RunError> {
-        // Test-runtime decision rule: C1 creation tests intentionally model an
-        // available provider; C2 layouts may contain Repository bindings. E1 an
-        // explicit capable fake admits both, while the production trait default
-        // remains fail-closed for C2 when no layout authority is installed.
-        Ok(())
-    }
-
     async fn install_session_projection(
         &self,
         _thread: &str,
@@ -170,6 +158,119 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingCreateRu
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)
+            .await
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_execution_contract::RealizationEffects for RecordingCreateRuntime {
+    fn validate_session_sandbox_layout(
+        &self,
+        _thread: &str,
+        _layout: &awaken_session_configuration_contract::SessionSandboxLayout,
+    ) -> Result<(), RunError> {
+        // Test-runtime decision rule: C1 creation tests intentionally model an
+        // available provider; C2 layouts may contain Repository bindings. E1 an
+        // explicit capable fake admits both, while the production trait default
+        // remains fail-closed for C2 when no layout authority is installed.
+        Ok(())
+    }
+
+    async fn checkpoint_session_environment(
+        &self,
+        thread: &str,
+        request: awaken_session_execution_contract::__macro_support::SandboxCheckpointRequest,
+    ) -> Result<
+        awaken_session_execution_contract::__macro_support::CheckpointReceipt,
+        awaken_session_execution_contract::__macro_support::RunError,
+    > {
+        awaken_session_execution_contract::NeutralRuntime
+            .checkpoint_session_environment(thread, request)
+            .await
+    }
+
+    async fn prepare_checkpoint_source_disposal(
+        &self,
+        thread: &str,
+        preparation: &awaken_session_execution_contract::__macro_support::SourceReleasePreparationEffect,
+        generation: &awaken_session_execution_contract::__macro_support::SandboxGeneration,
+        source_binding: &str,
+    ) -> Result<
+        awaken_session_execution_contract::__macro_support::SourceReleasePreparedReceipt,
+        awaken_session_execution_contract::__macro_support::RunError,
+    > {
+        awaken_session_execution_contract::NeutralRuntime
+            .prepare_checkpoint_source_disposal(thread, preparation, generation, source_binding)
+            .await
+    }
+
+    async fn dispose_prepared_checkpoint_source(
+        &self,
+        thread: &str,
+        disposal: &awaken_session_execution_contract::__macro_support::SourceReleaseDisposal,
+    ) -> Result<
+        awaken_session_execution_contract::__macro_support::SourceDisposedReceipt,
+        awaken_session_execution_contract::__macro_support::RunError,
+    > {
+        awaken_session_execution_contract::NeutralRuntime
+            .dispose_prepared_checkpoint_source(thread, disposal)
+            .await
+    }
+
+    async fn restore_checkpointed_session_environment(
+        &self,
+        request: awaken_session_execution_contract::__macro_support::SandboxRestoreRequest,
+    ) -> Result<
+        awaken_session_execution_contract::__macro_support::RestoreReceipt,
+        awaken_session_execution_contract::__macro_support::RunError,
+    > {
+        awaken_session_execution_contract::NeutralRuntime
+            .restore_checkpointed_session_environment(request)
+            .await
+    }
+
+    async fn delete_session_checkpoint(
+        &self,
+        thread: &str,
+        checkpoint: &awaken_session_execution_contract::__macro_support::SandboxCheckpointRef,
+    ) -> Result<(), awaken_session_execution_contract::__macro_support::RunError> {
+        awaken_session_execution_contract::NeutralRuntime
+            .delete_session_checkpoint(thread, checkpoint)
+            .await
+    }
+
+    async fn apply_session_inputs(
+        &self,
+        thread: &str,
+        transition: &awaken_session_execution_contract::__macro_support::SessionResourceTransition,
+    ) -> Result<(), awaken_session_execution_contract::__macro_support::RunError> {
+        awaken_session_execution_contract::NeutralRuntime
+            .apply_session_inputs(thread, transition)
+            .await
+    }
+
+    async fn execute_terminal_repository_publication_for_lease(
+        &self,
+        command: awaken_session_execution_contract::__macro_support::SessionRepositoryPublicationCommand,
+        lease: &awaken_session_execution_contract::__macro_support::SessionRealizationLease,
+    ) -> Result<
+        awaken_session_execution_contract::__macro_support::SessionRepositoryPublicationEffect,
+        awaken_session_execution_contract::__macro_support::RunError,
+    > {
+        awaken_session_execution_contract::NeutralRuntime
+            .execute_terminal_repository_publication_for_lease(command, lease)
+            .await
+    }
+
+    async fn dispose_terminal_cleanup_for_effect(
+        &self,
+        effect: awaken_session_execution_contract::__macro_support::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<
+        awaken_session_execution_contract::__macro_support::SessionCleanupDisposalReceipt,
+        awaken_session_execution_contract::__macro_support::RunError,
+    > {
+        awaken_session_execution_contract::NeutralRuntime
+            .dispose_terminal_cleanup_for_effect(effect)
             .await
     }
 }

@@ -3,104 +3,6 @@ use super::*;
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::TerminalCleanupRuntime for RecordingCleanupRuntime {
-    async fn execute_terminal_repository_publication_for_lease(
-        &self,
-        command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
-        lease: &crate::session_resource::SessionRealizationLease,
-    ) -> Result<awaken_session_state_contract::SessionRepositoryPublicationEffect, RunError> {
-        let exact = self
-            .terminal_assignments
-            .lock()
-            .unwrap()
-            .last()
-            .is_some_and(|assignment| assignment.authority.lease == *lease);
-        if !exact {
-            return Err(RunError::internal(
-                "terminal Repository effect does not match its installed assignment",
-            ));
-        }
-        self.publication_intents
-            .lock()
-            .unwrap()
-            .push(command.clone());
-        self.terminal_effect_order
-            .lock()
-            .unwrap()
-            .push("publication".into());
-        if self.fail_publication_once.swap(false, Ordering::SeqCst) {
-            return Err(RunError::unavailable_classified(
-                "repository_publication_transport_unavailable",
-                "injected publication transport loss",
-            ));
-        }
-        if self.close_publication_source.load(Ordering::SeqCst) {
-            // Control conformance only: derive identity from the installed
-            // assignment, while the Runtime Host integration owns the physical
-            // observation. No independent source store or forged Git ref.
-            let binding = self
-                .terminal_assignments
-                .lock()
-                .unwrap()
-                .last()
-                .and_then(|assignment| {
-                    assignment
-                        .projection
-                        .environment
-                        .terminal_repository_publication_binding()
-                })
-                .map(str::to_owned)
-                .ok_or_else(|| RunError::internal("closure fixture has no exact source"))?;
-            let rejection = awaken_session_state_contract::SessionRepositoryPublicationRejection::source_closed(
-                &command,
-                &binding,
-                awaken_provisioning_contract::SandboxObservation::DefinitivelyUnavailable {
-                    physical_incarnation: None,
-                },
-            ).map_err(|error| RunError::internal(error.to_string()))?;
-            return Ok(
-                awaken_session_state_contract::SessionRepositoryPublicationEffect::Rejected(
-                    rejection,
-                ),
-            );
-        }
-        if self.reject_publication.load(Ordering::SeqCst) {
-            let rejection =
-                awaken_session_state_contract::SessionRepositoryPublicationRejection::new(
-                    &command,
-                    awaken_provisioning_contract::RepositoryPublicationRejection::RemoteRefAbsent,
-                )
-                .map_err(|error| RunError::internal(error.to_string()))?;
-            return Ok(
-                awaken_session_state_contract::SessionRepositoryPublicationEffect::Rejected(
-                    rejection,
-                ),
-            );
-        }
-        let crate::session_resource::ResolvedInputSource::Repository {
-            repository_id,
-            config,
-            ..
-        } = &command.intent.input.source
-        else {
-            return Err(RunError::internal(
-                "test publication command did not contain a Repository",
-            ));
-        };
-        Ok(
-            awaken_session_state_contract::SessionRepositoryPublicationEffect::Published(
-                awaken_session_state_contract::SessionRepositoryPublicationReceipt::new(
-                    &command,
-                    awaken_provisioning_contract::RepositoryPublicationReceipt {
-                        repository_id: repository_id.to_string(),
-                        source_remote_url: config.remote_url.clone(),
-                        branch: command.intent.expectation.branch.clone(),
-                        commit: command.intent.expectation.commit.clone(),
-                    },
-                ),
-            ),
-        )
-    }
-
     async fn prepare_terminal_cleanup_for_effect(
         &self,
         effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
@@ -158,17 +60,6 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for RecordingClea
             .lock()
             .unwrap()
             .push(effect.clone());
-    }
-
-    async fn dispose_terminal_cleanup_for_effect(
-        &self,
-        effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
-    ) -> Result<awaken_session_state_contract::SessionCleanupDisposalReceipt, RunError> {
-        self.terminal_effect_order
-            .lock()
-            .unwrap()
-            .push("dispose".into());
-        Ok(awaken_session_state_contract::SessionCleanupDisposalReceipt::new(&effect.command))
     }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never

@@ -92,7 +92,7 @@ pub(super) async fn prepare(
     // direct-compatibility catalog.
     let session_dispatch = host
         .installed_sessions
-        .read_run(thread, |run| run.session_dispatch)
+        .read_run(thread, |run| run.session_dispatch)?
         .unwrap_or(false);
     // Direct protocol Sessions have no aggregate Resource projection, but
     // Environment realization still consumes the same exact transition as
@@ -109,11 +109,8 @@ pub(super) async fn prepare(
         let transition =
             crate::session_resource::SessionResourceTransition::new(empty.clone(), empty)
                 .map_err(|error| HostError::internal(error.to_string()))?;
-        realizations.update_realization(thread, |r| {
-            if r.staging().transition.is_none() {
-                r.staging_mut().transition = Some(transition);
-            }
-        })?;
+        realizations
+            .update_realization(thread, |r| r.stage_initial_resource_transition(transition))?;
     }
     // Legacy direct Session manifests carry no frozen Skill list. Refresh
     // their canonical delivered catalog before deciding whether
@@ -201,7 +198,7 @@ pub(super) async fn prepare(
     let a2a_only = installed.as_ref().is_some_and(|snapshot| {
         !awaken_session_realization_contract::requires_local_environment(&snapshot.resolved_spec)
     });
-    if a2a_only && host.session_has_local_environment_inputs(thread, installed.as_ref()) {
+    if a2a_only && host.session_has_local_environment_inputs(thread, installed.as_ref())? {
         return Err(HostError::bad_request(
             "remote A2A execution cannot consume local Session Environment inputs",
         ));

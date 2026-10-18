@@ -107,22 +107,6 @@ impl awaken_session_execution_contract::RealizationRuntime for AcceptingFake {
             .await
     }
 
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Validate the exact provider-effective Sandbox layout without publishing
-    /// process-local state or performing provider, cache, Skill, File, Vault,
-    /// Repository, or Git I/O. Session creation and Resource mutation call this
-    /// before their durable/effect boundaries; Runtime repeats it at the final
-    /// realization edge as defense in depth.
-    fn validate_session_sandbox_layout(
-        &self,
-        thread: &str,
-        layout: &awaken_session_configuration_contract::SessionSandboxLayout,
-    ) -> Result<(), awaken_session_types::RunError> {
-        awaken_session_execution_contract::NeutralRuntime
-            .validate_session_sandbox_layout(thread, layout)
-    }
-
     async fn install_session_projection(
         &self,
         thread: &str,
@@ -168,6 +152,8 @@ impl awaken_session_execution_contract::RealizationRuntime for AcceptingFake {
             .await
     }
 }
+
+awaken_session_execution_contract::neutral_role!(RealizationEffects for AcceptingFake);
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::ThreadReadRuntime for AcceptingFake {

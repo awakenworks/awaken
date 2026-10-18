@@ -498,22 +498,6 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingResource
             .await
     }
 
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Validate the exact provider-effective Sandbox layout without publishing
-    /// process-local state or performing provider, cache, Skill, File, Vault,
-    /// Repository, or Git I/O. Session creation and Resource mutation call this
-    /// before their durable/effect boundaries; Runtime repeats it at the final
-    /// realization edge as defense in depth.
-    fn validate_session_sandbox_layout(
-        &self,
-        thread: &str,
-        layout: &awaken_session_configuration_contract::SessionSandboxLayout,
-    ) -> Result<(), awaken_session_types::RunError> {
-        awaken_session_execution_contract::NeutralRuntime
-            .validate_session_sandbox_layout(thread, layout)
-    }
-
     async fn install_session_projection(
         &self,
         thread: &str,
@@ -614,8 +598,32 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RecordingResource
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
-    /// Persist one verified filesystem checkpoint. Replays with the same
-    /// operation id must return the same authoritative object receipt.
+    /// Resolve the current versions of already-authorized Skill resource ids once
+    /// at Session creation. The implementation receives only a trusted Workspace
+    /// and resource ids; it performs no principal/role/policy decision.
+    async fn resolve_session_skills(
+        &self,
+        workspace_id: &str,
+        skills: &[awaken_agent_contract::AgentSkillBinding],
+    ) -> Result<Vec<crate::session_resource::ResolvedSkillBinding>, awaken_session_types::RunError>
+    {
+        awaken_session_execution_contract::NeutralRuntime
+            .resolve_session_skills(workspace_id, skills)
+            .await
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_execution_contract::RealizationEffects for RecordingResourceRuntime {
+    fn validate_session_sandbox_layout(
+        &self,
+        thread: &str,
+        layout: &awaken_session_configuration_contract::SessionSandboxLayout,
+    ) -> Result<(), awaken_session_types::RunError> {
+        awaken_session_execution_contract::NeutralRuntime
+            .validate_session_sandbox_layout(thread, layout)
+    }
+
     async fn checkpoint_session_environment(
         &self,
         thread: &str,
@@ -627,11 +635,6 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RecordingResource
             .await
     }
 
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Complete every live source-durability effect without deleting the
-    /// source. The aggregate must durably admit the returned receipt before it
-    /// invokes physical disposal.
     async fn prepare_checkpoint_source_disposal(
         &self,
         thread: &str,
@@ -647,10 +650,6 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RecordingResource
             .await
     }
 
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Physically dispose the source only after the aggregate has durably
-    /// committed the exact source-release preparation receipt.
     async fn dispose_prepared_checkpoint_source(
         &self,
         thread: &str,
@@ -662,9 +661,6 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RecordingResource
             .await
     }
 
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Restore a distinct environment from the exact durable checkpoint.
     async fn restore_checkpointed_session_environment(
         &self,
         request: awaken_session_state_contract::SandboxRestoreRequest,
@@ -674,10 +670,6 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RecordingResource
             .await
     }
 
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Idempotently delete checkpoint bytes at a terminal edge. It never
-    /// restores the Environment merely to clean it up.
     async fn delete_session_checkpoint(
         &self,
         thread: &str,
@@ -685,22 +677,6 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RecordingResource
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .delete_session_checkpoint(thread, checkpoint)
-            .await
-    }
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Resolve the current versions of already-authorized Skill resource ids once
-    /// at Session creation. The implementation receives only a trusted Workspace
-    /// and resource ids; it performs no principal/role/policy decision.
-    async fn resolve_session_skills(
-        &self,
-        workspace_id: &str,
-        skills: &[awaken_agent_contract::AgentSkillBinding],
-    ) -> Result<Vec<crate::session_resource::ResolvedSkillBinding>, awaken_session_types::RunError>
-    {
-        awaken_session_execution_contract::NeutralRuntime
-            .resolve_session_skills(workspace_id, skills)
             .await
     }
 
@@ -721,6 +697,31 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RecordingResource
             transition.desired().resources.clone(),
         ));
         Ok(())
+    }
+
+    async fn execute_terminal_repository_publication_for_lease(
+        &self,
+        command: awaken_session_execution_contract::__macro_support::SessionRepositoryPublicationCommand,
+        lease: &awaken_session_execution_contract::__macro_support::SessionRealizationLease,
+    ) -> Result<
+        awaken_session_execution_contract::__macro_support::SessionRepositoryPublicationEffect,
+        awaken_session_execution_contract::__macro_support::RunError,
+    > {
+        awaken_session_execution_contract::NeutralRuntime
+            .execute_terminal_repository_publication_for_lease(command, lease)
+            .await
+    }
+
+    async fn dispose_terminal_cleanup_for_effect(
+        &self,
+        effect: awaken_session_execution_contract::__macro_support::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<
+        awaken_session_execution_contract::__macro_support::SessionCleanupDisposalReceipt,
+        awaken_session_execution_contract::__macro_support::RunError,
+    > {
+        awaken_session_execution_contract::NeutralRuntime
+            .dispose_terminal_cleanup_for_effect(effect)
+            .await
     }
 }
 
@@ -2352,6 +2353,7 @@ async fn worker_placement_defers_live_effects_but_not_terminal_cleanup_case() {
         &application,
         &NoopRuntime,
         &NoopRuntime,
+        &NoopRuntime,
     )
     .await
     .expect("W3 canonical Worker driver");
@@ -2489,6 +2491,7 @@ async fn remote_terminal_cleanup_uses_canonical_driver_and_cold_completion_repla
         &application,
         &worker_runtime,
         &worker_runtime,
+        &worker_runtime,
     )
     .await
     .expect("W3 canonical Worker driver");
@@ -2534,6 +2537,7 @@ async fn remote_terminal_cleanup_uses_canonical_driver_and_cold_completion_repla
         &SessionId::from("remote-cleanup"),
         &asserted_lease,
         &application,
+        &worker_runtime,
         &worker_runtime,
         &worker_runtime,
     )
@@ -2674,6 +2678,7 @@ async fn restoring_terminal_cleanup_binds_the_exact_target_only_to_the_root() {
         &SessionId::from(session_id),
         &lease,
         &application,
+        &worker_runtime,
         &worker_runtime,
         &worker_runtime,
     )
@@ -2888,6 +2893,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         &child_id,
         &exact_lease,
         &application,
+        &child_worker,
         &child_worker,
         &child_worker,
     )
@@ -3177,6 +3183,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         &application,
         &root_worker,
         &root_worker,
+        &root_worker,
     )
     .await
     .expect("P5 root preparation and aggregate disposal");
@@ -3260,6 +3267,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         &rejected_assignment.session_id,
         &rejected_assignment.authority.lease,
         &application,
+        &rejected_worker,
         &rejected_worker,
         &rejected_worker,
     )

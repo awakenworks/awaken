@@ -52,7 +52,8 @@ impl Grader for HostAgentGrader<'_> {
         }
         self.host
             .capabilities
-            .register_thread_workspace(&thread.0, &workspace);
+            .register_thread_workspace(&thread.0, &workspace)
+            .map_err(|error| GraderError::Execution(error.to_string()))?;
         tracing::debug!(thread = %thread.0, "Outcome grader context opening");
         let context = if crate::sandbox_projection::environment_free_inference(snapshot) {
             self.host
@@ -272,7 +273,8 @@ mod tests {
         });
         let host = judge_test_host(model.clone()).await;
         host.capabilities
-            .register_thread_workspace("worker", "workspace-judge-source");
+            .register_thread_workspace("worker", "workspace-judge-source")
+            .expect("installed Sessions");
         let snapshot = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS)
             .expect("literal model reference");
         let input = grading_input("agent-grade-exact-json");
@@ -346,11 +348,13 @@ mod tests {
         });
         let host = judge_test_host(model.clone()).await;
         host.capabilities
-            .register_thread_workspace("worker", "workspace-a");
+            .register_thread_workspace("worker", "workspace-a")
+            .expect("installed Sessions");
         let input = grading_input("grader-workspace-conflict");
         let thread = grader_thread_id(&input.outcome_id, input.iteration);
         host.capabilities
-            .register_thread_workspace(&thread.0, "workspace-b");
+            .register_thread_workspace(&thread.0, "workspace-b")
+            .expect("installed Sessions");
         let snapshot = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS)
             .expect("literal model reference");
         let result = HostAgentGrader {

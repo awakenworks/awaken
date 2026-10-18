@@ -249,7 +249,8 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     managed
         .run_assembly
         .installed_sessions
-        .install("realization-memory-session");
+        .install("realization-memory-session")
+        .expect("installed Sessions");
     managed
         .realization_executor
         .staging()
@@ -486,7 +487,8 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     managed
         .run_assembly
         .installed_sessions
-        .install("unfenced-realization-memory-session");
+        .install("unfenced-realization-memory-session")
+        .expect("installed Sessions");
     let error = match managed
         .realization_executor
         .staging()
@@ -686,7 +688,8 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     managed
         .run_assembly
         .installed_sessions
-        .install("awaiting-memory-adoption");
+        .install("awaiting-memory-adoption")
+        .expect("installed Sessions");
     managed
         .realization_executor
         .staging()
@@ -750,6 +753,7 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
                 "R9 no physical completion"
             );
         })
+        .expect("installed Sessions")
         .unwrap();
     // R8 missing selected encoder: the same upstream mode has no local
     // fallback. The original owner returns Internal before any content call.
@@ -934,8 +938,8 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
         .expect("HS1 decode the aggregate-owned preparation transport");
 
     let error =
-        awaken_session_execution_contract::EnvironmentRuntime::prepare_checkpoint_source_disposal(
-            &*managed.run_assembly,
+        awaken_session_execution_contract::RealizationEffects::prepare_checkpoint_source_disposal(
+            &*managed.realization_executor,
             thread,
             &preparation,
             &generation,
@@ -1652,7 +1656,7 @@ async fn total_absence_recovers_artifacts_before_separate_terminal_disposal() {
     events.lock().unwrap().clear();
     let disposal_effect = terminal_disposal_effect(preparation, lease, &terminal_projection);
     let disposal = managed
-        .run_assembly
+        .realization_executor
         .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
         .await
         .expect("HS2 total-absence physical-disposal proof");
@@ -1783,7 +1787,7 @@ async fn disposing_cleanup_prepares_durability_before_resuming_physical_disposal
         "HS3/E1 physical disposal inherits continuation fpA exactly",
     );
     let disposal = managed
-        .run_assembly
+        .realization_executor
         .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
         .await
         .expect("HS3 resume exact physical disposal");
@@ -1931,7 +1935,7 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
         "A1/E3 aggregate disposal keeps exact A/fpA",
     );
     managed
-        .run_assembly
+        .realization_executor
         .dispose_terminal_cleanup_for_effect(disposal_effect)
         .await
         .expect("A1/E3 total absence is exact physical response-loss success");
@@ -2609,7 +2613,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
 
         let disposal_effect = terminal_disposal_effect(preparation, lease, &projection);
         let disposal = managed
-            .run_assembly
+            .realization_executor
             .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
             .await
             .unwrap_or_else(|error| panic!("{} terminal physical disposal: {error}", rule.name));

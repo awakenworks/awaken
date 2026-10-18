@@ -95,7 +95,8 @@ impl SessionWorkerResolver {
         // never relabel a predecessor before Control has accepted this claim.
         let (realization, continuation) = installation
             .acquire_claimed_realization(&thread_id.0, &claim)
-            .await;
+            .await
+            .map_err(map_admission_error)?;
         if !has_session_projection_authority(claimed) {
             if let Some(manifest) = dispatched_resources {
                 install_dispatched_resources(installation, &thread_id.0, manifest, &claim).await?;

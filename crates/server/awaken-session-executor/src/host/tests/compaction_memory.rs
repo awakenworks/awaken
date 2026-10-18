@@ -82,8 +82,8 @@ async fn install_complete_memory_test_session(
         projection.resource_revision,
         resources.clone(),
     );
-    awaken_session_execution_contract::EnvironmentRuntime::apply_session_inputs(
-        &*managed.run_assembly,
+    awaken_session_execution_contract::RealizationEffects::apply_session_inputs(
+        &*managed.realization_executor,
         thread,
         &resource_transition(
             managed.run_assembly.local_workspace(),
@@ -499,7 +499,11 @@ async fn memory_written_in_one_thread_is_recalled_and_used_in_another() {
     )
     .await
     .expect("Thread 1 Run");
-    assert!(host.drain_runtime(std::time::Duration::from_secs(10)).await);
+    assert!(
+        crate::CoordinatorRoles::of(&host)
+            .drain(std::time::Duration::from_secs(10))
+            .await
+    );
     let admitted = roots
         .repository
         .get(&awaken_session_types::SessionId::from("thread-1"))
@@ -612,6 +616,7 @@ async fn claimed_child_terminal_memory_uses_parent_physical_commit_partition() {
                 host.run_assembly
                     .installed_sessions
                     .read_run(&parent, |run| run.context.is_none())
+                    .expect("installed Sessions")
                     .unwrap_or(true),
                 "R1 parent Runtime starts cold"
             );
@@ -632,6 +637,7 @@ async fn claimed_child_terminal_memory_uses_parent_physical_commit_partition() {
             )],
         );
         let dispatch = host
+            .run_assembly
             .authority
             .dispatch_binding()
             .map(|binding| binding.queue())
@@ -715,6 +721,7 @@ async fn claimed_child_terminal_memory_uses_parent_physical_commit_partition() {
         );
         assert!(
             !host
+                .run_assembly
                 .authority
                 .durable_thread_exists(&child.0)
                 .await
@@ -771,6 +778,7 @@ async fn reopening_a_direct_terminal_thread_recovers_a_missing_extraction_outbox
                     .as_ref()
                     .is_some_and(|context| context.delivery.direct().is_some())
             })
+            .expect("installed Sessions")
             .unwrap_or(false),
         "D1/E4 foreground delivery must retain DirectAttemptDriver"
     );
@@ -807,8 +815,8 @@ async fn reopening_a_direct_terminal_thread_recovers_a_missing_extraction_outbox
         "D2/E2: {error:?}"
     );
     assert!(
-        second
-            .drain_runtime(std::time::Duration::from_secs(10))
+        crate::CoordinatorRoles::of(&second)
+            .drain(std::time::Duration::from_secs(10))
             .await
     );
 
@@ -935,7 +943,11 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
     )
     .await
     .unwrap();
-    assert!(host.drain_runtime(std::time::Duration::from_secs(10)).await);
+    assert!(
+        crate::CoordinatorRoles::of(&host)
+            .drain(std::time::Duration::from_secs(10))
+            .await
+    );
     assert!(
         host.resources
             .memory_stores
@@ -1094,7 +1106,8 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     };
     host.run_assembly
         .installed_sessions
-        .install("memory-replay");
+        .install("memory-replay")
+        .expect("installed Sessions");
     let lifecycle_guard = host
         .run_assembly
         .installed_sessions
@@ -1161,10 +1174,10 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     );
     let (left, right) = tokio::join!(
         managed
-            .run_assembly
+            .realization_executor
             .apply_session_inputs("memory-replay", &unacknowledged),
         managed
-            .run_assembly
+            .realization_executor
             .apply_session_inputs("memory-replay", &unacknowledged),
     );
     left.expect("original command replay after local completion");
@@ -1196,17 +1209,17 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         resources.clone(),
     );
     managed
-        .run_assembly
+        .realization_executor
         .apply_session_inputs("memory-replay", &replay)
         .await
         .expect("cold durable generation installs beside the adopted Environment");
 
     let (left, right) = tokio::join!(
         managed
-            .run_assembly
+            .realization_executor
             .apply_session_inputs("memory-replay", &replay),
         managed
-            .run_assembly
+            .realization_executor
             .apply_session_inputs("memory-replay", &replay),
     );
     left.expect("first exact durable replay");
@@ -1282,7 +1295,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         // Memory pin; compare the completed projection, not command equality.
         for previous in [resources.clone(), changed.clone()] {
             let error = managed
-                .run_assembly
+                .realization_executor
                 .apply_session_inputs(
                     "memory-replay",
                     &resource_transition(
@@ -1316,7 +1329,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         );
     }
     let error = managed
-        .run_assembly
+        .realization_executor
         .apply_session_inputs(
             "memory-replay",
             &resource_transition(
@@ -1410,7 +1423,11 @@ async fn published_agent_memory_config_can_disable_recall_and_extraction() {
         .map(|message| block_text(&message.content))
         .unwrap_or_default();
     assert_eq!(reply, "ok", "disabled recall does not inject store content");
-    assert!(host.drain_runtime(std::time::Duration::from_secs(1)).await);
+    assert!(
+        crate::CoordinatorRoles::of(&host)
+            .drain(std::time::Duration::from_secs(1))
+            .await
+    );
     assert!(
         host.resources
             .memory_stores
@@ -1539,7 +1556,11 @@ async fn resume_ended_run_triggers_memory_extraction() {
         "resume should end the Run"
     );
 
-    assert!(host.drain_runtime(std::time::Duration::from_secs(10)).await);
+    assert!(
+        crate::CoordinatorRoles::of(&host)
+            .drain(std::time::Duration::from_secs(10))
+            .await
+    );
     let saved = host
         .resources
         .memory_stores
@@ -1624,11 +1645,19 @@ async fn extraction_cursor_only_processes_new_messages() {
     run_prepared_session_messages(&managed, "memory-agent", "t-cur", user("alpha"))
         .await
         .expect("Run 1");
-    assert!(host.drain_runtime(std::time::Duration::from_secs(10)).await);
+    assert!(
+        crate::CoordinatorRoles::of(&host)
+            .drain(std::time::Duration::from_secs(10))
+            .await
+    );
     run_prepared_session_messages(&managed, "memory-agent", "t-cur", user("beta"))
         .await
         .expect("Run 2");
-    assert!(host.drain_runtime(std::time::Duration::from_secs(10)).await);
+    assert!(
+        crate::CoordinatorRoles::of(&host)
+            .drain(std::time::Duration::from_secs(10))
+            .await
+    );
 
     // The second extraction saw only "beta" — Run 1's "alpha" was past the cursor.
     let seen = host
@@ -1673,7 +1702,9 @@ async fn run_end_fires_background_memory_extraction() {
         "Run should end"
     );
 
-    let drained = host.drain_runtime(std::time::Duration::from_secs(10)).await;
+    let drained = crate::CoordinatorRoles::of(&host)
+        .drain(std::time::Duration::from_secs(10))
+        .await;
     assert!(drained, "memory extraction should drain");
 
     let saved = host

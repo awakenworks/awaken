@@ -245,6 +245,43 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RehydrateFake {
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
+    /// Resolve the current versions of already-authorized Skill resource ids once
+    /// at Session creation. The implementation receives only a trusted Workspace
+    /// and resource ids; it performs no principal/role/policy decision.
+    async fn resolve_session_skills(
+        &self,
+        workspace_id: &str,
+        skills: &[awaken_agent_contract::AgentSkillBinding],
+    ) -> Result<
+        Vec<awaken_session_configuration_contract::resource::ResolvedSkillBinding>,
+        awaken_session_types::RunError,
+    > {
+        awaken_session_execution_contract::NeutralRuntime
+            .resolve_session_skills(workspace_id, skills)
+            .await
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_execution_contract::RealizationEffects for RehydrateFake {
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Validate the exact provider-effective Sandbox layout without publishing
+    /// process-local state or performing provider, cache, Skill, File, Vault,
+    /// Repository, or Git I/O. Session creation and Resource mutation call this
+    /// before their durable/effect boundaries; Runtime repeats it at the final
+    /// realization edge as defense in depth.
+    fn validate_session_sandbox_layout(
+        &self,
+        thread: &str,
+        layout: &awaken_session_configuration_contract::SessionSandboxLayout,
+    ) -> Result<(), awaken_session_types::RunError> {
+        awaken_session_execution_contract::NeutralRuntime
+            .validate_session_sandbox_layout(thread, layout)
+    }
+
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
     /// Persist one verified filesystem checkpoint. Replays with the same
     /// operation id must return the same authoritative object receipt.
     async fn checkpoint_session_environment(
@@ -319,24 +356,6 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RehydrateFake {
             .await
     }
 
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Resolve the current versions of already-authorized Skill resource ids once
-    /// at Session creation. The implementation receives only a trusted Workspace
-    /// and resource ids; it performs no principal/role/policy decision.
-    async fn resolve_session_skills(
-        &self,
-        workspace_id: &str,
-        skills: &[awaken_agent_contract::AgentSkillBinding],
-    ) -> Result<
-        Vec<awaken_session_configuration_contract::resource::ResolvedSkillBinding>,
-        awaken_session_types::RunError,
-    > {
-        awaken_session_execution_contract::NeutralRuntime
-            .resolve_session_skills(workspace_id, skills)
-            .await
-    }
-
     async fn apply_session_inputs(
         &self,
         thread: &str,
@@ -349,6 +368,35 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RehydrateFake {
             transition.desired().resources.clone(),
         ));
         Ok(())
+    }
+
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Execute terminal Repository publication under the same realization
+    /// generation that owns the cleanup command set and return either its
+    /// secret-free receipt or one permanent compare-and-swap rejection. The
+    /// caller verifies and durably records that outcome before ordinary root
+    /// cleanup may dispose the shared environment. Runtimes must override this
+    /// edge and carry the lease to the Repository transport boundary; falling
+    /// back would erase the terminal ownership proof.
+    async fn execute_terminal_repository_publication_for_lease(
+        &self,
+        command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
+        lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
+    ) -> Result<
+        awaken_session_state_contract::SessionRepositoryPublicationEffect,
+        awaken_session_types::RunError,
+    > {
+        awaken_session_execution_contract::NeutralRuntime
+            .execute_terminal_repository_publication_for_lease(command, lease)
+            .await
+    }
+
+    async fn dispose_terminal_cleanup_for_effect(
+        &self,
+        effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<awaken_session_state_contract::SessionCleanupDisposalReceipt, RunError> {
+        Ok(crate::complete_terminal_cleanup_disposal(&effect))
     }
 }
 
@@ -739,28 +787,6 @@ impl awaken_session_execution_contract::ThreadReadRuntime for RehydrateFake {
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::TerminalCleanupRuntime for RehydrateFake {
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Execute terminal Repository publication under the same realization
-    /// generation that owns the cleanup command set and return either its
-    /// secret-free receipt or one permanent compare-and-swap rejection. The
-    /// caller verifies and durably records that outcome before ordinary root
-    /// cleanup may dispose the shared environment. Runtimes must override this
-    /// edge and carry the lease to the Repository transport boundary; falling
-    /// back would erase the terminal ownership proof.
-    async fn execute_terminal_repository_publication_for_lease(
-        &self,
-        command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
-        lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
-    ) -> Result<
-        awaken_session_state_contract::SessionRepositoryPublicationEffect,
-        awaken_session_types::RunError,
-    > {
-        awaken_session_execution_contract::NeutralRuntime
-            .execute_terminal_repository_publication_for_lease(command, lease)
-            .await
-    }
-
     async fn prepare_terminal_cleanup_for_effect(
         &self,
         effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
@@ -785,13 +811,6 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for RehydrateFake
         awaken_session_execution_contract::NeutralRuntime
             .acknowledge_terminal_cleanup_preparation(effect)
             .await
-    }
-
-    async fn dispose_terminal_cleanup_for_effect(
-        &self,
-        effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
-    ) -> Result<awaken_session_state_contract::SessionCleanupDisposalReceipt, RunError> {
-        Ok(crate::complete_terminal_cleanup_disposal(&effect))
     }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never

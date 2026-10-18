@@ -195,7 +195,10 @@ async fn unknown_candidate_retry_never_authorizes_or_relabels_its_owner() {
         (host.clone())
             .run_assembly
             .install_test_environment_binding_sink(sink.clone());
-        host.run_assembly.installed_sessions.install(thread);
+        host.run_assembly
+            .installed_sessions
+            .install(thread)
+            .expect("installed Sessions");
         let candidate = host
             .realization_executor
             .environments()
@@ -380,7 +383,10 @@ async fn ordinary_candidate_without_a_sink_gets_an_explicit_direct_receipt() {
         .await)
             .build()
             .expect("validated Host dependencies");
-        host.run_assembly.installed_sessions.install(thread);
+        host.run_assembly
+            .installed_sessions
+            .install(thread)
+            .expect("installed Sessions");
         let candidate = match kind {
             awaken_session_state_contract::SessionEnvironmentEffectKind::Create => host
                 .realization_executor.environments().begin_session_environment_preparation(host.realization_executor.peers(), thread, environment, Some(&intent))
@@ -431,7 +437,10 @@ async fn durable_projection_cannot_publish_a_hidden_candidate() {
     .await)
         .build()
         .expect("validated Host dependencies");
-    host.run_assembly.installed_sessions.install(thread);
+    host.run_assembly
+        .installed_sessions
+        .install(thread)
+        .expect("installed Sessions");
     let candidate = host
         .realization_executor
         .environments()
@@ -717,7 +726,7 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
         };
         host.run_assembly
             .installed_sessions
-            .update_run(thread, |run| {
+            .install_run(thread, |run| {
                 run.session_dispatch = true;
                 run.dispatch_claim = Some(awaken_dispatch_contract::RunClaim::from(&old.lease));
             });
@@ -802,7 +811,7 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
             }
             host.run_assembly
                 .installed_sessions
-                .update_run(thread, |run| {
+                .install_run(thread, |run| {
                     run.dispatch_claim =
                         Some(awaken_dispatch_contract::RunClaim::from(&current.lease));
                 });
@@ -889,7 +898,10 @@ async fn committed_hidden_create_candidate_is_terminally_retired_without_publica
     .await)
         .build()
         .expect("validated Host dependencies");
-    host.run_assembly.installed_sessions.install(thread);
+    host.run_assembly
+        .installed_sessions
+        .install(thread)
+        .expect("installed Sessions");
     let candidate = host
         .realization_executor
         .environments()
@@ -1215,7 +1227,10 @@ async fn unacknowledged_candidate_adoption_requires_aggregate_authority() {
     .await)
         .build()
         .expect("validated Host dependencies");
-    host.run_assembly.installed_sessions.install(thread);
+    host.run_assembly
+        .installed_sessions
+        .install(thread)
+        .expect("installed Sessions");
     let candidate = host
         .realization_executor
         .environments()
@@ -1294,7 +1309,10 @@ async fn stale_unmaterialized_projection_cannot_unbind_a_candidate_or_resident()
     .await)
         .build()
         .expect("validated Host dependencies");
-    host.run_assembly.installed_sessions.install(thread);
+    host.run_assembly
+        .installed_sessions
+        .install(thread)
+        .expect("installed Sessions");
     let candidate = host
         .realization_executor
         .environments()

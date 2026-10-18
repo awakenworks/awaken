@@ -150,11 +150,15 @@ async fn worker_authority_loss_interrupts_active_session_before_revocation() {
     await_interrupt_inference_gate(&reached, &mut task).await;
     // The outcome owns both its Worker Session and its Judge Session; authority
     // loss must fence every process-local projection, not only the caller thread.
-    let revocation = host.run_assembly.begin_session_realization_revocation();
+    let revocation = host
+        .run_assembly
+        .begin_session_realization_revocation()
+        .expect("installed Sessions");
     assert!(
         host.run_assembly
             .installed_sessions
             .session_ids()
+            .expect("installed Sessions")
             .iter()
             .all(|id| {
                 host.run_assembly
@@ -166,7 +170,13 @@ async fn worker_authority_loss_interrupts_active_session_before_revocation() {
             }),
         "E3 before asynchronous interruption"
     );
-    assert_eq!(host.session_runs.interrupt_all_session_runs().await, 2);
+    assert_eq!(
+        host.session_runs
+            .interrupt_all_session_runs()
+            .await
+            .unwrap(),
+        2
+    );
     gate.notify_one();
 
     let report = completed_outcome(task.await.expect("join").expect("define_outcome"));
@@ -238,7 +248,7 @@ async fn worker_interrupt_uses_resident_claim_without_coordinator_queue_operatio
         worker
             .run_assembly
             .installed_sessions
-            .update_run("worker-stop", |run| {
+            .install_run("worker-stop", |run| {
                 run.context = Some(ctx.clone());
                 run.dispatch_claim = Some(awaken_dispatch_contract::RunClaim {
                     run_id,
@@ -262,7 +272,7 @@ async fn worker_interrupt_uses_resident_claim_without_coordinator_queue_operatio
     worker
         .run_assembly
         .installed_sessions
-        .update_run("worker-stop", |run| {
+        .install_run("worker-stop", |run| {
             run.dispatch_claim = Some(awaken_dispatch_contract::RunClaim {
                 run_id: unregistered.clone(),
                 owner: "worker-old".into(),
@@ -558,7 +568,8 @@ async fn workspace_narrowing_tightens_the_deployment_ceiling_for_each_run() {
         ("narrow-broken", "ws-broken"),
     ] {
         host.capabilities
-            .register_thread_workspace(thread, workspace);
+            .register_thread_workspace(thread, workspace)
+            .expect("installed Sessions");
     }
 
     host.session_runs
@@ -862,7 +873,8 @@ async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finis
     .build()
     .expect("validated Host dependencies");
     let _managed = install_test_dispatch_runtime(&host);
-    host.ensure_dispatch_pool()
+    crate::CoordinatorRoles::of(&host)
+        .start_local_pool()
         .expect("valid test dispatch composition");
 
     let driver = host.clone();
@@ -968,6 +980,7 @@ async fn live_only_durable_control_never_materializes_a_cold_session() {
             .run_assembly
             .installed_sessions
             .read(cold_thread, |_| ())
+            .expect("installed Sessions")
             .is_none(),
         "W0/E4 direct control must not create a Session slot"
     );
@@ -1016,6 +1029,7 @@ async fn live_only_durable_control_never_materializes_a_cold_session() {
             .run_assembly
             .installed_sessions
             .read(cold_thread, |_| ())
+            .expect("installed Sessions")
             .is_none(),
         "W1/E4 live-only control must not materialize a Session or Environment"
     );
@@ -1088,6 +1102,7 @@ async fn managed_interrupt_cancels_cold_dispatch_without_realizing_an_environmen
         host.run_assembly
             .installed_sessions
             .read_run(thread, |run| run.context.clone())
+            .expect("installed Sessions")
             .flatten()
             .is_none(),
         "C2 precondition"
@@ -1113,6 +1128,7 @@ async fn managed_interrupt_cancels_cold_dispatch_without_realizing_an_environmen
         host.run_assembly
             .installed_sessions
             .read_run(thread, |run| run.context.clone())
+            .expect("installed Sessions")
             .flatten()
             .is_none(),
         "E3 interrupt must not realize a cold Runtime/Environment"
@@ -1254,7 +1270,8 @@ async fn managed_primary_interrupt_recovers_the_active_dispatch_without_a_local_
         !ctx.foreground.has_run().unwrap(),
         "M1/C3 Managed admission has no foreground hint"
     );
-    host.ensure_dispatch_pool()
+    crate::CoordinatorRoles::of(&host)
+        .start_local_pool()
         .expect("valid test dispatch composition");
 
     host.session_runs

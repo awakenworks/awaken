@@ -122,23 +122,25 @@ fn publication_selection_uses_frozen_coordinates_and_selected_workspace_without_
             "local-workspace".into(),
             (!missing).then(|| source.clone() as Arc<dyn PublishedAgentSnapshotSource>),
         );
-        sessions.replace_frozen_with("session", |next| {
-            next.agent_id = Some("agent-a".into());
-            if !matches!(rule, "legacy" | "delivered" | "orphan_backend") {
-                let mut frozen_baseline = baseline(Some(2));
-                if rule == "missing_required" {
-                    frozen_baseline.runtime_placement =
-                        awaken_session_types::SessionRuntimePlacement::Worker;
+        sessions
+            .replace_frozen_with("session", |next| {
+                next.agent_id = Some("agent-a".into());
+                if !matches!(rule, "legacy" | "delivered" | "orphan_backend") {
+                    let mut frozen_baseline = baseline(Some(2));
+                    if rule == "missing_required" {
+                        frozen_baseline.runtime_placement =
+                            awaken_session_types::SessionRuntimePlacement::Worker;
+                    }
+                    next.baseline = Some(frozen_baseline);
                 }
-                next.baseline = Some(frozen_baseline);
-            }
-            if rule == "workspace" {
-                next.workspace = Some("session-workspace".into());
-            }
-            if matches!(rule, "backend" | "orphan_backend") {
-                next.backend_ref = Some("other".into());
-            }
-        });
+                if rule == "workspace" {
+                    next.workspace = Some("session-workspace".into());
+                }
+                if matches!(rule, "backend" | "orphan_backend") {
+                    next.backend_ref = Some("other".into());
+                }
+            })
+            .expect("installed Sessions");
         let delivered = match rule {
             "delivered" => Some(publication("agent-a", 2)),
             "revision" => Some(publication("agent-a", 3)),
@@ -218,7 +220,9 @@ fn publication_retention_is_one_atomic_slot_write_and_rejects_competing_candidat
     // R3 two distinct concurrent publications have one winner and one denial;
     // R4 no projection fields are lost while replacing its immutable value.
     let sessions = Arc::new(InstalledSessions::default());
-    sessions.replace_frozen_with("session", |next| next.workspace = Some("tenant".into()));
+    sessions
+        .replace_frozen_with("session", |next| next.workspace = Some("tenant".into()))
+        .expect("installed Sessions");
     let selection = Arc::new(SessionPublicationSelection::new(
         sessions.realizations(),
         "local-workspace".into(),

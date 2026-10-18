@@ -121,6 +121,7 @@ impl awaken_dispatch_execution::session_execution::RunMcpAttachments for RunMcpE
         Ok(self
             .assembly
             .active_mcp_projections(session)
+            .map_err(crate::host_error::to_run_error)?
             .into_iter()
             .map(|projection| projection.request)
             .collect())

@@ -121,11 +121,11 @@ impl crate::RunAssembly {
         thread: &str,
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
         authored_skills_subdir: &str,
-    ) -> Option<Vec<String>> {
+    ) -> Result<Option<Vec<String>>, HostError> {
         let realizations = self.installed_sessions.realizations();
         let managed_session = self
             .installed_sessions
-            .read_run(thread, |run| run.session_dispatch)
+            .read_run(thread, |run| run.session_dispatch)?
             .unwrap_or(false);
         let read_enabled =
             self.session_allows_repository_skill_discovery(thread, published_snapshot);
@@ -137,10 +137,10 @@ impl crate::RunAssembly {
             read_enabled && (managed_session || published_snapshot.is_some());
 
         if managed_session && !repository_discovery {
-            return None;
+            return Ok(None);
         }
         if !managed_session && !repository_discovery {
-            return Some(Vec::new());
+            return Ok(Some(Vec::new()));
         }
 
         let mut roots = realizations
@@ -161,8 +161,7 @@ impl crate::RunAssembly {
                         )
                     })
                     .collect::<Vec<_>>()
-            })
-            .expect("session runtime slots mutex poisoned")
+            })?
             .unwrap_or_default();
         if !managed_session {
             roots.push(authored_skills_subdir.to_string());
@@ -171,9 +170,9 @@ impl crate::RunAssembly {
         roots.dedup();
 
         if managed_session && roots.is_empty() {
-            None
+            Ok(None)
         } else {
-            Some(roots)
+            Ok(Some(roots))
         }
     }
 
@@ -186,7 +185,7 @@ impl crate::RunAssembly {
         let realizations = self.installed_sessions.realizations();
         let managed_session = self
             .installed_sessions
-            .read_run(thread, |run| run.session_dispatch)
+            .read_run(thread, |run| run.session_dispatch)?
             .unwrap_or(false);
         let selected_skills = published_skill_ids(published_snapshot);
         let managed_has_skill = if managed_session {
@@ -295,9 +294,7 @@ impl crate::RunAssembly {
                 ));
             }
         }
-        realizations.update_realization(thread, |r| {
-            r.staging_mut().content_delivery = Some(delivery)
-        })?;
+        realizations.update_realization(thread, |r| r.select_content_delivery(delivery))?;
         Ok(delivery)
     }
 
@@ -305,7 +302,7 @@ impl crate::RunAssembly {
         &self,
         thread: &str,
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
-    ) -> bool {
+    ) -> Result<bool, HostError> {
         let filesystem_delivery = self.session_allows_filesystem_tools(thread, published_snapshot);
         let selected_skills = published_skill_ids(published_snapshot);
         let (managed_session, slot_requires, frozen_has_selected) = self
@@ -370,7 +367,7 @@ impl crate::RunAssembly {
                     slot_requires,
                     frozen_has_selected,
                 )
-            })
+            })?
             .unwrap_or((false, false, false));
         let workspace = self.capabilities.thread_workspace(thread);
         let filesystem_skill_projection = !managed_session
@@ -381,14 +378,14 @@ impl crate::RunAssembly {
                     .tools
                     .skills
                     .has_selected_in(&workspace, selected_skills.as_ref()));
-        slot_requires
+        Ok(slot_requires
             || filesystem_skill_projection
             || (!managed_session
                 && self
                     .capabilities
                     .tools
                     .skills
-                    .requires_environment_in(&workspace, selected_skills.as_ref()))
+                    .requires_environment_in(&workspace, selected_skills.as_ref())))
     }
 
     pub(super) fn can_defer_session_environment(
@@ -398,13 +395,13 @@ impl crate::RunAssembly {
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
         has_published_delegates: bool,
         claimed_attempt: bool,
-    ) -> bool {
+    ) -> Result<bool, HostError> {
         let realizations = self.installed_sessions.realizations();
         // A Coordinator-only Host constructs the durable dispatch envelope but
         // never executes it. Creating an eager sandbox here would make the
         // Coordinator a second physical owner beside the registered Worker.
         if !self.runs_local_dispatch_pool() {
-            return true;
+            return Ok(true);
         }
         // One deferred-environment decision owns both Coordinator and Worker
         // behavior. A claim-fenced inference-only auxiliary keeps Execution
@@ -423,10 +420,10 @@ impl crate::RunAssembly {
                             .staging()
                             .run_manifest(slot.run.session_dispatch)
                             .is_none()
-                })
+                })?
                 .unwrap_or(true);
         if inference_only_claim {
-            return true;
+            return Ok(true);
         }
         let slot_allows = self
             .installed_sessions
@@ -440,7 +437,7 @@ impl crate::RunAssembly {
                             projection.provisioning
                                 == awaken_session_configuration_contract::SandboxProvisioning::OnToolUse
                         })
-            })
+            })?
             .unwrap_or(false);
         let workspace = self.capabilities.thread_workspace(thread);
         let published_backend_is_acp = published_snapshot
@@ -466,8 +463,7 @@ impl crate::RunAssembly {
                 .is_acp()
             });
         let selected_backend_is_acp = realizations
-            .frozen(thread)
-            .expect("session runtime slots mutex poisoned")
+            .frozen(thread)?
             .backend_ref
             .clone()
             .is_some_and(|backend_ref| {
@@ -477,10 +473,10 @@ impl crate::RunAssembly {
         // exact parent environment and its lifecycle fence. Keep that fact in the
         // sole eager-vs-deferred classifier instead of accepting deferral here and
         // rejecting the same snapshot later while the Runtime is being wired.
-        slot_allows
-            && !self.session_has_local_environment_inputs(thread, published_snapshot)
+        Ok(slot_allows
+            && !self.session_has_local_environment_inputs(thread, published_snapshot)?
             && !published_backend_is_acp
             && !selected_backend_is_acp
-            && !has_published_delegates
+            && !has_published_delegates)
     }
 }

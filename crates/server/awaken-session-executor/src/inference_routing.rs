@@ -53,9 +53,13 @@ impl InferenceRouting {
 
     /// Bind `model_ref` to `thread` (R2/R5), staged before its first Run.
     /// Re-registering replaces the binding (the per-Run override re-stages).
-    pub(crate) fn register(&self, thread: &str, model_ref: impl Into<String>) {
+    pub(crate) fn register(
+        &self,
+        thread: &str,
+        model_ref: impl Into<String>,
+    ) -> Result<(), crate::realization_error::RealizationLock> {
         self.slots
-            .replace_frozen_with(thread, |next| next.model_ref = Some(model_ref.into()));
+            .replace_frozen_with(thread, |next| next.model_ref = Some(model_ref.into()))
     }
 
     /// The model ref bound to `thread`, or `default_ref`.
@@ -280,10 +284,14 @@ mod tests {
             Some(provider as Arc<dyn InferenceExecutorMaterializer>),
         );
 
-        binding.register("t", "model-a");
+        binding
+            .register("t", "model-a")
+            .expect("installed Sessions");
         assert_eq!(binding.model_ref("t", "default-model"), "model-a");
         // Re-register (per-Run override) → the new ref replaces the old one.
-        binding.register("t", "model-b");
+        binding
+            .register("t", "model-b")
+            .expect("installed Sessions");
         assert_eq!(binding.model_ref("t", "default-model"), "model-b");
         assert_eq!(binding.override_for("t").as_deref(), Some("model-b"));
     }
@@ -362,7 +370,9 @@ mod tests {
     fn override_for_returns_the_staged_override_else_none() {
         let binding = routing();
         assert!(binding.override_for("t").is_none());
-        binding.register("t", "fast-model");
+        binding
+            .register("t", "fast-model")
+            .expect("installed Sessions");
         assert_eq!(binding.override_for("t").as_deref(), Some("fast-model"));
     }
 }

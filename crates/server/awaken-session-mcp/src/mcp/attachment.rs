@@ -72,14 +72,15 @@ pub trait McpStagingSession: Send + Sync {
         http_transport: bool,
     ) -> Result<Option<awaken_credential_contract::CredentialRealizationCapabilities>, RunError>;
 
-    /// The Session's resident Environment, if one is realized.
+    /// The Session's resident Environment, if one is realized. An unreadable
+    /// installed-Session registry is refused, never reported as absent.
     async fn resident_environment(
         &self,
         session: &str,
-    ) -> Option<Arc<awaken_session_environment_contract::SessionEnvironment>>;
+    ) -> Result<Option<Arc<awaken_session_environment_contract::SessionEnvironment>>, RunError>;
 
-    /// The Agent frozen for the Session.
-    fn frozen_agent(&self, session: &str) -> Option<String>;
+    /// The Agent frozen for the Session; an unreadable registry is refused.
+    fn frozen_agent(&self, session: &str) -> Result<Option<String>, RunError>;
 
     /// Realize the Session's Environment for `agent`.
     async fn realize_environment(&self, session: &str, agent: &str) -> Result<(), String>;
@@ -142,7 +143,9 @@ impl<S: SessionMcpStates> RelayStaging<S> {
         // Direct SDK assertions may precede root installation. Assigned calls
         // must find the original root under the canonical slot transaction.
         if matches!(admission, StagingAdmission::Direct) {
-            slots.update_mcp(request.generation.session_id().as_str(), |_| ());
+            slots
+                .update_mcp(request.generation.session_id().as_str(), |_| ())
+                .map_err(run_error)?;
         }
         let activity = crate::mcp_material::McpStagingActivity::default();
         let drain = Arc::new(tokio::sync::Mutex::new(()));
@@ -193,6 +196,7 @@ impl<S: SessionMcpStates> RelayStaging<S> {
                     });
                 Ok(())
             })
+            .map_err(run_error)?
             .ok_or_else(|| {
                 RunError::classified("mcp_stale_ownership", "MCP Session root is unavailable")
             })??;
@@ -258,6 +262,7 @@ impl<S: SessionMcpStates> RelayStaging<S> {
                 projection.state = crate::mcp_material::McpProjectionState::Staged;
                 Ok(())
             })
+            .map_err(run_error)?
             .ok_or_else(|| {
                 RunError::classified(
                     "mcp_stale_ownership",
@@ -353,6 +358,7 @@ impl McpSessions {
             .read_mcp(request.generation.session_id().as_str(), |mcp| {
                 mcp.admits_realization()
             })
+            .map_err(run_error)?
             .unwrap_or(true)
         {
             return Err(RunError::unavailable_classified(
@@ -363,6 +369,7 @@ impl McpSessions {
         let now_unix_ms = awaken_time::WallClockExt::now_ms(self.clock.as_ref());
         let root = slots
             .modify_mcp_with_root(&request.generation, |_mcp, root| root)
+            .map_err(run_error)?
             .flatten();
         if !host.mcp_generation_is_authorized_at(&request.generation, now_unix_ms)
             || !admission.admits(root, &request.generation, now_unix_ms)
@@ -385,7 +392,10 @@ impl McpSessions {
             ));
         }
         let request_fingerprint = request.fingerprint();
-        if let Some(existing) = self.projection(slots.as_ref(), &request.generation) {
+        if let Some(existing) = self
+            .projection(slots.as_ref(), &request.generation)
+            .map_err(run_error)?
+        {
             let exact_replay = existing.request.realization_id == request.realization_id
                 && existing.request.stage_idempotency_key == request.stage_idempotency_key
                 && existing.receipt.receipt_fingerprint == request_fingerprint;
@@ -419,7 +429,8 @@ impl McpSessions {
         // A completed drain has no effect left to renew. Both exact retry and
         // same-binding lease catch-up re-enter ordinary staging through this
         // single tombstone owner; live/Staging/Draining projections stay fenced.
-        self.forget_replayable_removed_projection(slots.as_ref(), &request);
+        self.forget_replayable_removed_projection(slots.as_ref(), &request)
+            .map_err(run_error)?;
         match self.renew_projection(slots.as_ref(), &request) {
             Ok(Some(receipt)) => return Ok(receipt),
             Ok(None) => {}
@@ -763,10 +774,10 @@ impl McpSessions {
             // a Host was assembled without that process authority.
             let process_reaper = self.process_reaper().map_err(run_error)?;
             let session_id = &request.generation.session_id();
-            let environment = match host.resident_environment(session_id.as_str()).await {
+            let environment = match host.resident_environment(session_id.as_str()).await? {
                 Some(environment) => environment,
                 None => {
-                    let agent_id = host.frozen_agent(session_id.as_str()).ok_or_else(|| {
+                    let agent_id = host.frozen_agent(session_id.as_str())?.ok_or_else(|| {
                             RunError::classified(
                                 "mcp_sandbox_unavailable",
                                 "sandbox stdio MCP requires a frozen Session Agent before Environment realization",
@@ -782,7 +793,7 @@ impl McpSessions {
                                 ),
                             )
                         })?;
-                    let realized = host.resident_environment(session_id.as_str()).await;
+                    let realized = host.resident_environment(session_id.as_str()).await?;
                     realized.ok_or_else(|| {
                         RunError::classified(
                             "mcp_sandbox_unavailable",
@@ -930,7 +941,9 @@ impl McpSessions {
     ) -> Result<(), RunError> {
         let generation = projection.request.generation.clone();
         if matches!(admission, StagingAdmission::Direct) {
-            slots.update_mcp(generation.session_id().as_str(), |_| ());
+            slots
+                .update_mcp(generation.session_id().as_str(), |_| ())
+                .map_err(run_error)?;
         }
         slots
             .modify_mcp_with_root(&generation, |mcp, root| {
@@ -961,6 +974,7 @@ impl McpSessions {
                 mcp.projections.push(projection);
                 Ok(())
             })
+            .map_err(run_error)?
             .ok_or_else(|| {
                 RunError::classified("mcp_stale_ownership", "MCP Session root is unavailable")
             })?

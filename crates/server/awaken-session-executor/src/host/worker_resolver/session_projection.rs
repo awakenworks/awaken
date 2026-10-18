@@ -132,7 +132,7 @@ mod tests {
                 .read("cold-deferred", |slot| slot.run.deferred_executor.is_some()
                     && slot.inputs.tools.as_ref().is_some_and(|tools| {
                         tools == &awaken_session_configuration_contract::SessionToolConfiguration::default()
-                    }))
+                    })).expect("installed Sessions")
                 .unwrap_or(false),
             "C2"
         );
@@ -154,6 +154,7 @@ mod tests {
                         && slot.run.dispatch_claim.as_ref() == Some(&claim)
                         && slot.inputs.published_snapshot.as_ref()
                             == Some(&claimed.request.activation.snapshot))
+                    .expect("installed Sessions")
                     .unwrap_or(false),
                 "E3 ordinary Queue/publication authority is retained without Managed facts"
             );
@@ -622,6 +623,11 @@ mod tests {
             .installed_sessions
             .acquire_realization_with(session_id.as_str(), |_| ())
             .await
+            .map_err(|error| {
+                awaken_session_types::RunError::from(
+                    crate::realization_error::RealizationError::from(error),
+                )
+            })?
             .0;
         let synchronizer = WorkerProjectionSynchronizer::for_directive(
             host.run_assembly.as_ref(),
@@ -1644,6 +1650,7 @@ mod tests {
             host.run_assembly
                 .installed_sessions
                 .read_run(thread, |run| run.session_dispatch)
+                .expect("installed Sessions")
                 .unwrap_or(false),
             "R1/E1 Control synchronization publishes the existing Managed Session marker so a later empty compatibility envelope cannot drain this MCP generation"
         );
@@ -1661,6 +1668,7 @@ mod tests {
                 .installed_sessions
                 .read(thread, |slot| slot.run.context.is_none()
                     && slot.realization.environment().owner.is_resident())
+                .expect("installed Sessions")
                 .unwrap_or(false),
             "R2 fixture is the publish-to-final-resolve gap"
         );
@@ -1716,6 +1724,7 @@ mod tests {
                 host.run_assembly
                     .installed_sessions
                     .read_run(thread, |run| run.context.is_some())
+                    .expect("installed Sessions")
                     .unwrap_or(false),
                 runtime_cached,
                 "R9 fixture independently establishes each Runtime state"

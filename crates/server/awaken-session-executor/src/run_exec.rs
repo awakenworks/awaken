@@ -349,7 +349,8 @@ impl RunExecutor for BoundRunExecutor<'_> {
         let activation = self
             .host
             .run_assembly
-            .bind_fresh_root_tool_configuration(activation);
+            .bind_fresh_root_tool_configuration(activation)
+            .map_err(|error| ExecutionError::Execution(error.to_string()))?;
         let run_id = activation.run_id.clone();
         let refused = |error: crate::host::ForegroundRunPoisoned| {
             ExecutionError::Execution(HostError::from(error).to_string())
@@ -779,7 +780,7 @@ pub(crate) mod tests {
             _activation: RunActivation,
             _context: RuntimeRunContext,
         ) -> ExecutionResult<RunState> {
-            self.slots.update_run(&self.thread, |run| {
+            self.slots.install_run(&self.thread, |run| {
                 run.dispatch_claim = Some(self.replacement.clone());
             });
             match self.failure {
@@ -1017,11 +1018,12 @@ pub(crate) mod tests {
         let host = (raw_host).build().expect("validated Host dependencies");
         host.run_assembly
             .installed_sessions
-            .update_run(thread, |run| {
+            .install_run(thread, |run| {
                 run.dispatch_claim = Some(expected_claim.clone());
             });
         host.capabilities
-            .register_thread_workspace(thread, "workspace-a");
+            .register_thread_workspace(thread, "workspace-a")
+            .expect("installed Sessions");
         let spec = crate::sandbox_projection::agent_run_sandbox_spec(thread);
         assert_eq!(
             spec.outputs_path, "/mnt/session/outputs",
@@ -1148,7 +1150,7 @@ pub(crate) mod tests {
 
         host.run_assembly
             .installed_sessions
-            .update_run(thread, |run| {
+            .install_run(thread, |run| {
                 run.dispatch_claim = Some(expected_claim.clone());
             });
 
@@ -1189,7 +1191,7 @@ pub(crate) mod tests {
 
         host.run_assembly
             .installed_sessions
-            .update_run(thread, |run| {
+            .install_run(thread, |run| {
                 run.dispatch_claim = Some(expected_claim.clone());
             });
         let replacement = awaken_dispatch_contract::RunClaim {
@@ -1233,7 +1235,7 @@ pub(crate) mod tests {
 
         host.run_assembly
             .installed_sessions
-            .update_run(thread, |run| run.dispatch_claim = None);
+            .install_run(thread, |run| run.dispatch_claim = None);
         let replacement = awaken_dispatch_contract::RunClaim {
             run_id: expected_claim.run_id.clone(),
             owner: "worker-late".into(),
@@ -1266,7 +1268,7 @@ pub(crate) mod tests {
 
         host.run_assembly
             .installed_sessions
-            .update_run(thread, |run| {
+            .install_run(thread, |run| {
                 run.dispatch_claim = Some(expected_claim.clone());
             });
 
@@ -1309,7 +1311,8 @@ pub(crate) mod tests {
         let failed_host = (raw_host).build().expect("validated Host dependencies");
         failed_host
             .capabilities
-            .register_thread_workspace(thread, "workspace-a");
+            .register_thread_workspace(thread, "workspace-a")
+            .expect("installed Sessions");
         let failed_environment = Arc::new(
             awaken_session_environment::SandboxEnvironment::workdir(
                 awaken_sandbox_local::LocalProvider::new(failed_storage.path())

@@ -73,6 +73,9 @@ SESSION_STORE = "crates/stores/awaken-session-store/src/lib.rs"
 SQLITE_SESSION_STORE = "crates/stores/awaken-session-store/src/sqlite.rs"
 POSTGRES_SESSION_STORE = "crates/stores/awaken-session-store/src/postgres.rs"
 RUNTIME_HOST = "crates/server/awaken-session-executor/src/run_assembly/roles.rs"
+REALIZATION_EFFECTS_ROLE = (
+    "crates/server/awaken-session-realization/src/realization_executor/effects_role.rs"
+)
 RUNTIME_HOST_APPLICATION = "crates/server/awaken-session-executor/src/application.rs"
 SESSION_REALIZATION_CONTROL_DEADLINE = (
     "crates/server/awaken-session-realization-driver/src/"
@@ -283,10 +286,10 @@ REQUIRED = {
     RUNTIME_HOST: (
         "async fn prepare_terminal_cleanup_for_effect",
         "async fn acknowledge_terminal_cleanup_preparation",
-        "async fn dispose_terminal_cleanup_for_effect",
         "async fn acknowledge_terminal_cleanup_disposal",
         "async fn acknowledge_completed_terminal_cleanup",
     ),
+    REALIZATION_EFFECTS_ROLE: ("async fn dispose_terminal_cleanup_for_effect",),
     RUNTIME_HOST_APPLICATION: ("drive_session_terminal_cleanup(",),
     SESSION_REALIZATION_CONTROL_DEADLINE: (
         "async fn renew_session_realization(",

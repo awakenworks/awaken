@@ -462,7 +462,7 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
     );
     host.run_assembly
         .installed_sessions
-        .update_run("semantic-memory", |run| {
+        .install_run("semantic-memory", |run| {
             run.context = None;
         });
     let rebuilt = host
@@ -797,7 +797,7 @@ async fn complete_projection_preserves_the_canonical_repository_path_without_rel
         .await
         .expect("canonical Repository path stages through the complete projection");
     managed
-        .run_assembly
+        .realization_executor
         .apply_session_inputs(
             "canonical-repository-path",
             &resource_transition(
@@ -1212,7 +1212,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         assert_eq!(sources.len(), 1, "S1 one fixture-owned realization");
         std::fs::remove_dir_all(&sources[0]).expect("S1 remove owned fixture source");
         let outcome = managed
-            .run_assembly
+            .realization_executor
             .execute_terminal_repository_publication_for_lease(command, &lease)
             .await
             .expect("S1 exact closed source must return a negative outcome");
@@ -1238,7 +1238,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         // reopening ordinary execution. A cold Host does not reproduce this shape.
         host.run_assembly
             .installed_sessions
-            .update(session_id, |slot| {
+            .install_with(session_id, |slot| {
                 let owned = slot
                     .realization
                     .environment()
@@ -1256,7 +1256,8 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
                     },
                 );
                 slot.run.context = None;
-            });
+            })
+            .expect("installed Sessions");
         assert!(
             host.realization_executor
                 .environments()
@@ -1318,7 +1319,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             .expect("installed Sessions")
             .unwrap();
         managed
-            .run_assembly
+            .realization_executor
             .execute_terminal_repository_publication_for_lease(command.clone(), &lease)
             .await
             .expect("P7 fresh wrapper resumes exact terminal publication");
@@ -1363,12 +1364,12 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         );
     }
     let first = managed
-        .run_assembly
+        .realization_executor
         .execute_terminal_repository_publication_for_lease(command.clone(), &lease)
         .await
         .expect("P1 publish");
     let replay = managed
-        .run_assembly
+        .realization_executor
         .execute_terminal_repository_publication_for_lease(command.clone(), &lease)
         .await
         .expect("P2 replay");

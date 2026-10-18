@@ -1321,7 +1321,7 @@ fn configured_container_acp_capability_source(
     }
     let clock = host.clock();
     let negotiator = Arc::new(awaken_session_executor::SessionAcpCapabilityNegotiator::new(
-        host,
+        host.run_assembly().clone(),
         deployment.dispatch_owner.clone(),
         // Some native adapters perform image-local plugin discovery before
         // opening their first prompt-free Session. Keep the probe bounded while
@@ -1512,7 +1512,7 @@ impl WorkerNode {
         {
             return Err(std::io::Error::other("registered Worker admission is already closed").into());
         }
-        let (host, lifecycle, heartbeat_timing, environment_proof_started) = {
+        let (roles, lifecycle, heartbeat_timing, environment_proof_started) = {
         let startup = std::panic::AssertUnwindSafe(async {
         let registered_context =
             RegisteredWorkerContext::new(registration.clone(), upstream.clone());
@@ -1694,7 +1694,7 @@ impl WorkerNode {
         let observations = Arc::new(WorkerObservationCache::default());
         let lifecycle = Arc::new(WorkerSupervisor {
             authority,
-            host: host.clone(),
+            roles: awaken_session_executor::WorkerRoles::of(&host),
             control: control.clone(),
             identity: registration.snapshot.identity,
             credential_observation_resolver: self.credential_observation_resolver,
@@ -1774,7 +1774,7 @@ impl WorkerNode {
         {
             return Err(error.into());
         }
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>((host, lifecycle, heartbeat_timing, environment_proof_started))
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>((lifecycle.roles.clone(), lifecycle, heartbeat_timing, environment_proof_started))
         }).catch_unwind();
         tokio::pin!(startup);
         tokio::select! {
@@ -1787,7 +1787,7 @@ impl WorkerNode {
             }
         }
         };
-        host.ensure_dispatch_pool()?;
+        roles.start_pool()?;
         let credential_probe = credential_liveness::spawn_probe(
             lifecycle.observations.clone(),
             lifecycle.credential_observation_resolver.clone(),
@@ -1876,7 +1876,7 @@ impl WorkerNode {
                 grace.as_secs()
             );
             let (runs_drained, preparation_drained) = tokio::join!(
-                host.drain_runtime(grace),
+                roles.drain(grace),
                 preparation_drained_before(&mut session_preparations, grace),
             );
             if !runs_drained || !preparation_drained {
@@ -1930,7 +1930,7 @@ impl WorkerNode {
         cleanup = lifecycle::shutdown_worker_capacity_before(&lifecycle, deadline, cleanup).await;
         // A timeout carries no authority to publish quiescence, even when the
         // instantaneous process-local counter happens to read zero.
-        if cleanup.permits_quiescence_publication(host.dispatch().in_flight()) {
+        if cleanup.permits_quiescence_publication(roles.dispatch().in_flight()) {
             let _ = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
                 control.mark_quiesced(&lifecycle.identity),

@@ -28,8 +28,6 @@ use awaken_acp_contract::{
 };
 use awaken_provisioning_contract as pc;
 
-use crate::SharedHost;
-
 /// The reader a probe claim names.
 ///
 /// Each tier's reconciliation reads the stamp back with its own scan —
@@ -93,7 +91,7 @@ impl StrandedProbeEnvironments {
 
 #[derive(Clone)]
 pub struct SessionAcpCapabilityNegotiator {
-    host: Arc<SharedHost>,
+    assembly: Arc<crate::RunAssembly>,
     scope_owner: String,
     timeout: Duration,
     handshake: Arc<dyn AcpCapabilityHandshake>,
@@ -103,13 +101,13 @@ pub struct SessionAcpCapabilityNegotiator {
 impl SessionAcpCapabilityNegotiator {
     #[must_use]
     pub fn new(
-        host: Arc<SharedHost>,
+        assembly: Arc<crate::RunAssembly>,
         scope_owner: String,
         timeout: Duration,
         handshake: Arc<dyn AcpCapabilityHandshake>,
     ) -> Self {
         Self {
-            host,
+            assembly,
             scope_owner,
             timeout,
             handshake,
@@ -159,7 +157,7 @@ impl SessionAcpCapabilityNegotiator {
     ) -> Result<NegotiatedAcpCapabilities, pc::SandboxError> {
         let spec = crate::sandbox_projection::agent_run_sandbox_spec(scope);
         let environment = self
-            .host
+            .assembly
             .realization_executor
             .environments()
             .providers()
@@ -285,7 +283,7 @@ impl AcpCapabilityNegotiator for SessionAcpCapabilityNegotiator {
         // This is the Host's existing drainable task registry, shared with
         // auxiliary execution. Receiver cancellation may interrupt handshake,
         // but cannot drop a create response or the exact-handle cleanup tail.
-        self.host
+        self.assembly
             .resources
             .memory
             .background()

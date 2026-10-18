@@ -175,13 +175,17 @@ impl ClaimedSessionInstallation for ClaimedRunAssembly {
         &self,
         session: &str,
         claim: &RunClaim,
-    ) -> (
-        awaken_session_realization_contract::SessionRealizationPermit,
-        Option<crate::session_resource::SessionRealizationLease>,
-    ) {
+    ) -> Result<
+        (
+            awaken_session_realization_contract::SessionRealizationPermit,
+            Option<crate::session_resource::SessionRealizationLease>,
+        ),
+        AdmissionError,
+    > {
         self.sessions
             .acquire_claimed_realization(session, claim)
             .await
+            .map_err(admission_error)
     }
 
     async fn install_dispatched_resources(
@@ -292,7 +296,8 @@ impl ClaimedRunPreparation for ClaimedRunAssembly {
         let host = &self.assembly;
         host.install_environment_projection(session, &projection.environment)?;
         host.installed_sessions
-            .replace_frozen_with(session, |next| next.tools = projection.tools);
+            .replace_frozen_with(session, |next| next.tools = projection.tools)
+            .map_err(|error| admission_error(error.into()))?;
         Ok(())
     }
 
@@ -332,8 +337,9 @@ impl ClaimedRunPreparation for ClaimedRunAssembly {
             .map_err(AdmissionError::from)
     }
 
-    fn bind_deferred_executor(&self, session: &str) {
-        crate::lazy_sandbox::bind_deferred_executor(&self.assembly, session);
+    fn bind_deferred_executor(&self, session: &str) -> Result<(), AdmissionError> {
+        crate::lazy_sandbox::bind_deferred_executor(&self.assembly, session)
+            .map_err(|error| admission_error(error.into()))
     }
 }
 

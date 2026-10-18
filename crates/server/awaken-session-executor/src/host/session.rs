@@ -180,7 +180,7 @@ impl crate::RunAssembly {
                 RuntimeContextPurpose::Execution
             };
             // Opening a Session context is the host's install path.
-            self.installed_sessions.install(thread);
+            self.installed_sessions.install(thread)?;
             let lifecycle = realizations.lock_lifecycle(thread).await?;
             self.realization_executor
                 .environments()
@@ -196,7 +196,7 @@ impl crate::RunAssembly {
                 .await?;
             if let Some(ctx) = self
                 .installed_sessions
-                .read_run(thread, |run| run.context.clone())
+                .read_run(thread, |run| run.context.clone())?
                 .flatten()
             {
                 let cache_matches_attempt = claimed_attempt.as_ref().is_none_or(|attempt| {
@@ -214,7 +214,7 @@ impl crate::RunAssembly {
                     // coordination-only envelope is never an executable cache hit,
                     // even when its publication fingerprint is identical.
                     self.installed_sessions
-                        .update_run(thread, |run| run.context = None);
+                        .modify_run(thread, |run| run.context = None)?;
                 } else {
                     // A resident Session is also a recovery wake. Rebind every
                     // frozen writable Memory resource through the one controller so

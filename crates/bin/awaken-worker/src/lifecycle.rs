@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
 
 use awaken_lease_contract::authority::AuthorityLeaseTiming;
-use awaken_session_executor::SharedHost;
+use awaken_session_executor::WorkerRoles;
 use awaken_worker_contract::{RegistryMutation, WorkerIdentity};
 use awaken_coordinator_client::WorkerControlClient;
 use futures_util::FutureExt as _;
@@ -85,10 +85,10 @@ struct WarmCapacityPlan {
 
 impl WarmCapacityPlan {
     fn build(
-        host: &SharedHost,
+        roles: &WorkerRoles,
         desired: Vec<awaken_session_configuration_contract::EnvironmentSnapshot>,
     ) -> Self {
-        let (per_shape, total) = host.environment_capacity().environment_warmup_limits();
+        let (per_shape, total) = roles.environment_capacity().environment_warmup_limits();
         if per_shape == 0 || total == 0 {
             return Self {
                 targets: Vec::new(),
@@ -101,7 +101,7 @@ impl WarmCapacityPlan {
             if snapshot.self_hosted || remaining == 0 {
                 continue;
             }
-            let shape = host
+            let shape = roles
                 .environment_capacity()
                 .environment_snapshot_capacity_shape(&snapshot);
             if !selected.insert(shape.clone()) {
@@ -116,7 +116,7 @@ impl WarmCapacityPlan {
             });
         }
         if remaining > 0 {
-            let shape = host
+            let shape = roles
                 .environment_capacity()
                 .default_environment_capacity_shape();
             if selected.insert(shape.clone()) {
@@ -186,7 +186,7 @@ pub(crate) struct WorkerRevocationReport {
 #[derive(Clone)]
 pub(crate) struct WorkerSupervisor {
     pub(crate) authority: Arc<WorkerAuthorityProof>,
-    pub(crate) host: Arc<SharedHost>,
+    pub(crate) roles: WorkerRoles,
     pub(crate) control: WorkerControlClient,
     pub(crate) identity: WorkerIdentity,
     pub(crate) credential_observation_resolver:
@@ -275,7 +275,7 @@ impl WorkerSupervisor {
         // The process-local claim gate is the drain linearization point. Fence it
         // before publishing Draining to the Registry so no still-open claim loop
         // can race the remote state transition and receive a predictable rejection.
-        let local_fence = self.host.dispatch().begin_drain().await.ok_or_else(|| {
+        let local_fence = self.roles.dispatch().begin_drain().await.ok_or_else(|| {
             "worker drain rejected: local claim pool is not installed".to_string()
         })?;
         self.publish_registry_drain(local_fence, deadline_ms).await
@@ -290,7 +290,7 @@ impl WorkerSupervisor {
             .refresh(
                 self.credential_observation_resolver.as_deref(),
                 self.acp_capability_observation_source.as_deref(),
-                self.host.clock().as_ref(),
+                self.roles.clock().as_ref(),
                 self.observation_ttl,
             )
             .await
@@ -304,7 +304,7 @@ impl WorkerSupervisor {
             .expect("warm Environment receipt lock")
             .iter()
             .filter(|(_, snapshot)| {
-                self.host
+                self.roles
                     .environment_capacity()
                     .ready_environment_snapshot_capacity(snapshot)
                     > 0
@@ -328,7 +328,7 @@ impl WorkerSupervisor {
             .current_environment_warmups(&self.identity)
             .await;
         if let Err(error) = prepare_current_environment_images(&fetched, |desired| {
-            self.host
+            self.roles
                 .environment_capacity()
                 .prewarm_environment_images(desired)
         })
@@ -340,7 +340,7 @@ impl WorkerSupervisor {
             Ok(desired) => (desired, None),
             Err(error) => (previous.values().cloned().collect(), Some(error)),
         };
-        let plan = WarmCapacityPlan::build(&self.host, desired);
+        let plan = WarmCapacityPlan::build(&self.roles, desired);
         let selected_shapes = plan.shapes();
 
         // Release every plan-external shape before creating replacements. Both
@@ -348,18 +348,18 @@ impl WorkerSupervisor {
         // so an identical projection cannot discard its own selected capacity.
         for (shape, snapshot) in &previous {
             if !selected_shapes.contains(shape) {
-                self.host
+                self.roles
                     .environment_capacity()
                     .discard_environment_snapshot_capacity(snapshot)
                     .await;
             }
         }
         let default_shape = self
-            .host
+            .roles
             .environment_capacity()
             .default_environment_capacity_shape();
         if !selected_shapes.contains(&default_shape) {
-            self.host
+            self.roles
                 .environment_capacity()
                 .discard_default_environment_capacity()
                 .await;
@@ -371,13 +371,13 @@ impl WorkerSupervisor {
         for target in &plan.targets {
             let result = match &target.demand {
                 WarmCapacityDemand::Environment(snapshot) => {
-                    self.host
+                    self.roles
                         .environment_capacity()
                         .prewarm_environment_snapshot(snapshot, target.target)
                         .await
                 }
                 WarmCapacityDemand::Default => {
-                    self.host
+                    self.roles
                         .environment_capacity()
                         .prewarm_default_environment_capacity(target.target)
                         .await
@@ -510,14 +510,14 @@ async fn renew_registry_authority(lifecycle: &WorkerSupervisor, mut sequence: u6
             break;
         };
         let timing = receipt.timing;
-        let ready = lifecycle.host.dispatch().can_resume_work().await;
+        let ready = lifecycle.roles.dispatch().can_resume_work().await;
         let heartbeat_timeout = timing
             .request_timeout()
             .min(lifecycle.authority.remaining());
         let heartbeat = lifecycle.observations.snapshot().into_heartbeat(
             sequence,
             ready,
-            lifecycle.host.dispatch().in_flight(),
+            lifecycle.roles.dispatch().in_flight(),
             lifecycle.warm_environment_shapes(),
         );
         let mutation = tokio::time::timeout(
@@ -562,7 +562,7 @@ async fn renew_registry_authority(lifecycle: &WorkerSupervisor, mut sequence: u6
                 }
                 consecutive_failures = 0;
                 if admission_suspended {
-                    if lifecycle.host.dispatch().resume_admission().await {
+                    if lifecycle.roles.dispatch().resume_admission().await {
                         tracing::info!(
                             "worker registry authority re-proven; claim admission resumed"
                         );
@@ -671,7 +671,7 @@ async fn pause_authority_admission_for_retry(
     timing: AuthorityLeaseTiming,
 ) -> Option<Instant> {
     if !*admission_suspended {
-        lifecycle.host.dispatch().suspend_admission().await;
+        lifecycle.roles.dispatch().suspend_admission().await;
         *admission_suspended = true;
     }
     let now = mono::now();
@@ -728,7 +728,7 @@ fn session_realization_claim_target(
     lifecycle: &WorkerSupervisor,
     lease_ttl_ms: u64,
 ) -> Option<awaken_session_realization_contract::SessionRealizationTarget> {
-    let now_at = lifecycle.host.clock().now();
+    let now_at = lifecycle.roles.clock().now();
     let expiry = awaken_time::Expiry::child_within(
         awaken_time::Expiry::after(now_at, lifecycle.authority.remaining()),
         now_at,
@@ -779,7 +779,7 @@ pub(crate) fn spawn_session_realization_reconciliation(
                     // | R2 | yes | yes | any | E1 + E2 + E3 |
                     // | R3 | no | any | any | E4 |
                     if let Err(error) = lifecycle
-                        .host
+                        .roles
                         .run_assembly().renew_due_session_realizations(timing)
                         .boxed()
                         .await
@@ -802,7 +802,7 @@ pub(crate) fn spawn_session_realization_reconciliation(
                         return;
                     };
                     if let Err(error) = lifecycle
-                        .host
+                        .roles
                         .run_assembly().recover_terminal_cleanup_assignments(cleanup_target)
                         .boxed()
                         .await
@@ -833,10 +833,10 @@ pub(crate) fn spawn_session_preparation_reconciliation(
             // The same absorbing pool drain that stops Run claims also stops
             // new preparation claims. Temporary heartbeat suspension skips a
             // tick but can resume; it never turns into terminal drain.
-            if !lifecycle.host.dispatch().can_resume_work().await {
+            if !lifecycle.roles.dispatch().can_resume_work().await {
                 break;
             }
-            if !lifecycle.host.dispatch().accepting_work().await {
+            if !lifecycle.roles.dispatch().accepting_work().await {
                 continue;
             }
             let Some(target) = session_realization_claim_target(
@@ -852,7 +852,7 @@ pub(crate) fn spawn_session_preparation_reconciliation(
             {
                 Ok(Some(assignment)) => {
                     if let Err(error) = lifecycle
-                        .host
+                        .roles
                         .run_assembly()
                         .prepare_session_without_run(&assignment)
                         .await
@@ -997,7 +997,7 @@ pub(crate) async fn revoke_worker_session_authority_before(
     lifecycle.authority.close();
     awaken_observability::set_worker_authority_proof_remaining(std::time::Duration::ZERO);
     let revocation = lifecycle
-        .host
+        .roles
         .run_assembly()
         .begin_session_realization_revocation();
     // Fail closed without racing terminal sandbox disposal against in-flight
@@ -1010,25 +1010,28 @@ pub(crate) async fn revoke_worker_session_authority_before(
         deadline,
         async {
             let _local_fence = lifecycle
-                .host
+                .roles
                 .dispatch()
                 .begin_drain()
                 .await
                 .ok_or_else(|| {
                     "Worker revocation could not install the local claim fence".to_string()
                 })?;
-            Ok(lifecycle
-                .host
+            lifecycle
+                .roles
                 .session_runs()
                 .interrupt_all_session_runs()
-                .await)
+                .await
+                .map_err(|error| error.to_string())
         },
-        |remaining| lifecycle.host.drain_runtime(remaining),
+        |remaining| lifecycle.roles.drain(remaining),
         async {
             lifecycle
-                .host
+                .roles
                 .run_assembly()
-                .finish_session_realization_revocation(revocation)
+                .finish_session_realization_revocation(
+                    revocation.map_err(|error| error.to_string())?,
+                )
                 .await
                 .map(|_| ())
                 .map_err(|error| error.to_string())
@@ -1064,7 +1067,7 @@ pub(crate) async fn shutdown_worker_capacity_before(
         deadline,
         revocation,
         lifecycle
-            .host
+            .roles
             .environment_capacity()
             .shutdown_environment_capacity(),
     )
@@ -1122,11 +1125,13 @@ mod tests {
         let supervisor = |local_readiness| async move {
             Arc::new(super::WorkerSupervisor {
                 authority: Default::default(),
-                host: awaken_runtime_host_testkit::volatile_host(
-                    Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
-                    "worker-test",
-                )
-                .await,
+                roles: awaken_session_executor::WorkerRoles::of(
+                    &*awaken_runtime_host_testkit::volatile_host(
+                        Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
+                        "worker-test",
+                    )
+                    .await,
+                ),
                 control: awaken_coordinator_client::WorkerControlClient::new(
                     awaken_worker_transport_security::WorkerUpstream::new("http://127.0.0.1:1")
                         .with_worker_id("local-probe"),
@@ -1680,11 +1685,13 @@ mod tests {
                 .unwrap();
             let lifecycle = Arc::new(WorkerSupervisor {
                 authority: authority.clone(),
-                host: awaken_runtime_host_testkit::volatile_host(
-                    Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
-                    "none",
-                )
-                .await,
+                roles: awaken_session_executor::WorkerRoles::of(
+                    &*awaken_runtime_host_testkit::volatile_host(
+                        Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
+                        "none",
+                    )
+                    .await,
+                ),
                 control: WorkerControlClient::new(
                     awaken_worker_transport_security::WorkerUpstream::new(format!(
                         "http://{address}"

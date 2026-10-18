@@ -324,7 +324,8 @@ mod tests {
                 .acquire_realization_with("shared-session", |slot| {
                     slot.run.install_dispatch_claim(old.clone());
                 })
-                .await;
+                .await
+                .expect("installed Sessions");
             let second_entered = Arc::new(AtomicBool::new(false));
             let waiting = {
                 let host = host.clone();
@@ -338,7 +339,8 @@ mod tests {
                         .acquire_realization_with("shared-session", |slot| {
                             slot.run.install_dispatch_claim(claim.clone());
                         })
-                        .await;
+                        .await
+                        .expect("installed Sessions");
                     entered.store(true, Ordering::SeqCst);
                     guard
                 })
@@ -349,6 +351,7 @@ mod tests {
                 host.run_assembly
                     .installed_sessions
                     .read_run("shared-session", |run| run.dispatch_claim.clone())
+                    .expect("installed Sessions")
                     .flatten(),
                 Some(old),
                 "R1"
@@ -360,7 +363,7 @@ mod tests {
             } else {
                 host.run_assembly
                     .installed_sessions
-                    .update_run("shared-session", |run| run.dispatch_claim = None);
+                    .install_run("shared-session", |run| run.dispatch_claim = None);
             }
             drop(first);
             let second = waiting.await.expect("next admission joins");
@@ -369,6 +372,7 @@ mod tests {
                 host.run_assembly
                     .installed_sessions
                     .read_run("shared-session", |run| run.dispatch_claim.clone())
+                    .expect("installed Sessions")
                     .flatten(),
                 Some(new),
                 "R2/R3"

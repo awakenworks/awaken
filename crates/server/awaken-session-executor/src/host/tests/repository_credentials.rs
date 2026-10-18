@@ -228,7 +228,8 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 host.run_assembly
                     .installed_sessions
-                    .modify(&thread, |_| panic!("P2/C12 actual Slot poison"));
+                    .modify(&thread, |_| panic!("P2/C12 actual Slot poison"))
+                    .expect("installed Sessions");
             }))
             .is_err()
         );
@@ -650,7 +651,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         let session = "terminal-protected-platform";
         remote.run_assembly.installed_sessions.replace_frozen_with(session, |next| {
             next.workspace = Some("terminal-original-workspace".into());
-        });
+        }).expect("installed Sessions");
         let expectation = awaken_provisioning_contract::RepositoryPublicationExpectation {
             branch: "awf/work".into(), commit: "a".repeat(40), expected_prior_commit: None,
         };
@@ -731,9 +732,9 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         let missing = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await
             .with_authority(crate::UpstreamAuthority::default()))
             .build().expect("C12 upstream has no verifier");
-        missing.run_assembly.installed_sessions.replace_frozen_with(session, |next| next.workspace = Some("terminal-original-workspace".into()));
+        missing.run_assembly.installed_sessions.replace_frozen_with(session, |next| next.workspace = Some("terminal-original-workspace".into())).expect("installed Sessions");
         assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            missing.run_assembly.installed_sessions.modify(session, |_| panic!("C12 actual Slot poison"));
+            missing.run_assembly.installed_sessions.modify(session, |_| panic!("C12 actual Slot poison")).expect("installed Sessions");
         })).is_err());
         let refused = std::panic::AssertUnwindSafe(missing.realization_executor.staging().publish_repository_activation(
             session, missing.local_workspace(), repository, &staged.binding_checks,
@@ -774,7 +775,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified()).await.expect("C13 actual verifier entry");
         assert_eq!(remote_verifier.calls.load(Ordering::SeqCst), 5, "C13 first read reached verifier");
         assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            remote.run_assembly.installed_sessions.modify(session, |_| panic!("C13 poison during original verifier"));
+            remote.run_assembly.installed_sessions.modify(session, |_| panic!("C13 poison during original verifier")).expect("installed Sessions");
         })).is_err());
         release.notify_one();
         let refused = operation.await.expect("C13 callback and operation joined");
@@ -1185,7 +1186,7 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
         .await
         .unwrap();
     managed
-        .run_assembly
+        .realization_executor
         .apply_session_inputs(
             "t-rot",
             &resource_transition(
@@ -1245,7 +1246,7 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
     // The Managed adapter stores the supplied credential in the Vault and publishes a
     // new Repository config before invoking this complete-manifest runtime port.
     managed
-        .run_assembly
+        .realization_executor
         .apply_session_inputs(
             "t-rot",
             &resource_transition(
@@ -1264,5 +1265,10 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
         Some(next_credential.id.0.as_str()),
         "clone credential pin rotated without retaining either secret"
     );
-    assert!(host.run_assembly.active_mcp_projections("t-rot").is_empty());
+    assert!(
+        host.run_assembly
+            .active_mcp_projections("t-rot")
+            .expect("registry and projection are healthy")
+            .is_empty()
+    );
 }

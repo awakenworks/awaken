@@ -608,6 +608,7 @@ mod tests {
         );
         assert!(
             !host
+                .run_assembly
                 .authority
                 .durable_thread_exists(&child_id.0)
                 .await
@@ -802,6 +803,7 @@ mod tests {
         assert_eq!(worker_snapshot, snapshot, "R2/E5 one recovery authority");
         assert!(
             !host
+                .run_assembly
                 .authority
                 .durable_thread_exists(&child_id.0)
                 .await
@@ -918,6 +920,7 @@ mod tests {
         }
         assert!(
             !host
+                .run_assembly
                 .authority
                 .durable_thread_exists(&child_id.0)
                 .await

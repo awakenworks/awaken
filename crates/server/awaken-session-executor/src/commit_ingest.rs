@@ -274,6 +274,7 @@ mod tests {
                         && slot.realization.staging().memory_bindings.is_empty()
                         && slot.realization.staging().memory.is_none()
                 })
+                .expect("installed Sessions")
                 .unwrap_or(true),
             "{rule}: claimed commit must not realize a Session projection"
         );
@@ -293,7 +294,9 @@ mod tests {
     ) {
         let (host, versions) = memory;
         assert!(
-            host.drain_runtime(std::time::Duration::from_secs(10)).await,
+            crate::CoordinatorRoles::of(host)
+                .drain(std::time::Duration::from_secs(10))
+                .await,
             "{rule}: Memory extraction did not drain"
         );
         let intent = host
@@ -377,7 +380,11 @@ mod tests {
                 .with_agent_publications(Arc::new(publications)))
             .build()
             .expect("validated Host dependencies");
-        admission.run_assembly.installed_sessions.install(thread);
+        admission
+            .run_assembly
+            .installed_sessions
+            .install(thread)
+            .expect("installed Sessions");
         admission
             .realization_executor
             .staging()
@@ -398,6 +405,7 @@ mod tests {
             host.run_assembly
                 .installed_sessions
                 .read(thread, |_| ())
+                .expect("installed Sessions")
                 .is_none(),
             "R1-R3/C3 target starts cold"
         );
@@ -586,7 +594,11 @@ mod tests {
                 committed.resource_revision,
                 committed.resources.clone(),
             );
-        admission.run_assembly.installed_sessions.install(thread);
+        admission
+            .run_assembly
+            .installed_sessions
+            .install(thread)
+            .expect("installed Sessions");
         admission
             .realization_executor
             .staging()
@@ -637,6 +649,7 @@ mod tests {
             .run_assembly
             .installed_sessions
             .read_run(thread, |run| run.context.clone())
+            .expect("installed Sessions")
             .flatten()
             .expect("D1 durable context resident");
         assert!(ctx.delivery.is_durable(), "D1/C3 must use durable delivery");
@@ -740,11 +753,13 @@ mod tests {
             host.run_assembly
                 .installed_sessions
                 .read(parent_thread, |_| ())
+                .expect("installed Sessions")
                 .is_none()
                 && host
                     .run_assembly
                     .installed_sessions
                     .read(child_thread, |_| ())
+                    .expect("installed Sessions")
                     .is_none(),
             "R1-R5/C6 target starts cold"
         );
@@ -873,6 +888,7 @@ mod tests {
         );
 
         let child_partition_exists = host
+            .run_assembly
             .authority
             .durable_thread_exists(child_thread)
             .await
@@ -918,6 +934,7 @@ mod tests {
             host.run_assembly
                 .installed_sessions
                 .read(child_thread, |_| ())
+                .expect("installed Sessions")
                 .is_none(),
             "R4-R6 E6 logical child has no resident Session slot"
         );
@@ -960,6 +977,7 @@ mod tests {
             (dependencies().await)
                 .build()
                 .expect("validated Host dependencies")
+                .run_assembly
                 .authority
                 .claimed_commit()
                 .unwrap()
@@ -983,6 +1001,7 @@ mod tests {
         ))
         .build()
         .expect("validated Host dependencies")
+        .run_assembly
         .authority
         .claimed_commit()
         .unwrap()
@@ -993,6 +1012,7 @@ mod tests {
             .with_authority(crate::UpstreamAuthority::default()))
         .build()
         .expect("validated Host dependencies")
+        .run_assembly
         .authority
         .claimed_commit()
         {

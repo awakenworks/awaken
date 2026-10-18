@@ -597,7 +597,7 @@ async fn local_managed_state_over(
     let environments =
         environments.unwrap_or_else(|| volatile_environment_execution(clock.clone()));
     let mut builder = awaken_session_application::SessionApplicationBuilder::new(
-        host.session_execution_roles(),
+        awaken_session_executor::CoordinatorRoles::of(&host).session_execution(),
         host.run_assembly().clone(),
         persistence,
         environments.clone(),
@@ -708,11 +708,12 @@ async fn with_scenario_session_lifecycle(
     prepare_managed_lifecycle_delivery(&managed_state.managed, &managed_state.sessions, None, None)
         .map(|prepared| prepared.start(&lifecycle))
         .expect("scenario Managed lifecycle delivery binds before traffic");
-    coordinator_component::start_runtime_services(&host, dreams)
+    let roles = awaken_session_executor::CoordinatorRoles::of(&host);
+    coordinator_component::start_runtime_services(&roles, dreams)
         .await
         .expect("scenario dispatch composition binds before traffic");
     coordinator_component::register_session_lifecycle(&lifecycle, managed_state.sessions);
-    coordinator_component::register_runtime_background_drain(&lifecycle, host);
+    coordinator_component::register_runtime_background_drain(&lifecycle, roles);
     // The Router owns the same process-lifecycle handle as the Scenario surface.
     // Dropping the test server drops the composition; the Tokio runtime then
     // tears down its registered tasks just as process shutdown does.

@@ -14,6 +14,7 @@
 //! peers it reads.
 
 pub mod continuation;
+mod effects_role;
 
 use crate::environment_holding::EnvironmentHolding;
 use crate::execution_authority::ExecutionAuthority;
@@ -150,7 +151,7 @@ impl RealizationExecutor {
     }
 
     /// Apply one Resource transition to the Session's Environment.
-    pub async fn apply_session_inputs(
+    pub async fn apply_session_inputs_with_context(
         &self,
         thread: &str,
         transition: &awaken_session_configuration_contract::resource::SessionResourceTransition,

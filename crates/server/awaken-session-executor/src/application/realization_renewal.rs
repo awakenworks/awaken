@@ -57,7 +57,7 @@ impl crate::RunAssembly {
             .read(&session_id, |slot| {
                 (slot.realization.execution().authority.lease() == Some(&lease))
                     .then(|| slot.realization.execution().phase.clone())
-            })
+            })?
             .flatten()
         else {
             return Ok(false);
@@ -210,7 +210,7 @@ impl crate::RunAssembly {
 
     #[cfg(target_os = "linux")]
     async fn refresh_session_execution(&self) -> Result<(), crate::HostError> {
-        let outcomes = stream::iter(self.installed_sessions.execution_environments())
+        let outcomes = stream::iter(self.installed_sessions.execution_environments()?)
             .map(|environment| async move {
                 let Some(scoped) = environment.scoped_execution() else {
                     unreachable!("execution environments are exactly the scoped ones")
@@ -236,7 +236,7 @@ impl crate::RunAssembly {
             .map_err(|error| crate::HostError::internal(error.to_string()))?;
         let mut due = self
             .installed_sessions
-            .realization_leases()
+            .realization_leases()?
             .into_iter()
             .filter(|(_, proof)| {
                 owner.is_none_or(|(owner, incarnation)| {

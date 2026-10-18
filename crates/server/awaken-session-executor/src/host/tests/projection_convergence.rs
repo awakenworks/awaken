@@ -171,6 +171,7 @@ async fn independent_coordinators_converge_after_binding_replacement_and_reject_
                     assert!(run.context.is_none(), "no physical realization");
                     assert!(run.session_dispatch);
                 })
+                .expect("installed Sessions")
                 .unwrap();
         }
     }

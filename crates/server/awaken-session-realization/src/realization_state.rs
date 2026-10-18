@@ -110,6 +110,14 @@ impl SessionRealization {
     }
 
     /// The Environment holding state, for a change of that state alone.
+    #[cfg(not(any(test, feature = "test-support")))]
+    pub(crate) fn environment_mut(&mut self) -> &mut EnvironmentHoldingState {
+        &mut self.environment
+    }
+
+    /// The Environment holding state, for a test fixture's direct change. Production
+    /// callers outside the realization use the named operations instead.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn environment_mut(&mut self) -> &mut EnvironmentHoldingState {
         &mut self.environment
     }
@@ -120,6 +128,14 @@ impl SessionRealization {
     }
 
     /// The Resource staging state, for a change of that state alone.
+    #[cfg(not(any(test, feature = "test-support")))]
+    pub(crate) fn staging_mut(&mut self) -> &mut ResourceStagingState {
+        &mut self.staging
+    }
+
+    /// The Resource staging state, for a test fixture's direct change. Production
+    /// callers outside the realization use the named operations instead.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn staging_mut(&mut self) -> &mut ResourceStagingState {
         &mut self.staging
     }
@@ -130,6 +146,14 @@ impl SessionRealization {
     }
 
     /// The terminal effects state, for a change of that state alone.
+    #[cfg(not(any(test, feature = "test-support")))]
+    pub(crate) fn effects_mut(&mut self) -> &mut TerminalEffectsState {
+        &mut self.effects
+    }
+
+    /// The terminal effects state, for a test fixture's direct change. Production
+    /// callers outside the realization use the named operations instead.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn effects_mut(&mut self) -> &mut TerminalEffectsState {
         &mut self.effects
     }
@@ -140,6 +164,9 @@ impl SessionRealization {
     }
 
     /// The execution authority state, for a change of that state alone.
+    /// The execution authority state, for a test fixture's direct change. Production
+    /// callers outside the realization use the named operations instead.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn execution_mut(&mut self) -> &mut ExecutionAuthorityState {
         &mut self.execution
     }
@@ -368,6 +395,84 @@ impl SessionRealization {
 }
 
 impl SessionRealization {
+    /// Publish one complete frozen projection in the installed Session lock:
+    /// the projected Environment owner, the accepted aggregate receipt, the
+    /// frozen MCP attachment marker and the exact Resource transition to replay.
+    pub fn publish_frozen_projection(
+        &mut self,
+        owner: SessionEnvironmentOwner,
+        state: &awaken_session_state_contract::SessionEnvironmentState,
+        holds_context: bool,
+        receipt: projection_receipt::FrozenProjectionReceipt,
+        has_mcp_attachment: bool,
+        transition: awaken_session_configuration_contract::resource::SessionResourceTransition,
+    ) {
+        self.install_owner(owner, state, holds_context);
+        self.execution.frozen_receipt = Some(receipt);
+        self.staging
+            .mcp
+            .set_has_frozen_attachment(has_mcp_attachment);
+        self.staging.transition = Some(transition);
+    }
+
+    /// Stage the Resource transition a prepared Session replays, unless an
+    /// aggregate-owned transition is already staged.
+    pub fn stage_initial_resource_transition(
+        &mut self,
+        transition: awaken_session_configuration_contract::resource::SessionResourceTransition,
+    ) {
+        if self.staging.transition.is_none() {
+            self.staging.transition = Some(transition);
+        }
+    }
+
+    /// Publish the immutable inputs compiled for one Resource effect: staged
+    /// Resources, standard Memory bindings and Skill versions, keyed by the
+    /// effect they were compiled for. The automatic Memory selection is
+    /// cleared; its binding is chosen again from the new standard bindings.
+    pub fn publish_compiled_inputs(
+        &mut self,
+        compiled: crate::staged_resources::CompiledEffectiveInputs,
+        skills: Vec<awaken_resource_contract::SkillVersion>,
+        effect_key: String,
+    ) {
+        self.staging.resources = compiled.staged;
+        self.staging.memory_bindings = compiled.memory_bindings;
+        self.staging.memory = None;
+        self.staging.skills = Some(skills);
+        self.staging.effect_key = Some(effect_key);
+    }
+
+    /// Record the one content delivery path the Session context selected.
+    pub fn select_content_delivery(
+        &mut self,
+        delivery: crate::frozen_inputs::ManagedContentDelivery,
+    ) {
+        self.staging.content_delivery = Some(delivery);
+    }
+
+    /// Project the managed-filesystem Skill discovery prompt, or clear it.
+    pub fn project_skill_prompt(
+        &mut self,
+        prompt: Option<crate::skill_delivery::FilesystemSkillPrompt>,
+    ) {
+        self.staging.skill_prompt = prompt;
+    }
+
+    /// Install one Control-issued terminal cleanup assignment.
+    pub fn assign_terminal_cleanup(
+        &mut self,
+        assignment: awaken_session_realization_contract::SessionTerminalCleanupAssignment,
+    ) {
+        self.effects.assignment = Some(assignment);
+    }
+
+    /// The Session's MCP generation state, changed only through its own
+    /// methods.
+    pub fn session_mcp_mut(&mut self) -> &mut awaken_session_mcp::SessionMcpState {
+        &mut self.staging.mcp
+    }
+
     /// Install a projected Environment owner and, in the same installed Session lock, let
     /// the canonical projection reopen MCP admission when the run layer holds
     /// no local effect.

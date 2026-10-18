@@ -486,7 +486,7 @@ impl crate::ChildRunCoordination {
                         .run_manifest(slot.run.session_dispatch),
                     slot.inputs.published_snapshot.clone(),
                 )
-            })
+            })?
             .ok_or_else(|| HostError::bad_request("Session runtime projection is unavailable"))?;
         let baseline = baseline.ok_or_else(|| {
             HostError::bad_request("Session frozen baseline is unavailable for coordination")
@@ -1255,7 +1255,7 @@ mod tests {
             .expect("validated Host dependencies");
             host.run_assembly
                 .installed_sessions
-                .update(&session_id, |slot| {
+                .install_with(&session_id, |slot| {
                     slot.run.session_dispatch = true;
                     slot.replace_frozen_with(|next| {
                         next.baseline = Some(baseline);
@@ -1266,7 +1266,8 @@ mod tests {
                     });
                     slot.realization.staging_mut().manifest = active.clone();
                     slot.realization.staging_mut().transition = transition;
-                });
+                })
+                .expect("installed Sessions");
             let mut snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent-a")
                 .model(awaken_runtime_contract::resolved::ModelBinding::new(
                     "test", "model-a", "native",
@@ -1369,7 +1370,8 @@ mod tests {
             };
             host.run_assembly
                 .installed_sessions
-                .replace_frozen_with(&session_id, |next| next.tools = Some(updated_tools.clone()));
+                .replace_frozen_with(&session_id, |next| next.tools = Some(updated_tools.clone()))
+                .expect("installed Sessions");
             let mut target = awaken_runtime_contract::ExecutableAgentSnapshot::builder("roster-b")
                 .model(awaken_runtime_contract::resolved::ModelBinding::new(
                     "test", "model-b", "native",
@@ -1433,6 +1435,7 @@ mod tests {
                 .run_assembly
                 .installed_sessions
                 .read(&session_id, |slot| slot.inputs.baseline.clone())
+                .expect("installed Sessions")
                 .unwrap()
                 .unwrap();
             // R8 exact report Message and source Run bind the original continuation;

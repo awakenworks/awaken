@@ -508,7 +508,9 @@ impl crate::RunAssembly {
         thread: &str,
         bindings: std::collections::HashMap<String, Arc<MemoryBinding>>,
     ) {
-        self.installed_sessions.install(thread);
+        self.installed_sessions
+            .install(thread)
+            .expect("installed Sessions");
         let realizations = self.installed_sessions.realizations();
         realizations
             .update_realization(thread, |r| {
@@ -619,7 +621,9 @@ impl crate::RunAssembly {
         );
         // The embedder seam installs the Session it binds (the host's install
         // path); the realization view then only changes the installed slot.
-        self.installed_sessions.update(thread, |_| ());
+        self.installed_sessions
+            .install(thread)
+            .expect("session runtime slots mutex poisoned");
         self.realization_executor
             .staging()
             .register_thread_memory(thread, Some(Arc::new(binding)))

@@ -885,22 +885,6 @@ impl awaken_session_execution_contract::RealizationRuntime for EchoFake {
             .await
     }
 
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Validate the exact provider-effective Sandbox layout without publishing
-    /// process-local state or performing provider, cache, Skill, File, Vault,
-    /// Repository, or Git I/O. Session creation and Resource mutation call this
-    /// before their durable/effect boundaries; Runtime repeats it at the final
-    /// realization edge as defense in depth.
-    fn validate_session_sandbox_layout(
-        &self,
-        thread: &str,
-        layout: &awaken_session_configuration_contract::SessionSandboxLayout,
-    ) -> Result<(), awaken_session_types::RunError> {
-        awaken_session_execution_contract::NeutralRuntime
-            .validate_session_sandbox_layout(thread, layout)
-    }
-
     async fn install_session_projection(
         &self,
         thread: &str,
@@ -944,6 +928,127 @@ impl awaken_session_execution_contract::RealizationRuntime for EchoFake {
         awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)
             .await
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_execution_contract::RealizationEffects for EchoFake {
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Validate the exact provider-effective Sandbox layout without publishing
+    /// process-local state or performing provider, cache, Skill, File, Vault,
+    /// Repository, or Git I/O. Session creation and Resource mutation call this
+    /// before their durable/effect boundaries; Runtime repeats it at the final
+    /// realization edge as defense in depth.
+    fn validate_session_sandbox_layout(
+        &self,
+        thread: &str,
+        layout: &awaken_session_configuration_contract::SessionSandboxLayout,
+    ) -> Result<(), awaken_session_types::RunError> {
+        awaken_session_execution_contract::NeutralRuntime
+            .validate_session_sandbox_layout(thread, layout)
+    }
+
+    async fn checkpoint_session_environment(
+        &self,
+        thread: &str,
+        request: awaken_session_execution_contract::__macro_support::SandboxCheckpointRequest,
+    ) -> Result<
+        awaken_session_execution_contract::__macro_support::CheckpointReceipt,
+        awaken_session_execution_contract::__macro_support::RunError,
+    > {
+        awaken_session_execution_contract::NeutralRuntime
+            .checkpoint_session_environment(thread, request)
+            .await
+    }
+
+    async fn prepare_checkpoint_source_disposal(
+        &self,
+        thread: &str,
+        preparation: &awaken_session_execution_contract::__macro_support::SourceReleasePreparationEffect,
+        generation: &awaken_session_execution_contract::__macro_support::SandboxGeneration,
+        source_binding: &str,
+    ) -> Result<
+        awaken_session_execution_contract::__macro_support::SourceReleasePreparedReceipt,
+        awaken_session_execution_contract::__macro_support::RunError,
+    > {
+        awaken_session_execution_contract::NeutralRuntime
+            .prepare_checkpoint_source_disposal(thread, preparation, generation, source_binding)
+            .await
+    }
+
+    async fn dispose_prepared_checkpoint_source(
+        &self,
+        thread: &str,
+        disposal: &awaken_session_execution_contract::__macro_support::SourceReleaseDisposal,
+    ) -> Result<
+        awaken_session_execution_contract::__macro_support::SourceDisposedReceipt,
+        awaken_session_execution_contract::__macro_support::RunError,
+    > {
+        awaken_session_execution_contract::NeutralRuntime
+            .dispose_prepared_checkpoint_source(thread, disposal)
+            .await
+    }
+
+    async fn restore_checkpointed_session_environment(
+        &self,
+        request: awaken_session_execution_contract::__macro_support::SandboxRestoreRequest,
+    ) -> Result<
+        awaken_session_execution_contract::__macro_support::RestoreReceipt,
+        awaken_session_execution_contract::__macro_support::RunError,
+    > {
+        awaken_session_execution_contract::NeutralRuntime
+            .restore_checkpointed_session_environment(request)
+            .await
+    }
+
+    async fn delete_session_checkpoint(
+        &self,
+        thread: &str,
+        checkpoint: &awaken_session_execution_contract::__macro_support::SandboxCheckpointRef,
+    ) -> Result<(), awaken_session_execution_contract::__macro_support::RunError> {
+        awaken_session_execution_contract::NeutralRuntime
+            .delete_session_checkpoint(thread, checkpoint)
+            .await
+    }
+
+    async fn apply_session_inputs(
+        &self,
+        thread: &str,
+        transition: &awaken_session_execution_contract::__macro_support::SessionResourceTransition,
+    ) -> Result<(), awaken_session_execution_contract::__macro_support::RunError> {
+        awaken_session_execution_contract::NeutralRuntime
+            .apply_session_inputs(thread, transition)
+            .await
+    }
+
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Execute terminal Repository publication under the same realization
+    /// generation that owns the cleanup command set and return either its
+    /// secret-free receipt or one permanent compare-and-swap rejection. The
+    /// caller verifies and durably records that outcome before ordinary root
+    /// cleanup may dispose the shared environment. Runtimes must override this
+    /// edge and carry the lease to the Repository transport boundary; falling
+    /// back would erase the terminal ownership proof.
+    async fn execute_terminal_repository_publication_for_lease(
+        &self,
+        command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
+        lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
+    ) -> Result<
+        awaken_session_state_contract::SessionRepositoryPublicationEffect,
+        awaken_session_types::RunError,
+    > {
+        awaken_session_execution_contract::NeutralRuntime
+            .execute_terminal_repository_publication_for_lease(command, lease)
+            .await
+    }
+
+    async fn dispose_terminal_cleanup_for_effect(
+        &self,
+        effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<awaken_session_state_contract::SessionCleanupDisposalReceipt, RunError> {
+        Ok(awaken_protocol_managed_testkit::complete_terminal_cleanup_disposal(&effect))
     }
 }
 
@@ -1448,28 +1553,6 @@ impl awaken_session_execution_contract::ThreadReadRuntime for EchoFake {
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::TerminalCleanupRuntime for EchoFake {
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Execute terminal Repository publication under the same realization
-    /// generation that owns the cleanup command set and return either its
-    /// secret-free receipt or one permanent compare-and-swap rejection. The
-    /// caller verifies and durably records that outcome before ordinary root
-    /// cleanup may dispose the shared environment. Runtimes must override this
-    /// edge and carry the lease to the Repository transport boundary; falling
-    /// back would erase the terminal ownership proof.
-    async fn execute_terminal_repository_publication_for_lease(
-        &self,
-        command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
-        lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
-    ) -> Result<
-        awaken_session_state_contract::SessionRepositoryPublicationEffect,
-        awaken_session_types::RunError,
-    > {
-        awaken_session_execution_contract::NeutralRuntime
-            .execute_terminal_repository_publication_for_lease(command, lease)
-            .await
-    }
-
     async fn prepare_terminal_cleanup_for_effect(
         &self,
         effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
@@ -1493,13 +1576,6 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for EchoFake {
         awaken_session_execution_contract::NeutralRuntime
             .acknowledge_terminal_cleanup_preparation(effect)
             .await
-    }
-
-    async fn dispose_terminal_cleanup_for_effect(
-        &self,
-        effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
-    ) -> Result<awaken_session_state_contract::SessionCleanupDisposalReceipt, RunError> {
-        Ok(awaken_protocol_managed_testkit::complete_terminal_cleanup_disposal(&effect))
     }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
@@ -2059,22 +2135,6 @@ impl awaken_session_execution_contract::RealizationRuntime for CapableFake {
             .await
     }
 
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Validate the exact provider-effective Sandbox layout without publishing
-    /// process-local state or performing provider, cache, Skill, File, Vault,
-    /// Repository, or Git I/O. Session creation and Resource mutation call this
-    /// before their durable/effect boundaries; Runtime repeats it at the final
-    /// realization edge as defense in depth.
-    fn validate_session_sandbox_layout(
-        &self,
-        thread: &str,
-        layout: &awaken_session_configuration_contract::SessionSandboxLayout,
-    ) -> Result<(), awaken_session_types::RunError> {
-        awaken_session_execution_contract::NeutralRuntime
-            .validate_session_sandbox_layout(thread, layout)
-    }
-
     async fn install_session_projection(
         &self,
         thread: &str,
@@ -2120,6 +2180,8 @@ impl awaken_session_execution_contract::RealizationRuntime for CapableFake {
             .await
     }
 }
+
+awaken_session_execution_contract::neutral_role!(RealizationEffects for CapableFake);
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::ThreadReadRuntime for CapableFake {
@@ -2680,22 +2742,6 @@ impl awaken_session_execution_contract::RealizationRuntime for ToolAwaitingFake 
             .await
     }
 
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Validate the exact provider-effective Sandbox layout without publishing
-    /// process-local state or performing provider, cache, Skill, File, Vault,
-    /// Repository, or Git I/O. Session creation and Resource mutation call this
-    /// before their durable/effect boundaries; Runtime repeats it at the final
-    /// realization edge as defense in depth.
-    fn validate_session_sandbox_layout(
-        &self,
-        thread: &str,
-        layout: &awaken_session_configuration_contract::SessionSandboxLayout,
-    ) -> Result<(), awaken_session_types::RunError> {
-        awaken_session_execution_contract::NeutralRuntime
-            .validate_session_sandbox_layout(thread, layout)
-    }
-
     async fn install_session_projection(
         &self,
         thread: &str,
@@ -2741,6 +2787,8 @@ impl awaken_session_execution_contract::RealizationRuntime for ToolAwaitingFake 
             .await
     }
 }
+
+awaken_session_execution_contract::neutral_role!(RealizationEffects for ToolAwaitingFake);
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::CoordinationRuntime for ToolAwaitingFake {
@@ -3535,22 +3583,6 @@ impl awaken_session_execution_contract::RealizationRuntime for OutcomeFake {
             .await
     }
 
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Validate the exact provider-effective Sandbox layout without publishing
-    /// process-local state or performing provider, cache, Skill, File, Vault,
-    /// Repository, or Git I/O. Session creation and Resource mutation call this
-    /// before their durable/effect boundaries; Runtime repeats it at the final
-    /// realization edge as defense in depth.
-    fn validate_session_sandbox_layout(
-        &self,
-        thread: &str,
-        layout: &awaken_session_configuration_contract::SessionSandboxLayout,
-    ) -> Result<(), awaken_session_types::RunError> {
-        awaken_session_execution_contract::NeutralRuntime
-            .validate_session_sandbox_layout(thread, layout)
-    }
-
     async fn install_session_projection(
         &self,
         thread: &str,
@@ -3596,6 +3628,8 @@ impl awaken_session_execution_contract::RealizationRuntime for OutcomeFake {
             .await
     }
 }
+
+awaken_session_execution_contract::neutral_role!(RealizationEffects for OutcomeFake);
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::ThreadReadRuntime for OutcomeFake {
@@ -4633,22 +4667,6 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingFake {
             .await
     }
 
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Validate the exact provider-effective Sandbox layout without publishing
-    /// process-local state or performing provider, cache, Skill, File, Vault,
-    /// Repository, or Git I/O. Session creation and Resource mutation call this
-    /// before their durable/effect boundaries; Runtime repeats it at the final
-    /// realization edge as defense in depth.
-    fn validate_session_sandbox_layout(
-        &self,
-        thread: &str,
-        layout: &awaken_session_configuration_contract::SessionSandboxLayout,
-    ) -> Result<(), awaken_session_types::RunError> {
-        awaken_session_execution_contract::NeutralRuntime
-            .validate_session_sandbox_layout(thread, layout)
-    }
-
     async fn install_session_projection(
         &self,
         thread: &str,
@@ -4694,6 +4712,8 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingFake {
             .await
     }
 }
+
+awaken_session_execution_contract::neutral_role!(RealizationEffects for RecordingFake);
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::CoordinationRuntime for RecordingFake {
@@ -5574,22 +5594,6 @@ impl awaken_session_execution_contract::RealizationRuntime for InterruptRedirect
             .await
     }
 
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Validate the exact provider-effective Sandbox layout without publishing
-    /// process-local state or performing provider, cache, Skill, File, Vault,
-    /// Repository, or Git I/O. Session creation and Resource mutation call this
-    /// before their durable/effect boundaries; Runtime repeats it at the final
-    /// realization edge as defense in depth.
-    fn validate_session_sandbox_layout(
-        &self,
-        thread: &str,
-        layout: &awaken_session_configuration_contract::SessionSandboxLayout,
-    ) -> Result<(), awaken_session_types::RunError> {
-        awaken_session_execution_contract::NeutralRuntime
-            .validate_session_sandbox_layout(thread, layout)
-    }
-
     async fn install_session_projection(
         &self,
         thread: &str,
@@ -5635,6 +5639,8 @@ impl awaken_session_execution_contract::RealizationRuntime for InterruptRedirect
             .await
     }
 }
+
+awaken_session_execution_contract::neutral_role!(RealizationEffects for InterruptRedirectFake);
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::CoordinationRuntime for InterruptRedirectFake {

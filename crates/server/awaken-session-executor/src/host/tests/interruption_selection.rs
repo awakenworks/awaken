@@ -148,6 +148,7 @@ async fn delayed_interruption_preserves_the_successor(start_with_active_run: boo
                 .context
                 .as_ref()
                 .is_some_and(|current| Arc::ptr_eq(current, &ctx)))
+            .expect("installed Sessions")
             .unwrap(),
         "C3 same original resident Runtime, not a replacement fake context"
     );

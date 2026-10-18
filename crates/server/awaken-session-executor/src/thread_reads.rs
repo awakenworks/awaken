@@ -65,21 +65,30 @@ impl ThreadReads {
     pub(crate) async fn commit_for_read(&self, thread: &str) -> Result<Arc<HostCommit>, HostError> {
         let realizations = self.installed_sessions.realizations();
         let _lifecycle = realizations.lock_lifecycle_if_installed(thread).await?;
-        self.commit_for_read_under_lifecycle(thread).await
+        self.open_commit_for_read(thread).await
     }
 
-    /// Read the authoritative commit while the caller already owns this
-    /// Session's lifecycle guard. This is the only non-reentrant seam used by
-    /// continuation quiescence; ordinary callers use [`Self::commit_for_read`].
-    pub(crate) async fn commit_for_read_under_lifecycle(
-        &self,
-        thread: &str,
-    ) -> Result<Arc<HostCommit>, HostError> {
+    /// Read the authoritative commit while the caller holds this Session's
+    /// lifecycle guard, proven by the token only that guard lends. This is the
+    /// only non-reentrant seam used by continuation quiescence; ordinary
+    /// callers use [`Self::commit_for_read`].
+    pub(crate) fn commit_for_read_under_lifecycle<'s>(
+        &'s self,
+        lifecycle: crate::session_realizations::LifecycleHeld<'_>,
+    ) -> impl std::future::Future<Output = Result<Arc<HostCommit>, HostError>> + Send + use<'s>
+    {
+        let thread = lifecycle.session().to_owned();
+        async move { self.open_commit_for_read(&thread).await }
+    }
+
+    /// The resident context's commit, or the configured durable adapter. The
+    /// caller decides which lifecycle lock, if any, the read happens under.
+    async fn open_commit_for_read(&self, thread: &str) -> Result<Arc<HostCommit>, HostError> {
         if let Some(commit) = self
             .installed_sessions
             .read_run(thread, |run| {
                 run.context.as_ref().map(|context| context.commit.clone())
-            })
+            })?
             .flatten()
         {
             return Ok(commit);
@@ -114,16 +123,45 @@ impl ThreadReads {
             .map(|snapshot| snapshot.delegated_runs)
     }
 
-    /// Continuation-only read that reuses the lifecycle guard already held by
-    /// the caller instead of recursively acquiring it through `commit_for_read`.
-    pub(crate) async fn delegated_runs_under_lifecycle(
-        &self,
-        thread: &str,
-    ) -> Result<Vec<DelegatedRun>, HostError> {
-        let commit = self.commit_for_read_under_lifecycle(thread).await?;
-        self.delegated_run_snapshot_from_commit(thread, commit)
-            .await
-            .map(|(snapshot, _)| snapshot.delegated_runs)
+    /// Continuation-only read that reuses the lifecycle guard the caller holds,
+    /// proven by its token, instead of recursively acquiring it through
+    /// `commit_for_read`.
+    pub(crate) fn delegated_runs_under_lifecycle<'s>(
+        &'s self,
+        lifecycle: crate::session_realizations::LifecycleHeld<'_>,
+    ) -> impl std::future::Future<Output = Result<Vec<DelegatedRun>, HostError>> + Send + use<'s>
+    {
+        let thread = lifecycle.session().to_owned();
+        let commit = self.commit_for_read_under_lifecycle(lifecycle);
+        async move {
+            let commit = commit.await?;
+            self.delegated_run_snapshot_from_commit(&thread, commit)
+                .await
+                .map(|(snapshot, _)| snapshot.delegated_runs)
+        }
+    }
+
+    /// Terminal cleanup's delegated-Run read: under the target's held lifecycle
+    /// guard, or, for a cold child that has no installed lifecycle (cleanup never
+    /// installs one), straight from the configured durable adapter.
+    pub(crate) fn delegated_runs_for_cleanup<'s>(
+        &'s self,
+        thread: String,
+        lifecycle: Option<crate::session_realizations::LifecycleHeld<'_>>,
+    ) -> impl std::future::Future<Output = Result<Vec<DelegatedRun>, HostError>> + Send + use<'s>
+    {
+        let held = lifecycle.map(|lifecycle| self.delegated_runs_under_lifecycle(lifecycle));
+        async move {
+            match held {
+                Some(held) => held.await,
+                None => {
+                    let commit = self.open_commit_for_read(&thread).await?;
+                    self.delegated_run_snapshot_from_commit(&thread, commit)
+                        .await
+                        .map(|(snapshot, _)| snapshot.delegated_runs)
+                }
+            }
+        }
     }
 
     async fn delegated_run_snapshot(

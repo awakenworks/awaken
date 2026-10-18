@@ -152,7 +152,8 @@ async fn durable_child_run_scenario() {
     )))
     .build()
     .expect("validated Host dependencies");
-    host.ensure_dispatch_pool()
+    awaken_session_executor::CoordinatorRoles::of(&host)
+        .start_local_pool()
         .expect("valid test dispatch composition");
 
     let awaiting = tokio::time::timeout(

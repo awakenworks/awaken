@@ -78,6 +78,7 @@ pub async fn drive_session_terminal_cleanup(
     asserted_lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     control: &dyn SessionTerminalCleanupControl,
     realization: &dyn awaken_session_execution_contract::RealizationRuntime,
+    effects: &dyn awaken_session_execution_contract::RealizationEffects,
     runtime: &dyn awaken_session_execution_contract::TerminalCleanupRuntime,
 ) -> Result<SessionTerminalCleanupDriveOutcome, SessionRealizationDriveError> {
     let mut lease = asserted_lease.clone();
@@ -133,7 +134,7 @@ pub async fn drive_session_terminal_cleanup(
                     ));
                 }
                 let current_lease = projection.current_lease;
-                let effect = runtime
+                let effect = effects
                     .execute_terminal_repository_publication_for_lease(
                         projection.command,
                         &current_lease,
@@ -261,7 +262,7 @@ pub async fn drive_session_terminal_cleanup(
                         Err(error) => return Err(error.into()),
                     };
                 workspace_matches(&expected_workspace, &authorized_workspace)?;
-                let receipt = runtime
+                let receipt = effects
                     .dispose_terminal_cleanup_for_effect(effect.clone())
                     .await?;
                 match control
@@ -672,22 +673,6 @@ mod tests {
 
         // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
-        /// Validate the exact provider-effective Sandbox layout without publishing
-        /// process-local state or performing provider, cache, Skill, File, Vault,
-        /// Repository, or Git I/O. Session creation and Resource mutation call this
-        /// before their durable/effect boundaries; Runtime repeats it at the final
-        /// realization edge as defense in depth.
-        fn validate_session_sandbox_layout(
-            &self,
-            thread: &str,
-            layout: &awaken_session_configuration_contract::SessionSandboxLayout,
-        ) -> Result<(), awaken_session_types::RunError> {
-            awaken_session_execution_contract::NeutralRuntime
-                .validate_session_sandbox_layout(thread, layout)
-        }
-
-        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-        // answered this role method with anything but the refusal below.
         /// Install one complete Control-frozen Session projection. Dispatch and
         /// realization are explicit modes of this single port; callers must never
         /// lower publication, baseline, request context, Environment, or lease
@@ -736,7 +721,96 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_execution_contract::TerminalCleanupRuntime for RecordingRuntime {
+    impl awaken_session_execution_contract::RealizationEffects for RecordingRuntime {
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // answered this role method with anything but the refusal below.
+        /// Validate the exact provider-effective Sandbox layout without publishing
+        /// process-local state or performing provider, cache, Skill, File, Vault,
+        /// Repository, or Git I/O. Session creation and Resource mutation call this
+        /// before their durable/effect boundaries; Runtime repeats it at the final
+        /// realization edge as defense in depth.
+        fn validate_session_sandbox_layout(
+            &self,
+            thread: &str,
+            layout: &awaken_session_configuration_contract::SessionSandboxLayout,
+        ) -> Result<(), awaken_session_types::RunError> {
+            awaken_session_execution_contract::NeutralRuntime
+                .validate_session_sandbox_layout(thread, layout)
+        }
+
+        async fn checkpoint_session_environment(
+            &self,
+            thread: &str,
+            request: awaken_session_execution_contract::__macro_support::SandboxCheckpointRequest,
+        ) -> Result<
+            awaken_session_execution_contract::__macro_support::CheckpointReceipt,
+            awaken_session_execution_contract::__macro_support::RunError,
+        > {
+            awaken_session_execution_contract::NeutralRuntime
+                .checkpoint_session_environment(thread, request)
+                .await
+        }
+
+        async fn prepare_checkpoint_source_disposal(
+            &self,
+            thread: &str,
+            preparation: &awaken_session_execution_contract::__macro_support::SourceReleasePreparationEffect,
+            generation: &awaken_session_execution_contract::__macro_support::SandboxGeneration,
+            source_binding: &str,
+        ) -> Result<
+            awaken_session_execution_contract::__macro_support::SourceReleasePreparedReceipt,
+            awaken_session_execution_contract::__macro_support::RunError,
+        > {
+            awaken_session_execution_contract::NeutralRuntime
+                .prepare_checkpoint_source_disposal(thread, preparation, generation, source_binding)
+                .await
+        }
+
+        async fn dispose_prepared_checkpoint_source(
+            &self,
+            thread: &str,
+            disposal: &awaken_session_execution_contract::__macro_support::SourceReleaseDisposal,
+        ) -> Result<
+            awaken_session_execution_contract::__macro_support::SourceDisposedReceipt,
+            awaken_session_execution_contract::__macro_support::RunError,
+        > {
+            awaken_session_execution_contract::NeutralRuntime
+                .dispose_prepared_checkpoint_source(thread, disposal)
+                .await
+        }
+
+        async fn restore_checkpointed_session_environment(
+            &self,
+            request: awaken_session_execution_contract::__macro_support::SandboxRestoreRequest,
+        ) -> Result<
+            awaken_session_execution_contract::__macro_support::RestoreReceipt,
+            awaken_session_execution_contract::__macro_support::RunError,
+        > {
+            awaken_session_execution_contract::NeutralRuntime
+                .restore_checkpointed_session_environment(request)
+                .await
+        }
+
+        async fn delete_session_checkpoint(
+            &self,
+            thread: &str,
+            checkpoint: &awaken_session_execution_contract::__macro_support::SandboxCheckpointRef,
+        ) -> Result<(), awaken_session_execution_contract::__macro_support::RunError> {
+            awaken_session_execution_contract::NeutralRuntime
+                .delete_session_checkpoint(thread, checkpoint)
+                .await
+        }
+
+        async fn apply_session_inputs(
+            &self,
+            thread: &str,
+            transition: &awaken_session_execution_contract::__macro_support::SessionResourceTransition,
+        ) -> Result<(), awaken_session_execution_contract::__macro_support::RunError> {
+            awaken_session_execution_contract::NeutralRuntime
+                .apply_session_inputs(thread, transition)
+                .await
+        }
+
         async fn execute_terminal_repository_publication_for_lease(
             &self,
             _command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
@@ -754,6 +828,17 @@ mod tests {
                 .ok_or_else(|| RunError::internal("missing publication fixture outcome"))
         }
 
+        async fn dispose_terminal_cleanup_for_effect(
+            &self,
+            effect: SessionTerminalCleanupDisposalEffect,
+        ) -> Result<SessionCleanupDisposalReceipt, RunError> {
+            self.events.lock().unwrap().push("dispose".into());
+            Ok(SessionCleanupDisposalReceipt::new(&effect.command))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_session_execution_contract::TerminalCleanupRuntime for RecordingRuntime {
         async fn prepare_terminal_cleanup_for_effect(
             &self,
             effect: SessionTerminalCleanupEffect,
@@ -792,14 +877,6 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(format!("ack:{}", effect.command.thread_id));
-        }
-
-        async fn dispose_terminal_cleanup_for_effect(
-            &self,
-            effect: SessionTerminalCleanupDisposalEffect,
-        ) -> Result<SessionCleanupDisposalReceipt, RunError> {
-            self.events.lock().unwrap().push("dispose".into());
-            Ok(SessionCleanupDisposalReceipt::new(&effect.command))
         }
 
         async fn acknowledge_terminal_cleanup_disposal(
@@ -905,6 +982,7 @@ mod tests {
                 &lease,
                 &control,
                 &runtime,
+                &runtime,
                 &runtime
             )
             .await
@@ -991,6 +1069,7 @@ mod tests {
                 &lease,
                 &control,
                 &runtime,
+                &runtime,
                 &runtime
             )
             .await
@@ -1057,6 +1136,7 @@ mod tests {
                 &awaken_session_types::SessionId::from("session"),
                 &lease,
                 &control,
+                &runtime,
                 &runtime,
                 &runtime
             )
@@ -1143,6 +1223,7 @@ mod tests {
                     &control,
                     &runtime,
                     &runtime,
+                    &runtime,
                 )
                 .await
                 .unwrap(),
@@ -1226,6 +1307,7 @@ mod tests {
                         &awaken_session_types::SessionId::from("session"),
                         &assigned_lease,
                         &control,
+                        &runtime,
                         &runtime,
                         &runtime,
                     )

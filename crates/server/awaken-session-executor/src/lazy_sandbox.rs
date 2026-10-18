@@ -18,7 +18,10 @@ pub(crate) struct DeferredSandboxExecutor {
 /// Bind the deferred Sandbox executor an on-tool-use Environment needs: the
 /// one installation, for a co-located Session preparation and a Worker's
 /// claimed resolve alike. An installed executor is kept.
-pub(crate) fn bind_deferred_executor(host: &crate::RunAssembly, thread: &str) {
+pub(crate) fn bind_deferred_executor(
+    host: &crate::RunAssembly,
+    thread: &str,
+) -> Result<(), crate::realization_error::RealizationLock> {
     let needed = host
         .installed_sessions
         .read(thread, |slot| {
@@ -31,7 +34,7 @@ pub(crate) fn bind_deferred_executor(host: &crate::RunAssembly, thread: &str) {
                         env.provisioning
                             == awaken_session_configuration_contract::SandboxProvisioning::OnToolUse
                     })
-        })
+        })?
         .unwrap_or(false);
     if needed {
         let executor: Arc<dyn awaken_tool_contract::tool::ToolExecutor> =
@@ -41,8 +44,9 @@ pub(crate) fn bind_deferred_executor(host: &crate::RunAssembly, thread: &str) {
                 thread,
             ));
         host.installed_sessions
-            .update_run(thread, |run| run.deferred_executor = Some(executor));
+            .modify_run(thread, |run| run.deferred_executor = Some(executor))?;
     }
+    Ok(())
 }
 
 impl DeferredSandboxExecutor {
@@ -86,6 +90,7 @@ impl ToolExecutor for DeferredSandboxExecutor {
                 .read(&self.thread, |slot| {
                     crate::skills::read_pinned_skill(slot, &args)
                 })
+                .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?
                 .flatten()
                 .is_some()
             {
@@ -139,6 +144,7 @@ impl ToolExecutor for DeferredSandboxExecutor {
                 .read(&self.thread, |slot| {
                     crate::skills::read_pinned_skill(slot, &args)
                 })
+                .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?
                 .flatten()
             {
                 return result.map(|content| ToolOutput::ok(&call.call_id, content));

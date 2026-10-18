@@ -158,7 +158,8 @@ async fn outcome_queries_need_no_frozen_runtime_or_environment_and_preserve_comm
             assert_eq!(
                 host.run_assembly
                     .installed_sessions
-                    .read_run(&thread.0, |run| run.context.is_some()),
+                    .read_run(&thread.0, |run| run.context.is_some())
+                    .expect("installed Sessions"),
                 cached.then_some(true),
                 "Q{rule} no execution context construction; a read never installs the Session"
             );

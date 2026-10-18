@@ -100,7 +100,10 @@ async fn assigned_staging_requires_a_root_and_direct_assertions_never_override_a
         "exact replay retains the original transport"
     );
 
-    let _closed = host.run_assembly.begin_session_realization_revocation();
+    let _closed = host
+        .run_assembly
+        .begin_session_realization_revocation()
+        .expect("installed Sessions");
     assert_eq!(
         host.run_assembly.mcp_generation_root_authority(&generation),
         Some(false)

@@ -71,7 +71,7 @@ async fn remote_cached_consumers_release_original_slots() {
     let host = remote_host(Arc::new(RemoteControl::default())).await;
     host.run_assembly
         .installed_sessions
-        .update_run("session", |run| run.session_dispatch = true);
+        .install_run("session", |run| run.session_dispatch = true);
     let context = host
         .run_assembly
         .ctx_for_session_coordination("session", None)
@@ -86,6 +86,7 @@ async fn remote_cached_consumers_release_original_slots() {
                 .context
                 .as_ref()
                 .is_some_and(|cached| Arc::ptr_eq(cached, &context)))
+            .expect("installed Sessions")
             .unwrap()
     );
     assert!(host.dispatch.pool().is_none() && host.run_assembly.mcp.relay().is_none());
@@ -116,7 +117,9 @@ async fn remote_cached_consumers_release_original_slots() {
     let slots_released = weak_slots.upgrade().is_none();
     let context_released = weak_context.upgrade().is_none();
     if let Some(slots) = weak_slots.upgrade() {
-        let detached = slots.modify_run("session", |run| run.context.take());
+        let detached = slots
+            .modify_run("session", |run| run.context.take())
+            .expect("installed Sessions");
         drop(detached);
     }
     drop((coordinator, gate, factory, observer));
@@ -140,7 +143,7 @@ async fn current_claim_queries_fail_closed_after_original_owner_drops() {
         let host = remote_host(control.clone()).await;
         host.run_assembly
             .installed_sessions
-            .update_run("session", |run| run.dispatch_claim = Some(claim()));
+            .install_run("session", |run| run.dispatch_claim = Some(claim()));
         let endpoint = host
             .run_assembly
             .capabilities
@@ -174,7 +177,7 @@ async fn current_claim_queries_reject_missing_or_foreign_claim_before_control_io
                 other.run_id = RunId("other-run".into());
                 host.run_assembly
                     .installed_sessions
-                    .update_run("session", |run| run.dispatch_claim = Some(other));
+                    .install_run("session", |run| run.dispatch_claim = Some(other));
             }
             let error = query
                 .run(
@@ -219,7 +222,7 @@ async fn active_remote_queries_retain_original_slots_until_completion_or_cancell
             let host = remote_host(control.clone()).await;
             host.run_assembly
                 .installed_sessions
-                .update_run("session", |run| run.dispatch_claim = Some(claim()));
+                .install_run("session", |run| run.dispatch_claim = Some(claim()));
             let endpoint = host
                 .run_assembly
                 .capabilities
@@ -292,7 +295,7 @@ async fn explicit_claim_controls_continue_after_original_slots_drop() {
     other.run_id = RunId("other-run".into());
     host.run_assembly
         .installed_sessions
-        .update_run("session", |run| run.dispatch_claim = Some(other));
+        .install_run("session", |run| run.dispatch_claim = Some(other));
     let endpoint = host
         .run_assembly
         .capabilities

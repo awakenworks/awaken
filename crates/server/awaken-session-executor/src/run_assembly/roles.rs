@@ -39,15 +39,6 @@ impl awaken_session_execution_contract::RealizationRuntime for RunAssembly {
         .map_err(to_run_error)
     }
 
-    fn validate_session_sandbox_layout(
-        &self,
-        thread: &str,
-        layout: &awaken_session_configuration_contract::SessionSandboxLayout,
-    ) -> Result<(), RunError> {
-        self.realization_executor
-            .validate_prospective_session_layout(thread, layout)
-    }
-
     async fn install_session_projection(
         &self,
         thread: &str,
@@ -58,7 +49,9 @@ impl awaken_session_execution_contract::RealizationRuntime for RunAssembly {
         // Installing the frozen projection is the install path. Every
         // Environment-owner projection, including lease-only recovery, crosses
         // the same lifecycle guard as physical publication/retirement.
-        self.installed_sessions.install(thread);
+        self.installed_sessions
+            .install(thread)
+            .map_err(crate::installed_session::registry_run_error)?;
         let _lifecycle = realizations.lock_lifecycle(thread).await?;
         if mode.prepares_session() {
             // Cause/effect rule P2: an unprotected active Runtime rejects before
@@ -69,7 +62,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RunAssembly {
             self.install_projection_facts(thread, &projection, &mode)
                 .await?;
             if preparation_needed {
-                self.complete_session_preparation(thread);
+                self.complete_session_preparation(thread)?;
             }
         } else {
             self.install_projection_facts(thread, &projection, &mode)
@@ -133,7 +126,8 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RunAssembly {
         tools: awaken_session_configuration_contract::SessionToolConfiguration,
     ) -> Result<(), RunError> {
         self.installed_sessions
-            .replace_frozen_with(thread, |next| next.tools = Some(tools));
+            .replace_frozen_with(thread, |next| next.tools = Some(tools))
+            .map_err(crate::installed_session::registry_run_error)?;
         self.realization_executor
             .environments()
             .evict_session_for_rebuild(thread)
@@ -193,62 +187,6 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RunAssembly {
         .await
     }
 
-    async fn checkpoint_session_environment(
-        &self,
-        thread: &str,
-        request: awaken_session_state_contract::SandboxCheckpointRequest,
-    ) -> Result<awaken_session_state_contract::CheckpointReceipt, RunError> {
-        self.realization_executor
-            .checkpoint_environment_continuation(thread, request)
-            .await
-    }
-
-    async fn prepare_checkpoint_source_disposal(
-        &self,
-        thread: &str,
-        preparation: &awaken_session_state_contract::SourceReleasePreparationEffect,
-        generation: &awaken_session_state_contract::SandboxGeneration,
-        source_binding: &str,
-    ) -> Result<awaken_session_state_contract::SourceReleasePreparedReceipt, RunError> {
-        self.realization_executor
-            .prepare_environment_continuation_source_release(
-                thread,
-                preparation,
-                generation,
-                source_binding,
-            )
-            .await
-    }
-
-    async fn dispose_prepared_checkpoint_source(
-        &self,
-        thread: &str,
-        disposal: &awaken_session_state_contract::SourceReleaseDisposal,
-    ) -> Result<awaken_session_state_contract::SourceDisposedReceipt, RunError> {
-        self.realization_executor
-            .dispose_prepared_environment_continuation_source(thread, disposal)
-            .await
-    }
-
-    async fn restore_checkpointed_session_environment(
-        &self,
-        request: awaken_session_state_contract::SandboxRestoreRequest,
-    ) -> Result<awaken_session_state_contract::RestoreReceipt, RunError> {
-        self.realization_executor
-            .restore_environment_continuation(request)
-            .await
-    }
-
-    async fn delete_session_checkpoint(
-        &self,
-        _thread: &str,
-        checkpoint: &awaken_session_state_contract::SandboxCheckpointRef,
-    ) -> Result<(), RunError> {
-        self.realization_executor
-            .delete_environment_continuation_checkpoint(checkpoint)
-            .await
-    }
-
     async fn resolve_session_skills(
         &self,
         workspace_id: &str,
@@ -264,31 +202,10 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RunAssembly {
             .await
             .map_err(skill_store_run_error)
     }
-
-    async fn apply_session_inputs(
-        &self,
-        thread: &str,
-        transition: &crate::session_resource::SessionResourceTransition,
-    ) -> Result<(), RunError> {
-        self.realization_executor
-            .apply_session_inputs(thread, transition, None, None)
-            .await
-    }
 }
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::TerminalCleanupRuntime for RunAssembly {
-    async fn execute_terminal_repository_publication_for_lease(
-        &self,
-        command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
-        lease: &crate::session_resource::SessionRealizationLease,
-    ) -> Result<awaken_session_state_contract::SessionRepositoryPublicationEffect, RunError> {
-        self.realization_executor
-            .effects()
-            .publish_terminal_repository(self.realization_executor.peers(), command, lease)
-            .await
-    }
-
     async fn prepare_terminal_cleanup_for_effect(
         &self,
         effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
@@ -300,11 +217,12 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for RunAssembly {
                 self.realization_executor.peers(),
                 effect,
                 authorization,
-                |thread| {
-                    let host = self;
+                |thread, lifecycle| {
+                    let delegated = self
+                        .thread_reads
+                        .delegated_runs_for_cleanup(thread, lifecycle);
                     async move {
-                        host.thread_reads
-                            .delegated_runs_under_lifecycle(&thread)
+                        delegated
                             .await
                             .map_err(crate::realization_error::RealizationError::from)
                     }
@@ -335,17 +253,6 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for RunAssembly {
             .effects()
             .acknowledge_terminal_cleanup_preparation(&self.mcp, effect)
             .await;
-    }
-
-    async fn dispose_terminal_cleanup_for_effect(
-        &self,
-        effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
-    ) -> Result<awaken_session_state_contract::SessionCleanupDisposalReceipt, RunError> {
-        self.realization_executor
-            .effects()
-            .dispose_terminal_cleanup_effect(self.realization_executor.peers(), effect)
-            .await
-            .map_err(RunError::from)
     }
 
     async fn acknowledge_terminal_cleanup_disposal(

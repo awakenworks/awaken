@@ -54,6 +54,7 @@ async fn idle_resident_context_releases_slots_when_last_host_owner_drops() {
                 .context
                 .as_ref()
                 .is_some_and(|cached| Arc::ptr_eq(cached, &context)))
+            .expect("installed Sessions")
             .unwrap(),
         "canonical slot owns this fully installed Context"
     );
@@ -88,7 +89,9 @@ async fn idle_resident_context_releases_slots_when_last_host_owner_drops() {
     if let Some(slots) = retained_slots {
         // Capture the failure before cleanup. Remove the real resident Context
         // under its original mutex, and destroy the detached value outside it.
-        let detached = slots.modify_run(session, |run| run.context.take());
+        let detached = slots
+            .modify_run(session, |run| run.context.take())
+            .expect("installed Sessions");
         drop(detached);
         drop(slots);
     }

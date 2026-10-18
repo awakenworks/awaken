@@ -186,7 +186,7 @@ pub trait SessionRealizationSource: Send + Sync {
         admit: &'a mut (dyn FnMut(SessionRealizationAccess<'_>) + Send),
     ) -> futures_util::future::BoxFuture<
         'a,
-        awaken_session_realization_contract::SessionRealizationPermit,
+        Result<awaken_session_realization_contract::SessionRealizationPermit, RealizationLock>,
     >;
 
     /// The install path: install an empty Session when absent and leave an
@@ -280,8 +280,9 @@ impl SessionRealizations {
     pub async fn acquire_realization(
         &self,
         session: &str,
-    ) -> awaken_session_realization_contract::SessionRealizationPermit {
-        self.acquire_realization_with(session, |_| ()).await.0
+    ) -> Result<awaken_session_realization_contract::SessionRealizationPermit, RealizationError>
+    {
+        Ok(self.acquire_realization_with(session, |_| ()).await?.0)
     }
 
     /// Observe/admit through the installed Session owner's same acquire callback. Reading
@@ -291,19 +292,22 @@ impl SessionRealizations {
         &self,
         session: &str,
         mut admit: impl FnMut(SessionRealizationAccess<'_>) -> R + Send,
-    ) -> (
-        awaken_session_realization_contract::SessionRealizationPermit,
-        R,
-    ) {
+    ) -> Result<
+        (
+            awaken_session_realization_contract::SessionRealizationPermit,
+            R,
+        ),
+        RealizationError,
+    > {
         let mut result = None;
         let permit = self
             .0
             .acquire_realization(session, &mut |installed| result = Some(admit(installed)))
-            .await;
-        (
+            .await?;
+        Ok((
             permit,
             result.expect("canonical permit acquisition admits its current installed Session"),
-        )
+        ))
     }
 
     /// Apply the installed Session owner's exact post-I/O cleanup CAS.
