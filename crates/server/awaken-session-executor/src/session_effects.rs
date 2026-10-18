@@ -1,6 +1,5 @@
 // @formal surface requirement=session.lifecycle.session_state
-// @formal reason: The configured Session MCP realizer and the ordinary Run MCP role over the same Session
-// @formal reason: assembly retain the same lifecycle and MCP authorities; neither holds a back-reference.
+// @formal reason: Constructor-selected effects use the original realizer and canonical MCP authority. Configured forwarding retains no unrelated Session owner; local Direct execution keeps its required staging context.
 //! Run-side effects reached by claimed execution: the Memory terminal
 //! observer of a guarded dispatch, the Session MCP realizer the composition
 //! selected, and the ordinary Run MCP role (SDK Direct admission).
@@ -58,68 +57,66 @@ impl crate::RunAssembly {
     }
 }
 
-/// Ordinary Run compatibility effects borrow the same configured MCP owner.
-/// Only this role selects the SDK's Direct admission; it never installs a root.
+/// The exact constructor-selected realizer and a weak view of local projections.
+/// A configured remote realizer owns no unrelated local Session execution state.
 #[derive(Clone)]
 pub(crate) struct RunMcpEffects {
-    assembly: Arc<crate::RunAssembly>,
+    realizer: Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>,
+    projections: std::sync::Weak<crate::RunAssembly>,
 }
-
 impl RunMcpEffects {
     pub(crate) fn new(assembly: Arc<crate::RunAssembly>) -> Self {
-        Self { assembly }
+        let realizer = assembly
+            .session_execution
+            .mcp_realizer
+            .clone()
+            .unwrap_or_else(|| {
+                Arc::new(awaken_session_mcp::DirectMcpAttachments::new(
+                    assembly.mcp.clone(),
+                    assembly.installed_sessions.clone(),
+                    assembly.clone(),
+                    crate::RunAssembly::mcp_credential_materialization,
+                ))
+            });
+        Self {
+            realizer,
+            projections: Arc::downgrade(&assembly),
+        }
     }
 }
-
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::McpAttachmentRealizer for RunMcpEffects {
     async fn stage_mcp_attachment(
         &self,
         request: crate::session_mcp::StageMcpAttachment,
     ) -> Result<crate::session_mcp::McpRealizationReceipt, RunError> {
-        let assembly = self.assembly.as_ref();
-        match &assembly.session_execution.mcp_realizer {
-            Some(realizer) => realizer.stage_mcp_attachment(request).await,
-            None => {
-                assembly
-                    .mcp
-                    .stage_attachment(
-                        &assembly.installed_sessions,
-                        assembly,
-                        assembly.mcp_credential_materialization(),
-                        request,
-                    )
-                    .await
-            }
-        }
+        self.realizer.stage_mcp_attachment(request).await
     }
     async fn publish_mcp_generation(
         &self,
         generation: crate::session_mcp::McpGenerationRef,
     ) -> Result<(), RunError> {
-        self.assembly
-            .session_mcp_realizer()
-            .publish_mcp_generation(generation)
-            .await
+        self.realizer.publish_mcp_generation(generation).await
     }
     async fn drain_mcp_generation(
         &self,
         generation: crate::session_mcp::McpGenerationRef,
     ) -> Result<(), RunError> {
-        self.assembly
-            .session_mcp_realizer()
-            .drain_mcp_generation(generation)
-            .await
+        self.realizer.drain_mcp_generation(generation).await
     }
 }
-
 impl awaken_dispatch_execution::session_execution::RunMcpAttachments for RunMcpEffects {
     fn active_stages(
         &self,
         session: &str,
     ) -> Result<Vec<crate::session_mcp::StageMcpAttachment>, RunError> {
-        Ok(self
-            .assembly
+        let assembly = self.projections.upgrade().ok_or_else(|| {
+            RunError::unavailable_classified(
+                "mcp_projection_owner_released",
+                "the original MCP projection owner was released",
+            )
+        })?;
+        Ok(assembly
             .active_mcp_projections(session)
             .map_err(crate::session_execution_error::to_run_error)?
             .into_iter()

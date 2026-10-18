@@ -207,3 +207,118 @@ async fn configured_realizer_is_exclusive_for_both_mcp_roles() {
     );
     assert!(seen.lock().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn retained_configured_mcp_effects_release_unrelated_session_owners() {
+    let realizer = Arc::new(FailingRealizer::default());
+    let host = crate::SessionExecutorBuilder::ephemeral(
+        Arc::new(crate::NoModelConfiguredExecutor),
+        "stub",
+    )
+    .await
+    .with_session_execution(
+        crate::SessionExecutionDependencies::default()
+            .with_mcp_attachment_realizer(realizer.clone()),
+    )
+    .build()
+    .unwrap();
+    let context = host
+        .run_assembly
+        .ctx_for_session_coordination("configured-mcp-idle", None)
+        .await
+        .unwrap();
+    let effects = RunMcpEffects::new(host.run_assembly.clone());
+    let assembly = Arc::downgrade(&host.run_assembly);
+    let slots = Arc::downgrade(&host.run_assembly.installed_sessions);
+    let cached = Arc::downgrade(&context);
+    drop(context);
+    drop(host);
+    assert!(
+        assembly.upgrade().is_none() && slots.upgrade().is_none() && cached.upgrade().is_none()
+    );
+    let stage = request("released-configured-mcp", "http://127.0.0.1:9/mcp");
+    for result in [
+        effects
+            .stage_mcp_attachment(stage.clone())
+            .await
+            .map(|_| ()),
+        effects
+            .publish_mcp_generation(stage.generation.clone())
+            .await,
+        effects.drain_mcp_generation(stage.generation.clone()).await,
+    ] {
+        assert_eq!(
+            result.unwrap_err().code,
+            "configured_mcp_failure",
+            "original configured failure, no local fallback"
+        );
+    }
+    assert_eq!(*realizer.stages.lock().unwrap(), vec![stage.clone()]);
+    assert_eq!(
+        *realizer.generations.lock().unwrap(),
+        vec![
+            ("publish", stage.generation.clone()),
+            ("drain", stage.generation.clone())
+        ]
+    );
+    assert_eq!(
+        effects
+            .active_stages(stage.generation.session_id().as_str())
+            .unwrap_err()
+            .code,
+        "mcp_projection_owner_released",
+        "missing original state is not an empty projection"
+    );
+    assert!(slots.upgrade().is_none());
+}
+
+#[tokio::test]
+async fn retained_direct_mcp_effects_keep_required_execution_owner_until_drained() {
+    let host = crate::SessionExecutorBuilder::ephemeral(
+        Arc::new(crate::NoModelConfiguredExecutor),
+        "stub",
+    )
+    .await
+    .build()
+    .unwrap();
+    let effects = RunMcpEffects::new(host.run_assembly.clone());
+    let assembly = Arc::downgrade(&host.run_assembly);
+    let slots = Arc::downgrade(&host.run_assembly.installed_sessions);
+    drop(host);
+    assert!(
+        assembly.upgrade().is_some() && slots.upgrade().is_some(),
+        "owned Direct execution still needs its original context"
+    );
+    let (url, seen) = crate::test_mcp::start(None).await;
+    let stage = request("released-direct-mcp", &url);
+    effects.stage_mcp_attachment(stage.clone()).await.unwrap();
+    effects
+        .publish_mcp_generation(stage.generation.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        effects
+            .active_stages(stage.generation.session_id().as_str())
+            .unwrap(),
+        vec![stage.clone()]
+    );
+    assert!(
+        !seen.lock().unwrap().is_empty(),
+        "actual original transport handled staging"
+    );
+    effects
+        .drain_mcp_generation(stage.generation.clone())
+        .await
+        .unwrap();
+    assert!(
+        effects
+            .active_stages(stage.generation.session_id().as_str())
+            .unwrap()
+            .is_empty()
+    );
+    drop(effects);
+    assert!(
+        assembly.upgrade().is_none() && slots.upgrade().is_none(),
+        "last genuine execution role releases its original owners"
+    );
+}

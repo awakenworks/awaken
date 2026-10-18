@@ -108,8 +108,16 @@ impl StrandedProbeEnvironments {
 
 #[derive(Clone)]
 pub struct SessionAcpCapabilityNegotiator {
-    assembly: Arc<crate::RunAssembly>,
+    probe: AcpProbe,
+    background: Arc<crate::background::BackgroundRuns>,
     scope_owner: String,
+}
+
+/// Only the selected execution inputs cross into the owned task. In particular,
+/// the task does not retain its own background supervisor or Session owners.
+#[derive(Clone)]
+struct AcpProbe {
+    provider: crate::session_environment::SessionEnvironmentProvider,
     timeout: Duration,
     handshake: Arc<dyn AcpCapabilityHandshake>,
     stranded: Arc<StrandedProbeEnvironments>,
@@ -124,11 +132,19 @@ impl SessionAcpCapabilityNegotiator {
         handshake: Arc<dyn AcpCapabilityHandshake>,
     ) -> Self {
         Self {
-            assembly,
+            probe: AcpProbe {
+                provider: assembly
+                    .realization_executor
+                    .environments()
+                    .providers()
+                    .session_provider
+                    .clone(),
+                timeout,
+                handshake,
+                stranded: Arc::default(),
+            },
+            background: assembly.resources.memory.background(),
             scope_owner,
-            timeout,
-            handshake,
-            stranded: Arc::default(),
         }
     }
 
@@ -158,7 +174,9 @@ impl SessionAcpCapabilityNegotiator {
         let hex = digest.trim_start_matches("sha256:");
         format!("acp-capability-probe-{}", &hex[..32])
     }
+}
 
+impl AcpProbe {
     /// Create, handshake, kill, dispose. Everything from the first physical
     /// effect to the last is inside this one future, so the claim that wraps it
     /// covers every cancellation point rather than only the create.
@@ -173,31 +191,23 @@ impl SessionAcpCapabilityNegotiator {
         >,
     ) -> Result<NegotiatedAcpCapabilities, pc::SandboxError> {
         let spec = crate::sandbox_projection::agent_run_sandbox_spec(scope);
-        let environment = self
-            .assembly
-            .realization_executor
-            .environments()
-            .providers()
-            .session_provider
-            .create(&spec)
-            .await
-            .map_err(|error| {
-                // A derived scope means a failure here is usually the *previous*
-                // probe's strand occupying it. Say so: "the root is not absent"
-                // sends an operator hunting, the scope plus the reason sends
-                // them straight at the one environment to reconcile.
-                let strand = if self.stranded.contains(scope) {
-                    format!(
-                        "; an earlier probe at scope `{scope}` was interrupted and its \
+        let environment = self.provider.create(&spec).await.map_err(|error| {
+            // A derived scope means a failure here is usually the *previous*
+            // probe's strand occupying it. Say so: "the root is not absent"
+            // sends an operator hunting, the scope plus the reason sends
+            // them straight at the one environment to reconcile.
+            let strand = if self.stranded.contains(scope) {
+                format!(
+                    "; an earlier probe at scope `{scope}` was interrupted and its \
                          environment was never disposed"
-                    )
-                } else {
-                    String::new()
-                };
-                error.map_detail(|detail| {
-                    format!("create ACP capability probe environment: {detail}{strand}")
-                })
-            })?;
+                )
+            } else {
+                String::new()
+            };
+            error.map_detail(|detail| {
+                format!("create ACP capability probe environment: {detail}{strand}")
+            })
+        })?;
         let result = async {
             if response.is_closed() {
                 return Err(pc::SandboxError::timeout("ACP capability probe caller cancelled"));
@@ -291,25 +301,23 @@ impl AcpCapabilityNegotiator for SessionAcpCapabilityNegotiator {
         // durable half of that record is the scope the provider stamps on the
         // resource; the retention covers the window before that stamp lands,
         // which the stamp itself cannot.
-        let claim = pc::EffectClaim::durable(PROBE_RECONCILER, self.stranded.retain(scope.clone()));
+        let claim =
+            pc::EffectClaim::durable(PROBE_RECONCILER, self.probe.stranded.retain(scope.clone()));
         let (mut response, result) = tokio::sync::oneshot::channel();
-        let owner = self.clone();
+        let probe = self.probe.clone();
         let argv = argv.to_vec();
         let cwd = cwd.to_owned();
         let auth_method_id = auth_method_id.map(str::to_owned);
         // This is the Host's existing drainable task registry, shared with
         // auxiliary execution. Receiver cancellation may interrupt handshake,
         // but cannot drop a create response or the exact-handle cleanup tail.
-        self.assembly
-            .resources
-            .memory
-            .background()
+        self.background
             .spawn(
                 crate::background::BackgroundWorkClass::UnattachedEnvironment,
                 async move {
                     let outcome = pc::ClaimedEffect::new(
                         claim,
-                        owner.probe(
+                        probe.probe(
                             &scope,
                             &argv,
                             &cwd,
