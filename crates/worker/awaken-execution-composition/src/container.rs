@@ -578,35 +578,48 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn provider_selection_requires_an_image() {
-        use awaken_sandbox_container::podman::PodmanRuntime;
+    #[test]
+    fn provider_selection_requires_an_image() {
+        // I1 absent/empty -> exact configuration refusal before engine I/O;
+        // I2 present -> preserve the selected image. Runtime readiness is a
+        // separate obligation, not an assumption that Podman is installed.
+        for image in [None, Some("")] {
+            let error = container_image(image).expect_err("I1");
+            assert!(error.contains("AWAKEN_CONTAINER_IMAGE"), "I1: {error}");
+        }
+        assert_eq!(container_image(Some("busybox")).unwrap(), "busybox", "I2");
+    }
 
+    #[tokio::test]
+    async fn provider_startup_requires_runtime_evidence() {
+        // S1 no image -> configuration refusal before the runtime probe;
+        // S2 image + unavailable engine -> startup refusal, never a provider.
+        // An absolute, absent executable makes both rows deterministic on
+        // every OS without consuming a host Podman installation or daemon.
+        let temporary = tempfile::tempdir().unwrap();
+        let missing = temporary.path().join("podman-not-installed.exe");
+        assert!(!missing.exists());
         let settings = awaken_session_executor::SandboxSettings::default();
-        assert!(
-            finish(
-                Arc::new(PodmanRuntime::new(8080)),
-                None,
-                &settings,
-                &ContainerTierPolicy::default(),
-                None,
-                awaken_time::system_clock()
-            )
-            .await
-            .is_err()
-        );
-        assert!(
-            finish(
-                Arc::new(PodmanRuntime::new(8080)),
-                Some("busybox"),
+        for (image, expected) in [
+            (None, "AWAKEN_CONTAINER_IMAGE"),
+            (Some("busybox"), "container backend start-up evidence"),
+        ] {
+            let result = finish(
+                Arc::new(awaken_sandbox_container::podman::PodmanRuntime::with_bin(
+                    8080,
+                    missing.to_string_lossy().into_owned(),
+                )),
+                image,
                 &settings,
                 &ContainerTierPolicy::default(),
                 None,
                 awaken_time::system_clock(),
             )
-            .await
-            .is_ok()
-        );
+            .await;
+            let error = result.err().expect("S1/S2 must not publish a provider");
+            assert!(error.contains(expected), "S1/S2: {error}");
+        }
+        temporary.close().unwrap();
     }
 
     /// L7 (warm-capacity lease table in `awaken_sandbox_container::pool::lease`):
