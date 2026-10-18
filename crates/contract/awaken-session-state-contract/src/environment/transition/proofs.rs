@@ -10,6 +10,7 @@ use super::*;
 
 fn any_facts() -> SessionEnvironmentFacts {
     SessionEnvironmentFacts {
+        root_present: kani::any(),
         step: STEPS[usize::from(kani::any::<u8>() % 8)],
         terminality: match kani::any::<u8>() % 3 {
             0 => SessionTerminality::Active,

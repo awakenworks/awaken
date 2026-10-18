@@ -11,9 +11,10 @@ transition_environment(SessionEnvironmentFacts, SessionEnvironmentEvent)
 It lives in `awaken-session-state-contract` (`environment/transition.rs`), next
 to `PersistedSession::transition_execution`. `SessionEnvironmentFacts::project`
 folds the root, the event's asserted realization lease and the caller's `now`
-into the facts; it is their only constructor, so no caller decides over facts
-the aggregate did not project, and `PersistedSession` gains no further methods.
-The function reads no clock and performs no I/O.
+into the facts. The same domain module privately projects a directive or an
+explicit absent-root observation; `admit_unowned` alone consumes the latter,
+so no caller fabricates aggregate or ownership facts. `PersistedSession` gains
+no further methods. The function reads no clock and performs no I/O.
 
 ## Vocabulary
 
@@ -92,7 +93,7 @@ D = decision, E = effect, O = observation mapping, P = read projection.
 | `realization/control.rs:321`, `:804`, `:13`, `:1089`, `:990` lease grant, expiry, terminal claim and rollback | D (lease axis) | stay with `session_realization_assignment`; not Environment steps |
 | `application.rs:1077` binding command | O | **moved**: admission and receipt decide `AdmitMaterialization` / `Materialized` in the aggregate |
 | `resource_reconciliation.rs:635/727` terminal cleanup authorization and disposal records | O | **moved**: `PersistedSession::authorize_terminal_cleanup_effect`, `authorize_terminal_cleanup_disposal_effect` and `record_terminal_cleanup_disposal` decide `RetireForCleanup` / `CleanedUp` after their exact lease-generation check; the application classifies every cleanup refusal through the one `terminal_cleanup_authorization_failure` |
-| `application.rs:1152` `Unowned` on a missing root; realization `publication.rs:157` `Unowned` | D (two inputs) | open: unify behind `AdmitMaterialization` |
+| application missing-root admission; realization publication ordinary-thread admission | D (absence observation) | **moved**: `SessionEnvironmentEffectAuthorization::admit_unowned` decides `AdmitMaterialization` over explicit absent-root facts; no lease or Session instruction is fabricated |
 | `resource_reconciliation/terminal_cleanup.rs:103` cleanup path (Completed / NormalizeLegacy / WaitForExternalWorker / DriveLocal) | scheduling | stays: which actor drives; the effect orchestration is the driver's |
 | realization `projection_synchronizer.rs:88` legacy claim merge (writes a projection copy) | D | **moved**: `SessionEnvironmentState::deliver_legacy_binding` decides `LegacyBindingDelivered` |
 | store `row_codec.rs:187` legacy `environment_binding` column | decode | **moved**: `SessionEnvironmentState::from_legacy_binding` |
@@ -100,7 +101,7 @@ D = decision, E = effect, O = observation mapping, P = read projection.
 | realization `environment_lifecycle/*` owner, adoption and restore on the process-local owner | D (local) | stay: process-local, not durable state |
 | realization `environment_continuation.rs` and runtime-host `lib.rs:939` adapters | E | unchanged |
 | driver `terminal_cleanup_driver.rs:76` | O + retry policy | unchanged; the action comes from the aggregate |
-| runtime-host `application.rs` `reconcile_terminal_cleanup_for_lease` (NotFound table T1–T3) and `recover_terminal_cleanup_assignments` | orchestration | open: belongs to the driver; it reads the process-local installed Sessions the executor split (P4) restructures |
+| executor terminal reconciliation and cold assignment sweep | orchestration | **moved**: driver `terminal_cleanup_recovery`; executor implements only the named `TerminalRecoveryProjections` local effects; T1–T3 retain the original captured generation |
 | `lib.rs:113` recovery hints | P | **moved**: `SessionEnvironmentFacts::continuation_due` (the `AdvanceContinuation` decision at the scan's `now`) |
 | `event_batch_cutover_validation.rs:121` | P | stays: a count over `SessionEnvironmentPhase` |
 
@@ -178,20 +179,40 @@ state, and the cleanup laws decide through the transition function:
    no longer re-attempted and logged on every sweep; the root re-enters the
    hint when its facts admit the effect.
 
-## Remaining
+## Final admission and recovery ownership
 
-1. runtime-host `reconcile_terminal_cleanup_for_lease` and
-   `recover_terminal_cleanup_assignments` still orchestrate terminal recovery
-   (NotFound table T1–T3, sweep); they move into the driver with the executor
-   split, which owns the installed-Session reads they use.
-2. The process-local `Unowned` admission (`publication` path) and
-   `application.rs:1168` both stand for a missing root; unify behind
-   `AdmitMaterialization`.
-3. `realization_error.rs` still classifies
-   `SessionEnvironmentReceiptError::RealizationStale` and wraps
-   `SessionEnvironmentTransitionError` opaquely.
-4. `normalize_legacy_terminal_cleanup` retires the state from historical
-   one-stage receipts without a lease, which no `CleanedUp` row expresses.
+- **Absent root.** `AdmitMaterialization` has an explicit missing-root row.
+  The contract's `admit_unowned` verifies the exact intent and projects that
+  absence once. Every ordinary effect kind remains eligible without a
+  realization assertion; an asserted lease is `RealizationStale`. Absence
+  issues no durable Session instruction and admits no other Session event.
+  Application and realization use the same row. Managed projections still
+  fail closed without their binding authority or when a lookup loses the root;
+  an ordinary Run retains its original Dispatch claim and sandbox binding.
+- **Rejected evidence.** Realization carries the aggregate's receipt or
+  transition refusal unchanged and reads its `recovery_action`. A stale lease
+  retries; inconsistent evidence or an invalid transition stays terminal for
+  the same evidence. No adapter reclassifies by error name or text.
+- **Legacy cleanup.** `LegacyCleanupNormalized` expresses the historical
+  one-stage receipt's no-lease retirement. The aggregate first verifies exact
+  historical evidence; the row requires terminality and refuses stale
+  ownership. It authorizes no new physical effect and cannot become a current
+  cleanup receipt.
+- **Recovery.** The driver alone selects, bounds and reconciles cold terminal
+  assignments, handles NotFound, and decides retirement or revocation.
+  Executor projections perform one named process-local effect on the original
+  captured generation; the aggregate and existing cleanup driver still own
+  durable admission, provider effects and receipts. No cursor or retry phase is
+  persisted outside the root.
+- **Intervention signal.** The existing lifecycle supervisor retains a
+  disposable map of Session identity to an unrepairable continuation refusal.
+  Its existing owned task scans to EOF, then signals a first or changed refusal
+  once; successful scans forget disappeared/recovered roots. Failed or
+  cancelled prefixes neither consume nor clear a signal. The map moves into
+  and back from the same sequential recovery task, so concurrent status scans
+  cannot replace its view. Retry-classified refusals remain quiet and no
+  refused continuation is executed. A process restart may signal the still
+  blocked root again; this diagnostic grants no authority and persists nothing.
 
 ## Verification
 
@@ -208,3 +229,11 @@ state, and the cleanup laws decide through the transition function:
   O1–O3 for the adopted fail-closed rows).
 - Kani `environment::transition::proofs`. Obligations are under
   `formal/obligations/session_environment/`.
+
+- `awaken-session-state-contract` `environment::effect_intent::tests`
+  U1–U3 and `absent_root_facts_never_admit_another_session_event` U4;
+  the complete finite sweep includes both root-presence facts.
+- `awaken-session-realization-driver` `terminal_cleanup_recovery::tests`
+  R1–R9/T1–T3 and S1–S7 (absence, generation selection and bounded sweep).
+- `awaken-session-application` `tests::recovery_sweep` D1–D12 (changed
+  refusal, successful absence, failed later page, retry EOF, aggregate cause).

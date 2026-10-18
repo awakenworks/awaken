@@ -212,17 +212,15 @@ impl crate::environment_holding::EnvironmentHolding {
         // Sending an ordinary Run to a remote Session sink cannot be authorized
         // (it has no realization lease) and duplicates the queue-owned binding.
         let authorization = match sink {
-            Some(_) if claimed_ordinary_run => SessionEnvironmentEffectAuthorization::Unowned {
-                intent: Box::new(intent.clone()),
-            },
+            Some(_) if claimed_ordinary_run => {
+                SessionEnvironmentEffectAuthorization::admit_unowned(intent)?
+            }
             Some(sink) => sink
                 .authorize(intent)
                 .await
                 .map_err(RealizationError::Run)?,
             None if !managed_projection && intent.realization().is_none() => {
-                SessionEnvironmentEffectAuthorization::Unowned {
-                    intent: Box::new(intent.clone()),
-                }
+                SessionEnvironmentEffectAuthorization::admit_unowned(intent)?
             }
             None => {
                 return Err(RealizationError::authority_lost(

@@ -94,3 +94,66 @@ pub(super) async fn recovery_candidates(
     )
     .await
 }
+
+/// Disposable diagnostics owned by the existing, sequential lifecycle loop.
+/// It neither schedules work nor changes Session truth. Only a completed scan
+/// updates it; a failed/cancelled prefix cannot consume or erase a signal.
+#[derive(Default)]
+pub(super) struct ContinuationDiagnostics {
+    observed: BTreeMap<
+        awaken_session_types::SessionId,
+        awaken_session_state_contract::SessionEnvironmentRejection,
+    >,
+}
+
+impl ContinuationDiagnostics {
+    pub(super) fn observe(
+        &mut self,
+        candidates: &SessionRecoveryCandidates,
+    ) -> Vec<(
+        awaken_session_types::SessionId,
+        awaken_session_state_contract::SessionEnvironmentRejection,
+    )> {
+        let current: BTreeMap<_, _> = candidates
+            .sessions
+            .iter()
+            .filter_map(|candidate| {
+                candidate
+                    .interests
+                    .continuation_rejection
+                    .map(|rejection| (candidate.session_id.clone(), rejection))
+            })
+            .collect();
+        let signals = current
+            .iter()
+            .filter(|(session, rejection)| self.observed.get(*session) != Some(*rejection))
+            .map(|(session, rejection)| (session.clone(), *rejection))
+            .collect();
+        // Replace the whole successful EOF view, dropping disappeared and
+        // recovered roots. Size is bounded by this scan's rejected Sessions.
+        self.observed = current;
+        signals
+    }
+
+    /// Reuse the canonical EOF scan. Other status/phase scans never receive
+    /// this loop-owned value, so they cannot publish an out-of-order view.
+    pub(super) async fn scan(
+        &mut self,
+        application: &super::SessionApplication,
+        audit_resource_references: bool,
+    ) -> Result<SessionRecoveryCandidates, SessionRepositoryError> {
+        let candidates = recovery_candidates(application, audit_resource_references).await?;
+        self.signal(&candidates);
+        Ok(candidates)
+    }
+
+    fn signal(&mut self, candidates: &SessionRecoveryCandidates) {
+        for (session_id, rejection) in self.observe(candidates) {
+            tracing::warn!(
+                session = %session_id,
+                reason = %rejection,
+                "Session Environment continuation requires intervention"
+            );
+        }
+    }
+}

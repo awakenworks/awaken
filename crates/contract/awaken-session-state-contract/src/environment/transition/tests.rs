@@ -29,6 +29,7 @@ const RS: S = S::Restoring;
 
 fn ready(step: S) -> SessionEnvironmentFacts {
     SessionEnvironmentFacts {
+        root_present: true,
         step,
         terminality: SessionTerminality::Active,
         execution_idle: true,
@@ -738,8 +739,9 @@ fn t8_complete_domain_satisfies_the_safety_laws() {
     for step in STEPS {
         for terminality in terminalities {
             for lease in leases {
-                for bits in 0_u16..512 {
+                for bits in 0_u16..1024 {
                     let facts = SessionEnvironmentFacts {
+                        root_present: bits & 512 != 0,
                         step,
                         terminality,
                         lease,
@@ -774,7 +776,7 @@ fn t8_complete_domain_satisfies_the_safety_laws() {
             }
         }
     }
-    assert_eq!(cases, 8 * 3 * 3 * 512 * EVENT_COUNT);
+    assert_eq!(cases, 8 * 3 * 3 * 1024 * EVENT_COUNT);
 }
 
 #[test]
@@ -998,5 +1000,30 @@ fn t12_legacy_normalization_retires_a_terminal_root_on_its_historical_receipts()
                 check_row("T12", facts, E::LegacyCleanupNormalized, cell);
             }
         }
+    }
+}
+
+#[test]
+fn absent_root_facts_never_admit_another_session_event() {
+    // U4: absence is usable only for AdmitMaterialization. Sweep all closed
+    // events so it cannot fabricate a Session, continue, retire, or accept a
+    // durable receipt; neither asserted lease nor materialization kind widens
+    // that authority. U1/U2 above own the one admitted event's table.
+    let intent = crate::SessionEnvironmentEffectIntent::new(
+        "session",
+        crate::SessionEnvironmentEffectKind::Create,
+        None,
+    );
+    let facts = SessionEnvironmentFacts::project_unowned(&intent);
+    for index in 0..laws::EVENT_COUNT {
+        let event = laws::event(index);
+        if matches!(event, SessionEnvironmentEvent::AdmitMaterialization { .. }) {
+            continue;
+        }
+        assert_eq!(
+            transition_environment(facts, event),
+            Err(SessionEnvironmentRejection::RequiresResident),
+            "U4 {event:?}"
+        );
     }
 }

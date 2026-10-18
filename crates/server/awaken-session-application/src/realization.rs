@@ -1,7 +1,6 @@
 // @formal entrypoint session.internal_create_accepts_only_a_complete_durable_root_and_recovers_without_a_job_store
 // @formal entrypoint session_execution.terminal_state_never_reopens
 // @formal entrypoint session_realization.publication_excludes_staged_retired_generation
-// @formal entrypoint session_realization.recovery_backoff_is_bounded_and_dependency_wakes_never_postpone_the_existing_deadline
 //! Canonical durable Session realization phase commands.
 
 use crate::SessionAggregate;
@@ -35,7 +34,7 @@ mod authority;
 mod control;
 mod local_lock;
 mod publication;
-mod recovery_backoff;
+pub(super) mod recovery_backoff;
 
 use publication::{draining_generations, publication_action, publication_generations};
 
@@ -46,10 +45,7 @@ use authority::{
 };
 use control::RefreshedSessionRealizationControl;
 pub(crate) use local_lock::LocalRealizationLocks;
-use recovery_backoff::{
-    SessionRecoveryTrigger, external_wake_coalescing_delay, next_external_wake_cooldown,
-    next_session_recovery_delay,
-};
+use recovery_backoff::SessionRecoveryTrigger;
 
 /// One timing policy for every realization owned by the co-located Runtime.
 /// Terminal cleanup uses the same lease horizon but renews at one third of it
@@ -280,20 +276,22 @@ impl SessionApplication {
     pub(crate) async fn reconcile_pending_session_state(
         self: std::sync::Arc<Self>,
     ) -> SessionRecoveryCycle {
-        self.reconcile_pending_session_state_for(SessionRecoveryTrigger::Scheduled)
-            .await
-    }
-
-    async fn reconcile_pending_session_state_for(
-        self: std::sync::Arc<Self>,
-        trigger: SessionRecoveryTrigger,
-    ) -> SessionRecoveryCycle {
-        let cycle_started = awaken_time::mono::Stopwatch::start();
-        let candidates = match super::recovery_scan::recovery_candidates(
-            &self,
-            trigger == SessionRecoveryTrigger::Scheduled,
+        self.reconcile_pending_session_state_for(
+            SessionRecoveryTrigger::Scheduled,
+            &mut super::recovery_scan::ContinuationDiagnostics::default(),
         )
         .await
+    }
+
+    pub(super) async fn reconcile_pending_session_state_for(
+        self: std::sync::Arc<Self>,
+        trigger: SessionRecoveryTrigger,
+        diagnostics: &mut super::recovery_scan::ContinuationDiagnostics,
+    ) -> SessionRecoveryCycle {
+        let cycle_started = awaken_time::mono::Stopwatch::start();
+        let candidates = match diagnostics
+            .scan(&self, trigger == SessionRecoveryTrigger::Scheduled)
+            .await
         {
             Ok(candidates) => candidates,
             Err(error) => {
@@ -305,6 +303,9 @@ impl SessionApplication {
                 };
             }
         };
+        // EOF is proven before any diagnostic is consumed. The supervisor
+        // owns this value across sequential cycles, so an older concurrent
+        // status/phase scan cannot overwrite a newer diagnostic view.
         let scan_elapsed = cycle_started.elapsed();
         let resources = self.reconcile_resource_activations_from(&candidates).await;
         let resources_elapsed = cycle_started.elapsed();
@@ -353,38 +354,9 @@ impl SessionApplication {
                 "reconciled durable Session Runtime projections"
             );
         }
-        // Event reconciliation may enter the complete Runtime Run state machine.
-        // Start that phase at a scheduler boundary instead of nesting it below
-        // Resource, continuation, and realization recovery. The `JoinSet` keeps
-        // the child structurally owned and aborts it if this recovery cycle is
-        // cancelled; only its polling stack changes.
-        let application = std::sync::Arc::clone(&self);
-        let mut event_task = tokio::task::JoinSet::new();
-        let event_candidates = candidates.clone();
-        event_task.spawn(async move {
-            application
-                .reconcile_event_batches_from(&event_candidates)
-                .await
-        });
-        let event_batches = match event_task.join_next().await {
-            Some(Ok(report)) => report,
-            Some(Err(error)) => {
-                let mut report = crate::event_batches::EventBatchReconciliation::default();
-                report.failures.push((
-                    "<supervisor>".to_string(),
-                    format!("Session Event recovery task failed: {error}"),
-                ));
-                report
-            }
-            None => {
-                let mut report = crate::event_batches::EventBatchReconciliation::default();
-                report.failures.push((
-                    "<supervisor>".to_string(),
-                    "Session Event recovery task disappeared".to_string(),
-                ));
-                report
-            }
-        };
+        let event_batches =
+            super::lifecycle_supervisor::reconcile_event_batch_recovery_task(&self, &candidates)
+                .await;
         let event_batches_elapsed = cycle_started.elapsed();
         let event_batch_failure_count = event_batches.failures.len();
         let event_batches_settled = event_batches.settled;
@@ -493,112 +465,8 @@ impl SessionApplication {
         tokio::select! {
             biased;
             () = cancellation.cancelled() => Ok(()),
-            result = self.run_lifecycle_loop(cancellation.clone()) => result,
+            result = super::lifecycle_supervisor::run_lifecycle_loop(self, cancellation.clone()) => result,
         }
-    }
-
-    async fn run_lifecycle_maintenance(&self) {
-        if let Err(error) = self.renew_due_session_realizations().await {
-            tracing::warn!(
-                error = ?error,
-                "Session realization lease renewal remains pending"
-            );
-        }
-        let dispatch = self.reconcile_work_dispatches().await;
-        for failure in dispatch.failures {
-            tracing::warn!(
-                session = %failure.session_id,
-                environment = %failure.environment_id,
-                error = %failure.message,
-                "Session WorkQueue dispatch remains pending"
-            );
-        }
-    }
-
-    async fn run_lifecycle_loop(
-        self: std::sync::Arc<Self>,
-        cancellation: awaken_runtime_contract::CancellationToken,
-    ) -> Result<(), String> {
-        let mut recovery_failure_streak = 0_u32;
-        let mut next_recovery = awaken_time::mono::now();
-        let mut external_wake_cooldown = awaken_time::mono::now();
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        interval.tick().await;
-        let initial_dispatch = self.reconcile_work_dispatches().await;
-        for failure in initial_dispatch.failures {
-            tracing::warn!(
-                session = %failure.session_id,
-                environment = %failure.environment_id,
-                error = %failure.message,
-                "Session WorkQueue dispatch remains pending"
-            );
-        }
-        loop {
-            let recovery_trigger = tokio::select! {
-                () = cancellation.cancelled() => break,
-                _ = self.lifecycle_wakeup.notified() => {
-                    let delay = external_wake_coalescing_delay(
-                        next_recovery.saturating_duration_since(awaken_time::mono::now()),
-                        external_wake_cooldown
-                            .saturating_duration_since(awaken_time::mono::now()),
-                    );
-                    tokio::select! {
-                        biased;
-                        () = cancellation.cancelled() => break,
-                        () = tokio::time::sleep(delay) => {}
-                    }
-                    Some(SessionRecoveryTrigger::ExternalWake)
-                },
-                _ = tokio::time::sleep_until(next_recovery) => Some(SessionRecoveryTrigger::Scheduled),
-                _ = interval.tick() => {
-                    self.run_lifecycle_maintenance().await;
-                    None
-                }
-            };
-            let Some(recovery_trigger) = recovery_trigger else {
-                continue;
-            };
-            // The sole recovery cycle composes Resource, realization,
-            // Event-batch, and Outcome reconciliation. Await it as a distinct
-            // Tokio task so its first poll begins at the scheduler boundary;
-            // nesting the complete state machine in this supervisor can exceed
-            // a default worker stack before the first User batch is admitted.
-            let application = std::sync::Arc::clone(&self);
-            let mut recovery_task = tokio::task::JoinSet::new();
-            recovery_task.spawn(async move {
-                application
-                    .reconcile_pending_session_state_for(recovery_trigger)
-                    .await
-            });
-            let cycle = loop {
-                tokio::select! {
-                    biased;
-                    result = recovery_task.join_next() => {
-                        break result
-                            .ok_or_else(|| "Session recovery task disappeared".to_string())?
-                            .map_err(|error| format!("Session recovery task failed: {error}"))?;
-                    }
-                    _ = interval.tick() => self.run_lifecycle_maintenance().await,
-                }
-            };
-            recovery_failure_streak = if cycle.retryable_failures == 0 {
-                0
-            } else {
-                recovery_failure_streak.saturating_add(1)
-            };
-            let now = awaken_time::mono::now();
-            external_wake_cooldown =
-                now + next_external_wake_cooldown(recovery_trigger, cycle.settled, cycle.elapsed);
-            let existing_remaining = next_recovery.saturating_duration_since(now);
-            next_recovery = now
-                + next_session_recovery_delay(
-                    recovery_trigger,
-                    existing_remaining,
-                    recovery_failure_streak,
-                );
-        }
-        Ok(())
     }
 
     /// Install frozen dispatch facts without acquiring a local realization

@@ -134,11 +134,14 @@ pub enum RealizationLeaseStanding {
 }
 
 /// Every aggregate fact the transition function reads. Time-dependent facts
-/// are already evaluated at the caller-supplied `now`. Only
-/// [`SessionEnvironmentFacts::project`] constructs it, so no caller
-/// can decide over facts the aggregate did not project.
+/// are already evaluated at the caller-supplied `now`. This domain module
+/// alone constructs the facts: from the aggregate or its narrow directive and
+/// missing-root projections. No caller can invent state or ownership facts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SessionEnvironmentFacts {
+    /// False only for a process-local ordinary thread without a Session root.
+    /// Absence can admit an Unowned request, never a durable Session effect.
+    pub(crate) root_present: bool,
     pub(crate) step: SessionEnvironmentStep,
     pub(crate) terminality: SessionTerminality,
     pub(crate) execution_idle: bool,
@@ -343,6 +346,18 @@ pub const fn transition_environment(
     event: SessionEnvironmentEvent,
 ) -> Outcome {
     use SessionEnvironmentEvent as E;
+    if !facts.root_present {
+        return match event {
+            E::AdmitMaterialization { .. }
+                if is_active(facts)
+                    && matches!(facts.lease, RealizationLeaseStanding::Unfenced) =>
+            {
+                stay(facts)
+            }
+            E::AdmitMaterialization { .. } => Err(SessionEnvironmentRejection::LeaseNotCurrent),
+            _ => Err(SessionEnvironmentRejection::RequiresResident),
+        };
+    }
     match event {
         E::BeginRealization => begin_realization(facts),
         E::RenewRealization => renew_realization(facts),
@@ -785,6 +800,7 @@ impl SessionEnvironmentFacts {
             _ => (false, false),
         };
         Self {
+            root_present: true,
             step: session.environment.step(),
             terminality,
             execution_idle: session.execution == crate::SessionExecutionState::Idle,
@@ -863,6 +879,31 @@ impl SessionEnvironmentFacts {
         Self::project(session, 0, None)
     }
 
+    /// A missing Session root is not a made-up aggregate or lease. Only
+    /// Unowned materialization admission may consume these facts; the ordinary
+    /// Run's existing claim remains its physical effect authority.
+    pub(super) fn project_unowned(intent: &super::SessionEnvironmentEffectIntent) -> Self {
+        Self {
+            root_present: false,
+            step: SessionEnvironmentStep::Unmaterialized,
+            terminality: SessionTerminality::Active,
+            execution_idle: false,
+            activities_open: false,
+            lease: if intent.realization().is_some() {
+                RealizationLeaseStanding::Stale
+            } else {
+                RealizationLeaseStanding::Unfenced
+            },
+            resident_generated: false,
+            suspend_due: false,
+            suspend_evidence_consistent: true,
+            generation_live: false,
+            checkpoint_live: false,
+            continuation_topology_supported: false,
+            suspend_memory_admitted: false,
+        }
+    }
+
     /// Project the facts of a realization directive's frozen Environment
     /// state, for the one event a directive's projection receives
     /// (`LegacyBindingDelivered`). Session-application issues a directive only
@@ -881,6 +922,7 @@ impl SessionEnvironmentFacts {
             }
         );
         Self {
+            root_present: true,
             step: environment.step(),
             terminality: SessionTerminality::Active,
             execution_idle: false,

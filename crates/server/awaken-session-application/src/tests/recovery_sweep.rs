@@ -38,6 +38,7 @@ async fn scan_interests_skip_only_phases_absent_from_the_observed_prefix() {
                 resource_activation: false,
                 event_batches: false,
                 environment_continuation: false,
+                continuation_rejection: None,
                 local_realization: false,
                 dispatch_projection: false,
             },
@@ -659,4 +660,162 @@ fn continuation_hint_is_the_aggregates_advance_projection() {
             .environment_continuation,
         "H2e"
     );
+}
+
+#[test]
+fn continuation_diagnostic_signals_each_current_refusal_once() {
+    // Cause/effect table D1-D5. C1 a complete scan contains an unrepairable
+    // rejection; C2 the same identity/reason was already observed; C3 its reason
+    // changes; C4 it disappears or becomes retryable; C5 it returns later.
+    // D1=C1+!C2 => one signal; D2=C1+C2 => none; D3=C3 => one new signal;
+    // D4=C4 => forget it; D5=C5 => signal again. The map is disposable and
+    // replaced by the full EOF view, bounded by its currently rejected roots.
+    use awaken_session_state_contract::SessionEnvironmentRejection as X;
+    let candidate = |reason| SessionRecoveryCandidates {
+        sessions: vec![SessionRecoveryCandidate {
+            workspace_id: "test".into(),
+            session_id: "stuck".into(),
+            interests: SessionRecoveryInterests {
+                environment_continuation: false,
+                continuation_rejection: reason,
+                ..Default::default()
+            },
+        }],
+        ..Default::default()
+    };
+    let mut diagnostics = crate::recovery_scan::ContinuationDiagnostics::default();
+    let stuck = candidate(Some(X::InconsistentEvidence));
+    assert_eq!(
+        diagnostics.observe(&stuck),
+        [("stuck".into(), X::InconsistentEvidence)],
+        "D1"
+    );
+    assert!(diagnostics.observe(&stuck).is_empty(), "D2");
+    assert_eq!(
+        diagnostics.observe(&candidate(Some(X::GenerationExpired))),
+        [("stuck".into(), X::GenerationExpired)],
+        "D3"
+    );
+    for cleared in [candidate(None), SessionRecoveryCandidates::default()] {
+        assert!(diagnostics.observe(&cleared).is_empty(), "D4");
+        assert_eq!(diagnostics.observe(&stuck).len(), 1, "D5");
+    }
+}
+
+#[tokio::test]
+async fn failed_diagnostic_scan_keeps_the_last_complete_view_until_retry_eof() {
+    // D6-D8/D12 composition with the canonical scan. C1 a prior EOF signalled a
+    // rejected root; C2 a newer scan has 257 ordinary roots; C3 page two fails.
+    // D6=C1+C2+C3 => no prefix signal or clearing; D7 retry EOF => the absent
+    // rejection is forgotten; D8 its later return => one signal. The actual
+    // production scan entry performs no effect and never publishes a failed
+    // prefix, so retry cannot consume a signal it did not emit.
+    use awaken_session_state_contract::SessionEnvironmentRejection as X;
+    let durable = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
+    for index in 0..257 {
+        create(
+            durable.as_ref(),
+            persisted(&format!("diagnostic-{index:03}"), true, "idle"),
+        )
+        .await;
+    }
+    let observed = Arc::new(FaultingSessionRepository::new(durable));
+    observed.fail_recovery_scan_on_call(2);
+    let app = application(
+        observed.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let stuck = SessionRecoveryCandidates {
+        sessions: vec![SessionRecoveryCandidate {
+            workspace_id: "test".into(),
+            session_id: "stuck".into(),
+            interests: SessionRecoveryInterests {
+                continuation_rejection: Some(X::InconsistentEvidence),
+                ..Default::default()
+            },
+        }],
+        ..Default::default()
+    };
+    let mut diagnostics = crate::recovery_scan::ContinuationDiagnostics::default();
+    assert_eq!(diagnostics.observe(&stuck).len(), 1, "D6 original signal");
+    assert!(
+        diagnostics.scan(&app, false).await.is_err(),
+        "D6 page two failure"
+    );
+    assert!(
+        diagnostics.observe(&stuck).is_empty(),
+        "D6 failed EOF did not erase prior signal"
+    );
+    let complete = diagnostics.scan(&app, false).await.unwrap();
+    assert_eq!(complete.sessions.len(), 257, "D7 complete retry");
+    assert_eq!(
+        diagnostics.observe(&stuck).len(),
+        1,
+        "D8 return after complete absence"
+    );
+    // D12 cancellation after page one is reduced also leaves the complete
+    // diagnostic view intact. The borrowed scan has no detached work; joining
+    // the held page is bounded so a missing entrance fails with this rule.
+    observed
+        .hold_recovery_scan_on_call
+        .store(6, Ordering::SeqCst);
+    let mut pending = Box::pin(diagnostics.scan(&app, false));
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::select! {
+            () = observed.recovery_scan_entered.notified() => {},
+            result = &mut pending => panic!("D12 incomplete held scan returned: {result:?}"),
+        }
+    })
+    .await
+    .expect("D12 second page enters before cancellation");
+    drop(pending);
+    assert!(
+        diagnostics.observe(&stuck).is_empty(),
+        "D12 cancelled prefix preserves the signal"
+    );
+}
+
+#[test]
+fn continuation_diagnostic_interest_keeps_only_the_aggregates_unrepairable_refusal() {
+    // D9-D11: the actual aggregate decision classifies causes before the
+    // diagnostic map sees them. D9 due valid root => work, no refusal;
+    // D10 inconsistent suspend evidence => no effect + InconsistentEvidence;
+    // D11 terminal refusal is retry-classified => no intervention signal.
+    use awaken_session_state_contract::{SessionEnvironmentRejection as X, SuspendPhase};
+    let mut session = super::continuation::generated_session("diagnostic-interest");
+    let due = SessionRecoveryInterests::from_session(&session, false, 2_000);
+    assert!(due.environment_continuation, "D9");
+    assert_eq!(due.continuation_rejection, None, "D9");
+    session
+        .environment
+        .begin_suspend_at(
+            "test",
+            &session.session_id,
+            0,
+            session.realization.clone(),
+            2_000,
+        )
+        .unwrap();
+    if let awaken_session_state_contract::SessionEnvironmentState::Suspending {
+        suspend_phase,
+        ..
+    } = &mut session.environment
+    {
+        *suspend_phase = SuspendPhase::ReadyToDispose;
+    }
+    let stuck = SessionRecoveryInterests::from_session(&session, false, 2_000);
+    assert!(!stuck.environment_continuation, "D10");
+    assert_eq!(
+        stuck.continuation_rejection,
+        Some(X::InconsistentEvidence),
+        "D10"
+    );
+    session.execution = awaken_session_state_contract::SessionExecutionState::Terminated;
+    let terminal = SessionRecoveryInterests::from_session(&session, false, 2_000);
+    assert!(!terminal.environment_continuation, "D11");
+    assert_eq!(terminal.continuation_rejection, None, "D11");
 }
