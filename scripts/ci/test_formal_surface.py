@@ -7,6 +7,7 @@ import importlib.util
 import contextlib
 import io
 import json
+import os
 import subprocess
 from collections.abc import Iterator
 import pathlib
@@ -582,19 +583,24 @@ class FormalSurfaceStagedSubjectTests(unittest.TestCase):
             self.assertIn("absent from the index", error)
 
     def test_renamed_paths_use_the_canonical_nul_framed_git_reader(self) -> None:
-        # R11 a rename target contains a newline and unsafe code -> inspect the
+        # R11 a rename target contains a line separator and unsafe code -> inspect the
         # one complete path, not display-quoted text or two partial path names.
         with self.fixture() as root:
             (root / self.POLICY).write_text("fn original() {}\n")
             self.git(root, "add", self.POLICY)
             self.git(root, "commit", "--quiet", "-m", "fixture baseline")
-            renamed = "crates/runtime/example/src/odd\nname.rs"
+            # Win32 forbids LF in names. U+2028 is legal on NTFS and still
+            # exposes splitlines-based parsing; POSIX keeps the LF fixture.
+            separator = "\u2028" if os.name == "nt" else "\n"
+            renamed = f"crates/runtime/example/src/odd{separator}name with space.rs"
             self.git(root, "mv", self.POLICY, renamed)
             (root / renamed).write_text("fn authorize_renamed() {}\n")
             self.git(root, "add", renamed)
             status, _, error = self.invoke([])
             self.assertEqual(status, 1)
             self.assertIn(renamed, error)
+            self.assertIn("unclassified safety surfaces", error)
+            self.assertIn("authorization", error)
 
     def test_failed_index_selection_or_blob_io_never_becomes_empty_success(self) -> None:
         # R12 failed selection and R13 failed selected-blob IO both refuse;
