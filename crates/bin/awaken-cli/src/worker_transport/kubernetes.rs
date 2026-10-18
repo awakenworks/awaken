@@ -1,7 +1,9 @@
 // @formal entrypoint sandbox.k8s_process_observation_requires_complete_exit
 //! Trusted Kubernetes facts lowered into existing Coordinator ports.
 
-use super::*;
+use std::sync::Arc;
+
+use super::WorkerTransport;
 #[cfg(test)]
 use awaken_dispatch::classify_native_attempt_termination;
 use awaken_dispatch::{
@@ -14,12 +16,12 @@ use awaken_sandbox_kubernetes::{
     K8sLedgerBinding, K8sWorkerCreateLedger, PodProcessBinding, PodProcessObserver,
     PodProcessStopper, PodProcessTermination,
 };
+use awaken_worker_contract::{WorkerRelayTargetError, WorkerRelayTargetObserver};
 use awaken_worker_transport_security::kubernetes::{
     KubernetesPodIdentity, KubernetesWorkerAuthenticator,
 };
 
-mod create_broker;
-pub(super) use create_broker::K8sCreateBroker;
+use awaken_coordinator::worker_create_broker::{K8sCreateBroker, seal_worker_requests};
 
 pub(super) fn assemble(
     client: kube::Client,
@@ -311,14 +313,7 @@ impl KubernetesWorkerStops {
         let Some(anchor) = original else {
             return Ok(());
         };
-        create_broker::seal_worker_requests(
-            &self.create_ledger,
-            anchor,
-            pod,
-            worker,
-            &self.provider_id,
-        )
-        .await?;
+        seal_worker_requests(&self.create_ledger, anchor, pod, worker, &self.provider_id).await?;
         Ok(())
     }
 }

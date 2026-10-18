@@ -3,24 +3,7 @@
 
 use std::sync::Arc;
 
-#[derive(Debug, thiserror::Error)]
-pub enum WorkerRelayTargetError {
-    #[error("Worker Pod identity is invalid or foreign")]
-    InvalidIdentity,
-    #[error("exact Worker Pod route evidence is unavailable")]
-    Unavailable,
-}
-
-/// Observe the address of an already selected Worker. The provider must bind
-/// its identity, Pod UID and IP in one observation; it cannot select a Worker
-/// or grant an MCP route.
-#[async_trait::async_trait]
-pub trait WorkerRelayTargetObserver: Send + Sync {
-    async fn ip_for(
-        &self,
-        worker: &awaken_worker_contract::WorkerIdentity,
-    ) -> Result<std::net::IpAddr, WorkerRelayTargetError>;
-}
+use awaken_worker_contract::WorkerRelayTargetObserver;
 
 #[cfg(feature = "container-k8s")]
 mod kubernetes;
@@ -35,7 +18,7 @@ pub struct WorkerTransport {
     stops: Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>>,
     relay_targets: Option<Arc<dyn WorkerRelayTargetObserver>>,
     #[cfg(feature = "container-k8s")]
-    create_broker: Option<Arc<kubernetes::K8sCreateBroker>>,
+    create_broker: Option<Arc<awaken_coordinator::worker_create_broker::K8sCreateBroker>>,
 }
 
 impl WorkerTransport {
@@ -186,31 +169,6 @@ impl WorkerTransport {
             create_control_namespace,
         )
     }
-}
-
-/// Assemble the private Worker Memory boundary with the same selected content,
-/// claim authority, identity checks, and Session-owned materialization fences.
-pub(crate) fn memory_router(
-    resources: &awaken_resource_application::ResourceAuthorities,
-    registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
-    dispatch: Arc<dyn awaken_dispatch_http::WorkerDispatchAuthority>,
-    sessions: Arc<awaken_session_application::SessionApplication>,
-    authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
-    directory: Arc<dyn crate::WorkerDirectory>,
-    clock: Arc<dyn awaken_time::WallClock>,
-) -> axum::Router {
-    awaken_resource_worker_http::worker_memory_router(Arc::new(
-        awaken_resource_worker_http::WorkerMemoryService::from_resources(
-            resources,
-            registry,
-            dispatch,
-            authenticator,
-            directory,
-            clock,
-        )
-        .with_materialization_control(sessions.clone())
-        .with_terminal_memory_control(sessions),
-    ))
 }
 
 #[cfg(test)]
