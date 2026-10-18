@@ -214,6 +214,10 @@ pub enum SessionEnvironmentEvent {
     CleanedUp {
         already_recorded: bool,
     },
+    /// A historical one-stage terminal cleanup's complete receipt set was
+    /// normalized. Those receipts predate realization leases: they, not a
+    /// lease, prove the physical disposal.
+    LegacyCleanupNormalized,
     /// An effect failed. A failure never proves physical absence (ADR-0074),
     /// so its disposition decides only the lease and execution axes.
     EffectFailed,
@@ -361,6 +365,7 @@ pub const fn transition_environment(
         E::Restored => restored(facts),
         E::ExpiredCheckpointDeleted => expired_checkpoint_deleted(facts),
         E::CleanedUp { already_recorded } => cleaned_up(facts, already_recorded),
+        E::LegacyCleanupNormalized => legacy_cleanup_normalized(facts),
         E::EffectFailed => stay(facts),
     }
 }
@@ -709,6 +714,25 @@ const fn cleaned_up(facts: SessionEnvironmentFacts, already_recorded: bool) -> O
     enter(SessionEnvironmentStep::Unmaterialized)
 }
 
+/// `PersistedSession::normalize_legacy_terminal_cleanup`: a terminal Session
+/// retires its Environment on the historical receipt set alone, so the row
+/// admits an unfenced root (no lease existed then) as well as a fenced one; an
+/// asserted lease the root no longer authorizes is still refused. Restoring
+/// carries an exact physical target that predates no historical receipt, so
+/// that evidence cannot prove it disposed.
+const fn legacy_cleanup_normalized(facts: SessionEnvironmentFacts) -> Outcome {
+    if is_active(facts) {
+        return Err(SessionEnvironmentRejection::NotTerminal);
+    }
+    if is_stale(facts) {
+        return Err(SessionEnvironmentRejection::LeaseNotCurrent);
+    }
+    match facts.step {
+        SessionEnvironmentStep::Restoring => Err(SessionEnvironmentRejection::InvalidTransition),
+        _ => enter(SessionEnvironmentStep::Unmaterialized),
+    }
+}
+
 impl SessionEnvironmentFacts {
     /// Fold the aggregate, the caller's asserted lease and `now` into the
     /// facts the transition function reads. `asserted_lease` is the lease an
@@ -968,14 +992,16 @@ mod laws {
             29 => E::CleanedUp {
                 already_recorded: true,
             },
+            30 => E::LegacyCleanupNormalized,
             _ => E::EffectFailed,
         }
     }
 
-    pub(super) const EVENT_COUNT: usize = 31;
+    pub(super) const EVENT_COUNT: usize = 32;
 
     /// L1: a terminal Session never re-enters a live Environment step. Outside
-    /// the cleanup's Fenced join it only retires to Unmaterialized; inside the
+    /// the cleanup's Fenced join it only retires to Unmaterialized (by its
+    /// disposal or by legacy normalization); inside the
     /// join an in-flight materialization receipt may still land. Continuation
     /// and materialization effects are never instructed for it.
     pub(super) fn terminal_never_reenters(
@@ -990,7 +1016,8 @@ mod laws {
             return true;
         }
         let moved_legally = decision.next == facts.step
-            || (decision.next == S::Unmaterialized && matches!(event, E::CleanedUp { .. }))
+            || (decision.next == S::Unmaterialized
+                && matches!(event, E::CleanedUp { .. } | E::LegacyCleanupNormalized))
             || (decision.next == S::Resident
                 && matches!(facts.terminality, SessionTerminality::CleanupJoining)
                 && matches!(event, E::Materialized { .. }));
@@ -1040,10 +1067,13 @@ mod laws {
             }
             (S::Hibernated, S::Restoring) => matches!(event, E::RequireResident),
             (S::Restoring, S::Resident) => matches!(event, E::Restored),
-            (S::Hibernated, S::Unmaterialized) => {
-                matches!(event, E::ExpiredCheckpointDeleted | E::CleanedUp { .. })
+            (S::Hibernated, S::Unmaterialized) => matches!(
+                event,
+                E::ExpiredCheckpointDeleted | E::CleanedUp { .. } | E::LegacyCleanupNormalized
+            ),
+            (_, S::Unmaterialized) => {
+                matches!(event, E::CleanedUp { .. } | E::LegacyCleanupNormalized)
             }
-            (_, S::Unmaterialized) => matches!(event, E::CleanedUp { .. }),
             _ => false,
         };
         let resident_entry = to != S::Resident
@@ -1059,7 +1089,9 @@ mod laws {
 
     /// L3: no effect is instructed under a stale lease, and every instruction
     /// that creates, destroys or retires physical state, as well as every
-    /// observation that advances one, requires the current lease.
+    /// observation that advances one, requires the current lease. The one
+    /// exception is the legacy normalization, whose historical receipts
+    /// predate leases: it may retire an unfenced root, never a stale one.
     pub(super) fn effects_require_current_lease(
         facts: SessionEnvironmentFacts,
         event: SessionEnvironmentEvent,
@@ -1078,7 +1110,10 @@ mod laws {
         };
         let destructive_observation = decision.next != facts.step
             && matches!(event, E::SourceReleasePrepared | E::CleanedUp { .. });
-        instruction_ok && (!destructive_observation || fenced)
+        let legacy_retirement = decision.next != facts.step
+            && matches!(event, E::LegacyCleanupNormalized)
+            && matches!(facts.lease, RealizationLeaseStanding::Stale);
+        instruction_ok && (!destructive_observation || fenced) && !legacy_retirement
     }
 }
 

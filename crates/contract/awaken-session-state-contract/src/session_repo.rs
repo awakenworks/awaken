@@ -727,9 +727,13 @@ mod mutation_tests {
         //
         // | Rule | complete legacy receipts | Environment | Effect |
         // |---|---|---|---|
-        // | L1 | yes | Restoring | E1 ReceiptMismatch, no mutation |
+        // | L1 | yes | Restoring | E1 InvalidTransition, no mutation |
         // | L2 | yes | Unmaterialized | E2 normalize to Completed |
+        // | L3 | yes | Unmaterialized, Session active | E1 NotTerminal, no mutation |
         //
+        // The Environment refusal is the `LegacyCleanupNormalized` decision of
+        // the transition function (table T12), so a historical row is retired
+        // only through a decided transition.
         // Constraint: legacy completion has no `SandboxRestoreRequest`, so it
         // can never prove disposal of a Phase-B unpublished physical target.
         let session_id = "legacy-restoring";
@@ -769,6 +773,7 @@ mod mutation_tests {
             Some(&checkpoint),
         );
         let mut aggregate = session(session_id, SessionRevision(1));
+        aggregate.execution = crate::SessionExecutionState::Terminated;
         aggregate.realization = Some(lease);
         aggregate.environment = crate::SessionEnvironmentState::Restoring {
             operation,
@@ -809,13 +814,26 @@ mod mutation_tests {
         let before = recovered.clone();
         assert_eq!(
             recovered.normalize_legacy_terminal_cleanup("legacy released"),
-            Err(crate::SessionCleanupError::ReceiptMismatch),
+            Err(crate::SessionCleanupError::EnvironmentRejected(
+                crate::SessionEnvironmentRejection::InvalidTransition
+            )),
             "L1/E1"
         );
         assert_eq!(recovered, before, "L1/E1 atomic rejection");
 
         let mut ordinary = recovered;
         ordinary.environment = crate::SessionEnvironmentState::Unmaterialized;
+        let mut active = ordinary.clone();
+        active.execution = crate::SessionExecutionState::Idle;
+        let active_before = active.clone();
+        assert_eq!(
+            active.normalize_legacy_terminal_cleanup("legacy released"),
+            Err(crate::SessionCleanupError::EnvironmentRejected(
+                crate::SessionEnvironmentRejection::NotTerminal
+            )),
+            "L3/E1"
+        );
+        assert_eq!(active, active_before, "L3/E1 atomic rejection");
         assert!(
             ordinary
                 .normalize_legacy_terminal_cleanup("legacy released")

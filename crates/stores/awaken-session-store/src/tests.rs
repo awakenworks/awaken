@@ -2347,6 +2347,9 @@ fn install_legacy_completion_wire(
 
 fn requested_cleanup_with_completion(session_id: &str) -> PersistedSession {
     let mut session = sample(session_id);
+    // Terminal cleanup belongs to a terminal Session: the legacy normalization
+    // retires the Environment only through its terminal transition row.
+    session.execution = SessionExecutionState::Terminated;
     assert!(
         session
             .terminal_cleanup
@@ -3147,6 +3150,7 @@ async fn terminal_cleanup_intent_and_receipt_survive_sqlite_reopen() {
             )
             .unwrap();
         requested.environment.set_resident("opaque-binding");
+        requested.execution = SessionExecutionState::Terminated;
         awaken_store_conformance::session_store::replace_session(
             &repo,
             "ws_a",
