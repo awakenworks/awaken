@@ -16,6 +16,8 @@ separation = "sole-in-layer"
 [dependencies]
 awaken-session-configuration-contract.workspace = true
 async-trait.workspace = true
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+thiserror.workspace = true
 awaken-time.workspace = true
 tokio = { workspace = true, features = ["macros", "sync", "time"] }
 awaken-agent-contract.workspace = true
@@ -33,7 +35,6 @@ test-support = ["awaken-session-realization-contract/test-support"]
 
 [dev-dependencies]
 awaken-reliability-testkit.workspace = true
-futures-util = { version = "0.3", default-features = false, features = ["std"] }
 awaken-credential-contract.workspace = true
 awaken-environment-contract.workspace = true
 awaken-provisioning-contract.workspace = true

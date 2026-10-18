@@ -293,7 +293,7 @@ pub async fn drive_session_terminal_cleanup(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_session_application_contract::StepOutcome;
@@ -313,7 +313,8 @@ mod tests {
         },
     };
 
-    fn lease() -> awaken_session_configuration_contract::resource::SessionRealizationLease {
+    pub(crate) fn lease() -> awaken_session_configuration_contract::resource::SessionRealizationLease
+    {
         awaken_session_configuration_contract::resource::SessionRealizationLease {
             owner: "worker".into(),
             runtime_incarnation: "worker/boot".into(),
@@ -423,7 +424,7 @@ mod tests {
         }
     }
 
-    fn work(
+    pub(crate) fn work(
         action: SessionTerminalCleanupAction,
         lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> SessionTerminalCleanupWork {
