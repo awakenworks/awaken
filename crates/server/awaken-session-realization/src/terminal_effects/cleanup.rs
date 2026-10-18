@@ -255,7 +255,7 @@ impl crate::terminal_effects::TerminalEffects {
         };
         let mut provider_prepared_effect_fence = None;
         if let Some(prepared) = root_environment.as_ref() {
-            let effect_mode = prepared.environment.effect_mode;
+            let effect_mode = prepared.environment.effect_mode();
             let environment = prepared.environment.environment.as_ref();
             if let Some((environment, _)) = environment.as_ref() {
                 self.effect_fence(&effect)?;

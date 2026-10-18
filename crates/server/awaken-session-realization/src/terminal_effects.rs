@@ -79,71 +79,101 @@ impl TerminalEffects {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_environment::TerminalEffectMode;
+    use crate::session_environment::{
+        SourceReleasePredecessor, TerminalEffectMode, TerminalSourceObservation,
+    };
+
+    const OBSERVATIONS: [TerminalSourceObservation; 8] = [
+        TerminalSourceObservation::Unbound,
+        TerminalSourceObservation::Ready,
+        TerminalSourceObservation::Terminal {
+            data_readable: true,
+        },
+        TerminalSourceObservation::Terminal {
+            data_readable: false,
+        },
+        TerminalSourceObservation::DefinitivelyUnavailable,
+        TerminalSourceObservation::Disposing,
+        TerminalSourceObservation::RestoreAwaiting,
+        TerminalSourceObservation::ClosedPublicationSource,
+    ];
 
     #[test]
     fn terminal_effect_mode_keeps_live_recovery_and_provider_preparation_coupled() {
-        /* Process-local mode table HT0. Causes: C1 provider observation is
-         * Ready/filesystem-Terminal, Container-Terminal, primary absence, or Disposing; C2 the
-         * exact cleanup owner may be present/absent. Effects: E1 only live mode
-         * permits source reads; E2 live and unprepared-recovery require the
-         * provider preparation edge; E3 only Disposing proves that source
-         * effects were already prepared. The owner presence does not change
-         * these rules. This single projector prevents Artifact, Memory, and
-         * provider callers from inventing separate observation policies.
+        /* Process-local mode table HT0, exhaustive over its closed domain.
+         * Causes: C1 the source observation (8 values); C2 the frozen
+         * predecessor (none / inherited provider disposal). Effects: E1 only
+         * live mode permits source reads; E2 live and unprepared recovery
+         * require the provider preparation edge; E3 only Disposing or an
+         * inherited disposal proves that source effects were already prepared.
+         * One decision (`TerminalEffectMode::decide`) serves Artifact, Memory
+         * and provider callers alike.
          *
-         * | Rule | observation projection | live I/O | provider prep | prior prep |
-         * | T0 | LiveUnprepared | yes | yes | no |
-         * | T1 | RecoverOnlyUnprepared | no | yes | no |
-         * | T2 | RecoverOnlyAlreadyPrepared | no | no | yes | */
-        let cases = [
-            (
-                PreparedBoundEnvironment::new(None, None, TerminalEffectMode::LiveUnprepared),
-                true,
-                true,
-                false,
-            ),
-            (
-                PreparedBoundEnvironment::new(
-                    None,
-                    None,
-                    TerminalEffectMode::RecoverOnlyUnprepared,
-                ),
-                false,
-                true,
-                false,
-            ),
-            (
-                PreparedBoundEnvironment::new(
-                    None,
-                    None,
-                    TerminalEffectMode::RecoverOnlyAlreadyPrepared,
-                ),
-                false,
-                false,
-                true,
-            ),
-        ];
-        assert_eq!(
-            TerminalEffectMode::for_terminal_source(true),
-            TerminalEffectMode::LiveUnprepared,
-            "HT0 filesystem data remains readable"
-        );
-        assert_eq!(
-            TerminalEffectMode::for_terminal_source(false),
-            TerminalEffectMode::RecoverOnlyUnprepared,
-            "HT0 Container terminal source requires receipt-only reads and still needs preparation"
-        );
-        for (prepared, live_io, provider_preparation, already_prepared) in cases {
-            assert_eq!(prepared.permits_live_io(), live_io);
-            assert_eq!(
-                prepared.requires_provider_preparation(),
-                provider_preparation,
-            );
-            assert_eq!(
-                prepared.source_effects_are_already_prepared(),
-                already_prepared,
-            );
+         * | Rule | predecessor | observation | mode | live I/O | provider prep | prior prep |
+         * | M1 | inherited | any | RecoverOnlyAlreadyPrepared | no | no | yes |
+         * | M2 | none | Unbound, Ready, readable Terminal | LiveUnprepared | yes | yes | no |
+         * | M3 | none | unreadable Terminal, DefinitivelyUnavailable, RestoreAwaiting, ClosedPublicationSource | RecoverOnlyUnprepared | no | yes | no |
+         * | M4 | none | Disposing | RecoverOnlyAlreadyPrepared | no | no | yes |
+         *
+         * Safety (asserted over every cell): S1 live I/O needs a source the
+         * observation proves readable and nothing prepared; S2 provider
+         * preparation is skipped only on durable proof (Disposing or the
+         * inherited disposal). */
+        use TerminalEffectMode as M;
+        use TerminalSourceObservation as O;
+        for predecessor in [
+            SourceReleasePredecessor::None,
+            SourceReleasePredecessor::InheritedProviderDisposal,
+        ] {
+            for observation in OBSERVATIONS {
+                let expected = match (predecessor, observation) {
+                    (SourceReleasePredecessor::InheritedProviderDisposal, _) => {
+                        M::RecoverOnlyAlreadyPrepared
+                    }
+                    (
+                        _,
+                        O::Unbound
+                        | O::Ready
+                        | O::Terminal {
+                            data_readable: true,
+                        },
+                    ) => M::LiveUnprepared,
+                    (_, O::Disposing) => M::RecoverOnlyAlreadyPrepared,
+                    _ => M::RecoverOnlyUnprepared,
+                };
+                assert_eq!(
+                    TerminalEffectMode::decide(observation, predecessor),
+                    expected,
+                    "HT0 {predecessor:?} {observation:?}"
+                );
+                let prepared = PreparedBoundEnvironment::new(None, None, observation)
+                    .with_source_release_predecessor(predecessor);
+                assert_eq!(prepared.effect_mode(), expected, "HT0 projection");
+                let live = prepared.permits_live_io();
+                let provider_preparation = prepared.requires_provider_preparation();
+                let already_prepared = prepared.source_effects_are_already_prepared();
+                assert_eq!(live, expected == M::LiveUnprepared, "E1");
+                assert_eq!(provider_preparation, !already_prepared, "E2/E3 coupled");
+                assert!(
+                    !live
+                        || (predecessor == SourceReleasePredecessor::None
+                            && matches!(
+                                observation,
+                                O::Unbound
+                                    | O::Ready
+                                    | O::Terminal {
+                                        data_readable: true
+                                    }
+                            )),
+                    "S1 {predecessor:?} {observation:?}"
+                );
+                assert!(
+                    provider_preparation
+                        || predecessor == SourceReleasePredecessor::InheritedProviderDisposal
+                        || observation == O::Disposing,
+                    "S2 {predecessor:?} {observation:?}"
+                );
+            }
         }
     }
 
@@ -173,7 +203,7 @@ mod tests {
                 environment: PreparedBoundEnvironment::new(
                     None,
                     None,
-                    TerminalEffectMode::LiveUnprepared,
+                    TerminalSourceObservation::Ready,
                 ),
                 pending_checkpoint: None,
             }
@@ -195,7 +225,7 @@ mod tests {
             environment: PreparedBoundEnvironment::new(
                 None,
                 None,
-                TerminalEffectMode::RecoverOnlyAlreadyPrepared,
+                TerminalSourceObservation::Disposing,
             ),
             pending_checkpoint: None,
         };
