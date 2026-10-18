@@ -34,7 +34,7 @@ async fn empty_pinned_skill_set_needs_no_repository_but_real_references_fail_clo
     .await
     .build()
     .unwrap();
-    let catalog = &host.tools.skills;
+    let catalog = &host.capabilities.tools.skills;
     let staging = host.realization_executor.staging();
     assert!(
         staging
@@ -121,7 +121,8 @@ async fn skill_catalog_and_bundle_read_roles_are_selected_independently_before_c
         }
         let host = dependencies.build().unwrap();
         assert_eq!(
-            host.tools
+            host.capabilities
+                .tools
                 .skills
                 .resolve("ws-a", &[AgentSkillBinding::custom("greet")])
                 .await
@@ -137,7 +138,12 @@ async fn skill_catalog_and_bundle_read_roles_are_selected_independently_before_c
         if let Ok(loaded) = loaded {
             assert_eq!(loaded, vec![selected.clone()]);
         }
-        assert!(host.installed_sessions.session_ids().is_empty());
+        assert!(
+            host.run_assembly
+                .installed_sessions
+                .session_ids()
+                .is_empty()
+        );
     }
 }
 
@@ -153,7 +159,7 @@ async fn frozen_binding_keeps_v1_after_v2_and_is_workspace_scoped() {
     .with_skill_store_backend(Arc::new(InMemorySkillStore::new()))
     .build()
     .unwrap();
-    let catalog = &host.tools.skills;
+    let catalog = &host.capabilities.tools.skills;
     let staging = host.realization_executor.staging();
     catalog
         .create(
@@ -216,7 +222,7 @@ async fn prebuilt_and_custom_selectors_follow_one_resolution_table() {
     .await
     .build()
     .unwrap();
-    let catalog = &host.tools.skills;
+    let catalog = &host.capabilities.tools.skills;
     let staging = host.realization_executor.staging();
     for selector in ["latest", "1"] {
         let selection = AgentSkillBinding {
@@ -258,7 +264,7 @@ async fn prebuilt_and_custom_selectors_follow_one_resolution_table() {
     .with_skill_store_backend(Arc::new(InMemorySkillStore::new()))
     .build()
     .unwrap();
-    let catalog = &host.tools.skills;
+    let catalog = &host.capabilities.tools.skills;
     catalog
         .create(
             SkillDefinition {

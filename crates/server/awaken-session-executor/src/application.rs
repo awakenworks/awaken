@@ -365,9 +365,14 @@ impl crate::RunAssembly {
         &self,
         assignment: &awaken_session_realization_contract::SessionPreparationAssignment,
     ) -> Result<(), crate::HostError> {
-        let control = self.worker.session_control.as_ref().ok_or_else(|| {
-            crate::HostError::internal("Worker has no Session realization Control client")
-        })?;
+        let control = self
+            .capabilities
+            .worker
+            .session_control
+            .as_ref()
+            .ok_or_else(|| {
+                crate::HostError::internal("Worker has no Session realization Control client")
+            })?;
         crate::application::worker_projection::realize_session(
             self,
             control.as_ref(),

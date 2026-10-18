@@ -278,10 +278,10 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
         ))
     .build()
     .expect("validated Host dependencies");
-    let managed = crate::ManagedHost::new(host.clone());
+    let managed = host.clone();
     let mut projection = remote_terminal_cleanup_projection();
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-        &*managed.host.run_assembly,
+        &*managed.run_assembly,
         "remote-terminal-worker",
         projection.clone(),
         awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
@@ -406,7 +406,9 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
         "R1/E6 identifies the failing assignment"
     );
     assert!(
-        host.installed_sessions.contains("remote-terminal-worker"),
+        host.run_assembly
+            .installed_sessions
+            .contains("remote-terminal-worker"),
         "R1/E4 keeps the exact projection for aggregate readback"
     );
     assert_eq!(
@@ -436,7 +438,10 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
         "R2/E5 reconciles the completed terminal generation without renewal"
     );
     assert!(
-        !host.installed_sessions.contains("remote-terminal-worker"),
+        !host
+            .run_assembly
+            .installed_sessions
+            .contains("remote-terminal-worker"),
         "R2/E5 retires the exact local tree"
     );
     assert_eq!(
@@ -475,7 +480,7 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
         ))
     .build()
     .expect("validated Host dependencies");
-    let managed = crate::ManagedHost::new(host.clone());
+    let managed = host.clone();
     let now_unix_ms = awaken_session_realization::test_support::wall_clock_now_ms();
     let expiring_unix_ms = now_unix_ms.saturating_add(5_000);
     // Renewal extends the asserted Control coordinate by one renewal interval;
@@ -485,7 +490,7 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
     let ordinary_id = "renewal-beside-terminal";
     let ordinary_projection = remote_terminal_cleanup_projection();
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-        &*managed.host.run_assembly,
+        &*managed.run_assembly,
         ordinary_id,
         ordinary_projection.clone(),
         awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
@@ -582,7 +587,8 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
         "R1/E2 both Sessions use the sole lease-only renewal port"
     );
     assert_eq!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .read_realization(ordinary_id, |r| {
                 r.execution()
@@ -596,7 +602,8 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
         "R1/E2"
     );
     assert_eq!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .read_realization(terminal_id, |r| {
                 r.execution()
@@ -1015,7 +1022,7 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
         ))
     .build()
     .expect("validated Host dependencies");
-    let managed = crate::ManagedHost::new(host.clone());
+    let managed = host.clone();
     let session_id = "cold-terminal-worker";
     let lease = crate::session_resource::SessionRealizationLease {
         owner: "remote-worker".into(),
@@ -1061,7 +1068,10 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
         lease_expires_at_unix_ms: lease.expires_at_unix_ms,
         reassign_existing_lease: false,
     };
-    assert!(!host.installed_sessions.contains(session_id), "C1");
+    assert!(
+        !host.run_assembly.installed_sessions.contains(session_id),
+        "C1"
+    );
 
     let recovery = tokio::spawn({
         let host = host.clone();
@@ -1079,7 +1089,8 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
     .await
     .expect("C2 canonical driver reaches authorization after its unique install");
     assert_eq!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .frozen(session_id)
             .expect("installed Sessions")
@@ -1091,7 +1102,8 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
         "C1/E1"
     );
     assert!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .read_realization(session_id, |r| r.staging().resources.mounts.is_empty())
             .expect("installed Sessions")
@@ -1099,7 +1111,8 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
         "C1/E1 terminal installation must not materialize active Resources"
     );
     assert_eq!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .read_realization(session_id, |r| r.execution().authority.lease().cloned())
             .expect("installed Sessions")
@@ -1113,7 +1126,10 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
         1,
         "C2/E2"
     );
-    assert!(!host.installed_sessions.contains(session_id), "C2/E2/E3");
+    assert!(
+        !host.run_assembly.installed_sessions.contains(session_id),
+        "C2/E2/E3"
+    );
     let disposals = control.disposals.lock().unwrap();
     assert_eq!(disposals.len(), 1, "C2/E3");
     assert_eq!(
@@ -1190,10 +1206,12 @@ async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recover
         ))
         .await
         .expect("A1 idle child truth");
-    host.archive_session_thread(&parent.0, &idle)
+    host.coordination
+        .archive_session_thread(&parent.0, &idle)
         .await
         .expect("A1 archive");
-    host.archive_session_thread(&parent.0, &idle)
+    host.coordination
+        .archive_session_thread(&parent.0, &idle)
         .await
         .expect("A1 exact retry");
     assert_eq!(
@@ -1219,6 +1237,7 @@ async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recover
         .await
         .expect("A2 pending admission");
     let rejected = host
+        .coordination
         .archive_session_thread(&parent.0, &pending)
         .await
         .expect_err("A2 running work cannot archive");
@@ -1316,7 +1335,11 @@ async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recover
         let host = host.clone();
         let parent = parent.clone();
         let awaiting = awaiting.clone();
-        tokio::spawn(async move { host.archive_session_thread(&parent.0, &awaiting).await })
+        tokio::spawn(async move {
+            host.coordination
+                .archive_session_thread(&parent.0, &awaiting)
+                .await
+        })
     };
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         loop {
@@ -1388,7 +1411,11 @@ async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recover
         let host = host.clone();
         let parent = parent.clone();
         let idle = idle.clone();
-        tokio::spawn(async move { host.archive_session_thread(&parent.0, &idle).await })
+        tokio::spawn(async move {
+            host.coordination
+                .archive_session_thread(&parent.0, &idle)
+                .await
+        })
     };
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         loop {

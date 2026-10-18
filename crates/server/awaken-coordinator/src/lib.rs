@@ -103,8 +103,8 @@ pub use awaken_protocol_managed::{ResourcesRouterInput, models_router, resources
 pub use awaken_dispatch_http::durable_ops_router;
 use awaken_session_executor::HostDependencies;
 pub use awaken_session_executor::{
-    HostResume, ManagedHost, NoModelConfiguredExecutor, RunApplicationHost, SharedHost,
-    ThreadEvent, ThreadEventHub, UNCONFIGURED_MODEL_REF, advertised_tools,
+    HostResume, NoModelConfiguredExecutor, SharedHost, ThreadEvent, ThreadEventHub,
+    UNCONFIGURED_MODEL_REF, advertised_tools,
 };
 pub use awaken_sandbox_local::content_fingerprint;
 pub use awaken_session_mcp::ExtMcpProbe;
@@ -596,14 +596,13 @@ async fn local_managed_state_over(
     let local_realization_owner = host.dispatch_owner().to_string();
     let environments =
         environments.unwrap_or_else(|| volatile_environment_execution(clock.clone()));
-    let runtime = Arc::new(ManagedHost::new(host.clone()));
     let mut builder = awaken_session_application::SessionApplicationBuilder::new(
-        awaken_session_executor::session_execution_roles(&runtime),
+        host.session_execution_roles(),
         host.run_assembly().clone(),
         persistence,
         environments.clone(),
         awaken_session_application::SessionExecutionAdmission::fixture_with_dispatch(
-            runtime
+            host.coordination()
                 .dispatch_observation_source()
                 .expect("fixture canonical dispatch feed"),
         ),
@@ -635,7 +634,7 @@ async fn local_managed_state_over(
         .build()
         .expect("scenario Session capabilities are complete");
     let application = Arc::new(application);
-    install_managed_agent_coordination(&host, &runtime, &application)
+    install_managed_agent_coordination(&host, &application)
         .expect("scenario Session coordination application binds once");
     let managed = ManagedState::from_application(
         application.clone(),
@@ -659,7 +658,7 @@ async fn local_managed_state_over(
 // `awaken-scenario-host::run_echo_worker`.
 
 /// [`mount`], with a caller-assembled Managed state: the management server passes
-/// a vault-aware `ManagedState` over an MCP-wired `ManagedHost` (ADR-0043 Phase
+/// a vault-aware `ManagedState` over the MCP-wired Session executor (ADR-0043 Phase
 /// 3); every other mode goes through [`mount`], whose state is the plain host.
 #[cfg(feature = "test-support")]
 pub async fn mount_with_managed(
@@ -1570,14 +1569,14 @@ async fn mount_with_managed_over_and_models(
         .merge(session_extensions);
     // One protocol-neutral Run application serves all three wire adapters, so
     // they share the Host with no per-protocol execution path.
-    let host_runs: Arc<dyn RunApplication> = Arc::new(RunApplicationHost::new(host.clone()));
+    let host_runs: Arc<dyn RunApplication> = host.session_runs().clone();
     let workspace_host = host.clone();
     let agent_host = host.clone();
     let session_runs = Arc::new(awaken_session_application::SessionRunApplication::new(
         host_runs,
         session_application.clone(),
-        move |thread| workspace_host.run_assembly().thread_workspace(thread),
-        move |thread| agent_host.run_assembly().thread_agent_projection(thread),
+        move |thread| workspace_host.capabilities().thread_workspace(thread),
+        move |thread| agent_host.capabilities().thread_agent_projection(thread),
     ));
     let background_runs: Arc<
         dyn awaken_session_application_contract::SessionRunBackgroundApplication,
@@ -1620,7 +1619,7 @@ async fn mount_with_managed_over_and_models(
     // The durable-ingress operations surface (slice E): ADR-0009 follow-on verbs
     // (supersede / reconcile / manual quarantine + GC) over the same shared host.
     let durable_ops = awaken_dispatch_http::durable_ops_router_with_session_admission(
-        host.clone(),
+        host.session_runs().clone(),
         session_runs.clone(),
         session_runs,
         host.clock(),

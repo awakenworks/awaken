@@ -8,7 +8,7 @@ use awaken_ext_goal::grader::{DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent_fr
 use awaken_ext_goal::outcome::{Definition, Id};
 use awaken_ext_goal::state::Binding;
 
-use crate::host::{HostError, HostOutcomeDrive, SharedHost};
+use crate::host::{HostError, HostOutcomeDrive};
 use crate::judge::HostAgentGrader;
 use crate::outcome_report::{controller_error, project_report};
 use crate::run_exec::BoundRunExecutor;
@@ -28,7 +28,7 @@ enum OutcomeCommandResult {
     Driven(Option<HostOutcomeDrive>),
 }
 
-impl SharedHost {
+impl crate::Outcomes {
     /// Translate Managed's request into the extension application service. Host
     /// retains only locking, backend/context selection, id generation, and DTO
     /// projection; all Outcome transitions and prompts live in `awaken-ext-goal`.
@@ -134,21 +134,26 @@ impl SharedHost {
                         == awaken_session_types::SessionRuntimePlacement::Worker
                 });
         let ctx = if worker_placement {
-            self.run_assembly
+            self.session_runs
+                .run_assembly
                 .ctx_for_session_coordination(thread, None)
                 .await?
         } else {
-            self.run_assembly.ctx_for(thread, None).await?
+            self.session_runs.run_assembly.ctx_for(thread, None).await?
         };
-        let binding = outcome_binding(&ctx.config, self.agent.judge_snapshot.as_ref());
+        let binding = outcome_binding(
+            &ctx.config,
+            self.session_runs.capabilities.agent.judge_snapshot.as_ref(),
+        );
         let host_grader = HostAgentGrader {
-            host: self,
+            host: &self.session_runs,
             session_foreground: ctx.foreground.clone(),
         };
         // Outcome owns ordinary Worker Runs on the shared Thread. They reuse
         // the Session's frozen execution inputs but are not a second public
         // Session Run admission or Session activity owner.
-        let executor = BoundRunExecutor::new(self, ctx.clone()).for_thread_extension();
+        let executor =
+            BoundRunExecutor::new(&self.session_runs, ctx.clone()).for_thread_extension();
         let controller = Controller::new(
             &ctx.thread_id,
             ctx.commit.as_ref(),
@@ -282,11 +287,11 @@ mod tests {
     /// Complete ordinary Host composition shared by Outcome controller tests.
     /// The controller remains the sole Outcome owner; this fixture supplies only
     /// the production Dispatch runtime required by context construction.
-    async fn outcome_test_host(model: Arc<dyn LlmExecutor>) -> Arc<SharedHost> {
+    async fn outcome_test_host(model: Arc<dyn LlmExecutor>) -> Arc<crate::SharedHost> {
         let host = (crate::HostDependencies::ephemeral(model, "stub").await)
             .build()
             .expect("validated Host dependencies");
-        let _managed = crate::ManagedHost::new(host.clone());
+        let _managed = host.clone();
         host
     }
 
@@ -319,7 +324,8 @@ mod tests {
         ]));
         let host = outcome_test_host(model.clone()).await;
         let report = completed(
-            host.define_outcome("satisfied", "finish", "FINAL", 3)
+            host.outcomes
+                .define_outcome("satisfied", "finish", "FINAL", 3)
                 .await
                 .unwrap(),
         );
@@ -344,18 +350,21 @@ mod tests {
             r#"{"result":"satisfied","explanation":"rubric met"}"#,
         ]));
         let host = outcome_test_host(model.clone()).await;
-        host.prepare_outcome("prepared", "stable-outcome", "finish", "FINAL", 3)
+        host.outcomes
+            .prepare_outcome("prepared", "stable-outcome", "finish", "FINAL", 3)
             .await
             .expect("H1 prepare");
         assert_eq!(model.calls.load(Ordering::SeqCst), 0, "H1/E1");
 
-        host.prepare_outcome("prepared", "stable-outcome", "finish", "FINAL", 3)
+        host.outcomes
+            .prepare_outcome("prepared", "stable-outcome", "finish", "FINAL", 3)
             .await
             .expect("H2 replay");
         assert_eq!(model.calls.load(Ordering::SeqCst), 0, "H2/E2");
 
         let report = completed(
-            host.continue_outcome("prepared")
+            host.outcomes
+                .continue_outcome("prepared")
                 .await
                 .expect("H3 continue")
                 .expect("H3 active"),
@@ -409,7 +418,8 @@ mod tests {
         ]));
         let host = outcome_test_host(model.clone()).await;
         let report = completed(
-            host.define_outcome("revision", "finish", "FINAL", 3)
+            host.outcomes
+                .define_outcome("revision", "finish", "FINAL", 3)
                 .await
                 .unwrap(),
         );
@@ -433,7 +443,8 @@ mod tests {
         ]));
         let host = outcome_test_host(model.clone()).await;
         let report = completed(
-            host.define_outcome("max", "finish", "FINAL", 1)
+            host.outcomes
+                .define_outcome("max", "finish", "FINAL", 1)
                 .await
                 .unwrap(),
         );

@@ -318,9 +318,8 @@ mod tests {
         ))
         .build()
         .expect("validated Host dependencies");
-        let managed = crate::host::worker_resolver::test_support::complete_managed_test_host(
-            crate::ManagedHost::new(host.clone()),
-        );
+        let managed =
+            crate::host::worker_resolver::test_support::complete_managed_test_host(host.clone());
         let snapshot = test_activation(thread, "run-claimed-ready-durable").snapshot;
         let snapshot = if successor_cancellations.is_empty() {
             snapshot
@@ -376,7 +375,6 @@ mod tests {
         let control = RecoveryControl::fixed(projection.clone());
         let binding_sink = Arc::new(RecoveryEnvironmentBindingSink::new(&control));
         managed
-            .host
             .run_assembly
             .install_test_environment_binding_sink(binding_sink.clone());
         let initial_lease =
@@ -388,7 +386,7 @@ mod tests {
                     + 60_000,
             };
         awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-            &*managed.host.run_assembly,
+            &*managed.run_assembly,
             thread,
             projection,
             awaken_session_realization_contract::SessionProjectionInstallMode::Realization {
@@ -415,7 +413,6 @@ mod tests {
                 ),
             );
             managed
-                .host
                 .run_assembly
                 .install_test_environment_binding_sink(sink.clone());
             let creating = {
@@ -455,7 +452,6 @@ mod tests {
                     .exact_matches(&candidate)
             );
             managed
-                .host
                 .run_assembly
                 .install_test_environment_binding_sink(binding_sink.clone());
             None
@@ -464,6 +460,7 @@ mod tests {
             // No synthetic generation or Resident -> Candidate demotion: use
             // the canonical authorization, fenced Provider and retention edges.
             let _lifecycle = host
+                .run_assembly
                 .installed_sessions
                 .realizations()
                 .lock_lifecycle(thread)
@@ -552,7 +549,8 @@ mod tests {
         // Query the existing portable publication phases, not Linux's scoped
         // execution-authority view; renewal/conflict checks share this oracle.
         let owned_environment = || {
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .realizations()
                 .read_realization(thread, |r| {
                     r.environment().owner.resident().or_else(|| {
@@ -665,6 +663,7 @@ mod tests {
             None
         };
         let lifecycle = host
+            .run_assembly
             .installed_sessions
             .realizations()
             .read_realization(thread, |r| r.environment().lifecycle.clone())
@@ -680,7 +679,10 @@ mod tests {
                         .environments()
                         .retire_session_environment_for_revocation(
                             thread,
-                            (&host.run_assembly.mcp, host.installed_sessions.as_ref()),
+                            (
+                                &host.run_assembly.mcp,
+                                host.run_assembly.installed_sessions.as_ref()
+                            ),
                             None,
                         )
                         .await
@@ -692,6 +694,7 @@ mod tests {
         assert!(
             !revoke
                 || host
+                    .run_assembly
                     .installed_sessions
                     .read(thread, |slot| slot.run.context.is_none()
                         && !slot.realization.environment().owner.is_resident())
@@ -845,7 +848,8 @@ mod tests {
                 result.is_err(),
                 "SR3 unknown tree cannot authorize replacement"
             );
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .read(thread, |slot| {
                     assert!(matches!(&slot.realization.environment().owner,
                     crate::environment_owner::SessionEnvironmentOwner::Retiring(retiring)
@@ -898,7 +902,6 @@ mod tests {
             });
             if let Some(sink) = &cancelled_sink {
                 managed
-                    .host
                     .run_assembly
                     .install_test_environment_binding_sink(sink.clone());
             }
@@ -1008,7 +1011,6 @@ mod tests {
                 );
                 retired.push(candidate.environment);
                 managed
-                    .host
                     .run_assembly
                     .install_test_environment_binding_sink(binding_sink.clone());
                 drop(sink);
@@ -1131,7 +1133,8 @@ mod tests {
             "DH1/E4 R2 consumes only Resident B"
         );
         assert!(
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .read(thread, |slot| slot.run.context.as_ref().is_some_and(
                     |runtime| {
                         Arc::ptr_eq(runtime, &fresh_runtime)
@@ -1251,6 +1254,7 @@ mod tests {
         host.run_assembly
             .install_test_resident_session_environment(thread, environment.clone());
         let lifecycle = host
+            .run_assembly
             .installed_sessions
             .realizations()
             .read_realization(thread, |r| r.environment().lifecycle.clone())
@@ -1263,7 +1267,10 @@ mod tests {
                     .environments()
                     .retire_session_environment_for_revocation(
                         thread,
-                        (&host.run_assembly.mcp, host.installed_sessions.as_ref()),
+                        (
+                            &host.run_assembly.mcp,
+                            host.run_assembly.installed_sessions.as_ref()
+                        ),
                         None,
                     )
                     .await
@@ -1303,10 +1310,9 @@ mod tests {
             .await)
             .build()
             .expect("validated Host dependencies");
-        let managed = crate::ManagedHost::new(host.clone());
+        let managed = host.clone();
         let sink = Arc::new(LegacyUnownedEnvironmentBindingSink::default());
         managed
-            .host
             .run_assembly
             .install_test_environment_binding_sink(sink.clone());
 
@@ -1386,7 +1392,7 @@ mod tests {
                 .is_none(),
             "CR1/E3"
         );
-        host.installed_sessions.realizations().read_realization(thread, |r| {
+        host.run_assembly.installed_sessions.realizations().read_realization(thread, |r| {
             assert!(matches!(&r.environment().owner,
                 crate::environment_owner::SessionEnvironmentOwner::Preparing(
                     crate::environment_owner::SessionEnvironmentPreparation::AwaitingAdoption { binding, .. }
@@ -1441,14 +1447,13 @@ mod tests {
             .with_ephemeral_dispatch(store.clone()))
         .build()
         .unwrap();
-        let managed = crate::ManagedHost::new(host.clone());
+        let managed = host.clone();
         let sink = Arc::new(LegacyUnownedEnvironmentBindingSink::default());
         managed
-            .host
             .run_assembly
             .install_test_environment_binding_sink(sink.clone());
         let snapshot = test_activation(thread, run).snapshot;
-        host.run_assembly
+        host.capabilities
             .register_thread_agent_projection(thread, snapshot.root_agent_id.0.as_str());
         host.realization_executor
             .environments()
@@ -1458,7 +1463,8 @@ mod tests {
         host.run_assembly
             .install_environment_projection(thread, &eager_environment())
             .unwrap();
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .read(thread, |slot| {
                 assert!(slot.inputs.baseline.is_none(), "OR1 C3 no Managed baseline");
                 assert!(!slot.run.session_dispatch, "OR1 C3 ordinary Run");
@@ -1494,7 +1500,8 @@ mod tests {
                 .applied(),
             "OR1 C1"
         );
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .update_run(thread, |state| state.dispatch_claim = Some(claim));
         let resumed = host
             .run_assembly
@@ -1517,7 +1524,8 @@ mod tests {
             "OR1/E1 old root disposed before recreation"
         );
         assert!(
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .realizations()
                 .read_realization(thread, |r| r
                     .environment()
@@ -1574,7 +1582,7 @@ mod tests {
             .await)
             .build()
             .expect("validated Host dependencies");
-        let _managed = crate::ManagedHost::new(host.clone());
+        let _managed = host.clone();
         let local_snapshot = test_activation(thread, "run-local-owner").snapshot;
         let mut local_projection = frozen_projection();
         local_projection.agent_publication = Some(local_snapshot.clone());
@@ -1602,6 +1610,7 @@ mod tests {
         let (retiring, _raw_binding, root_sentinel) =
             revoked_legacy_v1_environment(host.as_ref(), thread).await;
         let cached = host
+            .run_assembly
             .installed_sessions
             .read(thread, |slot| {
                 (
@@ -1682,7 +1691,7 @@ mod tests {
         );
         assert!(root_sentinel.exists(), "RA1/E2 physical root is untouched");
         assert!(
-            host.installed_sessions.realizations()
+            host.run_assembly.installed_sessions.realizations()
                 .read_realization(thread, |r| {
                     matches!(
                         &r.environment().owner,
@@ -1696,7 +1705,7 @@ mod tests {
             "RA1/E2 exact Retiring owner remains fenced"
         );
         assert_eq!(
-            host.installed_sessions.read(thread, |slot| {
+            host.run_assembly.installed_sessions.read(thread, |slot| {
                 (
                     slot.inputs.published_snapshot.clone(),
                     slot.realization.execution().authority.lease().cloned(),

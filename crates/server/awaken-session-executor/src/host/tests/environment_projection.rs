@@ -95,7 +95,8 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         .expect("session environment");
     let handle_before = environment_before.lifecycle().handle();
     assert!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .read_run("t-attach", |run| run.context.is_some())
             .unwrap_or(false),
         "the first Run caches the Thread's sandbox ctx"
@@ -114,9 +115,11 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         owner: "retired-worker".into(),
         epoch: 1,
     };
-    host.installed_sessions.update_run("t-attach", |run| {
-        run.dispatch_claim = Some(stale_claim.clone());
-    });
+    host.run_assembly
+        .installed_sessions
+        .update_run("t-attach", |run| {
+            run.dispatch_claim = Some(stale_claim.clone());
+        });
 
     // Attach a file resource on the LIVE session.
     let res = TestInput {
@@ -130,7 +133,6 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     };
     let attached = effective_resources(vec![res.clone()]);
     managed
-        .host
         .run_assembly
         .apply_session_inputs(
             "t-attach",
@@ -148,6 +150,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     // The cached sandbox was evicted (so the next Run rebuilds) ...
     assert!(
         !host
+            .run_assembly
             .installed_sessions
             .read_run("t-attach", |run| run.context.is_some())
             .unwrap_or(false),
@@ -191,13 +194,15 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         b"hello-attached"
     );
     assert_eq!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .read_run("t-attach", |run| run.dispatch_claim.clone())
             .flatten(),
         Some(stale_claim),
         "R2 Resource reservation leaves the attempt delivery cache untouched"
     );
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .update_run("t-attach", |run| run.dispatch_claim = None);
 
     run_prepared_session_messages(&managed, "agent", "t-attach", user("after attach"))
@@ -214,7 +219,6 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
 
     // Detach removes exactly that mount again.
     managed
-        .host
         .run_assembly
         .apply_session_inputs(
             "t-attach",
@@ -360,7 +364,6 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
     durable["inputs"][0]["mount_path"] = serde_json::Value::String("/repo".into());
     let invalid = serde_json::from_value(durable).expect("decode historical Resource manifest");
     let error = managed
-        .host
         .run_assembly
         .apply_session_inputs(
             "invalid-live-repository",
@@ -407,7 +410,8 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
         "L1/L2 physical files"
     );
     assert!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .read_run("invalid-live-repository", |run| run.context.is_some())
             .unwrap_or(false),
         "L1/L2 cached Runtime"
@@ -561,7 +565,6 @@ async fn applying_repository_detach_removes_the_resident_namespace_checkout() {
     );
 
     managed
-        .host
         .run_assembly
         .apply_session_inputs(
             "t-repo-detach",
@@ -606,13 +609,14 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
     .build()
     .expect("validated Host dependencies");
     let managed = managed_with_resource_source(host.clone());
-    host.run(
-        None,
-        "t-local-attach",
-        vec![Message::text(MessageId("initial".into()), Role::User, "hi")],
-    )
-    .await
-    .expect("first Run");
+    host.session_runs
+        .run(
+            None,
+            "t-local-attach",
+            vec![Message::text(MessageId("initial".into()), Role::User, "hi")],
+        )
+        .await
+        .expect("first Run");
     let environment = host
         .realization_executor
         .environments()
@@ -656,7 +660,6 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
     }]);
 
     let error = managed
-        .host
         .run_assembly
         .apply_session_inputs(
             "t-local-attach",
@@ -684,7 +687,8 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
             .is_empty()
     );
     assert!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .read_run("t-local-attach", |run| run.context.is_some())
             .unwrap_or(false),
         "rejected replacement leaves the cached runtime intact"
@@ -903,7 +907,6 @@ async fn frozen_environment_network_follows_the_decision_table() {
     for (id, network, sandbox, expected_network, expected_denial) in rules {
         let thread = format!("environment-{id}");
         managed
-            .host
             .run_assembly
             .install_test_session_init(
                 &thread,
@@ -1022,7 +1025,7 @@ async fn install_test_session_init_overlays_the_environment_sandbox_onto_the_spe
         .await
         .unwrap();
     assert_eq!(
-        host.run_assembly
+        host.capabilities
             .registered_thread_workspace("t-bare")
             .as_deref(),
         Some("ws"),
@@ -1156,7 +1159,6 @@ async fn coordinator_dispatch_context_never_materializes_an_eager_environment() 
 
     install_test_session_application(&host);
     install_test_dispatch_runtime(&host)
-        .host
         .run_assembly
         .install_test_session_init(
             "coordinator-dispatch-only",
@@ -1191,7 +1193,8 @@ async fn coordinator_dispatch_context_never_materializes_an_eager_environment() 
         },
     ];
     let hash = bundle_sha256(&files);
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .realizations()
         .update_realization("coordinator-dispatch-only", |r| {
             r.staging_mut().skills = Some(vec![SkillVersion {
@@ -1224,7 +1227,8 @@ async fn coordinator_dispatch_context_never_materializes_an_eager_environment() 
         "D1/E3"
     );
     assert!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .read("coordinator-dispatch-only", |slot| slot
                 .inputs
                 .environment_snapshot
@@ -1348,9 +1352,8 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
             resources,
         }
     };
-    let managed = crate::ManagedHost::new(host.clone());
+    let managed = host.clone();
     managed
-        .host
         .run_assembly
         .validate_session_sandbox_layout(
             "worker-prospective-valid",
@@ -1362,7 +1365,6 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
         )
         .expect("P1 Worker admission needs no Coordinator provider");
     let conflict = managed
-        .host
         .run_assembly
         .validate_session_sandbox_layout(
             "worker-prospective-conflict",
@@ -1375,7 +1377,6 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
         .expect_err("P2 structural conflict remains fail-closed");
     assert!(conflict.to_string().contains("overlaps"), "P2: {conflict}");
     let local_error = managed
-        .host
         .run_assembly
         .validate_session_sandbox_layout(
             "local-prospective-valid",
@@ -1475,7 +1476,8 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
         "P5: {dispatch_conflict:?}"
     );
     assert!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .read("worker-dispatch-conflict", |slot| slot
                 .inputs
                 .baseline
@@ -1689,7 +1691,6 @@ async fn on_tool_use_text_only_run_keeps_the_environment_absent() {
     install_test_session_application(&host);
     let managed = install_test_dispatch_runtime(&host);
     managed
-        .host
         .run_assembly
         .install_test_session_init(
             "deferred-text",
@@ -1822,13 +1823,11 @@ async fn on_tool_use_published_delegate_forces_one_eager_environment() {
     let coordination: Arc<dyn awaken_session_execution_contract::SessionAgentCoordination> =
         Arc::new(RejectingSessionAgentCoordination);
     managed
-        .host
         .session_application_bindings()
         .bind_agent_coordination(coordination.clone())
         .expect("L9 one coordination application");
     assert_eq!(
         managed
-            .host
             .session_application_bindings()
             .bind_agent_coordination(coordination.clone()),
         Err(crate::SessionApplicationBindingError::AlreadyBound),
@@ -1893,7 +1892,6 @@ async fn model_request_gate_follows_the_session_dispatch_decision_table() {
         .build()
         .expect("validated Host dependencies");
     install_test_dispatch_runtime(&direct_with_endpoint)
-        .host
         .session_application_bindings()
         .bind_agent_coordination(coordination.clone())
         .unwrap();
@@ -1923,13 +1921,11 @@ async fn model_request_gate_follows_the_session_dispatch_decision_table() {
         .expect("validated Host dependencies");
     let managed_runtime = install_test_dispatch_runtime(&managed);
     managed_runtime
-        .host
         .run_assembly
         .install_test_session_init("gate-managed-present", session_init())
         .await
         .unwrap();
     managed_runtime
-        .host
         .session_application_bindings()
         .bind_agent_coordination(coordination.clone())
         .unwrap();
@@ -1964,7 +1960,6 @@ async fn model_request_gate_follows_the_session_dispatch_decision_table() {
         .build()
         .expect("validated Host dependencies");
     install_test_dispatch_runtime(&missing)
-        .host
         .run_assembly
         .install_test_session_init("gate-managed-absent", session_init())
         .await

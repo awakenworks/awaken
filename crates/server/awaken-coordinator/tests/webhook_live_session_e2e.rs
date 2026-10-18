@@ -18,7 +18,6 @@ use awaken_coordinator::{prepare_managed_lifecycle_delivery, webhooks};
 use awaken_credential_vault::{InMemorySecretStore, SecretRef, SecretStore};
 use awaken_protocol_managed::ManagedState;
 use awaken_runtime_contract::llm::{ChatRequest, ChatResponse, LlmExecutor};
-use awaken_session_executor::ManagedHost;
 use awaken_session_store::SqliteManagedSessionRepository;
 use awaken_webhook::{generate_secret, verify};
 use axum::body::Body;
@@ -128,11 +127,9 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
         .build()
         .expect("validated Host dependencies");
     let managed = Arc::new(
-        ManagedState::with_roles(awaken_session_executor::session_execution_roles(
-            &ManagedHost::new(host),
-        ))
-        .await
-        .with_session_repo(sessions),
+        ManagedState::with_roles(host.session_execution_roles())
+            .await
+            .with_session_repo(sessions),
     );
     prepare_managed_lifecycle_delivery(
         &managed,

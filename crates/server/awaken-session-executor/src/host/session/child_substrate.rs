@@ -98,7 +98,7 @@ impl crate::RunAssembly {
         let mut attempt_context = match warm_context {
             Some(context) => context.attempt_context.for_child_run(),
             None => {
-                let workspace = self.thread_workspace(thread);
+                let workspace = self.capabilities.thread_workspace(thread);
                 let mut context = awaken_runtime_contract::RuntimeRunContext::new()
                     .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
                         awaken_tenancy::ScopeId::from(workspace),
@@ -120,7 +120,7 @@ impl crate::RunAssembly {
                     .installed_sessions
                     .read_run(thread, |run| run.session_dispatch)
                     .unwrap_or(false)
-                    && let Some(endpoint) = self.coordination_endpoint()
+                    && let Some(endpoint) = self.capabilities.coordination_endpoint()
                 {
                     context = context.with_model_request_gate(Arc::new(
                         crate::coordination::HostModelRequestGate::new(endpoint, thread),
@@ -192,7 +192,7 @@ mod tests {
             )
             .build()
             .expect("validated Host dependencies");
-        let managed = crate::ManagedHost::new(host.clone());
+        let managed = host.clone();
         let mut initial = empty_frozen_projection_for_snapshot(
             host.local_workspace(),
             eager_environment(),
@@ -234,6 +234,7 @@ mod tests {
             .await
             .expect("S1/E1 child resolve");
         let physical = host
+            .run_assembly
             .installed_sessions
             .read(parent_thread, |slot| {
                 (
@@ -244,7 +245,10 @@ mod tests {
             .expect("S1 parent physical slot");
         assert_eq!(physical, (true, false), "S1/E2,E3");
         assert!(
-            host.installed_sessions.read(child_thread, |_| ()).is_none(),
+            host.run_assembly
+                .installed_sessions
+                .read(child_thread, |_| ())
+                .is_none(),
             "S1/E3"
         );
     }

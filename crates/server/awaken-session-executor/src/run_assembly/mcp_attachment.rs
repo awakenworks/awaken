@@ -37,7 +37,7 @@ impl RunAssembly {
         &self,
     ) -> awaken_session_mcp::McpCredentialMaterialization<'_> {
         awaken_session_mcp::McpCredentialMaterialization {
-            credentials: self.exec.credential_materializer.as_ref(),
+            credentials: self.capabilities.exec.credential_materializer.as_ref(),
             refresh_factory: self.session_execution.credential_refresh_factory.as_deref(),
             platform_egress: self.session_execution.platform_mcp_egress.as_deref(),
         }
@@ -104,7 +104,9 @@ impl awaken_session_mcp::McpStagingSession for RunAssembly {
     {
         Ok(crate::host::acp_mcp_client_injection_capabilities(
             materializer,
-            self.acp_adapter_policy().map_err(to_run_error)?,
+            self.capabilities
+                .acp_adapter_policy()
+                .map_err(to_run_error)?,
             cli,
             http_transport,
         ))

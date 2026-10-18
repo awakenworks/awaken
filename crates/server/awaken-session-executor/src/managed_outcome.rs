@@ -10,12 +10,11 @@
 use awaken_session_execution_contract::OutcomeDrive;
 use awaken_session_types::RunError;
 
-use crate::host::SharedHost;
 use crate::managed_adapter_error::to_run_error;
 use crate::outcome_report::progress;
 
 pub(crate) async fn define(
-    host: &SharedHost,
+    host: &crate::Outcomes,
     thread: &str,
     description: &str,
     rubric: &str,
@@ -28,7 +27,7 @@ pub(crate) async fn define(
 }
 
 pub(crate) async fn prepare(
-    host: &SharedHost,
+    host: &crate::Outcomes,
     thread: &str,
     outcome_id: &str,
     description: &str,
@@ -41,7 +40,7 @@ pub(crate) async fn prepare(
 }
 
 pub(crate) async fn resume(
-    host: &SharedHost,
+    host: &crate::Outcomes,
     thread: &str,
 ) -> Result<Option<OutcomeDrive>, RunError> {
     host.continue_outcome(thread)

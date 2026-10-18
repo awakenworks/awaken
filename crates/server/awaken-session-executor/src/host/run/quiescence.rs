@@ -31,7 +31,7 @@ const fn terminal_dispatch_action(
     }
 }
 
-impl SharedHost {
+impl crate::SessionRuns {
     pub async fn quiesce_terminal_delegations(
         &self,
         thread: &str,
@@ -372,7 +372,10 @@ mod terminal_scope_tests {
                     .unwrap();
             }
             clock.set(200);
-            let scope = host.quiesce_terminal_delegations(&thread.0).await;
+            let scope = host
+                .session_runs
+                .quiesce_terminal_delegations(&thread.0)
+                .await;
             if ended {
                 let scope = scope.unwrap();
                 assert!(scope.delegated_runs.is_empty());

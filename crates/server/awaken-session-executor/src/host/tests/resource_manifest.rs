@@ -33,7 +33,6 @@ async fn told_equals_mounted_the_prompt_path_and_access_match_the_realized_mount
     let mut init = bare_session("a", host.run_assembly.local_workspace());
     init.resources = effective_resources(vec![resource]);
     managed
-        .host
         .run_assembly
         .install_test_session_init("t-g1", init)
         .await
@@ -214,7 +213,6 @@ async fn managed_multi_memory_mounts_are_backend_neutral_pairwise() {
             .await
             .unwrap_or_else(|error| panic!("{}: {error}", case.rule));
         managed
-            .host
             .run_assembly
             .apply_session_inputs(
                 &thread,
@@ -254,6 +252,7 @@ async fn managed_multi_memory_mounts_are_backend_neutral_pairwise() {
             case.rule
         );
         let (binding_count, automatic_absent) = host
+            .run_assembly
             .installed_sessions
             .realizations()
             .read_realization(&thread, |r| {
@@ -266,7 +265,8 @@ async fn managed_multi_memory_mounts_are_backend_neutral_pairwise() {
             .unwrap();
         assert_eq!(binding_count, count, "{} E1 bindings", case.rule);
         assert!(automatic_absent, "{} E3", case.rule);
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .read_realization(&thread, |r| {
                 for (index, access) in expected_access.iter().enumerate() {
@@ -474,7 +474,6 @@ async fn runtime_stages_exactly_the_effective_resource_list() {
         initial_commit: None,
     }]);
     managed
-        .host
         .run_assembly
         .install_test_session_init("t-g3", init)
         .await
@@ -515,7 +514,7 @@ async fn a_bound_resource_with_a_missing_backing_store_fails_the_session_closed(
         ))
     .build()
     .expect("validated Host dependencies");
-    let managed = crate::ManagedHost::new(host.clone());
+    let managed = host.clone();
     let mut init = bare_session("a", host.run_assembly.local_workspace());
     init.resources = effective_resources(vec![TestInput {
         kind: "memory_store".into(),
@@ -528,7 +527,6 @@ async fn a_bound_resource_with_a_missing_backing_store_fails_the_session_closed(
     }]);
 
     let result = managed
-        .host
         .run_assembly
         .install_test_session_init("t-g4", init)
         .await;
@@ -598,11 +596,10 @@ async fn activation_validates_the_frozen_config_without_selecting_current_again(
         initial_branch: None,
         initial_commit: None,
     }]);
-    let managed = crate::ManagedHost::new(host.clone());
+    let managed = host.clone();
     let mut valid = bare_session("a", &workspace);
     valid.resources = manifest.clone();
     managed
-        .host
         .run_assembly
         .install_test_session_init("frozen-v1", valid)
         .await
@@ -620,7 +617,6 @@ async fn activation_validates_the_frozen_config_without_selecting_current_again(
     let mut invalid = bare_session("a", &workspace);
     invalid.resources = missing;
     let error = managed
-        .host
         .run_assembly
         .install_test_session_init("missing-v3", invalid)
         .await
@@ -705,7 +701,8 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
         },
     ];
     let hash = bundle_sha256(&files);
-    host.tools
+    host.capabilities
+        .tools
         .skills
         .create(
             SkillDefinition {
@@ -747,7 +744,6 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
         .await
         .expect("prepare pinned Skill");
     managed
-        .host
         .run_assembly
         .apply_session_inputs(
             "skill-revoke",
@@ -789,7 +785,6 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
         .expect("installed manifest");
 
     managed
-        .host
         .run_assembly
         .apply_session_inputs(
             "skill-revoke",
@@ -842,7 +837,6 @@ async fn an_effective_resource_mounts_on_a_worker_without_the_binding_repository
         initial_commit: None,
     }]);
     managed_worker
-        .host
         .run_assembly
         .install_test_session_init("t-g5-worker", init)
         .await

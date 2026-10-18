@@ -123,7 +123,7 @@ async fn missing_projection_admits_only_the_direct_empty_revision_zero_noop() {
         let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
             .build()
             .expect("validated Host dependencies");
-        let _runtime = crate::ManagedHost::new(host.clone());
+        let _runtime = host.clone();
         let thread = format!("direct-resource-guard-{}", rule.id);
         let previous = if rule.previous_nonempty {
             nonempty.clone()
@@ -153,7 +153,8 @@ async fn missing_projection_admits_only_the_direct_empty_revision_zero_noop() {
                 .unwrap_or_else(|error| panic!("{} installs C7: {error}", rule.id));
         }
         assert_eq!(
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .read(&thread, |slot| (
                     slot.inputs.baseline.is_some(),
                     slot.run.session_dispatch
@@ -164,7 +165,7 @@ async fn missing_projection_admits_only_the_direct_empty_revision_zero_noop() {
             rule.id
         );
 
-        host.installed_sessions.install(&thread);
+        host.run_assembly.installed_sessions.install(&thread);
         let result = host
             .realization_executor
             .apply_session_inputs(&thread, &transition, claim.as_ref(), None)
@@ -379,7 +380,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             .await)
             .build()
             .expect("validated Host dependencies");
-        let _baseline_runtime = crate::ManagedHost::new(baseline_host.clone());
+        let _baseline_runtime = baseline_host.clone();
         let first_projection = projection("baseline-a", true);
         baseline_host
             .run_assembly
@@ -394,6 +395,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             .expect("B1 valid baseline installs");
         assert!(
             baseline_host
+                .run_assembly
                 .installed_sessions
                 .read("local-baseline", |slot| {
                     slot.inputs.baseline.is_some() && slot.run.session_dispatch
@@ -467,11 +469,12 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             "B5"
         );
         install_test_session_application(&baseline_host);
-        baseline_host
-            .installed_sessions
-            .update_run("coordinator-before-baseline", |run| {
+        baseline_host.run_assembly.installed_sessions.update_run(
+            "coordinator-before-baseline",
+            |run| {
                 run.session_dispatch = true;
-            });
+            },
+        );
         let coordinator = baseline_host
             .run_assembly
             .ctx_for_session_coordination("coordinator-before-baseline", None)
@@ -495,6 +498,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             .expect("B6 complete projection replaces the cold reservation envelope");
         assert!(
             baseline_host
+                .run_assembly
                 .installed_sessions
                 .read("coordinator-before-baseline", |slot| {
                     slot.inputs.baseline.is_some() && slot.run.context.is_none()
@@ -502,11 +506,12 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                 .unwrap_or(false),
             "B6/E4 baseline is installed and stale coordination cache is gone"
         );
-        baseline_host
-            .installed_sessions
-            .update_run("dispatch-before-baseline", |run| {
+        baseline_host.run_assembly.installed_sessions.update_run(
+            "dispatch-before-baseline",
+            |run| {
                 run.session_dispatch = true;
-            });
+            },
+        );
         let dispatch_coordinator = baseline_host
             .run_assembly
             .ctx_for_session_coordination("dispatch-before-baseline", None)
@@ -523,6 +528,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             .expect("B6 Dispatch installs one complete baseline after reservation");
         assert!(
             baseline_host
+                .run_assembly
                 .installed_sessions
                 .read("dispatch-before-baseline", |slot| {
                     slot.inputs.baseline.is_some() && slot.run.context.is_none()
@@ -547,7 +553,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             ))
         .build()
         .expect("validated Host dependencies");
-        let _failed_runtime = crate::ManagedHost::new(failed_host.clone());
+        let _failed_runtime = failed_host.clone();
         let mut rejected = projection("must not publish", false);
         rejected.resources = effective_repository(
             "rejected-repository",
@@ -567,6 +573,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         );
         assert!(
             failed_host
+                .run_assembly
                 .installed_sessions
                 .read("failed-projection", |slot| {
                     slot.inputs.baseline.is_none()
@@ -608,7 +615,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         .expect("validated Host dependencies");
     install_test_session_application(&host);
 
-    let managed = crate::ManagedHost::new(host.clone());
+    let managed = host.clone();
 
     Box::pin(async {
         // Complete-install and unattempted Resource-amendment cause/effect table.
@@ -639,10 +646,10 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                 ))
             .build()
             .expect("validated Host dependencies");
-        let amendment_managed = crate::ManagedHost::new(amendment_host.clone());
+        let amendment_managed = amendment_host.clone();
         let initial_dispatch = projection("authority amendment", false);
         awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-            &*amendment_managed.host.run_assembly,
+            &*amendment_managed.run_assembly,
             "authority-amendment",
             initial_dispatch.clone(),
             awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
@@ -651,6 +658,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         .expect("A1 initial dispatch projection");
         assert!(
             amendment_host
+                .run_assembly
                 .installed_sessions
                 .read("authority-amendment", |slot| {
                     slot.inputs.baseline.is_some()
@@ -696,6 +704,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         );
         assert!(
             amendment_host
+                .run_assembly
                 .installed_sessions
                 .realizations()
                 .read_realization("authority-amendment", |r| {
@@ -710,7 +719,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             "A1/E2 rejection is side-effect free"
         );
         awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-            &*amendment_managed.host.run_assembly,
+            &*amendment_managed.run_assembly,
             "authority-amendment",
             amended_dispatch.clone(),
             awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
@@ -719,6 +728,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         .expect("A2 authority amendment");
         assert!(
             amendment_host
+                .run_assembly
                 .installed_sessions
                 .realizations()
                 .read_realization("authority-amendment", |r| {
@@ -776,7 +786,8 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             "F1 no Resource projection"
         );
         assert!(
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .read("prospective-layout-conflict", |slot| {
                     slot.inputs.baseline.is_none() && slot.inputs.environment_projection.is_none()
                 })
@@ -833,9 +844,8 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         owned_session_id: Some("branch-thread".into()),
         committed_environment: Some(committed_environment.clone()),
     });
-    let branch_managed = crate::ManagedHost::new(branch_host.clone());
+    let branch_managed = branch_host.clone();
     branch_managed
-        .host
         .run_assembly
         .install_test_environment_binding_sink(branch_sink.clone());
     let mut branch = projection("branch prompt", false);
@@ -903,7 +913,8 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         // E2=active completion stays absent until the physical transition; E3=the
         // staged sandbox requirements remain available. R1 C1+C2=>E1,E2,E3.
         assert!(
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .realizations()
                 .read_realization("flow-thread", |r| {
                     r.staging().manifest.is_none()
@@ -947,7 +958,10 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         // | P2   | 1  | 1  | 0  | 1 |
         // | P3   | 1  | 1  | 1  | 0 (deduplicate) |
         // | P4   | 1  | later Run | 0 | E1 again, never from history |
-        host.run(None, "no-baseline", user("P1")).await.expect("P1");
+        host.session_runs
+            .run(None, "no-baseline", user("P1"))
+            .await
+            .expect("P1");
         // P2-P4 are fresh physical subjects, not the metadata-only generation7
         // rows above. Real Root preparation chooses their first Resource
         // generation; the original baseline/prompt and all assertions survive.
@@ -958,10 +972,12 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             .install_projection(&managed, "prompt-thread", first)
             .await
             .expect("P2/P4 projection");
-        host.run_thread_extension_after_admission(None, "prompt-thread", user("P2"))
+        host.session_runs
+            .run_thread_extension_after_admission(None, "prompt-thread", user("P2"))
             .await
             .expect("P2");
-        host.run_thread_extension_after_admission(None, "prompt-thread", user("P4"))
+        host.session_runs
+            .run_thread_extension_after_admission(None, "prompt-thread", user("P4"))
             .await
             .expect("P4");
         let mut first = projection("exact prompt", false);
@@ -971,20 +987,21 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             .install_projection(&managed, "deduplicated", first)
             .await
             .expect("P3 projection");
-        host.run_thread_extension_after_admission(
-            None,
-            "deduplicated",
-            vec![
-                Message::text(
-                    MessageId("system-existing".into()),
-                    Role::System,
-                    "exact prompt",
-                ),
-                Message::text(MessageId("user-existing".into()), Role::User, "P3"),
-            ],
-        )
-        .await
-        .expect("P3");
+        host.session_runs
+            .run_thread_extension_after_admission(
+                None,
+                "deduplicated",
+                vec![
+                    Message::text(
+                        MessageId("system-existing".into()),
+                        Role::System,
+                        "exact prompt",
+                    ),
+                    Message::text(MessageId("user-existing".into()), Role::User, "P3"),
+                ],
+            )
+            .await
+            .expect("P3");
         {
             let requests = observed.lock().unwrap();
             let prompt_count =
@@ -1044,13 +1061,14 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             .install_projection(&managed, "context-thread", contextual)
             .await
             .expect("C4 projection");
-        host.run_thread_extension_after_admission(
-            None,
-            "context-thread",
-            user("current branch input"),
-        )
-        .await
-        .expect("C4 run");
+        host.session_runs
+            .run_thread_extension_after_admission(
+                None,
+                "context-thread",
+                user("current branch input"),
+            )
+            .await
+            .expect("C4 run");
         let request = observed
             .lock()
             .unwrap()
@@ -1210,6 +1228,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
 
     assert_eq!(
         managed
+            .coordination
             .reserve_session_run(command.clone())
             .await
             .expect("R1 reservation"),
@@ -1218,6 +1237,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     );
     assert_eq!(
         managed
+            .coordination
             .reserve_session_run(command.clone())
             .await
             .expect("R1 exact Reserved replay"),
@@ -1228,6 +1248,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     retraced.traceparent = Some("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01".into());
     assert_eq!(
         managed
+            .coordination
             .reserve_session_run(retraced)
             .await
             .expect("R4 trace-only replay"),
@@ -1238,6 +1259,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     changed_operation.operation_id = "cold-session-reservation-other-op".into();
     assert!(
         managed
+            .coordination
             .reserve_session_run(changed_operation)
             .await
             .is_err(),
@@ -1245,6 +1267,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     );
     assert_eq!(
         managed
+            .coordination
             .session_run_state(
                 &SessionId::from(thread),
                 &RunId("cold-session-reservation-run".into())
@@ -1274,7 +1297,8 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         "R1/E2"
     );
     assert!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .read_run(thread, |run| run.context.clone())
             .flatten()
             .is_none(),
@@ -1295,6 +1319,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         .clear();
     assert_eq!(
         managed
+            .coordination
             .reserve_session_run(empty_capabilities.clone())
             .await
             .expect("R3 reserve empty capabilities"),
@@ -1307,7 +1332,11 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         .required_worker_capabilities
         .insert("application:added-after-reservation/v1".into());
     assert!(
-        managed.reserve_session_run(added_capability).await.is_err(),
+        managed
+            .coordination
+            .reserve_session_run(added_capability)
+            .await
+            .is_err(),
         "R3/E6 empty-to-present capability change conflicts"
     );
     let mut recovery_command = command.clone();
@@ -1320,6 +1349,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     )];
     assert_eq!(
         managed
+            .coordination
             .reserve_session_run(recovery_command.clone())
             .await
             .expect("R1 reserve recovery probe"),
@@ -1343,6 +1373,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     );
     assert_eq!(
         managed
+            .coordination
             .reserve_session_run(recovery_command)
             .await
             .expect("R1 exact Recovery replay"),
@@ -1375,6 +1406,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     );
     assert_eq!(
         managed
+            .coordination
             .reserve_session_run(command.clone())
             .await
             .expect("R1 exact Activated replay"),
@@ -1456,6 +1488,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     );
     assert_eq!(
         managed
+            .coordination
             .reserve_session_run(command)
             .await
             .expect("R1 exact Completed replay"),
@@ -1513,6 +1546,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     );
     assert_eq!(
         managed
+            .coordination
             .reserve_session_run(empty_capabilities.clone())
             .await
             .expect("R3 exact empty-capability Completed replay"),
@@ -1523,6 +1557,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     completed_changed_operation.operation_id =
         "cold-session-empty-capabilities-completed-other-op".into();
     let completed_operation_error = managed
+        .coordination
         .reserve_session_run(completed_changed_operation)
         .await
         .expect_err("R2 completed operation change conflicts");
@@ -1537,6 +1572,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         .required_worker_capabilities
         .insert("application:added-after-completion/v1".into());
     let completed_capability_error = managed
+        .coordination
         .reserve_session_run(completed_added_capability)
         .await
         .expect_err("R3 completed empty-to-present capability change conflicts");
@@ -1719,7 +1755,8 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
         "R1/E1"
     );
 
-    host.prepare_outcome(thread, "worker-owned-outcome", "deliver", "rubric", 2)
+    host.outcomes
+        .prepare_outcome(thread, "worker-owned-outcome", "deliver", "rubric", 2)
         .await
         .expect("R3 Outcome preparation uses the coordination envelope");
     assert!(
@@ -1759,7 +1796,8 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
         .await
         .expect("installed Sessions");
     for _ in 0..2 {
-        host.continue_session_agent_report(report.clone())
+        host.coordination
+            .continue_session_agent_report(report.clone())
             .await
             .expect("R4 report admission needs no local Environment");
     }
@@ -1779,7 +1817,12 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
     );
     let mut invalid = report;
     invalid.message.role = Role::Assistant;
-    assert!(host.continue_session_agent_report(invalid).await.is_err());
+    assert!(
+        host.coordination
+            .continue_session_agent_report(invalid)
+            .await
+            .is_err()
+    );
     assert_eq!(dispatch.list_dispatches().await.unwrap().len(), 1, "R5");
 
     host.realization_executor
@@ -1881,7 +1924,7 @@ async fn claimed_inference_only_context_keeps_scope_without_a_resource_transitio
     install_test_session_application(&host);
     let _managed = install_test_dispatch_runtime(&host);
     let thread = "inference-only-claimed";
-    host.run_assembly
+    host.capabilities
         .register_thread_workspace(thread, "workspace-inference");
     let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("judge")
         .model(test_model_binding())

@@ -8,7 +8,7 @@ use awaken_session_execution_contract::{
     ApplicationError, DurableDispatchStatus, DurableRunOperations, DurableSupersedeResult,
 };
 
-use crate::{HostError, HostErrorKind, SharedHost};
+use crate::{HostError, HostErrorKind};
 
 /// The Host's error as the neutral application error its Coordinator ports return.
 pub(crate) fn application_error(error: HostError) -> ApplicationError {
@@ -21,7 +21,7 @@ pub(crate) fn application_error(error: HostError) -> ApplicationError {
 }
 
 #[async_trait::async_trait]
-impl DurableRunOperations for SharedHost {
+impl DurableRunOperations for crate::SessionRuns {
     async fn submit_background(
         &self,
         agent: Option<&str>,

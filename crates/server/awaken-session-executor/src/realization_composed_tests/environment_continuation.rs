@@ -51,7 +51,8 @@ mod tests {
                         .observed(awaken_authority_clock::authority_proof_started().unwrap()),
                 ),
             };
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .install_realization(rule, |r| r.execution_mut().authority = authority);
             let generation = awaken_session_state_contract::SandboxGeneration::new(
                 &awaken_session_types::SessionId::from(rule),
@@ -108,15 +109,17 @@ mod tests {
             expires_at_unix_ms: 30_000,
         };
         let install = |lease: SessionRealizationLease| {
-            host.installed_sessions.install_realization(thread, |r| {
-                r.execution_mut().authority = Authority::Live(
+            host.run_assembly
+                .installed_sessions
+                .install_realization(thread, |r| {
+                    r.execution_mut().authority = Authority::Live(
                     awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
                         lease, 0,
                     )
                     .unwrap()
                     .observed(awaken_authority_clock::authority_proof_started().unwrap()),
                 );
-            });
+                });
         };
         install(lease.clone());
         let generation = awaken_session_state_contract::SandboxGeneration::new(

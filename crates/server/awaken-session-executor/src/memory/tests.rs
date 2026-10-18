@@ -978,6 +978,7 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
         ]),
     );
     recovered_host
+        .run_assembly
         .installed_sessions
         .realizations()
         .update_realization(parent, |r| {

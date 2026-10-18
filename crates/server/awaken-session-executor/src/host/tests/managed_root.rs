@@ -47,7 +47,7 @@ impl ManagedSessionRootFixture {
 
     pub(super) async fn install_complete_test_session(
         &self,
-        managed: &crate::ManagedHost,
+        managed: &Arc<crate::SharedHost>,
         thread: &str,
         init: awaken_session_configuration_contract::SessionInit,
     ) -> Result<
@@ -68,7 +68,7 @@ impl ManagedSessionRootFixture {
     /// different assignment remains an error until the original command changes it.
     pub(crate) async fn install_projection(
         &self,
-        managed: &crate::ManagedHost,
+        managed: &Arc<crate::SharedHost>,
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
     ) -> Result<
@@ -142,7 +142,7 @@ impl ManagedSessionRootFixture {
     /// method calls this command, and it never changes the original Create fact.
     pub(crate) async fn advance_assignment(
         &self,
-        managed: &crate::ManagedHost,
+        managed: &Arc<crate::SharedHost>,
         thread: &str,
     ) -> Result<
         awaken_session_realization_contract::FrozenSessionProjection,
@@ -166,7 +166,7 @@ impl ManagedSessionRootFixture {
         self.check_actor(current)?;
         let (resource_revision, resources) = root.resources.desired_generation();
         let frozen = managed
-            .host
+            .run_assembly
             .installed_sessions
             .realizations()
             .frozen(thread)
@@ -202,8 +202,8 @@ impl ManagedSessionRootFixture {
     /// only the next test assignment, never a physical-domain takeover proof.
     pub(crate) async fn reassign_closed(
         &self,
-        source: &crate::ManagedHost,
-        target: &crate::ManagedHost,
+        source: &Arc<crate::SharedHost>,
+        target: &Arc<crate::SharedHost>,
         thread: &str,
         template: awaken_session_realization_contract::FrozenSessionProjection,
         target_actor: (&str, &str),
@@ -232,7 +232,7 @@ impl ManagedSessionRootFixture {
         let current = root.realization.as_ref().ok_or_else(|| {
             awaken_session_types::RunError::unavailable("fixture assignment is absent")
         })?;
-        let closed = source.host.installed_sessions.realizations().read_realization(thread, |r| {
+        let closed = source.run_assembly.installed_sessions.realizations().read_realization(thread, |r| {
             matches!(&r.execution().authority, crate::realization_state::SessionRealizationAuthority::Closed(Some(old)) if old == current)
         }).expect("installed Sessions").unwrap_or(false);
         if !closed {
@@ -288,7 +288,7 @@ impl ManagedSessionRootFixture {
     /// commands, not another reducer or receipt writer.
     fn application(
         &self,
-        managed: &crate::ManagedHost,
+        managed: &Arc<crate::SharedHost>,
     ) -> Arc<awaken_session_application::SessionApplication> {
         self.application
             .get_or_init(|| {
@@ -308,11 +308,11 @@ impl ManagedSessionRootFixture {
                         catalog,
                     ),
                 );
-                let runtime = crate::session_execution_roles(managed);
+                let runtime = managed.session_execution_roles();
                 Arc::new(
                     awaken_session_application::SessionApplicationBuilder::fixture(
                         runtime,
-                        managed.host.run_assembly.clone(),
+                        managed.run_assembly.clone(),
                         self.persistence
                             .lock()
                             .unwrap()
@@ -332,7 +332,7 @@ impl ManagedSessionRootFixture {
     /// the existing manifest command. Unchanged desired input stays unchanged.
     pub(crate) async fn prepare_resource_update(
         &self,
-        managed: &crate::ManagedHost,
+        managed: &Arc<crate::SharedHost>,
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         desired: crate::session_resource::ResolvedSessionResources,
@@ -373,7 +373,6 @@ impl ManagedSessionRootFixture {
             awaken_session_realization_contract::FrozenResourceTransitionUse::ApplyEffects,
         )?;
         managed
-            .host
             .realization_executor
             .apply_session_inputs(thread, &transition, None, Some(lease))
             .await?;
@@ -387,7 +386,7 @@ impl ManagedSessionRootFixture {
     /// an Environment binding or staged-only desired manifest is insufficient.
     pub(crate) async fn settle_resource_stage(
         &self,
-        managed: &crate::ManagedHost,
+        managed: &Arc<crate::SharedHost>,
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
     ) -> Result<
@@ -413,7 +412,7 @@ impl ManagedSessionRootFixture {
             resources.clone(),
         );
         let exact_stage = managed
-            .host
+            .run_assembly
             .installed_sessions
             .realizations()
             .read_realization(thread, |r| {
@@ -485,7 +484,7 @@ impl ManagedSessionRootFixture {
 
     pub(super) async fn install_committed_projection(
         &self,
-        managed: &crate::ManagedHost,
+        managed: &Arc<crate::SharedHost>,
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         root: awaken_session_state_contract::PersistedSession,
@@ -566,7 +565,7 @@ impl ManagedSessionRootFixture {
 
     async fn install_projection_for_assignment(
         &self,
-        managed: &crate::ManagedHost,
+        managed: &Arc<crate::SharedHost>,
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         root: awaken_session_state_contract::PersistedSession,
@@ -586,14 +585,14 @@ impl ManagedSessionRootFixture {
         // adopt. Both modes carry the same Store-read snapshot, and the tested
         // Run remains the only owner of new physical Environment I/O.
         awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-            &*managed.host.run_assembly,
+            &*managed.run_assembly,
             thread,
             projection.clone(),
             awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
         )
         .await?;
         awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-            &*managed.host.run_assembly,
+            &*managed.run_assembly,
             thread,
             projection.clone(),
             awaken_session_realization_contract::SessionProjectionInstallMode::Realization {

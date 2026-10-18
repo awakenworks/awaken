@@ -44,7 +44,7 @@ async fn claimed_inference_only_grader_keeps_execution_authority_without_a_sandb
             .expect("validated Host dependencies"),
     );
     let thread = "claim-inference-only-judge";
-    host.run_assembly
+    host.capabilities
         .register_thread_workspace(thread, "workspace-judge");
     let identity = RuntimePublicationIdentity::from_publications(&published, &[], "stub");
     let publications = Arc::new(
@@ -171,7 +171,7 @@ async fn background_task_fails_closed_on_a_database_less_worker() {
             .expect("validated Host dependencies"),
     );
     local
-        .run_assembly
+        .capabilities
         .register_thread_agent_projection("background-local", "background-agent");
     local
         .run_assembly
@@ -513,19 +513,21 @@ async fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope
         let expected = desired
             .or_else(|| active.clone())
             .expect("selected manifest");
-        host.installed_sessions.update(&thread, |slot| {
-            slot.run.session_dispatch = prepared_session;
-            slot.realization.staging_mut().manifest = active.clone();
-            slot.realization.staging_mut().transition = transition;
-            slot.replace_frozen_with(|next| {
-                next.environment_snapshot = runtime_projection.then(|| {
-                    session_environment(
+        host.run_assembly
+            .installed_sessions
+            .update(&thread, |slot| {
+                slot.run.session_dispatch = prepared_session;
+                slot.realization.staging_mut().manifest = active.clone();
+                slot.realization.staging_mut().transition = transition;
+                slot.replace_frozen_with(|next| {
+                    next.environment_snapshot = runtime_projection.then(|| {
+                        session_environment(
                         awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
                         serde_json::json!({}),
                     )
-                })
+                    })
+                });
             });
-        });
         let activation = awaken_runtime_contract::RunActivation::new(
             awaken_agent_contract::agent::run::Id(format!("run-dispatch-resources-{rule}")),
             awaken_agent_contract::agent::thread::Id(thread.clone()),
@@ -661,7 +663,8 @@ async fn durable_dispatch_marks_only_a_prepared_root_session_for_worker_realizat
         .build()
         .expect("validated Host dependencies");
     let thread = "prepared-root-session";
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .update_run(thread, |run| run.session_dispatch = true);
     let activation = awaken_runtime_contract::RunActivation::new(
         awaken_agent_contract::agent::run::Id("run-prepared-root-session".into()),
@@ -698,7 +701,8 @@ async fn thread_extension_dispatch_reuses_frozen_inputs_without_session_admissio
         .build()
         .expect("validated Host dependencies");
     let thread = "prepared-outcome-thread";
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .update_run(thread, |run| run.session_dispatch = true);
     let activation = awaken_runtime_contract::RunActivation::new(
         awaken_agent_contract::agent::run::Id("outcome-worker-run".into()),

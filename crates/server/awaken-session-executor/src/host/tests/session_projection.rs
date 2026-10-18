@@ -43,10 +43,11 @@ async fn host_accepts_only_backend_projections_that_match_the_publication() {
 
     let (matching, _matching_managed) = published_host().await;
     matching
-        .run_assembly
+        .capabilities
         .register_thread_backend_projection("backend-h1", "default");
     assert!(
         matching
+            .run_assembly
             .installed_sessions
             .read("backend-h1", |slot| slot.inputs.backend_ref.is_none())
             .unwrap_or(false),
@@ -61,6 +62,7 @@ async fn host_accepts_only_backend_projections_that_match_the_publication() {
     let (mismatch, _mismatch_managed) = published_host().await;
     mismatch
         .run_assembly
+        .capabilities
         .register_thread_backend_projection("backend-h2", "acp:claude");
     let error = match mismatch
         .run_assembly
@@ -89,6 +91,7 @@ async fn host_accepts_only_backend_projections_that_match_the_publication() {
     );
     orphan
         .run_assembly
+        .capabilities
         .register_thread_backend_projection("backend-h4", "acp:claude");
     let error = match orphan
         .run_assembly
@@ -246,7 +249,8 @@ async fn session_tool_policy_preserves_the_published_snapshot_identity() {
         .build()
         .expect("validated Host dependencies"),
     );
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .replace_frozen_with("policy-session", |next| {
             next.tools = Some(
                 awaken_session_configuration_contract::SessionToolConfiguration {
@@ -358,7 +362,8 @@ async fn session_web_policy_overlay_reaches_the_configured_plugin_before_inferen
         .build()
         .expect("validated Host dependencies"),
     );
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .replace_frozen_with("provider-server-policy", |next| {
             next.tools = Some(
                 awaken_session_configuration_contract::SessionToolConfiguration {
@@ -380,6 +385,7 @@ async fn session_web_policy_overlay_reaches_the_configured_plugin_before_inferen
         });
 
     let receipt = host
+        .session_runs
         .run(
             Some("assistant"),
             "provider-server-policy",
@@ -443,32 +449,34 @@ async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool()
             },
             credential_pin: None,
         };
-    host.installed_sessions.update("repository-policy", |slot| {
-        slot.run.session_dispatch = true;
-        slot.replace_frozen_with(|next| {
-            next.tools = Some(
-                awaken_session_configuration_contract::SessionToolConfiguration {
-                    toolsets: vec![ToolsetPolicy {
-                        source: ToolsetSource::Agent,
-                        default: ToolExecutionPolicy {
-                            enabled: false,
-                            permission: ToolPermissionRequirement::AlwaysAllow,
-                        },
-                        overrides: vec![ToolPolicyOverride::new("bash", enabled)],
-                    }],
-                    client_tools: Vec::new(),
-                },
-            )
+    host.run_assembly
+        .installed_sessions
+        .update("repository-policy", |slot| {
+            slot.run.session_dispatch = true;
+            slot.replace_frozen_with(|next| {
+                next.tools = Some(
+                    awaken_session_configuration_contract::SessionToolConfiguration {
+                        toolsets: vec![ToolsetPolicy {
+                            source: ToolsetSource::Agent,
+                            default: ToolExecutionPolicy {
+                                enabled: false,
+                                permission: ToolPermissionRequirement::AlwaysAllow,
+                            },
+                            overrides: vec![ToolPolicyOverride::new("bash", enabled)],
+                        }],
+                        client_tools: Vec::new(),
+                    },
+                )
+            });
+            slot.realization
+                .staging_mut()
+                .resources
+                .repositories
+                .extend([
+                    repository("repo-a", "/workspace/repo-a"),
+                    repository("legacy-repo", "legacy-repo"),
+                ]);
         });
-        slot.realization
-            .staging_mut()
-            .resources
-            .repositories
-            .extend([
-                repository("repo-a", "/workspace/repo-a"),
-                repository("legacy-repo", "legacy-repo"),
-            ]);
-    });
     let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("repository-agent")
         .model(test_model_binding())
         .build();
@@ -494,13 +502,15 @@ async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool()
         "R3 no Managed repository source"
     );
 
-    host.installed_sessions.update("repository-policy", |slot| {
-        let mut tools = slot.inputs.tools.clone().expect("Session tools");
-        tools.toolsets[0]
-            .overrides
-            .push(ToolPolicyOverride::new("read", enabled));
-        slot.replace_frozen_with(|next| next.tools = Some(tools));
-    });
+    host.run_assembly
+        .installed_sessions
+        .update("repository-policy", |slot| {
+            let mut tools = slot.inputs.tools.clone().expect("Session tools");
+            tools.toolsets[0]
+                .overrides
+                .push(ToolPolicyOverride::new("read", enabled));
+            slot.replace_frozen_with(|next| next.tools = Some(tools));
+        });
     assert!(
         host.run_assembly
             .session_allows_repository_skill_discovery("repository-policy", Some(&snapshot)),
@@ -531,7 +541,8 @@ async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool()
         "R2c cold Managed recovery uses the durable slot read policy"
     );
 
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .update_run("repository-policy", |run| run.session_dispatch = false);
     assert_eq!(
         host.run_assembly.session_skill_source_roots(
@@ -607,7 +618,8 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
     .build()
     .expect("validated Host dependencies");
 
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .replace_frozen_with("direct-semantic", |next| {
             next.tools = Some(deny_filesystem())
         });
@@ -623,7 +635,8 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
         "M1/E2"
     );
 
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .update_run("managed-filesystem", |run| {
             run.session_dispatch = true;
         });
@@ -639,10 +652,12 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
         "M2/E1"
     );
 
-    host.installed_sessions.update("managed-denied", |slot| {
-        slot.run.session_dispatch = true;
-        slot.replace_frozen_with(|next| next.tools = Some(deny_filesystem()));
-    });
+    host.run_assembly
+        .installed_sessions
+        .update("managed-denied", |slot| {
+            slot.run.session_dispatch = true;
+            slot.replace_frozen_with(|next| next.tools = Some(deny_filesystem()));
+        });
     let denied = host
         .run_assembly
         .select_content_delivery(
@@ -662,6 +677,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
         .build()
         .expect("validated Host dependencies");
     empty_host
+        .run_assembly
         .installed_sessions
         .update("managed-no-skill", |slot| {
             slot.run.session_dispatch = true;
@@ -697,6 +713,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
         instructions: Some("Read {{awaken.resource.path}}".into()),
     };
     empty_host
+        .run_assembly
         .installed_sessions
         .update("managed-memory-path", |slot| {
             slot.run.session_dispatch = true;
@@ -728,6 +745,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
     );
 
     empty_host
+        .run_assembly
         .installed_sessions
         .update_run("managed-missing-freeze", |run| {
             run.session_dispatch = true;
@@ -789,6 +807,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
         bundle_sha256: "sha256:think".into(),
     };
     empty_host
+        .run_assembly
         .installed_sessions
         .update_run("managed-deferred-freeze", |run| run.session_dispatch = true);
     assert_eq!(
@@ -818,6 +837,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
             })
             .build();
     empty_host
+        .run_assembly
         .installed_sessions
         .update_run("managed-deferred-mismatch", |run| {
             run.session_dispatch = true
@@ -866,7 +886,8 @@ async fn session_content_delivery_is_frozen_across_auxiliary_agent_snapshots() {
             .session_allows_filesystem_tools("filesystem-session", Some(&restricted)),
         "CD2 auxiliary snapshot would independently derive semantic delivery"
     );
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .install_realization("filesystem-session", |r| {
             r.staging_mut().content_delivery = Some(ManagedContentDelivery::ManagedFilesystem)
         });
@@ -882,31 +903,33 @@ async fn session_content_delivery_is_frozen_across_auxiliary_agent_snapshots() {
         "CD2/E2"
     );
 
-    host.installed_sessions.update("semantic-session", |slot| {
-        slot.realization.staging_mut().content_delivery =
-            Some(ManagedContentDelivery::SemanticTools);
-        slot.replace_frozen_with(|next| {
-            next.tools = Some(
-                awaken_session_configuration_contract::SessionToolConfiguration {
-                    toolsets: vec![ToolsetPolicy {
-                        source: ToolsetSource::Agent,
-                        default: ToolExecutionPolicy {
-                            enabled: false,
-                            permission: ToolPermissionRequirement::AlwaysAllow,
-                        },
-                        overrides: vec![ToolPolicyOverride::new(
-                            "write",
-                            ToolExecutionPolicy {
-                                enabled: true,
+    host.run_assembly
+        .installed_sessions
+        .update("semantic-session", |slot| {
+            slot.realization.staging_mut().content_delivery =
+                Some(ManagedContentDelivery::SemanticTools);
+            slot.replace_frozen_with(|next| {
+                next.tools = Some(
+                    awaken_session_configuration_contract::SessionToolConfiguration {
+                        toolsets: vec![ToolsetPolicy {
+                            source: ToolsetSource::Agent,
+                            default: ToolExecutionPolicy {
+                                enabled: false,
                                 permission: ToolPermissionRequirement::AlwaysAllow,
                             },
-                        )],
-                    }],
-                    client_tools: Vec::new(),
-                },
-            )
+                            overrides: vec![ToolPolicyOverride::new(
+                                "write",
+                                ToolExecutionPolicy {
+                                    enabled: true,
+                                    permission: ToolPermissionRequirement::AlwaysAllow,
+                                },
+                            )],
+                        }],
+                        client_tools: Vec::new(),
+                    },
+                )
+            });
         });
-    });
     assert!(
         host.run_assembly
             .session_allows_filesystem_tools("semantic-session", None),
@@ -1247,7 +1270,8 @@ async fn session_client_tools_replace_the_published_surface_with_exact_ownership
         .expect("validated Host dependencies"),
     );
 
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .replace_frozen_with("cleared-client-tools", |next| {
             next.tools =
                 Some(awaken_session_configuration_contract::SessionToolConfiguration::default());
@@ -1277,7 +1301,8 @@ async fn session_client_tools_replace_the_published_surface_with_exact_ownership
             "additionalProperties": false
         }),
     };
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .replace_frozen_with("session-client-tools", |next| {
             next.tools = Some(
                 awaken_session_configuration_contract::SessionToolConfiguration {
@@ -1319,6 +1344,7 @@ async fn session_client_tools_replace_the_published_surface_with_exact_ownership
     );
 
     let result = host
+        .session_runs
         .run(
             Some("assistant"),
             "session-client-tools",
@@ -1374,7 +1400,6 @@ async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_read
     .expect("validated Host dependencies");
     install_test_session_application(&host);
     install_test_dispatch_runtime(&host)
-        .host
         .run_assembly
         .install_test_session_init(
             "cold-agent",
@@ -1400,14 +1425,14 @@ async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_read
         .expect("R1 internal history read resolves the frozen Agent");
     assert_eq!(recovered.config.root_agent_id.0, "agent-a", "R1");
 
-    host.run_assembly
+    host.capabilities
         .register_thread_agent_projection("same-agent", "agent-a");
     host.run_assembly
         .ctx_for("same-agent", Some("agent-a"))
         .await
         .expect("R2 repeated exact Agent");
 
-    host.run_assembly
+    host.capabilities
         .register_thread_agent_projection("mismatch-agent", "agent-a");
     let error = match host
         .run_assembly
@@ -1424,7 +1449,6 @@ async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_read
         .expect("validated Host dependencies");
     install_test_session_application(&fallback_host);
     install_test_dispatch_runtime(&fallback_host)
-        .host
         .run_assembly
         .install_test_session_init(
             "cold-built-in",
@@ -1649,7 +1673,8 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
         .await
         .expect("P1 installs the frozen projection");
     assert!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .read_run("late-projection", |run| run.context.is_none())
             .unwrap_or(false),
         "P1 stale context must not survive the authority transition"
@@ -1693,7 +1718,7 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
         "P2/E2"
     );
     assert!(
-        host.run_assembly
+        host.capabilities
             .thread_agent_projection("active-projection")
             .is_none(),
         "P2 rejection precedes every projection mutation"
@@ -1729,6 +1754,7 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
         .await
         .expect("P4 reuses the immutable active projection");
     let retained = host
+        .run_assembly
         .installed_sessions
         .read_run("active-frozen-projection", |run| {
             Arc::ptr_eq(run.context.as_ref().expect("P4 runtime"), &frozen_active)
@@ -2019,7 +2045,6 @@ async fn repository_layout_conflict_fails_before_cache_prewarm() {
         initial_commit: None,
     }]);
     managed
-        .host
         .run_assembly
         .install_test_session_init("repository-prewarm-fence", init)
         .await
@@ -2168,10 +2193,9 @@ async fn platform_held_mcp_is_mediated_without_resolving_material_into_the_host(
         selected_plaintext_holder: Some(holder),
     };
 
-    let bare = crate::ManagedHost::new(host.clone());
+    let bare = host.clone();
     assert_eq!(
-        bare.host
-            .run_assembly
+        bare.run_assembly
             .stage_direct_mcp_attachment(request.clone())
             .await
             .unwrap_err()
@@ -2196,9 +2220,8 @@ async fn platform_held_mcp_is_mediated_without_resolving_material_into_the_host(
         ))
     .build()
     .unwrap();
-    let managed = crate::ManagedHost::new(host.clone());
+    let managed = host.clone();
     let receipt = managed
-        .host
         .run_assembly
         .stage_direct_mcp_attachment(request)
         .await
@@ -2229,8 +2252,8 @@ async fn executor_components_supply_every_session_role() {
     let shared = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
-    let host = crate::ManagedHost::new(shared.clone());
-    let roles = crate::session_execution_roles(&host);
+    let host = shared.clone();
+    let roles = host.session_execution_roles();
     assert!(Arc::ptr_eq(
         &(shared.thread_reads().clone()
             as Arc<dyn awaken_session_execution_contract::ThreadReadRuntime>),
@@ -2242,5 +2265,5 @@ async fn executor_components_supply_every_session_role() {
         &roles.live_inbox
     ));
     let bindings = awaken_session_execution_contract::SessionExecutor::from(roles);
-    assert_eq!(bindings.core().model(), host.host.run_assembly.model());
+    assert_eq!(bindings.core().model(), host.capabilities.model());
 }

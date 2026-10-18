@@ -173,8 +173,9 @@ impl crate::RunAssembly {
         &self,
         timing: AuthorityLeaseTiming,
     ) -> Result<usize, crate::HostError> {
+        let worker = &self.capabilities.worker;
         self.renew_session_realization_projections(
-            self.worker.session_control.as_deref().map(|control| {
+            worker.session_control.as_deref().map(|control| {
                 control as &dyn awaken_session_realization_contract::SessionRealizationControl
             }),
             None,

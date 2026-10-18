@@ -336,11 +336,11 @@ async fn direct_on_tool_use_brain_skill_adapter_keeps_the_environment_absent() {
         .unwrap();
     let deferred: Arc<dyn awaken_tool_contract::tool::ToolExecutor> =
         Arc::new(crate::lazy_sandbox::DeferredSandboxExecutor::new(
-            Arc::downgrade(&host.installed_sessions),
+            Arc::downgrade(&host.run_assembly.installed_sessions),
             Arc::downgrade(&host.realization_executor),
             thread,
         ));
-    host.installed_sessions.update(thread, |slot| {
+    host.run_assembly.installed_sessions.update(thread, |slot| {
         slot.replace_frozen_with(|next| {
             next.tools = Some(
                 awaken_session_configuration_contract::SessionToolConfiguration {
@@ -366,6 +366,7 @@ async fn direct_on_tool_use_brain_skill_adapter_keeps_the_environment_absent() {
     });
 
     let result = host
+        .session_runs
         .run(
             None,
             thread,
@@ -430,7 +431,8 @@ async fn managed_session_ignores_unbound_host_skill_sources() {
         "Never project without a binding.",
         &[],
     );
-    host.tools
+    host.capabilities
+        .tools
         .skills
         .create(
             awaken_skill_store::SkillDefinition {
@@ -447,7 +449,8 @@ async fn managed_session_ignores_unbound_host_skill_sources() {
         .expect("durable Skill store configured")
         .expect("cache unbound Skill version");
     assert_eq!(
-        host.tools
+        host.capabilities
+            .tools
             .skills
             .managed_ids_in(host.run_assembly.local_workspace()),
         vec!["cached".to_string()],
@@ -455,7 +458,6 @@ async fn managed_session_ignores_unbound_host_skill_sources() {
     );
     install_test_session_application(&host);
     install_test_dispatch_runtime(&host)
-        .host
         .run_assembly
         .install_test_session_init(
             "managed-no-frozen-skill",
@@ -504,7 +506,8 @@ async fn managed_session_ignores_unbound_host_skill_sources() {
         "A1/E1 no semantic Skill compatibility surface"
     );
     assert_eq!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .read_realization("managed-no-frozen-skill", |r| r
                 .staging()
@@ -646,6 +649,7 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         "L9/E1 no reservation side effect"
     );
     let provisional_metadata = host
+        .run_assembly
         .installed_sessions
         .realizations()
         .read_realization("deferred-managed-filesystem-skill", |r| {
@@ -693,6 +697,7 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         "L10/E2 Skill reads remain sandbox-free"
     );
     let deferred = host
+        .run_assembly
         .installed_sessions
         .read_run("deferred-managed-filesystem-skill", |run| {
             run.deferred_executor.clone()
@@ -749,7 +754,8 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         "L11 exact pre/post materialization bytes"
     );
     assert_eq!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .read_realization("deferred-managed-filesystem-skill", |r| {
                 r.staging().skill_prompt.clone()
@@ -794,7 +800,6 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         .expect("installed Sessions")
         .unwrap();
     managed
-        .host
         .run_assembly
         .apply_session_inputs(
             "deferred-managed-filesystem-skill",
@@ -848,6 +853,7 @@ async fn on_tool_use_legacy_delivered_filesystem_skill_forces_an_eager_environme
     ];
     let hash = bundle_sha256(&files);
     catalog_host
+        .capabilities
         .tools
         .skills
         .create(
@@ -886,7 +892,11 @@ async fn on_tool_use_legacy_delivered_filesystem_skill_forces_an_eager_environme
     .build()
     .expect("validated Host dependencies");
     assert!(
-        host.tools.skills.cache_snapshot_in(&workspace).is_empty(),
+        host.capabilities
+            .tools
+            .skills
+            .cache_snapshot_in(&workspace)
+            .is_empty(),
         "L8 starts from a cold process cache"
     );
     let managed = managed_with_resource_source(host.clone());

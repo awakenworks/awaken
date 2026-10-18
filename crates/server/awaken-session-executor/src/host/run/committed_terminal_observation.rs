@@ -93,10 +93,11 @@ impl crate::RunAssembly {
                     .resolve_session_publication(thread, agent, None)?;
                 let frozen_model_ref = installed
                     .as_ref()
-                    .map_or(self.agent.model_ref.as_str(), |root| {
+                    .map_or(self.capabilities.agent.model_ref.as_str(), |root| {
                         root.resolved_spec.model_binding.identity().1
                     });
                 let effective_model_ref = self
+                    .capabilities
                     .agent
                     .inference_routing
                     .model_ref(thread, frozen_model_ref);
@@ -105,7 +106,7 @@ impl crate::RunAssembly {
                     .map(|root| {
                         crate::agent_catalog::RUN_PUBLICATIONS.freeze(
                             root,
-                            self.agent.agent_publications.as_deref(),
+                            self.capabilities.agent.agent_publications.as_deref(),
                             &workspace,
                         )
                     })

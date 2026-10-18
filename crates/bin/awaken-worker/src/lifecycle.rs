@@ -1012,7 +1012,11 @@ pub(crate) async fn revoke_worker_session_authority_before(
             let _local_fence = lifecycle.host.begin_pool_drain().await.ok_or_else(|| {
                 "Worker revocation could not install the local claim fence".to_string()
             })?;
-            Ok(lifecycle.host.interrupt_all_session_runs().await)
+            Ok(lifecycle
+                .host
+                .session_runs()
+                .interrupt_all_session_runs()
+                .await)
         },
         |remaining| lifecycle.host.drain_runtime(remaining),
         async {

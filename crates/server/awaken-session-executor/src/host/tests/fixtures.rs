@@ -1002,5 +1002,5 @@ pub(crate) async fn with_test_memory_history(
 pub(crate) fn session_executor(
     host: &Arc<SharedHost>,
 ) -> awaken_session_execution_contract::SessionExecutor {
-    crate::session_execution_roles(&crate::ManagedHost::new(host.clone())).into()
+    host.session_execution_roles().into()
 }

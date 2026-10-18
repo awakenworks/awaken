@@ -56,7 +56,7 @@ async fn memory_test_host(
 /// Return that same creation-time manifest so a cold child test can freeze its
 /// dispatch before any process-local Runtime slot derives a cached copy.
 async fn install_complete_memory_test_session(
-    managed: &crate::ManagedHost,
+    managed: &Arc<crate::SharedHost>,
     roots: &ManagedSessionRootFixture,
     thread: &str,
     agent: &str,
@@ -71,22 +71,22 @@ async fn install_complete_memory_test_session(
         initial_branch: None,
         initial_commit: None,
     }]);
-    let mut init = bare_session(agent, managed.host.run_assembly.local_workspace());
+    let mut init = bare_session(agent, managed.run_assembly.local_workspace());
     init.resources = resources.clone();
     let projection = roots
         .install_complete_test_session(managed, thread, init)
         .await
         .expect("real Root before Memory fixture projection");
     let manifest = crate::session_resource::SessionResourceManifest::at_revision(
-        managed.host.run_assembly.local_workspace(),
+        managed.run_assembly.local_workspace(),
         projection.resource_revision,
         resources.clone(),
     );
     awaken_session_execution_contract::EnvironmentRuntime::apply_session_inputs(
-        &*managed.host.run_assembly,
+        &*managed.run_assembly,
         thread,
         &resource_transition(
-            managed.host.run_assembly.local_workspace(),
+            managed.run_assembly.local_workspace(),
             0,
             Default::default(),
             projection.resource_revision,
@@ -165,7 +165,11 @@ async fn compaction_summary_reaches_the_same_long_run() {
     let user = |t: &str| vec![Message::text(MessageId(t.into()), Role::User, "hello")];
 
     // Run 1: only the single user message → below threshold, no summary injected.
-    let r1 = host.run(None, "t-c", user("u1")).await.expect("Run 1");
+    let r1 = host
+        .session_runs
+        .run(None, "t-c", user("u1"))
+        .await
+        .expect("Run 1");
     assert!(matches!(r1.state, RunState::Ended(_)));
     let reply1 = r1
         .new_messages
@@ -178,7 +182,11 @@ async fn compaction_summary_reaches_the_same_long_run() {
 
     // Run 2: the conversation now exceeds the threshold, so the compact plugin's
     // BeforeInference hook summarizes the older slice inline and the model sees it.
-    let r2 = host.run(None, "t-c", user("u2")).await.expect("Run 2");
+    let r2 = host
+        .session_runs
+        .run(None, "t-c", user("u2"))
+        .await
+        .expect("Run 2");
     let reply2 = r2
         .new_messages
         .iter()
@@ -205,10 +213,12 @@ async fn compaction_keeps_full_history_until_a_summary_activates_the_window() {
     );
     let user = |id: &str| vec![Message::text(MessageId(id.into()), Role::User, id)];
 
-    host.run(None, "t-before-fold", user("u1"))
+    host.session_runs
+        .run(None, "t-before-fold", user("u1"))
         .await
         .expect("Run 1");
     let run = host
+        .session_runs
         .run(None, "t-before-fold", user("u2"))
         .await
         .expect("Run 2");
@@ -599,7 +609,8 @@ async fn claimed_child_terminal_memory_uses_parent_physical_commit_partition() {
                 .expect("R2 warm parent context");
         } else {
             assert!(
-                host.installed_sessions
+                host.run_assembly
+                    .installed_sessions
                     .read_run(&parent, |run| run.context.is_none())
                     .unwrap_or(true),
                 "R1 parent Runtime starts cold"
@@ -625,7 +636,7 @@ async fn claimed_child_terminal_memory_uses_parent_physical_commit_partition() {
             activation,
             ThreadId(parent.clone()),
             Some(manifest),
-            host.agent.agent_publications.as_deref(),
+            host.capabilities.agent.agent_publications.as_deref(),
         )
         .expect("freeze child dispatch through production owner")
         .with_session_activity_epoch(7);
@@ -742,11 +753,13 @@ async fn reopening_a_direct_terminal_thread_recovers_a_missing_extraction_outbox
         .expect("validated Host dependencies"),
     );
     first
+        .session_runs
         .run(None, thread, user("remember rust"))
         .await
         .expect("terminal run");
     assert!(
         first
+            .run_assembly
             .installed_sessions
             .read_run(thread, |run| {
                 run.context
@@ -1074,8 +1087,11 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
             serde_json::json!({}),
         ),
     };
-    host.installed_sessions.install("memory-replay");
+    host.run_assembly
+        .installed_sessions
+        .install("memory-replay");
     let lifecycle_guard = host
+        .run_assembly
         .installed_sessions
         .realizations()
         .lock_lifecycle("memory-replay")
@@ -1140,11 +1156,9 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     );
     let (left, right) = tokio::join!(
         managed
-            .host
             .run_assembly
             .apply_session_inputs("memory-replay", &unacknowledged),
         managed
-            .host
             .run_assembly
             .apply_session_inputs("memory-replay", &unacknowledged),
     );
@@ -1159,7 +1173,8 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     // Reproduce the active-active recovery state observed in the black-box
     // pressure test: the durable sandbox binding is resident, while this process
     // has not yet projected the authoritative Resource generation.
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .realizations()
         .update_realization("memory-replay", |r| {
             r.staging_mut().manifest = None;
@@ -1176,7 +1191,6 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         resources.clone(),
     );
     managed
-        .host
         .run_assembly
         .apply_session_inputs("memory-replay", &replay)
         .await
@@ -1184,11 +1198,9 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
 
     let (left, right) = tokio::join!(
         managed
-            .host
             .run_assembly
             .apply_session_inputs("memory-replay", &replay),
         managed
-            .host
             .run_assembly
             .apply_session_inputs("memory-replay", &replay),
     );
@@ -1265,7 +1277,6 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         // Memory pin; compare the completed projection, not command equality.
         for previous in [resources.clone(), changed.clone()] {
             let error = managed
-                .host
                 .run_assembly
                 .apply_session_inputs(
                     "memory-replay",
@@ -1300,7 +1311,6 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         );
     }
     let error = managed
-        .host
         .run_assembly
         .apply_session_inputs(
             "memory-replay",
@@ -1511,6 +1521,7 @@ async fn resume_ended_run_triggers_memory_extraction() {
 
     // RunResume approves the write; the Run now ends and extraction fires.
     let r2 = host
+        .session_runs
         .resume(
             "t-res",
             &pending.tool_use_id,

@@ -156,7 +156,8 @@ impl ChildWorkerFactory {
         }
         worker.install_attempt_executor(attempt.executor);
         worker = worker.with_local_credential_capabilities(attempt.credentials);
-        if has_model_request_gate && let Some(endpoint) = host.coordination_endpoint() {
+        if has_model_request_gate && let Some(endpoint) = host.capabilities.coordination_endpoint()
+        {
             worker = worker.with_claimed_model_request_gate_factory(
                 crate::coordination::claimed_model_request_gate_factory(
                     endpoint,

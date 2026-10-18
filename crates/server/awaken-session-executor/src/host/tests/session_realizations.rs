@@ -46,7 +46,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         "V1"
     );
     assert!(
-        !host.installed_sessions.contains("absent"),
+        !host.run_assembly.installed_sessions.contains("absent"),
         "V1 nothing installed"
     );
     assert!(
@@ -67,10 +67,10 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         "V2 a write to an absent Session is denied"
     );
     assert!(
-        !host.installed_sessions.contains("created"),
+        !host.run_assembly.installed_sessions.contains("created"),
         "V2 a write never installs"
     );
-    host.installed_sessions.install("created");
+    host.run_assembly.installed_sessions.install("created");
     assert!(
         sessions
             .update_session("created", |access| access
@@ -81,15 +81,20 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
             .expect("installed Sessions"),
         "V2 empty"
     );
-    assert!(host.installed_sessions.contains("created"), "V2 installed");
+    assert!(
+        host.run_assembly.installed_sessions.contains("created"),
+        "V2 installed"
+    );
 
     let thread = "realizations-view";
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .replace_frozen_with(thread, |next| next.workspace = Some("ws-view".into()));
     assert!(
         Arc::ptr_eq(
             &sessions.frozen(thread).expect("installed Sessions"),
             &host
+                .run_assembly
                 .installed_sessions
                 .realizations()
                 .frozen(thread)
@@ -121,7 +126,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         "C11 installed Workspace"
     );
     assert_eq!(
-        host.run_assembly.thread_workspace(thread),
+        host.capabilities.thread_workspace(thread),
         "ws-view",
         "C11 public thin delegate"
     );
@@ -140,12 +145,12 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         "C11 absent fallback"
     );
     assert_eq!(
-        host.run_assembly.thread_workspace("unknown"),
+        host.capabilities.thread_workspace("unknown"),
         host.run_assembly.local_workspace(),
         "C11 same public fallback"
     );
     assert!(
-        !host.installed_sessions.contains("unknown"),
+        !host.run_assembly.installed_sessions.contains("unknown"),
         "C11 no absent Slot created"
     );
 
@@ -153,14 +158,15 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         .update_realization(thread, |r| r.staging_mut().effect_key = Some("k1".into()))
         .expect("installed Sessions");
     assert_eq!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .read(thread, |slot| slot.realization.staging().effect_key.clone())
             .flatten()
             .as_deref(),
         Some("k1"),
         "V4 realizer write"
     );
-    host.installed_sessions.update(thread, |slot| {
+    host.run_assembly.installed_sessions.update(thread, |slot| {
         slot.realization.staging_mut().effect_key = Some("k2".into());
     });
     assert_eq!(
@@ -198,15 +204,17 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
     };
     let deferred: Arc<dyn awaken_tool_contract::tool::ToolExecutor> =
         Arc::new(crate::lazy_sandbox::DeferredSandboxExecutor::new(
-            Arc::downgrade(&host.installed_sessions),
+            Arc::downgrade(&host.run_assembly.installed_sessions),
             Arc::downgrade(&host.realization_executor),
             thread,
         ));
-    host.installed_sessions.update_run(thread, |run| {
-        run.context = Some(ctx.clone());
-        run.dispatch_claim = Some(claim.clone());
-        run.deferred_executor = Some(deferred.clone());
-    });
+    host.run_assembly
+        .installed_sessions
+        .update_run(thread, |run| {
+            run.context = Some(ctx.clone());
+            run.dispatch_claim = Some(claim.clone());
+            run.deferred_executor = Some(deferred.clone());
+        });
     assert_eq!(
         query(&sessions),
         (true, false, Some(claim.clone())),
@@ -235,7 +243,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
             .run_assembly.ctx_for(child_id, None)
             .await
             .expect("actual child context");
-        host.installed_sessions
+        host.run_assembly.installed_sessions
             .update_run(child_id, |run| run.context = Some(child.clone()));
         let delegated = |status| awaken_session_application_contract::DelegatedRun {
             run_id: RunId(child_id.into()),
@@ -259,7 +267,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                             |id| {
                                 trace.lock().unwrap().push(format!("query:{id}"));
                                 if legacy {
-                                    Ok(host.installed_sessions
+                                    Ok(host.run_assembly.installed_sessions
                                         .read_run(id, |run| {
                                             run.context
                                                 .as_ref()
@@ -302,7 +310,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                     |id| {
                         trace.lock().unwrap().push(format!("query:{id}"));
                         if legacy {
-                            Ok(host.installed_sessions
+                            Ok(host.run_assembly.installed_sessions
                                 .read_run(id, |run| {
                                     run.context
                                         .as_ref()
@@ -346,7 +354,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                     id,
                     |session| {
                         if legacy {
-                            Ok(host.installed_sessions
+                            Ok(host.run_assembly.installed_sessions
                                 .read_run(session, |run| {
                                     run.context
                                         .as_ref()
@@ -366,7 +374,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                 assert!(!observed, "Q1/Q5 missing Slot or Runtime stays false");
             }
             assert!(
-                !host.installed_sessions.contains("query-missing-slot"),
+                !host.run_assembly.installed_sessions.contains("query-missing-slot"),
                 "Q1 no new Slot"
             );
             child.foreground.install_for_test(Some(RunId("query-child".into())));
@@ -379,7 +387,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                     |id| {
                         trace.lock().unwrap().push(format!("query:{id}"));
                         if legacy {
-                            Ok(host.installed_sessions
+                            Ok(host.run_assembly.installed_sessions
                                 .read_run(id, |run| {
                                     run.context
                                         .as_ref()
@@ -465,7 +473,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                     thread,
                     |id| {
                         if legacy {
-                            Ok(host.installed_sessions
+                            Ok(host.run_assembly.installed_sessions
                                 .read_run(id, |run| {
                                     run.context
                                         .as_ref()
@@ -535,7 +543,10 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         "S1/R4 absent publication denied"
     );
     assert!(
-        !host.installed_sessions.contains("absent-requirements"),
+        !host
+            .run_assembly
+            .installed_sessions
+            .contains("absent-requirements"),
         "S1/R4 publication never installs"
     );
     let before = sessions.frozen(thread).expect("installed Sessions");
@@ -558,7 +569,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         "C11 current whole Frozen Arc, no cached Workspace"
     );
     assert_eq!(
-        host.run_assembly.thread_workspace(thread),
+        host.capabilities.thread_workspace(thread),
         "ws-published",
         "C11 delegate observes new publication"
     );
@@ -576,7 +587,8 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         Some("ws-published"),
         "S1 workspace and requirements"
     );
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .read(thread, |slot| {
             assert_eq!(
                 slot.realization.staging().resources.prompts,
@@ -614,7 +626,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
     };
     for rule in ["missing", "foreign", "closed", "cancelled", "expired"] {
         let token = Arc::new(awaken_runtime_contract::CancellationToken::new());
-        host.installed_sessions.update(thread, |slot| {
+        host.run_assembly.installed_sessions.update(thread, |slot| {
             slot.realization.execution_mut().authority =
                 crate::realization_state::SessionRealizationAuthority::Live(if rule == "expired" {
                     awaken_session_realization::test_support::test_expired_observed_lease(
@@ -663,7 +675,8 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
             failed.code, "session_realization_authority_lost",
             "S2/R5 {rule}"
         );
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .read(thread, |slot| {
                 assert!(Arc::ptr_eq(&slot.inputs, &published), "S2 Frozen {rule}");
                 assert_eq!(
@@ -699,7 +712,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
             })
             .unwrap();
     }
-    host.installed_sessions.update(thread, |slot| {
+    host.run_assembly.installed_sessions.update(thread, |slot| {
         slot.realization.execution_mut().authority =
             crate::realization_state::SessionRealizationAuthority::Live(
                 awaken_session_realization::test_support::test_observed_lease(lease.clone()),
@@ -733,6 +746,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
     );
     let mut callbacks = 0;
     let refused: Result<(), &str> = host
+        .run_assembly
         .installed_sessions
         .modify(thread, |_| {
             callbacks += 1;
@@ -746,12 +760,12 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
     );
     assert_eq!(callbacks, 1, "S3 callback exactly once");
     assert!(
-        host.installed_sessions.contains(thread),
+        host.run_assembly.installed_sessions.contains(thread),
         "S3 Err never poisons the lock"
     );
     // Drop only the preparation marker installed by the explicit Source rows;
     // subsequent V6-V8 keep their original semantics and state expectations.
-    host.installed_sessions.update(thread, |slot| {
+    host.run_assembly.installed_sessions.update(thread, |slot| {
         slot.realization.staging_mut().preparation = None
     });
 
@@ -759,6 +773,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         .drop_run_context(thread)
         .expect("installed Sessions");
     let (runtime, deferred_kept, kept_claim, session_dispatch) = host
+        .run_assembly
         .installed_sessions
         .read_run(thread, |run| {
             (
@@ -779,18 +794,20 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         .expect("installed Sessions");
     assert_eq!(query(&sessions), (false, true, Some(claim.clone())), "V7");
     assert!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .read_run(thread, |run| run.deferred_executor.is_some())
             .unwrap(),
         "V7 deferred executor kept"
     );
 
-    host.installed_sessions.update(thread, |slot| {
+    host.run_assembly.installed_sessions.update(thread, |slot| {
         slot.run.context = Some(ctx.clone());
         slot.realization.staging_mut().reconciliation =
             crate::staged_resources::EnvironmentResourceReconciliation::Adopted;
     });
     let staged_before = host
+        .run_assembly
         .installed_sessions
         .read(thread, |slot| slot.realization.staging().effect_key.clone())
         .unwrap();
@@ -798,6 +815,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         .end_terminal_disposal(thread)
         .expect("installed Sessions");
     let after = host
+        .run_assembly
         .installed_sessions
         .read(thread, |slot| {
             (

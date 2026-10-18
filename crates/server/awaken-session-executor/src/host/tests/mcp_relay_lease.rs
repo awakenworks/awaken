@@ -94,7 +94,8 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
             "R2"
         );
     }
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .realizations()
         .update_realization(session, |r| {
             let mut expired = lease.clone();
@@ -125,12 +126,12 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
     for remove in [false, true] {
         // Independent R5 allocations: a closed/expired owner cannot be revived
         // by reinstallation. Retain the relay route to test its stale authority.
-        host.installed_sessions.remove(session);
+        host.run_assembly.installed_sessions.remove(session);
         host.run_assembly
             .install_session_realization_lease(session, lease.clone())
             .unwrap();
         if remove {
-            host.installed_sessions.remove(session);
+            host.run_assembly.installed_sessions.remove(session);
         } else {
             host.run_assembly
                 .invalidate_session_realization_lease(session, &lease);

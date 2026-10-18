@@ -103,44 +103,29 @@ fn assemble_host(dependencies: HostDependencies) -> SharedHost {
     );
     let memory = memory_runtime(&agent, &env, &resources, &clock);
     let background_supervisor = background_supervisor(&clock);
-    let dispatch_execution = dispatch_execution(authority.as_ref());
-    let publication = crate::session_publication::SessionPublicationSelection::new(
-        realizations.clone(),
-        local_workspace.clone(),
-        agent.agent_publications.clone(),
-    );
     let realization_executor = Arc::new(crate::realization_executor::RealizationExecutor::new(
         clock.clone(),
         realizations.clone(),
-        crate::environment_holding::EnvironmentHolding::new(
+        environment_holding(
             env,
             execution.local.runs_local_pool(),
-            realizations.clone(),
+            &realizations,
             environment_binding_sink,
-            dispatch_execution,
-            publication,
+            authority.as_ref(),
+            &local_workspace,
+            agent.agent_publications.clone(),
         ),
         crate::resource_staging::ResourceStaging::new(
             realizations.clone(),
-            crate::resource_staging::ResourceSources {
-                bundle_source: skill_bundle_source,
-                file_content_source: resources.file_content_source.clone(),
-                memory: resources.memory_stores.clone(),
-                resource_validator: session_execution.resource_validator.clone(),
-                repository_binding_verifier: session_execution.repository_binding_verifier.clone(),
-                fetches_resources_upstream: authority.fetches_resources_upstream(),
-                credential_materializer: exec.credential_materializer.clone(),
-                memory_reference_encoder: authority.memory_reference_encoder(),
-            },
+            resource_sources(
+                skill_bundle_source,
+                &resources,
+                &session_execution,
+                authority.as_ref(),
+                exec.credential_materializer.clone(),
+            ),
         ),
-        crate::terminal_effects::TerminalEffects::new(
-            realizations.clone(),
-            Arc::new(crate::artifact_harvest::ArtifactHarvester::new(
-                realizations.clone(),
-                local_workspace.clone(),
-                resources.artifact_publisher.clone(),
-            )),
-        ),
+        terminal_effects(&realizations, &local_workspace, &resources),
         crate::execution_authority::ExecutionAuthority::new(
             realizations.clone(),
             execution_authority,
@@ -175,44 +160,58 @@ fn assemble_host(dependencies: HostDependencies) -> SharedHost {
     );
     let (mcp_root_authority, mcp_application_inputs) =
         mcp_application_inputs(&installed_sessions, &mcp, &durable_run_cancellation);
+    let capabilities = Arc::new(crate::RunCapabilities {
+        local_workspace: local_workspace.clone(),
+        installed_sessions: installed_sessions.clone(),
+        clock: clock.clone(),
+        background_supervisor: background_supervisor.clone(),
+        agent: agent.clone(),
+        exec: exec.clone(),
+        tools: tools.clone(),
+        worker: worker.clone(),
+        session_application: session_application.clone(),
+    });
     let run_assembly = Arc::new(crate::RunAssembly {
+        child_runs: Arc::new(crate::ChildRunLauncher::new(
+            capabilities.clone(),
+            authority.clone(),
+            clock.clone(),
+            execution.clone(),
+            realization_executor.clone(),
+        )),
+        capabilities: capabilities.clone(),
         local_workspace: local_workspace.clone(),
         installed_sessions: installed_sessions.clone(),
         hub: hub.clone(),
         authority: authority.clone(),
         clock: clock.clone(),
-        background_supervisor: background_supervisor.clone(),
         completion: completion.clone(),
         session_execution: session_execution.clone(),
         execution: execution.clone(),
-        worker: worker.clone(),
-        agent: agent.clone(),
-        exec: exec.clone(),
         realization_executor: realization_executor.clone(),
         thread_reads: thread_reads.clone(),
-        tools: tools.clone(),
         resources: resources.clone(),
         mcp: mcp.clone(),
         capture: capture.clone(),
-        session_application: session_application.clone(),
         mcp_application_inputs,
         durable_run_cancellation,
         mcp_root_authority,
     });
+    let (dispatch, session_runs) = session_run_delivery(&run_assembly, &completion, dispatch_hint);
     SharedHost {
-        agent,
-        exec,
-        worker,
         realization_executor,
         thread_reads,
         live_inboxes,
+        capabilities,
         run_assembly,
-        tools,
+        coordination: Arc::new(crate::ChildRunCoordination::new(session_runs.clone())),
+        outcomes: Arc::new(crate::Outcomes::new(session_runs.clone())),
+        budget: Arc::new(crate::BudgetAccounting::new(session_runs.clone())),
+        session_runs,
         resources,
-        dispatch: capability::DispatchCapability::new(execution, dispatch_hint),
+        dispatch,
         capture,
         local_workspace,
-        installed_sessions,
         hub,
         store_dir,
         authority,
@@ -255,6 +254,73 @@ fn memory_runtime(
     ))
 }
 
+/// The Environment holding over the installed Sessions, with the dispatch
+/// instance narrowed to execution binding and the frozen publication selection.
+fn environment_holding(
+    env: capability::EnvironmentProviders,
+    runs_local_pool: bool,
+    realizations: &crate::session_realizations::SessionRealizations,
+    sink: Option<Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>>,
+    authority: &dyn crate::SessionAuthority,
+    local_workspace: &str,
+    publications: Option<Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>>,
+) -> crate::environment_holding::EnvironmentHolding {
+    crate::environment_holding::EnvironmentHolding::new(
+        env,
+        runs_local_pool,
+        realizations.clone(),
+        sink,
+        dispatch_execution(authority),
+        crate::session_publication::SessionPublicationSelection::new(
+            realizations.clone(),
+            local_workspace.to_owned(),
+            publications,
+        ),
+    )
+}
+
+/// The Resource sources the realization executor stages from.
+fn resource_sources(
+    bundle_source: Option<
+        Arc<
+            dyn awaken_session_configuration_contract::SkillBundleSource<
+                    crate::ResourceOperationFence,
+                >,
+        >,
+    >,
+    resources: &capability::ResourceSelection,
+    session_execution: &crate::SessionExecutionDependencies,
+    authority: &dyn crate::SessionAuthority,
+    credential_materializer: Option<crate::PinnedCredentialMaterializer>,
+) -> crate::resource_staging::ResourceSources {
+    crate::resource_staging::ResourceSources {
+        bundle_source,
+        file_content_source: resources.file_content_source.clone(),
+        memory: resources.memory_stores.clone(),
+        resource_validator: session_execution.resource_validator.clone(),
+        repository_binding_verifier: session_execution.repository_binding_verifier.clone(),
+        fetches_resources_upstream: authority.fetches_resources_upstream(),
+        credential_materializer,
+        memory_reference_encoder: authority.memory_reference_encoder(),
+    }
+}
+
+/// Terminal cleanup effects with the Artifact harvester they flush through.
+fn terminal_effects(
+    realizations: &crate::session_realizations::SessionRealizations,
+    local_workspace: &str,
+    resources: &capability::ResourceSelection,
+) -> crate::terminal_effects::TerminalEffects {
+    crate::terminal_effects::TerminalEffects::new(
+        realizations.clone(),
+        Arc::new(crate::artifact_harvest::ArtifactHarvester::new(
+            realizations.clone(),
+            local_workspace.to_owned(),
+            resources.artifact_publisher.clone(),
+        )),
+    )
+}
+
 /// The same dispatch instance this process uses, narrowed to execution binding.
 fn dispatch_execution(
     authority: &dyn crate::SessionAuthority,
@@ -262,6 +328,24 @@ fn dispatch_execution(
     authority
         .dispatch_binding()
         .map(|binding| binding.queue() as Arc<dyn awaken_dispatch_contract::DispatchExecution>)
+}
+
+/// The dispatch capability and the Session Run component that shares its local
+/// pool handle and wake hint.
+fn session_run_delivery(
+    run_assembly: &Arc<crate::RunAssembly>,
+    completion: &Arc<CompletionRegistry>,
+    hint: awaken_dispatch_execution::DispatchHint,
+) -> (capability::DispatchCapability, Arc<crate::SessionRuns>) {
+    let dispatch =
+        capability::DispatchCapability::new(run_assembly.execution.clone(), hint.clone());
+    let runs = Arc::new(crate::SessionRuns::new(
+        run_assembly.clone(),
+        completion.clone(),
+        dispatch.dispatch_pool.clone(),
+        hint,
+    ));
+    (dispatch, runs)
 }
 
 /// The process-local BackgroundTask slot registry, under a process-unique
@@ -377,10 +461,62 @@ impl SharedHost {
         &self.session_application
     }
 
+    /// Capability assembly for this process's Runs.
+    #[must_use]
+    pub fn capabilities(&self) -> &Arc<crate::RunCapabilities> {
+        &self.capabilities
+    }
+
     /// The Session context assembly of this process.
     #[must_use]
     pub fn run_assembly(&self) -> &Arc<crate::RunAssembly> {
         &self.run_assembly
+    }
+
+    /// Session Run delivery of this process.
+    #[must_use]
+    pub fn session_runs(&self) -> &Arc<crate::SessionRuns> {
+        &self.session_runs
+    }
+
+    /// Session root and child Run coordination of this process.
+    #[must_use]
+    pub fn coordination(&self) -> &Arc<crate::ChildRunCoordination> {
+        &self.coordination
+    }
+
+    /// Session Outcome orchestration of this process.
+    #[must_use]
+    pub fn outcomes(&self) -> &Arc<crate::Outcomes> {
+        &self.outcomes
+    }
+
+    /// The Session application's executor roles: each role is served by the
+    /// component that owns it.
+    #[must_use]
+    pub fn session_execution_roles(
+        &self,
+    ) -> awaken_session_execution_contract::SessionExecutionRoles {
+        awaken_session_execution_contract::SessionExecutionRoles {
+            core: self.session_runs.clone(),
+            realization: self.run_assembly.clone(),
+            coordination: self.coordination.clone(),
+            coordination_reads: self.coordination.clone(),
+            budget: self.budget.clone(),
+            streaming_runs: self.session_runs.clone(),
+            environment: self.run_assembly.clone(),
+            thread_reads: self.thread_reads.clone(),
+            terminal_cleanup: self.run_assembly.clone(),
+            outcomes: self.outcomes.clone(),
+            live_inbox: self.live_inboxes.clone(),
+            capability: self.capabilities.clone(),
+        }
+    }
+
+    /// Session usage and budget accounting of this process.
+    #[must_use]
+    pub fn budget(&self) -> &Arc<crate::BudgetAccounting> {
+        &self.budget
     }
 
     /// Committed Thread readback over this process's selected authority.

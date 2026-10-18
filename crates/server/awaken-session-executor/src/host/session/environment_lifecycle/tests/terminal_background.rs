@@ -28,16 +28,19 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
     .await)
         .build()
         .expect("validated Host dependencies");
-    host.installed_sessions.install_realization(thread, |r| {
-        r.environment_mut().owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
-            identity: BoundSessionEnvironmentIdentity::Durable {
-                effect_id: format!("effect-{thread}"),
-                generation: durable_generation.clone(),
-            },
-            binding: serde_json::to_string(&environment.lifecycle().handle()).unwrap(),
-            environment: environment.clone(),
+    host.run_assembly
+        .installed_sessions
+        .install_realization(thread, |r| {
+            r.environment_mut().owner =
+                SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
+                    identity: BoundSessionEnvironmentIdentity::Durable {
+                        effect_id: format!("effect-{thread}"),
+                        generation: durable_generation.clone(),
+                    },
+                    binding: serde_json::to_string(&environment.lifecycle().handle()).unwrap(),
+                    environment: environment.clone(),
+                });
         });
-    });
     let (activity_generation, origin) = host
         .realization_executor
         .environments()
@@ -99,7 +102,8 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
     // mutable effect changes. O2 a foreign Arc fails instead of borrowing its
     // desired key. O3 legacy activity fallback remains usable but cannot
     // manufacture the new provenance reference or historical Create evidence.
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .realizations()
         .update_realization(thread, |r| {
             let SessionEnvironmentOwner::Resident(owned) = &mut r.environment_mut().owner else {
@@ -126,7 +130,8 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
             .is_err(),
         "O2 exact Resident Arc required"
     );
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .realizations()
         .update_realization(thread, |r| {
             let SessionEnvironmentOwner::Resident(owned) = &mut r.environment_mut().owner else {
@@ -258,7 +263,8 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             generation: durable.then(|| durable_generation.clone()),
             idle_since_unix_ms: None,
         };
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .update_realization(thread, |r| {
                 r.environment_mut().owner = SessionEnvironmentOwner::Resident(owned.clone());
@@ -310,12 +316,14 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             .await;
         if retiring {
             let realization = host
+                .run_assembly
                 .installed_sessions
                 .realizations()
                 .realization_lock(thread)
                 .expect("installed Sessions");
             let _realization = realization.lock().await;
             let lifecycle = host
+                .run_assembly
                 .installed_sessions
                 .realizations()
                 .read_realization(thread, |r| r.environment().lifecycle.clone())
@@ -327,7 +335,10 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
                     .environments()
                     .retire_session_environment_for_revocation(
                         thread,
-                        (&host.run_assembly.mcp, host.installed_sessions.as_ref()),
+                        (
+                            &host.run_assembly.mcp,
+                            host.run_assembly.installed_sessions.as_ref()
+                        ),
                         None,
                     )
                     .await
@@ -335,7 +346,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
                 "C1 public revocation transition"
             );
             assert_eq!(
-                host.run_assembly
+                host.capabilities
                     .registered_thread_workspace(thread)
                     .as_deref(),
                 Some("workspace"),
@@ -484,7 +495,8 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             "E1 zero harvest"
         );
         assert!(
-            host.tools
+            host.capabilities
+                .tools
                 .skills
                 .definitions("workspace")
                 .await
@@ -498,6 +510,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             "E1"
         );
         let retained = host
+            .run_assembly
             .installed_sessions
             .realizations()
             .read_realization(thread, |r| r.environment().owner.clone())
@@ -545,7 +558,8 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             "E3 one durable Artifact"
         );
         assert!(
-            host.tools
+            host.capabilities
+                .tools
                 .skills
                 .definitions("workspace")
                 .await
@@ -608,7 +622,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             "E4 one physical disposal"
         );
         assert!(
-            host.installed_sessions.contains(thread),
+            host.run_assembly.installed_sessions.contains(thread),
             "E4 waits for durable ack"
         );
         aggregate
@@ -624,7 +638,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             .acknowledge_terminal_cleanup_disposal(&host.run_assembly.mcp, &disposal_effect)
             .await;
         assert!(
-            !host.installed_sessions.contains(thread),
+            !host.run_assembly.installed_sessions.contains(thread),
             "E4 owner removed after ack"
         );
     }
@@ -750,6 +764,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     );
     assert!(output.exists(), "U1 Preparation cannot delete");
     let retained = host
+        .run_assembly
         .installed_sessions
         .realizations()
         .read_realization(thread, |r| r.environment().owner.clone())
@@ -786,7 +801,8 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         },
     )];
     for wrong in &rejected_owners {
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .update_realization(thread, |r| r.environment_mut().owner = wrong.clone())
             .expect("installed Sessions");
@@ -801,7 +817,8 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
             "U6 rejected Preparation keeps physical bytes"
         );
     }
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .realizations()
         .update_realization(thread, |r| r.environment_mut().owner = retained.clone())
         .expect("installed Sessions");
@@ -831,7 +848,8 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         .expect("U2 identical Preparation after response loss");
     assert_eq!(first, preparation, "U2 stable receipt");
     let same_owner = || {
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .read_realization(thread, |r| match &r.environment().owner {
                 SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
@@ -880,7 +898,8 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     // provider has supplied it. A retained unrelated terminal owner is not that
     // predecessor; neither a valid receipt nor its fingerprint relabels it.
     for wrong in rejected_owners.drain(..) {
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .update_realization(thread, |r| r.environment_mut().owner = wrong)
             .expect("installed Sessions");
@@ -891,7 +910,8 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
             .expect_err("U6 wrong ownership cannot dispose");
         assert!(output.exists(), "U6 rejected Disposal keeps physical bytes");
     }
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .realizations()
         .update_realization(thread, |r| r.environment_mut().owner = retained.clone())
         .expect("installed Sessions");
@@ -933,7 +953,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         .acknowledge_terminal_cleanup_disposal(&host.run_assembly.mcp, &disposal)
         .await;
     assert!(
-        !host.installed_sessions.contains(thread),
+        !host.run_assembly.installed_sessions.contains(thread),
         "U5 only durable ack releases slot"
     );
 }

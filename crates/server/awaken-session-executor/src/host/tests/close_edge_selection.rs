@@ -71,13 +71,14 @@ async fn rebuilt_successor_is_not_interrupted(original_run_active: bool) {
         .install_session_realization_lease(thread, original.clone())
         .unwrap();
     let phase = host
+        .run_assembly
         .installed_sessions
         .read(thread, |slot| slot.realization.execution().phase.clone())
         .unwrap();
     let first_run = if original_run_active {
         let mut run = tokio::spawn({
             let host = host.clone();
-            async move { host.run(None, thread, user("original")).await }
+            async move { host.session_runs.run(None, thread, user("original")).await }
         });
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             tokio::select! {
@@ -103,6 +104,7 @@ async fn rebuilt_successor_is_not_interrupted(original_run_active: bool) {
         None
     };
     let selected = host
+        .run_assembly
         .installed_sessions
         .close_realization(thread, Some((&original, &phase)))
         .expect("close and select actual original root");
@@ -180,7 +182,7 @@ async fn rebuilt_successor_is_not_interrupted(original_run_active: bool) {
         .unwrap();
     let mut run = tokio::spawn({
         let host = host.clone();
-        async move { host.run(None, thread, user("successor")).await }
+        async move { host.session_runs.run(None, thread, user("successor")).await }
     });
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         tokio::select! {
@@ -209,6 +211,7 @@ async fn rebuilt_successor_is_not_interrupted(original_run_active: bool) {
         .unwrap();
     let cancelled = token.is_cancelled();
     let retained = host
+        .run_assembly
         .installed_sessions
         .read(thread, |slot| {
             slot.realization.execution().authority.lease() == Some(&successor)

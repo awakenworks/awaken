@@ -56,8 +56,8 @@ pub(super) async fn skills(
     // already-realized Resource projection. Only a direct Session without a
     // frozen manifest may fall back to the live compatibility catalog.
     let delivered = frozen_skill_versions.or_else(|| {
-        (!session_dispatch && host.tools.skills.has_application())
-            .then(|| host.tools.skills.cache_snapshot_in(workspace))
+        (!session_dispatch && host.capabilities.tools.skills.has_application())
+            .then(|| host.capabilities.tools.skills.cache_snapshot_in(workspace))
     });
     // A published Agent receives exactly its selected Skills. Embedded direct
     // Sessions without a publication use the host-configured catalog.
@@ -71,6 +71,7 @@ pub(super) async fn skills(
     } else {
         match &selected_skills {
             Some(selected) => host
+                .capabilities
                 .tools
                 .skills
                 .specs()
@@ -78,7 +79,7 @@ pub(super) async fn skills(
                 .filter(|skill| selected.contains(&skill.id))
                 .cloned()
                 .collect(),
-            None => host.tools.skills.specs().to_vec(),
+            None => host.capabilities.tools.skills.specs().to_vec(),
         }
     };
     let filtered_delivered = match (delivered, &selected_skills) {
@@ -148,8 +149,8 @@ pub(super) async fn skills(
             // receives that port and never selects another executor or clock.
             let agent_tool = env.as_ref().map(|env| {
                 Arc::new(crate::skills::ForkAgentTool {
-                    llm: host.agent.llm.clone(),
-                    model_ref: host.agent.model_ref.clone(),
+                    llm: host.capabilities.agent.llm.clone(),
+                    model_ref: host.capabilities.agent.model_ref.clone(),
                     sandbox: env.clone(),
                     execution: commit.clone(),
                     clock: host.clock.clone(),
@@ -220,7 +221,7 @@ pub(super) async fn memory(
     // it and list its id so it is active for the run (G30).
     // Seed with host-registered plugins (e.g. the tool state machine via
     // `with_state_machine`), then append the per-run memory/compact plugins.
-    let mut plugin_ids: Vec<String> = host.tools.plugin_ids.clone();
+    let mut plugin_ids: Vec<String> = host.capabilities.tools.plugin_ids.clone();
     let authored_memory = installed
         .as_ref()
         .and_then(|snapshot| {
@@ -296,7 +297,7 @@ pub(super) async fn memory(
                 )
                 .map_err(HostError::bad_request)?;
                 Ok(Arc::new(crate::memory::AgentSelector::new(
-                    host.agent.llm.clone(),
+                    host.capabilities.agent.llm.clone(),
                     snapshot,
                     commit.clone(),
                     host.clock.clone(),
@@ -381,13 +382,15 @@ fn compact(
         ),
         None if installed.is_none()
             && host
+                .capabilities
                 .tools
                 .plugin_ids
                 .iter()
                 .any(|id| id == awaken_ext_compact::COMPACT_PLUGIN_ID) =>
         {
             Some(
-                host.tools
+                host.capabilities
+                    .tools
                     .plugin_config
                     .get(awaken_ext_compact::COMPACT_PLUGIN_ID)
                     .cloned()
@@ -428,7 +431,7 @@ fn compact(
             )
             .map_err(HostError::bad_request)?;
             let agent_tool = build_compact_runner(
-                host.agent.llm.clone(),
+                host.capabilities.agent.llm.clone(),
                 snapshot,
                 commit.clone(),
                 host.clock.clone(),
