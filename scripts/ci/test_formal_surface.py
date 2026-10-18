@@ -6,6 +6,9 @@ from __future__ import annotations
 import importlib.util
 import contextlib
 import io
+import json
+import subprocess
+from collections.abc import Iterator
 import pathlib
 import tempfile
 import unittest
@@ -436,6 +439,214 @@ class FormalSurfaceProductionSourceTests(unittest.TestCase):
             "#[cfg(test)] fn fixture() { verify_current_worker_identity(directory, context, identity, now, false); }",
         ):
             self.assertEqual(MODULE.detect_signals(source), [], "W2")
+
+
+class FormalSurfaceStagedSubjectTests(unittest.TestCase):
+    POLICY = "crates/runtime/example/src/policy.rs"
+    CLASSIFIED = (
+        "// @formal surface requirement=fixture.policy\n"
+        "// @formal reason: original policy\nfn authorize_request() {}\n"
+    )
+
+    def git(self, root: pathlib.Path, *arguments: str) -> str:
+        # Only this disposable repository has an empty hooks directory. The
+        # product's normal commit hooks and shared repository are never changed.
+        return subprocess.check_output(
+            ["git", "-c", "core.hooksPath=" + str(root / "empty-hooks"),
+             "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
+             "-C", str(root), *arguments],
+            env=MODULE.formal_sources.detached_git_environment(), text=True,
+        )
+
+    @contextlib.contextmanager
+    def fixture(self, *, repository: bool = True) -> Iterator[pathlib.Path]:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            features = root / "formal/features.json"
+            features.parent.mkdir()
+            features.write_text(json.dumps({"features": [
+                {"id": "fixture", "requirements": [{"id": "policy"}]},
+            ]}))
+            (root / self.POLICY).parent.mkdir(parents=True)
+            if repository:
+                self.git(root, "init", "--quiet")
+                self.git(root, "add", "formal/features.json")
+            with mock.patch.multiple(MODULE, ROOT=root, FEATURES=features,
+                                     PRODUCTION_ROOTS=[root / "crates"]), \
+                    mock.patch.object(MODULE, "ledger_obligations", return_value=[]):
+                yield root
+
+    def invoke(self, paths: list[str], *, cli: bool = False) -> tuple[int, str, str]:
+        output, error = io.StringIO(), io.StringIO()
+        status = 0
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
+            try:
+                if cli:
+                    with mock.patch("sys.argv", ["check_formal_surface.py", "--staged", *paths]):
+                        MODULE.main()
+                else:
+                    MODULE.check_staged(paths)
+            except SystemExit as stopped:
+                status = stopped.code
+        return status, output.getvalue(), error.getvalue()
+
+    def test_bare_and_explicit_modes_scan_the_index_not_a_benign_working_copy(self) -> None:
+        # Causes C1 bare/explicit selection; C2 an unsafe staged source; C3 a
+        # benign unstaged replacement. R1/R2=C1+C2+C3 -> reject that indexed
+        # path. Neither an empty argv nor the working copy may earn false green.
+        for paths in [[], [self.POLICY]]:
+            with self.subTest(paths=paths), self.fixture() as root:
+                policy = root / self.POLICY
+                policy.write_text("fn authorize_request() {}\n")
+                self.git(root, "add", self.POLICY)
+                policy.write_text("fn harmless_working_copy() {}\n")
+                status, _, error = self.invoke(paths, cli=not paths)
+                self.assertEqual(status, 1)
+                self.assertIn(self.POLICY, error)
+                self.assertIn("unclassified", error)
+
+    def test_classification_requirements_and_source_share_the_same_index(self) -> None:
+        # R3 staged classified source + staged requirement, but both working
+        # copies disagree -> accept the actual commit subject, exactly one
+        # candidate. No unstaged requirement or source substitutes for the index.
+        with self.fixture() as root:
+            (root / self.POLICY).write_text(self.CLASSIFIED)
+            self.git(root, "add", self.POLICY)
+            (root / self.POLICY).write_text("fn authorize_unstaged() {}\n")
+            MODULE.FEATURES.write_text('{"features": []}')
+            status, output, error = self.invoke([self.POLICY])
+            self.assertEqual((status, error), (0, ""))
+            self.assertIn("1 production Rust candidate(s)", output)
+            self.assertIn("source=index", output)
+
+    def test_exclusion_owner_presence_is_an_index_fact(self) -> None:
+        # R4 owner staged then missing on disk -> still present in commit.
+        # R5 owner only on disk -> reject the staged exclusion; it names no
+        # committed implementation. A working file cannot authorize an exclusion.
+        owner = "crates/runtime/example/src/owner.rs"
+        for staged_owner in [False, True]:
+            with self.subTest(staged_owner=staged_owner), self.fixture() as root:
+                (root / self.POLICY).write_text(
+                    "// @formal surface exclude=application_adapter\n"
+                    f"// @formal owner {owner}\n// @formal reason: original owner\n"
+                    "fn authorize_request() {}\n"
+                )
+                (root / owner).write_text("fn original_owner() {}\n")
+                self.git(root, "add", self.POLICY)
+                if staged_owner:
+                    self.git(root, "add", owner)
+                    (root / owner).unlink()
+                status, _, error = self.invoke([self.POLICY])
+                self.assertEqual(status, 0 if staged_owner else 1)
+                if not staged_owner:
+                    self.assertIn(owner, error)
+                    self.assertIn("missing owner", error)
+
+    def test_staged_source_cannot_hide_by_disappearing_from_disk(self) -> None:
+        # R6 staged unsafe source + missing working file -> reject its indexed
+        # bytes. Disk absence is not deletion from the selected Git subject.
+        with self.fixture() as root:
+            (root / self.POLICY).write_text("fn authorize_request() {}\n")
+            self.git(root, "add", self.POLICY)
+            (root / self.POLICY).unlink()
+            status, _, error = self.invoke([])
+            self.assertEqual(status, 1)
+            self.assertIn(self.POLICY, error)
+
+    def test_scope_counts_ignore_docs_and_unstaged_sources_but_preserve_deletions(self) -> None:
+        # C4 docs-only/unstaged-only/deleted source. R7/R8 -> zero real staged
+        # Rust candidates, honestly reported. R9 explicit staged deletion ->
+        # skip the absent blob; R10 unknown/untracked explicit Rust -> refuse,
+        # never claim a source was checked merely because its path was supplied.
+        with self.fixture() as root:
+            (root / self.POLICY).write_text("fn original() {}\n")
+            self.git(root, "add", self.POLICY)
+            self.git(root, "commit", "--quiet", "-m", "fixture baseline")
+            (root / self.POLICY).write_text("fn authorize_unstaged() {}\n")
+            for docs in [False, True]:
+                if docs:
+                    (root / "README.md").write_text("Only documentation.\n")
+                    self.git(root, "add", "README.md")
+                status, output, error = self.invoke([])
+                self.assertEqual((status, error), (0, ""))
+                self.assertIn("0 production Rust candidate(s)", output)
+            self.git(root, "rm", "--force", "--quiet", self.POLICY)
+            status, output, error = self.invoke([self.POLICY])
+            self.assertEqual((status, error), (0, ""))
+            self.assertIn("0 production Rust candidate(s)", output)
+            missing = "crates/runtime/example/src/untracked.rs"
+            (root / missing).parent.mkdir(parents=True, exist_ok=True)
+            (root / missing).write_text("fn authorize_untracked() {}\n")
+            status, _, error = self.invoke([missing])
+            self.assertEqual(status, 1)
+            self.assertIn("absent from the index", error)
+
+    def test_renamed_paths_use_the_canonical_nul_framed_git_reader(self) -> None:
+        # R11 a rename target contains a newline and unsafe code -> inspect the
+        # one complete path, not display-quoted text or two partial path names.
+        with self.fixture() as root:
+            (root / self.POLICY).write_text("fn original() {}\n")
+            self.git(root, "add", self.POLICY)
+            self.git(root, "commit", "--quiet", "-m", "fixture baseline")
+            renamed = "crates/runtime/example/src/odd\nname.rs"
+            self.git(root, "mv", self.POLICY, renamed)
+            (root / renamed).write_text("fn authorize_renamed() {}\n")
+            self.git(root, "add", renamed)
+            status, _, error = self.invoke([])
+            self.assertEqual(status, 1)
+            self.assertIn(renamed, error)
+
+    def test_failed_index_selection_or_blob_io_never_becomes_empty_success(self) -> None:
+        # R12 failed selection and R13 failed selected-blob IO both refuse;
+        # neither may fall back to a benign disk file or a zero-source result.
+        with self.fixture() as root:
+            (root / self.POLICY).write_text(self.CLASSIFIED)
+            self.git(root, "add", self.POLICY)
+            with mock.patch.object(MODULE.formal_sources, "git_paths",
+                                   side_effect=OSError("index unavailable")):
+                status, _, error = self.invoke([])
+            self.assertEqual(status, 1)
+            self.assertIn("index unavailable", error)
+            reader = MODULE.formal_sources.file_text
+
+            def fail_selected(source_root, relative, staged):
+                if relative == self.POLICY:
+                    raise MODULE.formal_sources.SourceError("selected blob unavailable")
+                return reader(source_root, relative, staged)
+
+            with mock.patch.object(MODULE.formal_sources, "file_text", side_effect=fail_selected):
+                status, _, error = self.invoke([self.POLICY])
+            self.assertEqual(status, 1)
+            self.assertIn("selected blob unavailable", error)
+
+    def test_outside_paths_and_unreadable_repository_markers_are_refusals(self) -> None:
+        # R16 an explicit foreign Rust path -> refuse the wrong source root.
+        # R17 discovery fails while .git still marks this as a repository ->
+        # refuse, never reinterpret a damaged repository as a disk fixture.
+        with self.fixture() as root, tempfile.TemporaryDirectory() as foreign:
+            path = pathlib.Path(foreign) / "policy.rs"
+            path.write_text("fn authorize_foreign() {}\n")
+            status, _, error = self.invoke([str(path)])
+            self.assertEqual(status, 1)
+            self.assertIn("outside the source root", error)
+            (root / self.POLICY).write_text(self.CLASSIFIED)
+            self.git(root, "add", self.POLICY)
+            with mock.patch.object(MODULE.formal_sources, "repository_environment", return_value=None):
+                status, _, error = self.invoke([self.POLICY])
+            self.assertEqual(status, 1)
+            self.assertIn("repository index cannot be selected", error)
+
+    def test_disk_fixture_requires_explicit_selection(self) -> None:
+        # R14 explicit non-repository fixture -> existing disk predicate; R15
+        # bare --staged outside a repository -> refusal, no fabricated index.
+        with self.fixture(repository=False) as root:
+            (root / self.POLICY).write_text(self.CLASSIFIED)
+            status, output, error = self.invoke([self.POLICY])
+            self.assertEqual((status, error), (0, ""))
+            self.assertIn("source=explicit disk fixture", output)
+            status, _, error = self.invoke([], cli=True)
+            self.assertEqual(status, 1)
+            self.assertIn("Cannot read staged formal source", error)
 
 
 if __name__ == "__main__":
