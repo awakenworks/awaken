@@ -1588,12 +1588,12 @@ impl WorkerNode {
             ))
             .with_stream_publisher(stream_publisher)
             .with_terminal_cleanup_control(session_control.clone());
-        let mut deps = awaken_session_executor::HostDependencies::for_worker(
+        let mut deps = awaken_session_executor::SessionExecutorBuilder::for_worker(
             Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
             "worker",
             remote_content,
             deployment
-                .host_process(local_workspace, self.clock.clone())
+                .session_execution_process(local_workspace, self.clock.clone())
                 .map_err(std::io::Error::other)?,
             authority,
             registered_capacity,

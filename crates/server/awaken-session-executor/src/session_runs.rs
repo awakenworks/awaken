@@ -15,7 +15,7 @@ mod run_application;
 
 use std::sync::Arc;
 
-use crate::HostError;
+use crate::SessionExecutionError;
 use crate::host::capability;
 
 /// Session Run delivery for one process. Consumers: the Session application's
@@ -81,9 +81,10 @@ impl SessionRuns {
 
     pub fn coordinator_dispatch(
         &self,
-    ) -> Result<Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>, HostError> {
-        self.optional_dispatch_store()
-            .ok_or_else(|| HostError::internal("operation requires a Coordinator dispatch owner"))
+    ) -> Result<Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>, SessionExecutionError> {
+        self.optional_dispatch_store().ok_or_else(|| {
+            SessionExecutionError::internal("operation requires a Coordinator dispatch owner")
+        })
     }
 
     /// The process dispatch pool, or a fail-closed error when durable ingress
@@ -92,10 +93,10 @@ impl SessionRuns {
         &self,
     ) -> Result<
         &Arc<awaken_dispatch_execution::DispatchPool<awaken_dispatch_erasure::AnyDispatchStore>>,
-        HostError,
+        SessionExecutionError,
     > {
         self.dispatch.pool().ok_or_else(|| {
-            HostError::bad_request(
+            SessionExecutionError::bad_request(
                 "durable dispatch not enabled (set typed durable ingress to run the pool)",
             )
         })

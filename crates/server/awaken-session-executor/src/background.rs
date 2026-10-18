@@ -75,7 +75,7 @@ impl awaken_tool_contract::ToolExecutionAdmission for SharedToolExecutionAdmissi
                 // the ones already running, so it refuses the call.
                 let Ok(mut state) = self.state.lock() else {
                     return Err(awaken_tool_contract::tool::ToolError::DefinitiveFailure(
-                        crate::host_error::ExecutorLock::ToolAdmission.to_string(),
+                        crate::session_execution_error::ExecutorLock::ToolAdmission.to_string(),
                     ));
                 };
                 if state
@@ -183,13 +183,13 @@ impl BackgroundRuns {
         generation_id: &str,
     ) -> Result<
         Arc<dyn awaken_tool_contract::ToolExecutionAdmission>,
-        crate::host_error::ExecutorLock,
+        crate::session_execution_error::ExecutorLock,
     > {
         let key = (session_id.to_string(), generation_id.to_string());
         let mut admissions = self
             .admissions
             .lock()
-            .map_err(|_| crate::host_error::ExecutorLock::ToolAdmission)?;
+            .map_err(|_| crate::session_execution_error::ExecutorLock::ToolAdmission)?;
         if let Some(existing) = admissions.get(&key).and_then(std::sync::Weak::upgrade) {
             return Ok(existing);
         }
@@ -308,7 +308,7 @@ mod tests {
         .await;
         assert!(bg.has_shared_environment_work("s", "g1"), "B1");
         assert!(!bg.has_shared_environment_work("s", "g2"), "B2");
-        crate::host_error::poison_for_test(&bg.activity.shared);
+        crate::session_execution_error::poison_for_test(&bg.activity.shared);
         assert!(
             bg.has_shared_environment_work("s", "g2"),
             "B3 idleness unprovable"
@@ -330,17 +330,17 @@ mod tests {
         let admission = bg
             .tool_execution_admission("s", "g")
             .expect("healthy registry");
-        crate::host_error::poison_for_test(&bg.admissions);
+        crate::session_execution_error::poison_for_test(&bg.admissions);
         assert!(
             matches!(
                 bg.tool_execution_admission("s", "g"),
-                Err(crate::host_error::ExecutorLock::ToolAdmission)
+                Err(crate::session_execution_error::ExecutorLock::ToolAdmission)
             ),
             "registry refused"
         );
         use awaken_tool_contract::ToolExecutionAdmission as _;
         let shared = Arc::new(SharedToolExecutionAdmission::default());
-        crate::host_error::poison_for_test(&shared.state);
+        crate::session_execution_error::poison_for_test(&shared.state);
         assert!(
             shared
                 .acquire(awaken_tool_contract::ToolConcurrency::Serial)

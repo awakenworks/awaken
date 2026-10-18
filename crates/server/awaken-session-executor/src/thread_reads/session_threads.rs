@@ -25,10 +25,10 @@ impl ThreadReads {
         &self,
         session_id: &str,
         observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
-    ) -> Result<Vec<CoordinatedThreadLink>, HostError> {
+    ) -> Result<Vec<CoordinatedThreadLink>, SessionExecutionError> {
         let realizations = self.installed_sessions.realizations();
         if observed_root.is_some_and(|snapshot| snapshot.thread_id.0 != session_id) {
-            return Err(HostError::internal(
+            return Err(SessionExecutionError::internal(
                 "coordination query received a snapshot for a different Session root",
             ));
         }
@@ -87,7 +87,7 @@ impl ThreadReads {
             let page = commit
                 .events_after(cursor, MAX_LIFECYCLE_PAGE)
                 .await
-                .map_err(|error| HostError::internal(error.to_string()))?;
+                .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
             let reached_snapshot_fence =
                 apply_lifecycle_latest_runs(&mut links, &page.events, committed.store_cursor);
             if reached_snapshot_fence || page.events.is_empty() || page.next_cursor == cursor {
@@ -105,12 +105,12 @@ impl ThreadReads {
         &self,
         session_id: &str,
         thread_id: &ThreadId,
-    ) -> Result<Option<RunRecoverySnapshot>, HostError> {
+    ) -> Result<Option<RunRecoverySnapshot>, SessionExecutionError> {
         let commit = self.commit_for_read(session_id).await?;
         let Some(latest_run) = commit
             .authoritative_latest_run(thread_id)
             .await
-            .map_err(HostError::internal)?
+            .map_err(SessionExecutionError::internal)?
         else {
             return Ok(None);
         };
@@ -119,7 +119,7 @@ impl ThreadReads {
             .await
             .map(Some)
             .map_err(|error| {
-                HostError::internal(format!(
+                SessionExecutionError::internal(format!(
                     "recover Session Thread {:?} from parent partition: {error}",
                     thread_id.0
                 ))
@@ -135,13 +135,13 @@ impl ThreadReads {
         session_id: &str,
         thread_id: &ThreadId,
         run_id: &RunId,
-    ) -> Result<RunRecoverySnapshot, HostError> {
+    ) -> Result<RunRecoverySnapshot, SessionExecutionError> {
         self.commit_for_read(session_id)
             .await?
             .recovery_snapshot(thread_id, run_id)
             .await
             .map_err(|error| {
-                HostError::internal(format!(
+                SessionExecutionError::internal(format!(
                     "recover Session Thread {:?} Run {:?} from parent partition: {error}",
                     thread_id.0, run_id.0
                 ))
@@ -152,12 +152,12 @@ impl ThreadReads {
         &self,
         session_id: &str,
         thread_id: &ThreadId,
-    ) -> Result<awaken_session_budget_contract::SessionUsage, HostError> {
+    ) -> Result<awaken_session_budget_contract::SessionUsage, SessionExecutionError> {
         let commit = self.commit_for_read(session_id).await?;
         if commit
             .authoritative_latest_run(thread_id)
             .await
-            .map_err(HostError::internal)?
+            .map_err(SessionExecutionError::internal)?
             .is_none()
         {
             return Ok(awaken_session_budget_contract::SessionUsage::default());
@@ -169,7 +169,7 @@ impl ThreadReads {
         let state = commit
             .committed_state_view(thread_id)
             .await
-            .map_err(HostError::internal)?;
+            .map_err(SessionExecutionError::internal)?;
         Ok(
             awaken_session_application_contract::session_usage_from_thread_usage(
                 awaken_runtime_contract::llm::ThreadUsage::from_committed_state(&state),
@@ -181,14 +181,14 @@ impl ThreadReads {
         &self,
         session_id: &str,
         thread_id: &ThreadId,
-    ) -> Result<awaken_agent_contract::ThreadDisposition, HostError> {
+    ) -> Result<awaken_agent_contract::ThreadDisposition, SessionExecutionError> {
         let commit = self.commit_for_read(session_id).await?;
         let state = commit
             .committed_state_view(thread_id)
             .await
-            .map_err(HostError::internal)?;
+            .map_err(SessionExecutionError::internal)?;
         awaken_agent_contract::thread_disposition_from_committed_state(&state).map_err(|error| {
-            HostError::internal(format!(
+            SessionExecutionError::internal(format!(
                 "recover disposition for Session Thread {:?}: {error}",
                 thread_id.0
             ))
@@ -234,13 +234,15 @@ mod tests {
                 )),
             ),
         );
-        let host =
-            (crate::HostDependencies::ephemeral(Arc::new(crate::host::MemoryHostModel), "stub")
-                .await
-                .with_runtime_authority(authority)
-                .expect("local authority is selected before Host construction"))
-            .build()
-            .expect("validated Host dependencies");
+        let host = (crate::SessionExecutorBuilder::ephemeral(
+            Arc::new(crate::host::MemoryHostModel),
+            "stub",
+        )
+        .await
+        .with_runtime_authority(authority)
+        .expect("local authority is selected before Host construction"))
+        .build()
+        .expect("validated Host dependencies");
         let managed = crate::host::session_executor(&host);
         assert!(
             managed
@@ -450,10 +452,13 @@ mod tests {
                 ),
             );
             let make_host = || async {
-                (crate::HostDependencies::ephemeral(Arc::new(crate::host::MemoryHostModel), "stub")
-                    .await
-                    .with_runtime_authority(authority.clone())
-                    .expect("local authority is selected before Host construction"))
+                (crate::SessionExecutorBuilder::ephemeral(
+                    Arc::new(crate::host::MemoryHostModel),
+                    "stub",
+                )
+                .await
+                .with_runtime_authority(authority.clone())
+                .expect("local authority is selected before Host construction"))
                 .build()
                 .expect("validated Host dependencies")
             };
@@ -579,11 +584,13 @@ mod tests {
         let session_id = "snapshot-parent-session";
         let child_id = ThreadId("snapshot-logical-child".into());
         let child_run = RunId("snapshot-child-run".into());
-        let host =
-            (crate::HostDependencies::ephemeral(Arc::new(crate::host::MemoryHostModel), "stub")
-                .await)
-                .build()
-                .expect("validated Host dependencies");
+        let host = (crate::SessionExecutorBuilder::ephemeral(
+            Arc::new(crate::host::MemoryHostModel),
+            "stub",
+        )
+        .await)
+            .build()
+            .expect("validated Host dependencies");
 
         assert_eq!(
             host.thread_reads

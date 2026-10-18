@@ -5,7 +5,7 @@
 //! publication selection belong to their existing owners. Checkpoint and source
 //! release effects execute on RealizationExecutor after these participants drain.
 
-use crate::host_error::to_run_error;
+use crate::session_execution_error::to_run_error;
 use awaken_session_configuration_contract::mcp as session_mcp;
 use awaken_session_types::RunError;
 use std::time::Duration;

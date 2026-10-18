@@ -6,7 +6,7 @@
 //! owned by the completed context, or dropped if construction fails/cancels.
 
 use super::{PreparedContext, execution, extensions, resources::ContextResources};
-use crate::HostError;
+use crate::SessionExecutionError;
 use crate::config::{build_runtime_with_authorization, server_config};
 use crate::host::session::{
     ManagedCoordinationRole, SessionToolsetProjection, project_managed_coordination_surface,
@@ -22,7 +22,7 @@ pub(super) async fn assemble(
     thread: &str,
     mut resources: ContextResources,
     requested_purpose: RuntimeContextPurpose,
-) -> Result<PreparedContext, HostError> {
+) -> Result<PreparedContext, SessionExecutionError> {
     let realizations = host.realization_executor.sessions();
     let env = &resources.env;
     let authorization = &resources.authorization;
@@ -68,7 +68,7 @@ pub(super) async fn assemble(
         && env.is_none()
         && host.runs_local_dispatch_pool()
     {
-        return Err(HostError::internal(
+        return Err(SessionExecutionError::internal(
             "remote-only execution cannot host local delegate targets",
         ));
     }
@@ -125,7 +125,7 @@ pub(super) async fn assemble(
                         wiring.descriptors.clone(),
                         wiring.executors.clone(),
                     )
-                    .map_err(HostError::internal)?,
+                    .map_err(SessionExecutionError::internal)?,
                 ));
             }
             if !is_acp {
@@ -200,7 +200,7 @@ pub(super) async fn assemble(
                 context_policy,
             )
             .map_err(|error| {
-                HostError::bad_request(format!(
+                SessionExecutionError::bad_request(format!(
                     "host default model reference `{model_ref}` for Agent \
                      `{selected_agent}` is not an executable binding: {error}"
                 ))
@@ -235,7 +235,7 @@ pub(super) async fn assemble(
     }
     if config_changed {
         config.recompute_fingerprint().map_err(|error| {
-            HostError::internal(format!("fingerprint Session tool projection: {error}"))
+            SessionExecutionError::internal(format!("fingerprint Session tool projection: {error}"))
         })?;
     }
     debug_assert_eq!(
@@ -390,7 +390,7 @@ pub(super) async fn assemble(
         }
         Some(Arc::new(
             crate::config::FilesystemFreeAgentToolExecutor::try_new(tools)
-                .map_err(HostError::internal)?,
+                .map_err(SessionExecutionError::internal)?,
         )
             as Arc<dyn awaken_tool_contract::tool::ToolExecutor>)
     } else if let Some(environment) = env.as_ref() {
@@ -469,7 +469,7 @@ pub(super) async fn assemble(
     };
     if background_tasks_enabled {
         let background_commit = commit.committed_authority().ok_or_else(|| {
-            HostError::internal(
+            SessionExecutionError::internal(
                 "BackgroundTask terminal observation requires committed local authority",
             )
         })?;

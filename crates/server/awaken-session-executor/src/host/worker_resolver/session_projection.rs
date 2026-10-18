@@ -41,7 +41,7 @@ mod tests {
                 .await
                 .expect("dispatch store"),
         );
-        let host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+        let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
             .await
             .with_ephemeral_dispatch(store.clone()))
         .build()
@@ -807,7 +807,8 @@ mod tests {
         use awaken_session_realization_contract::SessionProjectionSynchronizer as _;
 
         let thread = "resident-renewal-resources";
-        let host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub").await)
+        let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
+            .await)
             .build()
             .expect("validated Host dependencies");
         let _managed = host.clone();
@@ -915,7 +916,8 @@ mod tests {
         use awaken_session_realization_contract::SessionProjectionSynchronizer as _;
 
         let thread = "dynamic-publication-renewal";
-        let host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub").await)
+        let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
+            .await)
             .build()
             .expect("validated Host dependencies");
         let _managed = host.clone();
@@ -1143,7 +1145,7 @@ mod tests {
             release_stage: Some(release_stage.clone()),
             ..Default::default()
         });
-        let host = ((crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+        let host = ((crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
             .await
             .with_session_realization_control(control.clone()))
         .with_session_execution(
@@ -1256,7 +1258,7 @@ mod tests {
             repeat_stage_without_progress: false,
         });
         let realizer = Arc::new(RecordingMcpRealizer::default());
-        let host = ((crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+        let host = ((crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
             .await
             .with_session_realization_control(control.clone()))
         .with_session_execution(
@@ -1303,7 +1305,7 @@ mod tests {
             repeat_stage_without_progress: true,
         });
         let realizer = Arc::new(RecordingMcpRealizer::default());
-        let host = ((crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+        let host = ((crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
             .await
             .with_session_realization_control(control.clone()))
         .with_session_execution(
@@ -1361,7 +1363,7 @@ mod tests {
         let roots = Arc::new(ManagedSessionRootFixture::new().await);
         let source_host = roots
             .configure(
-                crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+                crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
                     .await
                     .with_store_dir(storage)
                     .await,
@@ -1429,7 +1431,7 @@ mod tests {
         super::test_support::remove_local_environment_root(&source_host, thread);
         let host = roots
             .configure(
-                crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+                crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
                     .await
                     .with_store_dir(storage)
                     .await,
@@ -1522,7 +1524,7 @@ mod tests {
             epoch: 1,
             expires_at_unix_ms: u64::MAX,
         };
-        let original = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+        let original = (crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
             .await
             .with_store_dir(storage.path())
             .await)
@@ -1603,7 +1605,7 @@ mod tests {
         };
         let control = RecoveryControl::fixed(frozen.clone());
         let realizer = Arc::new(RecordingMcpRealizer::default());
-        let host = ((crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+        let host = ((crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
             .await
             .with_store_dir(storage.path())
             .await)
@@ -1912,7 +1914,7 @@ mod tests {
             };
         let first_use_realizer = Arc::new(RecordingMcpRealizer::default());
         let first_use_host =
-            ((crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+            ((crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
                 .await
                 .with_store_dir(storage.path())
                 .await)
@@ -1965,16 +1967,17 @@ mod tests {
         );
 
         let unpinned_realizer = Arc::new(RecordingMcpRealizer::default());
-        let unpinned_host = ((crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
-            .await
-            .with_store_dir(storage.path())
-            .await)
-            .with_session_execution(
-                crate::SessionExecutionDependencies::default()
-                    .with_mcp_attachment_realizer(unpinned_realizer.clone()),
-            ))
-        .build()
-        .expect("validated Host dependencies");
+        let unpinned_host =
+            ((crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
+                .await
+                .with_store_dir(storage.path())
+                .await)
+                .with_session_execution(
+                    crate::SessionExecutionDependencies::default()
+                        .with_mcp_attachment_realizer(unpinned_realizer.clone()),
+                ))
+            .build()
+            .expect("validated Host dependencies");
 
         let unpinned_managed = unpinned_host.clone();
         unpinned_managed
@@ -2017,7 +2020,7 @@ mod tests {
             "R8/E6: no unpinned Runtime may be installed"
         );
 
-        let cold = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+        let cold = (crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
             .await
             .with_store_dir(storage.path())
             .await)

@@ -32,7 +32,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
     //
     // The host side is observed through its own full-slot accessors, never
     // through the view, so each row checks the shared state itself.
-    let host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .build()
         .expect("validated Host dependencies");
@@ -294,7 +294,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                             },
                             async {
                                 trace.lock().unwrap().push("delegate".into());
-                                Ok::<_, crate::HostError>(vec![delegated(status)])
+                                Ok::<_, crate::SessionExecutionError>(vec![delegated(status)])
                             },
                         )
                         .await
@@ -337,7 +337,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                     },
                     async {
                         trace.lock().unwrap().push("delegate-error".into());
-                        Err(crate::HostError::unavailable_classified(
+                        Err(crate::SessionExecutionError::unavailable_classified(
                             "delegation_read_unknown",
                             "original delegation failure",
                         ))
@@ -345,7 +345,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                 )
                 .await
                 .expect_err("Q3 delegation error wins even when Primary is active");
-                assert_eq!(error.kind, crate::HostErrorKind::Unavailable, "Q3 kind");
+                assert_eq!(error.kind, crate::SessionExecutionErrorKind::Unavailable, "Q3 kind");
                 assert_eq!(error.code, "delegation_read_unknown", "Q3 original code");
                 assert_eq!(
                     error.message, "original delegation failure",
@@ -379,7 +379,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                                 .unwrap_or(false))
                         }
                     },
-                    async { Ok::<_, crate::HostError>(vec![missing]) },
+                    async { Ok::<_, crate::SessionExecutionError>(vec![missing]) },
                 )
                 .await
                 .unwrap();
@@ -414,7 +414,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                     },
                     async {
                         trace.lock().unwrap().push("delegate".into());
-                        Ok::<_, crate::HostError>(vec![delegated(Status::Open), second])
+                        Ok::<_, crate::SessionExecutionError>(vec![delegated(Status::Open), second])
                     }
                 )
                 .await
@@ -501,7 +501,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                     async {
                         entered.send(()).expect("Q12 start real marker writer");
                         change.await.expect("Q12 observe joined change");
-                        Ok::<_, crate::HostError>(vec![delegated(Status::Open)])
+                        Ok::<_, crate::SessionExecutionError>(vec![delegated(Status::Open)])
                     },
                 ))
                 .catch_unwind()

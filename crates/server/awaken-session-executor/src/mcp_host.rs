@@ -10,7 +10,7 @@
 
 use std::sync::{Arc, Weak};
 
-use crate::HostError;
+use crate::SessionExecutionError;
 use crate::installed_session::InstalledSessions;
 use awaken_session_mcp::{
     McpError, McpGenerationAuthority, McpInputHost, McpInputRecipients, McpQuiescenceProof,
@@ -172,7 +172,9 @@ impl McpInputHost for McpApplicationInputs {
     ) -> Result<Vec<McpGenerationProjection>, awaken_session_types::RunError> {
         self.mcp
             .active_projections(self.installed_sessions.as_ref(), session)
-            .map_err(|error| crate::host_error::to_run_error(HostError::from(error)))
+            .map_err(|error| {
+                crate::session_execution_error::to_run_error(SessionExecutionError::from(error))
+            })
     }
 
     async fn cancel_durable_run(&self, session: &str, run_id: &str) -> bool {
@@ -184,7 +186,7 @@ impl crate::RunAssembly {
     pub(crate) fn active_mcp_projections(
         &self,
         thread: &str,
-    ) -> Result<Vec<McpGenerationProjection>, HostError> {
+    ) -> Result<Vec<McpGenerationProjection>, SessionExecutionError> {
         Ok(self
             .mcp
             .active_projections(self.installed_sessions.as_ref(), thread)?)
@@ -204,7 +206,7 @@ impl crate::RunAssembly {
     pub(crate) fn insert_mcp_projection(
         &self,
         projection: McpGenerationProjection,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), SessionExecutionError> {
         Ok(self
             .mcp
             .insert_projection(self.installed_sessions.as_ref(), projection)?)
@@ -217,7 +219,7 @@ impl crate::RunAssembly {
         &self,
         generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
         process: Arc<dyn awaken_provisioning_contract::ProcessHandle>,
-    ) -> Result<bool, HostError> {
+    ) -> Result<bool, SessionExecutionError> {
         Ok(self.mcp.attach_staging_process(
             self.installed_sessions.as_ref(),
             generation,
@@ -232,7 +234,7 @@ impl crate::RunAssembly {
         &self,
         generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
         wiring: awaken_session_mcp::McpWiring,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), SessionExecutionError> {
         Ok(self
             .mcp
             .complete_staging(self.installed_sessions.as_ref(), generation, wiring)?)
@@ -242,8 +244,10 @@ impl crate::RunAssembly {
     pub(crate) fn renew_mcp_projection(
         &self,
         request: &awaken_session_configuration_contract::mcp::StageMcpAttachment,
-    ) -> Result<Option<awaken_session_configuration_contract::mcp::McpRealizationReceipt>, HostError>
-    {
+    ) -> Result<
+        Option<awaken_session_configuration_contract::mcp::McpRealizationReceipt>,
+        SessionExecutionError,
+    > {
         Ok(self
             .mcp
             .renew_projection(self.installed_sessions.as_ref(), request)?)
@@ -263,7 +267,7 @@ impl crate::RunAssembly {
     pub(crate) async fn publish_mcp_projection(
         &self,
         generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), SessionExecutionError> {
         Ok(self
             .mcp
             .publish_projection(self.installed_sessions.as_ref(), generation)
@@ -274,7 +278,7 @@ impl crate::RunAssembly {
     pub(crate) async fn drain_mcp_projection(
         &self,
         generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), SessionExecutionError> {
         Ok(self
             .mcp
             .drain_projection(self.installed_sessions.as_ref(), generation)
@@ -285,7 +289,7 @@ impl crate::RunAssembly {
         &self,
         thread: &str,
         expected: &[crate::session_mcp::McpGenerationRef],
-    ) -> Result<McpQuiescenceProof, HostError> {
+    ) -> Result<McpQuiescenceProof, SessionExecutionError> {
         Ok(self
             .mcp
             .drain_projections(self.installed_sessions.as_ref(), thread, expected)
@@ -296,7 +300,7 @@ impl crate::RunAssembly {
         &self,
         configuration: &std::collections::BTreeMap<String, serde_json::Value>,
         opaque_backend: bool,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), SessionExecutionError> {
         Ok(self.mcp.validate_input_placement(
             configuration,
             opaque_backend,
@@ -308,7 +312,7 @@ impl crate::RunAssembly {
         &self,
         projections: &[McpGenerationProjection],
         configuration: &std::collections::BTreeMap<String, serde_json::Value>,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), SessionExecutionError> {
         let recipients = || {
             let application = self
                 .capabilities
@@ -361,7 +365,7 @@ mod tests {
         // realization, Staging projection, or process spawn. Constraint: an
         // anonymous target needs no credential materialization. Decision row:
         // S0 C1+C2 -> E1+E2, before any Session Environment effect.
-        let host = (crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test").await)
+        let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(NoLlm), "test").await)
             .build()
             .expect("validated Host dependencies");
         let generation =

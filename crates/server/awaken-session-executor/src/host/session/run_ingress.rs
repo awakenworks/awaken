@@ -39,17 +39,16 @@ impl crate::RunAssembly {
             ForegroundRunDelivery,
             Arc<awaken_dispatch_execution::DispatchWorker<AnyDispatchStore>>,
         ),
-        HostError,
+        SessionExecutionError,
     > {
         // The ONE process-shared dispatch queue (shared SQLite file, or the shared
         // Postgres pool for a fleet) plus this process's unique claim owner — both
         // arrive through the Coordinator-owned RuntimeAuthority (ADR-0019/0024).
         // Every session's worker shares this queue; the process-level `DispatchPool`
         // is its sole claimer and routes each run back to its owning session.
-        let binding = self
-            .authority
-            .dispatch_binding()
-            .ok_or_else(|| HostError::internal("claimed Worker requires a dispatch binding"))?;
+        let binding = self.authority.dispatch_binding().ok_or_else(|| {
+            SessionExecutionError::internal("claimed Worker requires a dispatch binding")
+        })?;
         // Carry the host's InferenceExecutorMaterializer into the worker as a neutral model→executor
         // closure, so a worker-driven run resolves its own configured model per attempt
         // (R1). `None` when no provider is installed — the worker stays on the host
@@ -97,7 +96,7 @@ impl crate::RunAssembly {
         if let Some(projection) = recovery_projection {
             worker = worker
                 .with_recovery_projection(projection)
-                .map_err(|error| HostError::internal(error.to_string()))?;
+                .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
         }
         let claimed_worker = Arc::new(worker);
         claimed_worker.install_attempt_executor(attempt_executor.clone());

@@ -1,5 +1,5 @@
 //! The Host's auxiliary-run sandboxes before the process composition installs
-//! its factory (`HostDependencies::with_auxiliary_sandboxes`).
+//! its factory (`SessionExecutorBuilder::with_auxiliary_sandboxes`).
 
 use std::sync::Arc;
 

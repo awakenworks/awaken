@@ -39,7 +39,7 @@ impl crate::RunAssembly {
         &self,
         thread: &str,
         agent: Option<&str>,
-    ) -> Result<Arc<SessionCtx>, HostError> {
+    ) -> Result<Arc<SessionCtx>, SessionExecutionError> {
         self.reconcile_direct_terminal_before_environment(thread, agent)
             .await?;
         self.ctx_for_snapshot(thread, agent, None).await
@@ -54,7 +54,7 @@ impl crate::RunAssembly {
         &self,
         thread: &str,
         agent: Option<&str>,
-    ) -> Result<Arc<SessionCtx>, HostError> {
+    ) -> Result<Arc<SessionCtx>, SessionExecutionError> {
         self.ctx_for_snapshot_with_attempt(
             thread,
             agent,
@@ -76,7 +76,7 @@ impl crate::RunAssembly {
         thread: &str,
         agent: Option<&str>,
         published_snapshot: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
-    ) -> Result<Arc<SessionCtx>, HostError> {
+    ) -> Result<Arc<SessionCtx>, SessionExecutionError> {
         self.ctx_for_snapshot_with_attempt(
             thread,
             agent,
@@ -100,7 +100,7 @@ impl crate::RunAssembly {
         thread: &str,
         agent: &str,
         published_snapshot: awaken_runtime_contract::ExecutableAgentSnapshot,
-    ) -> Result<Arc<SessionCtx>, HostError> {
+    ) -> Result<Arc<SessionCtx>, SessionExecutionError> {
         self.ctx_for_snapshot_with_attempt(
             thread,
             Some(agent),
@@ -120,7 +120,7 @@ impl crate::RunAssembly {
         agent: Option<&str>,
         published_snapshot: awaken_runtime_contract::ExecutableAgentSnapshot,
         attempt: ClaimedRuntimeInput,
-    ) -> Result<Arc<SessionCtx>, HostError> {
+    ) -> Result<Arc<SessionCtx>, SessionExecutionError> {
         self.ctx_for_snapshot_with_attempt(
             thread,
             agent,
@@ -137,7 +137,10 @@ impl crate::RunAssembly {
         .await
     }
 
-    pub(crate) async fn ctx_for_resume(&self, thread: &str) -> Result<Arc<SessionCtx>, HostError> {
+    pub(crate) async fn ctx_for_resume(
+        &self,
+        thread: &str,
+    ) -> Result<Arc<SessionCtx>, SessionExecutionError> {
         self.ctx_for_snapshot_with_attempt(
             thread,
             None,
@@ -157,7 +160,11 @@ impl crate::RunAssembly {
         agent: Option<&'a str>,
         request: SessionOpenRequest,
     ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Arc<SessionCtx>, HostError>> + Send + 'a>,
+        Box<
+            dyn std::future::Future<Output = Result<Arc<SessionCtx>, SessionExecutionError>>
+                + Send
+                + 'a,
+        >,
     > {
         let realizations = self.installed_sessions.realizations();
         // Context-construction stack cause/effect table: C1=the caller enters

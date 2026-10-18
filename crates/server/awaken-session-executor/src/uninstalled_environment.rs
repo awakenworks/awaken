@@ -3,7 +3,7 @@
 // @formal reason: terminal reconstruction until the process composition installs one, so the shared Host
 // @formal reason: never chooses a sandbox implementation itself. This link is not a formal-proof claim.
 //! The Host's Session environment provider before the process composition
-//! selects one (`HostDependencies::with_session_environment_provider`).
+//! selects one (`SessionExecutorBuilder::with_session_environment_provider`).
 
 use std::path::PathBuf;
 use std::sync::Arc;

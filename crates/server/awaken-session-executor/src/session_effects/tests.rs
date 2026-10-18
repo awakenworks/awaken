@@ -24,11 +24,13 @@ async fn ordinary_run_and_managed_session_use_distinct_mcp_admission() {
     // A1 unknown root: Session rejects before I/O, Run uses SDK Direct.
     // A2 an installed live root: Session replays that exact original receipt.
     // A3 closed root: both reject; Direct cannot override installed authority.
-    let host =
-        crate::HostDependencies::ephemeral(Arc::new(crate::NoModelConfiguredExecutor), "stub")
-            .await
-            .build()
-            .unwrap();
+    let host = crate::SessionExecutorBuilder::ephemeral(
+        Arc::new(crate::NoModelConfiguredExecutor),
+        "stub",
+    )
+    .await
+    .build()
+    .unwrap();
     let (url, seen) = crate::test_mcp::start(None).await;
     let stage = request("constructor-mcp-admission", &url);
     let run = &crate::session_effects::RunMcpEffects::new(host.run_assembly.clone());
@@ -150,15 +152,17 @@ async fn configured_realizer_is_exclusive_for_both_mcp_roles() {
     // Both constructor-bound roles forward exact requests and original failures.
     // No configured error grants a local stage, publication, or drain fallback.
     let realizer = Arc::new(FailingRealizer::default());
-    let host =
-        crate::HostDependencies::ephemeral(Arc::new(crate::NoModelConfiguredExecutor), "stub")
-            .await
-            .with_session_execution(
-                crate::SessionExecutionDependencies::default()
-                    .with_mcp_attachment_realizer(realizer.clone()),
-            )
-            .build()
-            .unwrap();
+    let host = crate::SessionExecutorBuilder::ephemeral(
+        Arc::new(crate::NoModelConfiguredExecutor),
+        "stub",
+    )
+    .await
+    .with_session_execution(
+        crate::SessionExecutionDependencies::default()
+            .with_mcp_attachment_realizer(realizer.clone()),
+    )
+    .build()
+    .unwrap();
     let (url, seen) = crate::test_mcp::start(None).await;
     let stage = request("configured-mcp-admission", &url);
     let run = &crate::session_effects::RunMcpEffects::new(host.run_assembly.clone());

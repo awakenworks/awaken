@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use awaken_session_environment::SandboxEnvironmentProvider;
 use awaken_session_environment_contract::HandExecutorFactory;
-use awaken_session_executor::{DeploymentConfig, HostDependencies, SandboxTier};
+use awaken_session_executor::{DeploymentConfig, SandboxTier, SessionExecutorBuilder};
 
 /// The readiness probe of a local tier's backend (ADR-0092 decision 5): the
 /// Worker runs it before registration and again on every heartbeat, so a
@@ -206,11 +206,11 @@ fn local_tier_provider(
 /// already-installed authoritative provider is preserved; the independent,
 /// operator-enabled TrustedHost backend is still completed.
 pub async fn select_local_session_environment(
-    host: HostDependencies,
+    host: SessionExecutorBuilder,
     deployment: &DeploymentConfig,
     hand_factory: Option<Arc<dyn HandExecutorFactory>>,
     namespace_hand_path: PathBuf,
-) -> Result<HostDependencies, String> {
+) -> Result<SessionExecutorBuilder, String> {
     deployment.validate_local_execution()?;
     let explicit = host.session_environment_provider_installed();
     if explicit && !deployment.trusted_host_enabled() {
@@ -307,9 +307,9 @@ pub async fn select_local_session_environment(
 /// roots that bind ACP without enabling TrustedHost Native execution.
 #[must_use]
 pub fn with_backend_owned_environment(
-    host: HostDependencies,
+    host: SessionExecutorBuilder,
     deployment: &DeploymentConfig,
-) -> HostDependencies {
+) -> SessionExecutorBuilder {
     if host
         .installed_backend_owned_environment_provider()
         .is_some()
@@ -329,9 +329,9 @@ pub fn with_backend_owned_environment(
 /// Deployment selection.
 #[must_use]
 pub fn with_workdir_fallback(
-    host: HostDependencies,
+    host: SessionExecutorBuilder,
     deployment: &DeploymentConfig,
-) -> HostDependencies {
+) -> SessionExecutorBuilder {
     let base = awaken_session_executor::session_sandbox_base(deployment);
     host.with_fallback_session_environment_provider(
         SandboxEnvironmentProvider::workdir(base).into_session_provider(),
@@ -543,7 +543,7 @@ mod startup_tests {
         path
     }
 
-    async fn host(deployment: DeploymentConfig) -> HostDependencies {
+    async fn host(deployment: DeploymentConfig) -> SessionExecutorBuilder {
         awaken_session_executor_testkit::volatile_dependencies_with_deployment(
             Arc::new(NoLlm),
             "test",
@@ -552,7 +552,7 @@ mod startup_tests {
         .await
     }
 
-    fn trusted_host_provider(host: &HostDependencies) -> &SandboxEnvironmentProvider {
+    fn trusted_host_provider(host: &SessionExecutorBuilder) -> &SandboxEnvironmentProvider {
         host.installed_backend_owned_environment_provider()
             .expect("TrustedHost provider installed")
             .origin()

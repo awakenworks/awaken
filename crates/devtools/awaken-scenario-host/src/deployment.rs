@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use awaken_runtime_contract::llm::LlmExecutor;
-use awaken_session_executor::{ExecutorComponents, HostDependencies};
+use awaken_session_executor::{ExecutorComponents, SessionExecutorBuilder};
 
 /// One runnable Scenario platform instance: the Host's dependencies, not yet
 /// turned into a Host, beside the Resources application they were selected
@@ -11,7 +11,7 @@ use awaken_session_executor::{ExecutorComponents, HostDependencies};
 /// from reopening Resource Registry, File, Memory, or Skill authorities after
 /// the persistence owner has selected them once.
 pub(crate) struct ScenarioPlatform {
-    dependencies: HostDependencies,
+    dependencies: SessionExecutorBuilder,
     resources: awaken_resource_application::ResourcesApplication,
     memory_invalidator: Arc<awaken_sandbox_memoryd::LocalInvalidator>,
     /// The typed Deployment the dependencies were selected from; Session
@@ -29,7 +29,7 @@ impl ScenarioPlatform {
     #[must_use]
     pub(crate) fn map_dependencies(
         mut self,
-        update: impl FnOnce(HostDependencies) -> HostDependencies,
+        update: impl FnOnce(SessionExecutorBuilder) -> SessionExecutorBuilder,
     ) -> Self {
         self.dependencies = update(self.dependencies);
         self
@@ -37,8 +37,8 @@ impl ScenarioPlatform {
 
     pub(crate) async fn map_dependencies_async<F, Fut>(mut self, update: F) -> Self
     where
-        F: FnOnce(HostDependencies) -> Fut,
-        Fut: std::future::Future<Output = HostDependencies>,
+        F: FnOnce(SessionExecutorBuilder) -> Fut,
+        Fut: std::future::Future<Output = SessionExecutorBuilder>,
     {
         self.dependencies = update(self.dependencies).await;
         self
@@ -50,7 +50,7 @@ impl ScenarioPlatform {
     pub(crate) fn into_dependencies(
         self,
     ) -> (
-        HostDependencies,
+        SessionExecutorBuilder,
         awaken_resource_application::ResourcesApplication,
     ) {
         (
@@ -302,7 +302,7 @@ async fn resource_host_with_selected_runtime(
         awaken_session_executor_testkit::local_resource_ports(&resources.authorities());
     let authority =
         select_scenario_runtime_authority(&deployment, resource_ports.clock.clone(), selected);
-    let dependencies = HostDependencies::for_local_resources(
+    let dependencies = SessionExecutorBuilder::for_local_resources(
         llm,
         model_ref,
         resource_ports,

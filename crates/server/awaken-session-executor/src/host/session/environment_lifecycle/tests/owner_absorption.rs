@@ -134,7 +134,7 @@ async fn revoked_resource_successor_reaches_only_the_canonical_adoption_edge() {
         .unwrap()
         .push(serde_json::json!("/workspace/confirmed-2.json"));
     let binding = serde_json::to_string(&successor).unwrap();
-    let host = (crate::HostDependencies::ephemeral(
+    let host = (crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
         "stub",
     )
@@ -623,7 +623,7 @@ async fn source_free_projection_does_not_reopen_mcp_before_retiring_owner_is_dis
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let environment = environment(&provider, thread).await;
-    let host = (crate::HostDependencies::ephemeral(
+    let host = (crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
         "stub",
     )
@@ -716,7 +716,7 @@ async fn discard_keeps_live_owner_and_exact_retry_clears_after_termination() {
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let environment = environment(&provider, thread).await;
-    let host = (crate::HostDependencies::ephemeral(
+    let host = (crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
         "stub",
     )
@@ -931,7 +931,7 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
     };
 
     let root = tempfile::tempdir().unwrap();
-    let host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
         .await
         .with_store_dir(root.path())
         .await)

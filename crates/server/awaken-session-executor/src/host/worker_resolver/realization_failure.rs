@@ -13,23 +13,30 @@ mod tests {
         // detail text so an operator message cannot become a second
         // classification policy.
         for (error, terminal) in [
-            (crate::HostError::bad_request("same detail"), true),
-            (crate::HostError::unavailable("same detail"), false),
-            (crate::HostError::internal("same detail"), false),
-            (crate::HostError::conflict("same detail"), false),
             (
-                crate::HostError::classified(
+                crate::SessionExecutionError::bad_request("same detail"),
+                true,
+            ),
+            (
+                crate::SessionExecutionError::unavailable("same detail"),
+                false,
+            ),
+            (crate::SessionExecutionError::internal("same detail"), false),
+            (crate::SessionExecutionError::conflict("same detail"), false),
+            (
+                crate::SessionExecutionError::classified(
                     "session_realization_invariant_violated",
                     "same detail",
                 ),
                 true,
             ),
         ] {
-            let run_error = crate::host_error::to_run_error(crate::HostError {
-                message: error.message.clone(),
-                kind: error.kind,
-                code: error.code.clone(),
-            });
+            let run_error =
+                crate::session_execution_error::to_run_error(crate::SessionExecutionError {
+                    message: error.message.clone(),
+                    kind: error.kind,
+                    code: error.code.clone(),
+                });
             let actual =
                 awaken_dispatch_execution::session_worker_resolver::map_admission_error(error);
             assert_eq!(actual.is_terminal_resolution(), terminal);
@@ -62,7 +69,7 @@ mod tests {
         // SandboxError variant (its Classify disposition, or the capacity
         // class); C2 the path that observes it: P1 the realization driver
         // (synchronizer -> RunError -> FailSessionRealization + drive error)
-        // or P2 the claim resolver (HostError -> map_admission_error).
+        // or P2 the claim resolver (SessionExecutionError -> map_admission_error).
         // Effects: the claim outcome (with the claim's backoff the dispatch
         // pool returns a `relinquish` through `retry_claim`, spending one
         // dispatch attempt, and a `defer` through `defer_claim`, keeping the
@@ -137,7 +144,7 @@ mod tests {
         for (rule, sandbox, claim, report) in rows {
             // P2: the resolver sees the Host error directly.
             let host_error = || {
-                crate::host_error::from_run_error(
+                crate::session_execution_error::from_run_error(
                     awaken_session_realization_contract::environment_effect_error(&sandbox),
                 )
             };
@@ -146,7 +153,7 @@ mod tests {
             );
             // P1: the driver sees the same Host error after the synchronizer's
             // Run projection, reports it to Control, then returns it.
-            let run_error = crate::host_error::to_run_error(host_error());
+            let run_error = crate::session_execution_error::to_run_error(host_error());
             let command = awaken_session_realization_contract::FailSessionRealization::for_effect(
                 "s".into(),
                 awaken_session_configuration_contract::resource::SessionRealizationLease {
@@ -179,7 +186,7 @@ mod tests {
         assert_eq!(
             claim_outcome(
                 &awaken_dispatch_execution::session_worker_resolver::map_admission_error(
-                    crate::HostError::internal("unclassified")
+                    crate::SessionExecutionError::internal("unclassified")
                 )
             ),
             "relinquish"

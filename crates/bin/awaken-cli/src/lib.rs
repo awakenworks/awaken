@@ -49,7 +49,7 @@ use awaken_protocol_managed::ManagedState;
 use awaken_runtime_contract::llm::LlmExecutor;
 #[cfg(any(test, feature = "test-support"))]
 use awaken_session_executor::ExecutorComponents;
-use awaken_session_executor::HostDependencies;
+use awaken_session_executor::SessionExecutorBuilder;
 use awaken_session_mcp::ExtMcpProbe;
 use axum::Router;
 #[cfg(any(test, feature = "test-support"))]
@@ -368,7 +368,7 @@ pub async fn build_all_in_one_router_with_host_customizer(
     binding: awaken_runtime_contract::resolved::ModelBinding,
     deployment: awaken_session_executor::DeploymentConfig,
     web_search_providers: Option<awaken_ext_builtin_tools::WebSearchProviderRegistry>,
-    customize_host: impl FnOnce(HostDependencies) -> HostDependencies + Send + 'static,
+    customize_host: impl FnOnce(SessionExecutorBuilder) -> SessionExecutorBuilder + Send + 'static,
 ) -> Router {
     let stores = in_memory_process_stores().await;
     let mut options = exact_host_model::local_test_process_options(&stores);
@@ -403,7 +403,7 @@ pub async fn build_durable_all_in_one_router_with_host_customizer(
     key: &[u8; 32],
     model: Arc<dyn LlmExecutor>,
     binding: awaken_runtime_contract::resolved::ModelBinding,
-    customize_host: impl FnOnce(HostDependencies) -> HostDependencies + Send + 'static,
+    customize_host: impl FnOnce(SessionExecutorBuilder) -> SessionExecutorBuilder + Send + 'static,
 ) -> Router {
     let stores = open_local_process_stores(dir, key)
         .await

@@ -34,7 +34,7 @@ pub(crate) struct AgentExecution {
 }
 
 /// The inference and Agent-publication dependencies a composition selects
-/// before the Host exists. Consumer: [`crate::HostDependencies`], which turns it
+/// before the Host exists. Consumer: [`crate::SessionExecutorBuilder`], which turns it
 /// into the Host's [`AgentExecution`].
 pub(crate) struct AgentSelection {
     pub(crate) llm: Arc<dyn LlmExecutor>,

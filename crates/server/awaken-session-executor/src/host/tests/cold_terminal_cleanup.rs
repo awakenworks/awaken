@@ -270,7 +270,7 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
     use awaken_provisioning_contract::SandboxStatus;
 
     let control = Arc::new(RemoteTerminalCleanupControl::default());
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_session_realization_control(control.clone())
         .with_authority(
@@ -400,7 +400,11 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
         .recover_terminal_cleanup_assignments(target.clone())
         .await
         .expect_err("R1/C4 reports the ambiguous completion response");
-    assert_eq!(pending.kind, crate::HostErrorKind::Internal, "R1/E6");
+    assert_eq!(
+        pending.kind,
+        crate::SessionExecutionErrorKind::Internal,
+        "R1/E6"
+    );
     assert!(
         pending.message.contains("remote-terminal-worker"),
         "R1/E6 identifies the failing assignment"
@@ -472,7 +476,7 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
     // | R1 | yes | yes | yes | no | E1 + E2 + E3 |
     // | R2 | yes | renewed | renewed | yes | E4 |
     let control = Arc::new(RemoteTerminalCleanupControl::default());
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_session_realization_control(control.clone())
         .with_authority(
@@ -699,7 +703,7 @@ async fn cold_terminal_cleanup_replenishes_a_slot_while_one_sibling_is_blocked()
     // | R1 | five | blocked | yes | E1 + E2 + E3 |
     // | R2 | five | released | yes | E4 + E5 |
     let control = Arc::new(RemoteTerminalCleanupControl::default());
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_session_realization_control(control.clone())
         .with_authority(
@@ -774,7 +778,7 @@ async fn cold_terminal_cleanup_never_drives_more_than_four_assignments() {
     // active increment; observing four active calls must wait for their arrivals
     // through that lock. Neither assertion may sample between those events.
     let control = Arc::new(RemoteTerminalCleanupControl::default());
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_session_realization_control(control.clone())
         .with_authority(
@@ -849,7 +853,7 @@ async fn cold_terminal_claim_failure_drains_claimed_work_and_retries_the_remaind
     // finishes once on C3, with no replay of E1. Rules P1=C1+C2->E1+E2 and
     // P2=P1+C3->E3. A failed claim never removes an assignment from Control.
     let control = Arc::new(RemoteTerminalCleanupControl::default());
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_session_realization_control(control.clone())
         .with_authority(
@@ -901,7 +905,7 @@ async fn cold_terminal_recovery_preserves_the_sixty_four_assignment_sweep_cap() 
     // resets the cursor, claims the final assignment, and reaches the empty
     // queue. R1=C1+C2->E1, R2=R1+C3->E2. The cursor grants no ownership.
     let control = Arc::new(RemoteTerminalCleanupControl::default());
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_session_realization_control(control.clone())
         .with_authority(
@@ -957,7 +961,7 @@ async fn cold_terminal_recovery_rejects_a_nonadvancing_legacy_cursor_reply() {
     // report protocol nonprogress, drain the first in-flight cleanup once,
     // and never execute a second physical effect under the duplicate lease.
     let control = Arc::new(RemoteTerminalCleanupControl::default());
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_session_realization_control(control.clone())
         .with_authority(
@@ -1014,7 +1018,7 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
     let authorization_proceed = Arc::new(tokio::sync::Notify::new());
     *control.authorization_barrier.lock().unwrap() =
         Some((authorization_started.clone(), authorization_proceed.clone()));
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_session_realization_control(control.clone())
         .with_authority(
@@ -1181,7 +1185,7 @@ async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recover
             .await
             .expect("archive saga dispatch"),
     );
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_ephemeral_coordinator_dispatch(dispatch.clone()))
     .build()
@@ -1241,7 +1245,11 @@ async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recover
         .archive_session_thread(&parent.0, &pending)
         .await
         .expect_err("A2 running work cannot archive");
-    assert_eq!(rejected.kind, HostErrorKind::BadRequest, "A2/E2");
+    assert_eq!(
+        rejected.kind,
+        SessionExecutionErrorKind::BadRequest,
+        "A2/E2"
+    );
     assert_eq!(
         host.thread_reads
             .session_thread_disposition(&parent.0, &pending)

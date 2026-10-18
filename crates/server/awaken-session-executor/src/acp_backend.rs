@@ -55,7 +55,9 @@ impl LaunchObserver for HubLaunchObserver {
 /// Install the existing ACP executor's policy/factory port for Host unit tests
 /// that exercise ACP projection without launching a real CLI process.
 #[cfg(test)]
-pub(crate) fn with_fixture_acp(dependencies: crate::HostDependencies) -> crate::HostDependencies {
+pub(crate) fn with_fixture_acp(
+    dependencies: crate::SessionExecutorBuilder,
+) -> crate::SessionExecutorBuilder {
     let launch = awaken_run_executor_acp::AcpLaunch::custom(vec!["true".into()], vec![]);
     let source = Arc::new(awaken_run_executor_acp::SubprocessChannelSource::new(
         launch,
@@ -138,7 +140,7 @@ mod tests {
         // role can launch; E4 only canonical ids pass. Decision rules:
         // P1=absent=>E1; P2=projection-only=>E2+!E3+E4;
         // P3=executor=>E2+E3+E4; P4=alias|unknown=>!E4 for P2/P3.
-        let host = (crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test").await)
+        let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(NoLlm), "test").await)
             .build()
             .expect("validated Host dependencies");
         assert!(
@@ -151,7 +153,7 @@ mod tests {
                 .contains("not installed"),
             "P1"
         );
-        let projection_only = crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test")
+        let projection_only = crate::SessionExecutorBuilder::ephemeral(Arc::new(NoLlm), "test")
             .await
             .with_acp_projection_policy(awaken_run_executor_acp::acp_adapter_policy());
         let host = (projection_only)
@@ -172,7 +174,7 @@ mod tests {
             "P2/E2 one catalog instance"
         );
         let host = (with_fixture_acp(
-            crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test")
+            crate::SessionExecutorBuilder::ephemeral(Arc::new(NoLlm), "test")
                 .await
                 .with_acp_projection_policy(awaken_run_executor_acp::acp_adapter_policy()),
         ))
@@ -209,10 +211,11 @@ mod tests {
         // | Rule | Executor wired | Session projection | ACP selected |
         // | A1 | yes | acp:claude | yes |
         // | A2 | yes | absent | no |
-        let host =
-            (with_fixture_acp(crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test").await))
-                .build()
-                .expect("validated Host dependencies");
+        let host = (with_fixture_acp(
+            crate::SessionExecutorBuilder::ephemeral(Arc::new(NoLlm), "test").await,
+        ))
+        .build()
+        .expect("validated Host dependencies");
         host.run_assembly
             .capabilities
             .register_thread_backend_projection("t", "acp:claude");
@@ -255,8 +258,9 @@ mod tests {
         // | E1 | BackendOwned | host identity |
         // | E2 | Provider | configured Namespace |
         // | E3 | HostExecutor | configured Namespace |
-        let mut dependencies =
-            with_fixture_acp(crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test").await);
+        let mut dependencies = with_fixture_acp(
+            crate::SessionExecutorBuilder::ephemeral(Arc::new(NoLlm), "test").await,
+        );
         let backend_owned = awaken_session_environment::SandboxEnvironmentProvider::
             trusted_host_workdir_with_agent_stderr(
                 dependencies.env.sandbox_root.join("backend-owned"),
@@ -337,7 +341,7 @@ mod tests {
     async fn hub_launch_observer_republishes_lifecycle_to_the_thread_hub() {
         use awaken_run_executor_acp::{AcpLaunchEvent, AcpLaunchStage};
 
-        let dependencies = crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test").await;
+        let dependencies = crate::SessionExecutorBuilder::ephemeral(Arc::new(NoLlm), "test").await;
         let observer = dependencies.acp_launch_observer();
         let host = (dependencies).build().expect("validated Host dependencies");
         // A UI-facing observer subscribes to the thread before the agent starts.

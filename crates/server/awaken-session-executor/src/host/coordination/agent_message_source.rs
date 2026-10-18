@@ -10,20 +10,22 @@ use awaken_tool_contract::tool_batch::ToolCallPhase;
 pub(super) fn validate(
     snapshot: &RunRecoverySnapshot,
     command: &SessionAgentMessageCommand,
-) -> Result<SessionAgentMessageCommand, HostError> {
+) -> Result<SessionAgentMessageCommand, SessionExecutionError> {
     if snapshot.thread_id != command.source_thread_id
         || snapshot.claimed_run_id != command.source_run_id
     {
-        return Err(HostError::bad_request(
+        return Err(SessionExecutionError::bad_request(
             "Agent message source does not match its committed Thread prefix",
         ));
     }
     let state = Store::rebuild(&snapshot.state);
     let batch = awaken_tool_contract::ActiveToolBatch::load(&state)
-        .map_err(|error| HostError::internal(error.to_string()))?
-        .ok_or_else(|| HostError::bad_request("Agent message source has no active tool batch"))?;
+        .map_err(|error| SessionExecutionError::internal(error.to_string()))?
+        .ok_or_else(|| {
+            SessionExecutionError::bad_request("Agent message source has no active tool batch")
+        })?;
     if batch.run_id() != &command.source_run_id {
-        return Err(HostError::bad_request(
+        return Err(SessionExecutionError::bad_request(
             "Agent message source batch belongs to another Run",
         ));
     }
@@ -32,19 +34,26 @@ pub(super) fn validate(
         .iter()
         .find(|entry| entry.call.call_id == command.source_call_id)
         .ok_or_else(|| {
-            HostError::bad_request("Agent message source call is absent from its active tool batch")
+            SessionExecutionError::bad_request(
+                "Agent message source call is absent from its active tool batch",
+            )
         })?;
     if call.call.tool_id != awaken_ext_builtin_tools::SEND_MESSAGE
         || batch.operation_id(&command.source_call_id) != command.operation_id
         || !matches!(call.phase, ToolCallPhase::Executing { .. })
     {
-        return Err(HostError::bad_request(
+        return Err(SessionExecutionError::bad_request(
             "Agent message source does not match an executing send_message operation",
         ));
     }
-    let args: SendMessageArgs = serde_json::from_value(call.call.arguments.clone())
-        .map_err(|_| HostError::bad_request("Agent message source arguments are invalid"))?;
-    let target = match args.normalized_target().map_err(HostError::bad_request)? {
+    let args: SendMessageArgs =
+        serde_json::from_value(call.call.arguments.clone()).map_err(|_| {
+            SessionExecutionError::bad_request("Agent message source arguments are invalid")
+        })?;
+    let target = match args
+        .normalized_target()
+        .map_err(SessionExecutionError::bad_request)?
+    {
         AgentMessageTarget::Spawn { agent_id } => SessionAgentTarget::Spawn { agent_id },
         AgentMessageTarget::ExistingThread { session_thread_id } => {
             SessionAgentTarget::ExistingThread {
@@ -67,12 +76,12 @@ pub(super) fn validate(
 fn refine_committed_command(
     committed: SessionAgentMessageCommand,
     requested: &SessionAgentMessageCommand,
-) -> Result<SessionAgentMessageCommand, HostError> {
+) -> Result<SessionAgentMessageCommand, SessionExecutionError> {
     if !agent_message_operation_matches(
         agent_message_operation(&committed),
         agent_message_operation(requested),
     ) {
-        return Err(HostError::bad_request(
+        return Err(SessionExecutionError::bad_request(
             "Agent message command differs from its committed tool call",
         ));
     }

@@ -52,7 +52,9 @@ impl ProcessOperations {
         }
     }
 
-    fn resolver(&self) -> Result<Arc<dyn WorkerResolver<AnyDispatchStore>>, crate::HostError> {
+    fn resolver(
+        &self,
+    ) -> Result<Arc<dyn WorkerResolver<AnyDispatchStore>>, crate::SessionExecutionError> {
         let resolver = crate::host::session_worker_resolver(&self.assembly, &self.dispatch)?;
         Ok(Arc::new(resolver))
     }

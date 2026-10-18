@@ -21,7 +21,7 @@ async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
     // same-id recreation. Rules RR1=C1+C2=>E1, RR2=C1+C2+C3=>E2+E3.
     let thread = "cached-resume-revocation";
     let root = tempfile::tempdir().unwrap();
-    let host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
         .await
         .with_store_dir(root.path())
         .await)
@@ -167,7 +167,7 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
     // SessionEffects composition; no test-only context path is restored.
     let ready_thread = "ordinary-ready-recovery";
     let ready_storage = tempfile::tempdir().unwrap();
-    let ready_host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+    let ready_host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
         .await
         .with_store_dir(ready_storage.path())
         .await)
@@ -258,7 +258,7 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
 
     let missing_thread = "terminated-recovery-missing-provider";
     let missing_storage = tempfile::tempdir().unwrap();
-    let missing_host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+    let missing_host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
         .await
         .with_store_dir(missing_storage.path())
         .await)
@@ -334,7 +334,7 @@ async fn closed_revoked_durable_environment_can_enter_canonical_rebuild() {
     let environment = environment(&provider, thread).await;
     let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
     let source_generation = generation(thread).id().to_owned();
-    let host = (crate::HostDependencies::ephemeral(
+    let host = (crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
         "stub",
     )
@@ -431,7 +431,7 @@ async fn closed_recovery_cannot_override_protected_retirements() {
         };
         let environment = environment(&provider, thread).await;
         let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
-        let host = (crate::HostDependencies::ephemeral(
+        let host = (crate::SessionExecutorBuilder::ephemeral(
             Arc::new(crate::no_model::NoModelConfiguredExecutor),
             "stub",
         )
@@ -577,7 +577,7 @@ async fn checkpoint_disposal_cannot_consume_a_different_prepared_durable_owner()
         .into_session_provider();
     let environment = environment(&provider, thread).await;
     let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
-    let host = (crate::HostDependencies::ephemeral(
+    let host = (crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
         "stub",
     )
@@ -685,7 +685,7 @@ async fn legacy_suspending_projection_keeps_exact_binding_provenance_without_fab
         None,
         None,
     );
-    let host = (crate::HostDependencies::ephemeral(
+    let host = (crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
         "stub",
     )

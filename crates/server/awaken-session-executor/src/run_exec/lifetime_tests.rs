@@ -238,11 +238,13 @@ async fn artifact_decorator_without_harvest_owner_refuses_effects_even_if_slots_
     // E2 cancel still forwards. A1=C1+C2+execute=>E1;
     // A2=C1+C2+resume=>E1; A3=C1+C2+cancel=>E2. C2 proves that readable state
     // cannot substitute for the independent original publication operation.
-    let host =
-        crate::HostDependencies::ephemeral(Arc::new(crate::NoModelConfiguredExecutor), "stub")
-            .await
-            .build()
-            .unwrap();
+    let host = crate::SessionExecutorBuilder::ephemeral(
+        Arc::new(crate::NoModelConfiguredExecutor),
+        "stub",
+    )
+    .await
+    .build()
+    .unwrap();
     let slots = host.run_assembly.installed_sessions.clone();
     let weak_slots = Arc::downgrade(&slots);
     let owner = host.realization_executor.effects().artifacts().clone();
@@ -286,7 +288,7 @@ async fn artifact_decorator_active_future_holds_owner_through_attempt_success_or
     // then release both. No new claim or publication authority is created.
     for is_resume in [false, true] {
         for fails in [false, true] {
-            let host = crate::HostDependencies::ephemeral(
+            let host = crate::SessionExecutorBuilder::ephemeral(
                 Arc::new(crate::NoModelConfiguredExecutor),
                 "stub",
             )
@@ -397,7 +399,7 @@ async fn artifact_decorator_holds_same_owner_until_real_publication_finishes() {
     for is_resume in [false, true] {
         for fails in [false, true] {
             let storage = tempfile::tempdir().unwrap();
-            let mut dependencies = crate::HostDependencies::ephemeral(
+            let mut dependencies = crate::SessionExecutorBuilder::ephemeral(
                 Arc::new(crate::NoModelConfiguredExecutor),
                 "stub",
             )
@@ -511,11 +513,13 @@ async fn abandoning_the_original_attempt_drops_both_decorator_owners_and_inner_f
     // reject a later attempt before I/O, and still forward explicit cancel once.
     // Future destruction does not establish external-process physical closure.
     for is_resume in [false, true] {
-        let host =
-            crate::HostDependencies::ephemeral(Arc::new(crate::NoModelConfiguredExecutor), "stub")
-                .await
-                .build()
-                .unwrap();
+        let host = crate::SessionExecutorBuilder::ephemeral(
+            Arc::new(crate::NoModelConfiguredExecutor),
+            "stub",
+        )
+        .await
+        .build()
+        .unwrap();
         let weak_slots = Arc::downgrade(&host.run_assembly.installed_sessions);
         let owner = host.realization_executor.effects().artifacts().clone();
         let weak_owner = Arc::downgrade(&owner);

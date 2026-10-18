@@ -90,7 +90,7 @@ async fn conflicting_revocation_preserves_active_worker_relay_until_compatible_d
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let environment = environment(&provider, thread).await;
-    let host = (crate::HostDependencies::ephemeral(
+    let host = (crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
         "stub",
     )
@@ -182,7 +182,7 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
     // terminal/revocation retry; E4 retain the open Route/fence and Active MCP
     // owner without an early drain. Rule R19/R20: C1+C2+C3+C4+C5=>E1+E2+E3+E4.
     let thread = "revocation-retains-retry-authority";
-    let host = (crate::HostDependencies::ephemeral(
+    let host = (crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
         "stub",
     )
@@ -329,7 +329,7 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let environment = environment(&provider, thread).await;
-    let host = (crate::HostDependencies::ephemeral(
+    let host = (crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
         "stub",
     )
@@ -505,7 +505,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
         &activation.snapshot,
     );
     projection.agent_publication = Some(activation.snapshot.clone());
-    let first = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+    let first = (crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
         .await
         .with_store_dir(storage.path())
         .await)
@@ -573,7 +573,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
     drop(first_managed);
     drop(first);
 
-    let host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
         .await
         .with_store_dir(storage.path())
         .await)

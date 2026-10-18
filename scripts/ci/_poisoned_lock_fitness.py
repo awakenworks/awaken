@@ -48,7 +48,7 @@ def scanned_manifests(repo_root: Path) -> list[Path]:
         .get("metadata", {})
         .get("awaken", {})
         .get("authority")
-        in {"runtime-host", "session-realization"}
+        in {"session-executor", "session-realization"}
     ]
 
 
@@ -159,7 +159,7 @@ def selftest() -> None:
         (moved / "src").mkdir(parents=True)
         (moved / "Cargo.toml").write_text(
             '[package]\nname = "moved-executor"\n'
-            '[package.metadata.awaken]\nauthority = "runtime-host"\n',
+            '[package.metadata.awaken]\nauthority = "session-executor"\n',
             encoding="utf-8",
         )
         (moved / "src" / "lib.rs").write_text(forbidden, encoding="utf-8")

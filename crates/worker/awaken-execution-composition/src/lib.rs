@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use awaken_session_environment::SandboxEnvironmentProvider;
 use awaken_session_environment_contract::HandExecutorFactory;
-use awaken_session_executor::{DeploymentConfig, HostDependencies};
+use awaken_session_executor::{DeploymentConfig, SessionExecutorBuilder};
 
 mod acp_backend;
 mod acp_policy;
@@ -53,7 +53,7 @@ pub struct ContainerEnvironmentComponents {
 }
 
 /// The auxiliary-run sandboxes every process root installs on its Host
-/// (`HostDependencies::with_auxiliary_sandboxes`): fresh Workdir roots under the
+/// (`SessionExecutorBuilder::with_auxiliary_sandboxes`): fresh Workdir roots under the
 /// process temp directory, one per auxiliary purpose.
 #[must_use]
 pub fn local_auxiliary_sandboxes()
@@ -68,11 +68,11 @@ pub fn local_auxiliary_sandboxes()
 /// mounts, and cache initialization stay paired with that same provider.
 #[must_use]
 pub fn install_container_environment_components(
-    host: HostDependencies,
+    host: SessionExecutorBuilder,
     deployment: &DeploymentConfig,
     components: ContainerEnvironmentComponents,
     hand_factory: Arc<dyn HandExecutorFactory>,
-) -> HostDependencies {
+) -> SessionExecutorBuilder {
     let settings = &deployment.sandbox;
     let provider = SandboxEnvironmentProvider::container_with_capacity_hand_idle_and_residency(
         components.provider,
@@ -99,12 +99,12 @@ pub fn install_container_environment_components(
 /// broker does so afterwards.
 #[must_use]
 pub fn install_container_provider(
-    host: HostDependencies,
+    host: SessionExecutorBuilder,
     deployment: &DeploymentConfig,
     provider: Arc<dyn awaken_container_contract::ContainerEnvironmentProvider>,
     capacity: Option<Arc<dyn awaken_container_contract::ContainerEnvironmentCapacity>>,
     hand_factory: Arc<dyn HandExecutorFactory>,
-) -> HostDependencies {
+) -> SessionExecutorBuilder {
     install_container_environment_components(
         host,
         deployment,
@@ -125,11 +125,11 @@ pub fn install_container_provider(
 /// Host installation's stable identity: the same parts the Host used when it
 /// assembled this tier itself.
 pub async fn install_container_environment(
-    host: HostDependencies,
+    host: SessionExecutorBuilder,
     deployment: &DeploymentConfig,
     hand_factory: Option<Arc<dyn HandExecutorFactory>>,
     policy: &ContainerTierPolicy,
-) -> Result<HostDependencies, String> {
+) -> Result<SessionExecutorBuilder, String> {
     if !deployment.sandbox_tier.is_container() || host.session_environment_provider_installed() {
         return Ok(host);
     }
@@ -167,11 +167,11 @@ pub async fn install_container_environment(
 /// A Deployment that serves ACP also receives the TrustedHost Workdir backend
 /// its BackendOwned candidates realize in.
 pub async fn with_session_environment_from_deployment(
-    host: HostDependencies,
+    host: SessionExecutorBuilder,
     deployment: &DeploymentConfig,
     hand_factory: Option<Arc<dyn HandExecutorFactory>>,
     policy: &ContainerTierPolicy,
-) -> Result<HostDependencies, String> {
+) -> Result<SessionExecutorBuilder, String> {
     with_session_environment_from_deployment_at(
         host,
         deployment,
@@ -187,12 +187,12 @@ pub async fn with_session_environment_from_deployment(
 /// Cargo's exact artifact rather than the release installation directory.
 /// This input never bypasses capability validation or changes selection.
 pub async fn with_session_environment_from_deployment_at(
-    host: HostDependencies,
+    host: SessionExecutorBuilder,
     deployment: &DeploymentConfig,
     hand_factory: Option<Arc<dyn HandExecutorFactory>>,
     namespace_hand_path: std::path::PathBuf,
     policy: &ContainerTierPolicy,
-) -> Result<HostDependencies, String> {
+) -> Result<SessionExecutorBuilder, String> {
     // One process owner for both warm and rebuilt Session MCP projections.
     // The Supervisor remains the only TERM/KILL/wait algorithm.
     let host = host.with_mcp_process_reaper(Arc::new(awaken_run_executor_acp::Supervisor));
@@ -213,11 +213,11 @@ pub async fn with_session_environment_from_deployment_at(
 /// projected source backed by published access; deterministic dev fixtures
 /// may supply a fixed one.
 pub async fn with_acp_launch_source(
-    host: HostDependencies,
+    host: SessionExecutorBuilder,
     deployment: &DeploymentConfig,
     hand_factory: Arc<dyn HandExecutorFactory>,
     source: LaunchSource,
-) -> Result<HostDependencies, String> {
+) -> Result<SessionExecutorBuilder, String> {
     let host = with_session_environment_from_deployment(
         host,
         deployment,
@@ -234,11 +234,11 @@ pub async fn with_acp_launch_source(
 }
 
 fn install_acp_source(
-    host: HostDependencies,
+    host: SessionExecutorBuilder,
     deployment: &DeploymentConfig,
     source: LaunchSource,
     store_dir: Option<std::path::PathBuf>,
-) -> HostDependencies {
+) -> SessionExecutorBuilder {
     let portable_root = deployment.acp_session_blob_root.clone();
     let observer = host.acp_launch_observer();
     host.with_acp(Arc::new(acp_backend::BoundAcpSessionFactory::new(
@@ -253,24 +253,24 @@ fn install_acp_source(
 /// Its resolver remains the only source of model and credential requirements.
 #[must_use]
 pub fn with_projected_acp(
-    host: HostDependencies,
+    host: SessionExecutorBuilder,
     deployment: &DeploymentConfig,
     cli: awaken_run_executor_acp::AcpCli,
     resolver: Arc<dyn awaken_run_executor_acp::LaunchResolver>,
     store_dir: Option<std::path::PathBuf>,
-) -> HostDependencies {
+) -> SessionExecutorBuilder {
     with_projected_acp_argv(host, deployment, cli, resolver, store_dir, None)
 }
 
 #[must_use]
 pub fn with_projected_acp_argv(
-    host: HostDependencies,
+    host: SessionExecutorBuilder,
     deployment: &DeploymentConfig,
     cli: awaken_run_executor_acp::AcpCli,
     resolver: Arc<dyn awaken_run_executor_acp::LaunchResolver>,
     store_dir: Option<std::path::PathBuf>,
     launch_argv: Option<Vec<String>>,
-) -> HostDependencies {
+) -> SessionExecutorBuilder {
     let secret_broker = resolver.secret_broker();
     let source = LaunchSource::Projected(
         AcpLaunchRegistry::single_with_resolved_argv(cli, resolver, launch_argv)
@@ -292,11 +292,11 @@ pub fn with_projected_acp_argv(
 /// the same secret broker for the resolver and the Session environment.
 #[must_use]
 pub fn with_acp_from_deployment(
-    host: HostDependencies,
+    host: SessionExecutorBuilder,
     deployment: &DeploymentConfig,
     credentials: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
     brokered: Option<Arc<dyn awaken_run_executor_acp::BrokeredAcpModelAccessMaterializer>>,
-) -> HostDependencies {
+) -> SessionExecutorBuilder {
     let Some(profile) = deployment.acp.as_ref() else {
         return match credentials {
             Some(credentials) => host.with_session_secret_broker(Arc::new(credentials)),

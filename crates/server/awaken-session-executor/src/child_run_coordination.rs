@@ -62,7 +62,8 @@ impl ChildRunCoordination {
     /// The Coordinator dispatch owner Session Runs are admitted through.
     pub fn coordinator_dispatch(
         &self,
-    ) -> Result<Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>, crate::HostError> {
+    ) -> Result<Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>, crate::SessionExecutionError>
+    {
         self.session_runs.coordinator_dispatch()
     }
 }

@@ -1,7 +1,7 @@
 // @formal surface requirement=assembly.binary_roles.role_assembly
 // @formal reason: Host construction selects every injected startup authority exactly once and composes the
 // @formal reason: capability groups; it opens no Store. This link is not a formal-proof claim.
-//! Construction of [`ExecutorComponents`] from its [`HostDependencies`] (the one
+//! Construction of [`ExecutorComponents`] from its [`SessionExecutorBuilder`] (the one
 //! constructor), per-thread registration, and the process dispatch pool.
 
 use super::*;
@@ -10,10 +10,10 @@ use awaken_session_realization::peers::EnvironmentPeer as _;
 /// The process a Host is constructed in: the installation's resolved platform
 /// Workspace, the process capabilities the composition projected from its
 /// configuration, and the one process clock. The process composition resolves them once;
-/// every [`HostDependencies`] constructor receives them together so none can
+/// every [`SessionExecutorBuilder`] constructor receives them together so none can
 /// pair a Workspace or clock from a different process selection. Consumer: the
-/// `HostDependencies` constructors.
-pub struct HostProcess {
+/// `SessionExecutorBuilder` constructors.
+pub struct SessionExecutionProcess {
     /// The installation's resolved platform Workspace coordinate.
     pub local_workspace: String,
     /// This process's part in Run execution, selected by the composition.
@@ -39,19 +39,21 @@ pub struct HostProcess {
     pub clock: Arc<dyn awaken_time::WallClock>,
 }
 
-impl HostDependencies {
+impl SessionExecutorBuilder {
     /// The one Host constructor: validate the selected dependencies once and
     /// assemble the Host's runtime state around them. It performs no I/O; every
     /// dependency was acquired while the composition filled `dependencies`.
-    pub fn build(self) -> Result<Arc<ExecutorComponents>, HostError> {
+    pub fn build(self) -> Result<Arc<ExecutorComponents>, SessionExecutionError> {
         let dependencies = self;
         if dependencies.local_workspace.trim().is_empty() {
-            return Err(HostError::bad_request("local workspace must not be empty"));
+            return Err(SessionExecutionError::bad_request(
+                "local workspace must not be empty",
+            ));
         }
         dependencies
             .execution
             .validate()
-            .map_err(HostError::bad_request)?;
+            .map_err(SessionExecutionError::bad_request)?;
         // A registered capacity exists only inside an in-process pool, so the
         // "registered but coordinator-only" graph has no representation; the
         // remaining contradiction is a registration under a local authority.
@@ -63,16 +65,16 @@ impl HostDependencies {
             .is_some()
             && dependencies.authority.hosts_session_application()
         {
-            return Err(HostError::bad_request(
+            return Err(SessionExecutionError::bad_request(
                 "registered Worker capacity requires upstream authority and a local execution pool",
             ));
         }
-        Ok(Arc::new(assemble_host(dependencies)))
+        Ok(Arc::new(assemble_components(dependencies)))
     }
 }
 
-fn assemble_host(dependencies: HostDependencies) -> ExecutorComponents {
-    let HostDependencies {
+fn assemble_components(dependencies: SessionExecutorBuilder) -> ExecutorComponents {
+    let SessionExecutorBuilder {
         #[cfg(test)]
         realization_source,
         local_workspace,
@@ -566,7 +568,7 @@ mod startup_tests {
                 .await
                 .expect("test extraction repository"),
         );
-        let host = (HostDependencies::for_coordinator(
+        let host = (SessionExecutorBuilder::for_coordinator(
             Arc::new(crate::NoModelConfiguredExecutor),
             crate::UNCONFIGURED_MODEL_REF,
             {
@@ -582,7 +584,7 @@ mod startup_tests {
             },
             expected.clone(),
             crate::DeploymentConfig::ephemeral()
-                .host_process(
+                .session_execution_process(
                     ExecutorComponents::mint_local_workspace(),
                     awaken_time::system_clock(),
                 )
@@ -623,14 +625,14 @@ mod startup_tests {
         );
         let process = || {
             crate::DeploymentConfig::ephemeral()
-                .host_process(
+                .session_execution_process(
                     ExecutorComponents::mint_local_workspace(),
                     awaken_time::system_clock(),
                 )
                 .expect("ephemeral process")
         };
         assert!(
-            HostDependencies::for_worker(
+            SessionExecutorBuilder::for_worker(
                 Arc::new(crate::NoModelConfiguredExecutor),
                 "stub",
                 {
@@ -650,7 +652,7 @@ mod startup_tests {
             .is_err(),
             "R0 missing required upstream connections"
         );
-        let worker = (HostDependencies::for_worker(
+        let worker = (SessionExecutorBuilder::for_worker(
             Arc::new(crate::NoModelConfiguredExecutor),
             "stub",
             {
@@ -670,7 +672,7 @@ mod startup_tests {
         .expect("complete Worker connections"))
         .build()
         .expect("validated Host dependencies");
-        let coordinator = (HostDependencies::for_coordinator(
+        let coordinator = (SessionExecutorBuilder::for_coordinator(
             Arc::new(crate::NoModelConfiguredExecutor),
             "stub",
             {
@@ -722,7 +724,7 @@ mod startup_tests {
                 .is_none(),
             "R2"
         );
-        let worker_dependencies = HostDependencies::for_worker(
+        let worker_dependencies = SessionExecutorBuilder::for_worker(
             Arc::new(crate::NoModelConfiguredExecutor),
             "stub",
             {

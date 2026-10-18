@@ -27,7 +27,7 @@ fn version(id: &str, ordinal: u64, body: &str) -> SkillVersion {
 async fn empty_pinned_skill_set_needs_no_repository_but_real_references_fail_closed() {
     // K1 empty pins need no read authority; K5/K7 a real custom pin
     // without its source rejects. Catalog selection grants no byte read.
-    let host = crate::HostDependencies::ephemeral(
+    let host = crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
         "stub",
     )
@@ -100,7 +100,7 @@ async fn skill_catalog_and_bundle_read_roles_are_selected_independently_before_c
         bundle_sha256: selected.bundle_sha256.clone(),
     };
     for (catalog, bytes) in [(false, false), (true, false), (false, true), (true, true)] {
-        let mut dependencies = crate::HostDependencies::ephemeral(
+        let mut dependencies = crate::SessionExecutorBuilder::ephemeral(
             Arc::new(crate::no_model::NoModelConfiguredExecutor),
             "stub",
         )
@@ -152,7 +152,7 @@ async fn skill_catalog_and_bundle_read_roles_are_selected_independently_before_c
 async fn frozen_binding_keeps_v1_after_v2_and_is_workspace_scoped() {
     // K3/K4/K5/K9: actual Host construction selects the same Resources
     // applications; publishing v2 cannot replace frozen v1 or its Workspace.
-    let host = crate::HostDependencies::ephemeral(
+    let host = crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
         "stub",
     )
@@ -216,7 +216,7 @@ async fn prebuilt_and_custom_selectors_follow_one_resolution_table() {
     // reject; S10 custom latest/exact -> selected store version.
     // K2/K9: bundled v1 is shared with catalog selection, while only the
     // staging component owns exact custom byte reads after construction.
-    let host = crate::HostDependencies::ephemeral(
+    let host = crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
         "stub",
     )
@@ -257,7 +257,7 @@ async fn prebuilt_and_custom_selectors_follow_one_resolution_table() {
         "S9"
     );
 
-    let host = crate::HostDependencies::ephemeral(
+    let host = crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
         "stub",
     )

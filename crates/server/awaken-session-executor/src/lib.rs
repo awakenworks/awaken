@@ -38,7 +38,8 @@ mod coordination;
 mod delegate;
 mod deployment_config;
 mod durable_operations;
-mod host_error;
+mod session_execution_error;
+pub use session_execution_error::{SessionExecutionError, SessionExecutionErrorKind};
 mod session_effects;
 
 #[cfg(test)]
@@ -51,7 +52,6 @@ mod judge;
 mod lazy_sandbox;
 mod live_inbox;
 pub use live_inbox::LiveInboxes;
-mod managed_adapter_error;
 mod managed_input_projection;
 mod managed_model_capability;
 mod managed_outcome;
@@ -108,9 +108,7 @@ pub use crate::authority::{
     UpstreamAuthority,
 };
 pub(crate) use crate::host::HostOutcomeIteration;
-pub use crate::host::{
-    CommittedStepReceipt, HostError, HostErrorKind, HostOutcomeDrive, HostOutcomeReport,
-};
+pub use crate::host::{CommittedStepReceipt, HostOutcomeDrive, HostOutcomeReport};
 pub(crate) use crate::installed_session::InstalledSessions;
 // The neutral session substrate and its resume vocabulary.
 pub use crate::acp_capability_probe::SessionAcpCapabilityNegotiator;
@@ -132,9 +130,9 @@ pub use crate::host::capability::WorkerContentAdapters;
 #[cfg(any(test, feature = "test-support"))]
 pub use crate::host::capability::{LocalResourcePorts, LocalSkillPorts, test_memory_content};
 pub use crate::host::{
-    AttemptExecutorDecorator, ExecutorComponents, HostDependencies, HostProcess, HostResume,
-    RemoteAttemptInstallation, SessionApplicationBindingError, SessionApplicationBindings,
-    SessionExecutionDependencies, TrustedHostPolicy, WarmPool,
+    AttemptExecutorDecorator, ExecutorComponents, HostResume, RemoteAttemptInstallation,
+    SessionApplicationBindingError, SessionApplicationBindings, SessionExecutionDependencies,
+    SessionExecutionProcess, SessionExecutorBuilder, TrustedHostPolicy, WarmPool,
 };
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::no_model::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};

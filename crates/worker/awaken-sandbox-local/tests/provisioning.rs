@@ -8,7 +8,8 @@ use std::path::PathBuf;
 
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::Sandbox as _;
-use awaken_sandbox_local::{LocalProvider, content_fingerprint};
+use awaken_resource_contract::content_id;
+use awaken_sandbox_local::LocalProvider;
 
 fn unique_base(tag: &str) -> PathBuf {
     std::env::temp_dir().join(format!("awaken-sbx-e2e-{}-{tag}", std::process::id()))
@@ -63,7 +64,7 @@ async fn provision_resource_mount_end_to_end() {
     s.mounts.push(resource_mount(
         "cfg",
         ".mnt/config/app.env",
-        Some(content_fingerprint(res_content.as_bytes())),
+        Some(content_id(res_content.as_bytes())),
     ));
 
     let env = provider
@@ -91,7 +92,7 @@ async fn carried_binary_resource_round_trips_to_the_sandbox_file() {
         mount_id: "binary-file".into(),
         source: pc::MountSource::InlineBytes {
             contents: bytes.clone(),
-            content_hash: Some(content_fingerprint(&bytes)),
+            content_hash: Some(content_id(&bytes)),
         },
         mount_path: ".mnt/input.bin".into(),
         access: pc::MountAccess::ReadWrite,
@@ -108,10 +109,7 @@ async fn carried_binary_resource_round_trips_to_the_sandbox_file() {
         std::fs::read(base.join("binary/.mnt/input.bin")).unwrap(),
         bytes
     );
-    assert_eq!(
-        env.realized()[0].content_hash,
-        Some(content_fingerprint(&bytes))
-    );
+    assert_eq!(env.realized()[0].content_hash, Some(content_id(&bytes)));
     env.dispose_unattached().await.unwrap();
 }
 

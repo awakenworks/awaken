@@ -18,7 +18,7 @@
 
 use std::collections::HashMap;
 
-use crate::host_error::ExecutorLock;
+use crate::session_execution_error::ExecutorLock;
 use std::sync::Mutex;
 
 use awaken_agent_contract::agent::message::Message;
@@ -98,7 +98,7 @@ impl ThreadEventHub {
                 let _ = sender.send(event);
             }
             Err(error) => tracing::error!(
-                code = crate::host_error::EXECUTOR_LOCK_POISONED_CODE,
+                code = crate::session_execution_error::EXECUTOR_LOCK_POISONED_CODE,
                 %error,
                 "live Thread event dropped"
             ),
@@ -160,7 +160,7 @@ mod tests {
     fn a_poisoned_channel_map_refuses_subscribers_and_drops_publications() {
         // Row H2 of `ThreadEventHub::sender`.
         let hub = ThreadEventHub::new();
-        crate::host_error::poison_for_test(&hub.channels);
+        crate::session_execution_error::poison_for_test(&hub.channels);
         assert!(
             matches!(hub.subscribe("t1"), Err(ExecutorLock::ThreadEventHub)),
             "H2 subscribe"

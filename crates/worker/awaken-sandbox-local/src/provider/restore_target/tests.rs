@@ -197,7 +197,7 @@ fn exact_restore_request(
         session_id: spec.scope.clone(),
         effect_id: format!(
             "blake3:{}",
-            crate::content_fingerprint(operation.as_bytes())
+            awaken_resource_contract::content_id(operation.as_bytes())
         ),
         generation_id: checkpoint_request.generation_id.clone(),
         checkpoint: checkpoint.clone(),

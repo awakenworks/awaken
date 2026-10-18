@@ -485,3 +485,44 @@ At the checked Cloud source, only `awaken-hosting-durable` tests
 They must use its owner directly when upgrading the common Awaken dependency pin;
 an old remote pin is not evidence of compatibility with this local source. This
 note records the consumer change, not a Cloud release or physical qualification.
+
+## Implementation note 2026-10-18: Session execution vocabulary
+
+The existing Session execution error and startup builder are named for their
+responsibilities. Their fields, constructor requirements,
+and one synchronous component-construction path retain the same behavior.
+
+| Previous Rust path | Authoritative Rust path |
+|---|---|
+| `awaken_session_executor::HostError` | `awaken_session_executor::SessionExecutionError` |
+| `awaken_session_executor::HostErrorKind` | `awaken_session_executor::SessionExecutionErrorKind` |
+| `awaken_session_executor::HostDependencies` | `awaken_session_executor::SessionExecutorBuilder` |
+| `awaken_session_executor::HostProcess` | `awaken_session_executor::SessionExecutionProcess` |
+| `DeploymentConfig::host_process` | `DeploymentConfig::session_execution_process` |
+| `awaken_sandbox_local::content_fingerprint` | `awaken_resource_contract::content_id` |
+| `awaken_coordinator::content_fingerprint` | `awaken_resource_contract::content_id` |
+| `awaken_scenario_host::content_fingerprint` | `awaken_resource_contract::content_id` |
+
+The error projection functions live beside `SessionExecutionError`; the removed
+Managed forwarding module no longer supplies another import path. Live inbox
+edit errors are projected by the existing `LiveInboxes` owner. Startup still
+selects its process facts and authority, fills the same builder, and constructs
+the same execution components once. A poisoned read follows the existing typed
+refusal path through the one Run-error projection.
+
+Run application errors already use `RunError`. Their duplicate classifier is
+removed, so classified Internal faults and classified BadRequest faults (such
+as `not_found`) keep the original code through the execution boundary. The
+kind, code and message decision table covers default and classified forms of
+all four faults. The existing private durable-operation envelope retains its
+own two-field projection at that same error owner.
+
+Resource bytes keep the existing BLAKE3 content identity. Every Sandbox,
+provisioning, File and transport caller imports its Resource owner directly;
+the three forwarding aliases are removed. The retained identity test belongs
+to that owner and checks the standard empty-input digest and nonempty digest
+width. Persisted ids and wire fields do not change.
+
+The checked local `awaken-cloud` source contains no use of the removed symbols.
+Consumers upgrading a different pin must use the paths above; this source
+inspection does not certify an external Cloud build or SDK publication.

@@ -11,11 +11,11 @@ impl crate::SessionRuns {
         ticket: &ResumeTicket,
         tool_use_id: &str,
         want_client: bool,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), SessionExecutionError> {
         let pending = Pending::from_resume_ticket(ticket)
-            .ok_or_else(|| HostError::internal("awaiting run has no pending tool"))?;
+            .ok_or_else(|| SessionExecutionError::internal("awaiting run has no pending tool"))?;
         if pending.tool_use_id != tool_use_id {
-            return Err(HostError::bad_request(format!(
+            return Err(SessionExecutionError::bad_request(format!(
                 "tool_use_id {tool_use_id:?} does not match the pending tool"
             )));
         }
@@ -25,7 +25,7 @@ impl crate::SessionRuns {
             } else {
                 ("client-executed", "a client tool result")
             };
-            return Err(HostError::bad_request(format!(
+            return Err(SessionExecutionError::bad_request(format!(
                 "pending tool is {got}; answer it with {expected}"
             )));
         }
@@ -37,9 +37,9 @@ impl crate::SessionRuns {
 pub(super) fn message_prefix_before_exact_inputs(
     committed: &RunRecoverySnapshot,
     expected_input_ids: &[String],
-) -> Result<usize, HostError> {
+) -> Result<usize, SessionExecutionError> {
     if expected_input_ids.is_empty() {
-        return Err(HostError::bad_request(
+        return Err(SessionExecutionError::bad_request(
             "Session Run admission requires at least one input message",
         ));
     }
@@ -52,12 +52,12 @@ pub(super) fn message_prefix_before_exact_inputs(
             .filter(|(_, message)| message.id.0 == *expected)
             .map(|(index, _)| index);
         let Some(position) = matches.next() else {
-            return Err(HostError::internal(format!(
+            return Err(SessionExecutionError::internal(format!(
                 "committed Session Run is missing input message `{expected}`"
             )));
         };
         if matches.next().is_some() {
-            return Err(HostError::internal(format!(
+            return Err(SessionExecutionError::internal(format!(
                 "committed Session Run contains duplicate input message `{expected}`"
             )));
         }
@@ -70,7 +70,7 @@ pub(super) fn message_prefix_before_exact_inputs(
         .enumerate()
         .any(|(offset, position)| position != first.saturating_add(offset))
     {
-        return Err(HostError::internal(
+        return Err(SessionExecutionError::internal(
             "committed Session Run input messages are not one exact ordered prefix",
         ));
     }
@@ -85,19 +85,19 @@ pub(super) fn verify_committed_step(
     returned_state: &RunState,
     before: usize,
     expected_input_ids: &[String],
-) -> Result<Vec<Message>, HostError> {
+) -> Result<Vec<Message>, SessionExecutionError> {
     if &committed.thread_id != thread_id || &committed.claimed_run_id != run_id {
-        return Err(HostError::internal(
+        return Err(SessionExecutionError::internal(
             "committed step proof names another Thread or Run",
         ));
     }
     let committed_state = committed
         .run_record(run_id)
-        .map_err(|error| HostError::internal(error.to_string()))?
+        .map_err(|error| SessionExecutionError::internal(error.to_string()))?
         .map(|run| &run.state)
-        .ok_or_else(|| HostError::internal("committed step proof has no Run record"))?;
+        .ok_or_else(|| SessionExecutionError::internal("committed step proof has no Run record"))?;
     if committed_state != returned_state {
-        return Err(HostError::internal(
+        return Err(SessionExecutionError::internal(
             "executor result does not match the committed Run state",
         ));
     }
@@ -110,10 +110,12 @@ pub(super) fn verify_committed_step(
     let message_end = if superseded {
         committed
             .current_run()
-            .map_err(|error| HostError::internal(error.to_string()))?
-            .ok_or_else(|| HostError::internal("committed step proof has no latest Run"))?;
+            .map_err(|error| SessionExecutionError::internal(error.to_string()))?
+            .ok_or_else(|| {
+                SessionExecutionError::internal("committed step proof has no latest Run")
+            })?;
         if !matches!(returned_state, RunState::Ended(_)) {
-            return Err(HostError::internal(
+            return Err(SessionExecutionError::internal(
                 "nonterminal step proof is not the latest Run on its Thread",
             ));
         }
@@ -124,13 +126,13 @@ pub(super) fn verify_committed_step(
                 .any(|cursor| *cursor == 0 || *cursor > committed.store_cursor)
             || cursors.windows(2).any(|pair| pair[0] > pair[1])
         {
-            return Err(HostError::internal(
+            return Err(SessionExecutionError::internal(
                 "superseded step proof lacks ordered message commit cursors",
             ));
         }
         let lifecycle = committed
             .lifecycle_events_after(awaken_agent_contract::RunLifecycleCursor(0), usize::MAX)
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
         let mut terminal = lifecycle.events.iter().filter(|event| {
             &event.run_id == run_id
                 && &event.state == returned_state
@@ -142,10 +144,12 @@ pub(super) fn verify_committed_step(
                 )
         });
         let exact = terminal.next().ok_or_else(|| {
-            HostError::internal("superseded step proof has no exact terminal lifecycle event")
+            SessionExecutionError::internal(
+                "superseded step proof has no exact terminal lifecycle event",
+            )
         })?;
         if exact.source_commit_cursor == 0 || terminal.next().is_some() {
-            return Err(HostError::internal(
+            return Err(SessionExecutionError::internal(
                 "superseded step proof has ambiguous terminal lifecycle evidence",
             ));
         }
@@ -154,15 +158,17 @@ pub(super) fn verify_committed_step(
         committed.messages.len()
     };
     if matches!(returned_state, RunState::Running) {
-        return Err(HostError::internal("committed step proof is not settled"));
+        return Err(SessionExecutionError::internal(
+            "committed step proof is not settled",
+        ));
     }
     if message_end < before {
-        return Err(HostError::internal(
+        return Err(SessionExecutionError::internal(
             "committed Thread message prefix moved backwards",
         ));
     }
     if committed.thread_version == 0 || committed.next_commit_ordinal == 0 {
-        return Err(HostError::internal(
+        return Err(SessionExecutionError::internal(
             "committed step proof has no durable commit identity",
         ));
     }
@@ -171,7 +177,7 @@ pub(super) fn verify_committed_step(
             .iter()
             .any(|message| message.id.0 == *expected)
         {
-            return Err(HostError::internal(format!(
+            return Err(SessionExecutionError::internal(format!(
                 "committed step proof is missing input message `{expected}`"
             )));
         }
@@ -186,7 +192,7 @@ pub(super) fn verify_committed_step(
                     .is_none_or(|(owner, _, _)| owner != run_id.0.as_str())
         })
     {
-        return Err(HostError::internal(
+        return Err(SessionExecutionError::internal(
             "superseded step proof contains another Run's assistant output",
         ));
     }
@@ -195,7 +201,7 @@ pub(super) fn verify_committed_step(
     if matches!(returned_state, RunState::Ended(EndCause::NaturalEnd))
         && !suffix.iter().any(|message| message.role == Role::Assistant)
     {
-        return Err(HostError::internal(
+        return Err(SessionExecutionError::internal(
             "committed natural terminal step has no assistant output",
         ));
     }

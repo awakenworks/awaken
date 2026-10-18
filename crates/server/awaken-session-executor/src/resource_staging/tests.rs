@@ -33,7 +33,7 @@ async fn mount_projection_reads_current_resource_and_frozen_inputs_without_retai
     // M3 semantic delivery filters Memory from BOTH sources. M4 removal drops
     // every old projection, even through a retained component clone; recreating
     // the same Session id reads only the new slot, never an executor-owned cache.
-    let host = crate::HostDependencies::ephemeral(
+    let host = crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
         "stub",
     )

@@ -27,7 +27,7 @@ RESOURCE_AUTHORITIES = "crates/resources/awaken-resource-application/src/authori
 RESOURCE_CONTRACT = "crates/contract/awaken-resource-contract/src/lib.rs"
 RESOURCE_PERSISTENCE = "crates/resources/awaken-resource-persistence/src/lib.rs"
 RUNTIME_HOST_BUILD = "crates/server/awaken-session-executor/src/host/build.rs"
-# The Host is built from one `HostDependencies` value whose constructors and
+# The Host is built from one `SessionExecutorBuilder` value whose constructors and
 # `with_*` selections live in this module tree, over the capability groups,
 # so the construction surface is build.rs plus these two places.
 RUNTIME_HOST_DEPENDENCIES = "crates/server/awaken-session-executor/src/host/dependencies"

@@ -4,7 +4,7 @@
 //! Legacy Skill catalog refresh remains here because its support-file evidence
 //! must precede Environment deferral. This stage never creates an Environment.
 
-use crate::HostError;
+use crate::SessionExecutionError;
 use crate::host::{ClaimedRuntimeInput, RuntimePublicationIdentity};
 use awaken_runtime_contract::ExecutableAgentSnapshot;
 use awaken_session_realization::peers::EnvironmentPeer as _;
@@ -37,7 +37,7 @@ pub(super) async fn prepare(
     published_snapshot: Option<ExecutableAgentSnapshot>,
     claimed_attempt: Option<&ClaimedRuntimeInput>,
     force_defer_environment: bool,
-) -> Result<ContextPlan, HostError> {
+) -> Result<ContextPlan, SessionExecutionError> {
     let realizations = host.realization_executor.sessions();
     // Resolve the immutable publication before selecting an environment.
     // Environment identity is a consequence of provisioning, not of the ACP
@@ -76,12 +76,14 @@ pub(super) async fn prepare(
                 )
             })
             .transpose()
-            .map_err(HostError::bad_request)?
+            .map_err(SessionExecutionError::bad_request)?
             .unwrap_or_default();
         let source = Arc::new(
             awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new(frozen.clone())
                 .map_err(|error| {
-                    HostError::bad_request(format!("invalid Agent publication closure: {error}"))
+                    SessionExecutionError::bad_request(format!(
+                        "invalid Agent publication closure: {error}"
+                    ))
                 })?,
         );
         (source, Some(frozen))
@@ -108,7 +110,7 @@ pub(super) async fn prepare(
         );
         let transition =
             crate::session_resource::SessionResourceTransition::new(empty.clone(), empty)
-                .map_err(|error| HostError::internal(error.to_string()))?;
+                .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
         realizations
             .update_realization(thread, |r| r.stage_initial_resource_transition(transition))?;
     }
@@ -143,7 +145,7 @@ pub(super) async fn prepare(
             .skills
             .reload_cache_in(&workspace)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
     }
     let published_backend_ref = model_candidate
         .as_ref()
@@ -172,12 +174,12 @@ pub(super) async fn prepare(
         .iter()
         .any(|id| id == awaken_ext_background_task::BACKGROUND_TASK_PLUGIN_ID);
     if background_tasks_enabled && execution_backend.is_acp() {
-        return Err(HostError::bad_request(
+        return Err(SessionExecutionError::bad_request(
             "background_task requires the Native backend so the canonical tool executor remains process-addressable",
         ));
     }
     if background_tasks_enabled && !host.authority.hosts_session_application() {
-        return Err(HostError::bad_request(
+        return Err(SessionExecutionError::bad_request(
             "background_task requires a co-located Session application until completion attention has a claim-fenced Worker transport",
         ));
     }
@@ -191,7 +193,7 @@ pub(super) async fn prepare(
         None
     };
     if background_tasks_enabled && session_dispatch && background_attention.is_none() {
-        return Err(HostError::internal(
+        return Err(SessionExecutionError::internal(
             "Managed BackgroundTask Session has no background Run application authority",
         ));
     }
@@ -199,7 +201,7 @@ pub(super) async fn prepare(
         !awaken_session_realization_contract::requires_local_environment(&snapshot.resolved_spec)
     });
     if a2a_only && host.session_has_local_environment_inputs(thread, installed.as_ref())? {
-        return Err(HostError::bad_request(
+        return Err(SessionExecutionError::bad_request(
             "remote A2A execution cannot consume local Session Environment inputs",
         ));
     }

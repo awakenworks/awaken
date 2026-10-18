@@ -259,7 +259,7 @@ mod tests {
         for database_less_worker in [false, true] {
             for material_access in [false, true] {
                 for acp_installed in [false, true] {
-                    let mut host = crate::HostDependencies::ephemeral(
+                    let mut host = crate::SessionExecutorBuilder::ephemeral(
                         Arc::new(crate::host::MemoryHostModel),
                         "test-model",
                     )
@@ -327,7 +327,7 @@ mod tests {
         // from the Session request. Decision rules: R1=!C1=>neither; R2=C1&&!C2
         // =>WorkerRelay only; R3=C1+C2+C3=>both; R4=C4=>WorkerRelay only;
         // R5=C1+C2+undeclared backend=>no client-injection profile for it.
-        let without = (crate::HostDependencies::ephemeral(
+        let without = (crate::SessionExecutorBuilder::ephemeral(
             Arc::new(crate::host::MemoryHostModel),
             "test-model",
         )
@@ -339,7 +339,7 @@ mod tests {
             launch,
         ));
         let executor = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
-        let acp_without_materializer = (crate::HostDependencies::ephemeral(
+        let acp_without_materializer = (crate::SessionExecutorBuilder::ephemeral(
             Arc::new(crate::host::MemoryHostModel),
             "test-model",
         )
@@ -373,7 +373,7 @@ mod tests {
                 awaken_time::system_clock(),
             );
         let remote_profile = materializer.worker_relay_capabilities();
-        let mut with_remote = crate::HostDependencies::ephemeral(
+        let mut with_remote = crate::SessionExecutorBuilder::ephemeral(
             Arc::new(crate::host::MemoryHostModel),
             "test-model",
         )
@@ -390,7 +390,7 @@ mod tests {
             "R3: the installed Remote adapter must be visible to claim admission"
         );
 
-        let with = (crate::HostDependencies::ephemeral(
+        let with = (crate::SessionExecutorBuilder::ephemeral(
             Arc::new(crate::host::MemoryHostModel),
             "test-model",
         )
@@ -418,7 +418,7 @@ mod tests {
             "R2: material access alone does not declare an ACP client"
         );
 
-        let with_acp = (crate::HostDependencies::ephemeral(
+        let with_acp = (crate::SessionExecutorBuilder::ephemeral(
             Arc::new(crate::host::MemoryHostModel),
             "test-model",
         )

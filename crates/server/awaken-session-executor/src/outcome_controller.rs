@@ -8,7 +8,8 @@ use awaken_ext_goal::grader::{DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent_fr
 use awaken_ext_goal::outcome::{Definition, Id};
 use awaken_ext_goal::state::Binding;
 
-use crate::host::{HostError, HostOutcomeDrive};
+use crate::SessionExecutionError;
+use crate::host::HostOutcomeDrive;
 use crate::judge::HostAgentGrader;
 use crate::outcome_report::{controller_error, project_report};
 use crate::run_exec::BoundRunExecutor;
@@ -38,7 +39,7 @@ impl crate::Outcomes {
         description: &str,
         rubric: &str,
         max_iterations: u32,
-    ) -> Result<HostOutcomeDrive, HostError> {
+    ) -> Result<HostOutcomeDrive, SessionExecutionError> {
         self.prepare_outcome(
             thread,
             &awaken_session_event_contract::session_outcome_convenience_id(
@@ -52,9 +53,9 @@ impl crate::Outcomes {
             max_iterations,
         )
         .await?;
-        self.continue_outcome(thread)
-            .await?
-            .ok_or_else(|| HostError::internal("defined Outcome aggregate was not persisted"))
+        self.continue_outcome(thread).await?.ok_or_else(|| {
+            SessionExecutionError::internal("defined Outcome aggregate was not persisted")
+        })
     }
 
     /// Persist only the extension-owned Outcome aggregate. No Worker or Grader
@@ -66,7 +67,7 @@ impl crate::Outcomes {
         description: &str,
         rubric: &str,
         max_iterations: u32,
-    ) -> Result<u64, HostError> {
+    ) -> Result<u64, SessionExecutionError> {
         match self
             .execute_outcome_command(
                 thread,
@@ -90,7 +91,7 @@ impl crate::Outcomes {
     pub async fn continue_outcome(
         &self,
         thread: &str,
-    ) -> Result<Option<HostOutcomeDrive>, HostError> {
+    ) -> Result<Option<HostOutcomeDrive>, SessionExecutionError> {
         match self
             .execute_outcome_command(thread, OutcomeCommand::Resume)
             .await?
@@ -106,7 +107,7 @@ impl crate::Outcomes {
         &self,
         thread: &str,
         command: OutcomeCommand<'_>,
-    ) -> Result<OutcomeCommandResult, HostError> {
+    ) -> Result<OutcomeCommandResult, SessionExecutionError> {
         let realizations = self.installed_sessions.realizations();
         let definition = match &command {
             OutcomeCommand::Prepare {
@@ -116,7 +117,7 @@ impl crate::Outcomes {
                 ..
             } => Some(
                 Definition::new(*description, *rubric, *max_iterations)
-                    .map_err(|error| HostError::bad_request(error.to_string()))?,
+                    .map_err(|error| SessionExecutionError::bad_request(error.to_string()))?,
             ),
             OutcomeCommand::Resume => None,
         };
@@ -288,7 +289,7 @@ mod tests {
     /// The controller remains the sole Outcome owner; this fixture supplies only
     /// the production Dispatch runtime required by context construction.
     async fn outcome_test_host(model: Arc<dyn LlmExecutor>) -> Arc<crate::ExecutorComponents> {
-        let host = (crate::HostDependencies::ephemeral(model, "stub").await)
+        let host = (crate::SessionExecutorBuilder::ephemeral(model, "stub").await)
             .build()
             .expect("validated Host dependencies");
         let _managed = host.clone();

@@ -9,7 +9,6 @@
 //! run results, resume commands, host errors, and outcome reports.
 
 use super::*;
-pub use crate::host_error::{HostError, HostErrorKind};
 
 /// Proof that one Host step was read back from the authoritative ThreadCommit
 /// prefix. Public protocols may inspect the projected result fields, but cannot
@@ -128,7 +127,7 @@ impl HostResume {
     }
 }
 
-impl From<crate::RuntimeAuthorityError> for HostError {
+impl From<crate::RuntimeAuthorityError> for SessionExecutionError {
     fn from(error: crate::RuntimeAuthorityError) -> Self {
         match error {
             crate::RuntimeAuthorityError::Unavailable(message) => Self::unavailable(message),

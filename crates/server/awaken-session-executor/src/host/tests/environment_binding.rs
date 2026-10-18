@@ -12,7 +12,7 @@ async fn captured_environment_intent_survives_renewal_without_rebuilding_adopt()
     // This tests the Host request boundary; real Root CAS is covered by the
     // repository-backed admission tests, not this selected recording port.
     let thread = "captured-adopt-renewal";
-    let host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .build()
         .unwrap();
@@ -113,7 +113,7 @@ async fn managed_projection_without_a_lease_never_falls_back_to_unowned() {
         (true, false, true),
     ] {
         let thread = "managed-root-missing";
-        let host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        let host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
             .await
             .build()
             .unwrap();
@@ -353,7 +353,7 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
     // | Rule | C1 | C2 Session | C3 | Effect |
     // | R1   | Y  | N          | Y  | E1     |
     // | R2   | Y  | Y          | Y  | E2     |
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     let sink = Arc::new(BindingOrderSink {
@@ -440,7 +440,7 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
 
 #[tokio::test]
 async fn new_environment_binding_commits_once_before_concurrent_contexts_can_use_it() {
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     let sink = Arc::new(BindingOrderSink {
@@ -484,7 +484,7 @@ async fn root_response_loss_is_read_back_without_recreating_the_environment() {
     // R2=R1+C4 retries the same idempotent persist, publishes the Store-read
     // identity with no second provider effect, and later context lookup is pure
     // slot reuse.
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     let sink = Arc::new(ResponseLossBindingSink::default());
@@ -500,7 +500,11 @@ async fn root_response_loss_is_read_back_without_recreating_the_environment() {
         Err(error) => error,
         Ok(_) => panic!("R1 lost response must remain retryable"),
     };
-    assert_eq!(first_error.kind, HostErrorKind::Unavailable, "R1");
+    assert_eq!(
+        first_error.kind,
+        SessionExecutionErrorKind::Unavailable,
+        "R1"
+    );
     assert!(
         host.realization_executor
             .environments()
@@ -567,7 +571,7 @@ async fn already_applied_create_adopts_under_the_existing_lifecycle_lock() {
     let roots = ManagedSessionRootFixture::new().await;
     let host = roots
         .configure(
-            crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+            crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
                 .await
                 .with_store_dir(storage.path())
                 .await,
@@ -651,7 +655,7 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
     // | T1 | ephemeral | yes | E1 |
     // | T2 | durable injected | yes | E1 |
     // | T3 | durable injected | no | E2 |
-    let ephemeral = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let ephemeral = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     assert!(
@@ -668,7 +672,7 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
             .await
             .unwrap(),
     );
-    let local = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let local = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_ephemeral_dispatch(local_store.clone()))
     .build()
@@ -698,7 +702,7 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
             .await
             .unwrap(),
     );
-    let coordinator = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let coordinator = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_ephemeral_coordinator_dispatch(coordinator_store.clone()))
     .build()
@@ -733,7 +737,7 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
     // this regression owns the production Host transport-to-capacity wiring.
     let default =
         std::thread::available_parallelism().unwrap_or(std::num::NonZeroUsize::new(4).unwrap());
-    let local = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let local = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     assert_eq!(
@@ -758,10 +762,13 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
         ));
         let process = || {
             crate::DeploymentConfig::ephemeral()
-                .host_process(ExecutorComponents::mint_local_workspace(), system_clock())
+                .session_execution_process(
+                    ExecutorComponents::mint_local_workspace(),
+                    system_clock(),
+                )
                 .expect("ephemeral process")
         };
-        let worker = (crate::HostDependencies::for_worker(
+        let worker = (crate::SessionExecutorBuilder::for_worker(
             Arc::new(OkModel),
             "stub",
             {
@@ -801,7 +808,7 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
         let mut coordinator_only = process();
         coordinator_only.execution.local = crate::LocalExecution::RemoteWorkersOnly;
         assert!(
-            crate::HostDependencies::for_worker(
+            crate::SessionExecutorBuilder::for_worker(
                 Arc::new(OkModel),
                 "stub",
                 {
@@ -838,7 +845,7 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
 /// created under the rejected lease.
 #[tokio::test]
 async fn recovered_environment_waits_for_replacement_realization_before_publish() {
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     let sink = Arc::new(BindingOrderSink {
@@ -859,7 +866,7 @@ async fn recovered_environment_waits_for_replacement_realization_before_publish(
         Ok(_) => panic!("R1 missing realization reached provider I/O"),
         Err(error) => error,
     };
-    assert_eq!(error.kind, HostErrorKind::Unavailable, "R1");
+    assert_eq!(error.kind, SessionExecutionErrorKind::Unavailable, "R1");
     assert_eq!(error.code, "session_realization_stale", "R1");
     assert_eq!(sink.authorize_calls.load(Ordering::SeqCst), 1, "R1");
     assert_eq!(sink.calls.load(Ordering::SeqCst), 0, "R1");
@@ -905,7 +912,7 @@ async fn recovered_environment_waits_for_replacement_realization_before_publish(
 /// without reusing a substrate produced under an older epoch.
 #[tokio::test]
 async fn environment_binding_catches_up_across_multiple_realization_fences() {
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     let sink = Arc::new(MovingRealizationFenceSink {
@@ -925,7 +932,7 @@ async fn environment_binding_catches_up_across_multiple_realization_fences() {
         Ok(_) => panic!("C1 reached provider I/O"),
         Err(error) => error,
     };
-    assert_eq!(first.kind, HostErrorKind::Unavailable, "E1");
+    assert_eq!(first.kind, SessionExecutionErrorKind::Unavailable, "E1");
     for epoch in [2, 3] {
         host.run_assembly
             .install_session_realization_lease(
@@ -947,7 +954,7 @@ async fn environment_binding_catches_up_across_multiple_realization_fences() {
                 Ok(_) => panic!("C2 reached provider I/O"),
                 Err(error) => error,
             };
-            assert_eq!(error.kind, HostErrorKind::Unavailable, "E1");
+            assert_eq!(error.kind, SessionExecutionErrorKind::Unavailable, "E1");
         } else {
             result.expect("C3 commits");
         }
@@ -977,7 +984,7 @@ async fn environment_binding_catches_up_across_multiple_realization_fences() {
 /// | B3 | present | absent | observe remote Run | env=None, preserve binding |
 #[tokio::test]
 async fn missing_durable_environment_adoption_is_deferred_only_for_coordination() {
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     host.run_assembly
@@ -1039,7 +1046,7 @@ async fn binding_commit_failure_is_retryable_and_never_publishes_the_environment
     // fails before durable commit; C3 the caller retries. R1=C1+C2 retains one
     // hidden Candidate and returns Unavailable; R2=R1+C3 reuses that exact
     // Candidate, repeats only authorize/persist, and still publishes nothing.
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     let sink = Arc::new(BindingOrderSink {
@@ -1061,7 +1068,7 @@ async fn binding_commit_failure_is_retryable_and_never_publishes_the_environment
         Err(error) => error,
     };
     assert!(error.to_string().contains("binding store unavailable"));
-    assert_eq!(error.kind, HostErrorKind::Unavailable);
+    assert_eq!(error.kind, SessionExecutionErrorKind::Unavailable);
     let candidate = host
         .run_assembly
         .prepared_session_environment("binding-failure")
@@ -1098,7 +1105,7 @@ async fn on_tool_use_concurrent_hand_calls_create_and_persist_one_environment() 
     // never one sandbox per caller. Decision rule: release concurrent C1 and
     // require creation cardinality one plus shared identity.
     use awaken_session_configuration_contract::SessionInit;
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     install_test_session_application(&host);
@@ -1179,7 +1186,7 @@ async fn on_tool_use_binding_failure_never_publishes_the_environment() {
     // Constraint/Invariant: publication follows complete binding and cannot expose
     // a partial sandbox. Rules L5=C1=>E1+E2; L6=L5+C2=>E1+E2+E3.
     use awaken_session_configuration_contract::SessionInit;
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     install_test_session_application(&host);

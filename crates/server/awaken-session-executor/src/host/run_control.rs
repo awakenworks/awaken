@@ -4,7 +4,7 @@
 //! Run control of a resident Session: wake and pause its current attempt,
 //! select the controls that interrupt it, and author the resume inputs that
 //! durable delivery stages through the canonical dispatch control owner.
-use super::{HostError, SessionCtx};
+use super::{SessionCtx, SessionExecutionError};
 use awaken_agent_contract::agent::{
     awaiting::{AwaitReason, ResumeTicket},
     run::Id as RunId,
@@ -59,19 +59,23 @@ impl DurableRunCancellation {
     }
 
     /// Persist cancellation of `run` and signal the resident attempt of `thread`.
-    pub(crate) async fn cancel(&self, thread: &str, run: &str) -> Result<(), HostError> {
+    pub(crate) async fn cancel(
+        &self,
+        thread: &str,
+        run: &str,
+    ) -> Result<(), SessionExecutionError> {
         let resident = self
             .installed_sessions
             .read_run(thread, |run| run.context.clone())?
             .flatten();
         let (owner, claimer) = match &self.control {
             DurableCancellationControl::NoLocalClaimer => {
-                return Err(HostError::bad_request(
+                return Err(SessionExecutionError::bad_request(
                     "durable dispatch not enabled (set typed durable ingress to run the pool)",
                 ));
             }
             DurableCancellationControl::NoDispatchOwner => {
-                return Err(HostError::internal(
+                return Err(SessionExecutionError::internal(
                     "operation requires a Coordinator dispatch owner",
                 ));
             }
@@ -83,7 +87,7 @@ impl DurableRunCancellation {
                 resident.as_ref().map(|ctx| ctx.live_control()),
             )
             .await
-            .map_err(HostError::from)
+            .map_err(SessionExecutionError::from)
     }
 }
 
@@ -227,7 +231,7 @@ impl crate::SessionRuns {
     /// Worker authority loss must stop in-flight tool processes before local
     /// realization revocation detaches their process bindings. Otherwise a native
     /// process can continue writing after this Worker has dropped authority.
-    pub async fn interrupt_all_session_runs(&self) -> Result<usize, HostError> {
+    pub async fn interrupt_all_session_runs(&self) -> Result<usize, SessionExecutionError> {
         let session_ids = self.installed_sessions.session_ids()?;
         let mut interrupted = 0;
         for session_id in session_ids {
@@ -240,7 +244,10 @@ impl crate::SessionRuns {
         Ok(interrupted)
     }
 
-    fn resident_context(&self, thread: &str) -> Result<Option<Arc<SessionCtx>>, HostError> {
+    fn resident_context(
+        &self,
+        thread: &str,
+    ) -> Result<Option<Arc<SessionCtx>>, SessionExecutionError> {
         Ok(self
             .installed_sessions
             .read_run(thread, |run| run.context.clone())?
@@ -248,13 +255,17 @@ impl crate::SessionRuns {
     }
 
     /// The canonical durable control owner over this process's dispatch queue and pool.
-    pub(crate) fn durable_run_control(&self) -> Result<DurableRunControl, HostError> {
+    pub(crate) fn durable_run_control(&self) -> Result<DurableRunControl, SessionExecutionError> {
         Ok(self
             .dispatch
             .durable_run_control(self.coordinator_dispatch()?))
     }
 
-    pub async fn cancel_durable(&self, thread: &str, run: &str) -> Result<(), HostError> {
+    pub async fn cancel_durable(
+        &self,
+        thread: &str,
+        run: &str,
+    ) -> Result<(), SessionExecutionError> {
         self.run_assembly
             .durable_run_cancellation
             .cancel(thread, run)
@@ -263,7 +274,7 @@ impl crate::SessionRuns {
 
     /// Wake the resident Run's current attempt. A cold Session has no
     /// subscriber; this never materializes one.
-    pub async fn wake_durable(&self, thread: &str, run: &str) -> Result<(), HostError> {
+    pub async fn wake_durable(&self, thread: &str, run: &str) -> Result<(), SessionExecutionError> {
         self.require_durable_delivery()?;
         let runtime = self
             .resident_context(thread)?
@@ -275,7 +286,7 @@ impl crate::SessionRuns {
         LiveAttemptControl::new(runtime)
             .wake(run)
             .await
-            .map_err(|error| HostError::from(AdmissionError::from(error)))
+            .map_err(|error| SessionExecutionError::from(AdmissionError::from(error)))
     }
 
     /// Pause the resident Run's current attempt (`run`, or the active one).
@@ -283,7 +294,7 @@ impl crate::SessionRuns {
         &self,
         thread: &str,
         run: Option<&str>,
-    ) -> Result<String, HostError> {
+    ) -> Result<String, SessionExecutionError> {
         self.require_durable_delivery()?;
         let resident = self.resident_context(thread)?;
         let no_active = || AdmissionError::rejected("thread has no locally owned active run");
@@ -314,7 +325,11 @@ impl crate::SessionRuns {
         Ok(run)
     }
 
-    pub async fn stage_decision(&self, thread: &str, allow: bool) -> Result<String, HostError> {
+    pub async fn stage_decision(
+        &self,
+        thread: &str,
+        allow: bool,
+    ) -> Result<String, SessionExecutionError> {
         let ctx = self.run_assembly.ctx_for(thread, None).await?;
         self.dispatch_pool_or_err()?;
         let thread = ThreadId(thread.to_owned());
@@ -322,19 +337,19 @@ impl crate::SessionRuns {
             .commit
             .open_wait_for_thread(&thread)
             .await
-            .map_err(HostError::internal)?;
+            .map_err(SessionExecutionError::internal)?;
         let input = decision_input(thread, awaiting, allow)?;
         self.durable_run_control()?
             .stage_input(input)
             .await
-            .map_err(HostError::from)
+            .map_err(SessionExecutionError::from)
     }
 
     pub async fn stage_manual_resume(
         &self,
         thread: &str,
         text: String,
-    ) -> Result<String, HostError> {
+    ) -> Result<String, SessionExecutionError> {
         let ctx = self.run_assembly.ctx_for(thread, None).await?;
         self.dispatch_pool_or_err()?;
         let thread = ThreadId(thread.to_owned());
@@ -342,12 +357,12 @@ impl crate::SessionRuns {
             .commit
             .open_wait_for_thread(&thread)
             .await
-            .map_err(HostError::internal)?;
+            .map_err(SessionExecutionError::internal)?;
         let input = manual_resume_input(thread, awaiting, text)?;
         self.durable_run_control()?
             .stage_input(input)
             .await
-            .map_err(HostError::from)
+            .map_err(SessionExecutionError::from)
     }
 }
 
@@ -486,19 +501,31 @@ mod durable_cancellation_tests {
             match rule {
                 "D1" => {
                     let error = outcome.unwrap_err();
-                    assert_eq!(error.kind, crate::HostErrorKind::BadRequest, "{rule}");
+                    assert_eq!(
+                        error.kind,
+                        crate::SessionExecutionErrorKind::BadRequest,
+                        "{rule}"
+                    );
                     assert!(error.message.contains("not enabled"), "{rule}");
                     assert_eq!(hints, 0, "{rule}");
                 }
                 "D2" => {
                     let error = outcome.unwrap_err();
-                    assert_eq!(error.kind, crate::HostErrorKind::Internal, "{rule}");
+                    assert_eq!(
+                        error.kind,
+                        crate::SessionExecutionErrorKind::Internal,
+                        "{rule}"
+                    );
                     assert!(error.message.contains("dispatch owner"), "{rule}");
                     assert_eq!(hints, 0, "{rule}");
                 }
                 "D3" => {
                     let error = outcome.unwrap_err();
-                    assert_eq!(error.kind, crate::HostErrorKind::BadRequest, "{rule}");
+                    assert_eq!(
+                        error.kind,
+                        crate::SessionExecutionErrorKind::BadRequest,
+                        "{rule}"
+                    );
                     assert!(error.message.contains("not found"), "{rule}");
                     assert_eq!(hints, 0, "{rule}");
                 }

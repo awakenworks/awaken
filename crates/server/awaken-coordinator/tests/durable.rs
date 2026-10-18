@@ -13,7 +13,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_coordinator::{ExecutorComponents, HostResume};
 use awaken_scenario_host::{
-    CustomToolModel, HostDependencies, build_unmounted_dependencies,
+    CustomToolModel, SessionExecutorBuilder, build_unmounted_dependencies,
     build_unmounted_dependencies_with_deployment,
 };
 
@@ -32,7 +32,7 @@ fn text_of(message: &Message) -> String {
         .collect()
 }
 
-fn host_with_client_tool(dependencies: HostDependencies) -> Arc<ExecutorComponents> {
+fn host_with_client_tool(dependencies: SessionExecutorBuilder) -> Arc<ExecutorComponents> {
     let client_tools = HashSet::from(["submit_answer".to_string()]);
     (dependencies.with_client_tools(client_tools))
         .build()

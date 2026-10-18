@@ -3,7 +3,7 @@
 //! Acquire the lifecycle-owned Environment and authoritative read/commit ports.
 
 use super::plan::ContextPlan;
-use crate::HostError;
+use crate::SessionExecutionError;
 use crate::config::effective_tool_authorization;
 use crate::host::session::SkillDeliveryEvidence;
 use crate::host::session::input_projection::pre_authorized_tool_ids;
@@ -43,7 +43,7 @@ pub(super) async fn acquire(
     requested_purpose: RuntimeContextPurpose,
     force_defer_environment: bool,
     recover_revoked_legacy: bool,
-) -> Result<ContextResources, HostError> {
+) -> Result<ContextResources, SessionExecutionError> {
     let installed = &plan.installed;
     let selected_agent = &plan.selected_agent;
     let frozen_skill_versions = &plan.frozen_skill_versions;
@@ -84,7 +84,7 @@ pub(super) async fn acquire(
         })?
         .unwrap_or(false);
     if a2a_only && !environment_owner_is_vacant {
-        return Err(HostError::bad_request(
+        return Err(SessionExecutionError::bad_request(
             "remote A2A execution cannot bind a local Session Environment",
         ));
     }
@@ -98,7 +98,7 @@ pub(super) async fn acquire(
         && !environment_owner_is_vacant
         && !environment_owner_has_unpublished_candidate
     {
-        return Err(HostError::internal(format!(
+        return Err(SessionExecutionError::internal(format!(
             "Session {thread} Environment transition must be recovered before context construction"
         )));
     }
@@ -125,7 +125,7 @@ pub(super) async fn acquire(
     // Threads must remain independent of the Managed application port.
     let coordination_endpoint = host.capabilities.coordination_endpoint();
     if session_dispatch && coordination_endpoint.is_none() {
-        return Err(HostError::internal(
+        return Err(SessionExecutionError::internal(
             "Managed Session has no Session application authority",
         ));
     }
@@ -171,7 +171,7 @@ pub(super) async fn acquire(
             Some(retained.expect("Environment admission selected the retained owner"))
         }
         RuntimeEnvironmentAdmission::RejectMissingBinding => {
-            return Err(HostError::internal(format!(
+            return Err(SessionExecutionError::internal(format!(
                 "Session {thread} durable Environment was not adopted before context construction"
             )));
         }
@@ -221,7 +221,7 @@ pub(super) async fn acquire(
         let mut combined = awaken_session_mcp::McpWiring::empty();
         for projection in &active_mcp {
             let wiring = projection.native_wiring.as_ref().ok_or_else(|| {
-                HostError::internal(format!(
+                SessionExecutionError::internal(format!(
                     "native MCP generation {}:{} has no staged connection",
                     projection.request.generation.attachment_id().0,
                     projection.request.generation.generation().version()

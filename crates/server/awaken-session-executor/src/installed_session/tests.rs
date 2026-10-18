@@ -102,7 +102,7 @@ async fn unpolled_staging_future_drop_releases_drain_without_false_proof() {
     // owner. Effects: E1 drain remains pending before C2, E2 Future drop
     // completes the same activity, and E3 the retry emits exact Removed
     // proof only after the unstarted spawn owner is known to be gone.
-    let host = (crate::HostDependencies::ephemeral(
+    let host = (crate::SessionExecutorBuilder::ephemeral(
         std::sync::Arc::new(crate::no_model::NoModelConfiguredExecutor),
         "stub",
     )
@@ -456,7 +456,7 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
     use crate::staged_resources::{CompiledEffectiveInputs, ResourceBindingCheck, StagedResources};
     use awaken_provisioning_contract as pc;
     use std::panic::{AssertUnwindSafe, catch_unwind};
-    let host = crate::HostDependencies::ephemeral(
+    let host = crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
         "stub",
     )
@@ -608,7 +608,7 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
                     },
                     async {
                         polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                        Ok::<_, crate::HostError>(Vec::new())
+                        Ok::<_, crate::SessionExecutionError>(Vec::new())
                     },
                 ),
             )
@@ -777,7 +777,7 @@ async fn local_activity_combination_keeps_real_poison_fault_order() {
         for (primary_active, status) in [(true, Status::Open), (false, Status::Completed)] {
             let root_id = format!("query-slot-root-{legacy}-{primary_active}-{status:?}");
             let child_id = format!("query-slot-child-{legacy}-{primary_active}-{status:?}");
-            let host = crate::HostDependencies::ephemeral(
+            let host = crate::SessionExecutorBuilder::ephemeral(
                 Arc::new(crate::no_model::NoModelConfiguredExecutor),
                 "stub",
             )
@@ -846,7 +846,7 @@ async fn local_activity_combination_keeps_real_poison_fault_order() {
                         (&mut writer).await.expect("Q9 writer joined within reader"),
                         "Q9 actual caught callback poisoned Slot"
                     );
-                    Ok::<_, crate::HostError>(vec![relationship(&child_id, status)])
+                    Ok::<_, crate::SessionExecutionError>(vec![relationship(&child_id, status)])
                 },
             ))
             .catch_unwind()
@@ -890,7 +890,7 @@ async fn local_activity_combination_keeps_real_poison_fault_order() {
         ] {
             let root_id = format!("query-marker-root-{legacy}-{primary_fault}-{status:?}");
             let child_id = format!("query-marker-child-{legacy}-{primary_fault}-{status:?}");
-            let host = crate::HostDependencies::ephemeral(
+            let host = crate::SessionExecutorBuilder::ephemeral(
                 Arc::new(crate::no_model::NoModelConfiguredExecutor),
                 "stub",
             )
@@ -952,7 +952,7 @@ async fn local_activity_combination_keeps_real_poison_fault_order() {
                 },
                 async {
                     polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    Ok::<_, crate::HostError>(vec![relationship(&child_id, status)])
+                    Ok::<_, crate::SessionExecutionError>(vec![relationship(&child_id, status)])
                 },
             ))
             .catch_unwind()

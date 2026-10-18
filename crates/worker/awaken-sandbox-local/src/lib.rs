@@ -1397,9 +1397,6 @@ pub(crate) fn rooted_raw_tools(
         .collect()
 }
 
-/// Canonical Resource content identity used to verify provisioning bytes.
-pub use awaken_resource_contract::content_id as content_fingerprint;
-
 /// A `SKILL.md`-bearing directory discovered under the environment; the
 /// Session environment contract owns the value (G3: `dir` is logical).
 pub use awaken_session_environment_contract::DiscoveredSkillFile;
@@ -1449,20 +1446,6 @@ mod tests {
 
     fn test_outputs() -> &'static Path {
         Path::new("/env/mnt/session/outputs")
-    }
-
-    #[test]
-    fn content_fingerprint_is_blake3_and_matches_file_store() {
-        // Cause/effect graph: C1 identical bytes enter the Resource and Sandbox
-        // paths; C2 the shared contract selects BLAKE3. Effects: E1 both paths
-        // produce one stable identity; E2 the legacy 16-hex hash cannot recur.
-        // Decision rule H1: C1+C2 -> E1+E2 (64-hex canonical digest).
-        let bytes = b"provisioned bytes";
-        assert_eq!(
-            content_fingerprint(bytes),
-            awaken_resource_contract::content_id(bytes)
-        );
-        assert_eq!(content_fingerprint(bytes).len(), 64);
     }
 
     #[test]

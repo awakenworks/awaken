@@ -307,9 +307,11 @@ async fn successful_retirement_cannot_remove_a_successor_session_relay_route() {
             point: GatePoint::AfterCanonicalFinish,
         });
         let release = ReleaseOnDrop(gate.clone());
-        let mut dependencies =
-            crate::HostDependencies::ephemeral(Arc::new(crate::host::MemoryHostModel), "model")
-                .await;
+        let mut dependencies = crate::SessionExecutorBuilder::ephemeral(
+            Arc::new(crate::host::MemoryHostModel),
+            "model",
+        )
+        .await;
         let observed = Arc::new(std::sync::OnceLock::new());
         let observed_by_factory = observed.clone();
         let original_gate = gate.clone();
@@ -551,7 +553,7 @@ async fn absent_component_retirement_cannot_close_or_remove_a_later_session() {
         let observed = Arc::new(std::sync::OnceLock::new());
         let factory_observed = observed.clone();
         let factory_gate = gate.clone();
-        let mut dependencies = crate::HostDependencies::ephemeral(
+        let mut dependencies = crate::SessionExecutorBuilder::ephemeral(
             Arc::new(crate::NoModelConfiguredExecutor), "stub",
         ).await;
         dependencies.realization_source = Some(Box::new(move |canonical| {

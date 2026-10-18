@@ -16,21 +16,23 @@ async fn idle_resident_context_releases_slots_when_last_host_owner_drops() {
     // inner chain via the existing decorator seam; this test adds no owner.
     let projection = Arc::new(Mutex::new(None::<Weak<dyn RunAttemptExecutor>>));
     let observed = projection.clone();
-    let host =
-        crate::HostDependencies::ephemeral(Arc::new(crate::NoModelConfiguredExecutor), "stub")
-            .await
-            .with_attempt_decorator(Arc::new(move |inner| {
-                assert!(
-                    observed
-                        .lock()
-                        .unwrap()
-                        .replace(Arc::downgrade(&inner))
-                        .is_none()
-                );
-                inner
-            }))
-            .build()
-            .expect("normal Host composition");
+    let host = crate::SessionExecutorBuilder::ephemeral(
+        Arc::new(crate::NoModelConfiguredExecutor),
+        "stub",
+    )
+    .await
+    .with_attempt_decorator(Arc::new(move |inner| {
+        assert!(
+            observed
+                .lock()
+                .unwrap()
+                .replace(Arc::downgrade(&inner))
+                .is_none()
+        );
+        inner
+    }))
+    .build()
+    .expect("normal Host composition");
     let session = "idle-context-owner-release";
     let slots_before = Arc::strong_count(&host.run_assembly.installed_sessions);
     let context = host

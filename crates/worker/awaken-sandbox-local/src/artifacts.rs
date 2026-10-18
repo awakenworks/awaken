@@ -4,7 +4,8 @@
 
 use awaken_provisioning_contract as pc;
 
-use crate::{IsolatedRoot, content_fingerprint};
+use crate::IsolatedRoot;
+use awaken_resource_contract::content_id;
 
 /// Capture the outputs tree once as `(artifact, bytes)` pairs, sorted by sandbox
 /// path. The descriptor-relative leaf binds the walk to `root_identity` and
@@ -31,7 +32,7 @@ pub(crate) fn scan_outputs(
             outputs_path.trim_end_matches('/'),
             relative.replace('\\', "/")
         );
-        let content_hash = content_fingerprint(&file.bytes);
+        let content_hash = content_id(&file.bytes);
         Ok((
             pc::Artifact {
                 id: content_hash.clone(),
@@ -92,7 +93,7 @@ mod tests {
         assert_eq!(arts[0].0.size_bytes, 3);
         // Cause C1: regular output bytes; effect E1: Artifact.id is the canonical
         // content hash (ADR-0038), independent of its logical path.
-        assert_eq!(arts[0].0.id, content_fingerprint(b"bbb"));
+        assert_eq!(arts[0].0.id, content_id(b"bbb"));
         assert_eq!(arts[0].0.id, arts[0].0.content_hash);
         assert_eq!(arts[1].1, b"aa");
     }

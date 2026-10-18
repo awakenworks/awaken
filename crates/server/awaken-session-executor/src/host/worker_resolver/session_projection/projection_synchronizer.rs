@@ -274,7 +274,7 @@ mod tests {
         let thread = "claimed-ready-durable-hand-rebuild";
         let storage = tempfile::tempdir().expect("durable Hand storage");
         let mut dependencies =
-            crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub").await;
+            crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub").await;
         dependencies.env.session_provider =
             awaken_session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
                 storage.path(),
@@ -1311,7 +1311,7 @@ mod tests {
 
         let thread = "claimed-ready-v1-preinstall-rebuild";
         let storage = tempfile::tempdir().expect("legacy rebuild storage");
-        let host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+        let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
             .await
             .with_store_dir(storage.path())
             .await)
@@ -1452,7 +1452,7 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        let host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+        let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
             .await
             .with_store_dir(storage.path())
             .await
@@ -1589,7 +1589,7 @@ mod tests {
 
         let thread = "claimed-remote-a2a-retiring-local";
         let storage = tempfile::tempdir().expect("remote A2A guard storage");
-        let host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+        let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
             .await
             .with_store_dir(storage.path())
             .await)

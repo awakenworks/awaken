@@ -695,7 +695,7 @@ async fn runtime_attach_copies_resolved_files_but_process_reattach_remains_unsup
         assert_eq!(receipt.realization, pc::Realization::Copy, "R1");
         assert_eq!(
             receipt.content_hash,
-            Some(awaken_sandbox_local::content_fingerprint(&expected)),
+            Some(awaken_resource_contract::content_id(&expected)),
             "R1"
         );
         for source in [

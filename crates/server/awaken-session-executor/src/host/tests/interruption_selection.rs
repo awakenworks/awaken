@@ -33,7 +33,7 @@ async fn delayed_interruption_preserves_the_successor(start_with_active_run: boo
             .await
             .expect("real SQLite dispatch authority"),
     );
-    let mut dependencies = crate::HostDependencies::ephemeral(model.clone(), "scripted")
+    let mut dependencies = crate::SessionExecutorBuilder::ephemeral(model.clone(), "scripted")
         .await
         .with_ephemeral_dispatch(dispatch);
     dependencies.execution.ingress = crate::RunIngress::Direct;

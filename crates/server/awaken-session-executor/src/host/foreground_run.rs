@@ -31,9 +31,9 @@ pub(crate) struct ForegroundRun {
 #[error("the Session's foreground Run record is unreadable after a panic")]
 pub(crate) struct ForegroundRunPoisoned;
 
-impl From<ForegroundRunPoisoned> for crate::HostError {
+impl From<ForegroundRunPoisoned> for crate::SessionExecutionError {
     fn from(error: ForegroundRunPoisoned) -> Self {
-        crate::HostError::classified("foreground_run_poisoned", error.to_string())
+        crate::SessionExecutionError::classified("foreground_run_poisoned", error.to_string())
     }
 }
 

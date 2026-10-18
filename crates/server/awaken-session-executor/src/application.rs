@@ -168,7 +168,7 @@ impl crate::RunAssembly {
         &self,
         session_id: &str,
         lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
-    ) -> Result<(), crate::HostError> {
+    ) -> Result<(), crate::SessionExecutionError> {
         // The test fixture installs the Session whose lease it installs.
         self.installed_sessions
             .install(session_id)
@@ -182,7 +182,7 @@ impl crate::RunAssembly {
                     if !r.install_lease(
                         awaken_session_realization::test_support::test_observed_lease(lease),
                     ) {
-                        return Err(crate::HostError::internal(
+                        return Err(crate::SessionExecutionError::internal(
                             "test lease installation rejected",
                         ));
                     }
@@ -254,14 +254,16 @@ impl crate::RunAssembly {
     pub async fn prepare_session_without_run(
         &self,
         assignment: &awaken_session_realization_contract::SessionPreparationAssignment,
-    ) -> Result<(), crate::HostError> {
+    ) -> Result<(), crate::SessionExecutionError> {
         let control = self
             .capabilities
             .worker
             .session_control
             .as_ref()
             .ok_or_else(|| {
-                crate::HostError::internal("Worker has no Session realization Control client")
+                crate::SessionExecutionError::internal(
+                    "Worker has no Session realization Control client",
+                )
             })?;
         crate::application::worker_projection::realize_session(
             self,
@@ -277,7 +279,9 @@ impl crate::RunAssembly {
             awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error,
         )
         .map_err(|error| {
-            crate::HostError::internal(format!("Session preparation remained pending: {error}"))
+            crate::SessionExecutionError::internal(format!(
+                "Session preparation remained pending: {error}"
+            ))
         })
     }
 
@@ -288,9 +292,9 @@ impl crate::RunAssembly {
     pub async fn recover_terminal_cleanup_assignments(
         &self,
         target: awaken_session_realization_contract::SessionRealizationTarget,
-    ) -> Result<usize, crate::HostError> {
+    ) -> Result<usize, crate::SessionExecutionError> {
         let control = self.authority.terminal_cleanup_control().ok_or_else(|| {
-            crate::HostError::internal(
+            crate::SessionExecutionError::internal(
                 "active Worker Session projection has no terminal cleanup Control client",
             )
         })?;
@@ -313,7 +317,7 @@ impl crate::RunAssembly {
             &crate::session_resource::SessionRealizationLease,
             &Arc<tokio::sync::Mutex<()>>,
         )>,
-    ) -> Result<bool, crate::HostError> {
+    ) -> Result<bool, crate::SessionExecutionError> {
         // Close admission under the synchronous slot mutex before waiting for
         // either async owner lock. Retain the exact closed projection for the
         // post-lock CAS; neither a renewal reply nor cancellation reopens it.
@@ -340,7 +344,7 @@ impl crate::RunAssembly {
         session_id: &str,
         selected: crate::installed_session::ClosedSessionRealization,
         interrupt: bool,
-    ) -> Result<bool, crate::HostError> {
+    ) -> Result<bool, crate::SessionExecutionError> {
         let run = if interrupt { selected.run? } else { None };
         self.realization_executor
             .environments()
@@ -359,7 +363,7 @@ impl crate::RunAssembly {
                 },
             )
             .await
-            .map_err(crate::HostError::from)
+            .map_err(crate::SessionExecutionError::from)
     }
 
     #[cfg(test)]
@@ -369,7 +373,7 @@ impl crate::RunAssembly {
         mut selected: crate::installed_session::ClosedSessionRealization,
         interrupt: bool,
         after_check: impl FnOnce() + Send + 'static,
-    ) -> Result<bool, crate::HostError> {
+    ) -> Result<bool, crate::SessionExecutionError> {
         selected.after_check = Some(Box::new(after_check));
         self.retire_selected_session_realization(session_id, selected, interrupt)
             .await
@@ -378,7 +382,9 @@ impl crate::RunAssembly {
     /// Revoke every process-local Session projection after Worker authority is
     /// no longer provable. Durable Session environments remain available for
     /// adoption; only terminal Session lifecycle commands may dispose them.
-    pub async fn revoke_all_session_realizations(&self) -> Result<usize, crate::HostError> {
+    pub async fn revoke_all_session_realizations(
+        &self,
+    ) -> Result<usize, crate::SessionExecutionError> {
         self.finish_session_realization_revocation(self.begin_session_realization_revocation()?)
             .await
     }
@@ -387,7 +393,7 @@ impl crate::RunAssembly {
     /// drain/interruption. This selection is not a new Worker registry lease.
     pub fn begin_session_realization_revocation(
         &self,
-    ) -> Result<SessionRealizationRevocation, crate::HostError> {
+    ) -> Result<SessionRealizationRevocation, crate::SessionExecutionError> {
         Ok(SessionRealizationRevocation {
             selected: self.installed_sessions.close_all_realizations()?,
         })
@@ -399,7 +405,7 @@ impl crate::RunAssembly {
     pub async fn finish_session_realization_revocation(
         &self,
         revocation: SessionRealizationRevocation,
-    ) -> Result<usize, crate::HostError> {
+    ) -> Result<usize, crate::SessionExecutionError> {
         let results = futures_util::future::join_all(revocation.selected.into_iter().map(
             |(id, selected)| async move {
                 self.retire_selected_session_realization(&id, selected, false)
@@ -430,7 +436,7 @@ impl crate::RunAssembly {
         &self,
         thread: &str,
         init: &awaken_session_configuration_contract::SessionInit,
-    ) -> Result<(), crate::HostError> {
+    ) -> Result<(), crate::SessionExecutionError> {
         let environment = environment_projection::project_environment(&init.environment);
         self.installed_sessions
             .install_with(thread, |slot| {
@@ -450,7 +456,7 @@ impl crate::RunAssembly {
         realization_lease: Option<
             awaken_session_realization_contract::ObservedSessionRealizationLease,
         >,
-    ) -> Result<(), crate::HostError> {
+    ) -> Result<(), crate::SessionExecutionError> {
         self.install_frozen_session_projection_with_resource_authority(
             thread,
             projection,
@@ -473,7 +479,7 @@ impl crate::RunAssembly {
         &self,
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
-    ) -> Result<(), crate::HostError> {
+    ) -> Result<(), crate::SessionExecutionError> {
         self.install_frozen_session_projection_with_resource_authority(
             thread,
             projection,
@@ -491,12 +497,12 @@ impl crate::RunAssembly {
         claim: Option<&RunClaim>,
         resource_mode: FrozenResourceProjectionMode,
         realization_lease: Option<ObservedSessionRealizationLease>,
-    ) -> Result<(), crate::HostError> {
+    ) -> Result<(), crate::SessionExecutionError> {
         let realization = &self.realization_executor;
         let exec = realization.environments();
         let sessions = &realization.sessions();
         if projection.baseline.fingerprint.0.trim().is_empty() {
-            return Err(crate::HostError::internal(
+            return Err(crate::SessionExecutionError::internal(
                 "frozen Session baseline fingerprint must not be empty",
             ));
         }
@@ -509,7 +515,7 @@ impl crate::RunAssembly {
         });
         let resource_transition = projection
             .resource_transition(resource_mode.transition_use())
-            .map_err(|error| crate::HostError::internal(error.to_string()))?;
+            .map_err(|error| crate::SessionExecutionError::internal(error.to_string()))?;
         let baseline = projection.baseline.clone();
         let init = projection.session_init();
         let environment_projection = environment_projection::project_environment(&init.environment);
@@ -534,7 +540,7 @@ impl crate::RunAssembly {
         frozen_inputs
             .validate_publication(publication.as_ref())
             .map_err(|_| {
-                crate::HostError::internal(
+                crate::SessionExecutionError::internal(
                     "Session realization cannot replace its immutable Agent publication",
                 )
             })?;
@@ -576,7 +582,7 @@ impl crate::RunAssembly {
 
         let baseline_to_install = if let Some(existing) = frozen_inputs.baseline.as_ref() {
             if existing.fingerprint != baseline.fingerprint {
-                return Err(crate::HostError::internal(format!(
+                return Err(crate::SessionExecutionError::internal(format!(
                     "thread {thread} is already bound to a different frozen Session baseline"
                 )));
             }
@@ -593,7 +599,7 @@ impl crate::RunAssembly {
                 })?
                 .unwrap_or(false);
             if is_realized {
-                return Err(crate::HostError::internal(format!(
+                return Err(crate::SessionExecutionError::internal(format!(
                     "thread {thread} was realized before its frozen Session baseline"
                 )));
             }
@@ -607,7 +613,7 @@ impl crate::RunAssembly {
             )
             && projection.resource_revision > 0
         {
-            return Err(crate::HostError::internal(format!(
+            return Err(crate::SessionExecutionError::internal(format!(
                 "thread {thread} cannot cold-materialize frozen Session Resources during lease-only renewal"
             )));
         }
@@ -630,7 +636,7 @@ impl crate::RunAssembly {
             let incoming_previous_matches = existing
                 .as_ref()
                 .is_some_and(|existing| existing.desired() == resource_transition.previous());
-            return Err(crate::HostError::internal(format!(
+            return Err(crate::SessionExecutionError::internal(format!(
                 "thread {thread} cannot replace its current Session Resource projection \
                  (mode {resource_mode:?}, existing desired revision {existing_revision:?}, \
                  incoming {}->{}, previous matches existing desired: {incoming_previous_matches})",
@@ -662,7 +668,7 @@ impl crate::RunAssembly {
                     newer,
                     pending_resource_reservation,
                 )?;
-                Ok::<_, crate::HostError>(())
+                Ok::<_, crate::SessionExecutionError>(())
             })??;
             let mcp = (&self.mcp, self.installed_sessions.as_ref());
             exec.retire_replaced_scoped_execution(realization.peers(), thread, proof, mcp)
@@ -698,7 +704,7 @@ impl crate::RunAssembly {
                         None => std::future::pending().await,
                     }
                 } => return Err(error.into()),
-                result = stage => result.map_err(|error| crate::HostError::internal(error.to_string()))?,
+                result = stage => result.map_err(|error| crate::SessionExecutionError::internal(error.to_string()))?,
             }
         }
         if let Some(preparation) = &preparation {
@@ -724,7 +730,7 @@ impl crate::RunAssembly {
                     preparation.finish(&mut slot.realization)?;
                 } else if let Some(lease) = realization_lease {
                     if !slot.realization.install_lease(lease) {
-                        return Err(crate::HostError::internal(
+                        return Err(crate::SessionExecutionError::internal(
                             "Session realization time proof is not current",
                         ));
                     }
@@ -770,7 +776,7 @@ impl crate::RunAssembly {
                 // remains authorized to clear it with the rest of live execution
                 // state.
                 slot.run.session_dispatch = true;
-                Ok::<_, crate::HostError>(())
+                Ok::<_, crate::SessionExecutionError>(())
             })??;
             Ok(())
         })
@@ -783,7 +789,7 @@ impl crate::RunAssembly {
     pub(crate) async fn install_test_terminal_cleanup_projection(
         &self,
         assignment: &awaken_session_realization_contract::SessionTerminalCleanupAssignment,
-    ) -> Result<(), crate::HostError> {
+    ) -> Result<(), crate::SessionExecutionError> {
         let started = awaken_authority_clock::authority_proof_started().unwrap();
         self.install_terminal_cleanup_projection(
             assignment,
@@ -799,10 +805,10 @@ impl crate::RunAssembly {
         &self,
         assignment: &awaken_session_realization_contract::SessionTerminalCleanupAssignment,
         proof: awaken_session_realization_contract::ObservedSessionRealizationLease,
-    ) -> Result<(), crate::HostError> {
+    ) -> Result<(), crate::SessionExecutionError> {
         let realizations = self.installed_sessions.realizations();
         if proof.lease != assignment.authority.lease {
-            return Err(crate::HostError::internal(
+            return Err(crate::SessionExecutionError::internal(
                 "terminal assignment time proof names another lease",
             ));
         }
@@ -829,7 +835,7 @@ impl crate::RunAssembly {
         &self,
         thread: &str,
         environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
-    ) -> Result<(), crate::HostError> {
+    ) -> Result<(), crate::SessionExecutionError> {
         let projection = environment_projection::project_environment(environment);
         self.installed_sessions.install_with(thread, |slot| {
             slot.inputs.validate_environment(thread, &projection)?;
@@ -866,7 +872,7 @@ impl crate::RunAssembly {
 #[cfg(test)]
 mod terminal_cleanup_drive_error_tests {
     use super::terminal_recovery_sweep_error as sweep_error;
-    use crate::HostErrorKind;
+    use crate::SessionExecutionErrorKind;
     use awaken_session_realization_driver::{TerminalRecoveryError, TerminalRecoverySweepError};
 
     #[test]
@@ -888,7 +894,7 @@ mod terminal_cleanup_drive_error_tests {
                 ),
             ),
         });
-        assert_eq!(effect.kind, HostErrorKind::Unavailable, "M1/E1");
+        assert_eq!(effect.kind, SessionExecutionErrorKind::Unavailable, "M1/E1");
         assert_eq!(effect.code, "terminal_provider_retry", "M1/E1");
 
         let control = sweep_error(TerminalRecoverySweepError {
@@ -899,7 +905,7 @@ mod terminal_cleanup_drive_error_tests {
                 ),
             ),
         });
-        assert_eq!(control.kind, HostErrorKind::Internal, "M2/E2");
+        assert_eq!(control.kind, SessionExecutionErrorKind::Internal, "M2/E2");
         assert!(control.message.contains("session-a"), "M2/E2");
         assert!(control.message.contains("changed concurrently"), "M2/E2");
     }
@@ -984,9 +990,9 @@ pub struct TerminalRecoveryOrigin {
 }
 
 fn terminal_recovery_run_error(
-    error: impl Into<crate::HostError>,
+    error: impl Into<crate::SessionExecutionError>,
 ) -> awaken_session_types::RunError {
-    crate::host_error::to_run_error(error.into())
+    crate::session_execution_error::to_run_error(error.into())
 }
 
 impl crate::RunAssembly {
@@ -1065,7 +1071,7 @@ impl awaken_session_realization_driver::TerminalRecoveryProjections for crate::R
         self.retire_selected_session_realization(session_id.as_str(), selected, true)
             .await
             .map(drop)
-            .map_err(crate::host_error::to_run_error)
+            .map_err(crate::session_execution_error::to_run_error)
     }
 
     async fn revoke_settled_projection(
@@ -1075,7 +1081,7 @@ impl awaken_session_realization_driver::TerminalRecoveryProjections for crate::R
         self.revoke_session_realization(session_id.as_str(), None)
             .await
             .map(drop)
-            .map_err(crate::host_error::to_run_error)
+            .map_err(crate::session_execution_error::to_run_error)
     }
 }
 
@@ -1084,26 +1090,26 @@ impl awaken_session_realization_driver::TerminalRecoveryProjections for crate::R
 /// failure stays pending (internal).
 fn terminal_recovery_error(
     error: awaken_session_realization_driver::TerminalRecoveryError,
-) -> crate::HostError {
+) -> crate::SessionExecutionError {
     match error {
         awaken_session_realization_driver::TerminalRecoveryError::Drive(
             awaken_session_realization_contract::SessionRealizationDriveError::Effect(error),
         )
         | awaken_session_realization_driver::TerminalRecoveryError::Projection(error) => {
-            crate::managed_adapter_error::from_run_error(error)
+            crate::session_execution_error::from_run_error(error)
         }
-        error => crate::HostError::internal(error.to_string()),
+        error => crate::SessionExecutionError::internal(error.to_string()),
     }
 }
 
 /// A sweep failure keeps its first cause's class and names its Session.
 fn terminal_recovery_sweep_error(
     error: awaken_session_realization_driver::TerminalRecoverySweepError,
-) -> crate::HostError {
+) -> crate::SessionExecutionError {
     let awaken_session_realization_driver::TerminalRecoverySweepError { session_id, error } = error;
     let projected = terminal_recovery_error(error);
     match session_id {
-        Some(session_id) => crate::HostError {
+        Some(session_id) => crate::SessionExecutionError {
             message: format!(
                 "Session `{session_id}` terminal cleanup remained pending: {}",
                 projected.message
@@ -1123,7 +1129,8 @@ pub(crate) async fn reconcile_terminal_cleanup_for_test(
     control: &dyn awaken_session_realization_contract::SessionTerminalCleanupControl,
     session_id: &awaken_session_types::SessionId,
     lease: &crate::session_resource::SessionRealizationLease,
-) -> Result<awaken_session_realization_driver::TerminalReconciliation, crate::HostError> {
+) -> Result<awaken_session_realization_driver::TerminalReconciliation, crate::SessionExecutionError>
+{
     awaken_session_realization_driver::reconcile_terminal_cleanup(
         session_id,
         lease,

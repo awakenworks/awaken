@@ -106,7 +106,7 @@ async fn pinned_reads_during_concurrent_first_hand_calls_do_not_join_sandbox_sta
     // proves ordering; the timeout only detects a deadlock, not a latency SLO.
     let storage = tempfile::tempdir().unwrap();
     let host = (crate::host::with_test_resource_validation(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_skill_store(storage.path().join("skills"))
             .with_store_dir(storage.path())
@@ -237,7 +237,7 @@ async fn cold_resource_replacement_and_revocation_never_return_old_skill_bytes()
     // both => no Sandbox, no latest fallback, no physical manifest promotion.
     let storage = tempfile::tempdir().unwrap();
     let host = (crate::host::with_test_resource_validation(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_skill_store(storage.path().join("skills"))
             .with_store_dir(storage.path())
@@ -369,7 +369,7 @@ async fn read_disabled_or_awaiting_permission_never_leaks_pinned_content() {
             paths: vec![".skills/diagnosis/SKILL.md"],
         });
         let host = (crate::host::with_test_resource_validation(
-            crate::HostDependencies::ephemeral(model.clone(), "stub")
+            crate::SessionExecutorBuilder::ephemeral(model.clone(), "stub")
                 .await
                 .with_skill_store(storage.path().join("skills"))
                 .with_store_dir(storage.path())
@@ -494,7 +494,7 @@ async fn failed_skill_file_write_blocks_tools_and_repaired_pin_reuses_environmen
     // authoritative pin; it never mutates bytes under an immutable v1 identity.
     let storage = tempfile::tempdir().unwrap();
     let host = (crate::host::with_test_resource_validation(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_skill_store(storage.path().join("skills"))
             .with_store_dir(storage.path())
@@ -645,7 +645,7 @@ async fn managed_on_tool_use_reads_instruction_and_reference_before_reply_withou
     let storage = tempfile::tempdir().unwrap();
     let model = Arc::new(PinnedReadModel::default());
     let host = (crate::host::with_test_resource_validation(
-        crate::HostDependencies::ephemeral(model.clone(), "stub")
+        crate::SessionExecutorBuilder::ephemeral(model.clone(), "stub")
             .await
             .with_skill_store(storage.path().join("skills"))
             .with_store_dir(storage.path())
@@ -741,7 +741,7 @@ async fn pinned_read_path_and_text_decision_table() {
     // manifest promotion. Plain workspace reads are covered by L3/L11.
     let storage = tempfile::tempdir().unwrap();
     let host = (crate::host::with_test_resource_validation(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_skill_store(storage.path().join("skills"))
             .with_store_dir(storage.path())
@@ -880,7 +880,7 @@ async fn cold_skill_read_keeps_pin_after_catalog_update_and_rejects_stale_projec
     let storage = tempfile::tempdir().unwrap();
     let make_host = || async {
         (crate::host::with_test_resource_validation(
-            crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+            crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
                 .await
                 .with_skill_store(storage.path().join("skills"))
                 .with_store_dir(storage.path())
@@ -1045,7 +1045,7 @@ async fn lazy_skill_installation_reloads_exact_bytes_and_reuses_environment() {
     // projection is not authority and cannot replace persisted pinned bytes.
     let storage = tempfile::tempdir().unwrap();
     let host = (crate::host::with_test_resource_validation(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_skill_store(storage.path().join("skills"))
             .with_store_dir(storage.path())

@@ -8,7 +8,7 @@ use super::*;
 async fn told_equals_mounted_the_prompt_path_and_access_match_the_realized_mount() {
     use awaken_provisioning_contract::MountAccess;
     let host = (crate::host::with_test_resource_validation(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
+        crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await,
     ))
     .build()
     .expect("validated Host dependencies");
@@ -174,7 +174,7 @@ async fn managed_multi_memory_mounts_are_backend_neutral_pairwise() {
     }
 
     let host = (crate::host::with_test_resource_validation(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
+        crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await,
     ))
     .build()
     .expect("validated Host dependencies");
@@ -358,7 +358,7 @@ async fn automatic_memory_requires_one_explicit_existing_binding() {
                 .expect("valid publication");
         let roots = ManagedSessionRootFixture::new().await;
         let dependencies = crate::host::with_test_resource_validation(with_test_memory_mounter(
-            crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+            crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
                 .await
                 .with_agent_publications(Arc::new(publications)),
         ));
@@ -458,7 +458,7 @@ async fn automatic_memory_requires_one_explicit_existing_binding() {
 #[tokio::test]
 async fn runtime_stages_exactly_the_effective_resource_list() {
     let host = (crate::host::with_test_resource_validation(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
+        crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await,
     ))
     .build()
     .expect("validated Host dependencies");
@@ -516,7 +516,7 @@ async fn runtime_stages_exactly_the_effective_resource_list() {
 /// G4 — an effective Memory input whose backing store is absent fails closed.
 #[tokio::test]
 async fn a_bound_resource_with_a_missing_backing_store_fails_the_session_closed() {
-    let host = ((crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let host = ((crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .with_session_execution(
             crate::SessionExecutionDependencies::default()
                 .with_resource_validator(resource_registry().await),
@@ -554,7 +554,7 @@ async fn activation_validates_the_frozen_config_without_selecting_current_again(
     use awaken_session_configuration_contract::resource::ResolvedInputSource;
 
     let catalog = resource_registry().await;
-    let host = ((crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let host = ((crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .with_session_execution(
             crate::SessionExecutionDependencies::default().with_resource_validator(catalog.clone()),
         ))
@@ -687,7 +687,7 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
     let publications = awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot])
         .expect("one immutable governed Agent");
     let host = (crate::host::with_test_resource_validation(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_skill_store(storage.path().join("skills"))
             .with_store_dir(storage.path())
@@ -822,7 +822,7 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
 #[tokio::test]
 async fn an_effective_resource_mounts_on_a_worker_without_the_binding_repository() {
     let db_less = (crate::host::with_test_resource_validation(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
+        crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await,
     ))
     .build()
     .expect("validated Host dependencies");

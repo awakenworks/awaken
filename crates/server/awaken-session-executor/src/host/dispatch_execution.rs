@@ -30,13 +30,15 @@ use awaken_session_realization_contract::{
 pub(crate) fn session_worker_resolver(
     run_assembly: &Arc<crate::RunAssembly>,
     dispatch: &awaken_dispatch_execution::ProcessDispatch,
-) -> Result<SessionWorkerResolver, HostError> {
+) -> Result<SessionWorkerResolver, SessionExecutionError> {
     let queue = run_assembly
         .authority
         .dispatch_binding()
         .map(|binding| binding.queue())
         .ok_or_else(|| {
-            HostError::internal("database-less Worker requires an injected dispatch binding")
+            SessionExecutionError::internal(
+                "database-less Worker requires an injected dispatch binding",
+            )
         })?;
     let clock = run_assembly.realization_executor.clock().clone();
     let assembly = Arc::new(ClaimedRunAssembly::new(run_assembly.clone()));

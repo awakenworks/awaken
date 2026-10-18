@@ -33,7 +33,7 @@ fn repository_binding_failure_controls_host_retry_semantics() {
     // R1..R6 cover the complete verifier enum through the sole classifier;
     // kind, literal code/message and Display are observable effects.
     // There is no lock, IO, state or poison precondition in this pure mapping.
-    use crate::host::HostErrorKind as K;
+    use crate::SessionExecutionErrorKind as K;
     use awaken_resource_contract::RepositoryBindingVerifierError as E;
     let cases = [
         (
@@ -74,8 +74,9 @@ fn repository_binding_failure_controls_host_retry_semantics() {
         ),
     ];
     for (error, expected, code, message) in cases {
-        let actual =
-            crate::HostError::from(crate::realization_error::RealizationError::from(error));
+        let actual = crate::SessionExecutionError::from(
+            crate::realization_error::RealizationError::from(error),
+        );
         assert_eq!(actual.kind, expected);
         assert_eq!(actual.code, code);
         assert_eq!(actual.message, message);
@@ -94,8 +95,8 @@ impl awaken_runtime_contract::llm::LlmExecutor for NoLlm {
     }
 }
 
-async fn dependencies() -> crate::HostDependencies {
-    crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test").await
+async fn dependencies() -> crate::SessionExecutorBuilder {
+    crate::SessionExecutorBuilder::ephemeral(Arc::new(NoLlm), "test").await
 }
 
 async fn host() -> Arc<ExecutorComponents> {
@@ -1394,7 +1395,7 @@ async fn agent_authored_skill_remains_run_scoped_until_explicit_publication() {
     // Constraint: explicit control-plane publication is covered separately
     // by the durable-catalog test below and is the only route to that store.
     let dir = std::env::temp_dir().join(format!("awaken-skillharvest-{}", std::process::id()));
-    let host = (crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(NoLlm), "test")
         .await
         .with_skill_store(dir.join("store")))
     .build()
@@ -1458,7 +1459,7 @@ async fn a_durable_skill_is_advertised_by_a_resolvable_catalog_id() {
     // enter this Managed id set. The static exclusion row is covered by
     // `managed_session_folds_builtins_into_the_agent_toolset`.
     let dir = std::env::temp_dir().join(format!("awaken-skillid-{}", std::process::id()));
-    let host = (crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(NoLlm), "test")
         .await
         .with_skill_store(dir.join("store")))
     .build()

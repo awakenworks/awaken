@@ -9,7 +9,7 @@ impl crate::RunAssembly {
     pub(crate) fn inference_plaintext_holder(
         &self,
         activation: &RunActivation,
-    ) -> Result<Option<awaken_runtime_contract::PlaintextHolder>, HostError> {
+    ) -> Result<Option<awaken_runtime_contract::PlaintextHolder>, SessionExecutionError> {
         awaken_dispatch_execution::session_dispatch::inference_plaintext_holder(activation, || {
             self.thread_credential_realization(&activation.thread_id.0)
                 .map_err(|error| {
@@ -18,7 +18,7 @@ impl crate::RunAssembly {
                     )
                 })
         })
-        .map_err(HostError::from)
+        .map_err(SessionExecutionError::from)
     }
 
     /// Bind the same fresh-root format before direct execution can commit an
@@ -26,7 +26,7 @@ impl crate::RunAssembly {
     pub(crate) fn bind_fresh_root_tool_configuration(
         &self,
         activation: RunActivation,
-    ) -> Result<RunActivation, HostError> {
+    ) -> Result<RunActivation, SessionExecutionError> {
         let is_session_dispatch = self
             .installed_sessions
             .read_run(&activation.thread_id.0, |run| run.session_dispatch)?
@@ -79,7 +79,7 @@ mod tests {
         // | R4 | yes | yes | E2 typed poison denial, no panic |
         for configured in [false, true] {
             for poisoned in [false, true] {
-                let host = crate::HostDependencies::ephemeral(
+                let host = crate::SessionExecutorBuilder::ephemeral(
                     Arc::new(NoModelConfiguredExecutor),
                     "model",
                 )
@@ -161,11 +161,13 @@ mod tests {
         // | R1 | yes | absent at admission | E1 |
         // | R2 | no | V1 empty | E2 |
         // | R3 | no | none | E3 |
-        let host =
-            (crate::HostDependencies::ephemeral(Arc::new(NoModelConfiguredExecutor), "model")
-                .await)
-                .build()
-                .expect("validated Host dependencies");
+        let host = (crate::SessionExecutorBuilder::ephemeral(
+            Arc::new(NoModelConfiguredExecutor),
+            "model",
+        )
+        .await)
+            .build()
+            .expect("validated Host dependencies");
         host.run_assembly
             .installed_sessions
             .install_run("format-root", |run| run.session_dispatch = true);

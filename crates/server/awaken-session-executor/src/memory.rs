@@ -58,11 +58,11 @@ use captured_writes::{CapturedMemoryWrites, writes_from_committed_agent};
 pub struct MemoryRuntime {
     llm: Arc<dyn LlmExecutor>,
     /// The Host's runtime-only inference materialization, when its
-    /// composition installed one (`HostDependencies::with_inference_materializer`).
+    /// composition installed one (`SessionExecutorBuilder::with_inference_materializer`).
     inference_materializer:
         Option<Arc<dyn awaken_credential_materializer::InferenceExecutorMaterializer>>,
     /// Fresh sandboxes for extraction/selection Runs, from the process
-    /// composition's `HostDependencies::with_auxiliary_sandboxes`.
+    /// composition's `SessionExecutorBuilder::with_auxiliary_sandboxes`.
     provider: Arc<dyn awaken_session_environment_contract::AuxiliarySandboxProvider>,
     background: Arc<BackgroundRuns>,
     claim_owner: String,
@@ -433,7 +433,7 @@ impl BoundMemory {
         // | X3 | poisoned | -     | the committed transcript (reported) |
         let mut writes = capture.take().unwrap_or_else(|error| {
             tracing::error!(
-                code = crate::host_error::EXECUTOR_LOCK_POISONED_CODE,
+                code = crate::session_execution_error::EXECUTOR_LOCK_POISONED_CODE,
                 %error,
                 "Memory extraction reads its committed transcript instead of the capture"
             );
@@ -557,7 +557,11 @@ impl crate::RunAssembly {
         session_thread: &'a str,
         commit: Arc<HostCommit>,
     ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<usize, crate::HostError>> + Send + 'a>,
+        Box<
+            dyn std::future::Future<Output = Result<usize, crate::SessionExecutionError>>
+                + Send
+                + 'a,
+        >,
     > {
         // Recovery is reached both from cold Runtime assembly and cache reuse.
         // Its typed controller futures must not enlarge those already nested
@@ -588,7 +592,7 @@ impl crate::RunAssembly {
                     .bind_recovery(commit.clone())
                     .await
                     .map_err(|error| {
-                        crate::HostError::internal(format!(
+                        crate::SessionExecutionError::internal(format!(
                             "recover Memory extraction for physical Session `{session_thread}`: {error}"
                         ))
                     })?

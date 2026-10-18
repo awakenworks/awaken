@@ -172,7 +172,7 @@ mod tests {
     /// Complete ordinary Host composition for real Judge Run tests. The Judge
     /// remains toolless and owns no alternate Session or dispatch path.
     async fn judge_test_host(model: Arc<dyn LlmExecutor>) -> Arc<crate::ExecutorComponents> {
-        let host = (crate::HostDependencies::ephemeral(model, "stub").await)
+        let host = (crate::SessionExecutorBuilder::ephemeral(model, "stub").await)
             .build()
             .expect("validated Host dependencies");
         let _managed = host.clone();

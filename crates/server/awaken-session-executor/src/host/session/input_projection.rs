@@ -65,7 +65,7 @@ pub(in crate::host) fn project_managed_coordination_surface(
 pub(super) fn merge_acp_mcp_servers(
     publication: Vec<awaken_runtime_contract::resolved::AcpMcpServer>,
     staged: impl IntoIterator<Item = awaken_acp_contract::SessionMcpServer>,
-) -> Result<Vec<awaken_acp_contract::SessionMcpServer>, HostError> {
+) -> Result<Vec<awaken_acp_contract::SessionMcpServer>, SessionExecutionError> {
     let publication = publication
         .into_iter()
         .map(|server| match server.transport {
@@ -94,12 +94,12 @@ pub(super) fn merge_acp_mcp_servers(
 pub(super) fn merge_process_local_mcp_servers(
     existing: Vec<awaken_acp_contract::SessionMcpServer>,
     staged: impl IntoIterator<Item = awaken_acp_contract::SessionMcpServer>,
-) -> Result<Vec<awaken_acp_contract::SessionMcpServer>, HostError> {
+) -> Result<Vec<awaken_acp_contract::SessionMcpServer>, SessionExecutionError> {
     let mut names = std::collections::BTreeSet::new();
     let mut merged = Vec::new();
     for server in existing.into_iter().chain(staged) {
         if !names.insert(server.name.clone()) {
-            return Err(HostError::bad_request(format!(
+            return Err(SessionExecutionError::bad_request(format!(
                 "duplicate ACP MCP server name `{}`",
                 server.name
             )));

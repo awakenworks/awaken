@@ -1,18 +1,21 @@
-"""The realization classifies each failure once.
+"""Each execution boundary projects its failures once, at its error owner.
 
 Plan v4 D3 and principles P6/P7. `awaken-session-realization` reports every
 failure as a `RealizationError`, whose `disposition()` is the one decision of
-what a caller does next. Two regressions would silently undo that, and the
+what a caller does next. Three regressions would silently undo that, and the
 compiler cannot see either (a poisoned lock read through `.expect` is refused
 by `_poisoned_lock_fitness.py`, which covers the realization and the executor):
 
-* `HostError` reappearing in the realization. The executor's error is not the
+* `SessionExecutionError` (or its removed `HostError` name) appearing in the realization. The executor's error is not the
   realization's vocabulary; mapping it back in would flatten every class into
   the executor's kinds again.
 * A typed failure flattened into the text of a stated variant
   (`invariant(error.to_string())`, `invalid_request(error.to_string())`, a
   `format!` interpolating the error, or `HostError::internal(..)`). The typed
   source keeps its class; only closed codes classify.
+* A Session executor caller inspecting `SessionExecutionErrorKind` instead of
+  using the error owner's projection. The removed RunApplication mapper lost
+  classified Internal codes even though its result was already RunError.
 
 Only production code is scanned: comments, `cfg(test)` code, test files and the
 test-support fixtures are excluded.
@@ -25,23 +28,30 @@ import sys
 from pathlib import Path
 
 import _crate_boundary_workspace
+import _poisoned_lock_fitness
 
 REALIZATION_SRC = "crates/server/awaken-session-realization/src"
-# The realization crate's sources are this check's whole input.
-INPUT_GLOBS: tuple[str, ...] = ("crates/server/awaken-session-realization/src/**",)
+# The owning crates are declared for hooks; compiled source discovery is shared
+# with the poison rule through Cargo authority metadata and module reachability.
+INPUT_GLOBS: tuple[str, ...] = (
+    "crates/server/awaken-session-realization/src/**",
+    "crates/server/awaken-session-executor/src/**",
+)
 TEST_FILES = re.compile(r"(^|/)(tests?|test_support)(\.rs|/)")
 
-HOST_ERROR = re.compile(r"\bHostError\b")
+EXECUTOR_ERROR = re.compile(r"\b(?:HostError|SessionExecutionError)\b")
 STATED = r"(?:\bRealizationError\s*::\s*)?\b(?:invariant|invalid_request|internal)\s*\("
 FLATTENED_TEXT = re.compile(STATED + r"\s*[\w.]*\.to_string\s*\(\s*\)")
 FLATTENED_FORMAT = re.compile(STATED + r"\s*format!\s*\(\s*\"[^\"]*\{(?:error|err|e|source)\}")
+EXECUTOR_OWNER = re.compile(r"\bpub\s+struct\s+SessionExecutionError\b")
+EXECUTOR_CLASSIFICATION = re.compile(r"\bSessionExecutionErrorKind\s*::")
 
 
 def realization_error_violations(sources: dict[str, str]) -> list[str]:
     """Rule violations in the realization's production sources.
 
     Cause/effect graph: C1 the source is production realization code; C2 it
-    names `HostError`; C3 it flattens a typed failure into a stated message.
+    names an executor error; C3 it flattens a typed failure into a stated message.
     E1 accept when C1 is false or neither C2 nor C3 holds; E2 reject and name
     the file and rule.
     """
@@ -54,9 +64,9 @@ def realization_error_violations(sources: dict[str, str]) -> list[str]:
         production = _crate_boundary_workspace.production_rust(source)
         text = _crate_boundary_workspace.rust_without_comments(production)
         syntax = _crate_boundary_workspace.rust_syntax(production)
-        if HOST_ERROR.search(syntax):
+        if EXECUTOR_ERROR.search(syntax):
             errors.append(
-                f"{relative}: the realization returns RealizationError; HostError belongs to the executor"
+                f"{relative}: the realization returns RealizationError; SessionExecutionError belongs to the executor"
             )
         if FLATTENED_TEXT.search(syntax) or FLATTENED_FORMAT.search(text):
             errors.append(
@@ -64,6 +74,31 @@ def realization_error_violations(sources: dict[str, str]) -> list[str]:
                 "do not flatten it into a stated message"
             )
     return errors
+
+
+def executor_error_violations(sources: dict[str, str]) -> list[str]:
+    """A caller forwards the executor error; only its owner projects its kind.
+
+    Cause/effect graph: C1 exactly one production source defines the error;
+    C2 another production source inspects a kind variant. Accept C1 and !C2;
+    otherwise refuse a missing/ambiguous owner or the parallel classifier.
+    """
+    syntax = {
+        relative: _crate_boundary_workspace.rust_syntax(
+            _crate_boundary_workspace.production_rust(source)
+        )
+        for relative, source in sources.items()
+        if not TEST_FILES.search(relative)
+    }
+    owners = [relative for relative, source in syntax.items() if EXECUTOR_OWNER.search(source)]
+    if len(owners) != 1:
+        return ["execution-error: exactly one production source must own SessionExecutionError"]
+    return [
+        f"{relative}: project SessionExecutionError through its owner {owners[0]}; "
+        "a caller must not reclassify its kind or discard its code"
+        for relative, source in syntax.items()
+        if relative != owners[0] and EXECUTOR_CLASSIFICATION.search(source)
+    ]
 
 
 def selftest() -> None:
@@ -74,7 +109,7 @@ def selftest() -> None:
     | E1 | typed variants, `?` into RealizationError               | accept |
     | E2 | the same text in a cfg(test) module or a test file      | accept |
     | E3 | the same text outside the realization crate             | accept |
-    | E4 | `HostError` named in production realization code        | reject |
+    | E4 | `HostError` or `SessionExecutionError` in realization code | reject |
     | E5 | `invariant(error.to_string())`                          | reject |
     | E6 | `invalid_request(format!("bad: {error}"))`              | reject |
     | E7 | the forbidden text only inside a comment or a string    | accept |
@@ -93,6 +128,7 @@ def selftest() -> None:
     ) == [], "E3"
     rejected = {
         "E4": "fn f() -> Result<(), HostError> { Ok(()) }\n",
+        "E4 renamed": "fn f() -> Result<(), SessionExecutionError> { Ok(()) }\n",
         "E5": "fn f() { g().map_err(|error| RealizationError::invariant(error.to_string())); }\n",
         "E6": "fn f() { g().map_err(|error| RealizationError::invalid_request(format!(\"bad: {error}\"))); }\n",
     }
@@ -104,14 +140,45 @@ def selftest() -> None:
     )
     assert realization_error_violations({path: commented}) == [], "E7"
 
+    # Executor table: X1 one owner + constructor-only caller -> accept;
+    # X2 parallel kind projection -> reject; X3 absent/ambiguous owner ->
+    # reject; X4 variant inspection in tests/comments/strings -> accept.
+    # The owner is discovered from its declaration, so its path may move.
+    owner = "moved/error.rs"
+    declaration = (
+        "pub struct SessionExecutionError {}\n"
+        "fn project() { SessionExecutionErrorKind::Internal; }\n"
+    )
+    caller = "fn call() { SessionExecutionError::internal(message); }\n"
+    assert executor_error_violations({owner: declaration, "caller.rs": caller}) == [], "X1"
+    classifier = "fn flatten() { SessionExecutionErrorKind::Internal; }\n"
+    assert len(executor_error_violations({owner: declaration, "caller.rs": classifier})) == 1, "X2"
+    assert len(executor_error_violations({"caller.rs": caller})) == 1, "X3 missing"
+    assert len(executor_error_violations({owner: declaration, "second.rs": declaration})) == 1, "X3 ambiguous"
+    assert executor_error_violations({
+        owner: declaration,
+        "tests.rs": classifier,
+        "caller.rs": caller + "#[cfg(test)]\nmod tests { " + classifier + "}\n"
+        + '// SessionExecutionErrorKind::Internal\nfn prose() { "SessionExecutionErrorKind::Internal"; }\n',
+    }) == [], "X4"
+
 
 def check_all(repo_root: Path) -> list[str]:
-    root = repo_root / REALIZATION_SRC
-    sources = {
-        path.relative_to(repo_root).as_posix(): path.read_text(encoding="utf-8")
-        for path in root.rglob("*.rs")
-    }
-    return realization_error_violations(sources)
+    errors: list[str] = []
+    # Both error and poison rules consume the existing Cargo-authority/module
+    # discovery; there is no second hand-maintained list of compiled files.
+    for manifest in _poisoned_lock_fitness.scanned_manifests(repo_root):
+        sources = {
+            path.relative_to(repo_root.resolve()).as_posix(): path.read_text(encoding="utf-8")
+            for path in _crate_boundary_workspace.production_module_files([manifest])
+        }
+        authority = _crate_boundary_workspace.load_manifest(manifest)["package"]["metadata"]["awaken"]["authority"]
+        errors.extend(
+            executor_error_violations(sources)
+            if authority == "session-executor"
+            else realization_error_violations(sources)
+        )
+    return errors
 
 
 if __name__ == "__main__":

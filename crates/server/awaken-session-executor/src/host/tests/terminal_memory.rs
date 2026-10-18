@@ -192,7 +192,7 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     // | R5 | any | exact | foreign | E4 |
     let events = Arc::new(Mutex::new(Vec::new()));
     let realization_attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_authority(
             crate::UpstreamAuthority::default().with_memory_reference_encoder(Arc::new(
@@ -757,7 +757,7 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         .unwrap();
     // R8 missing selected encoder: the same upstream mode has no local
     // fallback. The original owner returns Internal before any content call.
-    let missing_encoder_host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let missing_encoder_host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_authority(crate::UpstreamAuthority::default())
         .build()
@@ -854,7 +854,7 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
         scenario: TerminalRecoveryScenario::OrphanClaim,
         fence_refresh_probe: None,
     });
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_session_container_provider(
             provider,
@@ -1119,7 +1119,7 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
     // both projections; a future UTC expiry plus exhausted proof denies both.
     // R6 closed/uninstalled slots deny even with matching retained lease bytes.
     // These are Host projection decisions, not async Provider commit grants.
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     let session_id = "terminal-renewed-provider-fence";
@@ -1370,7 +1370,7 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
         scenario: TerminalRecoveryScenario::LiveMemory,
         fence_refresh_probe: Some(probe.clone()),
     });
-    let raw_host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let raw_host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_authority(
             crate::UpstreamAuthority::default().with_memory_reference_encoder(Arc::new(
@@ -1596,7 +1596,7 @@ async fn total_absence_recovers_artifacts_before_separate_terminal_disposal() {
         scenario: TerminalRecoveryScenario::TotalAbsence,
         fence_refresh_probe: None,
     });
-    let mut raw_host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let mut raw_host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_session_container_provider(
             provider,
@@ -1705,7 +1705,7 @@ async fn disposing_cleanup_prepares_durability_before_resuming_physical_disposal
         scenario: TerminalRecoveryScenario::Disposing,
         fence_refresh_probe: None,
     });
-    let mut raw_host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let mut raw_host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_session_container_provider(
             provider,
@@ -1842,7 +1842,7 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
         fence_refresh_probe: None,
     });
     let checkpoint_id = "checkpoint-disposing-absent";
-    let mut raw_host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let mut raw_host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_session_container_provider(
             provider,
@@ -1979,7 +1979,7 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
             fence_refresh_probe: None,
         });
         let host = (crate::host::with_test_resource_validation(
-            crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+            crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
                 .await
                 .with_session_container_provider(
                     provider,
@@ -2141,7 +2141,7 @@ async fn provider_proved_unmaterialized_absence_closes_missing_memory_evidence()
      * ambiguous; the contract decision-table test owns that negative row. */
     let thread = "proved-absent-terminal-memory-evidence";
     let events = Arc::new(Mutex::new(Vec::new()));
-    let mut raw_host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await;
+    let mut raw_host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await;
     raw_host.resources.artifact_publisher = Arc::new(RecordingScopedArtifactAuthority {
         events: events.clone(),
         records: Arc::new(Mutex::new(Vec::new())),
@@ -2299,7 +2299,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
             scenario: TerminalRecoveryScenario::LiveMemory,
             fence_refresh_probe: None,
         });
-        let raw_host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        let raw_host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_authority(
                 crate::UpstreamAuthority::default().with_memory_reference_encoder(Arc::new(

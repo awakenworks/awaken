@@ -34,9 +34,10 @@ use awaken_tool_contract::tool::RawTool;
 use crate::FilesystemHandleCodec as _;
 use crate::read_only_tree::materialize_read_only_tree_at;
 use crate::{
-    DiscoveredSkillFile, IsolatedRoot, content_fingerprint, list_files_at, provision_repo_at,
-    push_repo_to_at, rooted_raw_tools, scan_skill_dir_at,
+    DiscoveredSkillFile, IsolatedRoot, list_files_at, provision_repo_at, push_repo_to_at,
+    rooted_raw_tools, scan_skill_dir_at,
 };
+use awaken_resource_contract::content_id;
 
 mod checkpoint;
 mod command;
@@ -102,7 +103,7 @@ pub(crate) fn declared_hash(source: &pc::MountSource) -> Option<&str> {
 /// Verify resolved bytes against a declared hash; fail closed on mismatch.
 pub(crate) fn verify(source: &pc::MountSource, bytes: &[u8]) -> Result<(), pc::SandboxError> {
     if let Some(expected) = declared_hash(source) {
-        let got = content_fingerprint(bytes);
+        let got = content_id(bytes);
         if got != expected {
             return Err(pc::SandboxError::conflict(format!(
                 "mount content hash mismatch: declared {expected}, realized {got}"
@@ -954,7 +955,7 @@ impl LocalProvider {
                     mount_path: req.mount_path.clone(),
                     access: req.access,
                     realization: pc::Realization::Copy,
-                    content_hash: Some(content_fingerprint(&bytes)),
+                    content_hash: Some(content_id(&bytes)),
                 }
             }
             None if req.required => {
@@ -1637,7 +1638,7 @@ impl pc::Sandbox for LocalSandbox {
             mount_path: req.mount_path,
             access: req.access,
             realization: pc::Realization::Copy,
-            content_hash: Some(content_fingerprint(contents)),
+            content_hash: Some(content_id(contents)),
         })
     }
 

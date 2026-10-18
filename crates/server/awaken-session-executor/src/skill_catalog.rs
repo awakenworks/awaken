@@ -230,7 +230,7 @@ impl SkillCatalog {
         self.cache
             .lock()
             .map_err(|_| SkillStoreError::AuthorityUnavailable {
-                detail: crate::host_error::ExecutorLock::SkillCatalogCache.to_string(),
+                detail: crate::session_execution_error::ExecutorLock::SkillCatalogCache.to_string(),
             })
     }
 
@@ -243,11 +243,11 @@ impl SkillCatalog {
     pub(crate) fn cache_snapshot_in(
         &self,
         workspace: &str,
-    ) -> Result<Vec<SkillVersion>, crate::host_error::ExecutorLock> {
+    ) -> Result<Vec<SkillVersion>, crate::session_execution_error::ExecutorLock> {
         Ok(self
             .cache
             .lock()
-            .map_err(|_| crate::host_error::ExecutorLock::SkillCatalogCache)?
+            .map_err(|_| crate::session_execution_error::ExecutorLock::SkillCatalogCache)?
             .get(workspace)
             .cloned()
             .unwrap_or_default())
@@ -260,7 +260,7 @@ impl SkillCatalog {
         &self,
         workspace: &str,
         selected: Option<&std::collections::BTreeSet<String>>,
-    ) -> Result<bool, crate::host_error::ExecutorLock> {
+    ) -> Result<bool, crate::session_execution_error::ExecutorLock> {
         let is_selected = |id: &str| selected.is_none_or(|ids| ids.contains(id));
         Ok(self.specs.iter().any(|skill| {
             is_selected(&skill.id)
@@ -280,7 +280,7 @@ impl SkillCatalog {
         &self,
         workspace: &str,
         selected: Option<&std::collections::BTreeSet<String>>,
-    ) -> Result<bool, crate::host_error::ExecutorLock> {
+    ) -> Result<bool, crate::session_execution_error::ExecutorLock> {
         Ok(self
             .direct_ids_in(workspace)?
             .iter()
@@ -293,7 +293,7 @@ impl SkillCatalog {
     fn direct_ids_in(
         &self,
         workspace: &str,
-    ) -> Result<Vec<String>, crate::host_error::ExecutorLock> {
+    ) -> Result<Vec<String>, crate::session_execution_error::ExecutorLock> {
         let mut ids: Vec<String> = self.specs.iter().map(|s| s.id.clone()).collect();
         // The durable catalog is read from the sync cache (refreshed on write and at
         // session setup); a network-DB store cannot be awaited from this sync path.
@@ -313,7 +313,7 @@ impl SkillCatalog {
     pub(crate) fn managed_ids_in(
         &self,
         workspace: &str,
-    ) -> Result<Vec<String>, crate::host_error::ExecutorLock> {
+    ) -> Result<Vec<String>, crate::session_execution_error::ExecutorLock> {
         Ok(self
             .cache_snapshot_in(workspace)?
             .into_iter()
@@ -338,8 +338,8 @@ mod poisoned_cache_tests {
             catalog.managed_ids_in("w").expect("healthy cache"),
             Vec::<String>::new()
         );
-        crate::host_error::poison_for_test(&catalog.cache);
-        let poisoned = crate::host_error::ExecutorLock::SkillCatalogCache;
+        crate::session_execution_error::poison_for_test(&catalog.cache);
+        let poisoned = crate::session_execution_error::ExecutorLock::SkillCatalogCache;
         assert_eq!(
             catalog.cache_snapshot_in("w").map(|_| ()).unwrap_err(),
             poisoned,

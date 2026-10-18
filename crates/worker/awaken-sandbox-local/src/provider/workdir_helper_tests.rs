@@ -1103,7 +1103,7 @@ impl pc::SandboxCheckpointStore for CheckpointStore {
             metadata.generation_id,
             metadata.suspend_effect_id
         );
-        let digest = content_fingerprint(&bytes);
+        let digest = content_id(&bytes);
         let size_bytes = bytes.len() as u64;
         let receipt = pc::StoredCheckpointObject {
             id,

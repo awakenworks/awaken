@@ -440,7 +440,7 @@ mod tests {
         grants.on_allow(&call);
         assert!(grants.consume("export", &call.arguments), "G1");
         grants.on_allow(&call);
-        crate::host_error::poison_for_test(&grants.pending);
+        crate::session_execution_error::poison_for_test(&grants.pending);
         assert!(!grants.consume("export", &call.arguments), "G3 poisoned");
         grants.on_allow(&call);
         assert!(

@@ -1137,7 +1137,7 @@ mod tests {
         // Startup connection rules: R11 unbound/dead Weak => typed Unavailable;
         // R12 live binding => readiness observed through every shared clone.
         // Neither observation admits a Run or replaces its domain authority.
-        let host = (crate::HostDependencies::ephemeral(
+        let host = (crate::SessionExecutorBuilder::ephemeral(
             Arc::new(crate::NoModelConfiguredExecutor),
             "stub",
         )
