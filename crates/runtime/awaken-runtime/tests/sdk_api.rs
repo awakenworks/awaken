@@ -132,7 +132,7 @@ fn setup(
 async fn typed_tool_and_named_outcome_work_without_builtin_dependencies() {
     let (runtime, snapshot, model, hits, store) = setup(false, awaken_time::system_clock());
     let first = runtime
-        .session(
+        .conversation(
             &snapshot,
             "conversation",
             RuntimeRunContext::new().with_store(store.clone()),
@@ -151,7 +151,7 @@ async fn typed_tool_and_named_outcome_work_without_builtin_dependencies() {
     );
     assert_eq!(hits.load(Ordering::SeqCst), 1);
     let second = runtime
-        .session(
+        .conversation(
             &snapshot,
             "conversation",
             RuntimeRunContext::new().with_store(store.clone()),
@@ -175,6 +175,90 @@ async fn typed_tool_and_named_outcome_work_without_builtin_dependencies() {
 }
 
 #[tokio::test]
+#[expect(deprecated, reason = "exercise the public SDK compatibility entries")]
+async fn legacy_session_and_conversation_share_run_identity_and_recovery() {
+    for start_legacy in [false, true] {
+        let (runtime, snapshot, model, hits, store) = setup(true, awaken_time::system_clock());
+        let context = RuntimeRunContext::new().with_store(store.clone());
+        let legacy: awaken_runtime::EmbeddedSession<'_> = runtime
+            .session(&snapshot, "migration", context.clone())
+            .unwrap();
+        let conversation: awaken_runtime::Conversation<'_> = runtime
+            .conversation(&snapshot, "migration", context)
+            .unwrap();
+        assert_eq!(legacy.thread_id(), conversation.thread_id());
+        assert_eq!(store.commit_count(), 0, "binding does not commit a Run");
+        assert_eq!(model.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+
+        let pending = if start_legacy {
+            legacy.run("original input").await.unwrap()
+        } else {
+            conversation.run("original input").await.unwrap()
+        };
+        assert_eq!(pending.state(), &RunState::Awaiting);
+        assert_eq!(pending.thread_id(), conversation.thread_id());
+        assert!(pending.resume_ticket(store.as_ref()).unwrap().is_some());
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+
+        // Either public name resumes the other entry's original identity.
+        let resumed = if start_legacy {
+            conversation
+                .resume_with_id_async(pending.run_id().clone(), "original input", |_| {
+                    std::future::ready(Ok(ResumeResult::allow()))
+                })
+                .await
+                .unwrap()
+        } else {
+            legacy
+                .resume_with_id_async(pending.run_id().clone(), "original input", |_| {
+                    std::future::ready(Ok(ResumeResult::allow()))
+                })
+                .await
+                .unwrap()
+        };
+        assert_eq!(resumed.run_id(), pending.run_id());
+        assert_eq!(resumed.thread_id(), pending.thread_id());
+        assert_eq!(resumed.end_cause(), Some(&EndCause::NaturalEnd));
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert!(resumed.resume_ticket(store.as_ref()).unwrap().is_none());
+        assert_eq!(legacy.outcome(pending.run_id()).unwrap(), resumed);
+        assert_eq!(conversation.outcome(pending.run_id()).unwrap(), resumed);
+
+        let commits = store.commit_count();
+        let calls = model.calls.load(Ordering::SeqCst);
+        let replay = if start_legacy {
+            legacy
+                .resume_with_id_async(pending.run_id().clone(), "ignored", |_| async {
+                    panic!("terminal replay cannot ask for approval")
+                })
+                .await
+                .unwrap()
+        } else {
+            conversation
+                .resume_with_id_async(pending.run_id().clone(), "ignored", |_| async {
+                    panic!("terminal replay cannot ask for approval")
+                })
+                .await
+                .unwrap()
+        };
+        assert_eq!(replay, resumed);
+        assert_eq!(store.commit_count(), commits);
+        assert_eq!(model.calls.load(Ordering::SeqCst), calls);
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            store
+                .committed_messages(pending.thread_id())
+                .iter()
+                .filter(|message| message.text_content() == "original input")
+                .count(),
+            1,
+            "cross-entry recovery retains the original committed input"
+        );
+    }
+}
+
+#[tokio::test]
 async fn asynchronous_approval_and_denial_use_the_same_durable_resume_path() {
     // RI3 SDK owns the original activation across await; allow/deny resumes
     // through the same core with the same hello window. Every inference sees
@@ -184,7 +268,7 @@ async fn asynchronous_approval_and_denial_use_the_same_durable_resume_path() {
         let (runtime, snapshot, _, hits, store) = setup(true, awaken_time::system_clock());
         let (probe, inputs) = MarkPlugin::recording();
         let state = runtime
-            .session(
+            .conversation(
                 &snapshot,
                 "approval",
                 RuntimeRunContext::new()
@@ -249,7 +333,7 @@ async fn approval_timeout_preserves_ticket_and_rebuilt_runtime_can_resume_once()
     let clock = awaken_time::system_clock();
     let (runtime, snapshot, model, hits, store) = setup(true, clock.clone());
     let error = runtime
-        .session(
+        .conversation(
             &snapshot,
             "recover",
             RuntimeRunContext::new().with_store(store.clone()),
@@ -285,7 +369,7 @@ async fn approval_timeout_preserves_ticket_and_rebuilt_runtime_can_resume_once()
         .with_store(store.clone())
         .with_session_plugin(probe);
     let state = rebuilt
-        .session(&snapshot, "recover", context.clone())
+        .conversation(&snapshot, "recover", context.clone())
         .unwrap()
         .resume_with_id_async(record.id.clone(), "hello", |_| async {
             Ok(ResumeResult::allow())
@@ -304,7 +388,7 @@ async fn approval_timeout_preserves_ticket_and_rebuilt_runtime_can_resume_once()
     let hook_calls = inputs.lock().unwrap().len();
     let calls = model.calls.load(Ordering::SeqCst);
     let replay = rebuilt
-        .session(&snapshot, "recover", context)
+        .conversation(&snapshot, "recover", context)
         .unwrap()
         .resume_with_id_async(record.id, "ignored replay input", |_| async {
             panic!("terminal replay never asks again")
@@ -329,7 +413,7 @@ async fn cancellation_during_approval_commits_cancelled_without_running_the_tool
     let token = tokio_util::sync::CancellationToken::new();
     let callback_token = token.clone();
     let state = runtime
-        .session(
+        .conversation(
             &snapshot,
             "cancel",
             RuntimeRunContext::new()
@@ -361,7 +445,7 @@ async fn cancellation_during_approval_commits_cancelled_without_running_the_tool
 async fn callback_failure_keeps_cause_and_does_not_consume_the_ticket() {
     let (runtime, snapshot, _, hits, store) = setup(true, awaken_time::system_clock());
     let error = runtime
-        .session(
+        .conversation(
             &snapshot,
             "failure",
             RuntimeRunContext::new().with_store(store.clone()),
@@ -391,7 +475,7 @@ async fn a_concurrent_reply_cannot_execute_the_same_tool_twice() {
     let (runtime, snapshot, _, hits, store) = setup(true, clock.clone());
     let context = RuntimeRunContext::new().with_store(store.clone());
     let error = runtime
-        .session(&snapshot, "race", context.clone())
+        .conversation(&snapshot, "race", context.clone())
         .unwrap()
         .run_to_completion_async("hello", |ticket| {
             let context = context.clone();
@@ -419,7 +503,7 @@ async fn cold_recovery_rejects_each_identity_mismatch_before_approval_or_effects
     let (runtime, snapshot, model, hits, store) = setup(true, awaken_time::system_clock());
     let context = RuntimeRunContext::new().with_store(store.clone());
     let outcome = runtime
-        .session(&snapshot, "identity", context.clone())
+        .conversation(&snapshot, "identity", context.clone())
         .unwrap()
         .run("hello")
         .await
@@ -446,7 +530,7 @@ async fn cold_recovery_rejects_each_identity_mismatch_before_approval_or_effects
             }
         };
         let error = runtime
-            .session(&candidate, thread, context.clone())
+            .conversation(&candidate, thread, context.clone())
             .unwrap()
             .resume_with_id_async(outcome.run_id().clone(), "ignored", |_| async {
                 panic!("an identity mismatch must not ask for approval")
@@ -474,7 +558,7 @@ async fn cold_recovery_rejects_each_identity_mismatch_before_approval_or_effects
                 .with_store(store.clone())
                 .with_inherited_toolsets(ticket_source.clone());
             let pending = runtime
-                .session(&snapshot, "sources", context)
+                .conversation(&snapshot, "sources", context)
                 .unwrap()
                 .run("hello")
                 .await
@@ -482,7 +566,7 @@ async fn cold_recovery_rejects_each_identity_mismatch_before_approval_or_effects
             let callbacks = Arc::new(AtomicUsize::new(0));
             let callback_count = callbacks.clone();
             let recovered = runtime
-                .session(
+                .conversation(
                     &snapshot,
                     "sources",
                     RuntimeRunContext::new()
@@ -533,7 +617,9 @@ async fn recovery_enforces_ticket_deadline_using_the_supplied_owner_clock() {
         let clock = Arc::new(ManualClock::new(0));
         let (runtime, snapshot, _, hits, store) = setup(true, clock.clone());
         let context = RuntimeRunContext::new().with_store(store.clone());
-        let session = runtime.session(&snapshot, "deadline", context).unwrap();
+        let session = runtime
+            .conversation(&snapshot, "deadline", context)
+            .unwrap();
         let outcome = session.run("hello").await.unwrap();
         let ticket = outcome
             .resume_ticket(store.as_ref())
@@ -580,7 +666,7 @@ async fn missing_owner_clock_refuses_approval_before_callback_or_resume() {
     let (runtime, snapshot, model, hits, store) = setup(true, clock);
     let context = RuntimeRunContext::new().with_store(store.clone());
     let outcome = runtime
-        .session(&snapshot, "missing-clock", context.clone())
+        .conversation(&snapshot, "missing-clock", context.clone())
         .unwrap()
         .run("hello")
         .await
@@ -598,7 +684,7 @@ async fn missing_owner_clock_refuses_approval_before_callback_or_resume() {
         )
         .unwrap();
     let error = without_clock
-        .session(&snapshot, "missing-clock", context)
+        .conversation(&snapshot, "missing-clock", context)
         .unwrap()
         .resume_with_id_async(outcome.run_id().clone(), "ignored", |_| {
             callbacks.fetch_add(1, Ordering::SeqCst);
@@ -629,7 +715,7 @@ async fn callback_elapsed_time_cannot_borrow_an_earlier_clock_reading() {
     let clock = Arc::new(ManualClock::new(19));
     let (runtime, snapshot, _, hits, store) = setup(true, clock.clone());
     let context = RuntimeRunContext::new().with_store(store.clone());
-    let session = runtime.session(&snapshot, "elapsed", context).unwrap();
+    let session = runtime.conversation(&snapshot, "elapsed", context).unwrap();
     let outcome = session.run("hello").await.unwrap();
     let ticket = store
         .resume_ticket(outcome.run_id())
@@ -668,7 +754,7 @@ async fn committed_terminal_replay_requires_neither_clock_nor_callback() {
     let (runtime, snapshot, _, hits, store) = setup(true, Arc::new(ManualClock::new(10)));
     let context = RuntimeRunContext::new().with_store(store.clone());
     let first = runtime
-        .session(&snapshot, "terminal-clock", context.clone())
+        .conversation(&snapshot, "terminal-clock", context.clone())
         .unwrap()
         .run_to_completion_async("hello", |_| std::future::ready(Ok(ResumeResult::allow())))
         .await
@@ -676,7 +762,7 @@ async fn committed_terminal_replay_requires_neither_clock_nor_callback() {
     let commits = store.commit_count();
     let replay_runtime = Runtime::new();
     let replay = replay_runtime
-        .session(&snapshot, "terminal-clock", context)
+        .conversation(&snapshot, "terminal-clock", context)
         .unwrap()
         .resume_with_id_async(first.run_id().clone(), "ignored", |_| async {
             panic!("M2 terminal replay cannot call approval")
