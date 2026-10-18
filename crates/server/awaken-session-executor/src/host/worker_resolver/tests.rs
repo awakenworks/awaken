@@ -286,6 +286,7 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
     assert!(matches!(state, RunState::Ended(_)), "R1/E2");
     assert!(
         ephemeral
+            .thread_reads
             .committed_messages(session_id)
             .await
             .expect("R1 committed transcript")
@@ -2945,7 +2946,8 @@ async fn outcome_projection_read_does_not_adopt_worker_owned_environment() {
         .await
         .expect("prepare uses no local Environment");
     assert!(
-        host.committed_outcome_projection(thread, "outcome-a")
+        host.thread_reads
+            .committed_outcome(thread, "outcome-a")
             .await
             .expect("read remote-owned outcome")
             .is_none()

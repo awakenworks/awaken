@@ -136,49 +136,56 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
         local_workspace.clone(),
         agent.agent_publications.clone(),
     );
+    let realization_executor = Arc::new(crate::realization_executor::RealizationExecutor::new(
+        clock.clone(),
+        realizations.clone(),
+        crate::environment_holding::EnvironmentHolding::new(
+            env,
+            execution.local.runs_local_pool(),
+            realizations.clone(),
+            environment_binding_sink,
+            dispatch_execution,
+            publication,
+        ),
+        crate::resource_staging::ResourceStaging::new(
+            realizations.clone(),
+            crate::resource_staging::ResourceSources {
+                bundle_source: skill_bundle_source,
+                file_content_source: resources.file_content_source.clone(),
+                memory: resources.memory_stores.clone(),
+                resource_validator: session_execution.resource_validator.clone(),
+                repository_binding_verifier: session_execution.repository_binding_verifier.clone(),
+                fetches_resources_upstream: authority.fetches_resources_upstream(),
+                credential_materializer,
+                memory_reference_encoder: authority.memory_reference_encoder(),
+            },
+        ),
+        crate::terminal_effects::TerminalEffects::new(
+            realizations.clone(),
+            Arc::new(crate::artifact_harvest::ArtifactHarvester::new(
+                realizations.clone(),
+                local_workspace.clone(),
+                resources.artifact_publisher.clone(),
+            )),
+        ),
+        crate::execution_authority::ExecutionAuthority::new(
+            realizations.clone(),
+            execution_authority,
+        ),
+    ));
+    let thread_reads = Arc::new(crate::ThreadReads::new(
+        authority.clone(),
+        installed_sessions.clone(),
+        realization_executor.clone(),
+    ));
+    let live_inboxes = Arc::new(crate::LiveInboxes::new(installed_sessions.clone()));
     SharedHost {
         agent: capability::AgentExecution::new(agent, installed_sessions.clone()),
         exec,
         worker,
-        realization_executor: crate::realization_executor::RealizationExecutor::new(
-            clock.clone(),
-            realizations.clone(),
-            crate::environment_holding::EnvironmentHolding::new(
-                env,
-                execution.local.runs_local_pool(),
-                realizations.clone(),
-                environment_binding_sink,
-                dispatch_execution,
-                publication,
-            ),
-            crate::resource_staging::ResourceStaging::new(
-                realizations.clone(),
-                crate::resource_staging::ResourceSources {
-                    bundle_source: skill_bundle_source,
-                    file_content_source: resources.file_content_source.clone(),
-                    memory: resources.memory_stores.clone(),
-                    resource_validator: session_execution.resource_validator.clone(),
-                    repository_binding_verifier: session_execution
-                        .repository_binding_verifier
-                        .clone(),
-                    fetches_resources_upstream: authority.fetches_resources_upstream(),
-                    credential_materializer,
-                    memory_reference_encoder: authority.memory_reference_encoder(),
-                },
-            ),
-            crate::terminal_effects::TerminalEffects::new(
-                realizations.clone(),
-                Arc::new(crate::artifact_harvest::ArtifactHarvester::new(
-                    realizations.clone(),
-                    local_workspace.clone(),
-                    resources.artifact_publisher.clone(),
-                )),
-            ),
-            crate::execution_authority::ExecutionAuthority::new(
-                realizations.clone(),
-                execution_authority,
-            ),
-        ),
+        realization_executor,
+        thread_reads,
+        live_inboxes,
         tools,
         resources: capability::ResourcePorts::new(resources, memory),
         mcp,
@@ -312,6 +319,18 @@ impl SharedHost {
     pub(crate) fn thread_delegate_ids(&self, thread: &str) -> Option<Vec<String>> {
         self.installed_sessions
             .read(thread, |slot| slot.inputs.delegates.clone())
+    }
+
+    /// Committed Thread readback over this process's selected authority.
+    #[must_use]
+    pub fn thread_reads(&self) -> &Arc<crate::ThreadReads> {
+        &self.thread_reads
+    }
+
+    /// The live inboxes of the attempts this process currently owns.
+    #[must_use]
+    pub fn live_inboxes(&self) -> &Arc<crate::LiveInboxes> {
+        &self.live_inboxes
     }
 
     /// The shared per-thread live observation hub.

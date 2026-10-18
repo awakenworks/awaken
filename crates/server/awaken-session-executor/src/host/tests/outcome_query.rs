@@ -43,7 +43,7 @@ async fn outcome_queries_need_no_frozen_runtime_or_environment_and_preserve_comm
             committed_environment: None,
         });
         managed.install_test_environment_binding_sink(sink.clone());
-        let commit = host.commit_for_read(&thread.0).await.unwrap();
+        let commit = host.thread_reads.commit_for_read(&thread.0).await.unwrap();
         let state = ThreadOutcomeState::new(&thread, commit.as_ref(), commit.as_ref());
         let mut id = Id("query-only".into());
         let mut aggregate = State::new(id.clone(), 0);
@@ -91,7 +91,8 @@ async fn outcome_queries_need_no_frozen_runtime_or_environment_and_preserve_comm
             }
             let before = commit.recovery_snapshot(&thread, &worker).await.unwrap();
             let projection = host
-                .committed_outcome_projection(&thread.0, &id.0)
+                .thread_reads
+                .committed_outcome(&thread.0, &id.0)
                 .await
                 .unwrap();
             if rule < 3 {

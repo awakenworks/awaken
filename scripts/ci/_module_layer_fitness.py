@@ -94,6 +94,7 @@ LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "delegate",
         "judge",
         "outcome_controller",
+        "outcome_report",
         "run_exec",
         "step_projection",
         "tool_output_spill",
@@ -106,6 +107,7 @@ LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "durable_operations",
         "installed_session",
         "store",
+        "thread_reads",
     )),
     (HOST, "protocol-neutral host adapters and their composition", (
         "session_effects",

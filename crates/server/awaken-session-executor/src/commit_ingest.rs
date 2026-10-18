@@ -30,7 +30,8 @@ pub async fn session_commit_owner(
     // Thread identity in the operation, while the guarded dispatch selects
     // the parent Session partition. This only resolves the existing owner;
     // it never opens a second one.
-    host.commit_for_read(&session_thread.0)
+    host.thread_reads
+        .commit_for_read(&session_thread.0)
         .await
         .map(|coordinator| coordinator as Arc<dyn OperationCoordinator>)
         .map_err(crate::durable_operations::application_error)
@@ -91,7 +92,8 @@ mod tests {
         operation: CommitOperation,
     ) -> Result<CommitReceipt, HostError> {
         let session_thread = trusted_dispatch.session_thread_id();
-        host.commit_for_read(&session_thread.0)
+        host.thread_reads
+            .commit_for_read(&session_thread.0)
             .await?
             .commit_operation(operation)
             .await
@@ -813,6 +815,7 @@ mod tests {
         assert_eq!(wrong_thread.kind, ApplicationErrorKind::InvalidRequest);
 
         let parent_commit = host
+            .thread_reads
             .commit_for_read(parent_thread)
             .await
             .expect("parent physical commit authority");

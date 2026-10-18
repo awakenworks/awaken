@@ -1703,7 +1703,14 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
         !direct_ctx.delivery.is_durable(),
         "L1 direct foreground precondition"
     );
-    assert!(direct.live_inbox("direct-live").await.is_none(), "L1/E2");
+    assert!(
+        direct
+            .live_inboxes
+            .live_inbox("direct-live")
+            .await
+            .is_none(),
+        "L1/E2"
+    );
 
     let direct_tracking = direct_ctx.runtime.begin_active_attempt(
         &RunId("run-direct".into()),
@@ -1711,10 +1718,21 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
         awaken_runtime_contract::RuntimeRunContext::new(),
         awaken_runtime_contract::execution::LiveInput::SafeBoundary,
     );
-    assert!(direct.live_inbox("direct-live").await.is_some(), "L2/E1");
+    assert!(
+        direct
+            .live_inboxes
+            .live_inbox("direct-live")
+            .await
+            .is_some(),
+        "L2/E1"
+    );
     drop(direct_tracking);
     assert!(
-        direct.live_inbox("direct-live").await.is_none(),
+        direct
+            .live_inboxes
+            .live_inbox("direct-live")
+            .await
+            .is_none(),
         "L3/E2+E3 a settled scope is not a fallback authority"
     );
 
@@ -1730,6 +1748,7 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
         .clone()
         .expect("L4 event attempt inbox");
     let discovered = direct
+        .live_inboxes
         .live_inbox("direct-live")
         .await
         .expect("L4/E1 pool-owned Session Event inbox");
@@ -1740,7 +1759,14 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
     ));
     assert_eq!(event_inbox.list().len(), 1, "L4/E1 exact Event inbox");
     drop(event_tracking);
-    assert!(direct.live_inbox("direct-live").await.is_none(), "L5/E3");
+    assert!(
+        direct
+            .live_inboxes
+            .live_inbox("direct-live")
+            .await
+            .is_none(),
+        "L5/E3"
+    );
 
     let mut local_deployment = crate::DeploymentConfig::ephemeral();
     local_deployment.durable = true;
@@ -1763,10 +1789,13 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
         awaken_runtime_contract::RuntimeRunContext::new(),
         awaken_runtime_contract::execution::LiveInput::SafeBoundary,
     );
-    assert!(local.live_inbox("local-live").await.is_some(), "L6/E1");
+    assert!(
+        local.live_inboxes.live_inbox("local-live").await.is_some(),
+        "L6/E1"
+    );
     drop(tracking);
     assert!(
-        local.live_inbox("local-live").await.is_none(),
+        local.live_inboxes.live_inbox("local-live").await.is_none(),
         "L6/E3 settled"
     );
 
@@ -1788,7 +1817,14 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
     remote_ctx
         .foreground
         .install_for_test(Some(RunId("run-remote".into())));
-    assert!(remote.live_inbox("remote-live").await.is_none(), "L7/E3");
+    assert!(
+        remote
+            .live_inboxes
+            .live_inbox("remote-live")
+            .await
+            .is_none(),
+        "L7/E3"
+    );
 }
 
 /// FMECA: FM1 explicit warmup and Session creation use separate preparation
@@ -2103,14 +2139,26 @@ async fn platform_held_mcp_is_mediated_without_resolving_material_into_the_host(
     );
 }
 
-// The production Host must supply every required role at construction. A
-// missing role is a type error before a Coordinator can accept this executor.
+// The executor components must supply every required role at construction. A
+// missing role is a type error before a Coordinator can accept this executor;
+// each component-owned role is the component itself, not a forwarding adapter.
 #[tokio::test]
-async fn managed_host_owns_every_session_runtime_role() {
+async fn executor_components_supply_every_session_role() {
     let shared = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
-    let host = Arc::new(crate::ManagedHost::new(shared));
-    let bindings = awaken_session_execution_contract::SessionExecutor::from(host.clone());
+    let host = crate::ManagedHost::new(shared.clone());
+    let roles = crate::session_execution_roles(&host);
+    assert!(Arc::ptr_eq(
+        &(shared.thread_reads().clone()
+            as Arc<dyn awaken_session_execution_contract::ThreadReadRuntime>),
+        &roles.thread_reads
+    ));
+    assert!(Arc::ptr_eq(
+        &(shared.live_inboxes().clone()
+            as Arc<dyn awaken_session_execution_contract::LiveInboxRuntime>),
+        &roles.live_inbox
+    ));
+    let bindings = awaken_session_execution_contract::SessionExecutor::from(roles);
     assert_eq!(bindings.core().model(), host.model());
 }

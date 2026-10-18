@@ -3,9 +3,7 @@
 //! Worker runtime projection: frozen baselines, reservations, and coordination contexts.
 
 use super::*;
-use awaken_session_execution_contract::{
-    CoordinationRuntime as _, SessionCoordinationReads as _, ThreadReadRuntime as _,
-};
+use awaken_session_execution_contract::{CoordinationRuntime as _, SessionCoordinationReads as _};
 
 #[tokio::test]
 async fn missing_projection_admits_only_the_direct_empty_revision_zero_noop() {
@@ -992,7 +990,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             assert_eq!(prompt_count(&requests[3], "exact prompt"), 1, "P3");
         }
         assert!(
-            managed
+            host.thread_reads
                 .committed_messages("prompt-thread")
                 .await
                 .expect("prompt Thread truth")
@@ -1050,7 +1048,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             "C4/E4"
         );
         assert!(
-            managed
+            host.thread_reads
                 .committed_messages("context-thread")
                 .await
                 .expect("C4 committed truth")
@@ -1693,7 +1691,8 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
         .await
         .expect("R3 Outcome preparation uses the coordination envelope");
     assert!(
-        host.committed_outcome_projection(thread, "worker-owned-outcome")
+        host.thread_reads
+            .committed_outcome(thread, "worker-owned-outcome")
             .await
             .expect("R3 nonterminal Outcome read needs no physical Environment")
             .is_none()

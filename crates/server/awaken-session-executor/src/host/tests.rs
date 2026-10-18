@@ -33,7 +33,7 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
     let thread = ThreadId("native-input-session".into());
     let run = RunId("native-input-run".into());
     let ctx = host.ctx_for(&thread.0, None).await.unwrap();
-    let commit = host.commit_for_read(&thread.0).await.unwrap();
+    let commit = host.thread_reads.commit_for_read(&thread.0).await.unwrap();
     commit
         .commit(ThreadCommit::assemble(
             thread.clone(),

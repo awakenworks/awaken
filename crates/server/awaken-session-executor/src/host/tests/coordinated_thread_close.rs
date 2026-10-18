@@ -69,6 +69,7 @@ async fn failed_child_boundary_cancels_raced_follow_up_without_fencing_its_own_s
         .await
         .expect("R1 raced later admission");
     let commit = host
+        .thread_reads
         .commit_for_read(&parent.0)
         .await
         .expect("parent partition");
@@ -174,6 +175,7 @@ async fn follow_up_close_fence_applies_the_contract_rule_for_each_thread_kind() 
         .expect("validated Host dependencies");
     let parent = ThreadId("close-rule-parent".into());
     let commit = host
+        .thread_reads
         .commit_for_read(&parent.0)
         .await
         .expect("parent partition");

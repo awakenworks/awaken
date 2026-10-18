@@ -309,18 +309,6 @@ impl awaken_session_execution_contract::ThreadReadRuntime for PreparingFake {
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
-    /// Commit the absorbing archive disposition on one logical child Thread
-    /// through its parent Session partition. Implementations must not mutate a
-    /// protocol cache or open child-named storage.
-    async fn archive_session_thread(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        thread_id: &str,
-    ) -> Result<(), awaken_session_types::RunError> {
-        awaken_session_execution_contract::NeutralRuntime
-            .archive_session_thread(session_id, thread_id)
-            .await
-    }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
@@ -947,18 +935,6 @@ impl awaken_session_execution_contract::ThreadReadRuntime for HotRuntime {
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
-    /// Commit the absorbing archive disposition on one logical child Thread
-    /// through its parent Session partition. Implementations must not mutate a
-    /// protocol cache or open child-named storage.
-    async fn archive_session_thread(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        thread_id: &str,
-    ) -> Result<(), awaken_session_types::RunError> {
-        awaken_session_execution_contract::NeutralRuntime
-            .archive_session_thread(session_id, thread_id)
-            .await
-    }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
@@ -3522,18 +3498,6 @@ async fn minting_namespace_cannot_alias_committed_truth() {
 
         // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
-        /// Commit the absorbing archive disposition on one logical child Thread
-        /// through its parent Session partition. Implementations must not mutate a
-        /// protocol cache or open child-named storage.
-        async fn archive_session_thread(
-            &self,
-            session_id: &awaken_session_types::SessionId,
-            thread_id: &str,
-        ) -> Result<(), awaken_session_types::RunError> {
-            awaken_session_execution_contract::NeutralRuntime
-                .archive_session_thread(session_id, thread_id)
-                .await
-        }
 
         // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.

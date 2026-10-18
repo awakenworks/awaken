@@ -135,7 +135,10 @@ impl SharedHost {
             ));
         }
         let thread_id = command.target.thread_id(&command.session_id);
-        let commit = self.commit_for_read(command.session_id.as_str()).await?;
+        let commit = self
+            .thread_reads
+            .commit_for_read(command.session_id.as_str())
+            .await?;
         let snapshot = commit
             .recovery_snapshot(&thread_id, &command.expected_run_id)
             .await

@@ -111,6 +111,7 @@ impl InterruptedManagedRun {
             loop {
                 let committed = self
                     .host
+                    .thread_reads
                     .commit_for_read(self.thread)
                     .await
                     .expect("committed truth")

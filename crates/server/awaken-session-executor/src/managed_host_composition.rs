@@ -158,3 +158,26 @@ impl ManagedHost {
         Ok(())
     }
 }
+
+/// The Session application's executor roles over one Managed adapter's Host:
+/// each role is served by the component that owns it.
+#[must_use]
+pub fn session_execution_roles(
+    managed: &ManagedHost,
+) -> awaken_session_execution_contract::SessionExecutionRoles {
+    let core = Arc::new(managed.clone());
+    awaken_session_execution_contract::SessionExecutionRoles {
+        core: core.clone(),
+        realization: core.clone(),
+        coordination: core.clone(),
+        coordination_reads: core.clone(),
+        budget: core.clone(),
+        streaming_runs: core.clone(),
+        environment: core.clone(),
+        thread_reads: managed.host.thread_reads.clone(),
+        terminal_cleanup: core.clone(),
+        outcomes: core.clone(),
+        live_inbox: managed.host.live_inboxes.clone(),
+        capability: core,
+    }
+}

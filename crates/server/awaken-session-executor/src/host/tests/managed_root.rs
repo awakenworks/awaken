@@ -308,8 +308,7 @@ impl ManagedSessionRootFixture {
                         catalog,
                     ),
                 );
-                let runtime: Arc<dyn awaken_session_execution_contract::CompleteSessionRuntime> =
-                    Arc::new(managed.clone());
+                let runtime = crate::session_execution_roles(managed);
                 Arc::new(
                     awaken_session_application::SessionApplicationBuilder::fixture(
                         runtime,

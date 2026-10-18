@@ -436,6 +436,23 @@ impl awaken_session_execution_contract::RealizationRuntime for RehydrateFake {
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::CoordinationRuntime for RehydrateFake {
+    async fn archive_session_thread(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        thread_id: &str,
+    ) -> Result<(), awaken_session_types::RunError> {
+        let key = (session_id.to_string(), thread_id.to_string());
+        let mut dispositions = self.disposition_by_thread.lock().unwrap();
+        if dispositions.get(&key) != Some(&awaken_agent_contract::ThreadDisposition::Archived) {
+            dispositions.insert(
+                key.clone(),
+                awaken_agent_contract::ThreadDisposition::Archived,
+            );
+            self.archive_commits.lock().unwrap().push(key);
+        }
+        Ok(())
+    }
+
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one complete self-affine Session Run as an unclaimable reservation.

@@ -1267,7 +1267,8 @@ async fn managed_primary_interrupt_recovers_the_active_dispatch_without_a_local_
     .await
     .expect("M1/E3 cancellation settlement");
     assert_eq!(
-        host.commit_for_read(thread)
+        host.thread_reads
+            .commit_for_read(thread)
             .await
             .expect("M1 committed truth")
             .run_state(&run_id),

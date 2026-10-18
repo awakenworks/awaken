@@ -13,9 +13,14 @@
 //! same authority's narrower read port; this module has no cache or write path.
 
 use super::*;
+use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_agent_contract::thread::read::lifecycle::{RunLifecycleCursor, RunLifecycleFeed as _};
 use awaken_session_realization::peers::EnvironmentPeer as _;
+use awaken_session_execution_contract::CoordinatedThreadLink;
 
-impl SharedHost {
+const MAX_LIFECYCLE_PAGE: usize = 1_024;
+
+impl ThreadReads {
     pub(crate) async fn coordinated_threads(
         &self,
         session_id: &str,
@@ -194,12 +199,13 @@ impl SharedHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_agent_contract::agent::content::ContentBlock;
+    use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+    use awaken_agent_contract::agent::run::RunState;
+    use awaken_agent_contract::agent::state::Scope;
     use awaken_agent_contract::agent::state::{Command as StateCommand, MergePolicy};
     use awaken_agent_contract::thread::commit::RunDisposition;
     use awaken_agent_contract::thread::commit::coordinator::Coordinator as _;
-    use awaken_session_execution_contract::{
-        BudgetRuntime, SessionCoordinationReads, ThreadReadRuntime,
-    };
 
     #[tokio::test]
     async fn coordination_query_reuses_only_the_supplied_root_prefix() {
@@ -235,9 +241,10 @@ mod tests {
                 .expect("local authority is selected before Host construction"))
             .build()
             .expect("validated Host dependencies");
-        let managed = crate::ManagedHost::new(host.clone());
+        let managed = crate::host::session_executor(&host);
         assert!(
             managed
+                .coordination_reads()
                 .coordinated_threads(&awaken_session_types::SessionId::from(session), None)
                 .await
                 .unwrap()
@@ -268,12 +275,14 @@ mod tests {
             .await
             .unwrap();
         let snapshot = host
+            .thread_reads
             .session_thread_recovery_snapshot(session, &ThreadId(session.into()))
             .await
             .unwrap()
             .unwrap();
         let before = queries.latest_run_reads();
         let original = managed
+            .coordination_reads()
             .coordinated_threads(
                 &awaken_session_types::SessionId::from(session),
                 Some(&snapshot),
@@ -299,6 +308,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             managed
+                .coordination_reads()
                 .coordinated_threads(
                     &awaken_session_types::SessionId::from(session),
                     Some(&snapshot)
@@ -315,6 +325,7 @@ mod tests {
         );
         assert_eq!(
             managed
+                .coordination_reads()
                 .coordinated_threads(&awaken_session_types::SessionId::from(session), None)
                 .await
                 .unwrap()
@@ -349,6 +360,7 @@ mod tests {
         let before = queries.latest_run_reads();
         assert_eq!(
             managed
+                .coordination_reads()
                 .coordinated_threads(
                     &awaken_session_types::SessionId::from(session),
                     Some(&snapshot)
@@ -364,6 +376,7 @@ mod tests {
             "Q4 no hidden recovery query"
         );
         let error = managed
+            .coordination_reads()
             .coordinated_threads(&awaken_session_types::SessionId::from(session), None)
             .await
             .unwrap_err();
@@ -377,6 +390,7 @@ mod tests {
         let mut foreign = snapshot.clone();
         foreign.thread_id = ThreadId("another-session".into());
         let error = managed
+            .coordination_reads()
             .coordinated_threads(
                 &awaken_session_types::SessionId::from(session),
                 Some(&foreign),
@@ -444,9 +458,10 @@ mod tests {
                 .expect("validated Host dependencies")
             };
             let host = make_host().await;
-            let managed = crate::ManagedHost::new(host.clone());
+            let managed = crate::host::session_executor(&host);
             assert_eq!(
                 managed
+                    .budget()
                     .session_thread_usage(
                         &awaken_session_types::SessionId::from(session_id),
                         &thread_id.0
@@ -471,6 +486,7 @@ mod tests {
                 .await
                 .unwrap();
             let error = managed
+                .budget()
                 .session_thread_usage(
                     &awaken_session_types::SessionId::from(session_id),
                     &thread_id.0,
@@ -497,8 +513,9 @@ mod tests {
                     awaken_runtime_contract::llm::THREAD_USAGE_STATE_KEY,
                     serde_json::to_value(usage).unwrap(),
                 )]));
-                let restarted = crate::ManagedHost::new(make_host().await);
+                let restarted = crate::host::session_executor(&make_host().await);
                 let actual = restarted
+                    .budget()
                     .session_thread_usage(
                         &awaken_session_types::SessionId::from(session_id),
                         &thread_id.0,
@@ -533,7 +550,6 @@ mod tests {
 
     #[tokio::test]
     async fn child_recovery_snapshot_reuses_the_parent_commit_consistency_boundary() {
-        use awaken_session_execution_contract::SessionProjectionSource as _;
         // Constraint/Invariant: the authoritative inputs and ownership boundaries
         // documented here remain the only decision source; no parallel path is admitted.
         // Decision rule: execute every reachable cause partition documented here and
@@ -570,14 +586,16 @@ mod tests {
                 .expect("validated Host dependencies");
 
         assert_eq!(
-            host.session_thread_recovery_snapshot(session_id, &child_id)
+            host.thread_reads
+                .session_thread_recovery_snapshot(session_id, &child_id)
                 .await
                 .expect("R1 parent-partition read"),
             None,
             "R1/E1"
         );
         assert!(
-            crate::ManagedHost::new(host.clone())
+            crate::host::session_executor(&host)
+                .projection()
                 .projection_thread_snapshot(
                     &awaken_session_types::SessionId::from(session_id),
                     &child_id.0,
@@ -597,7 +615,8 @@ mod tests {
             "R1/E1 does not open a child-named physical partition"
         );
         assert_eq!(
-            crate::ManagedHost::new(host.clone())
+            crate::host::session_executor(&host)
+                .budget()
                 .session_thread_usage(
                     &awaken_session_types::SessionId::from(session_id),
                     &child_id.0
@@ -609,6 +628,7 @@ mod tests {
         );
 
         let parent_commit = host
+            .thread_reads
             .commit_for_read(session_id)
             .await
             .expect("parent physical commit authority");
@@ -698,8 +718,9 @@ mod tests {
             .await
             .expect("R2 awaiting child commit");
 
-        let managed = crate::ManagedHost::new(host.clone());
+        let managed = crate::host::session_executor(&host);
         let snapshot = managed
+            .thread_reads()
             .session_thread_recovery_snapshot(
                 &awaken_session_types::SessionId::from(session_id),
                 &child_id.0,
@@ -736,6 +757,7 @@ mod tests {
         assert_eq!(snapshot.store_cursor, 3, "R2/E3 parent-store cursor");
         assert_eq!(snapshot.next_commit_ordinal, 2, "R2/E2 claimed ordinal");
         let exact_snapshot = managed
+            .thread_reads()
             .session_thread_run_recovery_snapshot(
                 &awaken_session_types::SessionId::from(session_id),
                 &child_id.0,
@@ -745,6 +767,7 @@ mod tests {
             .expect("R2 ManagedHost exact read")
             .expect("R2 exact committed child Run");
         let usage = managed
+            .budget()
             .session_thread_usage(
                 &awaken_session_types::SessionId::from(session_id),
                 &child_id.0,
@@ -760,6 +783,7 @@ mod tests {
         assert_eq!(exact_snapshot, snapshot, "R2/E7 exact recovery authority");
         assert_eq!(
             managed
+                .thread_reads()
                 .session_thread_run_recovery_snapshot(
                     &awaken_session_types::SessionId::from(session_id),
                     &child_id.0,
@@ -822,11 +846,13 @@ mod tests {
             .expect("R3 newer Run in the original parent partition");
         let parent = awaken_session_types::SessionId::from(session_id);
         let latest = managed
+            .projection()
             .projection_thread_snapshot(&parent, &child_id.0, None)
             .await
             .unwrap()
             .unwrap();
         let older = managed
+            .projection()
             .projection_thread_snapshot(&parent, &child_id.0, Some(&child_run))
             .await
             .unwrap()
@@ -868,6 +894,7 @@ mod tests {
         );
         assert!(
             managed
+                .projection()
                 .projection_thread_snapshot(
                     &parent,
                     &child_id.0,

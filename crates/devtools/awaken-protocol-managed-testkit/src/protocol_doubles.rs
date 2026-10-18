@@ -1013,6 +1013,77 @@ impl awaken_session_execution_contract::CoordinationRuntime for CoordinatedRunti
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
+    async fn archive_session_thread(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        thread_id: &str,
+    ) -> Result<(), awaken_session_types::RunError> {
+        if self
+            .reject_archive
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(awaken_session_types::RunError::internal(
+                "archive disposition commit failed",
+            ));
+        }
+        let key = (session_id.to_string(), thread_id.to_string());
+        let lifecycle_cursor = self
+            .lifecycle
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|event| event.source_commit_cursor)
+            .max()
+            .unwrap_or_default();
+        let root_message_cursor = self
+            .root_message_cursors
+            .lock()
+            .unwrap()
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or_default();
+        let child_message_cursor = self
+            .child_message_cursors
+            .lock()
+            .unwrap()
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or_default();
+        let disposition_cursor = self
+            .disposition_commit_cursors
+            .lock()
+            .unwrap()
+            .values()
+            .copied()
+            .max()
+            .unwrap_or_default();
+        let source_commit_cursor = [
+            lifecycle_cursor,
+            root_message_cursor,
+            child_message_cursor,
+            disposition_cursor,
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or_default()
+        .checked_add(1)
+        .ok_or_else(|| {
+            awaken_session_types::RunError::internal("test disposition commit cursor exhausted")
+        })?;
+        let mut dispositions = self.disposition_by_thread.lock().unwrap();
+        let mut disposition_cursors = self.disposition_commit_cursors.lock().unwrap();
+        if dispositions.get(&key) != Some(&awaken_agent_contract::ThreadDisposition::Archived) {
+            dispositions.insert(
+                key.clone(),
+                awaken_agent_contract::ThreadDisposition::Archived,
+            );
+            disposition_cursors.insert(key.clone(), source_commit_cursor);
+            self.archive_commits.lock().unwrap().push(key);
+        }
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
@@ -1475,78 +1546,6 @@ impl awaken_session_execution_contract::ThreadReadRuntime for CoordinatedRuntime
             .get(&(session_id.to_string(), thread_id.to_string()))
             .copied()
             .unwrap_or_default())
-    }
-
-    async fn archive_session_thread(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        thread_id: &str,
-    ) -> Result<(), awaken_session_types::RunError> {
-        if self
-            .reject_archive
-            .load(std::sync::atomic::Ordering::SeqCst)
-        {
-            return Err(awaken_session_types::RunError::internal(
-                "archive disposition commit failed",
-            ));
-        }
-        let key = (session_id.to_string(), thread_id.to_string());
-        let lifecycle_cursor = self
-            .lifecycle
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|event| event.source_commit_cursor)
-            .max()
-            .unwrap_or_default();
-        let root_message_cursor = self
-            .root_message_cursors
-            .lock()
-            .unwrap()
-            .iter()
-            .copied()
-            .max()
-            .unwrap_or_default();
-        let child_message_cursor = self
-            .child_message_cursors
-            .lock()
-            .unwrap()
-            .iter()
-            .copied()
-            .max()
-            .unwrap_or_default();
-        let disposition_cursor = self
-            .disposition_commit_cursors
-            .lock()
-            .unwrap()
-            .values()
-            .copied()
-            .max()
-            .unwrap_or_default();
-        let source_commit_cursor = [
-            lifecycle_cursor,
-            root_message_cursor,
-            child_message_cursor,
-            disposition_cursor,
-        ]
-        .into_iter()
-        .max()
-        .unwrap_or_default()
-        .checked_add(1)
-        .ok_or_else(|| {
-            awaken_session_types::RunError::internal("test disposition commit cursor exhausted")
-        })?;
-        let mut dispositions = self.disposition_by_thread.lock().unwrap();
-        let mut disposition_cursors = self.disposition_commit_cursors.lock().unwrap();
-        if dispositions.get(&key) != Some(&awaken_agent_contract::ThreadDisposition::Archived) {
-            dispositions.insert(
-                key.clone(),
-                awaken_agent_contract::ThreadDisposition::Archived,
-            );
-            disposition_cursors.insert(key.clone(), source_commit_cursor);
-            self.archive_commits.lock().unwrap().push(key);
-        }
-        Ok(())
     }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never

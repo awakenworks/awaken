@@ -205,7 +205,9 @@ async fn durable_child_run_scenario() {
             "child resume stalled: rows={:?}, child_pending={}, parent={:?}",
             memory.list_dispatches().await,
             memory.pending_count(&child_run_id),
-            host.committed_messages("parent-thread").await,
+            host.thread_reads()
+                .committed_messages("parent-thread")
+                .await,
         ),
     };
 
@@ -224,7 +226,8 @@ async fn durable_child_run_scenario() {
         "the child and parent durable rows reach terminal settlement and leave the live queue"
     );
     assert!(
-        host.committed_messages("parent-thread")
+        host.thread_reads()
+            .committed_messages("parent-thread")
             .await
             .expect("committed history remains readable")
             .iter()

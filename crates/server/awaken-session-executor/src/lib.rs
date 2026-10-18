@@ -57,8 +57,10 @@ mod installed_session;
 mod judge;
 mod lazy_sandbox;
 mod live_inbox;
+pub use live_inbox::LiveInboxes;
 mod managed_adapter_error;
 mod managed_host_composition;
+pub use managed_host_composition::session_execution_roles;
 mod managed_input_projection;
 mod managed_model_capability;
 mod managed_outcome;
@@ -69,6 +71,7 @@ mod memory_stores;
 mod model_content_materializer;
 mod no_model;
 mod outcome_controller;
+mod outcome_report;
 mod redact;
 mod run_application_host;
 mod run_exec;
@@ -78,6 +81,8 @@ mod skill_catalog;
 mod skills;
 mod step_projection;
 mod store;
+mod thread_reads;
+pub use thread_reads::ThreadReads;
 
 #[cfg(test)]
 use awaken_session_mcp::test_mcp;
@@ -95,13 +100,9 @@ pub(crate) use session_effects::SessionEffects;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_runtime_contract::live_inbox::{LiveInboxMessageId, MessageOrigin, Offer};
 use awaken_session_application_contract::{DelegatedRun, Pending, StepOutcome};
 use awaken_session_configuration_contract::{AgentCapabilities, BuiltinTool, CustomTool};
-use awaken_session_execution_contract::{
-    LiveInboxEntry, LiveInboxError, LiveInboxSnapshot, OutcomeDrive, SessionRuntime,
-    ToolPermissionDecision,
-};
+use awaken_session_execution_contract::{OutcomeDrive, SessionRuntime, ToolPermissionDecision};
 use awaken_session_types::RunError;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -111,9 +112,11 @@ pub use crate::authority::{
     LocalCommit, LocalCommitAdapter, LocalCommitQueries, RuntimeAuthority, RuntimeAuthorityError,
     UpstreamAuthority,
 };
+pub(crate) use crate::host::HostOutcomeIteration;
 pub use crate::host::{
     CommittedStepReceipt, HostError, HostErrorKind, HostOutcomeDrive, HostOutcomeReport,
 };
+pub(crate) use crate::installed_session::InstalledSessions;
 // The neutral session substrate and its resume vocabulary.
 pub use crate::acp_capability_probe::SessionAcpCapabilityNegotiator;
 pub use crate::cache_volume::{
@@ -146,7 +149,7 @@ use awaken_credential_materializer::{CredentialRefreshFactory, PinnedCredentialM
 use awaken_resource_contract::FileContentSource;
 #[cfg(test)]
 use awaken_resource_contract::RepositoryBindingVerifier;
-use managed_adapter_error::{to_live_inbox_error, to_run_error};
+use managed_adapter_error::to_run_error;
 pub(crate) use managed_input_projection::{session_system_message, user_message};
 // The model-route seam (R1/R2/R5): a process startup supplies its own
 // `InferenceExecutorMaterializer` to map a session's model ref to a labeled executor.
@@ -536,6 +539,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for ManagedHost {
         }
         let links = self
             .host
+            .thread_reads
             .coordinated_threads(session_id.as_str(), None)
             .await
             .map_err(to_run_error)?;
@@ -594,6 +598,20 @@ impl awaken_session_execution_contract::CoordinationRuntime for ManagedHost {
         crate::step_projection::settled_step(receipt)
     }
 
+    async fn archive_session_thread(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        thread_id: &str,
+    ) -> Result<(), RunError> {
+        self.host
+            .archive_session_thread(
+                session_id.as_str(),
+                &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
+            )
+            .await
+            .map_err(to_run_error)
+    }
+
     async fn quiesce_terminal_delegations(
         &self,
         thread: &str,
@@ -626,7 +644,12 @@ impl awaken_session_execution_contract::SessionCoordinationReads for ManagedHost
                 reason: awaken_session_execution_contract::SessionExecutionRecoveryGap::HistoryUnavailable,
             };
         };
-        awaken_dispatch_execution::read_execution_recovery(source.as_ref(), self, session).await
+        let projection = awaken_session_execution_contract::CommittedSessionProjection::new(
+            self.host.thread_reads.clone(),
+            Arc::new(self.clone()),
+        );
+        awaken_dispatch_execution::read_execution_recovery(source.as_ref(), &projection, session)
+            .await
     }
 
     async fn coordinated_admission_receipt(
@@ -688,6 +711,7 @@ impl awaken_session_execution_contract::SessionCoordinationReads for ManagedHost
     ) -> Result<Option<awaken_agent_contract::agent::run::RunState>, RunError> {
         let commit = self
             .host
+            .thread_reads
             .commit_for_read(session_id.as_str())
             .await
             .map_err(to_run_error)?;
@@ -699,7 +723,11 @@ impl awaken_session_execution_contract::SessionCoordinationReads for ManagedHost
     }
 
     async fn delegated_runs(&self, thread: &str) -> Result<Vec<DelegatedRun>, RunError> {
-        self.host.delegated_runs(thread).await.map_err(to_run_error)
+        self.host
+            .thread_reads
+            .delegated_runs(thread)
+            .await
+            .map_err(to_run_error)
     }
 
     async fn coordinated_threads(
@@ -708,6 +736,7 @@ impl awaken_session_execution_contract::SessionCoordinationReads for ManagedHost
         observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Result<Vec<awaken_session_execution_contract::CoordinatedThreadLink>, RunError> {
         self.host
+            .thread_reads
             .coordinated_threads(session_id.as_str(), observed_root)
             .await
             .map_err(to_run_error)
@@ -761,6 +790,7 @@ impl awaken_session_execution_contract::BudgetRuntime for ManagedHost {
         thread: &str,
     ) -> Result<awaken_session_budget_contract::SessionUsage, RunError> {
         self.host
+            .thread_reads
             .session_thread_usage(
                 thread,
                 &awaken_agent_contract::agent::thread::Id(thread.to_string()),
@@ -775,6 +805,7 @@ impl awaken_session_execution_contract::BudgetRuntime for ManagedHost {
         thread_id: &str,
     ) -> Result<awaken_session_budget_contract::SessionUsage, RunError> {
         self.host
+            .thread_reads
             .session_thread_usage(
                 session_id.as_str(),
                 &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
@@ -880,7 +911,11 @@ impl awaken_session_execution_contract::StreamingRunRuntime for ManagedHost {
     }
 
     async fn pending_tool(&self, thread: &str) -> Result<Option<Pending>, RunError> {
-        self.host.pending_tool(thread).await.map_err(to_run_error)
+        self.host
+            .thread_reads
+            .pending_tool(thread)
+            .await
+            .map_err(to_run_error)
     }
 }
 
@@ -1047,98 +1082,6 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ManagedHost {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::ThreadReadRuntime for ManagedHost {
-    async fn owns_thread(&self, thread: &str) -> Result<bool, RunError> {
-        self.host
-            .has_durable_thread(thread)
-            .await
-            .map_err(to_run_error)
-    }
-
-    /// Committed transcript from durable truth, so the adapter can rehydrate a
-    /// session lost to a process restart and resume its awaiting run (ADR-0039).
-    async fn committed_messages(
-        &self,
-        thread: &str,
-    ) -> Result<Vec<awaken_agent_contract::Message>, RunError> {
-        self.host
-            .committed_messages(thread)
-            .await
-            .map_err(to_run_error)
-    }
-
-    async fn session_thread_recovery_snapshot(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        thread_id: &str,
-    ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
-    {
-        self.host
-            .session_thread_recovery_snapshot(
-                session_id.as_str(),
-                &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
-            )
-            .await
-            .map_err(to_run_error)
-    }
-
-    async fn session_thread_run_recovery_snapshot(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        thread_id: &str,
-        run_id: &awaken_agent_contract::agent::run::Id,
-    ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
-    {
-        let snapshot = self
-            .host
-            .session_thread_run_recovery_snapshot(
-                session_id.as_str(),
-                &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
-                run_id,
-            )
-            .await
-            .map_err(to_run_error)?;
-        awaken_session_execution_contract::select_recovery_snapshot_run(Some(snapshot), run_id)
-    }
-
-    async fn session_thread_disposition(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        thread_id: &str,
-    ) -> Result<awaken_agent_contract::ThreadDisposition, RunError> {
-        self.host
-            .session_thread_disposition(
-                session_id.as_str(),
-                &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
-            )
-            .await
-            .map_err(to_run_error)
-    }
-
-    async fn archive_session_thread(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        thread_id: &str,
-    ) -> Result<(), RunError> {
-        self.host
-            .archive_session_thread(
-                session_id.as_str(),
-                &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
-            )
-            .await
-            .map_err(to_run_error)
-    }
-
-    async fn committed_outcome_projection(
-        &self,
-        thread: &str,
-        outcome_id: &str,
-    ) -> Result<Option<awaken_session_execution_contract::CommittedOutcomeProjection>, RunError> {
-        managed_outcome::committed_projection(&self.host, thread, outcome_id).await
-    }
-}
-
-#[async_trait::async_trait]
 impl awaken_session_execution_contract::TerminalCleanupRuntime for ManagedHost {
     async fn execute_terminal_repository_publication_for_lease(
         &self,
@@ -1167,7 +1110,8 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ManagedHost {
                 |thread| {
                     let host = &self.host;
                     async move {
-                        host.delegated_runs_under_lifecycle(&thread)
+                        host.thread_reads
+                            .delegated_runs_under_lifecycle(&thread)
                             .await
                             .map_err(crate::realization_error::RealizationError::from)
                     }
@@ -1291,89 +1235,6 @@ impl awaken_session_execution_contract::OutcomeRuntime for ManagedHost {
 
     async fn continue_outcome(&self, thread: &str) -> Result<Option<OutcomeDrive>, RunError> {
         managed_outcome::resume(&self.host, thread).await
-    }
-}
-
-#[async_trait::async_trait]
-impl awaken_session_execution_contract::LiveInboxRuntime for ManagedHost {
-    async fn live_inbox_snapshot(&self, thread: &str) -> LiveInboxSnapshot {
-        match self.host.live_inbox(thread).await {
-            Some(inbox) => LiveInboxSnapshot {
-                active: true,
-                version: inbox.version(),
-                messages: inbox
-                    .list()
-                    .into_iter()
-                    .map(|entry| LiveInboxEntry {
-                        id: entry.id.0,
-                        content: entry.message.content,
-                    })
-                    .collect(),
-            },
-            None => LiveInboxSnapshot::inactive(),
-        }
-    }
-
-    async fn live_inbox_queue(
-        &self,
-        thread: &str,
-        content: Vec<ContentBlock>,
-    ) -> Result<u64, LiveInboxError> {
-        let inbox = self
-            .host
-            .live_inbox(thread)
-            .await
-            .ok_or(LiveInboxError::Inactive)?;
-        // Queued through the wire surface — an out-of-band injection into a live
-        // run, so it is tagged External (what a product maps operator steering onto).
-        match inbox.offer_as(MessageOrigin::External, user_message(content)) {
-            Offer::Accepted(id) => Ok(id.0),
-            // The attempt closed between lookup and offer, or its finite live
-            // identity space was exhausted: both route like no active inbox.
-            Offer::Closed => Err(LiveInboxError::Inactive),
-        }
-    }
-
-    async fn live_inbox_remove(&self, thread: &str, id: u64) -> Result<(), LiveInboxError> {
-        let inbox = self
-            .host
-            .live_inbox(thread)
-            .await
-            .ok_or(LiveInboxError::Inactive)?;
-        inbox
-            .remove(LiveInboxMessageId(id))
-            .map(|_| ())
-            .map_err(to_live_inbox_error)
-    }
-
-    async fn live_inbox_replace(
-        &self,
-        thread: &str,
-        id: u64,
-        content: Vec<ContentBlock>,
-    ) -> Result<(), LiveInboxError> {
-        let inbox = self
-            .host
-            .live_inbox(thread)
-            .await
-            .ok_or(LiveInboxError::Inactive)?;
-        inbox
-            .replace(LiveInboxMessageId(id), user_message(content))
-            .map_err(to_live_inbox_error)
-    }
-
-    async fn live_inbox_reorder(
-        &self,
-        thread: &str,
-        order: Vec<u64>,
-    ) -> Result<(), LiveInboxError> {
-        let inbox = self
-            .host
-            .live_inbox(thread)
-            .await
-            .ok_or(LiveInboxError::Inactive)?;
-        let order: Vec<LiveInboxMessageId> = order.into_iter().map(LiveInboxMessageId).collect();
-        inbox.reorder(&order).map_err(to_live_inbox_error)
     }
 }
 

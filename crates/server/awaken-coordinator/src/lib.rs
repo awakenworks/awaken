@@ -598,7 +598,7 @@ async fn local_managed_state_over(
         environments.unwrap_or_else(|| volatile_environment_execution(clock.clone()));
     let runtime = Arc::new(ManagedHost::new(host.clone()));
     let mut builder = awaken_session_application::SessionApplicationBuilder::new(
-        runtime.clone(),
+        awaken_session_executor::session_execution_roles(&runtime),
         runtime.clone(),
         persistence,
         environments.clone(),

@@ -42,6 +42,7 @@ impl RunRecoverySource for HostRunRecoverySource {
         claimed_run_id: &RunId,
     ) -> Result<RunRecoverySnapshot, RecoveryError> {
         self.0
+            .thread_reads
             .session_thread_run_recovery_snapshot(&session_thread_id.0, thread_id, claimed_run_id)
             .await
             .map_err(|error| RecoveryError::Rejected(error.to_string()))
@@ -107,6 +108,7 @@ impl DispatchSettlementObserver for HostMemoryDispatchSettlementObserver {
         };
         let commit = self
             .0
+            .thread_reads
             .commit_for_read(&dispatch.session_thread_id().0)
             .await
             .map_err(|error| DispatchSettlementError(error.to_string()))?;
