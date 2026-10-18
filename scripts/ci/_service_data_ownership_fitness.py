@@ -26,14 +26,14 @@ SERVICE_BOUNDARY = "crates/bin/awaken-cli/src/config/service_boundary.rs"
 RESOURCE_AUTHORITIES = "crates/resources/awaken-resource-application/src/authorities.rs"
 RESOURCE_CONTRACT = "crates/contract/awaken-resource-contract/src/lib.rs"
 RESOURCE_PERSISTENCE = "crates/resources/awaken-resource-persistence/src/lib.rs"
-RUNTIME_HOST_BUILD = "crates/server/awaken-runtime-host/src/host/build.rs"
+RUNTIME_HOST_BUILD = "crates/server/awaken-session-executor/src/host/build.rs"
 # The Host is built from one `HostDependencies` value whose constructors and
 # `with_*` selections live in this module tree, over the capability groups,
 # so the construction surface is build.rs plus these two places.
-RUNTIME_HOST_DEPENDENCIES = "crates/server/awaken-runtime-host/src/host/dependencies"
-RUNTIME_HOST_CAPABILITIES = "crates/server/awaken-runtime-host/src/host/capability"
+RUNTIME_HOST_DEPENDENCIES = "crates/server/awaken-session-executor/src/host/dependencies"
+RUNTIME_HOST_CAPABILITIES = "crates/server/awaken-session-executor/src/host/capability"
 PROCESS_STORES = "crates/bin/awaken-cli/src/process_stores.rs"
-RUNTIME_HOST_MANIFEST = "crates/server/awaken-runtime-host/Cargo.toml"
+RUNTIME_HOST_MANIFEST = "crates/server/awaken-session-executor/Cargo.toml"
 COORDINATOR_MANIFEST = "crates/server/awaken-coordinator/Cargo.toml"
 PROTOCOL_MANAGED_MANIFEST = "crates/server/awaken-protocol-managed/Cargo.toml"
 FILE_STORE_SOURCE = "crates/resources/awaken-file-store/src/lib.rs"
@@ -44,7 +44,7 @@ SKILL_STORE_SOURCE = "crates/resources/awaken-skill-store/src/lib.rs"
 SKILL_SQLITE_SOURCE = "crates/resources/awaken-skill-store/src/sqlite.rs"
 RESOURCE_STORE_SOURCE = "crates/stores/awaken-resource-store/src/lib.rs"
 RESOURCE_POSTGRES_REGISTRY = "crates/stores/awaken-resource-store/src/postgres_registry.rs"
-RUNTIME_MEMORY_STORES = "crates/server/awaken-runtime-host/src/memory_stores.rs"
+RUNTIME_MEMORY_STORES = "crates/server/awaken-session-executor/src/memory_stores.rs"
 ENV_STORE_SQLITE_SOURCE = "crates/stores/awaken-env-store/src/lib.rs"
 SANDBOX_POLICY_STORE_SOURCE = "crates/server/awaken-sandbox-policy-store/src/lib.rs"
 ENV_IMAGE_BUILD_SOURCE = "crates/server/awaken-environment-image-build/src/lib.rs"
@@ -62,7 +62,7 @@ RUN_INGRESS_FACTORY_SOURCE = "crates/server/awaken-run-ingress/src/any_factory.r
 RUN_INGRESS_LIB_SOURCE = "crates/server/awaken-run-ingress/src/lib.rs"
 RUN_INGRESS_SQLITE_SOURCE = "crates/server/awaken-run-ingress/src/sqlite.rs"
 RUNTIME_AUTHORITY_SOURCE = "crates/server/awaken-coordinator/src/runtime_authority.rs"
-RUNTIME_STORE_SOURCE = "crates/server/awaken-runtime-host/src/store.rs"
+RUNTIME_STORE_SOURCE = "crates/server/awaken-session-executor/src/store.rs"
 RUNTIME_LIB_SOURCE = "crates/runtime/awaken-runtime/src/lib.rs"
 STORE_FS_MANIFEST = "crates/stores/awaken-store-fs/Cargo.toml"
 CAPTURE_STORE_SOURCE = "crates/stores/awaken-captured-content-store/src/lib.rs"
@@ -242,7 +242,7 @@ NON_PRODUCT_APIS = (
         TEST_SUPPORT_GATE,
     ),
     (
-        "awaken_runtime_host::memory_stores::open",
+        "awaken_session_executor::memory_stores::open",
         RUNTIME_MEMORY_STORES,
         r"\bpub\s*\(\s*crate\s*\)\s+fn\s+open\b",
         NON_PRODUCT_GATE,
@@ -1291,7 +1291,7 @@ def check_all(repo_root: Path) -> list[str]:
         errors.append(f"{RUNTIME_HOST_MANIFEST}: {error}")
     try:
         runtime_dependencies = resolved_product_dependencies(
-            repo_root, "awaken-runtime-host", "default Runtime Host"
+            repo_root, "awaken-session-executor", "default Runtime Host"
         )
     except RuntimeError as error:
         errors.append(str(error))

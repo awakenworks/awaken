@@ -191,7 +191,7 @@ cargo run -p awaken-eval -- memory-run-acp \
 Memory extraction uses a tool-free, strict JSON projection of proposed
 `write_memory` calls to isolate decision quality. The production tool protocol,
 filter, persistence, and recall lifecycle are tested in `awaken-ext-memory` and
-`awaken-runtime-host`; the projection does not replace those tests.
+`awaken-session-executor`; the projection does not replace those tests.
 
 On 2026-07-22, the stress-floor configuration
 `gpt-5.3-codex-spark` / `low` produced 5/5 exact extraction and 6/6 exact

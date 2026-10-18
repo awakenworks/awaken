@@ -30,10 +30,10 @@ fn manifest() -> WorkerManifest {
     }
 }
 
-fn local_coordinator_deployment() -> awaken_runtime_host::DeploymentConfig {
-    let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
+fn local_coordinator_deployment() -> awaken_session_executor::DeploymentConfig {
+    let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
     deployment.disable_local_pool = true;
-    deployment.sandbox_tier = awaken_runtime_host::SandboxTier::Namespace;
+    deployment.sandbox_tier = awaken_session_executor::SandboxTier::Namespace;
     deployment
 }
 
@@ -417,9 +417,9 @@ fn builder_rejects_incomplete_or_invalid_topology() {
 
 #[test]
 fn standard_manifest_is_derived_from_builder_topology() {
-    let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
+    let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
     deployment.acp = Some(
-        awaken_runtime_host::AcpWorkerProfile::new(
+        awaken_session_executor::AcpWorkerProfile::new(
             vec!["codex".to_string()],
             awaken_execution_composition::acp_adapter_policy(),
         )
@@ -523,8 +523,8 @@ fn container_deployment_cannot_bypass_canonical_provider_preparation() {
      * E1=manifest, Host, and heartbeat share one instance; E2=build fails.
      * S=10/O=4/D=1, RPN=40. Rules A1 !C1=>normal; A2 C1&&(C2||C3)=>E1;
      * A3 C1&&!C2&&!C3=>E2. This case owns A3; provider drift owns A2. */
-    let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
-    deployment.sandbox_tier = awaken_runtime_host::SandboxTier::K8s;
+    let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
+    deployment.sandbox_tier = awaken_session_executor::SandboxTier::K8s;
     let error = WorkerNodeBuilder::new(
         WorkerUpstream::new("http://control"),
         awaken_time::system_clock(),
@@ -598,7 +598,7 @@ async fn node_runs_register_ready_drain_quiesce_and_deregister() {
     .with_manifest(manifest())
     .with_attempt_decorator_factory(Arc::new(move |context| {
         *observed.lock().expect("identity observation mutex") = Some(context.identity().clone());
-        let decorator: awaken_runtime_host::AttemptExecutorDecorator = Arc::new(|inner| inner);
+        let decorator: awaken_session_executor::AttemptExecutorDecorator = Arc::new(|inner| inner);
         Ok(decorator)
     }))
     .without_admin_surface()

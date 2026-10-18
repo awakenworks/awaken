@@ -359,7 +359,7 @@ esac
                     self.assertEqual(calls[-1], "+nightly metadata --locked --format-version 1")
                     self.assertFalse(any(" fuzz run " in call for call in calls), "D6 zero fuzz builds")
                 else:
-                    self.assertEqual(calls[-1], "clean -p awaken-runtime-host", "D2/D3 cleanup")
+                    self.assertEqual(calls[-1], "clean -p awaken-session-executor", "D2/D3 cleanup")
                 if passed:
                     preflight = calls.index("+nightly metadata --locked --format-version 1")
                     self.assertLess(preflight, next(index for index, call in enumerate(calls) if " fuzz run " in call), "D6 locked preflight precedes fuzz")

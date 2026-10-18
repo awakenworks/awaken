@@ -130,11 +130,11 @@ pub(super) async fn control_component_for_process(
             stores.clock.clone(),
         ))),
         assistant_model_selection,
-        global_tools: awaken_runtime_host::authorable_tools(),
-        platform_plugins: awaken_runtime_host::platform_plugin_capabilities_with_web_search(
+        global_tools: awaken_session_executor::authorable_tools(),
+        platform_plugins: awaken_session_executor::platform_plugin_capabilities_with_web_search(
             web_search_providers,
         ),
-        assistant_plugins: awaken_runtime_host::platform_plugin_capabilities_with_web_search(
+        assistant_plugins: awaken_session_executor::platform_plugin_capabilities_with_web_search(
             web_search_providers,
         ),
         runtimes,

@@ -24,7 +24,7 @@ use awaken_agent_contract::thread::read::lifecycle::{
     RunLifecycleCursor, RunLifecycleFeed, RunLifecycleFeedError, RunLifecyclePage,
 };
 use awaken_run_ingress::{AnyCoordinatorDispatch, WakeSignal};
-use awaken_runtime_host::{
+use awaken_session_executor::{
     DeploymentConfig, DispatchBackend, LocalCommit, LocalCommitAdapter, LocalCommitQueries,
     RuntimeAuthority, RuntimeAuthorityError, StoreKind, Wake,
 };

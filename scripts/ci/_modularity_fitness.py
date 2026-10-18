@@ -32,7 +32,7 @@ adds an entry):
   falls to the threshold or below, its entry is removed. Dependencies are exact (a lower
   count is recorded in the same commit); lines may float below the budget and
   must be re-recorded once they fall `BUDGET_LINE_SLACK` or more below it.
-  Modules of `awaken-runtime-host` that the module-layer guard classifies as
+  Modules of `awaken-session-executor` that the module-layer guard classifies as
   `realization` are the realization still being extracted (plan slice R). The crate
   budget still holds the whole crate (`lines`, host plus realization), so code
   moved between the two inside the crate is not growth and nothing grows
@@ -68,7 +68,7 @@ MAX_FUNCTION_LINES = 150
 BUDGET_LINE_SLACK = 1000
 CRATE_REVIEW_LINES = 15000
 
-# An inherent impl may name its type through a crate path (`impl crate::host::SharedHost`);
+# An inherent impl may name its type through a crate path (`impl crate::host::ExecutorComponents`);
 # that block belongs to the same type, so the path prefix is part of the match.
 _IMPL = re.compile(
     r"^\s*impl(?:<[^>{]*>)?\s+(?:crate::(?:[a-z_][a-z0-9_]*::)*)?([A-Z][A-Za-z0-9_]*)(?:<[^>{]*>)?\s*(?:where[^{]*)?\{",
@@ -526,7 +526,7 @@ def selftest() -> None:
         (_module_layer_fitness.REALIZATION, "r", ("host::session::environment_lifecycle", "provisioning")),
         (_module_layer_fitness.HOST, "h", ("host", "host::session", "host::run"))))
     host_files = ["host/session/environment_lifecycle/renewal.rs", "provisioning/mod.rs", "host/run.rs", "lib.rs"]
-    assert extracting_realization_files("awaken-runtime-host", host_files, layers) == {
+    assert extracting_realization_files("awaken-session-executor", host_files, layers) == {
         "host/session/environment_lifecycle/renewal.rs", "provisioning/mod.rs"}, "M11 realization vs host modules"
     assert extracting_realization_files("awaken-session-application", ["provisioning.rs"], layers) == set(), \
         "M11 other crates are measured whole"

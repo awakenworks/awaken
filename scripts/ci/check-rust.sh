@@ -298,7 +298,7 @@ consumed_packages() {
 # without acquiring Vault authority (effect). Checking it separately keeps
 # workspace feature unification from masking this product-consumer graph.
 scoped_step "runtime-host-neutral" "keep neutral Runtime Host ports available without enabling authority dependencies" \
-  "awaken-runtime-host" cargo check -p awaken-runtime-host --no-default-features "${locked[@]}"
+  "awaken-session-executor" cargo check -p awaken-session-executor --no-default-features "${locked[@]}"
 
 # Compile-surface decision table: CR10 the Managed HTTP library is a production
 # root without test-support; CR11 it calls a fixture-only Session accessor;

@@ -1,6 +1,6 @@
 use std::fs;
 
-use awaken_runtime_host::AcpWorkerProfile;
+use awaken_session_executor::AcpWorkerProfile;
 
 use super::ResolvedDeployment;
 

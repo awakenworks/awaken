@@ -24,7 +24,7 @@ use awaken_worker_transport_security::WorkerRequestAuthenticator;
 use axum::Router;
 
 use crate::application_access_store::ApplicationAccessStore;
-use crate::{SharedHost, WorkerTransportBuildError};
+use crate::{ExecutorComponents, WorkerTransportBuildError};
 
 const APPLICATION_ACCESS_RETENTION_MS: u64 = 24 * 60 * 60 * 1_000;
 const APPLICATION_ACCESS_RETENTION_INTERVAL: std::time::Duration =
@@ -40,12 +40,12 @@ pub(crate) const APPLICATION_ACCESS_RETENTION_CAPACITY_PER_TICK: u32 =
 ///
 /// There is no Control ConfigService, authoring repository, Resource content
 /// database, or `WorkerNode` here. Local and distributed deployments adapt those
-/// boundaries before invoking this builder; the injected `SharedHost` is the
+/// boundaries before invoking this builder; the injected `ExecutorComponents` is the
 /// Coordinator's neutral Runtime port adapter.
 pub struct CoordinatorDependencies {
     pub lifecycle_delivery: crate::PreparedManagedLifecycleDelivery,
     pub service_lifecycle: awaken_service_lifecycle::ServiceLifecycle,
-    pub host: Arc<SharedHost>,
+    pub host: Arc<ExecutorComponents>,
     /// Canonical Session application shared by internal services and protocol
     /// projections. ManagedState may observe it but never owns its construction.
     pub session_application: Arc<SessionApplication>,
@@ -182,7 +182,7 @@ pub(crate) fn register_session_lifecycle(
 /// lifecycle's outer shared deadline remains the sole shutdown timeout owner.
 pub(crate) fn register_runtime_background_drain(
     service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
-    roles: awaken_runtime_host::CoordinatorRoles,
+    roles: awaken_session_executor::CoordinatorRoles,
 ) {
     service_lifecycle.spawn(
         "coordinator-runtime-background-drain",
@@ -198,7 +198,7 @@ pub(crate) fn register_runtime_background_drain(
 
 /// Start the existing Runtime/Dream services after application composition.
 pub(crate) async fn start_runtime_services(
-    roles: &awaken_runtime_host::CoordinatorRoles,
+    roles: &awaken_session_executor::CoordinatorRoles,
     dreams: &Arc<awaken_dream_application::DreamApplication>,
 ) -> Result<(), CoordinatorBuildError> {
     roles
@@ -472,14 +472,14 @@ fn management_router(
 async fn start_coordinator_services(
     service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
     lifecycle_delivery: crate::PreparedManagedLifecycleDelivery,
-    host: Arc<SharedHost>,
+    host: Arc<ExecutorComponents>,
     session_application: Arc<SessionApplication>,
     deployment_application: Arc<DeploymentApplication>,
     dream_application: Arc<awaken_dream_application::DreamApplication>,
     clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<(), CoordinatorBuildError> {
     lifecycle_delivery.start(service_lifecycle);
-    let roles = awaken_runtime_host::CoordinatorRoles::of(&host);
+    let roles = awaken_session_executor::CoordinatorRoles::of(&host);
     start_runtime_services(&roles, &dream_application).await?;
     register_session_lifecycle(service_lifecycle, session_application);
     register_runtime_background_drain(service_lifecycle, roles);

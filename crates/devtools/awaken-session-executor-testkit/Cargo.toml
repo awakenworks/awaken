@@ -1,0 +1,36 @@
+[package]
+name = "awaken-session-executor-testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.awaken]
+context = "devtools"
+product = "devtools"
+layer = "tooling"
+authority = "runtime-host"
+description = "Local Resources, Skill and Memory-extraction adapters handed to test and scenario Runtime Hosts behind their ports"
+separation = "test-support"
+
+[dependencies]
+awaken-session-executor = { workspace = true, features = ["test-support"] }
+awaken-run-ingress = { workspace = true, features = ["test-support"] }
+# The sandbox-backed Session environment volatile and durable fixtures run in.
+awaken-session-environment = { workspace = true, features = ["test-support"] }
+awaken-runtime-contract.workspace = true
+awaken-resource-application.workspace = true
+awaken-resource-contract.workspace = true
+awaken-ext-memory.workspace = true
+awaken-time.workspace = true
+awaken-file-store = { workspace = true, features = ["test-support"] }
+awaken-memory-store = { workspace = true, features = ["sqlite", "test-support"] }
+awaken-session-store = { workspace = true, features = ["test-support"] }
+
+[dev-dependencies]
+awaken-resource-persistence = { workspace = true, features = ["test-support"] }
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

@@ -12,7 +12,7 @@ use awaken_agent_contract::RedactedString;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::delegation::DelegationStatus;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_coordinator::SharedHost;
+use awaken_coordinator::ExecutorComponents;
 use awaken_credential_contract::{CredentialPurpose, CredentialTarget};
 use awaken_credential_vault::repo::{InMemoryCredentialRepo, enter_credential};
 use awaken_credential_vault::{CredentialCreateParams, CredentialKind, InMemorySecretStore};
@@ -110,7 +110,7 @@ fn text_of(message: &Message) -> String {
         .collect()
 }
 
-async fn assert_committed_child_report(host: &SharedHost, thread: &str) {
+async fn assert_committed_child_report(host: &ExecutorComponents, thread: &str) {
     let relationships = host
         .thread_reads()
         .delegated_runs(thread)
@@ -165,7 +165,7 @@ async fn assert_committed_child_report(host: &SharedHost, thread: &str) {
                         content,
                         is_error,
                     } if tool_use_id == &relationship.parent_call_id && !is_error => {
-                        Some(awaken_runtime_host::block_text(content))
+                        Some(awaken_session_executor::block_text(content))
                     }
                     _ => None,
                 })
@@ -214,7 +214,7 @@ impl LlmExecutor for NativeDelegatingModel {
             .iter()
             .rev()
             .find(|message| message.role == Role::Tool)
-            .map(|message| awaken_runtime_host::block_text(&message.content));
+            .map(|message| awaken_session_executor::block_text(&message.content));
         let output = match result {
             Some(result) => AssistantOutput::text(format!("delegate said: {result}")),
             None => AssistantOutput::from_tool_calls(vec![ToolCall {
@@ -234,10 +234,10 @@ impl LlmExecutor for NativeDelegatingModel {
     }
 }
 
-async fn delegating_host(transport: Arc<dyn Transport>) -> Arc<SharedHost> {
+async fn delegating_host(transport: Arc<dyn Transport>) -> Arc<ExecutorComponents> {
     let parent = ExecutableAgentSnapshot::builder("assistant")
         .model(ModelBinding::new("default", "parent", "default"))
-        .tools(awaken_runtime_host::authorable_tools())
+        .tools(awaken_session_executor::authorable_tools())
         .agent_bindings(AgentBindings {
             delegates: vec![AgentDelegateBinding {
                 agent_id: AgentId("researcher".into()),
@@ -266,7 +266,7 @@ async fn delegating_host(transport: Arc<dyn Transport>) -> Arc<SharedHost> {
         Arc::new(publications),
     )
     .await
-    .with_remote_attempt_executor(awaken_runtime_host::RemoteAttemptInstallation {
+    .with_remote_attempt_executor(awaken_session_executor::RemoteAttemptInstallation {
         executor: Arc::new(A2aRunExecutor::new(Arc::new(FixedTransportResolver(
             transport,
         )))),
@@ -281,10 +281,10 @@ async fn published_delegating_host(
     credential: CredentialAccess,
     security_fingerprint: String,
     materializer: awaken_credential_materializer::PinnedCredentialMaterializer,
-) -> Arc<SharedHost> {
+) -> Arc<ExecutorComponents> {
     let parent = ExecutableAgentSnapshot::builder("assistant")
         .model(ModelBinding::new("default", "parent", "default"))
-        .tools(awaken_runtime_host::authorable_tools())
+        .tools(awaken_session_executor::authorable_tools())
         .agent_bindings(AgentBindings {
             delegates: vec![AgentDelegateBinding {
                 agent_id: AgentId("researcher".into()),
@@ -340,7 +340,7 @@ async fn delegated_remote_uses_the_published_child_run_and_attempt_executor() {
     // Decision rule U1: C1+C2+C3+C4+C5(no result) => E1+E2+E3+E5;
     // U2=the resulting ToolResult=>E4+E5(report). Missing C1 is covered by the
     // resolved-tool and target gates; missing C2/C3 is covered by fail-closed
-    // resolver tests in awaken-runtime-host.
+    // resolver tests in awaken-session-executor.
     run_composed_async_test(|| async {
         let transport = Arc::new(RouterTransport {
             app: build_router(Arc::new(EchoModel), "remote").await,

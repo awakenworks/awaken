@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_coordinator::SharedHost;
+use awaken_coordinator::ExecutorComponents;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use tokio::sync::{Mutex, mpsc};
 use tokio::time::timeout;
@@ -45,7 +45,7 @@ impl LlmExecutor for GatedEcho {
 }
 
 struct Harness {
-    host: Arc<SharedHost>,
+    host: Arc<ExecutorComponents>,
     started: Mutex<mpsc::UnboundedReceiver<()>>,
     permits: mpsc::UnboundedSender<()>,
 }

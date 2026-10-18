@@ -65,7 +65,7 @@ impl ManagedState {
 
     /// Construct the disposable Managed wire projection over the one canonical
     /// Session application created during process startup. `capture_policy`
-    /// is the Host's (`SharedHost::content_capture_policy`), so the Session
+    /// is the Host's (`ExecutorComponents::content_capture_policy`), so the Session
     /// `content_capture` projection decides exactly as its Runs do.
     pub fn from_application(
         application: Arc<SessionApplication>,

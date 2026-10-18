@@ -140,11 +140,11 @@ def selftest() -> None:
 
     _service_lifecycle_fitness.selftest()
 
-    assert dependency_violations({"awaken-runtime-host", "awaken-runtime-contract"}) == []  # O1
+    assert dependency_violations({"awaken-session-executor", "awaken-runtime-contract"}) == []  # O1
     assert dependency_violations({"awaken-session-store"}) == ["awaken-session-store"]  # O2
     graph = {
-        "awaken-worker": {"awaken-runtime-host"},
-        "awaken-runtime-host": {"awaken-session-store"},
+        "awaken-worker": {"awaken-session-executor"},
+        "awaken-session-executor": {"awaken-session-store"},
         "awaken-session-store": {"sqlx"},
     }
     assert dependency_violations(dependency_closure("awaken-worker", graph)) == [

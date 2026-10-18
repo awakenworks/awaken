@@ -44,8 +44,8 @@ cargo test --locked -p awaken-session-store --test process_crash_outbox \
 # process/ACP/prompt view; platform-native relative prompt paths; mismatched
 # fallback candidates reject before launch. The Local provider suite adds the
 # native Sandbox lifecycle and filesystem boundary on the executing OS.
-run_required_rust_tests -p awaken-runtime-host --lib resource_prompt_tests
-run_required_rust_tests -p awaken-runtime-host --lib trusted_host_repository_projection_preserves_the_exact_tier
+run_required_rust_tests -p awaken-session-executor --lib resource_prompt_tests
+run_required_rust_tests -p awaken-session-executor --lib trusted_host_repository_projection_preserves_the_exact_tier
 run_required_rust_tests -p awaken-session-environment --lib trusted_host_live_resource_admission_keeps_readonly_advisory
 # Memory replay decision tables cover absent/exact/different installed pins,
 # lost acknowledgements and concurrent callers as well as Provider restart.
@@ -57,16 +57,16 @@ if [[ "$(uname -s)" != Linux ]]; then
   # its non-Linux ignored result as portable execution evidence.
   memory_selection+=(--skip exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed)
 fi
-run_required_rust_tests -p awaken-runtime-host --lib memory -- "${memory_selection[@]}"
+run_required_rust_tests -p awaken-session-executor --lib memory -- "${memory_selection[@]}"
 # Terminal cause/effect tables include hot/cold Memory, cancelled recovery,
 # same-generation renewal and Control/Worker clock disagreement. Select the
 # existing terminal group once; it includes the former single Memory row and
 # the provider-fence regression, without a parallel list of disposal cases.
-run_required_rust_tests -p awaken-runtime-host --lib terminal_
+run_required_rust_tests -p awaken-session-executor --lib terminal_
 # Current-proof projection and Host adoption waits are platform-neutral. Select
 # their existing test module once on every OS; the terminal filter above does
 # not include these source/ABA rows, and provider unit tests cannot prove wiring.
-run_required_rust_tests -p awaken-runtime-host --lib fence_source_tests
+run_required_rust_tests -p awaken-session-executor --lib fence_source_tests
 run_required_rust_tests -p awaken-session-environment --lib \
   trusted_host_filesystem_view_maps_workspace_relative_cwd_once
 run_required_rust_tests -p awaken-session-environment --lib trusted_host_installed_hand
@@ -76,9 +76,9 @@ run_required_rust_tests -p awaken-session-environment --lib workdir_unknown_hand
 launch_selection=sandbox_source::tests::configured_working_directory_drives_process_and_acp_from_one_view
 run_required_rust_tests -p awaken-execution-composition --lib \
   "$launch_selection" --require-case="$launch_selection" -- --exact
-run_required_rust_tests -p awaken-runtime-host --lib \
+run_required_rust_tests -p awaken-session-executor --lib \
   model_pool_working_directory_is_one_attempt_invariant
-run_required_rust_tests -p awaken-runtime-host --lib \
+run_required_rust_tests -p awaken-session-executor --lib \
   session_environment::tests::shared_environment::native_process_and_agent_channel_share_one_live_environment -- --exact
 run_required_rust_tests -p awaken-agent-config --lib \
   backend_owned_selection_cannot_encode_an_inexact_backend_or_model
@@ -119,14 +119,14 @@ if [[ "$linux_supervision" == true ]]; then
   # helper. Missing binaries/substrate fail; ignored merely isolates this
   # mandatory Linux gate from portable unit builds without an installed helper.
   AWAKEN_TEST_SCOPED_LAUNCHER="$(command -v bwrap)" \
-    run_required_rust_tests -p awaken-runtime-host --lib trusted_host_scoped_session -- --ignored
+    run_required_rust_tests -p awaken-session-executor --lib trusted_host_scoped_session -- --ignored
   AWAKEN_TEST_SCOPED_LAUNCHER="$(command -v bwrap)" \
     run_required_rust_tests -p awaken-session-environment --lib trusted_host_scoped_session -- --ignored
 fi
 # These startup rows require the just-built release companion. The thin scoped
 # qualification above intentionally does not provide Hand, and must not race
 # companion validation or turn an absent executable into a successful skip.
-run_required_rust_tests -p awaken-runtime-host --lib acp_backend::tests -- --include-ignored
+run_required_rust_tests -p awaken-session-executor --lib acp_backend::tests -- --include-ignored
 run_required_rust_tests -p awaken-execution-composition --lib local:: -- --include-ignored
 cargo test -p awaken-sandbox-fs --lib
 cargo test -p awaken-sandbox-memoryd --lib

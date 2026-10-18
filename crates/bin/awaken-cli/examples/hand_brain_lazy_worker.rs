@@ -97,15 +97,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let upstream = std::env::var("AWAKEN_UPSTREAM_URL")?;
     let storage = std::env::var("AWAKEN_TEST_WORKER_STORAGE_DIR")?;
     let tier = std::env::var("SESSION_ENVIRONMENT_TIER").unwrap_or_else(|_| "local".into());
-    let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
+    let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
     deployment.durable = true;
     deployment.storage_dir = Some(storage.clone().into());
     deployment.sandbox_dir = Some(format!("{storage}/sandboxes").into());
     deployment.sandbox_tier = match tier.as_str() {
-        "local" => awaken_runtime_host::SandboxTier::Local,
-        "namespace" => awaken_runtime_host::SandboxTier::Namespace,
-        "docker" => awaken_runtime_host::SandboxTier::Docker,
-        "podman" => awaken_runtime_host::SandboxTier::Podman,
+        "local" => awaken_session_executor::SandboxTier::Local,
+        "namespace" => awaken_session_executor::SandboxTier::Namespace,
+        "docker" => awaken_session_executor::SandboxTier::Docker,
+        "podman" => awaken_session_executor::SandboxTier::Podman,
         other => return Err(format!("unsupported E2E sandbox tier `{other}`").into()),
     };
     if matches!(tier.as_str(), "docker" | "podman") {

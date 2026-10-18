@@ -477,9 +477,9 @@ async fn sales_scenario(inner: Arc<dyn LlmExecutor>, model_name: &str, verify_gu
         model.clone(),
         awaken_runtime_contract::resolved::ModelBinding::parse("default", model_name, "genai")
             .expect("complete fixture model binding"),
-        awaken_runtime_host::DeploymentConfig {
-            sandbox_tier: awaken_runtime_host::SandboxTier::Local,
-            ..awaken_runtime_host::DeploymentConfig::ephemeral()
+        awaken_session_executor::DeploymentConfig {
+            sandbox_tier: awaken_session_executor::SandboxTier::Local,
+            ..awaken_session_executor::DeploymentConfig::ephemeral()
         },
         None,
         |host| host,

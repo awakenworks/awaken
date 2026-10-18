@@ -10,7 +10,9 @@ use axum::Json;
 use axum::Router;
 use axum::routing::get;
 
-use crate::{SharedHost, build_router_and_host_with_model_publication_resolver, scenario_model};
+use crate::{
+    ExecutorComponents, build_router_and_host_with_model_publication_resolver, scenario_model,
+};
 use awaken_dream_application::{
     DreamCancellation, DreamExecutor, DreamFailure, DreamPreparation, DreamRequest,
 };
@@ -144,7 +146,7 @@ impl DreamExecutor for PreparedDreamBarrier {
 }
 
 /// Return the same router plus its Host for focused cross-module assertions.
-pub async fn build_dream_router_and_host() -> (Router, Arc<SharedHost>) {
+pub async fn build_dream_router_and_host() -> (Router, Arc<ExecutorComponents>) {
     // Keep the Dream lifecycle fixture deterministic by default, but route an
     // explicitly requested HTTP model through the same production provider
     // adapter as every other scenario. Dream used to bypass `scenario_model`,
@@ -160,8 +162,8 @@ pub async fn build_dream_router_and_host() -> (Router, Arc<SharedHost>) {
 
 fn dream_auxiliary_routes() -> Router {
     let capabilities = awaken_control::capabilities_router(
-        awaken_runtime_host::authorable_tools(),
-        awaken_runtime_host::platform_plugin_capabilities(),
+        awaken_session_executor::authorable_tools(),
+        awaken_session_executor::platform_plugin_capabilities(),
         vec![awaken_control::RuntimeCapability::native()],
     );
     let console_context = Router::new()
@@ -259,7 +261,7 @@ impl awaken_runtime_contract::llm::LlmExecutor for DreamScenarioModel {
 
         let is_dream = request.messages.iter().any(|message| {
             message.role == Role::User
-                && awaken_runtime_host::block_text(&message.content).contains("[dream-job:")
+                && awaken_session_executor::block_text(&message.content).contains("[dream-job:")
         });
         if !is_dream {
             return awaken_runtime_contract::llm::LlmExecutor::infer(&crate::EchoModel, request)

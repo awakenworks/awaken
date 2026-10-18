@@ -155,14 +155,14 @@ mod tests {
     // readiness reports 503 — the worker is not routable until its pool is up.
     #[tokio::test]
     async fn readyz_is_503_without_a_running_pool() {
-        let host = awaken_runtime_host_testkit::volatile_host(
-            Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
+        let host = awaken_session_executor_testkit::volatile_host(
+            Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
             "worker-test",
         )
         .await;
         let lifecycle = Arc::new(crate::WorkerSupervisor {
             authority: Default::default(),
-            roles: awaken_runtime_host::WorkerRoles::of(&host),
+            roles: awaken_session_executor::WorkerRoles::of(&host),
             control: awaken_worker_runtime::WorkerControlClient::new(
                 awaken_worker_transport_security::WorkerUpstream::new("http://127.0.0.1:1")
                     .with_worker_id("admin-test"),

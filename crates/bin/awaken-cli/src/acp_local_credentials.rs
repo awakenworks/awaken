@@ -91,7 +91,8 @@ fn uses_host_acp_discovery(deployment: &crate::config::ResolvedDeployment) -> bo
             .is_none_or(|cli_ids| !cli_ids.is_empty())
         && matches!(
             deployment.runtime.sandbox_tier,
-            awaken_runtime_host::SandboxTier::Local | awaken_runtime_host::SandboxTier::Namespace
+            awaken_session_executor::SandboxTier::Local
+                | awaken_session_executor::SandboxTier::Namespace
         )
 }
 
@@ -981,7 +982,7 @@ mod tests {
         let mut deployment = crate::config::local_test_deployment(directory.path().into());
         deployment.configured_acp_clis = Some(vec!["codex".to_string()]);
         deployment.runtime.acp = Some(
-            awaken_runtime_host::AcpWorkerProfile::new(
+            awaken_session_executor::AcpWorkerProfile::new(
                 ["codex".to_string()],
                 awaken_execution_composition::acp_adapter_policy(),
             )
@@ -1018,7 +1019,7 @@ mod tests {
 
         let workspace = awaken_installation_workspace::provision_at(
             &deployment.data_dir,
-            awaken_runtime_host::SharedHost::mint_local_workspace,
+            awaken_session_executor::ExecutorComponents::mint_local_workspace,
         );
         let prepared = prepare_local_acp_with(
             &mut deployment,
@@ -1134,15 +1135,15 @@ mod tests {
         // I4 Server + Workdir -> no personal identity startup
         let directory = tempfile::tempdir().unwrap();
         let mut deployment = crate::config::local_test_deployment(directory.path().into());
-        deployment.runtime.sandbox_tier = awaken_runtime_host::SandboxTier::Local;
+        deployment.runtime.sandbox_tier = awaken_session_executor::SandboxTier::Local;
         assert!(uses_trusted_local_identity(&deployment), "I1");
 
-        deployment.runtime.sandbox_tier = awaken_runtime_host::SandboxTier::Namespace;
+        deployment.runtime.sandbox_tier = awaken_session_executor::SandboxTier::Namespace;
         assert!(uses_trusted_local_identity(&deployment), "I2");
-        deployment.runtime.sandbox_tier = awaken_runtime_host::SandboxTier::Docker;
+        deployment.runtime.sandbox_tier = awaken_session_executor::SandboxTier::Docker;
         assert!(uses_trusted_local_identity(&deployment), "I3");
 
-        deployment.runtime.sandbox_tier = awaken_runtime_host::SandboxTier::Local;
+        deployment.runtime.sandbox_tier = awaken_session_executor::SandboxTier::Local;
         deployment.mode = crate::config::OperatingMode::Server;
         assert!(!uses_trusted_local_identity(&deployment), "I4");
     }
@@ -1229,7 +1230,7 @@ mod tests {
 
         let workspace = awaken_installation_workspace::provision_at(
             &deployment.data_dir,
-            awaken_runtime_host::SharedHost::mint_local_workspace,
+            awaken_session_executor::ExecutorComponents::mint_local_workspace,
         );
         let prepared = prepare_local_acp_with(
             &mut deployment,
@@ -1292,8 +1293,8 @@ fn host_discovery_is_limited_to_host_backed_sandbox_tiers() {
     let directory = tempfile::tempdir().unwrap();
     let mut deployment = crate::config::local_test_deployment(directory.path().into());
     for tier in [
-        awaken_runtime_host::SandboxTier::Local,
-        awaken_runtime_host::SandboxTier::Namespace,
+        awaken_session_executor::SandboxTier::Local,
+        awaken_session_executor::SandboxTier::Namespace,
     ] {
         deployment.runtime.sandbox_tier = tier;
         deployment.configured_acp_clis = None;
@@ -1304,9 +1305,9 @@ fn host_discovery_is_limited_to_host_backed_sandbox_tiers() {
         assert!(!uses_host_acp_discovery(&deployment));
     }
     for tier in [
-        awaken_runtime_host::SandboxTier::Docker,
-        awaken_runtime_host::SandboxTier::Podman,
-        awaken_runtime_host::SandboxTier::K8s,
+        awaken_session_executor::SandboxTier::Docker,
+        awaken_session_executor::SandboxTier::Podman,
+        awaken_session_executor::SandboxTier::K8s,
     ] {
         deployment.runtime.sandbox_tier = tier;
         for selection in [None, Some(Vec::new()), Some(vec!["codex".to_owned()])] {

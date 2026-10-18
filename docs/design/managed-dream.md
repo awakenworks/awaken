@@ -46,7 +46,7 @@ path.
 | Authority | Owner | Role in Dream |
 |---|---|---|
 | Managed Session/Event application | `awaken-protocol-managed::ManagedState` | validates Sessions, reads committed Messages, creates and archives the auxiliary Session |
-| ordinary Agent execution | `awaken-runtime-host::SessionRuntime` | executes the Dream Agent through the normal Run path |
+| ordinary Agent execution | `awaken-session-executor::SessionRuntime` | executes the Dream Agent through the normal Run path |
 | Memory file truth | `awaken-resource-contract::MemoryRepository` | reads and commits path-addressed Memory content |
 | Files data plane | `awaken-resource-contract::FileApplicationService` | deletes transcript Files still referenced by older durable Dream records |
 | Resource catalog | `ResourceCatalog` | validates source ownership |

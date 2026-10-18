@@ -158,7 +158,7 @@ The named harnesses in the strict gate invoke production pure functions directly
 - `awaken-control` `authz::roles` (Workspace and Hosted Runtime roles)
   - hosted admin, workspace member, and runtime member grants equal their exact
     closed sets; legacy workspace migration is idempotent and authority exact.
-- `awaken-protocol-managed` / `awaken-runtime-host`
+- `awaken-protocol-managed` / `awaken-session-executor`
   - only non-interactive collection projection and terminal cleanup may use a
     frozen baseline when an Agent publication is unavailable; interactive
     recovery remains fail-closed. MCP

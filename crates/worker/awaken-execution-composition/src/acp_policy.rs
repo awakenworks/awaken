@@ -71,9 +71,9 @@ mod tests {
         assert!(
             !policy.realizes_provider_server_tool("claude", &ProviderServerTool::OpenAiWebSearch,)
         );
-        let profile = awaken_runtime_host::AcpWorkerProfile::new(["codex".into()], policy)
+        let profile = awaken_session_executor::AcpWorkerProfile::new(["codex".into()], policy)
             .expect("canonical id admits one exact Worker route");
         assert_eq!(profile.cli_ids().collect::<Vec<_>>(), vec!["codex"]);
-        assert!(awaken_runtime_host::AcpWorkerProfile::new([unknown.into()], policy).is_err());
+        assert!(awaken_session_executor::AcpWorkerProfile::new([unknown.into()], policy).is_err());
     }
 }

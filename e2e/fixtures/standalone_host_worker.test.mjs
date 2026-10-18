@@ -19,7 +19,7 @@ test('standalone Worker grants local Git only to the process that owns Repositor
       assert.notEqual(flag,-1);
       assert.equal(args[flag+1],'awaken-execution-composition/test-support');
     }
-    assert.ok(!args.join(',').includes('awaken-runtime-host/test-support'));
+    assert.ok(!args.join(',').includes('awaken-session-executor/test-support'));
   }
   assert.equal(cargoArguments({packageName:'awaken-worker',targetName:'awaken-worker'})
     .includes('--features'),false);

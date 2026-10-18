@@ -18,7 +18,7 @@ use awaken_runtime_contract::llm::{
 };
 use awaken_runtime_contract::resolved::{ModelBinding, ToolKind};
 use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshot};
-use awaken_runtime_host::HostResume;
+use awaken_session_executor::HostResume;
 
 struct ParentChildModel {
     parent_calls: AtomicUsize,
@@ -26,7 +26,7 @@ struct ParentChildModel {
 }
 
 fn test_snapshot(agent_id: &str, delegates: Vec<AgentId>) -> ExecutableAgentSnapshot {
-    let mut tools = awaken_runtime_host::authorable_tools();
+    let mut tools = awaken_session_executor::authorable_tools();
     if delegates.is_empty() {
         tools.retain(|tool| tool.kind != ToolKind::AgentDelegation);
     }
@@ -133,7 +133,7 @@ async fn durable_child_run_scenario() {
             ],
         },
     ];
-    let host = (awaken_runtime_host_testkit::with_durable_store_dir(
+    let host = (awaken_session_executor_testkit::with_durable_store_dir(
         awaken_scenario_host::build_unmounted_dependencies(
             Arc::new(ParentChildModel {
                 parent_calls: AtomicUsize::new(0),
@@ -152,7 +152,7 @@ async fn durable_child_run_scenario() {
     )))
     .build()
     .expect("validated Host dependencies");
-    awaken_runtime_host::CoordinatorRoles::of(&host)
+    awaken_session_executor::CoordinatorRoles::of(&host)
         .start_local_pool()
         .expect("valid test dispatch composition");
 

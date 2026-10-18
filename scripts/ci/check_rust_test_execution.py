@@ -622,7 +622,7 @@ exit "$RESULT_STATUS"
                     source = entrypoint.read_text(encoding="utf-8")
                     entrypoint.write_text(source.replace(
                         "run_required_rust_tests -p awaken-execution-composition --lib ",
-                        "run_required_rust_tests -p awaken-runtime-host --lib ", 1), encoding="utf-8")
+                        "run_required_rust_tests -p awaken-session-executor --lib ", 1), encoding="utf-8")
                 binary = fixture / "bin"
                 binary.mkdir()
                 environment = self.cargo_fixture(fixture, '''

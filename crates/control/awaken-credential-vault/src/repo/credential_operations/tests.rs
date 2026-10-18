@@ -1407,7 +1407,7 @@ async fn pools_round_trip_and_list_scopes_by_workspace() {
 ///
 /// Audit of every `CredentialRepo::get` caller confirms none performs an
 /// unfenced cross-workspace *secret materialization*:
-/// - `awaken-runtime-host::PrefetchedSourceLookup::for_defs` (managed MCP)
+/// - `awaken-session-executor::PrefetchedSourceLookup::for_defs` (managed MCP)
 ///   prefetches by id, then materializes only through the fenced resolver;
 /// - the admin-config-api routes (`get_credential`, `archive_credential`,
 ///   `put_mcp_server` existence-check) are IAM-gated by-id management ops that

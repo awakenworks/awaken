@@ -114,7 +114,7 @@ pub type RegisteredMemoryMounterFactory = Arc<
 >;
 
 use awaken_credential_materializer::InferenceExecutorMaterializer;
-use awaken_runtime_host::SharedHost;
+use awaken_session_executor::ExecutorComponents;
 use awaken_worker_contract::{RegistryMutation, WorkerManifest};
 use awaken_worker_runtime::WorkerControlClient;
 use awaken_worker_transport_security::WorkerUpstream;
@@ -132,7 +132,7 @@ async fn preparation_drained_before(
 struct WorkerProcessConfig {
     /// The embedded Worker process's one wall clock.
     clock: Arc<dyn awaken_time::WallClock>,
-    deployment: awaken_runtime_host::DeploymentConfig,
+    deployment: awaken_session_executor::DeploymentConfig,
     manifest: StandardManifestConfig,
     admin_listen: Option<String>,
     graceful_drain: std::time::Duration,
@@ -146,7 +146,7 @@ impl WorkerProcessConfig {
     fn embedded_defaults(clock: Arc<dyn awaken_time::WallClock>) -> Self {
         Self {
             clock,
-            deployment: awaken_runtime_host::DeploymentConfig::ephemeral(),
+            deployment: awaken_session_executor::DeploymentConfig::ephemeral(),
             manifest: StandardManifestConfig::default(),
             admin_listen: None,
             graceful_drain: grace_window(true, None),
@@ -178,7 +178,7 @@ pub struct WorkerNodeBuilder {
     clock: Arc<dyn awaken_time::WallClock>,
     preselected_incarnation_id: Option<String>,
     manifest: ManifestSelection,
-    deployment: awaken_runtime_host::DeploymentConfig,
+    deployment: awaken_session_executor::DeploymentConfig,
     standard_manifest_config: StandardManifestConfig,
     application: WorkerApplicationSource,
     tool_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
@@ -186,7 +186,7 @@ pub struct WorkerNodeBuilder {
     mcp_relay_outbound_proxy: Option<Arc<dyn awaken_session_mcp::McpRelayOutboundProxy>>,
     brokered_acp_model_access:
         Option<Arc<dyn awaken_run_executor_acp::BrokeredAcpModelAccessMaterializer>>,
-    remote_attempt: Option<awaken_runtime_host::RemoteAttemptInstallation>,
+    remote_attempt: Option<awaken_session_executor::RemoteAttemptInstallation>,
     hand_executor_factory:
         Option<Arc<dyn awaken_session_environment_contract::HandExecutorFactory>>,
     worker_local_credential_resolver:
@@ -229,14 +229,16 @@ enum WorkerRealizationScopeSource {
 /// realization. Keeping this decision closed and pure prevents deployment
 /// manifests from inventing a second Workspace marker for Kubernetes Workers.
 const fn worker_realization_scope_source(
-    sandbox_tier: awaken_runtime_host::SandboxTier,
+    sandbox_tier: awaken_session_executor::SandboxTier,
 ) -> WorkerRealizationScopeSource {
     match sandbox_tier {
-        awaken_runtime_host::SandboxTier::K8s => WorkerRealizationScopeSource::KubernetesNamespace,
-        awaken_runtime_host::SandboxTier::Local
-        | awaken_runtime_host::SandboxTier::Namespace
-        | awaken_runtime_host::SandboxTier::Docker
-        | awaken_runtime_host::SandboxTier::Podman => {
+        awaken_session_executor::SandboxTier::K8s => {
+            WorkerRealizationScopeSource::KubernetesNamespace
+        }
+        awaken_session_executor::SandboxTier::Local
+        | awaken_session_executor::SandboxTier::Namespace
+        | awaken_session_executor::SandboxTier::Docker
+        | awaken_session_executor::SandboxTier::Podman => {
             WorkerRealizationScopeSource::PersistedLocalWorkspace
         }
     }
@@ -255,17 +257,17 @@ fn worker_realization_scope_source_is_total_and_exact() {
     let index: u8 = kani::any();
     kani::assume(index < 5);
     let tier = match index {
-        0 => awaken_runtime_host::SandboxTier::Local,
-        1 => awaken_runtime_host::SandboxTier::Namespace,
-        2 => awaken_runtime_host::SandboxTier::Docker,
-        3 => awaken_runtime_host::SandboxTier::Podman,
-        4 => awaken_runtime_host::SandboxTier::K8s,
+        0 => awaken_session_executor::SandboxTier::Local,
+        1 => awaken_session_executor::SandboxTier::Namespace,
+        2 => awaken_session_executor::SandboxTier::Docker,
+        3 => awaken_session_executor::SandboxTier::Podman,
+        4 => awaken_session_executor::SandboxTier::K8s,
         _ => unreachable!(),
     };
     let source = worker_realization_scope_source(tier);
     assert_eq!(
         source == WorkerRealizationScopeSource::KubernetesNamespace,
-        tier == awaken_runtime_host::SandboxTier::K8s
+        tier == awaken_session_executor::SandboxTier::K8s
     );
 }
 
@@ -278,7 +280,7 @@ fn worker_realization_scope_source_is_total_and_exact() {
 /// Downstream process roots reuse this same installation projection when they
 /// decorate the canonical container provider; it grants no execution authority.
 pub fn worker_realization_namespace(
-    deployment: &awaken_runtime_host::DeploymentConfig,
+    deployment: &awaken_session_executor::DeploymentConfig,
 ) -> Result<awaken_sandbox_container::ContainerRealizationNamespace, WorkerNodeBuildError> {
     let installation_scope = match worker_realization_scope_source(deployment.sandbox_tier) {
         WorkerRealizationScopeSource::KubernetesNamespace => {
@@ -293,7 +295,7 @@ pub fn worker_realization_namespace(
             })?;
             std::borrow::Cow::Owned(awaken_installation_workspace::provision_at(
                 installation_root,
-                awaken_runtime_host::SharedHost::mint_local_workspace,
+                awaken_session_executor::ExecutorComponents::mint_local_workspace,
             ))
         }
     };
@@ -314,7 +316,7 @@ impl WorkerNodeBuilder {
             clock,
             preselected_incarnation_id: None,
             manifest: ManifestSelection::Unset,
-            deployment: awaken_runtime_host::DeploymentConfig::ephemeral(),
+            deployment: awaken_session_executor::DeploymentConfig::ephemeral(),
             standard_manifest_config: StandardManifestConfig::default(),
             application: WorkerApplicationSource::default(),
             tool_gate: None,
@@ -407,7 +409,7 @@ impl WorkerNodeBuilder {
     #[must_use]
     pub fn with_deployment_config(
         mut self,
-        deployment: awaken_runtime_host::DeploymentConfig,
+        deployment: awaken_session_executor::DeploymentConfig,
     ) -> Self {
         self.deployment = deployment;
         self.prepared_local_sandbox = None;
@@ -489,7 +491,7 @@ impl WorkerNodeBuilder {
     #[must_use]
     pub fn with_remote_attempt_executor(
         mut self,
-        installation: awaken_runtime_host::RemoteAttemptInstallation,
+        installation: awaken_session_executor::RemoteAttemptInstallation,
     ) -> Self {
         self.remote_attempt = Some(installation);
         self
@@ -741,7 +743,7 @@ impl WorkerNodeBuilder {
             return Ok(self);
         }
         #[cfg(feature = "container-k8s")]
-        if self.deployment.sandbox_tier == awaken_runtime_host::SandboxTier::K8s
+        if self.deployment.sandbox_tier == awaken_session_executor::SandboxTier::K8s
             && self.k8s_create_client.is_none()
         {
             self.k8s_create_client =
@@ -858,7 +860,7 @@ impl WorkerNodeBuilder {
                     .to_string(),
             ));
         }
-        if self.deployment.sandbox_tier == awaken_runtime_host::SandboxTier::Namespace
+        if self.deployment.sandbox_tier == awaken_session_executor::SandboxTier::Namespace
             && self.deployment.sandbox.allow_local_fallback
             && self.session_container_provider.is_none()
             && self.enclosing_sandbox_boundary.is_none()
@@ -1036,7 +1038,7 @@ impl WorkerNodeBuilder {
 
 fn validate_worker_manifest(
     manifest: &WorkerManifest,
-    deployment: &awaken_runtime_host::DeploymentConfig,
+    deployment: &awaken_session_executor::DeploymentConfig,
 ) -> Result<(), WorkerNodeBuildError> {
     if manifest.build_digest.trim().is_empty() {
         return Err(WorkerNodeBuildError(
@@ -1106,14 +1108,14 @@ pub struct WorkerNode {
     clock: Arc<dyn awaken_time::WallClock>,
     preselected_incarnation_id: Option<String>,
     manifest: WorkerManifest,
-    deployment: awaken_runtime_host::DeploymentConfig,
+    deployment: awaken_session_executor::DeploymentConfig,
     application: WorkerApplicationSource,
     tool_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
     credential_materializer: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
     mcp_relay_outbound_proxy: Option<Arc<dyn awaken_session_mcp::McpRelayOutboundProxy>>,
     brokered_acp_model_access:
         Option<Arc<dyn awaken_run_executor_acp::BrokeredAcpModelAccessMaterializer>>,
-    remote_attempt: Option<awaken_runtime_host::RemoteAttemptInstallation>,
+    remote_attempt: Option<awaken_session_executor::RemoteAttemptInstallation>,
     hand_executor_factory:
         Option<Arc<dyn awaken_session_environment_contract::HandExecutorFactory>>,
     credential_observation_resolver:
@@ -1139,7 +1141,7 @@ struct InstalledSessionContainerProvider {
     provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
     capacity: Option<Arc<dyn awaken_sandbox_container::ContainerEnvironmentCapacity>>,
     extra_mounts: Vec<awaken_provisioning_contract::MountRequirement>,
-    cache_volume_initializer: Option<Arc<dyn awaken_runtime_host::CacheVolumeInitializer>>,
+    cache_volume_initializer: Option<Arc<dyn awaken_session_executor::CacheVolumeInitializer>>,
 }
 
 struct InstalledSandboxBoundary {
@@ -1258,27 +1260,27 @@ async fn build_secretless_worker(
 /// upstream, deriving every Memory execution role once from one HTTP client.
 fn remote_content_adapters(
     upstream: &WorkerUpstream,
-) -> awaken_runtime_host::WorkerContentAdapters {
+) -> awaken_session_executor::WorkerContentAdapters {
     let memory = Arc::new(awaken_resource_worker_http::HttpMemoryRepository::new(
         upstream.clone(),
     ));
     let files = Arc::new(awaken_resource_worker_http::HttpFileContentSource::new(
         upstream.clone(),
     ));
-    awaken_runtime_host::WorkerContentAdapters {
+    awaken_session_executor::WorkerContentAdapters {
         file_content_source: files,
         memory: awaken_resource_contract::MemoryExecutionContent::new(memory),
     }
 }
 
 fn configured_container_acp_targets(
-    deployment: &awaken_runtime_host::DeploymentConfig,
+    deployment: &awaken_session_executor::DeploymentConfig,
 ) -> Result<Vec<acp_capability::ConfiguredAcpCapabilityTarget>, String> {
     if !matches!(
         deployment.sandbox_tier,
-        awaken_runtime_host::SandboxTier::Docker
-            | awaken_runtime_host::SandboxTier::Podman
-            | awaken_runtime_host::SandboxTier::K8s
+        awaken_session_executor::SandboxTier::Docker
+            | awaken_session_executor::SandboxTier::Podman
+            | awaken_session_executor::SandboxTier::K8s
     ) {
         return Ok(Vec::new());
     }
@@ -1312,23 +1314,25 @@ fn configured_container_acp_targets(
 }
 
 fn configured_container_acp_capability_source(
-    deployment: &awaken_runtime_host::DeploymentConfig,
-    host: Arc<SharedHost>,
+    deployment: &awaken_session_executor::DeploymentConfig,
+    host: Arc<ExecutorComponents>,
 ) -> Result<Option<Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>>, String> {
     let targets = configured_container_acp_targets(deployment)?;
     if targets.is_empty() {
         return Ok(None);
     }
     let clock = host.clock();
-    let negotiator = Arc::new(awaken_runtime_host::SessionAcpCapabilityNegotiator::new(
-        host.run_assembly().clone(),
-        deployment.dispatch_owner.clone(),
-        // Some native adapters perform image-local plugin discovery before
-        // opening their first prompt-free Session. Keep the probe bounded while
-        // allowing that deterministic cold start to complete.
-        std::time::Duration::from_secs(30),
-        Arc::new(awaken_protocol_acp::ProtocolAcpCapabilityHandshake),
-    ));
+    let negotiator = Arc::new(
+        awaken_session_executor::SessionAcpCapabilityNegotiator::new(
+            host.run_assembly().clone(),
+            deployment.dispatch_owner.clone(),
+            // Some native adapters perform image-local plugin discovery before
+            // opening their first prompt-free Session. Keep the probe bounded while
+            // allowing that deterministic cold start to complete.
+            std::time::Duration::from_secs(30),
+            Arc::new(awaken_protocol_acp::ProtocolAcpCapabilityHandshake),
+        ),
+    );
     Ok(Some(Arc::new(
         acp_capability::ConfiguredAcpCapabilityObservationSource::new(
             targets,
@@ -1367,7 +1371,7 @@ impl WorkerNode {
         let policy = awaken_execution_composition::ContainerTierPolicy::default();
         #[cfg(feature = "container-k8s")]
         {
-            if self.deployment.sandbox_tier == awaken_runtime_host::SandboxTier::K8s
+            if self.deployment.sandbox_tier == awaken_session_executor::SandboxTier::K8s
                 && self.k8s_create_client.is_none()
             {
                 return Err(std::io::Error::other(
@@ -1560,9 +1564,9 @@ impl WorkerNode {
         let local_workspace = match deployment.storage_dir.as_deref() {
             Some(root) => awaken_installation_workspace::provision_at(
                 root,
-                SharedHost::mint_local_workspace,
+                ExecutorComponents::mint_local_workspace,
             ),
-            None => SharedHost::mint_local_workspace(),
+            None => ExecutorComponents::mint_local_workspace(),
         };
         // Claimed Runs commit back to the Coordinator under this registered
         // identity; the Host holds only the neutral claim-fenced port.
@@ -1577,15 +1581,15 @@ impl WorkerNode {
         ));
         // Committed truth lives in the Coordinator: the Host reaches it only
         // through these claim-fenced transports.
-        let authority = awaken_runtime_host::UpstreamAuthority::default()
+        let authority = awaken_session_executor::UpstreamAuthority::default()
             .with_dispatch_binding(awaken_dispatch_erasure::DispatchBinding::remote(dispatch, claimed_commit))
             .with_memory_reference_encoder(Arc::new(
                 awaken_resource_worker_http::HttpMemoryMaterializationReferenceEncoder,
             ))
             .with_stream_publisher(stream_publisher)
             .with_terminal_cleanup_control(session_control.clone());
-        let mut deps = awaken_runtime_host::HostDependencies::for_worker(
-            Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
+        let mut deps = awaken_session_executor::HostDependencies::for_worker(
+            Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
             "worker",
             remote_content,
             deployment
@@ -1673,7 +1677,7 @@ impl WorkerNode {
         );
         manifest::ensure_registered_local_provider(&self.prepared_local_sandbox, &self.manifest, &deps)?;
 
-        let mut execution = awaken_runtime_host::SessionExecutionDependencies::default()
+        let mut execution = awaken_session_executor::SessionExecutionDependencies::default()
             .with_repository_binding_verifier(remote_repositories);
         if let Some(realizer) = self.mcp_attachment_realizer {
             execution = execution.with_mcp_attachment_realizer(realizer);
@@ -1694,7 +1698,7 @@ impl WorkerNode {
         let observations = Arc::new(WorkerObservationCache::default());
         let lifecycle = Arc::new(WorkerSupervisor {
             authority,
-            roles: awaken_runtime_host::WorkerRoles::of(&host),
+            roles: awaken_session_executor::WorkerRoles::of(&host),
             control: control.clone(),
             identity: registration.snapshot.identity,
             credential_observation_resolver: self.credential_observation_resolver,

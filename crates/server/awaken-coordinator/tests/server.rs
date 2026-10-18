@@ -33,8 +33,8 @@ use tower::ServiceExt;
 use support::wait_for_session_events;
 
 async fn build_local_delegation_router() -> Router {
-    let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
-    deployment.sandbox_tier = awaken_runtime_host::SandboxTier::Local;
+    let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
+    deployment.sandbox_tier = awaken_session_executor::SandboxTier::Local;
     build_delegation_router_with_deployment(deployment).await
 }
 
@@ -45,7 +45,7 @@ async fn build_write_confirmation_router(
     let model_ref = model_ref.into();
     let publication = ExecutableAgentSnapshot::builder("assistant")
         .model(ModelBinding::new("default", &model_ref, "default"))
-        .tools(awaken_runtime_host::authorable_tools())
+        .tools(awaken_session_executor::authorable_tools())
         .agent_bindings(AgentBindings {
             toolsets: vec![ToolsetPolicy {
                 source: ToolsetSource::Agent,

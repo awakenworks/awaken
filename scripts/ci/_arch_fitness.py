@@ -34,10 +34,10 @@ def contract_purity_violations(spec: CrateSpec) -> list[str]:
 
 
 def runtime_host_facade_violations(spec: CrateSpec) -> list[str]:
-    if spec.name != "awaken-runtime-host":
+    if spec.name != "awaken-session-executor":
         return []
     return [
-        f"awaken-runtime-host publicly re-exports `{owner}`; consumers must depend on the "
+        f"awaken-session-executor publicly re-exports `{owner}`; consumers must depend on the "
         "authoritative owner directly"
         for owner in sorted(spec.public_first_party_reexports)
     ]
@@ -69,7 +69,7 @@ def selftest() -> None:
     c = lambda n, l, d=frozenset(), r=frozenset(): CrateSpec(n, d, "runtime", l, n, r)
     assert contract_purity_violations(c("contract", "contract", frozenset({"sqlx"}))), "R1"
     assert contract_purity_violations(c("application", "application", frozenset({"tokio"}))) == [], "R2"
-    assert runtime_host_facade_violations(CrateSpec("awaken-runtime-host", frozenset(), "runtime", "application", "runtime", frozenset({"awaken-runtime"}))), "R5"
+    assert runtime_host_facade_violations(CrateSpec("awaken-session-executor", frozenset(), "runtime", "application", "runtime", frozenset({"awaken-runtime"}))), "R5"
     assert interface_facade_violations(
         CrateSpec("wire", frozenset(), "coordinator", "interface", "wire", frozenset({"owner"}))
     ), "R6"

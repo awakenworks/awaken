@@ -79,10 +79,10 @@ pub use awaken_protocol_managed::{
     default_models, files_router, memory_stores_router, models_router, skills_router,
 };
 pub use awaken_run_ingress_http::durable_ops_router;
-pub use awaken_runtime_host::{
-    HostDependencies, HostResume, SharedHost, ThreadEvent, ThreadEventHub, advertised_tools,
-};
 pub use awaken_sandbox_local::content_fingerprint;
+pub use awaken_session_executor::{
+    ExecutorComponents, HostDependencies, HostResume, ThreadEvent, ThreadEventHub, advertised_tools,
+};
 pub use awaken_session_mcp::ExtMcpProbe;
 
 /// One tool-free ACP stand-in that can act as either Outcome Worker or Judge.
@@ -186,7 +186,9 @@ pub async fn build_memory_resource_router() -> Router {
 /// path-faithful environment across Hand, Bash, Git, and Agent, so this factory
 /// consumes the same typed Deployment environment selector as other
 /// provider-backed scenarios. `AWAKEN_MODEL_MODE=git-repo`.
-pub async fn build_git_repo_router(deployment: awaken_runtime_host::DeploymentConfig) -> Router {
+pub async fn build_git_repo_router(
+    deployment: awaken_session_executor::DeploymentConfig,
+) -> Router {
     let (model, model_ref) = scenario_model(Arc::new(crate::models::GitRepoModel), "git-repo");
     mount_platform(runtime_resource_host_with_deployment(model, model_ref, deployment).await).await
 }
@@ -206,7 +208,7 @@ pub async fn build_full_chain_router() -> Router {
 /// local tier while the process entry point keeps the configured production
 /// tier; both paths consume the same Runtime/resource composition.
 pub async fn build_full_chain_router_with_deployment(
-    deployment: awaken_runtime_host::DeploymentConfig,
+    deployment: awaken_session_executor::DeploymentConfig,
 ) -> Router {
     let (model, model_ref) = scenario_model(Arc::new(EchoModel), "full-chain");
     let host = runtime_resource_host_with_deployment(model, model_ref, deployment).await;
@@ -410,7 +412,7 @@ pub async fn build_router(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String
 pub async fn build_router_and_host(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
-) -> (Router, Arc<SharedHost>) {
+) -> (Router, Arc<ExecutorComponents>) {
     build_router_and_host_from(resource_host(llm, model_ref).await).await
 }
 
@@ -433,7 +435,7 @@ pub async fn build_unmounted_dependencies(
 pub async fn build_unmounted_dependencies_with_deployment(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
-    deployment: awaken_runtime_host::DeploymentConfig,
+    deployment: awaken_session_executor::DeploymentConfig,
 ) -> HostDependencies {
     resource_host_with_deployment(llm, model_ref, deployment)
         .await
@@ -448,7 +450,7 @@ pub async fn build_router_and_host_with_agent_publications(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
     publications: impl IntoIterator<Item = awaken_runtime_contract::ExecutableAgentSnapshot>,
-) -> (Router, Arc<SharedHost>) {
+) -> (Router, Arc<ExecutorComponents>) {
     let publication = scenario_platform::fixed_agent_publication(publications);
     let (host, resources) = resource_host(llm, model_ref)
         .await
@@ -495,7 +497,7 @@ pub async fn build_unmounted_platform_with_agent_publications(
 
 async fn build_router_and_host_from(
     platform: deployment::ScenarioPlatform,
-) -> (Router, Arc<SharedHost>) {
+) -> (Router, Arc<ExecutorComponents>) {
     let (host, resources) = platform.into_dependencies();
     scenario_platform::mount_parts(host, resources).await
 }
@@ -504,7 +506,7 @@ pub(crate) async fn build_router_and_host_with_model_publication_resolver(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
     resolver: Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>,
-) -> (Router, Arc<SharedHost>) {
+) -> (Router, Arc<ExecutorComponents>) {
     let platform = resource_host(llm, model_ref).await;
     let (host, resources) = platform.into_dependencies();
     scenario_platform::mount_parts_with_model_publication_resolver(host, resources, resolver, None)
@@ -517,7 +519,7 @@ pub(crate) async fn build_router_and_host_with_model_publication_resolver(
 pub async fn build_router_with_deployment(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
-    deployment: awaken_runtime_host::DeploymentConfig,
+    deployment: awaken_session_executor::DeploymentConfig,
 ) -> Router {
     let host = resource_host_with_deployment(llm, model_ref, deployment).await;
     mount_platform(host).await
@@ -982,7 +984,7 @@ pub async fn build_custom_router() -> Router {
 }
 
 /// The same custom-tool scenario with its owning Host for scope-aware tests.
-pub async fn build_custom_router_and_host() -> (Router, Arc<SharedHost>) {
+pub async fn build_custom_router_and_host() -> (Router, Arc<ExecutorComponents>) {
     let client_tools = HashSet::from(["submit_answer".to_string()]);
     let (model, model_ref) = scenario_model(Arc::new(CustomToolModel), "custom");
     let host = resource_host(model, model_ref)
@@ -1204,7 +1206,7 @@ pub async fn build_remote_delegation_router() -> Router {
     // Both parent and child are ordinary immutable publications. The child's
     // resolved backend selects the shared A2A attempt executor; delegation owns
     // no transport registry or protocol-specific execution path.
-    let mut tools = awaken_runtime_host::authorable_tools();
+    let mut tools = awaken_session_executor::authorable_tools();
     tools.retain(|tool| tool.kind == ToolKind::AgentDelegation);
     let assistant = ExecutableAgentSnapshot::builder("assistant")
         .model(
@@ -1418,7 +1420,7 @@ pub async fn build_config_router() -> Router {
     // Scope-keyed tool visibility (ADR-0052 D3): every scope sees the advertised
     // (global) tools; only the reserved admin scope additionally sees the four
     // management descriptors, so a config naming an `admin_*` tool compiles only there.
-    let global = awaken_runtime_host::authorable_tools();
+    let global = awaken_session_executor::authorable_tools();
     let tools = Arc::new(awaken_config_service::ScopedToolCatalog::new(
         global.clone(),
         awaken_config_service::RESERVED_ADMIN_SCOPE,
@@ -1448,7 +1450,7 @@ pub async fn build_config_router() -> Router {
     let reader = Arc::new(awaken_control::CatalogCapabilityReader::new(
         catalog_repo.clone(),
         &global,
-        &awaken_runtime_host::platform_plugin_capabilities(),
+        &awaken_session_executor::platform_plugin_capabilities(),
         // The config plane, to list existing agent ids in the tenant scope.
         plane.clone(),
         platform_workspace.clone(),

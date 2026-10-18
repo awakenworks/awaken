@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
 
 use awaken_lease_contract::authority::AuthorityLeaseTiming;
-use awaken_runtime_host::WorkerRoles;
+use awaken_session_executor::WorkerRoles;
 use awaken_worker_contract::{RegistryMutation, WorkerIdentity};
 use awaken_worker_runtime::WorkerControlClient;
 use futures_util::FutureExt as _;
@@ -1125,9 +1125,9 @@ mod tests {
         let supervisor = |local_readiness| async move {
             Arc::new(super::WorkerSupervisor {
                 authority: Default::default(),
-                roles: awaken_runtime_host::WorkerRoles::of(
-                    &*awaken_runtime_host_testkit::volatile_host(
-                        Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
+                roles: awaken_session_executor::WorkerRoles::of(
+                    &*awaken_session_executor_testkit::volatile_host(
+                        Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
                         "worker-test",
                     )
                     .await,
@@ -1685,9 +1685,9 @@ mod tests {
                 .unwrap();
             let lifecycle = Arc::new(WorkerSupervisor {
                 authority: authority.clone(),
-                roles: awaken_runtime_host::WorkerRoles::of(
-                    &*awaken_runtime_host_testkit::volatile_host(
-                        Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
+                roles: awaken_session_executor::WorkerRoles::of(
+                    &*awaken_session_executor_testkit::volatile_host(
+                        Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
                         "none",
                     )
                     .await,

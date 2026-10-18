@@ -11,7 +11,7 @@ use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, TokenUsage, ToolCall,
 };
 
-use awaken_runtime_host::block_text;
+use awaken_session_executor::block_text;
 
 /// A deterministic, network-free model: it replies with the latest User message's
 /// text, so the server runs end-to-end in CI and under the TypeScript SDK e2e

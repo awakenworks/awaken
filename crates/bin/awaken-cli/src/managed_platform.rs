@@ -414,8 +414,8 @@ mod tests {
         deployment.role = role;
         deployment.mode = crate::config::OperatingMode::Server;
         deployment.expected_platform_workspace_id = Some("workspace-background-test".into());
-        deployment.runtime.store = awaken_runtime_host::StoreKind::Postgres;
-        deployment.runtime.dispatch_backend = awaken_runtime_host::DispatchBackend::Postgres;
+        deployment.runtime.store = awaken_session_executor::StoreKind::Postgres;
+        deployment.runtime.dispatch_backend = awaken_session_executor::DispatchBackend::Postgres;
         deployment.runtime.database_url = Some(FAILED_POSTGRES_URL.to_owned());
         deployment.resources =
             crate::config::ResourceStoreBackend::Postgres(FAILED_POSTGRES_URL.to_owned());

@@ -6,18 +6,18 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::coordinator::OperationCoordinator;
 use awaken_run_ingress::ClaimedOperationCoordinatorResolver;
-use awaken_runtime_host::SharedHost;
+use awaken_session_executor::ExecutorComponents;
 use awaken_session_runtime_contract::ApplicationError;
 
 /// Binds [`ClaimedOperationCoordinatorResolver`] to
-/// [`awaken_runtime_host::session_commit_owner`]. The Host only resolves the existing
+/// [`awaken_session_executor::session_commit_owner`]. The Host only resolves the existing
 /// owner; `ClaimedCommitService` remains the sole caller of its write method.
-pub struct SessionCommitOwner(Arc<SharedHost>);
+pub struct SessionCommitOwner(Arc<ExecutorComponents>);
 
 impl SessionCommitOwner {
     /// Select the Host already installed by the Coordinator composition.
     #[must_use]
-    pub fn new(host: Arc<SharedHost>) -> Self {
+    pub fn new(host: Arc<ExecutorComponents>) -> Self {
         Self(host)
     }
 }
@@ -28,7 +28,7 @@ impl ClaimedOperationCoordinatorResolver for SessionCommitOwner {
         &self,
         session_thread_id: &ThreadId,
     ) -> Result<Arc<dyn OperationCoordinator>, ApplicationError> {
-        awaken_runtime_host::session_commit_owner(&self.0, session_thread_id).await
+        awaken_session_executor::session_commit_owner(&self.0, session_thread_id).await
     }
 }
 
@@ -44,8 +44,8 @@ mod tests {
         // commit_ingest tests own valid/stale claims,
         // child partitioning, replay and persistence. This test covers only
         // the newly shared binding, not a second implementation of those rules.
-        let host = awaken_runtime_host_testkit::volatile_host(
-            Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
+        let host = awaken_session_executor_testkit::volatile_host(
+            Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
             "stub",
         )
         .await;
@@ -57,7 +57,7 @@ mod tests {
                 .registered_thread_workspace(&thread.0)
                 .is_none()
         );
-        awaken_runtime_host::session_commit_owner(&host, &thread)
+        awaken_session_executor::session_commit_owner(&host, &thread)
             .await
             .expect("configured Host commit boundary");
         binding

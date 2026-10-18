@@ -119,7 +119,7 @@ struct ProcessBase {
     iam: Option<Arc<ManagementAuthz>>,
     remote_iam: Option<Arc<RemoteManagementAuthz>>,
     managed_rate_limiter: Arc<dyn awaken_tenancy::org_admission::OrgRequestAdmission>,
-    runtime_authority: Option<Arc<dyn awaken_runtime_host::RuntimeAuthority>>,
+    runtime_authority: Option<Arc<dyn awaken_session_executor::RuntimeAuthority>>,
     placement: awaken_session_application::SessionExecutionPlacement,
     worker_directory: awaken_coordinator::WorkerDirectoryHandle,
     worker_transport: worker_transport_security::WorkerTransport,
@@ -192,13 +192,13 @@ async fn open_process_base(
 async fn selected_runtime_authority(
     process: &mut ProcessStartup,
     stores: &ProcessStores,
-) -> Result<Option<Arc<dyn awaken_runtime_host::RuntimeAuthority>>, String> {
+) -> Result<Option<Arc<dyn awaken_session_executor::RuntimeAuthority>>, String> {
     #[cfg(any(test, feature = "test-support"))]
     if process.runtime_authority.is_none() {
         let selected = process
             .deployment
             .clone()
-            .unwrap_or_else(awaken_runtime_host::DeploymentConfig::ephemeral);
+            .unwrap_or_else(awaken_session_executor::DeploymentConfig::ephemeral);
         process.runtime_authority = Some(
             awaken_coordinator::init_scenario_runtime(&selected, stores.clock.clone())
                 .await
@@ -514,7 +514,7 @@ fn assemble_control_surface(
 /// The execution Host and the Session persistence it records Environment
 /// bindings through.
 struct ExecutionHost {
-    host: Arc<awaken_runtime_host::SharedHost>,
+    host: Arc<awaken_session_executor::ExecutorComponents>,
     /// Consumed once by the Session application that shares these exact handles.
     session_persistence: Option<awaken_session_application::SessionPersistence>,
     artifact_fence: Option<Arc<awaken_coordinator::ClaimFencedArtifactPublisher>>,
@@ -549,7 +549,7 @@ async fn assemble_execution_host(
             let host_builder = HostDependencies::for_coordinator(
                 cloud.model_wiring.executor.clone(),
                 cloud.model_wiring.model_ref.clone(),
-                awaken_runtime_host::WorkerContentAdapters {
+                awaken_session_executor::WorkerContentAdapters {
                     file_content_source: resources.resource_application.file_content_source(),
                     memory: resources.resource_authorities.memory_execution_content(),
                 },
@@ -561,11 +561,13 @@ async fn assemble_execution_host(
         }
         #[cfg(any(test, feature = "test-support"))]
         None => {
-            let deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
+            let deployment = awaken_session_executor::DeploymentConfig::ephemeral();
             let host_builder = HostDependencies::for_local_resources(
                 cloud.model_wiring.executor.clone(),
                 cloud.model_wiring.model_ref.clone(),
-                awaken_runtime_host_testkit::local_resource_ports(&resources.resource_authorities),
+                awaken_session_executor_testkit::local_resource_ports(
+                    &resources.resource_authorities,
+                ),
                 execution.memory_extractions.clone(),
                 base.stores.platform_workspace.clone(),
                 deployment.clone(),
@@ -641,7 +643,7 @@ async fn assemble_execution_host(
             resources.resource_registry.clone(),
         ),
     );
-    let mut session_execution = awaken_runtime_host::SessionExecutionDependencies::default()
+    let mut session_execution = awaken_session_executor::SessionExecutionDependencies::default()
         .with_resource_validator(resources.resource_registry.clone())
         .with_repository_binding_verifier(repository_bindings);
     if let Some(factory) = cloud.credential_refresh_factory.take() {
@@ -693,7 +695,7 @@ fn assemble_session_plane(
                 resources.resource_application.purge_scheduler(),
             );
     let mut builder = awaken_session_application::SessionApplicationBuilder::new(
-        awaken_runtime_host::CoordinatorRoles::of(&host.host).session_execution(),
+        awaken_session_executor::CoordinatorRoles::of(&host.host).session_execution(),
         host.host.run_assembly().clone(),
         host.session_persistence
             .take()

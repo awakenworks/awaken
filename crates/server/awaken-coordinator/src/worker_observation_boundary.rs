@@ -24,7 +24,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
-use crate::SharedHost;
+use crate::ExecutorComponents;
 
 pub const WORKER_OBSERVATIONS_PATH: &str = "/internal/v1/workers/observations";
 pub const WORKER_OBSERVE_PERMISSION: &str = "worker:observe";
@@ -48,7 +48,7 @@ struct BoundaryState {
 #[derive(Clone)]
 pub(crate) struct DomainState {
     pub(crate) directory: Arc<dyn WorkerDirectory>,
-    pub(crate) host: Arc<SharedHost>,
+    pub(crate) host: Arc<ExecutorComponents>,
     pub(crate) environments:
         Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
     pub(crate) sessions: Arc<awaken_session_application::SessionApplication>,

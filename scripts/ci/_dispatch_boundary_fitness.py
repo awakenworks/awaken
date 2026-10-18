@@ -23,7 +23,7 @@ dependency edge come back, so three rules hold it:
 
 Why this is the narrowest correct check: the section 3.3 constraint -- no
 Worker-side implementation anywhere in the Coordinator's closure -- is not yet
-true, because the Coordinator composes the executor (``awaken-runtime-host``)
+true, because the Coordinator composes the executor (``awaken-session-executor``)
 and Sandbox providers itself until the executor split (plan v4 P4) and the
 Sandbox provider work (P6) remove them. D2 makes the constraint hard for the
 dispatch path this boundary owns, which is the edge slice E introduced
@@ -59,7 +59,7 @@ COORDINATOR = "awaken-coordinator"
 COORDINATOR_WORKER_SIDE_ENTRIES: frozenset[str] = frozenset(
     {
         "awaken-credential-materializer",
-        "awaken-runtime-host",
+        "awaken-session-executor",
         "awaken-sandbox-container",
         "awaken-sandbox-kubernetes",
         "awaken-sandbox-local",
@@ -187,11 +187,11 @@ def selftest() -> None:
         ("awaken-sandbox-control", "worker", "contract", set()),
         ("awaken-sandbox-local", "worker", "infrastructure", {"awaken-sandbox-control"}),
         ("awaken-sandbox-policy-store", "control", "infrastructure", set()),
-        ("awaken-runtime-host", "shared", "infrastructure", {"awaken-session-realization"}),
+        ("awaken-session-executor", "shared", "infrastructure", {"awaken-session-realization"}),
         ("awaken-ext-memory", "runtime", "infrastructure", set()),
-        ("awaken-coordinator", "coordinator", "bootstrap", {"awaken-run-ingress", "awaken-runtime-host"}),
+        ("awaken-coordinator", "coordinator", "bootstrap", {"awaken-run-ingress", "awaken-session-executor"}),
     ]
-    listed = frozenset({"awaken-runtime-host"})
+    listed = frozenset({"awaken-session-executor"})
 
     def with_edge(name: str, *added: str) -> dict[str, _crate_dependency_fitness.CrateSpec]:
         rows = [(n, c, l, set(d) | (set(added) if n == name else set())) for n, c, l, d in base]

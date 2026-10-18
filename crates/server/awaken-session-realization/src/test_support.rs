@@ -1,6 +1,6 @@
 // @formal surface exclude=test_only
-// @formal owner crates/server/awaken-runtime-host/src/host/session/environment_realization/fence_source_tests.rs
-// @formal owner crates/server/awaken-runtime-host/src/realization_composed_tests/session_realizations/execution_authority.rs
+// @formal owner crates/server/awaken-session-executor/src/host/session/environment_realization/fence_source_tests.rs
+// @formal owner crates/server/awaken-session-executor/src/realization_composed_tests/session_realizations/execution_authority.rs
 // @formal reason: Original lease and direct provider-boundary fixtures, reachable only through cfg(test) or explicit test-support. The provider entry returns the original private kernel Future; it introduces no execution grant or alternate effect implementation. The in-memory installed-Session registry implements the same SessionRealizationSource port for the realization crate's absence and poison decision tables and grants no authority.
 //! Original lease observation fixtures, never execution authority.
 

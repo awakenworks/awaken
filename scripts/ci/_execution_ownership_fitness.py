@@ -28,7 +28,7 @@ RETIRED_EXECUTION_PATHS = {
     "AdmittedRunApplication": "use the sole SessionRunApplication adapter",
 }
 
-RUNTIME_HOST_ERROR_OWNER = "crates/server/awaken-runtime-host/src/lib.rs"
+RUNTIME_HOST_ERROR_OWNER = "crates/server/awaken-session-executor/src/lib.rs"
 SESSION_RUN_ADMISSION_OWNER = (
     "crates/server/awaken-session-application/src/run_admission.rs"
 )
@@ -264,7 +264,7 @@ def repository_git_boundary_violations(sources: dict[str, str]) -> list[str]:
         # neither may run Repository Git on the host.
         if not path.startswith(
             (
-                "crates/server/awaken-runtime-host/src/",
+                "crates/server/awaken-session-executor/src/",
                 "crates/worker/awaken-session-environment/src/",
             )
         ):
@@ -481,7 +481,7 @@ def selftest() -> None:
     ] = 'Command::new("git")'
     assert repository_git_boundary_violations(git_boundary), "G4"
     del git_boundary["crates/worker/awaken-session-environment/src/host_git_bypass.rs"]
-    git_boundary["crates/server/awaken-runtime-host/src/host_git_bypass.rs"] = (
+    git_boundary["crates/server/awaken-session-executor/src/host_git_bypass.rs"] = (
         'Command::new("git")'
     )
     assert repository_git_boundary_violations(git_boundary), "G5"

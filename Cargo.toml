@@ -101,7 +101,7 @@ awaken-protocol-ag-ui = { path = "crates/server/awaken-protocol-ag-ui" }
 awaken-protocol-ai-sdk = { path = "crates/server/awaken-protocol-ai-sdk" }
 awaken-protocol-managed = { path = "crates/server/awaken-protocol-managed" }
 awaken-protocol-managed-testkit = { path = "crates/devtools/awaken-protocol-managed-testkit" }
-awaken-runtime-host-testkit = { path = "crates/devtools/awaken-runtime-host-testkit" }
+awaken-session-executor-testkit = { path = "crates/devtools/awaken-session-executor-testkit" }
 awaken-protocol-awaken = { path = "crates/server/awaken-protocol-awaken" }
 awaken-resource-reclaimer = { path = "crates/server/awaken-resource-reclaimer" }
 awaken-protocol-acp = { path = "crates/server/awaken-protocol-acp" }
@@ -198,7 +198,7 @@ awaken-dispatch-execution = { path = "crates/shared/awaken-dispatch-execution" }
 awaken-run-ingress = { path = "crates/server/awaken-run-ingress", default-features = false }
 awaken-run-ingress-testkit = { path = "crates/server/awaken-run-ingress-testkit" }
 awaken-worker-transport-security = { path = "crates/server/awaken-worker-transport-security" }
-awaken-runtime-host = { path = "crates/server/awaken-runtime-host", default-features = false }
+awaken-session-executor = { path = "crates/server/awaken-session-executor", default-features = false }
 awaken-run-ingress-http = { path = "crates/server/awaken-run-ingress-http" }
 awaken-resource-worker-http = { path = "crates/resources/awaken-resource-worker-http" }
 awaken-worker-runtime = { path = "crates/server/awaken-worker-runtime" }

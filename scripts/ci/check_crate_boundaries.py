@@ -129,7 +129,7 @@ FORBIDDEN_BACKEND_CONFIG_DEPS = {
 # rather than left to convention.
 #
 # The `shared` context is deliberately NOT a blanket allowance: it holds neutral
-# values (`awaken-tool-pattern`) next to server assemblies (`awaken-runtime-host`),
+# values (`awaken-tool-pattern`) next to server assemblies (`awaken-session-executor`),
 # so admitting it wholesale would let the host back into the SDK. Ports and
 # values are admitted by layer instead, and each neutral shared library is named
 # so adding another is a reviewed decision rather than a side effect.
@@ -1708,7 +1708,7 @@ def selftest_sdk_tier_is_standalone() -> None:
         "awaken-ext-mcp", {"awaken-mcp-wire": ("shared", "infrastructure")}
     ), "S3/E1"
     assert _sdk_tier_dependency_errors(
-        "awaken-ext-permission", {"awaken-runtime-host": ("shared", "infrastructure")}
+        "awaken-ext-permission", {"awaken-session-executor": ("shared", "infrastructure")}
     ), "S4/E2 a serving assembly is not admitted by its context"
     assert _sdk_tier_dependency_errors(
         "awaken-runtime", {"awaken-coordinator": ("coordinator", "application")}

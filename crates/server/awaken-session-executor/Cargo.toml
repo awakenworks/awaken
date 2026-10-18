@@ -1,0 +1,166 @@
+[package]
+name = "awaken-session-executor"
+description = "Authority-free shared execution host infrastructure for Awaken Runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "shared"
+product = "platform"
+bounded_context = "execution"
+layer = "infrastructure"
+authority = "runtime-host"
+separation = "isolation"
+isolates = ["axum"]
+
+[dependencies]
+awaken-session-realization.workspace = true
+awaken-tool-contract.workspace = true
+awaken-data-governance-contract.workspace = true
+awaken-executable-agent-contract.workspace = true
+# The backend-erased container environment ports the Session owner holds.
+awaken-container-contract.workspace = true
+# The auxiliary-run sandbox ports the process composition injects.
+awaken-session-environment-contract.workspace = true
+# The neutral Agent channel the Session environment launches Agents over.
+# The neutral session substrate (ExecutorComponents) and the two port adapters
+# (ManagedHost / RunApplicationHost) live here; the assembly bin mounts them.
+awaken-agent-contract.workspace = true
+awaken-runtime-contract.workspace = true
+awaken-authority-clock.workspace = true
+awaken-session-application-contract.workspace = true
+awaken-session-configuration-contract.workspace = true
+awaken-session-realization-contract.workspace = true
+awaken-session-runtime-contract.workspace = true
+awaken-session-state-contract.workspace = true
+awaken-session-budget-contract.workspace = true
+awaken-session-event-contract.workspace = true
+# Per-Session MCP lifecycle and Worker relay; the Session slot holds its state.
+awaken-session-mcp.workspace = true
+awaken-session-types.workspace = true
+# The topology-neutral Session realization and terminal-cleanup drivers over
+# contract ports; the Session application and this Host's Workers both call them.
+awaken-session-realization-driver.workspace = true
+awaken-resource-contract.workspace = true
+awaken-runtime = { workspace = true }
+# Volatile commit/checkpoint reference adapters are available only to explicit
+# test/scenario deployments. Product builds do not link this backend.
+awaken-store-inmem = { workspace = true, optional = true }
+awaken-observability = { workspace = true }
+awaken-ext-builtin-tools = { workspace = true }
+awaken-ext-memory = { workspace = true }
+awaken-ext-compact = { workspace = true }
+awaken-ext-permission = { workspace = true }
+awaken-ext-skills = { workspace = true }
+awaken-ext-goal = { workspace = true }
+awaken-ext-state-machine = { workspace = true, features = ["schema"] }
+awaken-ext-background-task.workspace = true
+# The neutral sandbox vocabulary the sandboxed ACP channel source speaks
+# (SandboxSpec/Command/NetworkPolicy) when realizing the namespace tier.
+awaken-provisioning-contract = { workspace = true }
+awaken-tenancy = { workspace = true }
+awaken-run-ingress-contract.workspace = true
+awaken-dispatch-erasure.workspace = true
+awaken-dispatch-execution.workspace = true
+awaken-acp-contract = { workspace = true }
+awaken-credential-contract.workspace = true
+awaken-credential-materializer = { workspace = true }
+async-trait.workspace = true
+awaken-time.workspace = true
+awaken-lease-contract.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "process", "signal", "sync"] }
+axum = { version = "0.8", features = ["multipart"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+base64 = "0.22"
+# Content SHA-256 for the memory_stores memories/versions API (`content_sha256`).
+sha2 = "0.10"
+schemars = "1"
+# Host Run span (`#[instrument]`) exported through the global subscriber the service
+# binary installs; this crate emits spans, never wires an exporter.
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+url.workspace = true
+[features]
+# The reusable Host is authority-free by default. Coordinator injects the
+# RuntimeAuthority value directly; there is no feature-selected compatibility
+# assembly that can acquire a Store implicitly.
+default = []
+# Post-construction persistence overrides are restricted to tests. Product
+# startup selects every authority before constructing ExecutorComponents.
+test-support = [
+    "dep:awaken-store-inmem",
+    "awaken-session-mcp/test-support",
+    "awaken-session-realization/test-support",
+]
+# Live-backend tests only. The container tiers themselves are assembled by
+# `awaken-execution-composition`; these features enable a real backend in the
+# test-only container dependency for the Host tests that drive one.
+k8s-tests = ["awaken-session-realization/k8s-tests"]
+
+[dev-dependencies]
+awaken-environment-contract.workspace = true
+
+awaken-agent-channel.workspace = true
+
+awaken-sandbox-control.workspace = true
+
+awaken-ext-mcp.workspace = true
+
+awaken-session-realization = { workspace = true, features = ["test-support"] }
+awaken-worker-contract.workspace = true
+# Managed fixtures use the real Session Root/sink and its existing Store port.
+awaken-session-application = { workspace = true, features = ["test-support"] }
+awaken-session-repository-contract.workspace = true
+# Resource fixtures compose the same Environment catalog/Work owner as Coordinator.
+awaken-environment-application.workspace = true
+awaken-executable-environment-catalog.workspace = true
+awaken-work-store = { workspace = true, features = ["test-support"] }
+awaken-worker-runtime.workspace = true
+# MCP relay tests call the relay over plain loopback HTTP.
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+# The in-process MCP server fixture and the relay/state fixture hooks.
+awaken-session-mcp = { workspace = true, features = ["test-support"] }
+awaken-run-executor-acp = { workspace = true }
+awaken-worker-registry = { workspace = true, features = ["test-support"] }
+awaken-reliability-testkit.workspace = true
+# Test doubles decode real container handles through the container provider's
+# codec; the live-backend tests build a real provider.
+awaken-sandbox-container.workspace = true
+# `AcpCapabilityHandshake::negotiate` takes `&mut dyn AgentChannel`, which the
+# ACP contract re-uses but does not re-export, so a test handshake has to name
+# the trait itself. Dev-only: production code only ever consumes the port.
+awaken-provisioning-contract = { workspace = true, features = ["test-support"] }
+awaken-service-lifecycle = { workspace = true, features = ["test-support"] }
+awaken-sandbox-local = { workspace = true, features = ["test-support"] }
+# The sandbox-backed Session environment the process composition installs;
+# this crate's own tests realize environments through it.
+awaken-session-environment = { workspace = true, features = ["test-support"] }
+awaken-resource-application.workspace = true
+awaken-credential-vault = { workspace = true, features = ["test-support"] }
+awaken-file-store = { workspace = true, features = ["test-support"] }
+awaken-memory-store = { workspace = true, features = ["sqlite", "test-support"] }
+awaken-run-ingress = { workspace = true, features = ["test-support"] }
+awaken-session-store = { workspace = true, features = ["test-support"] }
+awaken-skill-store = { workspace = true, features = ["test-support"] }
+tokio = { workspace = true, features = ["test-util"] }
+awaken-resource-store = { workspace = true, features = ["sqlite", "test-support"] }
+awaken-run-ingress-testkit = { workspace = true }
+# The durable session-store round-trip test opens a real sessions.db under a temp dir.
+# Test fixtures cut an exact physical Environment root by inode.
+awaken-sandbox-fs = { workspace = true }
+tempfile = "3"
+# The sandboxed-channel-source integration test observes what the bwrap-confined
+# agent said through the in-memory commit boundary.
+awaken-store-inmem = { workspace = true }
+awaken-store-sqlite.workspace = true
+awaken-credential-materializer = { workspace = true, features = ["authority"] }
+awaken-lease-testkit.workspace = true
+# Drives Worker transport routers in-process through `ServiceExt::oneshot`.
+tower = { version = "0.5", features = ["util"] }
+
+[lints]
+workspace = true

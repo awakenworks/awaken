@@ -13,7 +13,7 @@ use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshot};
 use awaken_runtime_contract::{PublishedAgentSnapshotSource, StaticPublishedAgentSnapshots};
 use axum::Router;
 
-use super::{EchoModel, HostDependencies, SharedHost, resource_host};
+use super::{EchoModel, ExecutorComponents, HostDependencies, resource_host};
 use crate::deployment::ScenarioPlatform;
 
 pub(super) const SCENARIO_MEMORY_STORE_ID: &str = "memstore_scenario_memory";
@@ -43,7 +43,7 @@ pub(super) async fn mount_on_lifecycle(
 pub(super) async fn mount_parts(
     host: HostDependencies,
     resources: awaken_resource_application::ResourcesApplication,
-) -> (Router, Arc<SharedHost>) {
+) -> (Router, Arc<ExecutorComponents>) {
     mount_parts_on_lifecycle(
         host,
         resources,
@@ -56,7 +56,7 @@ async fn mount_parts_on_lifecycle(
     host: HostDependencies,
     resources: awaken_resource_application::ResourcesApplication,
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
-) -> (Router, Arc<SharedHost>) {
+) -> (Router, Arc<ExecutorComponents>) {
     let catalog = resources.authorities().resource_registry();
     let managed = awaken_coordinator::local_managed_state(host, catalog.clone()).await;
     let host = managed.host.clone();
@@ -78,7 +78,7 @@ pub(super) async fn mount_parts_with_model_publication_resolver(
     resources: awaken_resource_application::ResourcesApplication,
     resolver: Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>,
     dream_executor_decorator: Option<awaken_coordinator::ScenarioDreamExecutorDecorator>,
-) -> (Router, Arc<SharedHost>) {
+) -> (Router, Arc<ExecutorComponents>) {
     let catalog = resources.authorities().resource_registry();
     let managed = awaken_coordinator::local_managed_state_with_model_publication_resolver(
         host,
@@ -153,7 +153,7 @@ pub(super) async fn mount_parts_with_agent_source_on_lifecycle(
     resources: awaken_resource_application::ResourcesApplication,
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
-) -> (Router, Arc<SharedHost>) {
+) -> (Router, Arc<ExecutorComponents>) {
     let catalog = resources.authorities().resource_registry();
     let managed = awaken_coordinator::local_managed_state_with_agent_source(
         host,

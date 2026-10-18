@@ -25,7 +25,7 @@ AUTHORITY_IMPLS: dict[str, tuple[str, ...]] = {
         "crates/stores/awaken-store-fs/src/",
         "crates/stores/awaken-store-sqlite/src/",
         "crates/stores/awaken-store-postgres/src/",
-        "crates/server/awaken-runtime-host/src/store.rs",
+        "crates/server/awaken-session-executor/src/store.rs",
     ),
     "SessionRepository": ("crates/stores/awaken-session-store/src/",),
     "LifecycleOutbox": ("crates/stores/awaken-session-store/src/",),
@@ -68,12 +68,12 @@ def dispatch_handoff_violations(relative: str, production: str) -> list[str]:
     """The canonical Session resolver is dispatch-owned; its Run factory points inward."""
     syntax = _crate_boundary_workspace.rust_syntax(production)
     errors = []
-    if relative.startswith("crates/server/awaken-runtime-host/src/") and re.search(
+    if relative.startswith("crates/server/awaken-session-executor/src/") and re.search(
         r"\bimpl(?:\s*<[^>{}]*>)?\s+(?:[\w:]+::)?WorkerResolver\s*<", syntax
     ):
         errors.append(f"{relative}: Session dispatch routing belongs to awaken-dispatch-execution")
     if relative.startswith("crates/shared/awaken-dispatch-execution/src/") and re.search(
-        r"\bawaken_runtime_host\s*::", syntax
+        r"\bawaken_session_executor\s*::", syntax
     ):
         errors.append(f"{relative}: dispatch execution must consume its Run factory, never Runtime Host")
     return errors
@@ -195,12 +195,12 @@ def selftest() -> None:
     # Decision rules: H1=(0,0) accept, H2=(1,0) reject owner,
     # H3=(0,1) reject dependency, H4=comments/test-only code accept. Existing
     # production_rust owns cfg filtering; this guard reuses that one parser.
-    host = "crates/server/awaken-runtime-host/src/session.rs"
+    host = "crates/server/awaken-session-executor/src/session.rs"
     dispatch = "crates/shared/awaken-dispatch-execution/src/session.rs"
     resolver = "impl<T> WorkerResolver<AnyDispatchStore> for SessionWorkerResolver<T> {}"
     assert dispatch_handoff_violations(dispatch, resolver) == [], "H1 canonical owner"
     assert dispatch_handoff_violations(host, resolver), "H2 misplaced resolver"
-    assert dispatch_handoff_violations(dispatch, "use awaken_runtime_host::SharedHost;"), "H3 back edge"
+    assert dispatch_handoff_violations(dispatch, "use awaken_session_executor::SharedHost;"), "H3 back edge"
     fixture = "// impl WorkerResolver<Store> for Fixture {}\n#[cfg(test)]\nmod tests { impl WorkerResolver<Store> for Fixture {} }"
     assert dispatch_handoff_violations(host, _crate_boundary_workspace.production_rust(fixture)) == [], "H4 fixtures"
     """Cause/effect decision table:
@@ -222,7 +222,7 @@ def selftest() -> None:
         "crates/shared/awaken-dispatch-erasure/src/lib.rs", "DispatchCommitAuthority"
     ) == []  # R2 role delegation, not a second durable authority
     assert implementation_violation(
-        "crates/server/awaken-runtime-host/src/dispatch.rs", "DispatchCommitAuthority"
+        "crates/server/awaken-session-executor/src/dispatch.rs", "DispatchCommitAuthority"
     )  # R3
     allowed = TABLE_AUTHORITIES[2][2]
     assert table_violation("crates/stores/awaken-session-store/src/lib.rs", "session", allowed) == []
@@ -318,7 +318,7 @@ def check_all(repo_root: Path, crates_root: Path) -> list[str]:
 
     for facade in (
         crates_root / "server/awaken-protocol-managed/src/lib.rs",
-        crates_root / "server/awaken-runtime-host/src/lib.rs",
+        crates_root / "server/awaken-session-executor/src/lib.rs",
     ):
         source = facade.read_text(encoding="utf-8")
         if re.search(

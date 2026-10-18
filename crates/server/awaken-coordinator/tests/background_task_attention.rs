@@ -137,7 +137,7 @@ impl LlmExecutor for DeterministicBackgroundAttentionModel {
 }
 
 fn background_snapshot(model_ref: &str) -> ExecutableAgentSnapshot {
-    let ordinary_tools = awaken_runtime_host::authorable_tools()
+    let ordinary_tools = awaken_session_executor::authorable_tools()
         .into_iter()
         .filter(|tool| tool.id == "bash")
         .collect::<Vec<_>>();
@@ -314,7 +314,7 @@ async fn exercise_background_attention(
     .await;
     let events = wait_for_completion(&app, &session, &accepted_receipt, timeout).await;
     assert!(
-        awaken_runtime_host::CoordinatorRoles::of(&host)
+        awaken_session_executor::CoordinatorRoles::of(&host)
             .drain(Duration::from_secs(2))
             .await,
         "BackgroundTask execution and attention publication drain"

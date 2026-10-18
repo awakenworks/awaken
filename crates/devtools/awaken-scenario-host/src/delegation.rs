@@ -30,7 +30,7 @@ pub async fn build_delegation_router() -> Router {
 /// Deterministic in-process tests select Local here; real-process scenarios use
 /// [`build_delegation_router`] and exercise their configured sandbox tier.
 pub async fn build_delegation_router_with_deployment(
-    deployment: awaken_runtime_host::DeploymentConfig,
+    deployment: awaken_session_executor::DeploymentConfig,
 ) -> Router {
     let (model, model_ref) = scenario_model(Arc::new(DelegatingModel), "delegate");
     let metadata = |owner_id: &str| AgentSnapshotMetadata {
@@ -42,7 +42,7 @@ pub async fn build_delegation_router_with_deployment(
     };
     let snapshot =
         |owner_id: &str, backend_ref: &str, delegates: Vec<AgentId>, recursive_self: bool| {
-            let mut tools = awaken_runtime_host::authorable_tools();
+            let mut tools = awaken_session_executor::authorable_tools();
             if delegates.is_empty() {
                 tools.retain(|tool| tool.kind != ToolKind::AgentDelegation);
             }
@@ -104,7 +104,7 @@ pub async fn build_delegation_router_with_deployment(
     // The production config compiler is the one owner of the reserved Advisor
     // descriptor and its frozen binding. Reusing it here keeps the real-process
     // scenario from hand-maintaining a second copy of that capability.
-    let tool_catalog = awaken_runtime_host::authorable_tools();
+    let tool_catalog = awaken_session_executor::authorable_tools();
     let primary = ResolvedModelCandidate::host(
         ModelBinding::parse("default", &model_ref, "default")
             .unwrap_or_else(|error| panic!("scenario model `{model_ref}`: {error}")),

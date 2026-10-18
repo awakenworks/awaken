@@ -96,7 +96,7 @@ def selftest() -> None:
     assert realization_error_violations({f"{REALIZATION_SRC}/session_realizations/tests.rs": forbidden}) == [], "E2 file"
     assert realization_error_violations({f"{REALIZATION_SRC}/test_support.rs": forbidden}) == [], "E2 support"
     assert realization_error_violations(
-        {"crates/server/awaken-runtime-host/src/host_error.rs": forbidden}
+        {"crates/server/awaken-session-executor/src/host_error.rs": forbidden}
     ) == [], "E3"
     rejected = {
         "E4": "fn f() -> Result<(), HostError> { Ok(()) }\n",

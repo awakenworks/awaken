@@ -29,7 +29,7 @@ use tower::ServiceExt;
 
 async fn build_all_in_one_router() -> axum::Router {
     build_all_in_one_router_with_model(
-        Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
+        Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
         "kimi",
     )
     .await

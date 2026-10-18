@@ -234,8 +234,8 @@ async fn model_plane(
             brokered_client,
         ),
         (None, None) => RuntimeModelWiring {
-            executor: Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
-            model_ref: awaken_runtime_host::UNCONFIGURED_MODEL_REF.to_string(),
+            executor: Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
+            model_ref: awaken_session_executor::UNCONFIGURED_MODEL_REF.to_string(),
             materializer: None,
         },
         _ => unreachable!("Control model adapters and Control stores are configured together"),

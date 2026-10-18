@@ -14,9 +14,9 @@
 
 use std::sync::Arc;
 
-use awaken_runtime_host::{DeploymentConfig, HostDependencies};
 use awaken_session_environment::SandboxEnvironmentProvider;
 use awaken_session_environment_contract::HandExecutorFactory;
+use awaken_session_executor::{DeploymentConfig, HostDependencies};
 
 mod acp_backend;
 mod acp_policy;
@@ -49,7 +49,7 @@ pub struct ContainerEnvironmentComponents {
     pub provider: Arc<dyn awaken_container_contract::ContainerEnvironmentProvider>,
     pub capacity: Option<Arc<dyn awaken_container_contract::ContainerEnvironmentCapacity>>,
     pub extra_mounts: Vec<awaken_provisioning_contract::MountRequirement>,
-    pub cache_volume_initializer: Option<Arc<dyn awaken_runtime_host::CacheVolumeInitializer>>,
+    pub cache_volume_initializer: Option<Arc<dyn awaken_session_executor::CacheVolumeInitializer>>,
 }
 
 /// The auxiliary-run sandboxes every process root installs on its Host
@@ -303,7 +303,7 @@ pub fn with_acp_from_deployment(
             None => host,
         };
     };
-    let base = awaken_runtime_host::session_sandbox_base(deployment);
+    let base = awaken_session_executor::session_sandbox_base(deployment);
     let routes = profile
         .cli_ids()
         .map(|id| {

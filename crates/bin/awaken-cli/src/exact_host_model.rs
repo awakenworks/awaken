@@ -25,8 +25,8 @@ fn cargo_test_namespace_hand_path() -> Option<std::path::PathBuf> {
 }
 
 pub(super) fn local_test_process_options(stores: &super::ProcessStores) -> super::ProcessStartup {
-    let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
-    deployment.sandbox_tier = awaken_runtime_host::SandboxTier::Local;
+    let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
+    deployment.sandbox_tier = awaken_session_executor::SandboxTier::Local;
     let work = stores
         .coordinator
         .as_ref()

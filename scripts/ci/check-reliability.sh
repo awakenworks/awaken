@@ -41,9 +41,9 @@ if [ "${1:-}" = "--session-observations" ]; then
     -p awaken-session-configuration-contract -p awaken-worker-contract \
     -p awaken-session-application \
     -p awaken-store-inmem -p awaken-store-fs -p awaken-store-sqlite -p awaken-protocol-managed
-  cargo test --locked -p awaken-runtime-host --lib projection_convergence::
+  cargo test --locked -p awaken-session-executor --lib projection_convergence::
   cargo test --locked -p awaken-session-realization-driver --lib scheduler_capacity_observes_real_poll_drop_and_two_stage_cancellation
-  cargo test --locked -p awaken-runtime-host --lib control_deadline_releases_capacity_before_expired_session_mutex_cleanup
+  cargo test --locked -p awaken-session-executor --lib control_deadline_releases_capacity_before_expired_session_mutex_cleanup
   cargo test --locked -p awaken-coordinator --lib runtime_authority::tests
   cargo test --locked -p awaken-run-ingress --features test-support --test pool_memory only_the_queue_owner_runs_maintenance_without_disabling_worker_drains
   pnpm -C e2e exec tsx managed_mcp_recovery_e2e.ts
@@ -73,7 +73,7 @@ cleanup_mutation_artifacts() {
     -p awaken-session-event-contract -p awaken-session-realization-contract \
     -p awaken-session-repository-contract -p awaken-session-runtime-contract \
     -p awaken-session-state-contract >/dev/null 2>&1 || true
-  cargo clean -p awaken-runtime-host >/dev/null 2>&1 || true
+  cargo clean -p awaken-session-executor >/dev/null 2>&1 || true
 }
 python3 scripts/ci/check_reliability.py
 source scripts/ci/_rust_test_execution.sh
@@ -195,7 +195,7 @@ python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/session-wo
 # ordering kernel; effects: the complete ManagedHost installation advances or
 # rejects without rewriting its correlated receipt. The Host convergence test
 # owns the observation, while the mutation belongs to the shared type owner.
-cargo mutants --package awaken-session-types --test-package awaken-runtime-host \
+cargo mutants --package awaken-session-types --test-package awaken-session-executor \
   --output "$mutation_evidence/environment-projection" \
   --file crates/contract/awaken-session-types/src/monotone.rs \
   --re 'replace > with <|replace > with >=' \

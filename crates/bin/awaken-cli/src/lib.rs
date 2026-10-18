@@ -47,9 +47,9 @@ use std::sync::Arc;
 use awaken_config_service::ManagementAuditPlane;
 use awaken_protocol_managed::ManagedState;
 use awaken_runtime_contract::llm::LlmExecutor;
-use awaken_runtime_host::HostDependencies;
 #[cfg(any(test, feature = "test-support"))]
-use awaken_runtime_host::SharedHost;
+use awaken_session_executor::ExecutorComponents;
+use awaken_session_executor::HostDependencies;
 use awaken_session_mcp::ExtMcpProbe;
 use axum::Router;
 #[cfg(any(test, feature = "test-support"))]
@@ -366,7 +366,7 @@ async fn build_all_in_one_router_with_model_supply(
 pub async fn build_all_in_one_router_with_host_customizer(
     model: Arc<dyn LlmExecutor>,
     binding: awaken_runtime_contract::resolved::ModelBinding,
-    deployment: awaken_runtime_host::DeploymentConfig,
+    deployment: awaken_session_executor::DeploymentConfig,
     web_search_providers: Option<awaken_ext_builtin_tools::WebSearchProviderRegistry>,
     customize_host: impl FnOnce(HostDependencies) -> HostDependencies + Send + 'static,
 ) -> Router {
@@ -600,8 +600,8 @@ fn runtime_model_wiring(
 ) -> RuntimeModelWiring {
     match runtime {
         RuntimeModelServices::PublishedProviders => RuntimeModelWiring {
-            executor: Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
-            model_ref: awaken_runtime_host::UNCONFIGURED_MODEL_REF.to_string(),
+            executor: Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
+            model_ref: awaken_session_executor::UNCONFIGURED_MODEL_REF.to_string(),
             materializer: Some(Arc::new({
                 let materializer =
                     awaken_credential_materializer::CredentialInferenceMaterializer::from_pinned(
@@ -615,8 +615,8 @@ fn runtime_model_wiring(
             })),
         },
         RuntimeModelServices::NoModelConfigured => RuntimeModelWiring {
-            executor: Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
-            model_ref: awaken_runtime_host::UNCONFIGURED_MODEL_REF.to_string(),
+            executor: Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
+            model_ref: awaken_session_executor::UNCONFIGURED_MODEL_REF.to_string(),
             materializer: None,
         },
         #[cfg(any(test, feature = "test-support"))]
@@ -1154,7 +1154,7 @@ mod process_role_surface_tests {
         // Coordinator APIs without probing/constructing a local sandbox; registered
         // Workers remain the only Session physical-effect owners.
         coordinator_deployment.runtime.disable_local_pool = true;
-        coordinator_deployment.runtime.sandbox_tier = awaken_runtime_host::SandboxTier::K8s;
+        coordinator_deployment.runtime.sandbox_tier = awaken_session_executor::SandboxTier::K8s;
         coordinator_deployment.runtime.container_image = None;
         let executable_environment_wiring =
             executable_environment_registration::ExecutableEnvironmentWiring::local(

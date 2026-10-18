@@ -318,11 +318,11 @@ cargo test -p awaken-ext-background-task --features loom --lib supervisor::loom_
 cargo test -p awaken-ext-background-task --test state_machine execution_admission
 cargo test -p awaken-runtime --test background_task_state \
   terminal_reclaim_rejects_then_recovers_from_committed_thread_truth -- --exact
-cargo test -p awaken-runtime-host --lib background_task::ownership::tests
+cargo test -p awaken-session-executor --lib background_task::ownership::tests
 # The model's CommittedAuthority observation source is an async query policy,
 # not the process projection. Hold that projection stale while the production
 # terminal observer consumes an exact scripted authoritative state command.
-cargo test -p awaken-runtime-host --lib \
+cargo test -p awaken-session-executor --lib \
   committed_claim_launches_once_and_records_completion_without_a_second_store
 # Async return/cleanup is not covered by the scalar physical-slot proof.
 cargo test -p awaken-run-ingress --features test-support --test pool_memory
@@ -340,7 +340,7 @@ cargo test -p awaken-run-ingress --features test-support --test dispatch_conform
 # opens of the production file-backed SQLite adapter.
 cargo test -p awaken-run-ingress --features test-support --test crash_before_settle \
   sqlite_process_crash_before_settle_replays_and_consumes_exact_input_once -- --exact
-cargo test -p awaken-runtime-host --lib durable_interrupt_returns_after_intent
+cargo test -p awaken-session-executor --lib durable_interrupt_returns_after_intent
 # The epoch kernel assumes the failure CAS actually expires every recoverable
 # assignment; cover Idle hot replacement as well as initial retry at that owner.
 cargo test -p awaken-session-application --lib failed_nonterminal_realization

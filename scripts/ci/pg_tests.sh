@@ -276,7 +276,7 @@ self_test() {
   # P8 the claim/commit guard lives in durable_postgres and its HTTP receipt
   # boundary in active_active_postgres. The removed RuntimeHost filter matched
   # zero tests; it is not a compatibility route or additional test coverage.
-  if grep -Eq '^(pg_test )?cargo test -p awaken-runtime-host' "$0"; then
+  if grep -Eq '^(pg_test )?cargo test -p awaken-session-executor' "$0"; then
     echo "Postgres gate retains the retired RuntimeHost test selector" >&2
     return 1
   fi

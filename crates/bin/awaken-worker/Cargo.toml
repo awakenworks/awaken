@@ -50,10 +50,10 @@ awaken-session-environment-contract.workspace = true
 awaken-execution-composition.workspace = true
 awaken-container-contract.workspace = true
 awaken-protocol-mcp.workspace = true
-# The neutral host substrate: SharedHost, the dispatch pool, and the worker dispatch
+# The neutral host substrate: ExecutorComponents, the dispatch pool, and the worker dispatch
 # store that routes the drain over HTTP to the cell server.
 awaken-dispatch-execution.workspace = true
-awaken-runtime-host = { workspace = true, default-features = false }
+awaken-session-executor = { workspace = true, default-features = false }
 # The authenticated outbound proxy port of the Worker MCP relay.
 awaken-session-mcp.workspace = true
 # The installation platform Workspace marker this startup reads or publishes.
@@ -99,7 +99,7 @@ tracing = "0.1"
 
 [dev-dependencies]
 awaken-lease-testkit.workspace = true
-awaken-runtime-host-testkit.workspace = true
+awaken-session-executor-testkit.workspace = true
 awaken-reliability-testkit = { workspace = true, features = ["tracing"] }
 # The admin router tests drive the axum router directly (oneshot).
 tower = { version = "0.5", features = ["util"] }
@@ -107,7 +107,7 @@ tower = { version = "0.5", features = ["util"] }
 tokio = { workspace = true, features = ["test-util"] }
 # Bare in-memory Host construction exists only for explicit test startup;
 # production Worker builds keep the runtime-host test backend unlinked.
-awaken-runtime-host = { workspace = true, features = ["test-support"] }
+awaken-session-executor = { workspace = true, features = ["test-support"] }
 awaken-tool-relay = { workspace = true, features = ["test-support"] }
 tempfile = "3"
 awaken-ext-mcp.workspace = true

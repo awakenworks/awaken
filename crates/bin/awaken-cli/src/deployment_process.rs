@@ -334,8 +334,8 @@ pub(crate) async fn migrate_deployment_schema_prepared(
     if manifest.contains(&MigrationComponent::Coordinator) {
         executable_agent_registration::migrate(deployment, &mut postgres_pools).await?;
         executable_environment_registration::migrate(deployment, &mut postgres_pools).await?;
-        if deployment.runtime.dispatch_backend == awaken_runtime_host::DispatchBackend::Postgres
-            || deployment.runtime.store == awaken_runtime_host::StoreKind::Postgres
+        if deployment.runtime.dispatch_backend == awaken_session_executor::DispatchBackend::Postgres
+            || deployment.runtime.store == awaken_session_executor::StoreKind::Postgres
         {
             let url = deployment
                 .runtime

@@ -197,13 +197,13 @@ impl awaken_credential_contract::WorkerLocalReferenceRevalidator for ReferenceMa
     }
 }
 
-fn fixture_deployment() -> Result<awaken_runtime_host::DeploymentConfig, String> {
-    let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
+fn fixture_deployment() -> Result<awaken_session_executor::DeploymentConfig, String> {
+    let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
     if let Ok(tier) = std::env::var("AWAKEN_TEST_SANDBOX_TIER") {
         deployment.sandbox_tier = match tier.as_str() {
-            "local" => awaken_runtime_host::SandboxTier::Local,
+            "local" => awaken_session_executor::SandboxTier::Local,
             #[cfg(feature = "container-docker")]
-            "docker" => awaken_runtime_host::SandboxTier::Docker,
+            "docker" => awaken_session_executor::SandboxTier::Docker,
             _ => return Err(format!("unsupported E2E sandbox tier `{tier}`")),
         };
     }

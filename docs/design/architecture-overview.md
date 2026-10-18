@@ -123,7 +123,7 @@ the runtime through explicit contracts.
 
 ### 1.2 Runtime Host, authority, and protocol responsibilities
 
-`awaken-runtime-host` owns execution semantics, Session environments, Worker
+`awaken-session-executor` owns execution semantics, Session environments, Worker
 transport adapters, and the `RuntimeAuthority`/`LocalCommit` injection contracts.
 Its default dependency closure contains no SQL/FS commit, dispatch, Session,
 Resource, or Credential store and it has no backend-selection feature.

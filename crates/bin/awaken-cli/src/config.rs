@@ -13,8 +13,8 @@ use std::fs;
 use std::path::PathBuf;
 
 #[cfg(test)]
-use awaken_runtime_host::{ContentRedaction, PackageImageBuilder};
-use awaken_runtime_host::{DeploymentConfig, DispatchBackend, StoreKind};
+use awaken_session_executor::{ContentRedaction, PackageImageBuilder};
+use awaken_session_executor::{DeploymentConfig, DispatchBackend, StoreKind};
 mod browser_access;
 mod cloud_iam;
 mod deployment;

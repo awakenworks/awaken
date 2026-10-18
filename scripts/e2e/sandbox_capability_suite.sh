@@ -57,7 +57,7 @@ run()  { # run <label> <cmd...>
 if [ "$substrates_only" -eq 0 ]; then
   step "G2/G3 host + managed unit tests (dispose, fail-closed)"
   # cargo test takes a single substring filter, so run each crate's dispose tests apart.
-  run "host terminal cleanup unit" cargo test -q -p awaken-runtime-host --lib exact_terminal_cleanup_disposes_the_threads_sandbox
+  run "host terminal cleanup unit" cargo test -q -p awaken-session-executor --lib exact_terminal_cleanup_disposes_the_threads_sandbox
   run "managed dispose unit" cargo test -q -p awaken-protocol-managed --lib _disposes
 else
   echo "DELEGATED: host + managed unit tests are owned by check-rust --full"
@@ -224,9 +224,9 @@ fi
 # (measured by their own runs); this reports the lib-testable dispose surface.
 if [ "${COVERAGE:-0}" = 1 ] && command -v cargo-llvm-cov >/dev/null; then
   COV="${COV_DIR:-/tmp/awaken-sbx-cov}"
-  step "line coverage — dispose surface (awaken-protocol-managed + awaken-runtime-host)"
+  step "line coverage — dispose surface (awaken-protocol-managed + awaken-session-executor)"
   CARGO_TARGET_DIR="$COV" \
-    cargo llvm-cov --lib -p awaken-protocol-managed -p awaken-runtime-host \
+    cargo llvm-cov --lib -p awaken-protocol-managed -p awaken-session-executor \
       --summary-only 2>/dev/null | tail -1
   echo "  (uncovered in the change surface: state/sessions.rs child-thread teardown"
   echo "   loop body — no sub-agent child threads in deterministic unit tests; the"

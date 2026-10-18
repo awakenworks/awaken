@@ -271,7 +271,7 @@ AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-kubernetes \
 # CapacityUnavailable, leave no Pod behind, and succeed once there is room.
 AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-kubernetes \
   --test k8s_capacity_e2e -- --nocapture --test-threads=1
-AWAKEN_K8S_E2E=1 cargo test -p awaken-runtime-host --features k8s-tests --lib \
+AWAKEN_K8S_E2E=1 cargo test -p awaken-session-executor --features k8s-tests --lib \
   k8s_live_pvc_initialization_is_readable_and_reused -- --nocapture
 # Pod-bound Worker identity and independent stop are qualified by the existing
 # distributed-control k3d gate, which first verifies exact test selection.

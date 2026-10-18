@@ -128,7 +128,7 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
         .expect("validated Host dependencies");
     let managed = Arc::new(
         ManagedState::with_roles(
-            awaken_runtime_host::CoordinatorRoles::of(&host).session_execution(),
+            awaken_session_executor::CoordinatorRoles::of(&host).session_execution(),
         )
         .await
         .with_session_repo(sessions),

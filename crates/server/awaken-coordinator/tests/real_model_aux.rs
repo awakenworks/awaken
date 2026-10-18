@@ -1,5 +1,5 @@
 //! Real-model e2e for the auxiliary agents (memory extraction, context
-//! compaction) driven by [`SharedHost`] over a **live** Anthropic-compatible
+//! compaction) driven by [`ExecutorComponents`] over a **live** Anthropic-compatible
 //! endpoint (e.g. Kimi) through the genai provider. These prove the real effect:
 //! a live model, triggered after a Run, actually writes a memory file / produces
 //! a summary that keeps a long conversation going.
@@ -18,15 +18,15 @@ use std::time::Duration;
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::RunState;
-use awaken_coordinator::SharedHost;
+use awaken_coordinator::ExecutorComponents;
 use awaken_provider_genai::GenaiExecutor;
 use awaken_resource_contract::{
     ConfigVersion, LiveResourceBindingVerifier, MemoryStoreConfigVersion, ResourceAccess,
     ResourceRegistryError,
 };
-use awaken_runtime_host::HostOutcomeDrive;
+use awaken_session_executor::HostOutcomeDrive;
 
-async fn live_dependencies() -> Option<(awaken_runtime_host::HostDependencies, String)> {
+async fn live_dependencies() -> Option<(awaken_session_executor::HostDependencies, String)> {
     let key = std::env::var("KIMI_API_KEY").ok()?;
     let base = std::env::var("KIMI_BASE_URL")
         .unwrap_or_else(|_| "https://api.kimi.com/coding/v1/".to_string());
@@ -43,7 +43,7 @@ async fn live_dependencies() -> Option<(awaken_runtime_host::HostDependencies, S
     ))
 }
 
-async fn live_host() -> Option<(Arc<SharedHost>, String)> {
+async fn live_host() -> Option<(Arc<ExecutorComponents>, String)> {
     live_dependencies().await.map(|(dependencies, model)| {
         (
             (dependencies).build().expect("validated Host dependencies"),
@@ -56,7 +56,7 @@ fn user(text: &str) -> Vec<Message> {
     vec![Message::text(MessageId("u".into()), Role::User, text)]
 }
 
-fn bind_memory(host: &SharedHost, thread: &str, store: &str) {
+fn bind_memory(host: &ExecutorComponents, thread: &str, store: &str) {
     struct ActiveMemory;
     #[async_trait::async_trait]
     impl LiveResourceBindingVerifier for ActiveMemory {
@@ -122,13 +122,13 @@ async fn live_memory_extraction_writes_a_memory_file() {
     );
 
     assert!(
-        awaken_runtime_host::CoordinatorRoles::of(&host)
+        awaken_session_executor::CoordinatorRoles::of(&host)
             .drain(Duration::from_secs(90))
             .await,
         "memory extraction should finish"
     );
 
-    let files = awaken_runtime_host::test_memory_content(&host)
+    let files = awaken_session_executor::test_memory_content(&host)
         .queries()
         .list(store, "/")
         .await
@@ -139,7 +139,7 @@ async fn live_memory_extraction_writes_a_memory_file() {
     );
     let mut combined = String::new();
     for file in &files {
-        let memory = awaken_runtime_host::test_memory_content(&host)
+        let memory = awaken_session_executor::test_memory_content(&host)
             .queries()
             .get_by_path(store, &file.path)
             .await
@@ -186,12 +186,12 @@ async fn live_memory_is_generated_then_recalled_and_used_in_a_new_conversation()
     .await
     .expect("conversation 1 Run");
     assert!(
-        awaken_runtime_host::CoordinatorRoles::of(&host)
+        awaken_session_executor::CoordinatorRoles::of(&host)
             .drain(Duration::from_secs(90))
             .await,
         "memory extraction should finish"
     );
-    let files = awaken_runtime_host::test_memory_content(&host)
+    let files = awaken_session_executor::test_memory_content(&host)
         .queries()
         .list(store, "/")
         .await
@@ -257,13 +257,13 @@ async fn live_relevance_selection_picks_the_right_memory_via_the_selector_agent(
         "the user enjoys cooking pasta",
     ];
     for (i, n) in noise.iter().enumerate() {
-        awaken_runtime_host::test_memory_content(&host)
+        awaken_session_executor::test_memory_content(&host)
             .writer()
             .create(store, &format!("/noise-{i}.md"), n)
             .await
             .unwrap();
     }
-    awaken_runtime_host::test_memory_content(&host)
+    awaken_session_executor::test_memory_content(&host)
         .writer()
         .create(store, "/pet.md", "the user's dog is named Rex")
         .await

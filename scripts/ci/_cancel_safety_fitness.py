@@ -180,7 +180,7 @@ RESPONSIBILITY_RECORDERS: dict[str, str] = {
         "retained restore target before creating another"
     ),
     "record_hand_lifecycle": (
-        "awaken_runtime_host::session_environment::session_hand observes the recorded Hand "
+        "awaken_session_executor::session_environment::session_hand observes the recorded Hand "
         "lifecycle when it rebuilds or revokes the Session Hand"
     ),
 }

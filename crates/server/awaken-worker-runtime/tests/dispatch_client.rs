@@ -9,7 +9,7 @@
 //! No mock transport — the seam under test is the client's reqwest encode/decode
 //! against the wire the server actually serves.
 //!
-//! (The transport router itself lives in `awaken-runtime-host`, which depends on
+//! (The transport router itself lives in `awaken-session-executor`, which depends on
 //! this crate; to avoid a dev-dependency cycle and the router's process-global
 //! store injection, the test mirrors the same six routes over the same production
 //! in-memory store — the client, the socket, and the store are all real.)

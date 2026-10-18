@@ -30,7 +30,7 @@ below `single_owner_baseline.json`:
   named for realization -- a module path segment in `REALIZATION_MODULES`, or one
   whose words include one of `REALIZATION_WORDS` -- per crate, outside the
   realization, its contract, the provisioning contract and the sandbox providers
-  (crates of bounded context `sandbox`). Modules of `awaken-runtime-host` that
+  (crates of bounded context `sandbox`). Modules of `awaken-session-executor` that
   the module-layer guard classifies as `realization` are the realization still being
   extracted (plan slice R); the module-layer guard governs them, so moving code
   into them is consolidation, not growth. Lines may float below the baseline and
@@ -345,19 +345,19 @@ def selftest() -> None:
     assert not is_realization_module(Path("lib.rs")) and not is_realization_module(Path("unrealizedx.rs")), "S7"
     assert realization_owner("awaken-session-realization-contract", {}), "S8 contract"
     assert realization_owner("awaken-sandbox-local", {"bounded_context": "sandbox"}), "S8 provider"
-    assert not realization_owner("awaken-runtime-host", {"bounded_context": "session"}), "S8 other"
+    assert not realization_owner("awaken-session-executor", {"bounded_context": "session"}), "S8 other"
     assert module_of(Path("host/session/environment_lifecycle/mod.rs")) == ("host", "session", "environment_lifecycle")
     # S9 causes: historical transitional classification / completed extraction;
     # effect: only explicitly classified in-place R code is excluded. The
     # fixture keeps historical behavior covered without a blanket Host exemption.
     transitional = {("host", "session", "environment_lifecycle"): _module_layer_fitness.REALIZATION}
     assert in_extracting_realization(
-        "awaken-runtime-host", Path("host/session/environment_lifecycle/renewal.rs"), transitional
+        "awaken-session-executor", Path("host/session/environment_lifecycle/renewal.rs"), transitional
     ), "S9 explicit transitional R module is excluded"
     assert not in_extracting_realization(
-        "awaken-runtime-host", Path("host/session/environment_lifecycle/renewal.rs")
+        "awaken-session-executor", Path("host/session/environment_lifecycle/renewal.rs")
     ), "S9 completed extraction has no implicit Host exemption"
-    assert not in_extracting_realization("awaken-runtime-host", Path("host/session/realization_view.rs")), \
+    assert not in_extracting_realization("awaken-session-executor", Path("host/session/realization_view.rs")), \
         "S9 host-layer module stays counted"
     assert not in_extracting_realization("awaken-session-application", Path("realization/control.rs")), \
         "S9 other crates stay counted"

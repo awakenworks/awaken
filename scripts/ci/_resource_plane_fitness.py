@@ -216,21 +216,21 @@ def check_all(repo_root: Path, crates: Path) -> list[str]:
 
     selftest()
     errors: list[str] = []
-    runtime_manifest_path = repo_root / "crates/server/awaken-runtime-host/Cargo.toml"
+    runtime_manifest_path = repo_root / "crates/server/awaken-session-executor/Cargo.toml"
     runtime_manifest = _load_manifest(runtime_manifest_path)
     resource_application = runtime_manifest.get("dependencies", {}).get(
         "awaken-resource-application"
     )
     # Not even optionally: the Host consumes Resources through ports, and a test
-    # composition builds them in awaken-runtime-host-testkit.
+    # composition builds them in awaken-session-executor-testkit.
     if resource_application is not None:
         errors.append(
-            "crates/server/awaken-runtime-host/Cargo.toml: Resources application must not be "
+            "crates/server/awaken-session-executor/Cargo.toml: Resources application must not be "
             "linked; product Runtime Host accepts exact execution capabilities and test "
-            "compositions supply ports through awaken-runtime-host-testkit"
+            "compositions supply ports through awaken-session-executor-testkit"
         )
     # The Host's Resources-context ports are its `ResourcePorts` capability group.
-    host_resources = "crates/server/awaken-runtime-host/src/host/capability/resources.rs"
+    host_resources = "crates/server/awaken-session-executor/src/host/capability/resources.rs"
     host_source = (repo_root / host_resources).read_text(encoding="utf-8")
     for field in ("file_store", "file_catalog", "file_application", "resource_reclamation"):
         pattern = rf'#\[cfg\(any\(test, feature = "test-support"\)\)\]\s+pub\(crate\) {field}:'

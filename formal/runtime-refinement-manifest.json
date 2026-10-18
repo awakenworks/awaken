@@ -274,7 +274,7 @@
       },
       "realization-capacity-mutex": {
         "family": "realization-capacity",
-        "source": "crates/server/awaken-runtime-host/src/host/tests/realization_renewal.rs",
+        "source": "crates/server/awaken-session-executor/src/host/tests/realization_renewal.rs",
         "rules": ["finish-wait", "cancel-wait", "cancel-joined"]
       },
       "binding-apply": {
@@ -384,7 +384,7 @@
       },
       "environment-projection-convergence": {
         "family": "environment-projection",
-        "source": "crates/server/awaken-runtime-host/src/host/tests/projection_convergence.rs",
+        "source": "crates/server/awaken-session-executor/src/host/tests/projection_convergence.rs",
         "rules": [
           "p0-A",
           "p1-A",

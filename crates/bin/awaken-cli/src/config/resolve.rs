@@ -193,7 +193,7 @@ impl ResolvedDeployment {
                     .ok_or_else(|| "postgres_max_connections must be greater than zero".to_owned())
             })
             .transpose()?
-            .unwrap_or_else(awaken_runtime_host::default_postgres_max_connections);
+            .unwrap_or_else(awaken_session_executor::default_postgres_max_connections);
         for (field, value) in [
             ("otlp_protocol", file.otlp_protocol.as_deref()),
             ("otlp_traces_protocol", file.otlp_traces_protocol.as_deref()),
@@ -313,7 +313,7 @@ impl ResolvedDeployment {
             // The registered Worker receives durable claims through its injected
             // HTTP dispatch store. Everything it owns locally is ephemeral
             // execution state; retaining the product data directory here would
-            // make `SharedHost` silently open Session/File/Memory SQLite stores.
+            // make `ExecutorComponents` silently open Session/File/Memory SQLite stores.
             runtime.storage_dir = None;
             runtime.database_url = None;
             runtime.dispatch_backend = DispatchBackend::Sqlite;
