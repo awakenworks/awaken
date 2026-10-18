@@ -48,7 +48,7 @@ def self_test(gate: str) -> None:
         assert k8s_container_gate_errors(mutation), "K2 false-green control gate"
 
     # K3 causes: C17 old CLI Worker-stop filter present/absent; C18 the
-    # distributed gate exact-selects the Coordinator test. Effects: C17+C18
+    # distributed gate exact-selects the current process-root test. Effects: C17+C18
     # rejects duplicate/zero-selected proof; !C17+C18 retains one live owner.
     # Its existing contract and live gate own C18, so this case mutates C17.
     assert k8s_container_gate_errors(

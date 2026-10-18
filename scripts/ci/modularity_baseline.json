@@ -52,7 +52,6 @@
     "awaken-cli": 6,
     "awaken-config-service": 1,
     "awaken-control": 4,
-    "awaken-coordinator": 1,
     "awaken-credential-materializer": 1,
     "awaken-credential-store": 1,
     "awaken-credential-vault": 3,

@@ -34,7 +34,7 @@ impl KubernetesWorkerTransport {
             return Err("worker_kubernetes requires a separate Create control namespace".into());
         }
         #[cfg(feature = "container-k8s")]
-        return awaken_coordinator::WorkerTransport::validate_kubernetes_policy(
+        return crate::WorkerTransport::validate_kubernetes_policy(
             &self.namespace,
             &self.service_account,
             &self.audience,

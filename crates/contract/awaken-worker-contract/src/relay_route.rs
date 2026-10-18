@@ -11,6 +11,25 @@ use serde::{Deserialize, Serialize};
 
 use crate::WorkerIdentity;
 
+#[derive(Debug, thiserror::Error)]
+pub enum WorkerRelayTargetError {
+    #[error("Worker Pod identity is invalid or foreign")]
+    InvalidIdentity,
+    #[error("exact Worker Pod route evidence is unavailable")]
+    Unavailable,
+}
+
+/// Observe the address of an already selected Worker. The provider must bind
+/// its identity, Pod UID and IP in one observation; it cannot select a Worker
+/// or grant an MCP route.
+#[async_trait::async_trait]
+pub trait WorkerRelayTargetObserver: Send + Sync {
+    async fn ip_for(
+        &self,
+        worker: &WorkerIdentity,
+    ) -> Result<std::net::IpAddr, WorkerRelayTargetError>;
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     try_from = "WorkerRelayDestinationWire",

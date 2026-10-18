@@ -59,7 +59,10 @@ pub use registry::{
     worker_observation_sequence_after_heartbeat, worker_process_exit_admission,
     worker_registration_history_admission, worker_slot_is_replaceable,
 };
-pub use relay_route::{WORKER_RELAY_DESTINATION_PATH, WorkerRelayDestination};
+pub use relay_route::{
+    WORKER_RELAY_DESTINATION_PATH, WorkerRelayDestination, WorkerRelayTargetError,
+    WorkerRelayTargetObserver,
+};
 #[cfg(any(test, kani))]
 pub(crate) use requirements::required_capability_is_admitted;
 pub use requirements::{

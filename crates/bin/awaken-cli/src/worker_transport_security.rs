@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use crate::config::{OperatingMode, ResolvedDeployment};
 
-pub(super) use awaken_coordinator::WorkerTransport;
+pub(super) use crate::WorkerTransport;
 
 pub(super) async fn select(
     deployment: &ResolvedDeployment,
