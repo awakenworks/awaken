@@ -221,7 +221,7 @@ mod tests {
         // are absent. Decision rule P1: C1+C2 => E1. This prevents an unfenced
         // parallel command path.
         let dependencies = || {
-            crate::HostDependencies::ephemeral(
+            crate::SessionExecutorBuilder::ephemeral(
                 Arc::new(crate::NoModelConfiguredExecutor),
                 "startup-fixture",
             )

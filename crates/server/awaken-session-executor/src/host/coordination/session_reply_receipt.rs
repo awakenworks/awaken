@@ -23,23 +23,23 @@ pub(in crate::host) fn validate_awaiting_tool_authority(
     thread_id: &ThreadId,
     ticket: &ResumeTicket,
     state_commands: &[awaken_agent_contract::agent::state::Command],
-) -> Result<(), HostError> {
+) -> Result<(), SessionExecutionError> {
     let AwaitTarget::ToolCall {
         reason, authority, ..
     } = ticket.target()
     else {
-        return Err(HostError::internal(
+        return Err(SessionExecutionError::internal(
             "tool authority validation requires a tool-call ticket",
         ));
     };
     let state = Store::rebuild(state_commands);
     let batch = awaken_tool_contract::ActiveToolBatch::load(&state)
-        .map_err(|error| HostError::internal(error.to_string()))?;
+        .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
     let validate_batch = |batch: &awaken_tool_contract::ToolBatch| {
         batch
             .validate_awaiting_ticket(thread_id, ticket)
             .map_err(|_| {
-                HostError::bad_request(
+                SessionExecutionError::bad_request(
                     "Session Thread awaiting ticket changed after Event admission",
                 )
             })
@@ -48,7 +48,7 @@ pub(in crate::host) fn validate_awaiting_tool_authority(
         // Native/client tools remain owned by one durable ToolBatch; its
         // complete identity and payload are mandatory.
         (ToolCallAuthority::RuntimeToolBatch, Some(batch)) => validate_batch(batch),
-        (ToolCallAuthority::RuntimeToolBatch, None) => Err(HostError::internal(
+        (ToolCallAuthority::RuntimeToolBatch, None) => Err(SessionExecutionError::internal(
             "Runtime-owned awaiting tool Run has no ActiveToolBatch",
         )),
         // ACP and another opaque attempt executor commit the closed ticket
@@ -64,7 +64,7 @@ pub(in crate::host) fn validate_awaiting_tool_authority(
         {
             Ok(())
         }
-        (ToolCallAuthority::LegacyUnspecified, None) => Err(HostError::internal(
+        (ToolCallAuthority::LegacyUnspecified, None) => Err(SessionExecutionError::internal(
             "legacy awaiting tool Run has no recoverable execution authority",
         )),
     }
@@ -128,9 +128,9 @@ impl crate::ChildRunCoordination {
     pub(super) async fn session_thread_tool_reply_receipt(
         &self,
         command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
-    ) -> Result<SessionReplyReceipt, HostError> {
+    ) -> Result<SessionReplyReceipt, SessionExecutionError> {
         if !command.has_complete_coordinates() {
-            return Err(HostError::bad_request(
+            return Err(SessionExecutionError::bad_request(
                 "Session Thread tool reply is incomplete",
             ));
         }
@@ -142,7 +142,7 @@ impl crate::ChildRunCoordination {
         let snapshot = commit
             .recovery_snapshot(&thread_id, &command.expected_run_id)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
         let expected_operation = command.delivery_operation_id();
         let mut receipt = SessionReplyReceipt::Absent;
         for event in snapshot.events.iter().filter(|event| {

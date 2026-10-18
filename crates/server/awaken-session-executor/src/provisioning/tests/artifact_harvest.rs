@@ -387,7 +387,7 @@ async fn live_container_artifact_harvest_reads_one_complete_batch() {
         scans: scans.clone(),
     });
     let storage = tempfile::tempdir().unwrap();
-    let host = (crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(NoLlm), "test")
         .await
         .with_store_dir(storage.path())
         .await
@@ -444,7 +444,7 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
     // then and only then projects physical disposal => Sandbox gone while File
     // metadata/bytes remain.
     let storage = tempfile::tempdir().unwrap();
-    let host = (crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(NoLlm), "test")
         .await
         .with_store_dir(storage.path())
         .await)
@@ -609,7 +609,7 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
     // reconstructs that same creation receipt; H4 env absent under ordinary
     // Run semantics => empty, never a broad catalog recovery.
     let storage = tempfile::tempdir().unwrap();
-    let host = (crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(NoLlm), "test")
         .await
         .with_store_dir(storage.path())
         .await)
@@ -827,7 +827,7 @@ async fn receipt_only_terminal_harvest_skips_a_present_container() {
         scans: scans.clone(),
     });
     let publisher = Arc::new(RecordingArtifactRecovery::default());
-    let mut raw_host = crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test")
+    let mut raw_host = crate::SessionExecutorBuilder::ephemeral(Arc::new(NoLlm), "test")
         .await
         .with_session_container_provider(
             provider,
@@ -988,7 +988,7 @@ async fn retained_artifact_harvester_observes_late_realization_without_retaining
     // R3 the Host is dropped => publication still uses the selected authority,
     // without a strong back-reference; R4 replay => one durable File identity.
     let storage = tempfile::tempdir().unwrap();
-    let host = crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test")
+    let host = crate::SessionExecutorBuilder::ephemeral(Arc::new(NoLlm), "test")
         .await
         .build()
         .expect("Host");
@@ -1059,7 +1059,7 @@ async fn artifact_harvest_has_one_file_authority_and_no_magic_bundle_gate() {
     // E3 replay returns the same File identity. R1 C1+C2=>E1+E2;
     // R2 C1+C2+C3=>E1+E2+E3.
     let storage = tempfile::tempdir().unwrap();
-    let host = (crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test").await)
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(NoLlm), "test").await)
         .build()
         .expect("validated Host dependencies");
     host.capabilities
@@ -1251,7 +1251,7 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
     // harvest, never precedes it. Decision rule: execute R4 and require failure
     // with zero disposal.
     let storage = tempfile::tempdir().unwrap();
-    let mut raw_host = crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test")
+    let mut raw_host = crate::SessionExecutorBuilder::ephemeral(Arc::new(NoLlm), "test")
         .await
         .with_store_dir(storage.path())
         .await;
@@ -1515,7 +1515,7 @@ async fn artifact_capture_failures_do_not_publish_partial_or_rebased_sets() {
             ],
             scans: scans.clone(),
         });
-        let mut dependencies = crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test")
+        let mut dependencies = crate::SessionExecutorBuilder::ephemeral(Arc::new(NoLlm), "test")
             .await
             .with_session_container_provider(
                 provider,

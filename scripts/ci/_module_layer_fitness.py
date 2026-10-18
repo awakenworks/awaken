@@ -119,10 +119,9 @@ LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (HOST, "protocol-neutral host adapters and their composition", (
         "process_roles",
         "session_effects",
-        "host_error",
+        "session_execution_error",
         "hub",
         "live_inbox",
-        "managed_adapter_error",
         "managed_input_projection",
         "managed_model_capability",
         "managed_outcome",

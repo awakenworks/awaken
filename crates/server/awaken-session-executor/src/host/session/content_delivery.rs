@@ -120,7 +120,7 @@ impl crate::RunAssembly {
         thread: &str,
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
         authored_skills_subdir: &str,
-    ) -> Result<Option<Vec<String>>, HostError> {
+    ) -> Result<Option<Vec<String>>, SessionExecutionError> {
         let realizations = self.installed_sessions.realizations();
         let managed_session = self
             .installed_sessions
@@ -180,7 +180,7 @@ impl crate::RunAssembly {
         thread: &str,
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
         skill_evidence: SkillDeliveryEvidence<'_>,
-    ) -> Result<crate::frozen_inputs::ManagedContentDelivery, HostError> {
+    ) -> Result<crate::frozen_inputs::ManagedContentDelivery, SessionExecutionError> {
         let realizations = self.installed_sessions.realizations();
         let managed_session = self
             .installed_sessions
@@ -208,7 +208,7 @@ impl crate::RunAssembly {
                     !materialized && !deferred
                 })
             }) {
-                return Err(HostError::internal(format!(
+                return Err(SessionExecutionError::internal(format!(
                     "Managed Session Skill `{missing}` has neither frozen version bytes nor a deferred aggregate binding"
                 )));
             }
@@ -240,7 +240,7 @@ impl crate::RunAssembly {
             if managed_has_skill
                 && existing != crate::frozen_inputs::ManagedContentDelivery::ManagedFilesystem
             {
-                return Err(HostError::bad_request(
+                return Err(SessionExecutionError::bad_request(
                     "Managed Agent Skills require filesystem progressive disclosure, but this Session disables every filesystem tool",
                 ));
             }
@@ -248,7 +248,7 @@ impl crate::RunAssembly {
         }
         let allows_filesystem = self.session_allows_filesystem_tools(thread, published_snapshot)?;
         if managed_has_skill && !allows_filesystem {
-            return Err(HostError::bad_request(
+            return Err(SessionExecutionError::bad_request(
                 "Managed Agent Skills require filesystem progressive disclosure, but this Session disables every filesystem tool",
             ));
         }
@@ -267,7 +267,7 @@ impl crate::RunAssembly {
                 })?
                 .unwrap_or(false)
         {
-            return Err(HostError::bad_request(
+            return Err(SessionExecutionError::bad_request(
                 "MemoryStore instructions reference a filesystem path, but this Session disables filesystem delivery",
             ));
         }
@@ -288,7 +288,7 @@ impl crate::RunAssembly {
                     selected_skills.as_ref(),
                 )?
             {
-                return Err(HostError::bad_request(
+                return Err(SessionExecutionError::bad_request(
                     "a selected Skill requires filesystem tools, but this Session disables every filesystem tool",
                 ));
             }
@@ -301,7 +301,7 @@ impl crate::RunAssembly {
         &self,
         thread: &str,
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
-    ) -> Result<bool, HostError> {
+    ) -> Result<bool, SessionExecutionError> {
         let filesystem_delivery =
             self.session_allows_filesystem_tools(thread, published_snapshot)?;
         let selected_skills = published_skill_ids(published_snapshot);
@@ -395,7 +395,7 @@ impl crate::RunAssembly {
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
         has_published_delegates: bool,
         claimed_attempt: bool,
-    ) -> Result<bool, HostError> {
+    ) -> Result<bool, SessionExecutionError> {
         let realizations = self.installed_sessions.realizations();
         // A Coordinator-only Host constructs the durable dispatch envelope but
         // never executes it. Creating an eager sandbox here would make the

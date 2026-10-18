@@ -18,13 +18,13 @@ async fn reconcile_direct_terminal_from_committed_truth<F, Fut>(
     run_id: &RunId,
     thread_id: &ThreadId,
     observer_factory: F,
-) -> Result<bool, HostError>
+) -> Result<bool, SessionExecutionError>
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<
             Output = Result<
                 Vec<Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>>,
-                HostError,
+                SessionExecutionError,
             >,
         >,
 {
@@ -35,7 +35,7 @@ where
             return Ok(false);
         }
         awaken_runtime_contract::terminal::CommittedTerminalProjection::IdentityConflict => {
-            return Err(HostError::internal(
+            return Err(SessionExecutionError::internal(
                 "stable Run identity belongs to another Thread",
             ));
         }
@@ -47,7 +47,7 @@ where
     if failures.is_empty() {
         return Ok(true);
     }
-    Err(HostError::internal(format!(
+    Err(SessionExecutionError::internal(format!(
         "direct committed-terminal observation failed: {}",
         failures
             .into_iter()
@@ -66,7 +66,7 @@ impl crate::RunAssembly {
         &self,
         thread: &str,
         agent: Option<&str>,
-    ) -> Result<bool, HostError> {
+    ) -> Result<bool, SessionExecutionError> {
         if self.execution.ingress.is_durable()
             || !self.authority.observes_terminal_memory_locally()
             || self
@@ -111,12 +111,12 @@ impl crate::RunAssembly {
                         )
                     })
                     .transpose()
-                    .map_err(HostError::bad_request)?
+                    .map_err(SessionExecutionError::bad_request)?
                     .unwrap_or_default();
                 let source =
                     awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new(frozen)
                         .map_err(|error| {
-                            HostError::bad_request(format!(
+                            SessionExecutionError::bad_request(format!(
                                 "invalid Agent publication closure: {error}"
                             ))
                         })?;
@@ -468,7 +468,7 @@ mod tests {
         use awaken_agent_contract::thread::commit::{RunDisposition, commit_run};
 
         let creates = Arc::new(AtomicUsize::new(0));
-        let host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+        let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
             .await
             .with_session_container_provider(
                 Arc::new(CountingRejectedEnvironmentProvider(creates.clone())),

@@ -1,6 +1,6 @@
 [package]
 name = "awaken-session-executor"
-description = "Authority-free shared execution host infrastructure for Awaken Runtime"
+description = "Session Run execution and capability assembly over injected authorities"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,7 +10,7 @@ context = "shared"
 product = "platform"
 bounded_context = "execution"
 layer = "infrastructure"
-authority = "runtime-host"
+authority = "session-executor"
 separation = "isolation"
 isolates = ["axum"]
 

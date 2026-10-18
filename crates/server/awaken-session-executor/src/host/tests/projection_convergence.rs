@@ -89,7 +89,7 @@ async fn independent_coordinators_converge_after_binding_replacement_and_reject_
     let mut hosts = Vec::new();
     for _ in 0..3 {
         hosts.push(
-            (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub").await)
+            (crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub").await)
                 .build()
                 .expect("validated Host dependencies"),
         );

@@ -4,9 +4,9 @@
 //! composition; these handlers introduce no registry or lifecycle authority.
 
 use super::{
-    Arc, Extension, HeartbeatWorkerReq, HostError, Json, RegisterWorkerReq, State, StatusCode,
-    Value, VerifiedWorkerContext, WorkerDispatchService, WorkerIdentityReq, directory, json,
-    release_closed_idle_worker_evidence, respond, verify_worker_id, verify_worker_identity,
+    ApplicationError, Arc, Extension, HeartbeatWorkerReq, Json, RegisterWorkerReq, State,
+    StatusCode, Value, VerifiedWorkerContext, WorkerDispatchService, WorkerIdentityReq, directory,
+    json, release_closed_idle_worker_evidence, respond, verify_worker_id, verify_worker_identity,
 };
 use awaken_time::WallClockExt;
 use tracing::Instrument;
@@ -34,7 +34,7 @@ pub(super) async fn register_worker(
     let result = async {
         verify_worker_id(&worker, &request.registration.worker_id)?;
         if worker.identity().is_some() {
-            return Err(HostError::bad_request(
+            return Err(ApplicationError::bad_request(
                 "worker registration requires a bootstrap credential",
             ));
         }
@@ -43,7 +43,7 @@ pub(super) async fn register_worker(
             .manifest
             .supports_current_runtime_protocol()
         {
-            return Err(HostError::bad_request(
+            return Err(ApplicationError::bad_request(
                 "Worker manifest does not explicitly support the current runtime protocol",
             ));
         }
@@ -56,10 +56,10 @@ pub(super) async fn register_worker(
             if directory(&service)?
                 .current(worker.worker_id())
                 .await
-                .map_err(|error| HostError::unavailable(error.to_string()))?
+                .map_err(|error| ApplicationError::unavailable(error.to_string()))?
                 .is_some_and(|current| current.snapshot.identity.incarnation_id != incarnation)
             {
-                return Err(HostError::bad_request(
+                return Err(ApplicationError::bad_request(
                     "immutable Worker domain has a different historical incarnation; replace the execution domain",
                 ));
             }
@@ -71,7 +71,7 @@ pub(super) async fn register_worker(
                 source.prepare_registration_physical_evidence(&request.registration),
             )
             .await
-            .map_err(|_| HostError::unavailable("Worker physical evidence preparation timed out"))??;
+            .map_err(|_| ApplicationError::unavailable("Worker physical evidence preparation timed out"))??;
         }
         let record = match directory(&service)?
             .register(
@@ -86,11 +86,11 @@ pub(super) async fn register_worker(
                 worker_id,
                 generation,
             }) => {
-                return Err(HostError::conflict(format!(
+                return Err(ApplicationError::conflict(format!(
                     "worker slot {worker_id} is occupied by generation {generation}"
                 )));
             }
-            Err(error) => return Err(HostError::bad_request(error.to_string())),
+            Err(error) => return Err(ApplicationError::bad_request(error.to_string())),
         };
         if record.snapshot.state == awaken_dispatch::WorkerState::Starting
             && let Some(source) = &service.execution_bindings
@@ -100,16 +100,16 @@ pub(super) async fn register_worker(
                     &record.snapshot.identity,
                     record.create_ledger.as_ref(),
                 ))
-                .await.map_err(|_| HostError::unavailable("Worker evidence retention timed out"))??;
+                .await.map_err(|_| ApplicationError::unavailable("Worker evidence retention timed out"))??;
             // Provider I/O can outlive closure. Re-read durable truth before
             // replying, then converge retention if admission closed meanwhile.
             release_closed_idle_worker_evidence(&service, &record.snapshot.identity).await?;
         }
         let identity = record.snapshot.identity.clone();
         let record = directory(&service)?.current(&identity.worker_id)
-            .await.map_err(|e| HostError::unavailable(e.to_string()))?
+            .await.map_err(|e| ApplicationError::unavailable(e.to_string()))?
             .filter(|current| current.snapshot.identity == identity)
-            .ok_or_else(|| HostError::unavailable("registered Worker disappeared"))?;
+            .ok_or_else(|| ApplicationError::unavailable("registered Worker disappeared"))?;
         Ok(json!({
             "worker": record,
             "lease_ttl_ms": service.registry_ttl_ms,
@@ -126,7 +126,8 @@ pub(super) async fn heartbeat_worker(
     Json(request): Json<HeartbeatWorkerReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        verify_worker_identity(&worker, &request.identity).map_err(HostError::bad_request)?;
+        verify_worker_identity(&worker, &request.identity)
+            .map_err(ApplicationError::bad_request)?;
         let worker_directory = directory(&service)?;
         // Placement evidence is read only to decide whether to nudge the one
         // existing Session lifecycle supervisor. The registry mutation below
@@ -135,7 +136,7 @@ pub(super) async fn heartbeat_worker(
             .current(&request.identity.worker_id)
             .instrument(tracing::info_span!("worker.registry.current"))
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| ApplicationError::internal(error.to_string()))?;
         // The immutable incarnation manifest cannot gain protocol support by
         // heartbeat. Old incarnations may still drain/deregister, but cannot
         // extend authority indefinitely across a Control upgrade. A stale
@@ -144,7 +145,7 @@ pub(super) async fn heartbeat_worker(
             record.snapshot.identity == request.identity
                 && !record.snapshot.manifest.supports_current_runtime_protocol()
         }) {
-            return Err(HostError::bad_request(
+            return Err(ApplicationError::bad_request(
                 "Worker manifest does not explicitly support the current runtime protocol",
             ));
         }
@@ -160,7 +161,7 @@ pub(super) async fn heartbeat_worker(
             )
             .instrument(tracing::info_span!("worker.registry.heartbeat"))
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| ApplicationError::internal(error.to_string()))?;
         if mutation == awaken_dispatch::RegistryMutation::Applied
             && placement_changed
             && let Some(session_work) = service.session_work.as_ref()
@@ -188,7 +189,8 @@ pub(super) async fn drain_worker(
     Json(request): Json<WorkerIdentityReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        verify_worker_identity(&worker, &request.identity).map_err(HostError::bad_request)?;
+        verify_worker_identity(&worker, &request.identity)
+            .map_err(ApplicationError::bad_request)?;
         let deadline = request.deadline_ms.unwrap_or_else(|| {
             service
                 .clock
@@ -198,7 +200,7 @@ pub(super) async fn drain_worker(
         let mutation = directory(&service)?
             .begin_drain(&request.identity, deadline)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| ApplicationError::internal(error.to_string()))?;
         Ok(json!({ "mutation": mutation }))
     }
     .await;
@@ -211,11 +213,12 @@ pub(super) async fn quiesce_worker(
     Json(request): Json<WorkerIdentityReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        verify_worker_identity(&worker, &request.identity).map_err(HostError::bad_request)?;
+        verify_worker_identity(&worker, &request.identity)
+            .map_err(ApplicationError::bad_request)?;
         let mutation = directory(&service)?
             .mark_quiesced(&request.identity)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| ApplicationError::internal(error.to_string()))?;
         if mutation == awaken_dispatch::RegistryMutation::Applied {
             release_closed_idle_worker_evidence(&service, &request.identity).await?;
         }
@@ -231,19 +234,20 @@ pub(super) async fn deregister_worker(
     Json(request): Json<WorkerIdentityReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        verify_worker_identity(&worker, &request.identity).map_err(HostError::bad_request)?;
+        verify_worker_identity(&worker, &request.identity)
+            .map_err(ApplicationError::bad_request)?;
         if let Some(session_work) = service.session_work.as_ref() {
             session_work
                 .release_worker_session_work(&request.identity.lease_owner())
                 .instrument(tracing::info_span!("worker.session_work.release"))
                 .await
-                .map_err(|error| HostError::internal(error.to_string()))?;
+                .map_err(|error| ApplicationError::internal(error.to_string()))?;
         }
         let mutation = directory(&service)?
             .deregister(&request.identity)
             .instrument(tracing::info_span!("worker.registry.deregister"))
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| ApplicationError::internal(error.to_string()))?;
         if mutation == awaken_dispatch::RegistryMutation::Applied {
             release_closed_idle_worker_evidence(&service, &request.identity).await?;
         }

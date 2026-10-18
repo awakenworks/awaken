@@ -23,7 +23,7 @@ use awaken_dispatch::{RunClaim, WorkerIdentity};
 use awaken_worker_transport_security::VerifiedWorkerContext;
 
 use super::{
-    ClaimAuthority, HostError, RealizationHttpError, WorkerDispatchService, claim_authority,
+    ApplicationError, ClaimAuthority, RealizationHttpError, WorkerDispatchService, claim_authority,
     observe_expired_predecessor, respond_realization,
 };
 
@@ -86,7 +86,7 @@ async fn claimed_session_authority(
         .await
         .map_err(RealizationHttpError::from)?;
     if authority.owner != claim.owner {
-        return Err(RealizationHttpError::from(HostError::bad_request(
+        return Err(RealizationHttpError::from(ApplicationError::bad_request(
             "authenticated worker does not own the Session claim",
         )));
     }
@@ -94,23 +94,23 @@ async fn claimed_session_authority(
         .dispatch
         .lock_commit_epoch(claim)
         .await
-        .map_err(|error| HostError::internal(error.to_string()))
+        .map_err(|error| ApplicationError::internal(error.to_string()))
         .map_err(RealizationHttpError::from)?
         .ok_or_else(|| {
-            RealizationHttpError::from(HostError::bad_request("Session claim is stale"))
+            RealizationHttpError::from(ApplicationError::bad_request("Session claim is stale"))
         })?;
     if !guard.is_live_at(authority.now_ms) {
-        return Err(RealizationHttpError::from(HostError::bad_request(
+        return Err(RealizationHttpError::from(ApplicationError::bad_request(
             "Session claim lease has expired",
         )));
     }
     if guard.request().run_id() != &claim.run_id {
-        return Err(RealizationHttpError::from(HostError::bad_request(
+        return Err(RealizationHttpError::from(ApplicationError::bad_request(
             "guarded dispatch does not match the Session claim",
         )));
     }
     if guard.request().session_thread_id().0 != session_id {
-        return Err(RealizationHttpError::from(HostError::bad_request(
+        return Err(RealizationHttpError::from(ApplicationError::bad_request(
             "Session target does not match the claimed Run",
         )));
     }
@@ -122,7 +122,7 @@ fn require_primary_session_claim(
 ) -> Result<(), RealizationHttpError> {
     let dispatch = guard.request();
     if dispatch.thread_id() != dispatch.session_thread_id() {
-        return Err(RealizationHttpError::from(HostError::bad_request(
+        return Err(RealizationHttpError::from(ApplicationError::bad_request(
             "Agent coordination tools require the claimed primary Session Run",
         )));
     }
@@ -134,7 +134,7 @@ fn session_coordination(
 ) -> Result<&Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>, RealizationHttpError>
 {
     service.session_coordination.as_ref().ok_or_else(|| {
-        RealizationHttpError::from(HostError::internal(
+        RealizationHttpError::from(ApplicationError::internal(
             "Session coordination control is not configured",
         ))
     })
@@ -205,7 +205,7 @@ pub(super) async fn session_model_request_admit(
             || request.run_id != *guard.request().run_id()
             || request.thread_id != *guard.request().thread_id()
         {
-            return Err(RealizationHttpError::from(HostError::bad_request(
+            return Err(RealizationHttpError::from(ApplicationError::bad_request(
                 "model-request admission does not match the claimed Session dispatch",
             )));
         }
@@ -237,7 +237,7 @@ pub(super) async fn session_run_activity_admit(
             .await
             .map_err(RealizationHttpError::from)?;
         if authority.owner != request.claim.owner {
-            return Err(RealizationHttpError::from(HostError::bad_request(
+            return Err(RealizationHttpError::from(ApplicationError::bad_request(
                 "authenticated Worker does not own the Session reservation claim",
             )));
         }
@@ -245,10 +245,10 @@ pub(super) async fn session_run_activity_admit(
             .dispatch
             .lock_session_run_reservation_epoch(&request.claim)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))
+            .map_err(|error| ApplicationError::internal(error.to_string()))
             .map_err(RealizationHttpError::from)?
             .ok_or_else(|| {
-                RealizationHttpError::from(HostError::bad_request(
+                RealizationHttpError::from(ApplicationError::bad_request(
                     "Session Run reservation claim is stale",
                 ))
             })?;
@@ -267,7 +267,7 @@ pub(super) async fn session_run_activity_admit(
             || dispatch.activation.snapshot.root_agent_id.0 != request.agent_id
             || request.mode != expected_mode
         {
-            return Err(RealizationHttpError::from(HostError::bad_request(
+            return Err(RealizationHttpError::from(ApplicationError::bad_request(
                 "Session Run activity admission does not match the claimed reservation",
             )));
         }
@@ -310,7 +310,7 @@ pub(super) async fn session_agent_send(
         if request.command.source_run_id != request.claim.run_id
             || request.command.source_thread_id != *guard.request().thread_id()
         {
-            return Err(RealizationHttpError::from(HostError::bad_request(
+            return Err(RealizationHttpError::from(ApplicationError::bad_request(
                 "Agent message source does not match the claimed primary Run",
             )));
         }
@@ -340,10 +340,9 @@ pub(super) async fn session_agent_settle(
         )
         .await?;
         if !guard.permits_settlement() {
-            guard
-                .release()
-                .await
-                .map_err(|error| RealizationHttpError::from(HostError::unavailable(error)))?;
+            guard.release().await.map_err(|error| {
+                RealizationHttpError::from(ApplicationError::unavailable(error))
+            })?;
             // A remote Dispatch observer reaches this route before the Worker's
             // final `/dispatch/settle`. Progress an independently terminated
             // predecessor through the same application service used by attempt
@@ -357,7 +356,7 @@ pub(super) async fn session_agent_settle(
                 ?observation,
                 "blocked Session observer predecessor stop observation"
             );
-            return Err(RealizationHttpError::from(HostError::unavailable(
+            return Err(RealizationHttpError::from(ApplicationError::unavailable(
                 "Session boundary is waiting for predecessor physical quiescence",
             )));
         }
@@ -368,7 +367,7 @@ pub(super) async fn session_agent_settle(
             || Some(request.command.session_activity_epoch) != dispatch.session_activity_epoch
             || request.command.cancellation_requested != guard.cancellation_requested()
         {
-            return Err(RealizationHttpError::from(HostError::bad_request(
+            return Err(RealizationHttpError::from(ApplicationError::bad_request(
                 "Agent settlement does not match the claimed Session dispatch",
             )));
         }

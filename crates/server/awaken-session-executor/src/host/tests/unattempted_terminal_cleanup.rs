@@ -56,7 +56,7 @@ async fn cold_unmaterialized_recovery_uses_the_saved_create_not_the_cleanup_leas
                     &*(host.clone()).run_assembly,
                     effect.clone(),
                     terminal_preparation_authorization(&effect, &assignment.projection),
-                ).await.map_err(crate::host_error::from_run_error);
+                ).await.map_err(crate::session_execution_error::from_run_error);
         if known {
             result.unwrap();
             let saved = old_lease
@@ -93,7 +93,7 @@ async fn cold_host(
     Arc<crate::ExecutorComponents>,
     Arc<crate::ExecutorComponents>,
 ) {
-    let mut deps = crate::HostDependencies::ephemeral(
+    let mut deps = crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
         "stub",
     )
@@ -163,7 +163,7 @@ async fn cold_terminal_cleanup_consumes_only_control_no_create_evidence() {
                     &*(host.clone()).run_assembly,
                     effect.clone(),
                     terminal_preparation_authorization(&effect, &projection),
-                ).await.map_err(crate::host_error::from_run_error);
+                ).await.map_err(crate::session_execution_error::from_run_error);
         if !witness {
             assert!(
                 result.is_err(),
@@ -204,7 +204,7 @@ async fn cold_terminal_cleanup_consumes_only_control_no_create_evidence() {
                     &*(host.clone()).run_assembly,
                     effect.clone(),
                     terminal_preparation_authorization(&effect, &conflicting.projection),
-                ).await.map_err(crate::host_error::from_run_error)
+                ).await.map_err(crate::session_execution_error::from_run_error)
             .expect_err("H3 contradictory projection");
         assert_eq!(
             error.code, "session_terminal_unattempted_environment_conflict",

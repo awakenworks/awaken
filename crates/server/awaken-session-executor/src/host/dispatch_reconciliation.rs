@@ -136,18 +136,20 @@ mod tests {
                     .identity,
             );
         }
-        let host =
-            (crate::HostDependencies::ephemeral(Arc::new(crate::host::MemoryHostModel), "fixture")
-                .await
-                .with_ephemeral_dispatch(Arc::new(
-                    awaken_dispatch::open_sqlite_dispatch_store_in_memory(Arc::new(
-                        awaken_lease_testkit::ManualClock::new(0),
-                    ))
-                    .await
-                    .unwrap(),
-                )))
-            .build()
-            .expect("validated Host dependencies");
+        let host = (crate::SessionExecutorBuilder::ephemeral(
+            Arc::new(crate::host::MemoryHostModel),
+            "fixture",
+        )
+        .await
+        .with_ephemeral_dispatch(Arc::new(
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(Arc::new(
+                awaken_lease_testkit::ManualClock::new(0),
+            ))
+            .await
+            .unwrap(),
+        )))
+        .build()
+        .expect("validated Host dependencies");
         let source = Arc::new(IdleEvidence {
             released: Default::default(),
             fail_first: std::sync::atomic::AtomicBool::new(true),
@@ -406,18 +408,20 @@ mod tests {
             .unwrap()
             .snapshot
             .identity;
-        let host =
-            crate::HostDependencies::ephemeral(Arc::new(crate::host::MemoryHostModel), "fixture")
-                .await
-                .with_ephemeral_dispatch(Arc::new(
-                    awaken_dispatch::open_sqlite_dispatch_store_in_memory(Arc::new(
-                        awaken_lease_testkit::ManualClock::new(0),
-                    ))
-                    .await
-                    .unwrap(),
-                ))
-                .build()
-                .expect("validated Host dependencies");
+        let host = crate::SessionExecutorBuilder::ephemeral(
+            Arc::new(crate::host::MemoryHostModel),
+            "fixture",
+        )
+        .await
+        .with_ephemeral_dispatch(Arc::new(
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(Arc::new(
+                awaken_lease_testkit::ManualClock::new(0),
+            ))
+            .await
+            .unwrap(),
+        ))
+        .build()
+        .expect("validated Host dependencies");
         host.dispatch
             .bind_worker_evidence(
                 directory.clone(),
@@ -530,12 +534,14 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(before.binding.is_none(), "U4 historical unbound slot");
-        let host =
-            (crate::HostDependencies::ephemeral(Arc::new(crate::host::MemoryHostModel), "fixture")
-                .await
-                .with_ephemeral_dispatch(dispatch.clone()))
-            .build()
-            .expect("validated Host dependencies");
+        let host = (crate::SessionExecutorBuilder::ephemeral(
+            Arc::new(crate::host::MemoryHostModel),
+            "fixture",
+        )
+        .await
+        .with_ephemeral_dispatch(dispatch.clone()))
+        .build()
+        .expect("validated Host dependencies");
         host.dispatch
             .bind_worker_evidence(
                 directory.clone(),
@@ -790,7 +796,7 @@ mod tests {
                 }
                 clock.set(claimed.lease.expires_ms() + 1);
                 let mut dependencies =
-                    crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub").await;
+                    crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub").await;
                 dependencies.clock = clock.clone();
                 let mut dependencies = dependencies
                     .with_store_dir(storage.path())
@@ -991,7 +997,7 @@ mod tests {
         use awaken_agent_contract::thread::commit::{RunDisposition, commit_run};
 
         let mut local_pool =
-            crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub").await;
+            crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub").await;
         local_pool.execution.ingress = crate::RunIngress::Durable;
         local_pool.execution.local = crate::LocalExecution::in_process_pool();
         let local_pool = (local_pool).build().expect("validated Host dependencies");
@@ -1008,11 +1014,12 @@ mod tests {
                 .await
                 .expect("dispatch store"),
         );
-        let mut coordinator = crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
-            .await
-            .with_store_dir(storage.path())
-            .await
-            .with_ephemeral_dispatch(store.clone());
+        let mut coordinator =
+            crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
+                .await
+                .with_store_dir(storage.path())
+                .await
+                .with_ephemeral_dispatch(store.clone());
         coordinator.execution.ingress = crate::RunIngress::Durable;
         coordinator.execution.local = crate::LocalExecution::RemoteWorkersOnly;
         let coordinator = (coordinator).build().expect("validated Host dependencies");
@@ -1153,11 +1160,12 @@ mod tests {
                 .await
                 .expect("dispatch store"),
         );
-        let mut coordinator = crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
-            .await
-            .with_store_dir(storage.path())
-            .await
-            .with_ephemeral_dispatch(store.clone());
+        let mut coordinator =
+            crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
+                .await
+                .with_store_dir(storage.path())
+                .await
+                .with_ephemeral_dispatch(store.clone());
         coordinator.execution.ingress = crate::RunIngress::Durable;
         coordinator.execution.local = crate::LocalExecution::RemoteWorkersOnly;
         let coordinator = (coordinator).build().expect("validated Host dependencies");
@@ -1284,11 +1292,12 @@ mod tests {
                 .await
                 .expect("dispatch store"),
         );
-        let mut coordinator = crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
-            .await
-            .with_store_dir(storage.path())
-            .await
-            .with_ephemeral_dispatch(store.clone());
+        let mut coordinator =
+            crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
+                .await
+                .with_store_dir(storage.path())
+                .await
+                .with_ephemeral_dispatch(store.clone());
         coordinator.execution.ingress = crate::RunIngress::Durable;
         coordinator.execution.local = crate::LocalExecution::RemoteWorkersOnly;
         let coordinator = (coordinator).build().expect("validated Host dependencies");
@@ -1375,11 +1384,12 @@ mod tests {
                 .await
                 .expect("dispatch store"),
         );
-        let mut coordinator = crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
-            .await
-            .with_store_dir(storage.path())
-            .await
-            .with_ephemeral_dispatch(store.clone());
+        let mut coordinator =
+            crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
+                .await
+                .with_store_dir(storage.path())
+                .await
+                .with_ephemeral_dispatch(store.clone());
         coordinator.execution.ingress = crate::RunIngress::Durable;
         coordinator.execution.local = crate::LocalExecution::RemoteWorkersOnly;
         let coordinator = (coordinator).build().expect("validated Host dependencies");

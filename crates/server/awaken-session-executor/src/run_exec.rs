@@ -11,7 +11,8 @@
 use awaken_credential_contract as credential;
 use std::sync::Arc;
 
-use crate::host::{HostError, SessionCtx};
+use crate::SessionExecutionError;
+use crate::host::SessionCtx;
 use awaken_agent_contract::agent::run::RunState;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_runtime_contract::activation::RunActivation;
@@ -353,7 +354,7 @@ impl RunExecutor for BoundRunExecutor<'_> {
             .map_err(|error| ExecutionError::Execution(error.to_string()))?;
         let run_id = activation.run_id.clone();
         let refused = |error: crate::host::ForegroundRunPoisoned| {
-            ExecutionError::Execution(HostError::from(error).to_string())
+            ExecutionError::Execution(SessionExecutionError::from(error).to_string())
         };
         self.ctx.foreground.begin(run_id.clone()).map_err(refused)?;
         let result = self
@@ -422,7 +423,7 @@ impl crate::SessionRuns {
         &self,
         ctx: &Arc<SessionCtx>,
         activation: &RunActivation,
-    ) -> Result<RuntimeRunContext, HostError> {
+    ) -> Result<RuntimeRunContext, SessionExecutionError> {
         let mut context = ctx.context(&activation.run_id)?;
         let candidates = activation
             .snapshot
@@ -449,12 +450,14 @@ impl crate::SessionRuns {
                     .exec
                     .acp
                     .as_ref()
-                    .ok_or_else(|| HostError::bad_request("ACP backend is not installed"))?
+                    .ok_or_else(|| {
+                        SessionExecutionError::bad_request("ACP backend is not installed")
+                    })?
                     .credential_realization_capabilities(&backend)
-                    .map_err(HostError::bad_request)?,
+                    .map_err(SessionExecutionError::bad_request)?,
                 Backend::Remote(_) => self.agent.remote_credential_realization.clone(),
                 Backend::Invalid(invalid) => {
-                    return Err(HostError::bad_request(format!(
+                    return Err(SessionExecutionError::bad_request(format!(
                         "invalid backend_ref {}",
                         invalid.as_str()
                     )));
@@ -467,10 +470,10 @@ impl crate::SessionRuns {
                 epoch,
                 now_unix_ms,
             )
-            .map_err(|error| HostError::bad_request(error.to_string()))?;
+            .map_err(|error| SessionExecutionError::bad_request(error.to_string()))?;
             for binding in compiled {
                 if !seen.insert(binding.candidate_fingerprint.clone()) {
-                    return Err(HostError::bad_request(
+                    return Err(SessionExecutionError::bad_request(
                         "published model candidate is duplicated in the selected fallback set",
                     ));
                 }
@@ -501,7 +504,7 @@ impl crate::SessionRuns {
             .agent
             .inference_routing
             .executor_for_activation(activation, &context)
-            .map_err(HostError::bad_request)?
+            .map_err(SessionExecutionError::bad_request)?
         {
             context = context.with_model_executor(executor);
         }
@@ -521,7 +524,7 @@ impl crate::SessionRuns {
         ctx: &Arc<SessionCtx>,
         activation: RunActivation,
         options: ActivationOptions,
-    ) -> Result<RunState, HostError> {
+    ) -> Result<RunState, SessionExecutionError> {
         // Runtime selection is already pinned in the Session snapshot before the
         // SessionCtx and ingress are built. Every first attempt, resume, durable
         // claim and replacement therefore routes through this exact same binding.
@@ -565,7 +568,7 @@ impl crate::SessionRuns {
             {
                 // An auxiliary attempt runs only while its Session has no
                 // foreground Run, so Session interruption always reaches it.
-                return Err(HostError::conflict(
+                return Err(SessionExecutionError::conflict(
                     "auxiliary attempt cannot start while its Session drives a foreground Run",
                 ));
             }
@@ -574,10 +577,12 @@ impl crate::SessionRuns {
             }
             ctx.delivery
                 .direct()
-                .ok_or_else(|| HostError::internal("direct delivery driver is unavailable"))?
+                .ok_or_else(|| {
+                    SessionExecutionError::internal("direct delivery driver is unavailable")
+                })?
                 .start(activation, context)
                 .await
-                .map_err(|e| HostError::internal(e.to_string()))
+                .map_err(|e| SessionExecutionError::internal(e.to_string()))
         }
     }
 }
@@ -1006,7 +1011,7 @@ pub(crate) mod tests {
             .expect("claim artifact attempt")
             .expect("artifact attempt available");
         let expected_claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
-        let mut raw_host = crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test")
+        let mut raw_host = crate::SessionExecutorBuilder::ephemeral(Arc::new(NoLlm), "test")
             .await
             .with_ephemeral_dispatch(dispatch.clone());
         let claims = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1304,7 +1309,7 @@ pub(crate) mod tests {
         );
 
         let failed_storage = tempfile::tempdir().unwrap();
-        let mut raw_host = crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test").await;
+        let mut raw_host = crate::SessionExecutorBuilder::ephemeral(Arc::new(NoLlm), "test").await;
         raw_host.resources.file_application = None;
         raw_host.resources.artifact_publisher =
             Arc::new(awaken_resource_contract::UnavailableArtifactPublisher);

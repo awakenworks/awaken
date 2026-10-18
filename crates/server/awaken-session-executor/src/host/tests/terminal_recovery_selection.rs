@@ -35,7 +35,7 @@ async fn missing_terminal_work_preserves_successor(delayed: bool) {
             .await
             .expect("real SQLite dispatch authority"),
     );
-    let mut dependencies = crate::HostDependencies::ephemeral(model, "scripted")
+    let mut dependencies = crate::SessionExecutorBuilder::ephemeral(model, "scripted")
         .await
         .with_ephemeral_dispatch(dispatch);
     dependencies.execution.ingress = crate::RunIngress::Direct;
@@ -196,7 +196,7 @@ async fn missing_current_terminal_work_retires_original(renew: bool) {
             .await
             .expect("real SQLite dispatch authority"),
     );
-    let mut dependencies = crate::HostDependencies::ephemeral(model, "scripted")
+    let mut dependencies = crate::SessionExecutorBuilder::ephemeral(model, "scripted")
         .await
         .with_ephemeral_dispatch(dispatch);
     dependencies.execution.ingress = crate::RunIngress::Direct;
@@ -330,7 +330,7 @@ async fn completed_terminal_projection_not_found_cancels_its_original_real_run()
             .await
             .expect("real SQLite dispatch authority"),
     );
-    let mut dependencies = crate::HostDependencies::ephemeral(model, "scripted")
+    let mut dependencies = crate::SessionExecutorBuilder::ephemeral(model, "scripted")
         .await
         .with_ephemeral_dispatch(dispatch);
     dependencies.execution.ingress = crate::RunIngress::Direct;

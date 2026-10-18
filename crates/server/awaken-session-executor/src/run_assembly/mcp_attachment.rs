@@ -14,7 +14,7 @@ use awaken_session_types::RunError;
 
 use super::RunAssembly;
 use crate::PinnedCredentialMaterializer;
-use crate::managed_adapter_error::to_run_error;
+use crate::session_execution_error::to_run_error;
 
 impl RunAssembly {
     #[cfg(test)]

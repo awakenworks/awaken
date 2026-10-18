@@ -1,13 +1,13 @@
 // @formal surface requirement=assembly.binary_roles.role_assembly
 // @formal reason: The one Host dependency set selects every injected startup authority exactly once before
 // @formal reason: construction; it opens no Store. This link is not a formal-proof claim.
-//! [`HostDependencies`]: everything a [`ExecutorComponents`] is built from, selected
+//! [`SessionExecutorBuilder`]: everything a [`ExecutorComponents`] is built from, selected
 //! once by the process composition before the Host exists.
 //!
 //! Acquiring a dependency may be asynchronous (opening a Store, probing a
 //! sandbox tier); the composition does that while it fills this value. Turning
 //! the value into a Host is the one synchronous constructor
-//! (`HostDependencies::build`), which performs no I/O. Nothing installs a dependency
+//! (`SessionExecutorBuilder::build`), which performs no I/O. Nothing installs a dependency
 //! into a Host after it exists, so no Host is ever observed half-configured.
 //!
 //! The constructors take every dependency a role cannot run without; the
@@ -53,8 +53,8 @@ pub(crate) type RealizationSourceFactory = Box<
 
 /// Every dependency of one [`ExecutorComponents`]. Consumer: the process
 /// compositions (`awaken-cli`, `awaken-worker`, `awaken-coordinator`, the
-/// Scenario host and test fixtures) and `HostDependencies::build`.
-pub struct HostDependencies {
+/// Scenario host and test fixtures) and `SessionExecutorBuilder::build`.
+pub struct SessionExecutorBuilder {
     /// Test-only once-consumed projection of the canonical slot allocation.
     /// Default constructors never select a replacement source.
     #[cfg(test)]
@@ -91,10 +91,10 @@ fn select(
     llm: Arc<dyn LlmExecutor>,
     model_ref: String,
     resources: capability::ResourceInputs,
-    process: HostProcess,
+    process: SessionExecutionProcess,
     authority: Arc<dyn crate::SessionAuthority>,
-) -> HostDependencies {
-    let HostProcess {
+) -> SessionExecutorBuilder {
+    let SessionExecutionProcess {
         local_workspace,
         execution,
         content_capture,
@@ -122,7 +122,7 @@ fn select(
     let skill_bundle_source = None;
     let resources =
         capability::ResourceSelection::assemble(resources, store_dir.as_deref(), &clock);
-    HostDependencies {
+    SessionExecutorBuilder {
         #[cfg(test)]
         realization_source: None,
         agent: capability::AgentSelection::new(llm, model_ref),
@@ -153,7 +153,7 @@ fn select(
     }
 }
 
-impl HostDependencies {
+impl SessionExecutorBuilder {
     /// An execution Worker with its exact remote content adapters installed
     /// before any Resource data store is selected. Management-only File and
     /// durable extraction authorities fail closed; the Worker opens no File,
@@ -165,13 +165,13 @@ impl HostDependencies {
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
         content: capability::WorkerContentAdapters,
-        process: HostProcess,
+        process: SessionExecutionProcess,
         authority: crate::UpstreamAuthority,
         capacity: awaken_dispatch_contract::RegisteredCapacity,
-    ) -> Result<Self, HostError> {
+    ) -> Result<Self, SessionExecutionError> {
         authority.validate_worker_connections()?;
         if !process.execution.local.runs_local_pool() {
-            return Err(HostError::bad_request(
+            return Err(SessionExecutionError::bad_request(
                 "registered Worker capacity requires upstream authority and a local execution pool",
             ));
         }
@@ -205,7 +205,7 @@ impl HostDependencies {
         model_ref: impl Into<String>,
         content: capability::WorkerContentAdapters,
         extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
-        process: HostProcess,
+        process: SessionExecutionProcess,
         runtime_authority: Arc<dyn crate::RuntimeAuthority>,
     ) -> Self {
         select(
@@ -246,7 +246,7 @@ impl HostDependencies {
                 extraction_repository: Some(extraction_repository),
             },
             deployment
-                .host_process(local_workspace.into(), clock)
+                .session_execution_process(local_workspace.into(), clock)
                 .expect("a local fixture selects a valid process"),
             Arc::new(crate::LocalAuthority::new(runtime_authority)),
         )
@@ -291,7 +291,10 @@ impl HostDependencies {
                 extraction_repository: Some(extraction_repository),
             },
             deployment
-                .host_process(ExecutorComponents::mint_local_workspace(), clock.clone())
+                .session_execution_process(
+                    ExecutorComponents::mint_local_workspace(),
+                    clock.clone(),
+                )
                 .expect("a unit-test fixture selects a valid process"),
             Arc::new(crate::LocalAuthority::new(Arc::new(
                 crate::EphemeralRuntimeAuthority::new(clock),
@@ -325,9 +328,9 @@ impl HostDependencies {
     pub fn with_runtime_authority(
         mut self,
         authority: Arc<dyn crate::RuntimeAuthority>,
-    ) -> Result<Self, HostError> {
+    ) -> Result<Self, SessionExecutionError> {
         if !self.authority.hosts_session_application() {
-            return Err(HostError::bad_request(
+            return Err(SessionExecutionError::bad_request(
                 "a Worker cannot replace its upstream authority with a local Runtime authority",
             ));
         }
@@ -788,7 +791,7 @@ impl SessionExecutionDependencies {
     }
 }
 
-impl HostDependencies {
+impl SessionExecutorBuilder {
     /// Select a volatile Vault materializer for this crate's unit fixtures.
     #[cfg(test)]
     #[must_use]

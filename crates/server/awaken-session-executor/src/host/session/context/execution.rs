@@ -2,7 +2,7 @@
 //! ACP export leases and the exact executor built from the realized Environment.
 
 use super::{SemanticSkillTools, resources::ContextResources};
-use crate::HostError;
+use crate::SessionExecutionError;
 use crate::host::session::input_projection::{
     merge_acp_mcp_servers, merge_process_local_mcp_servers,
 };
@@ -39,7 +39,7 @@ pub(super) async fn prepare(
     config: &ExecutableAgentSnapshot,
     runtime: Runtime,
     tools: AcpTools<'_>,
-) -> Result<ExecutionWiring, HostError> {
+) -> Result<ExecutionWiring, SessionExecutionError> {
     let active_mcp = &resources.active_mcp;
     let execution_backend = &resources.plan.execution_backend;
     let is_acp = execution_backend.is_acp();
@@ -69,7 +69,7 @@ pub(super) async fn prepare(
         };
         let policy = host.capabilities.acp_adapter_policy()?;
         if !policy.contains(cli) {
-            return Err(HostError::internal(format!(
+            return Err(SessionExecutionError::internal(format!(
                 "unknown ACP adapter `acp:{cli}`"
             )));
         }
@@ -194,7 +194,7 @@ pub(super) async fn prepare(
                 })
                 .collect();
             let exporter = host.capabilities.exec.acp_tool_exporter.as_ref().ok_or_else(|| {
-                HostError::internal("ACP_TOOL_BRIDGE_MISSING: ACP Session tools require an installed tool-export adapter")
+                SessionExecutionError::internal("ACP_TOOL_BRIDGE_MISSING: ACP Session tools require an installed tool-export adapter")
             })?;
             if env
                 .as_deref()
@@ -206,7 +206,7 @@ pub(super) async fn prepare(
                         descriptors,
                         executors,
                     )
-                    .map_err(HostError::internal)?,
+                    .map_err(SessionExecutionError::internal)?,
                 ));
             } else {
                 let (servers, exports) = crate::acp_tool_export::export_tools(
@@ -217,7 +217,7 @@ pub(super) async fn prepare(
                 )
                 .await
                 .map_err(|error| {
-                    HostError::internal(format!("ACP_TOOL_BRIDGE_MISSING: {error}"))
+                    SessionExecutionError::internal(format!("ACP_TOOL_BRIDGE_MISSING: {error}"))
                 })?;
                 acp_mcp_servers = merge_process_local_mcp_servers(acp_mcp_servers, servers)?;
                 acp_tool_exports.extend(exports);
@@ -256,7 +256,7 @@ pub(super) async fn prepare(
             })
         })
         .transpose()
-        .map_err(HostError::internal)?;
+        .map_err(SessionExecutionError::internal)?;
     Ok(ExecutionWiring {
         runtime,
         acp_executor,

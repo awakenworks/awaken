@@ -12,8 +12,8 @@ use awaken_session_types::RunError;
 
 use super::SessionRuns;
 use crate::HostResume;
-use crate::managed_adapter_error::to_run_error;
 use crate::managed_input_projection::user_message;
+use crate::session_execution_error::to_run_error;
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::SessionRuntime for SessionRuns {

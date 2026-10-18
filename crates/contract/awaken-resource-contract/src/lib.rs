@@ -1445,3 +1445,25 @@ mod memory_contract_tests {
         assert!(skill_catalog_id("stable").starts_with("skill_"), "S1");
     }
 }
+
+#[cfg(test)]
+mod content_identity_tests {
+    use super::content_id;
+
+    #[test]
+    fn content_fingerprint_is_blake3_and_matches_file_store() {
+        // The former Sandbox alias now has no implementation or public path:
+        // File stores, Sandbox provisioning and transport verification all use
+        // this owner. The retained test therefore checks an independent digest
+        // instead of comparing the owner with a forwarding alias to itself.
+        // | Rule | bytes | effect |
+        // | H1 | empty | standard BLAKE3 golden identity, 64 hex digits |
+        // | H2 | provisioned blob | 64 hex digits; cannot regress to the former 16-hex hash |
+        assert_eq!(
+            content_id(b""),
+            "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+            "H1"
+        );
+        assert_eq!(content_id(b"provisioned bytes").len(), 64, "H2");
+    }
+}

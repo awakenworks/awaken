@@ -28,7 +28,7 @@ async fn large_session_reconciliation_is_earliest_deadline_first_and_bounded() {
     let control = Arc::new(RemoteTerminalCleanupControl::default());
     let gate = Arc::new(tokio::sync::Semaphore::new(0));
     *control.renewal_gate.lock().unwrap() = Some(gate.clone());
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_session_realization_control(control.clone())
         .with_authority(
@@ -149,7 +149,7 @@ async fn five_hundred_twelve_session_reconciliation_remains_bounded_and_complete
     const SESSION_COUNT: usize = 512;
     let authority_now = awaken_session_realization::test_support::wall_clock_now_ms();
     let control = Arc::new(RemoteTerminalCleanupControl::default());
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_session_realization_control(control.clone())
         .with_authority(
@@ -281,7 +281,7 @@ async fn late_renewal_response_cannot_mutate_a_replacement_projection() {
             *control.renewal_failure.lock().unwrap() = failure.clone();
             let gate = Arc::new(tokio::sync::Semaphore::new(0));
             *control.renewal_gate.lock().unwrap() = Some(gate.clone());
-            let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+            let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
                 .await
                 .with_session_realization_control(control.clone())
                 .with_authority(
@@ -399,7 +399,7 @@ async fn renewal_revocation_rechecks_authority_after_realization_admission() {
         *control.renewal_failure.lock().unwrap() = Some(
             awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership,
         );
-        let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_session_realization_control(control.clone())
             .with_authority(
@@ -506,7 +506,7 @@ async fn temporary_control_failure_retains_only_a_still_live_session_lease() {
      */
     let control = Arc::new(RemoteTerminalCleanupControl::default());
     *control.renewal_gate.lock().unwrap() = Some(Arc::new(tokio::sync::Semaphore::new(0)));
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_session_realization_control(control.clone())
         .with_authority(
@@ -571,7 +571,7 @@ async fn stale_ownership_revokes_even_when_the_old_deadline_is_still_live() {
     let control = Arc::new(RemoteTerminalCleanupControl::default());
     *control.renewal_failure.lock().unwrap() =
         Some(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership);
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_session_realization_control(control.clone())
         .with_authority(
@@ -634,7 +634,7 @@ async fn per_request_deadlines_release_every_renewal_capacity_slot() {
     const SESSION_COUNT: usize = 16;
     let control = Arc::new(RemoteTerminalCleanupControl::default());
     *control.renewal_gate.lock().unwrap() = Some(Arc::new(tokio::sync::Semaphore::new(0)));
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_session_realization_control(control.clone())
         .with_authority(
@@ -719,7 +719,7 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
         const SESSION_COUNT: usize = 16;
         let control = Arc::new(RemoteTerminalCleanupControl::default());
         *control.renewal_gate.lock().unwrap() = Some(Arc::new(tokio::sync::Semaphore::new(0)));
-        let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_session_realization_control(control.clone())
             .with_authority(
@@ -955,7 +955,7 @@ async fn delayed_realization_renewal_cannot_replace_or_revoke_new_projection() {
         let gate = Arc::new(tokio::sync::Semaphore::new(0));
         *control.renewal_gate.lock().unwrap() = Some(gate.clone());
         *control.renewal_failure.lock().unwrap() = failure;
-        let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_session_realization_control(control.clone())
             .with_authority(

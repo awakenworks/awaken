@@ -37,7 +37,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
         let roots = crate::host::tests::ManagedSessionRootFixture::new().await;
         let host = roots
             .configure(
-                crate::HostDependencies::ephemeral(
+                crate::SessionExecutorBuilder::ephemeral(
                     Arc::new(crate::no_model::NoModelConfiguredExecutor),
                     "stub",
                 )

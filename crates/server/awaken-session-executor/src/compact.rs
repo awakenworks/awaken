@@ -67,7 +67,7 @@ struct HostCompactBackend {
 /// | K2 | poisoned | no effect, reported   | `None`, reported        | `None`, reported   |
 fn compaction_index_poisoned() {
     tracing::error!(
-        code = crate::host_error::EXECUTOR_LOCK_POISONED_CODE,
+        code = crate::session_execution_error::EXECUTOR_LOCK_POISONED_CODE,
         "compaction artifact index lock poisoned; the Run keeps its uncompacted transcript"
     );
 }
@@ -286,7 +286,7 @@ mod tests {
             background: Arc::new(BackgroundRuns::new()),
             cells: Mutex::new(BTreeMap::new()),
         };
-        crate::host_error::poison_for_test(&backend.cells);
+        crate::session_execution_error::poison_for_test(&backend.cells);
         let request = CompactRequest {
             agent_id: awaken_ext_compact::COMPACT_AGENT_ID.to_string(),
             scope: "thread-a".into(),

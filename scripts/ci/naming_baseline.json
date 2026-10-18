@@ -9,7 +9,6 @@
     "CommittedPrefixBase": 1,
     "ExecutionWiring": 1,
     "HostAcpAdapters": 1,
-    "HostDependencies": 1,
     "HttpShared": 1,
     "LocalResourcePorts": 1,
     "LocalSkillPorts": 1,

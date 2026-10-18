@@ -150,7 +150,7 @@ async fn interrupt_with_admission_suspended(
         hold_after_signal,
         release: tokio::sync::Notify::new(),
     });
-    let mut host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let mut host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_ephemeral_dispatch(dispatch.clone())
         .with_remote_attempt_executor(RemoteAttemptInstallation {

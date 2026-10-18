@@ -17,9 +17,12 @@ impl CurrentExecutionAuthority for Worker {
     }
 }
 
-async fn dependencies() -> crate::HostDependencies {
-    crate::HostDependencies::ephemeral(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub")
-        .await
+async fn dependencies() -> crate::SessionExecutorBuilder {
+    crate::SessionExecutorBuilder::ephemeral(
+        Arc::new(crate::no_model::NoModelConfiguredExecutor),
+        "stub",
+    )
+    .await
 }
 
 async fn host() -> Arc<ExecutorComponents> {

@@ -12,21 +12,7 @@ use awaken_session_application_contract::{
 
 use super::SessionRuns;
 use crate::HostResume;
-use crate::host::{HostError, HostErrorKind};
-
-fn to_application_error(error: HostError) -> RunApplicationError {
-    match error.kind {
-        HostErrorKind::BadRequest => RunApplicationError::bad_request(error.message),
-        HostErrorKind::Conflict => crate::host_error::to_run_error(error),
-        HostErrorKind::Internal => RunApplicationError::internal(error.message),
-        HostErrorKind::Unavailable if error.code == "unavailable" => {
-            RunApplicationError::unavailable(error.message)
-        }
-        HostErrorKind::Unavailable => {
-            RunApplicationError::unavailable_classified(error.code, error.message)
-        }
-    }
-}
+use crate::session_execution_error::to_run_error;
 
 #[async_trait::async_trait]
 impl RunApplication for SessionRuns {
@@ -40,7 +26,7 @@ impl RunApplication for SessionRuns {
         let result = self
             .run(agent.as_deref(), thread, messages)
             .await
-            .map_err(to_application_error)?;
+            .map_err(to_run_error)?;
         crate::step_projection::settled_step(result)
     }
 
@@ -55,7 +41,7 @@ impl RunApplication for SessionRuns {
         let result = self
             .run_streaming(agent.as_deref(), thread, messages, sink)
             .await
-            .map_err(to_application_error)?;
+            .map_err(to_run_error)?;
         crate::step_projection::settled_step(result)
     }
 
@@ -75,26 +61,26 @@ impl RunApplication for SessionRuns {
         let result = self
             .resume(thread, tool_use_id, resume)
             .await
-            .map_err(to_application_error)?;
+            .map_err(to_run_error)?;
         crate::step_projection::settled_step(result)
     }
 
     async fn interrupt(&self, thread: &str) -> Result<(), RunApplicationError> {
-        self.interrupt(thread).await.map_err(to_application_error)
+        self.interrupt(thread).await.map_err(to_run_error)
     }
 
     async fn pending(&self, thread: &str) -> Result<Option<Pending>, RunApplicationError> {
         self.thread_reads
             .pending_tool(thread)
             .await
-            .map_err(to_application_error)
+            .map_err(to_run_error)
     }
 
     async fn history(&self, thread: &str) -> Result<Vec<Message>, RunApplicationError> {
         self.thread_reads
             .committed_messages(thread)
             .await
-            .map_err(to_application_error)
+            .map_err(to_run_error)
     }
 
     fn model(&self) -> String {
@@ -106,7 +92,7 @@ impl RunApplication for SessionRuns {
             .thread_reads
             .session_thread_usage(thread, &ThreadId(thread.to_string()))
             .await
-            .map_err(to_application_error)?;
+            .map_err(to_run_error)?;
         Ok((usage.input_tokens, usage.output_tokens))
     }
 }
@@ -114,6 +100,7 @@ impl RunApplication for SessionRuns {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SessionExecutionError;
     use awaken_session_types::RunErrorKind;
 
     #[test]
@@ -126,34 +113,66 @@ mod tests {
         // | A2 | Conflict | Conflict | conflict |
         // | A3 | Internal | Internal | internal |
         // | A4 | Unavailable (classified) | Unavailable | its own code |
+        // | A5 | Internal (classified) | Internal | its own code |
+        // | A6 | BadRequest (classified) | BadRequest | its own code, including not_found |
+        // | A7 | Conflict (classified) | Conflict | its own code |
+        // | A8 | Unavailable (default) | Unavailable | unavailable |
         let rows = [
             (
                 "A1",
-                HostError::bad_request("m"),
+                SessionExecutionError::bad_request("m"),
                 RunErrorKind::BadRequest,
                 "invalid_request",
             ),
             (
                 "A2",
-                HostError::conflict("m"),
+                SessionExecutionError::conflict("m"),
                 RunErrorKind::Conflict,
                 "conflict",
             ),
             (
                 "A3",
-                HostError::internal("m"),
+                SessionExecutionError::internal("m"),
                 RunErrorKind::Internal,
                 "internal",
             ),
             (
                 "A4",
-                HostError::unavailable_classified("dependency", "m"),
+                SessionExecutionError::unavailable_classified("dependency", "m"),
                 RunErrorKind::Unavailable,
                 "dependency",
             ),
+            (
+                "A5",
+                SessionExecutionError::classified("classified_internal", "m"),
+                RunErrorKind::Internal,
+                "classified_internal",
+            ),
+            (
+                "A6",
+                crate::session_execution_error::from_run_error(
+                    awaken_session_types::RunError::bad_request_classified("not_found", "m"),
+                ),
+                RunErrorKind::BadRequest,
+                "not_found",
+            ),
+            (
+                "A7",
+                crate::session_execution_error::from_run_error(
+                    awaken_session_types::RunError::conflict_classified("projection_changed", "m"),
+                ),
+                RunErrorKind::Conflict,
+                "projection_changed",
+            ),
+            (
+                "A8",
+                SessionExecutionError::unavailable("m"),
+                RunErrorKind::Unavailable,
+                "unavailable",
+            ),
         ];
         for (rule, error, kind, code) in rows {
-            let projected = to_application_error(error);
+            let projected = to_run_error(error);
             assert_eq!(projected.kind, kind, "{rule}");
             assert_eq!(projected.code, code, "{rule}");
             assert_eq!(projected.message, "m", "{rule}");

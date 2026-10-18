@@ -8,17 +8,7 @@ use awaken_session_execution_contract::{
     ApplicationError, DurableDispatchStatus, DurableRunOperations, DurableSupersedeResult,
 };
 
-use crate::{HostError, HostErrorKind};
-
-/// The Host's error as the neutral application error its Coordinator ports return.
-pub(crate) fn application_error(error: HostError) -> ApplicationError {
-    match error.kind {
-        HostErrorKind::BadRequest => ApplicationError::invalid(error.message),
-        HostErrorKind::Conflict => ApplicationError::conflict(error.message),
-        HostErrorKind::Internal => ApplicationError::internal(error.message),
-        HostErrorKind::Unavailable => ApplicationError::unavailable(error.message),
-    }
-}
+use crate::session_execution_error::to_durable_error;
 
 #[async_trait::async_trait]
 impl DurableRunOperations for crate::SessionRuns {
@@ -30,37 +20,37 @@ impl DurableRunOperations for crate::SessionRuns {
     ) -> Result<String, ApplicationError> {
         self.submit_background_async(agent, thread, messages)
             .await
-            .map_err(application_error)
+            .map_err(to_durable_error)
     }
 
     async fn cancel(&self, thread: &str, run_id: &str) -> Result<(), ApplicationError> {
         self.cancel_durable(thread, run_id)
             .await
-            .map_err(application_error)
+            .map_err(to_durable_error)
     }
 
     async fn pause(&self, thread: &str, run_id: Option<&str>) -> Result<String, ApplicationError> {
         self.pause_durable(thread, run_id)
             .await
-            .map_err(application_error)
+            .map_err(to_durable_error)
     }
 
     async fn resume(&self, thread: &str, text: String) -> Result<String, ApplicationError> {
         self.stage_manual_resume(thread, text)
             .await
-            .map_err(application_error)
+            .map_err(to_durable_error)
     }
 
     async fn wake(&self, thread: &str, run_id: &str) -> Result<(), ApplicationError> {
         self.wake_durable(thread, run_id)
             .await
-            .map_err(application_error)
+            .map_err(to_durable_error)
     }
 
     async fn deliver(&self, thread: &str, allow: bool) -> Result<String, ApplicationError> {
         self.stage_decision(thread, allow)
             .await
-            .map_err(application_error)
+            .map_err(to_durable_error)
     }
 
     async fn supersede(
@@ -72,8 +62,8 @@ impl DurableRunOperations for crate::SessionRuns {
         let run = self
             .supersede_run(agent, thread, messages)
             .await
-            .map_err(application_error)?;
-        let superseded = self.superseded(thread).await.map_err(application_error)?;
+            .map_err(to_durable_error)?;
+        let superseded = self.superseded(thread).await.map_err(to_durable_error)?;
         Ok(DurableSupersedeResult {
             state: format!("{:?}", run.state),
             superseded,
@@ -84,11 +74,11 @@ impl DurableRunOperations for crate::SessionRuns {
         self.thread_reads
             .committed_messages(thread)
             .await
-            .map_err(application_error)
+            .map_err(to_durable_error)
     }
 
     async fn superseded(&self, thread: &str) -> Result<Vec<String>, ApplicationError> {
-        self.superseded(thread).await.map_err(application_error)
+        self.superseded(thread).await.map_err(to_durable_error)
     }
 
     async fn dispatches(
@@ -109,11 +99,11 @@ impl DurableRunOperations for crate::SessionRuns {
                     )
                     .collect()
             })
-            .map_err(application_error)
+            .map_err(to_durable_error)
     }
 
     async fn reconcile(&self, thread: &str) -> Result<Vec<String>, ApplicationError> {
-        self.reconcile(thread).await.map_err(application_error)
+        self.reconcile(thread).await.map_err(to_durable_error)
     }
 
     async fn quarantine_retry_exhausted(
@@ -124,11 +114,11 @@ impl DurableRunOperations for crate::SessionRuns {
     ) -> Result<usize, ApplicationError> {
         self.quarantine_retry_exhausted(thread, max_attempts, now_ms)
             .await
-            .map_err(application_error)
+            .map_err(to_durable_error)
     }
 
     async fn dead_letters(&self, thread: &str) -> Result<Vec<String>, ApplicationError> {
-        self.dead_letters(thread).await.map_err(application_error)
+        self.dead_letters(thread).await.map_err(to_durable_error)
     }
 
     async fn requeue_dead_letter(
@@ -138,12 +128,12 @@ impl DurableRunOperations for crate::SessionRuns {
     ) -> Result<bool, ApplicationError> {
         self.requeue_dead_letter(thread, run_id)
             .await
-            .map_err(application_error)
+            .map_err(to_durable_error)
     }
 
     async fn purge_dead_letters(&self, thread: &str) -> Result<usize, ApplicationError> {
         self.purge_dead_letters(thread)
             .await
-            .map_err(application_error)
+            .map_err(to_durable_error)
     }
 }

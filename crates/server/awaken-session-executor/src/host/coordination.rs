@@ -26,7 +26,8 @@ fn reply_dispatch_activity(
     dispatch: Option<&awaken_dispatch_contract::DispatchSummary>,
     thread: &ThreadId,
     parent: &ThreadId,
-) -> Result<awaken_session_execution_contract::SessionThreadToolReplyActivity, HostError> {
+) -> Result<awaken_session_execution_contract::SessionThreadToolReplyActivity, SessionExecutionError>
+{
     use awaken_session_execution_contract::SessionThreadToolReplyActivity;
     match dispatch {
         Some(row) if row.thread_id == *thread => SessionThreadToolReplyActivity::from_dispatch(
@@ -36,30 +37,34 @@ fn reply_dispatch_activity(
             parent,
         )
         .ok_or_else(|| {
-            HostError::bad_request("Session Thread reply dispatch affinity is inconsistent")
+            SessionExecutionError::bad_request(
+                "Session Thread reply dispatch affinity is inconsistent",
+            )
         }),
-        Some(_) => Err(HostError::bad_request(
+        Some(_) => Err(SessionExecutionError::bad_request(
             "Session Thread reply dispatch affinity is inconsistent",
         )),
         None if thread == parent => {
             Ok(SessionThreadToolReplyActivity::Session { prior_epoch: None })
         }
-        None => Err(HostError::internal(
+        None => Err(SessionExecutionError::internal(
             "Session child Thread reply has no exact durable dispatch row",
         )),
     }
 }
 
-fn dispatch_admission_error(error: awaken_dispatch_contract::DispatchError) -> HostError {
+fn dispatch_admission_error(
+    error: awaken_dispatch_contract::DispatchError,
+) -> SessionExecutionError {
     match error {
         awaken_dispatch_contract::DispatchError::Rejected(message) => {
-            HostError::bad_request(message)
+            SessionExecutionError::bad_request(message)
         }
         awaken_dispatch_contract::DispatchError::Conflict(message) => {
-            HostError::unavailable(message)
+            SessionExecutionError::unavailable(message)
         }
         awaken_dispatch_contract::DispatchError::Unavailable(message) => {
-            HostError::unavailable(message)
+            SessionExecutionError::unavailable(message)
         }
     }
 }
@@ -69,7 +74,7 @@ async fn finish_coordinated_child_admission(
     session_id: &str,
     thread_id: ThreadId,
     intent: CoordinatedRunIntent,
-) -> Result<SessionAgentMessageReceipt, HostError> {
+) -> Result<SessionAgentMessageReceipt, SessionExecutionError> {
     // Thread disposition, Run commits, and dispatch admission may use
     // different durable adapters. Re-read both existing admission fences
     // after enqueue: whichever side won records cancellation on this exact
@@ -91,7 +96,7 @@ async fn finish_coordinated_child_admission(
         // the bad request is safe: no accepted child execution remains.
         host.cancel_and_await_coordinated_thread_quiescence(session_id, &thread_id)
             .await?;
-        return Err(HostError::bad_request(if archived {
+        return Err(SessionExecutionError::bad_request(if archived {
             "Agent Thread is archived"
         } else {
             "Agent Thread terminated after a failed Run"
@@ -109,7 +114,7 @@ impl crate::ChildRunCoordination {
         &self,
         delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
         stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
-    ) -> Result<CommittedStepReceipt, HostError> {
+    ) -> Result<CommittedStepReceipt, SessionExecutionError> {
         let session_id = delivery.command.session_id.clone();
         let run_id = delivery.command.expected_run_id.clone();
         let correlation_id = delivery.command.expected_correlation_id.clone();
@@ -130,9 +135,9 @@ impl crate::ChildRunCoordination {
     pub(super) async fn validated_session_thread_tool_reply(
         &self,
         command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
-    ) -> Result<(ThreadId, ResumeTicket), HostError> {
+    ) -> Result<(ThreadId, ResumeTicket), SessionExecutionError> {
         if !command.has_complete_coordinates() {
-            return Err(HostError::bad_request(
+            return Err(SessionExecutionError::bad_request(
                 "Session Thread tool reply is incomplete",
             ));
         }
@@ -142,7 +147,7 @@ impl crate::ChildRunCoordination {
             .child_thread_id()
             .is_some_and(|child| child.0 == command.session_id)
         {
-            return Err(HostError::bad_request(
+            return Err(SessionExecutionError::bad_request(
                 "a coordinated child Thread must differ from its parent Session",
             ));
         }
@@ -153,29 +158,31 @@ impl crate::ChildRunCoordination {
         let snapshot = commit
             .recovery_snapshot(&thread_id, &command.expected_run_id)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
         if command
             .expected_thread_version
             .is_some_and(|expected| expected != snapshot.thread_version)
         {
-            return Err(HostError::bad_request(
+            return Err(SessionExecutionError::bad_request(
                 "Session Thread awaiting ticket changed after Event admission",
             ));
         }
         let current = snapshot
             .current_run()
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
         if !current.is_some_and(|run| {
             run.id == command.expected_run_id && matches!(run.state, RunState::Awaiting)
         }) {
-            return Err(HostError::bad_request("Session Thread has no awaiting Run"));
+            return Err(SessionExecutionError::bad_request(
+                "Session Thread has no awaiting Run",
+            ));
         }
         let ticket = snapshot
             .answerable_ticket(&command.expected_run_id)
-            .map_err(|error| HostError::internal(error.to_string()))?
+            .map_err(|error| SessionExecutionError::internal(error.to_string()))?
             .filter(|ticket| ticket.correlation_id == command.expected_correlation_id)
             .ok_or_else(|| {
-                HostError::bad_request(
+                SessionExecutionError::bad_request(
                     "Session Thread awaiting ticket changed after Event admission",
                 )
             })?
@@ -185,7 +192,7 @@ impl crate::ChildRunCoordination {
             awaken_session_execution_contract::SessionThreadToolReply::Input(_)
         ) {
             if ticket.call_id().unwrap_or_default() != command.tool_use_id {
-                return Err(HostError::bad_request(
+                return Err(SessionExecutionError::bad_request(
                     "Session input call identity differs from its ticket",
                 ));
             }
@@ -205,7 +212,7 @@ impl crate::ChildRunCoordination {
                     awaken_time::WallClockExt::now_ms(self.clock.as_ref()),
                 ),
             )
-            .map_err(|error| HostError::bad_request(error.to_string()))?;
+            .map_err(|error| SessionExecutionError::bad_request(error.to_string()))?;
             return Ok((thread_id, ticket));
         }
         match ticket.target() {
@@ -218,7 +225,7 @@ impl crate::ChildRunCoordination {
             // projection plus client-result kind against that same ticket.
             AwaitTarget::RemoteInput { .. } => {}
             AwaitTarget::Pause(_) => {
-                return Err(HostError::bad_request(
+                return Err(SessionExecutionError::bad_request(
                     "Session Thread awaiting ticket is not externally answerable",
                 ));
             }
@@ -239,12 +246,12 @@ impl crate::ChildRunCoordination {
         session_id: &str,
         thread_id: &ThreadId,
         kind: CoordinatedThreadKind,
-    ) -> Result<bool, HostError> {
+    ) -> Result<bool, SessionExecutionError> {
         let commit = self.thread_reads.commit_for_read(session_id).await?;
         Ok(commit
             .authoritative_latest_run(thread_id)
             .await
-            .map_err(HostError::internal)?
+            .map_err(SessionExecutionError::internal)?
             .is_some_and(|run| coordinated_thread_closed(kind, &run.state)))
     }
 
@@ -254,7 +261,8 @@ impl crate::ChildRunCoordination {
     pub(crate) async fn session_thread_tool_reply_fence(
         &self,
         command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
-    ) -> Result<awaken_session_execution_contract::SessionThreadToolReplyFence, HostError> {
+    ) -> Result<awaken_session_execution_contract::SessionThreadToolReplyFence, SessionExecutionError>
+    {
         // Resolve topology before SessionApplication opens a reply activity.
         self.session_runs.coordinator_dispatch()?;
         let (thread_id, _ticket) = match self.validated_session_thread_tool_reply(command).await {
@@ -270,7 +278,7 @@ impl crate::ChildRunCoordination {
                     });
                 }
                 SessionReplyReceipt::Conflict => {
-                    return Err(HostError::bad_request(
+                    return Err(SessionExecutionError::bad_request(
                         "Session Thread awaiting correlation was answered by another reply operation",
                     ));
                 }
@@ -283,7 +291,7 @@ impl crate::ChildRunCoordination {
             .coordinator_dispatch()?
             .list_dispatches()
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?
+            .map_err(|error| SessionExecutionError::internal(error.to_string()))?
             .into_iter()
             .find(|dispatch| dispatch.run_id == command.expected_run_id);
         let activity = reply_dispatch_activity(dispatch.as_ref(), &thread_id, &parent)?;
@@ -302,7 +310,7 @@ impl crate::ChildRunCoordination {
     pub(crate) async fn reply_session_thread_tool(
         &self,
         delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), SessionExecutionError> {
         let awaken_session_execution_contract::SessionThreadToolReplyDelivery {
             command,
             fence,
@@ -310,7 +318,7 @@ impl crate::ChildRunCoordination {
         } = delivery;
         let (thread_id, ticket) = match self.validated_session_thread_tool_reply(&command).await {
             Ok(_) if fence.already_applied => {
-                return Err(HostError::internal(
+                return Err(SessionExecutionError::internal(
                     "Session Thread reply became active after an applied-receipt fence",
                 ));
             }
@@ -318,12 +326,12 @@ impl crate::ChildRunCoordination {
             Err(active_error) => match self.session_thread_tool_reply_receipt(&command).await? {
                 SessionReplyReceipt::Exact => return Ok(()),
                 SessionReplyReceipt::Conflict => {
-                    return Err(HostError::bad_request(
+                    return Err(SessionExecutionError::bad_request(
                         "Session Thread awaiting correlation was answered by another reply operation",
                     ));
                 }
                 SessionReplyReceipt::Absent if fence.already_applied => {
-                    return Err(HostError::internal(
+                    return Err(SessionExecutionError::internal(
                         "Session Thread reply receipt disappeared after fencing",
                     ));
                 }
@@ -338,20 +346,21 @@ impl crate::ChildRunCoordination {
         let dispatch = store
             .list_dispatches()
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?
+            .map_err(|error| SessionExecutionError::internal(error.to_string()))?
             .into_iter()
             .find(|dispatch| dispatch.run_id == command.expected_run_id);
         let activity = reply_dispatch_activity(dispatch.as_ref(), &thread_id, &parent)?;
         if std::mem::discriminant(&activity) != std::mem::discriminant(&fence.activity) {
-            return Err(HostError::bad_request(
+            return Err(SessionExecutionError::bad_request(
                 "Session Thread reply ownership changed after admission",
             ));
         }
         let store = if dispatch.is_some() {
             store
         } else {
-            let epoch = session_activity_epoch
-                .ok_or_else(|| HostError::internal("foreground Session reply requires activity"))?;
+            let epoch = session_activity_epoch.ok_or_else(|| {
+                SessionExecutionError::internal("foreground Session reply requires activity")
+            })?;
             self.session_runs
                 .enqueue_foreground_session_resume_dispatch(
                     command.session_id.as_str(),
@@ -365,7 +374,7 @@ impl crate::ChildRunCoordination {
             .as_ref()
             .map(|system| crate::session_system_message(command.session_id.as_str(), system))
             .transpose()
-            .map_err(|error| HostError::bad_request(error.message))?
+            .map_err(|error| SessionExecutionError::bad_request(error.message))?
             .into_iter()
             .collect::<Vec<_>>();
         let message_id = command.delivery_operation_id();
@@ -386,12 +395,12 @@ impl crate::ChildRunCoordination {
                 session_activity_epoch,
             )
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
         self.session_runs
             .dispatch
             .publish_staged(store.as_ref())
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
         Ok(())
     }
 
@@ -401,9 +410,9 @@ impl crate::ChildRunCoordination {
         thread_id: &ThreadId,
         intent: CoordinatedRunIntent,
         max_unarchived_threads: usize,
-    ) -> Result<awaken_dispatch_contract::SessionChildAdmission, HostError> {
+    ) -> Result<awaken_dispatch_contract::SessionChildAdmission, SessionExecutionError> {
         if max_unarchived_threads == 0 {
-            return Err(HostError::bad_request(
+            return Err(SessionExecutionError::bad_request(
                 "Session child capacity must be greater than zero",
             ));
         }
@@ -416,7 +425,7 @@ impl crate::ChildRunCoordination {
                 link.thread_id == *thread_id
                     && matches!(link.target, CoordinatedThreadTarget::Agent { .. })
             }) else {
-                return Err(HostError::bad_request(
+                return Err(SessionExecutionError::bad_request(
                     "follow-up target is not an ordinary coordinated Agent Thread",
                 ));
             };
@@ -424,7 +433,7 @@ impl crate::ChildRunCoordination {
                 .coordinated_thread_is_closed(session_id, thread_id, link.target.kind())
                 .await?
             {
-                return Err(HostError::bad_request(
+                return Err(SessionExecutionError::bad_request(
                     "Agent Thread terminated after a failed Run",
                 ));
             }
@@ -459,7 +468,7 @@ impl crate::ChildRunCoordination {
     pub(crate) async fn admit_coordinated_run(
         &self,
         command: CoordinatedRunCommand,
-    ) -> Result<SessionAgentMessageReceipt, HostError> {
+    ) -> Result<SessionAgentMessageReceipt, SessionExecutionError> {
         let mut command = command;
         let intent = command.intent;
         let max_unarchived_threads = command.max_unarchived_threads;
@@ -469,7 +478,9 @@ impl crate::ChildRunCoordination {
             .session_activity_epoch
             .filter(|epoch| *epoch != 0)
             .ok_or_else(|| {
-                HostError::unavailable("fresh coordination requires an original nonzero activity")
+                SessionExecutionError::unavailable(
+                    "fresh coordination requires an original nonzero activity",
+                )
             })?;
         let (baseline, tools, resources, coordinator_publication) = self
             .installed_sessions
@@ -487,17 +498,23 @@ impl crate::ChildRunCoordination {
                     slot.inputs.published_snapshot.clone(),
                 )
             })?
-            .ok_or_else(|| HostError::bad_request("Session runtime projection is unavailable"))?;
+            .ok_or_else(|| {
+                SessionExecutionError::bad_request("Session runtime projection is unavailable")
+            })?;
         let baseline = baseline.ok_or_else(|| {
-            HostError::bad_request("Session frozen baseline is unavailable for coordination")
+            SessionExecutionError::bad_request(
+                "Session frozen baseline is unavailable for coordination",
+            )
         })?;
         let resources = resources.ok_or_else(|| {
-            HostError::bad_request("Session resource manifest is unavailable for coordination")
+            SessionExecutionError::bad_request(
+                "Session resource manifest is unavailable for coordination",
+            )
         })?;
         if command.snapshot.metadata.source.revision == 0
             || command.snapshot.metadata.source.agent_id != command.snapshot.root_agent_id
         {
-            return Err(HostError::bad_request(
+            return Err(SessionExecutionError::bad_request(
                 "coordinated Run does not carry an exact Agent publication",
             ));
         }
@@ -512,7 +529,7 @@ impl crate::ChildRunCoordination {
                 &resources.workspace_id,
                 snapshot,
             )
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
             if let Some(tools) = tools.as_ref() {
                 super::session::project_session_tool_override(
                     &mut snapshot,
@@ -526,7 +543,9 @@ impl crate::ChildRunCoordination {
             super::session::ManagedCoordinationRole::Child,
         );
         snapshot.recompute_fingerprint().map_err(|error| {
-            HostError::internal(format!("fingerprint coordinated child snapshot: {error}"))
+            SessionExecutionError::internal(format!(
+                "fingerprint coordinated child snapshot: {error}"
+            ))
         })?;
 
         // `send_message` is an Agent/Thread command, not server message
@@ -548,7 +567,7 @@ impl crate::ChildRunCoordination {
                 })
             })
             .ok_or_else(|| {
-                HostError::bad_request(
+                SessionExecutionError::bad_request(
                     "coordinated Run has no exact coordinator tool configuration",
                 )
             })?;
@@ -561,7 +580,7 @@ impl crate::ChildRunCoordination {
             Some(resources),
             self.capabilities.agent.agent_publications.as_deref(),
         )
-        .map_err(|error| HostError::bad_request(error.to_string()))?
+        .map_err(|error| SessionExecutionError::bad_request(error.to_string()))?
         .with_session_activity_epoch(session_activity_epoch);
         let admission = self
             .coordinated_child_admission(
@@ -586,7 +605,7 @@ impl crate::ChildRunCoordination {
     pub(crate) async fn continue_session_agent_report(
         &self,
         command: SessionAgentReportContinuation,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), SessionExecutionError> {
         if command.source_thread_id.0 == command.session_id
             || command.session_activity_epoch == 0
             || command.message.role != Role::User
@@ -595,7 +614,7 @@ impl crate::ChildRunCoordination {
                 .id
                 .is_agent_thread_report_of(&command.source_run_id)
         {
-            return Err(HostError::bad_request(
+            return Err(SessionExecutionError::bad_request(
                 "coordinated Agent report has inconsistent provenance",
             ));
         }
@@ -644,7 +663,7 @@ impl crate::ChildRunCoordination {
     pub(crate) async fn validate_session_agent_message_source(
         &self,
         command: &SessionAgentMessageCommand,
-    ) -> Result<SessionAgentMessageCommand, HostError> {
+    ) -> Result<SessionAgentMessageCommand, SessionExecutionError> {
         let snapshot = self
             .thread_reads
             .session_thread_run_recovery_snapshot(
@@ -660,14 +679,14 @@ impl crate::ChildRunCoordination {
         &self,
         session_id: &str,
         thread_id: &ThreadId,
-    ) -> Result<Vec<awaken_dispatch_contract::DispatchSummary>, HostError> {
+    ) -> Result<Vec<awaken_dispatch_contract::DispatchSummary>, SessionExecutionError> {
         let parent = ThreadId(session_id.to_string());
         Ok(self
             .session_runs
             .coordinator_dispatch()?
             .list_dispatches()
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?
+            .map_err(|error| SessionExecutionError::internal(error.to_string()))?
             .into_iter()
             .filter(|dispatch| {
                 dispatch.thread_id == *thread_id
@@ -680,7 +699,7 @@ impl crate::ChildRunCoordination {
         &self,
         session_id: &str,
         thread_id: &ThreadId,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), SessionExecutionError> {
         self.session_runs
             .interrupt_session_thread(session_id, thread_id)
             .await?;
@@ -711,7 +730,7 @@ impl crate::ChildRunCoordination {
         })
         .await
         .map_err(|_| {
-            HostError::unavailable_classified(
+            SessionExecutionError::unavailable_classified(
                 "coordination_settle_timeout",
                 "Agent Thread interruption did not settle before archive timed out",
             )
@@ -727,9 +746,9 @@ impl crate::ChildRunCoordination {
         &self,
         session_id: &str,
         thread_id: &ThreadId,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), SessionExecutionError> {
         if thread_id.0 == session_id {
-            return Err(HostError::bad_request(
+            return Err(SessionExecutionError::bad_request(
                 "the primary Thread is archived through its Session",
             ));
         }
@@ -753,7 +772,7 @@ impl crate::ChildRunCoordination {
                 )
             })
         {
-            return Err(HostError::bad_request(
+            return Err(SessionExecutionError::bad_request(
                 "only an idle Agent Thread may be archived",
             ));
         }
@@ -776,10 +795,10 @@ impl crate::ChildRunCoordination {
         if commit
             .authoritative_latest_run(thread_id)
             .await
-            .map_err(HostError::internal)?
+            .map_err(SessionExecutionError::internal)?
             .is_some_and(|run| run.state == RunState::Running)
         {
-            return Err(HostError::bad_request(
+            return Err(SessionExecutionError::bad_request(
                 "only an idle Agent Thread may be archived",
             ));
         }
@@ -824,7 +843,7 @@ impl crate::ChildRunCoordination {
                     self.cancel_and_await_coordinated_thread_quiescence(session_id, thread_id)
                         .await
                 } else {
-                    Err(HostError::internal(format!(
+                    Err(SessionExecutionError::internal(format!(
                         "commit Session Thread archive: {error}"
                     )))
                 }
@@ -866,10 +885,18 @@ mod tests {
         let unavailable = dispatch_admission_error(
             awaken_dispatch_contract::DispatchError::Unavailable("response lost".into()),
         );
-        assert_eq!(rejected.kind, HostErrorKind::BadRequest, "R1/E1");
-        assert_eq!(unavailable.kind, HostErrorKind::Unavailable, "R3/E2");
-        let rejected = crate::host_error::to_run_error(rejected);
-        let unavailable = crate::host_error::to_run_error(unavailable);
+        assert_eq!(
+            rejected.kind,
+            SessionExecutionErrorKind::BadRequest,
+            "R1/E1"
+        );
+        assert_eq!(
+            unavailable.kind,
+            SessionExecutionErrorKind::Unavailable,
+            "R3/E2"
+        );
+        let rejected = crate::session_execution_error::to_run_error(rejected);
+        let unavailable = crate::session_execution_error::to_run_error(unavailable);
         assert_eq!(
             rejected.kind,
             awaken_session_types::RunErrorKind::BadRequest
@@ -1029,8 +1056,12 @@ mod tests {
             other => panic!("R2 expected actual identity conflict, got {other}"),
         };
         let conflict = dispatch_admission_error(conflict);
-        assert_eq!(conflict.kind, HostErrorKind::Unavailable, "R2/E2");
-        let conflict = crate::host_error::to_run_error(conflict);
+        assert_eq!(
+            conflict.kind,
+            SessionExecutionErrorKind::Unavailable,
+            "R2/E2"
+        );
+        let conflict = crate::session_execution_error::to_run_error(conflict);
         assert_eq!(
             conflict.kind,
             awaken_session_types::RunErrorKind::Unavailable,
@@ -1245,7 +1276,7 @@ mod tests {
                     .await
                     .expect("coordinated Resource dispatch store"),
             );
-            let host = (crate::HostDependencies::ephemeral(
+            let host = (crate::SessionExecutorBuilder::ephemeral(
                 Arc::new(crate::host::MemoryHostModel),
                 "stub",
             )

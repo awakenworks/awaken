@@ -2,7 +2,7 @@
 //!
 //! Each group is a plain owned struct defined in its own module, so the
 //! modules that read a capability name exactly one group. A composition
-//! selects every group's dependencies on [`crate::HostDependencies`] before the
+//! selects every group's dependencies on [`crate::SessionExecutorBuilder`] before the
 //! Host exists; groups that also carry Host runtime state (Agent execution,
 //! Resources) have a separate selection type that the one Host
 //! constructor turns into the group. Cross-group Host behaviour stays in the

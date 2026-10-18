@@ -11,7 +11,7 @@ async fn failed_context_assembly_retains_one_environment_for_retry() {
     // E2 the lifecycle owner retains the same Environment. R1=C1+C2=>E1+E2;
     // R2=C1+C2+C3=>E1+E2 without another acquisition. Configuration stays
     // unchanged; successful retry/cache reuse is covered by the ACP fault cases.
-    let mut host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await;
+    let mut host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await;
     let id = awaken_ext_compact::COMPACT_PLUGIN_ID.to_string();
     host.tools.plugin_ids.push(id.clone());
     host.tools
@@ -215,7 +215,7 @@ async fn acp_fixture(
     let source =
         awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot]).unwrap();
     let mut host = crate::acp_backend::with_fixture_acp(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_agent_publications(Arc::new(source))
             .with_acp_tool_exporter(exporter.clone()),

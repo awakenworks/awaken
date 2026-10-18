@@ -32,15 +32,15 @@ impl LlmExecutor for AdoptionModel {
 
 /// The dependencies of a Host over [`AdoptionModel`] with only its built-in
 /// volatile stores.
-pub(crate) async fn adoption_dependencies() -> crate::HostDependencies {
-    crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub").await
+pub(crate) async fn adoption_dependencies() -> crate::SessionExecutorBuilder {
+    crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub").await
 }
 
 /// [`adoption_dependencies`] with its durable stores opened under `dir`; two
 /// Hosts over one `dir` are a restart of the same installation.
 pub(crate) async fn adoption_dependencies_at(
     dir: impl Into<std::path::PathBuf>,
-) -> crate::HostDependencies {
+) -> crate::SessionExecutorBuilder {
     adoption_dependencies().await.with_store_dir(dir).await
 }
 

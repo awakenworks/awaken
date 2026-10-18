@@ -41,7 +41,7 @@ use awaken_dispatch::{
     WorkerIdentityRequest as WorkerIdentityReq, WorkerSnapshot,
 };
 
-use awaken_dispatch::{ApplicationError as HostError, ApplicationErrorKind};
+use awaken_dispatch::{ApplicationError, ApplicationErrorKind};
 use awaken_time::{WallClock, WallClockExt};
 use awaken_worker_transport_security::{
     FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, VerifiedWorkerContext, WorkerLeasePolicy,
@@ -131,12 +131,12 @@ pub fn worker_environment_warmup_router(
                 false,
             )
             .await
-            .map_err(HostError::bad_request)?;
+            .map_err(ApplicationError::bad_request)?;
             let warmups = state
                 .source
                 .current_environment_warmups()
                 .await
-                .map_err(HostError::unavailable)?;
+                .map_err(ApplicationError::unavailable)?;
             Ok(json!({ "warmups": warmups }))
         }
         .await;
@@ -417,7 +417,7 @@ async fn claim_authority(
     worker: &VerifiedWorkerContext,
     identity: Option<&WorkerIdentity>,
     require_ready: bool,
-) -> Result<ClaimAuthority, HostError> {
+) -> Result<ClaimAuthority, ApplicationError> {
     let now_ms = service.clock.now_ms();
     let lease_ms = service.lease_policy.lease_ms(worker);
     let Some(directory) = &service.directory else {
@@ -429,14 +429,16 @@ async fn claim_authority(
         });
     };
     let identity = identity.ok_or_else(|| {
-        HostError::bad_request("registered worker identity is required for dispatch authority")
+        ApplicationError::bad_request(
+            "registered worker identity is required for dispatch authority",
+        )
     })?;
     let snapshot =
         verify_current_worker_identity(directory.as_ref(), worker, identity, now_ms, require_ready)
             .await
-            .map_err(HostError::bad_request)?;
+            .map_err(ApplicationError::bad_request)?;
     if !snapshot.manifest.supports_current_runtime_protocol() {
-        return Err(HostError::bad_request(
+        return Err(ApplicationError::bad_request(
             "Worker manifest does not explicitly support the current runtime protocol",
         ));
     }
@@ -469,7 +471,7 @@ async fn verify_session_realization_authority(
     purpose: RealizationAuthorityPurpose,
 ) -> Result<(), RealizationHttpError> {
     verify_worker_identity(worker, identity)
-        .map_err(HostError::bad_request)
+        .map_err(ApplicationError::bad_request)
         .map_err(RealizationHttpError::from)?;
     let authority = claim_authority(service, worker, Some(identity), false).await?;
     if lease.owner != identity.worker_id
@@ -480,7 +482,7 @@ async fn verify_session_realization_authority(
                 authority.now_ms,
             ))
     {
-        return Err(RealizationHttpError::from(HostError::bad_request(
+        return Err(RealizationHttpError::from(ApplicationError::bad_request(
             "Session realization lease is not owned by the authenticated Worker incarnation",
         )));
     }
@@ -502,7 +504,7 @@ async fn observe_expired_predecessor(
     service: &WorkerDispatchService,
     successor: &RunClaim,
     request_budget_ms: u64,
-) -> Result<Option<awaken_dispatch::WorkerProcessStopStatus>, HostError> {
+) -> Result<Option<awaken_dispatch::WorkerProcessStopStatus>, ApplicationError> {
     let Some(source) = &service.execution_stops else {
         return Ok(None);
     };
@@ -522,7 +524,7 @@ async fn observe_expired_predecessor(
         ),
     )
     .await
-    .map_err(|_| HostError::unavailable("predecessor stop observation timed out"))?
+    .map_err(|_| ApplicationError::unavailable("predecessor stop observation timed out"))?
 }
 
 pub struct RegisteredDispatchDependencies {
@@ -757,7 +759,7 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
         .with_state(service)
 }
 
-pub fn respond(result: Result<Value, HostError>) -> (StatusCode, Json<Value>) {
+pub fn respond(result: Result<Value, ApplicationError>) -> (StatusCode, Json<Value>) {
     match result {
         Ok(value) => (StatusCode::OK, Json(value)),
         Err(error) => {
@@ -773,13 +775,13 @@ pub fn respond(result: Result<Value, HostError>) -> (StatusCode, Json<Value>) {
 }
 
 enum RealizationHttpError {
-    Boundary(HostError),
+    Boundary(ApplicationError),
     Control(awaken_session_realization_contract::SessionRealizationControlFailure),
     Binding(awaken_session_types::RunError),
 }
 
-impl From<HostError> for RealizationHttpError {
-    fn from(error: HostError) -> Self {
+impl From<ApplicationError> for RealizationHttpError {
+    fn from(error: ApplicationError) -> Self {
         Self::Boundary(error)
     }
 }
@@ -839,11 +841,11 @@ fn respond_realization(result: Result<Value, RealizationHttpError>) -> (StatusCo
 
 fn checkpoint_store(
     service: &WorkerDispatchService,
-) -> Result<&Arc<dyn StreamCheckpointStore>, HostError> {
+) -> Result<&Arc<dyn StreamCheckpointStore>, ApplicationError> {
     service
         .checkpoint
         .as_ref()
-        .ok_or_else(|| HostError::internal("worker checkpoint store is not configured"))
+        .ok_or_else(|| ApplicationError::internal("worker checkpoint store is not configured"))
 }
 
 // Work ownership can outlive a Run claim. Delay only the blocked Dispatch long
@@ -857,7 +859,7 @@ async fn bind_claimed_session_work_authority(
     service: &WorkerDispatchService,
     authority: &ClaimAuthority,
     mut claimed: Option<awaken_dispatch::Claimed>,
-) -> Result<Option<awaken_dispatch::Claimed>, HostError> {
+) -> Result<Option<awaken_dispatch::Claimed>, ApplicationError> {
     let Some(claimed_run) = claimed.as_mut() else {
         return Ok(None);
     };
@@ -868,7 +870,7 @@ async fn bind_claimed_session_work_authority(
     let work = service
         .session_work
         .as_ref()
-        .ok_or_else(|| HostError::internal("Session Work authority is not configured"))?;
+        .ok_or_else(|| ApplicationError::internal("Session Work authority is not configured"))?;
     let receipt = awaken_session_application_contract::acquire_session_work_receipt(
         work.as_ref(),
         &awaken_session_types::SessionId::from(session_id),
@@ -885,7 +887,7 @@ async fn bind_claimed_session_work_authority(
                 .dispatch
                 .defer_claim(&claim, SESSION_WORK_BUSY_RETRY_MS)
                 .await
-                .map_err(|error| HostError::unavailable(error.to_string()))?;
+                .map_err(|error| ApplicationError::unavailable(error.to_string()))?;
             tracing::debug!(run_id = %claim.run_id.0, session_id,
                 retry_after_ms = SESSION_WORK_BUSY_RETRY_MS,
                 "Session Work is held by another Worker; deferred only this Dispatch");
@@ -897,8 +899,8 @@ async fn bind_claimed_session_work_authority(
                 .dispatch
                 .relinquish_claim(&claim)
                 .await
-                .map_err(|rollback| HostError::internal(rollback.to_string()))?;
-            return Err(HostError::unavailable(error.to_string()));
+                .map_err(|rollback| ApplicationError::internal(rollback.to_string()))?;
+            return Err(ApplicationError::unavailable(error.to_string()));
         }
     };
     claimed_run.session_work_authority = Some(receipt);
@@ -914,7 +916,7 @@ async fn claim_is_current(
         let authority =
             claim_authority(&service, &worker, request.identity.as_ref(), false).await?;
         if authority.owner != request.claim.owner {
-            return Err(HostError::bad_request(
+            return Err(ApplicationError::bad_request(
                 "authenticated worker does not own the claim",
             ));
         }
@@ -922,7 +924,7 @@ async fn claim_is_current(
             .dispatch
             .lock_commit_epoch(&request.claim)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| ApplicationError::internal(error.to_string()))?;
         let Some(guard) = guard else {
             return Ok(json!({ "current": false }));
         };
@@ -931,7 +933,7 @@ async fn claim_is_current(
         }
         let dispatch = guard.request();
         if dispatch.run_id() != &request.claim.run_id {
-            return Err(HostError::bad_request(
+            return Err(ApplicationError::bad_request(
                 "guarded dispatch does not match the claim",
             ));
         }
@@ -954,7 +956,7 @@ async fn recovery_snapshot(
         let authority =
             claim_authority(&service, &worker, request.identity.as_ref(), false).await?;
         if authority.owner != request.claim.owner {
-            return Err(HostError::bad_request(
+            return Err(ApplicationError::bad_request(
                 "authenticated worker does not own the recovery claim",
             ));
         }
@@ -962,11 +964,11 @@ async fn recovery_snapshot(
             .dispatch
             .lock_commit_epoch(&request.claim)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?
-            .ok_or_else(|| HostError::conflict("run claim is stale"))?;
+            .map_err(|error| ApplicationError::internal(error.to_string()))?
+            .ok_or_else(|| ApplicationError::conflict("run claim is stale"))?;
         let dispatch = guard.request();
         if dispatch.run_id() != &request.claim.run_id {
-            return Err(HostError::bad_request(
+            return Err(ApplicationError::bad_request(
                 "guarded dispatch does not match the recovery claim",
             ));
         }
@@ -977,12 +979,12 @@ async fn recovery_snapshot(
         ) {
             (false, None) => {}
             (false, Some(_)) => {
-                return Err(HostError::bad_request(
+                return Err(ApplicationError::bad_request(
                     "ordinary recovery cannot present Session Work authority",
                 ));
             }
             (true, None) => {
-                return Err(HostError::bad_request(
+                return Err(ApplicationError::bad_request(
                     "recovery requires exact Session Work authority",
                 ));
             }
@@ -990,12 +992,12 @@ async fn recovery_snapshot(
                 if receipt.session_id().as_str() != session.0
                     || receipt.worker_owner() != authority.owner
                 {
-                    return Err(HostError::bad_request(
+                    return Err(ApplicationError::bad_request(
                         "Session recovery Work authority identity does not match the claim",
                     ));
                 }
                 let work = service.session_work.as_ref().ok_or_else(|| {
-                    HostError::internal("Session Work authority is not configured")
+                    ApplicationError::internal("Session Work authority is not configured")
                 })?;
                 let observed = work
                     .acquire_session_work(
@@ -1005,9 +1007,9 @@ async fn recovery_snapshot(
                         awaken_session_application_contract::SessionWorkAcquisition::RealizationRenewal,
                     )
                     .await
-                    .map_err(|error| HostError::unavailable(error.to_string()))?;
+                    .map_err(|error| ApplicationError::unavailable(error.to_string()))?;
                 if !receipt.matches_observation(&observed) {
-                    return Err(HostError::bad_request(
+                    return Err(ApplicationError::bad_request(
                         "Session recovery Work authority is stale",
                     ));
                 }
@@ -1016,7 +1018,7 @@ async fn recovery_snapshot(
         let source = service
             .recovery
             .as_ref()
-            .ok_or_else(|| HostError::internal("worker recovery source is not configured"))?;
+            .ok_or_else(|| ApplicationError::internal("worker recovery source is not configured"))?;
         let snapshot = source
             .recovery_snapshot_in_session(
                 dispatch.session_thread_id(),
@@ -1024,7 +1026,7 @@ async fn recovery_snapshot(
                 dispatch.run_id(),
             )
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| ApplicationError::internal(error.to_string()))?;
         Ok(json!({ "snapshot": snapshot }))
     }
     .await;
@@ -1040,16 +1042,20 @@ async fn bind_sandbox(
         let authority =
             claim_authority(&service, &worker, request.identity.as_ref(), false).await?;
         if request.claim.owner != authority.owner {
-            return Err(HostError::bad_request("sandbox claim owner is stale"));
+            return Err(ApplicationError::bad_request(
+                "sandbox claim owner is stale",
+            ));
         }
         if request.sandbox_ref.is_empty() {
-            return Err(HostError::bad_request("sandbox reference is required"));
+            return Err(ApplicationError::bad_request(
+                "sandbox reference is required",
+            ));
         }
         let outcome = service
             .dispatch
             .bind_sandbox(&request.claim, &request.sandbox_ref)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| ApplicationError::internal(error.to_string()))?;
         Ok(json!({ "applied": outcome.applied() }))
     }
     .await;
@@ -1060,10 +1066,12 @@ async fn checkpoint_authority(
     service: &WorkerDispatchService,
     worker: &VerifiedWorkerContext,
     request: &CheckpointReq,
-) -> Result<(), HostError> {
+) -> Result<(), ApplicationError> {
     let authority = claim_authority(service, worker, request.identity.as_ref(), false).await?;
     if request.claim.owner != authority.owner {
-        return Err(HostError::bad_request("checkpoint claim owner is stale"));
+        return Err(ApplicationError::bad_request(
+            "checkpoint claim owner is stale",
+        ));
     }
     Ok(())
 }
@@ -1079,7 +1087,7 @@ async fn get_checkpoint(
             .dispatch
             .lock_commit_epoch(&request.claim)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?
+            .map_err(|error| ApplicationError::internal(error.to_string()))?
         else {
             return Ok(json!({ "checkpoint": null }));
         };
@@ -1092,7 +1100,7 @@ async fn get_checkpoint(
         {
             Observed::Present(checkpoint) => Ok(json!({ "checkpoint": checkpoint })),
             Observed::Absent => Ok(json!({ "checkpoint": null })),
-            Observed::Unknown(cause) => Err(HostError::internal(cause.to_string())),
+            Observed::Unknown(cause) => Err(ApplicationError::internal(cause.to_string())),
         }
     }
     .await;
@@ -1108,9 +1116,9 @@ async fn put_checkpoint(
         checkpoint_authority(&service, &worker, &request).await?;
         let checkpoint = request
             .checkpoint
-            .ok_or_else(|| HostError::bad_request("checkpoint payload is required"))?;
+            .ok_or_else(|| ApplicationError::bad_request("checkpoint payload is required"))?;
         if checkpoint.run_id != request.claim.run_id.0 {
-            return Err(HostError::bad_request(
+            return Err(ApplicationError::bad_request(
                 "checkpoint run id does not match claim",
             ));
         }
@@ -1118,14 +1126,14 @@ async fn put_checkpoint(
             .dispatch
             .lock_commit_epoch(&request.claim)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?
+            .map_err(|error| ApplicationError::internal(error.to_string()))?
         else {
             return Ok(json!({ "applied": false }));
         };
         checkpoint_store(&service)?
             .put(checkpoint)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| ApplicationError::internal(error.to_string()))?;
         Ok(json!({ "applied": true }))
     }
     .await;
@@ -1143,30 +1151,35 @@ async fn delete_checkpoint(
             .dispatch
             .lock_commit_epoch(&request.claim)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?
+            .map_err(|error| ApplicationError::internal(error.to_string()))?
         else {
             return Ok(json!({ "applied": false }));
         };
         checkpoint_store(&service)?
             .delete(&request.claim.run_id.0)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| ApplicationError::internal(error.to_string()))?;
         Ok(json!({ "applied": true }))
     }
     .await;
     respond(result)
 }
 
-fn directory(service: &WorkerDispatchService) -> Result<&Arc<dyn WorkerDirectory>, HostError> {
+fn directory(
+    service: &WorkerDispatchService,
+) -> Result<&Arc<dyn WorkerDirectory>, ApplicationError> {
     service
         .directory
         .as_ref()
-        .ok_or_else(|| HostError::internal("worker directory is not configured"))
+        .ok_or_else(|| ApplicationError::internal("worker directory is not configured"))
 }
 
-fn verify_worker_id(worker: &VerifiedWorkerContext, worker_id: &str) -> Result<(), HostError> {
+fn verify_worker_id(
+    worker: &VerifiedWorkerContext,
+    worker_id: &str,
+) -> Result<(), ApplicationError> {
     if worker.worker_id() != worker_id {
-        return Err(HostError::bad_request(
+        return Err(ApplicationError::bad_request(
             "authenticated worker id does not match request identity",
         ));
     }
@@ -1178,7 +1191,7 @@ fn verify_worker_id(worker: &VerifiedWorkerContext, worker_id: &str) -> Result<(
 async fn release_closed_idle_worker_evidence(
     service: &WorkerDispatchService,
     identity: &WorkerIdentity,
-) -> Result<(), HostError> {
+) -> Result<(), ApplicationError> {
     let Some(source) = &service.execution_stops else {
         return Ok(());
     };
@@ -1193,7 +1206,7 @@ async fn release_closed_idle_worker_evidence(
         ),
     )
     .await
-    .map_err(|_| HostError::unavailable("idle Worker evidence release timed out"))?
+    .map_err(|_| ApplicationError::unavailable("idle Worker evidence release timed out"))?
 }
 
 async fn settle(
@@ -1216,17 +1229,18 @@ async fn settle(
             .dispatch
             .lock_commit_epoch(&claim)
             .await
-            .map_err(|error| RealizationHttpError::from(HostError::internal(error.to_string())))?;
+            .map_err(|error| {
+                RealizationHttpError::from(ApplicationError::internal(error.to_string()))
+            })?;
         let Some(guard) = authorized else {
             return Ok(json!({ "settled": false }));
         };
         // No observer, Memory extraction, or Work release may run merely
         // because logical Ended truth exists while a predecessor still runs.
         if !guard.permits_settlement() {
-            guard
-                .release()
-                .await
-                .map_err(|error| RealizationHttpError::from(HostError::unavailable(error)))?;
+            guard.release().await.map_err(|error| {
+                RealizationHttpError::from(ApplicationError::unavailable(error))
+            })?;
             // A committed-terminal recovery claim never re-enters physical
             // admission. Give it the same independent predecessor-stop
             // progression as a blocked begin, then require the ordinary settle
@@ -1276,20 +1290,20 @@ async fn settle(
                             .map(|record| record.state.clone())
                     }
                     Ok(_) if terminal_observer.is_some() => {
-                        return Err(RealizationHttpError::from(HostError::bad_request(
+                        return Err(RealizationHttpError::from(ApplicationError::bad_request(
                             "terminal settlement recovery does not match the guarded dispatch",
                         )));
                     }
                     Ok(_) => None,
                     Err(error) if terminal_observer.is_some() => {
-                        return Err(RealizationHttpError::from(HostError::unavailable(format!(
-                            "read committed terminal settlement state: {error}"
-                        ))));
+                        return Err(RealizationHttpError::from(ApplicationError::unavailable(
+                            format!("read committed terminal settlement state: {error}"),
+                        )));
                     }
                     Err(_) => None,
                 }
             } else if terminal_observer.is_some() {
-                return Err(RealizationHttpError::from(HostError::internal(
+                return Err(RealizationHttpError::from(ApplicationError::internal(
                     "terminal settlement recovery source is not configured",
                 )));
             } else {
@@ -1300,12 +1314,12 @@ async fn settle(
         };
         if let Some(observer) = terminal_observer {
             let committed_state = committed_state.as_ref().ok_or_else(|| {
-                RealizationHttpError::from(HostError::bad_request(
+                RealizationHttpError::from(ApplicationError::bad_request(
                     "terminal settlement recovery has no matching committed Run",
                 ))
             })?;
             if !matches!(committed_state, RunState::Ended(_)) {
-                return Err(RealizationHttpError::from(HostError::bad_request(
+                return Err(RealizationHttpError::from(ApplicationError::bad_request(
                     "Done settlement requires matching committed Ended truth",
                 )));
             }
@@ -1332,7 +1346,7 @@ async fn settle(
                 .instrument(observation)
                 .await
                 .map_err(|error| {
-                    RealizationHttpError::from(HostError::unavailable(error.to_string()))
+                    RealizationHttpError::from(ApplicationError::unavailable(error.to_string()))
                 })?;
         }
         // Work retirement revokes execution admission, not an already committed
@@ -1344,7 +1358,7 @@ async fn settle(
         let session_boundary = if coordinated_dispatch {
             if let Some(session_activity_epoch) = guard.request().session_activity_epoch {
                 let state = committed_state.as_ref().ok_or_else(|| {
-                    RealizationHttpError::from(HostError::bad_request(
+                    RealizationHttpError::from(ApplicationError::bad_request(
                         "coordinated settlement has no matching committed Run",
                     ))
                 })?;
@@ -1359,7 +1373,7 @@ async fn settle(
                     )
                 );
                 if !state_matches || session_activity_epoch == 0 {
-                    return Err(RealizationHttpError::from(HostError::bad_request(
+                    return Err(RealizationHttpError::from(ApplicationError::bad_request(
                         "coordinated settlement does not match committed Session activity truth",
                     )));
                 }
@@ -1404,7 +1418,7 @@ async fn settle(
                 )
                 .await
                 .map_err(|error| {
-                    RealizationHttpError::from(HostError::internal(error.to_string()))
+                    RealizationHttpError::from(ApplicationError::internal(error.to_string()))
                 })? {
                 awaken_session_application_contract::SessionWorkOwnership::NotRequired => None,
                 awaken_session_application_contract::SessionWorkOwnership::Leased(lease)
@@ -1422,7 +1436,7 @@ async fn settle(
                 }
                 awaken_session_application_contract::SessionWorkOwnership::Unowned
                 | awaken_session_application_contract::SessionWorkOwnership::Leased(_) => {
-                    return Err(RealizationHttpError::from(HostError::bad_request(
+                    return Err(RealizationHttpError::from(ApplicationError::bad_request(
                         "Session Work ownership was lost before Run settlement",
                     )));
                 }
@@ -1432,12 +1446,12 @@ async fn settle(
                     .release_session_work(lease)
                     .await
                     .map_err(|error| {
-                        RealizationHttpError::from(HostError::internal(error.to_string()))
+                        RealizationHttpError::from(ApplicationError::internal(error.to_string()))
                     })?,
                 None => true,
             };
             if !released && !committed_terminal {
-                return Err(RealizationHttpError::from(HostError::bad_request(
+                return Err(RealizationHttpError::from(ApplicationError::bad_request(
                     "Session Work ownership was lost before Run settlement",
                 )));
             }
@@ -1451,7 +1465,9 @@ async fn settle(
                 &request.consumed,
             )
             .await
-            .map_err(|error| RealizationHttpError::from(HostError::internal(error.to_string())))?;
+            .map_err(|error| {
+                RealizationHttpError::from(ApplicationError::internal(error.to_string()))
+            })?;
         if outcome.applied()
             && let Some(completion) = &service.completion
             && let Some(state) = committed_state.as_ref()
@@ -1466,7 +1482,7 @@ async fn settle(
                 .finalize_session_agent_boundary(command)
                 .await
                 .map_err(|error| {
-                    RealizationHttpError::from(HostError::unavailable(error.to_string()))
+                    RealizationHttpError::from(ApplicationError::unavailable(error.to_string()))
                 })?;
         }
         Ok(json!({ "settled": outcome.applied() }))
@@ -1487,12 +1503,12 @@ async fn stream_event(
         if stream_request.claim.owner != authority.owner
             || stream_request.event.run_id != stream_request.claim.run_id
         {
-            return Err(HostError::bad_request(
+            return Err(ApplicationError::bad_request(
                 "live Worker event does not match its authenticated claim",
             ));
         }
         if !awaken_agent_contract::event::classify(&stream_request.event.kind).live {
-            return Err(HostError::bad_request(
+            return Err(ApplicationError::bad_request(
                 "Worker transport accepts only live-classified Agent events",
             ));
         }
@@ -1500,7 +1516,7 @@ async fn stream_event(
             .dispatch
             .lock_commit_epoch(&stream_request.claim)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| ApplicationError::internal(error.to_string()))?;
         let Some(guard) = current else {
             return Ok(json!({ "accepted": false }));
         };
@@ -1512,7 +1528,7 @@ async fn stream_event(
         let provided_thread_mismatch =
             observed_thread.is_some_and(|thread_id| thread_id != committed_thread);
         if provided_thread_mismatch {
-            return Err(HostError::bad_request(
+            return Err(ApplicationError::bad_request(
                 "live Worker event does not match its claim's logical Thread",
             ));
         }

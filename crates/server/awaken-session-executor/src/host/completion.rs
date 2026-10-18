@@ -6,7 +6,7 @@
 //! best-effort live routes for each foreground Run.
 
 use super::*;
-use crate::host_error::ExecutorLock;
+use crate::session_execution_error::ExecutorLock;
 #[cfg(test)]
 use awaken_dispatch_execution::placement::remote_worker_placement;
 #[cfg(test)]
@@ -25,8 +25,8 @@ impl crate::SessionRuns {
         run_id: RunId,
         correlation_id: String,
         stream_sink: Option<Arc<dyn StreamSink>>,
-        publish: impl std::future::Future<Output = Result<(), HostError>>,
-    ) -> Result<CommittedStepReceipt, HostError> {
+        publish: impl std::future::Future<Output = Result<(), SessionExecutionError>>,
+    ) -> Result<CommittedStepReceipt, SessionExecutionError> {
         let ctx = self
             .run_assembly
             .ctx_for_session_coordination(session_id, None)
@@ -51,9 +51,9 @@ impl crate::SessionRuns {
     pub(crate) async fn activate_session_run_reservation(
         &self,
         delivery: awaken_session_execution_contract::SessionRunDelivery,
-    ) -> Result<awaken_session_execution_contract::SessionRunActivation, HostError> {
+    ) -> Result<awaken_session_execution_contract::SessionRunActivation, SessionExecutionError> {
         if delivery.session_activity_epoch == 0 {
-            return Err(HostError::bad_request(
+            return Err(SessionExecutionError::bad_request(
                 "Session User Run activity epoch must be nonzero",
             ));
         }
@@ -65,7 +65,7 @@ impl crate::SessionRuns {
                 delivery.session_activity_epoch,
             )
             .await
-            .map_err(|error| HostError::unavailable(error.to_string()))?;
+            .map_err(|error| SessionExecutionError::unavailable(error.to_string()))?;
         let projected = match outcome {
             awaken_dispatch_contract::SessionRunReservationActivation::Activated => {
                 awaken_session_execution_contract::SessionRunActivation::Activated
@@ -82,12 +82,12 @@ impl crate::SessionRuns {
                 awaken_session_execution_contract::SessionRunActivation::Completed
             }
             awaken_dispatch_contract::SessionRunReservationActivation::MissingOrRejected => {
-                return Err(HostError::bad_request(
+                return Err(SessionExecutionError::bad_request(
                     "Session User Run reservation is missing or rejected",
                 ));
             }
             awaken_dispatch_contract::SessionRunReservationActivation::Conflict => {
-                return Err(HostError::bad_request(
+                return Err(SessionExecutionError::bad_request(
                     "Session User Run reservation activation conflicts with durable truth",
                 ));
             }
@@ -100,7 +100,7 @@ impl crate::SessionRuns {
             self.dispatch
                 .publish_staged(store.as_ref())
                 .await
-                .map_err(|error| HostError::unavailable(error.to_string()))?;
+                .map_err(|error| SessionExecutionError::unavailable(error.to_string()))?;
         }
         Ok(projected)
     }
@@ -113,7 +113,7 @@ impl crate::SessionRuns {
         admission: awaken_session_execution_contract::AdmittedSessionRun,
         input_message_ids: Vec<String>,
         stream_sink: Option<Arc<dyn StreamSink>>,
-    ) -> Result<CommittedStepReceipt, HostError> {
+    ) -> Result<CommittedStepReceipt, SessionExecutionError> {
         let session_id = admission.session_id().to_string();
         let run_id = admission.run_id().clone();
         let ctx = self
@@ -162,7 +162,7 @@ impl crate::SessionRuns {
         supersede: bool,
         stream_sink: Option<Arc<dyn StreamSink>>,
         associate_prepared_session: bool,
-    ) -> Result<awaken_agent_contract::agent::run::RunState, HostError> {
+    ) -> Result<awaken_agent_contract::agent::run::RunState, SessionExecutionError> {
         let run_id = activation.run_id.clone();
         // Register for the settle event BEFORE enqueue, so the pool cannot drive and
         // settle the run before this caller is listening (no lost wakeup). The guard
@@ -183,7 +183,7 @@ impl crate::SessionRuns {
         // best-effort wake after the durable write. `resolved_dispatch` already
         // captured the admitting trace before either topology reaches this point.
         if !ctx.delivery.is_durable() {
-            return Err(HostError::internal(
+            return Err(SessionExecutionError::internal(
                 "durable submit requires durable delivery",
             ));
         }
@@ -198,12 +198,12 @@ impl crate::SessionRuns {
                     },
                 )
                 .await
-                .map_err(|e| HostError::internal(e.to_string()))?;
+                .map_err(|e| SessionExecutionError::internal(e.to_string()))?;
         } else {
             store
                 .enqueue(request)
                 .await
-                .map_err(|e| HostError::internal(e.to_string()))?;
+                .map_err(|e| SessionExecutionError::internal(e.to_string()))?;
         }
         self.dispatch.hint_local_pool().await;
         self.await_settled_event(ctx, &run_id, None, settled).await
@@ -217,7 +217,7 @@ impl crate::SessionRuns {
         &self,
         ctx: &Arc<SessionCtx>,
         command: ResumeCommand,
-    ) -> Result<RunState, HostError> {
+    ) -> Result<RunState, SessionExecutionError> {
         let run_id = command.run_id.clone();
         let correlation_id = command.correlation_id.clone();
         // Register before append so a local pool cannot settle between input
@@ -225,7 +225,7 @@ impl crate::SessionRuns {
         let (settled, _waiter_guard) = self.completion.register(&run_id, None)?;
         let input = durable_resume_input(command);
         if !ctx.delivery.is_durable() {
-            return Err(HostError::internal(
+            return Err(SessionExecutionError::internal(
                 "durable resume requires durable delivery",
             ));
         }
@@ -233,7 +233,7 @@ impl crate::SessionRuns {
         store
             .append(input)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
         self.dispatch.hint_local_pool().await;
         self.await_settled_event(ctx, &run_id, Some(&correlation_id), settled)
             .await
@@ -250,7 +250,7 @@ impl crate::SessionRuns {
         run_id: &RunId,
         answered_correlation: Option<&str>,
         settled: tokio::sync::oneshot::Receiver<RunState>,
-    ) -> Result<RunState, HostError> {
+    ) -> Result<RunState, SessionExecutionError> {
         await_completion_state(settled, std::time::Duration::from_millis(250), || {
             self.read_settled_phase(ctx, run_id, answered_correlation)
         })
@@ -264,12 +264,12 @@ impl crate::SessionRuns {
         ctx: &Arc<SessionCtx>,
         run_id: &RunId,
         answered_correlation: Option<&str>,
-    ) -> Result<Option<RunState>, HostError> {
+    ) -> Result<Option<RunState>, SessionExecutionError> {
         let record = ctx
             .commit
             .authoritative_run(run_id)
             .await
-            .map_err(HostError::internal)?;
+            .map_err(SessionExecutionError::internal)?;
         match record {
             Some(
                 record @ awaken_agent_contract::agent::run::Record {
@@ -294,7 +294,7 @@ impl crate::SessionRuns {
                     .commit
                     .open_wait_for_thread(&ctx.thread_id)
                     .await
-                    .map_err(HostError::internal)?;
+                    .map_err(SessionExecutionError::internal)?;
                 Ok(awaiting_ticket_advanced(
                     run_id,
                     answered_correlation,
@@ -349,10 +349,10 @@ async fn await_completion_state<Read, ReadFuture>(
     settled: tokio::sync::oneshot::Receiver<RunState>,
     reconciliation_interval: std::time::Duration,
     mut read_settled: Read,
-) -> Result<RunState, HostError>
+) -> Result<RunState, SessionExecutionError>
 where
     Read: FnMut() -> ReadFuture,
-    ReadFuture: std::future::Future<Output = Result<Option<RunState>, HostError>>,
+    ReadFuture: std::future::Future<Output = Result<Option<RunState>, SessionExecutionError>>,
 {
     let mut settled = std::pin::pin!(settled);
     // The local event is the fast path. A peer Coordinator can commit the same
@@ -367,7 +367,7 @@ where
                     return Ok(state);
                 }
                 return read_settled().await?.ok_or_else(|| {
-                    HostError::internal(
+                    SessionExecutionError::internal(
                         "durable completion signal closed before committed Run settlement",
                     )
                 });
@@ -391,14 +391,17 @@ async fn activate_and_await_session_run<Activate, ActivateFuture, Read, ReadFutu
     reconciliation_interval: std::time::Duration,
     activate: Activate,
     mut read_settled: Read,
-) -> Result<RunState, HostError>
+) -> Result<RunState, SessionExecutionError>
 where
     Activate: FnOnce() -> ActivateFuture,
     ActivateFuture: std::future::Future<
-            Output = Result<awaken_session_execution_contract::SessionRunActivation, HostError>,
+            Output = Result<
+                awaken_session_execution_contract::SessionRunActivation,
+                SessionExecutionError,
+            >,
         >,
     Read: FnMut() -> ReadFuture,
-    ReadFuture: std::future::Future<Output = Result<Option<RunState>, HostError>>,
+    ReadFuture: std::future::Future<Output = Result<Option<RunState>, SessionExecutionError>>,
 {
     // The guard spans activation and the complete committed-truth wait. Dropping
     // the caller at either phase removes only this observation; Dispatch/Thread
@@ -543,7 +546,7 @@ impl CompletionRegistry {
 
 fn completion_registry_poisoned(consequence: &'static str) {
     tracing::error!(
-        code = crate::host_error::EXECUTOR_LOCK_POISONED_CODE,
+        code = crate::session_execution_error::EXECUTOR_LOCK_POISONED_CODE,
         consequence,
         "foreground completion registry lock poisoned"
     );

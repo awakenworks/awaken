@@ -37,7 +37,7 @@ async fn dispatched_mcp_effect_projection_decision_table() {
         .is_none(),
         "R1"
     );
-    let host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub").await)
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     let _managed = host.clone();
@@ -182,7 +182,7 @@ async fn undecodable_dispatched_runtime_projection_is_an_absorbing_resolution_fa
             .await
             .expect("dispatch store"),
     );
-    let host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
         .await
         .with_ephemeral_dispatch(store.clone()))
     .build()

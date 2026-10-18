@@ -32,7 +32,7 @@ fn awaiting_tool_batch_state(
 }
 
 async fn host_requiring_write_confirmation(model: Arc<dyn LlmExecutor>) -> Arc<ExecutorComponents> {
-    let host = (crate::HostDependencies::ephemeral(model, "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(model, "stub")
         .await
         .with_gate_override(write_confirmation_gate()))
     .build()
@@ -105,7 +105,7 @@ async fn run_on_an_awaiting_thread_fails_closed() {
         .await
         .err()
         .expect("a second run on an awaiting thread must fail");
-    assert_eq!(err.kind, HostErrorKind::BadRequest);
+    assert_eq!(err.kind, SessionExecutionErrorKind::BadRequest);
     assert!(
         err.message.contains("awaiting a tool decision"),
         "message names the await: {}",
@@ -140,7 +140,7 @@ async fn resume_with_no_awaiting_run_fails_closed() {
         .await
         .err()
         .expect("resume with nothing awaiting must fail");
-    assert_eq!(err.kind, HostErrorKind::BadRequest);
+    assert_eq!(err.kind, SessionExecutionErrorKind::BadRequest);
     assert!(
         err.message.contains("no awaiting run"),
         "message names the missing await: {}",
@@ -175,7 +175,7 @@ async fn resume_with_a_wrong_tool_use_id_fails_closed() {
         .await
         .err()
         .expect("a mismatched tool_use_id must fail");
-    assert_eq!(err.kind, HostErrorKind::BadRequest);
+    assert_eq!(err.kind, SessionExecutionErrorKind::BadRequest);
     assert!(
         err.message.contains("does not match the pending tool"),
         "message names the mismatch: {}",
@@ -227,7 +227,7 @@ async fn client_result_cannot_answer_a_builtin_tool() {
         .await
         .err()
         .expect("a client result must not answer a built-in tool");
-    assert_eq!(err.kind, HostErrorKind::BadRequest);
+    assert_eq!(err.kind, SessionExecutionErrorKind::BadRequest);
     assert!(
         err.message.contains("built-in"),
         "message names the binding: {}",
@@ -255,7 +255,7 @@ async fn confirm_cannot_answer_a_client_tool() {
     // Constraint: typed reply kind must match target ownership. Decision rule:
     // exercise the inverse mismatch, then answer correctly to prove E1+E2.
     let (host, _managed) = dispatch_test_host(
-        (crate::HostDependencies::ephemeral(Arc::new(ClientLookupModel), "stub")
+        (crate::SessionExecutorBuilder::ephemeral(Arc::new(ClientLookupModel), "stub")
             .await
             .with_client_tools(HashSet::from(["lookup".to_string()])))
         .build()
@@ -279,7 +279,7 @@ async fn confirm_cannot_answer_a_client_tool() {
         .await
         .err()
         .expect("a confirmation must not answer a client tool");
-    assert_eq!(err.kind, HostErrorKind::BadRequest);
+    assert_eq!(err.kind, SessionExecutionErrorKind::BadRequest);
     assert!(
         err.message.contains("client-executed"),
         "message names the binding: {}",
@@ -317,7 +317,7 @@ async fn client_result_delivers_a_client_tool_result_and_ends_the_run() {
     // | Rule | ingress | ticket | answer | Effects |
     // | R1 | direct | valid client tool | exact result | E1+E2+E3 |
     let (host, _managed) = dispatch_test_host(
-        (crate::HostDependencies::ephemeral(Arc::new(ClientLookupModel), "stub")
+        (crate::SessionExecutorBuilder::ephemeral(Arc::new(ClientLookupModel), "stub")
             .await
             .with_client_tools(HashSet::from(["lookup".to_string()])))
         .build()
@@ -377,7 +377,7 @@ async fn durable_foreground_run_relays_live_progress_before_committed_completion
             .await
             .expect("in-memory dispatch"),
     );
-    let host = (crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub")
         .await
         .with_ephemeral_dispatch(dispatch))
     .build()
@@ -428,7 +428,7 @@ async fn terminal_child_report_atomically_admits_one_deterministic_primary_run()
             .await
             .expect("in-memory dispatch"),
     );
-    let host = (crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub")
         .await
         .with_ephemeral_dispatch(dispatch.clone()))
     .build()
@@ -578,7 +578,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
             .expect("coordinated reply dispatch"),
     );
     let (host, _managed) = dispatch_test_host(
-        (crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub")
+        (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub")
             .await
             .with_ephemeral_dispatch(dispatch.clone()))
         .build()
@@ -1195,7 +1195,7 @@ async fn remote_input_reply_uses_its_ticket_without_inventing_a_tool_batch() {
 
     let thread = ThreadId("remote-input-reply-session".into());
     let run_id = RunId("remote-input-reply-run".into());
-    let host = (crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub").await)
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     let commit = host
@@ -1269,7 +1269,8 @@ async fn remote_input_reply_uses_its_ticket_without_inventing_a_tool_batch() {
 
     let tool_thread = ThreadId("missing-tool-batch-session".into());
     let tool_run = RunId("missing-tool-batch-run".into());
-    let tool_host = (crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub").await)
+    let tool_host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub")
+        .await)
         .build()
         .expect("validated Host dependencies");
     let tool_commit = tool_host
@@ -1377,7 +1378,7 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
                 .expect("primary reply dispatch"),
         );
         let (host, _managed) = dispatch_test_host(
-            (crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub")
+            (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub")
                 .await
                 .with_ephemeral_dispatch(dispatch.clone()))
             .build()
@@ -1652,7 +1653,7 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
             .expect("budget resume dispatch"),
     );
     let (host, _managed) = dispatch_test_host(
-        (crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub")
+        (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub")
             .await
             .with_ephemeral_dispatch(dispatch.clone()))
         .build()
@@ -2091,7 +2092,7 @@ async fn durable_client_result_settles_the_authoritative_dispatch() {
             .await
             .expect("in-memory dispatch"),
     );
-    let host = (crate::HostDependencies::ephemeral(Arc::new(ClientLookupModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(ClientLookupModel), "stub")
         .await
         .with_client_tools(HashSet::from(["lookup".to_string()]))
         .with_ephemeral_dispatch(dispatch.clone()))
@@ -2168,7 +2169,7 @@ async fn coordinator_only_foreground_admission_survives_request_drop_without_a_p
             .await
             .expect("in-memory dispatch"),
     );
-    let host = (crate::HostDependencies::ephemeral(Arc::new(ClientLookupModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(ClientLookupModel), "stub")
         .await
         .with_client_tools(HashSet::from(["lookup".to_string()]))
         .with_ephemeral_coordinator_dispatch(dispatch.clone()))
@@ -2242,7 +2243,7 @@ async fn pending_client_tool_query_uses_committed_ticket_during_projection_gap()
     // | R3   | T  | T  | F  | F  | T  | E4     |
     // | R4   | F  | T/F| T  | F  | F  | E2 (resume_with_no_awaiting_run) |
     let (host, _managed) = dispatch_test_host(
-        (crate::HostDependencies::ephemeral(Arc::new(ClientLookupModel), "stub")
+        (crate::SessionExecutorBuilder::ephemeral(Arc::new(ClientLookupModel), "stub")
             .await
             .with_client_tools(HashSet::from(["lookup".to_string()])))
         .build()
@@ -2285,7 +2286,7 @@ async fn pending_client_tool_query_uses_committed_ticket_during_projection_gap()
         Ok(_) => panic!("committed wait must reject a competing user Run"),
         Err(error) => error,
     };
-    assert_eq!(error.kind, HostErrorKind::BadRequest);
+    assert_eq!(error.kind, SessionExecutionErrorKind::BadRequest);
 
     let resumed = host
         .session_runs
@@ -2333,7 +2334,7 @@ async fn supersede_run_without_durable_ingress_fails_closed() {
         .await
         .err()
         .expect("supersede without durable ingress must fail");
-    assert_eq!(err.kind, HostErrorKind::BadRequest);
+    assert_eq!(err.kind, SessionExecutionErrorKind::BadRequest);
     assert!(
         err.message.contains("durable ingress"),
         "message names the requirement: {}",
@@ -2354,7 +2355,7 @@ async fn managed_session_root_rejects_legacy_host_run_ingress() {
             .await
             .expect("managed ingress fence dispatch"),
     );
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_ephemeral_dispatch(dispatch.clone()))
     .build()
@@ -2375,7 +2376,7 @@ async fn managed_session_root_rejects_legacy_host_run_ingress() {
             Ok(_) => panic!("Managed root must reject legacy Host ingress"),
             Err(error) => error,
         };
-        assert_eq!(error.kind, HostErrorKind::BadRequest, "E1");
+        assert_eq!(error.kind, SessionExecutionErrorKind::BadRequest, "E1");
         assert!(error.message.contains("Session-owned Run ingress"), "E1");
     }
     assert!(

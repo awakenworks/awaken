@@ -12,7 +12,7 @@ async fn ctx_for_carries_one_self_consistent_snapshot_on_any_claiming_node() {
     // session config is already the complete execution authority and resolves
     // without manufacturing a second node-local catalog object.
     let (host, _managed) = dispatch_test_host(
-        (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+        (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
             .build()
             .expect("validated Host dependencies"),
     );
@@ -39,7 +39,7 @@ async fn claimed_inference_only_grader_keeps_execution_authority_without_a_sandb
     )
     .expect("literal model reference");
     let (host, _managed) = dispatch_test_host(
-        (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+        (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
             .build()
             .expect("validated Host dependencies"),
     );
@@ -112,7 +112,9 @@ async fn claimed_snapshot_is_the_worker_session_authority() {
     let roots = ManagedSessionRootFixture::new().await;
     let (host, managed) = dispatch_test_host(
         roots
-            .configure(crate::HostDependencies::ephemeral(Arc::new(OkModel), "host-default").await)
+            .configure(
+                crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "host-default").await,
+            )
             .build()
             .expect("validated Host dependencies"),
     );
@@ -167,7 +169,7 @@ async fn background_task_fails_closed_on_a_database_less_worker() {
         .build();
 
     let (local, _local_managed) = dispatch_test_host(
-        (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+        (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
             .build()
             .expect("validated Host dependencies"),
     );
@@ -185,7 +187,7 @@ async fn background_task_fails_closed_on_a_database_less_worker() {
         .await
         .expect("R1 co-located Native context");
 
-    let worker = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let worker = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_authority(crate::UpstreamAuthority::default()))
     .build()
@@ -202,7 +204,11 @@ async fn background_task_fails_closed_on_a_database_less_worker() {
         Err(error) => error,
         Ok(_) => panic!("R2 database-less Worker must reject BackgroundTask"),
     };
-    assert_eq!(error.kind, HostErrorKind::BadRequest, "R2 classification");
+    assert_eq!(
+        error.kind,
+        SessionExecutionErrorKind::BadRequest,
+        "R2 classification"
+    );
     assert!(
         error.message.contains("co-located Session application"),
         "R2 actionable boundary: {error}"
@@ -240,7 +246,9 @@ async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
     let roots = ManagedSessionRootFixture::new().await;
     let (host, managed) = dispatch_test_host(
         roots
-            .configure(crate::HostDependencies::ephemeral(Arc::new(OkModel), "host-default").await)
+            .configure(
+                crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "host-default").await,
+            )
             .build()
             .expect("validated Host dependencies"),
     );
@@ -317,7 +325,11 @@ async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
         Ok(_) => panic!("R2 local input was accepted"),
         Err(error) => error,
     };
-    assert_eq!(error.kind, crate::host::HostErrorKind::BadRequest, "R2");
+    assert_eq!(
+        error.kind,
+        crate::SessionExecutionErrorKind::BadRequest,
+        "R2"
+    );
     assert!(
         host.realization_executor
             .environments()
@@ -383,7 +395,7 @@ async fn session_event_dispatch_uses_the_explicit_persisted_trace_source() {
     // so recovery cannot manufacture a parent when root provenance stores None.
     const AMBIENT: &str = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01";
     const PERSISTED: &str = "00-11111111111111111111111111111111-2222222222222222-01";
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "host-default").await)
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "host-default").await)
         .build()
         .expect("validated Host dependencies");
     let activation = || {
@@ -470,7 +482,8 @@ async fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope
         ("R5", true, true, false, Some(4), None, 4),
         ("R6", true, true, true, Some(4), Some(7), 7),
     ] {
-        let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "host-default").await)
+        let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "host-default")
+            .await)
             .build()
             .expect("validated Host dependencies");
         let thread = format!("t-dispatch-resources-{rule}");
@@ -615,7 +628,7 @@ async fn durable_dispatch_freezes_the_delegation_publication_closure() {
     let publications =
         awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([child.clone()])
             .expect("A1 publication source");
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "host-default")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "host-default")
         .await
         .with_agent_publications(Arc::new(publications)))
     .build()
@@ -662,7 +675,7 @@ async fn durable_dispatch_marks_only_a_prepared_root_session_for_worker_realizat
     //
     // This test owns R1. The adjacent resource-envelope test owns R2 and the
     // existing child-dispatch test owns R3, avoiding a parallel child builder.
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "host-default").await)
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "host-default").await)
         .build()
         .expect("validated Host dependencies");
     let thread = "prepared-root-session";
@@ -700,7 +713,7 @@ async fn thread_extension_dispatch_reuses_frozen_inputs_without_session_admissio
     // preserves the ordinary full-dispatch shape while reusing the canonical
     // decorator. Decision table: public root => E1 (adjacent test); Outcome
     // extension => E2. A structural self-affinity must never be inferred for C2.
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "host-default").await)
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "host-default").await)
         .build()
         .expect("validated Host dependencies");
     let thread = "prepared-outcome-thread";
@@ -751,7 +764,7 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
     // | R7   | T  | T  | F  | F  | F  | T  | F  | F  | reject                   |
     // | R8   | T  | F  | F  | F  | F  | F  | T  | F  | Worker holder            |
     // | R9   | T  | T  | F  | F  | F  | F  | F  | T  | reject                   |
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "host-default").await)
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "host-default").await)
         .build()
         .expect("validated Host dependencies");
     let candidate_with_policy =
@@ -946,10 +959,10 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
     );
     conflicting_environment.credential_realization =
         awaken_credential_contract::CredentialRealizationProfile::self_hosted_acp();
-    let conflicting_host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "host-default")
-        .await)
-        .build()
-        .expect("validated Host dependencies");
+    let conflicting_host =
+        (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "host-default").await)
+            .build()
+            .expect("validated Host dependencies");
     conflicting_host
         .run_assembly
         .install_environment_projection("cold-thread", &conflicting_environment)
@@ -1004,7 +1017,7 @@ async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
     let (first, first_managed) = dispatch_test_host(
         roots
             .configure(
-                crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+                crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
                     .await
                     .with_store_dir(storage.path())
                     .await,
@@ -1045,7 +1058,7 @@ async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
     let (replacement, replacement_managed) = dispatch_test_host(
         roots
             .configure(
-                crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+                crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
                     .await
                     .with_store_dir(storage.path())
                     .await,
@@ -1103,7 +1116,7 @@ async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
 async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
     let storage = tempfile::tempdir().expect("storage dir");
     let (host, managed) = dispatch_test_host(
-        (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_store_dir(storage.path())
             .await)
@@ -1210,7 +1223,7 @@ async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
 async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
     let storage = tempfile::tempdir().expect("storage dir");
     let (host, managed) = dispatch_test_host(
-        (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_store_dir(storage.path())
             .await)

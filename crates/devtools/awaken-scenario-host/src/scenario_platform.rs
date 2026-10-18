@@ -13,7 +13,7 @@ use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshot};
 use awaken_runtime_contract::{PublishedAgentSnapshotSource, StaticPublishedAgentSnapshots};
 use axum::Router;
 
-use super::{EchoModel, ExecutorComponents, HostDependencies, resource_host};
+use super::{EchoModel, ExecutorComponents, SessionExecutorBuilder, resource_host};
 use crate::deployment::ScenarioPlatform;
 
 pub(super) const SCENARIO_MEMORY_STORE_ID: &str = "memstore_scenario_memory";
@@ -41,7 +41,7 @@ pub(super) async fn mount_on_lifecycle(
 }
 
 pub(super) async fn mount_parts(
-    host: HostDependencies,
+    host: SessionExecutorBuilder,
     resources: awaken_resource_application::ResourcesApplication,
 ) -> (Router, Arc<ExecutorComponents>) {
     mount_parts_on_lifecycle(
@@ -53,7 +53,7 @@ pub(super) async fn mount_parts(
 }
 
 async fn mount_parts_on_lifecycle(
-    host: HostDependencies,
+    host: SessionExecutorBuilder,
     resources: awaken_resource_application::ResourcesApplication,
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> (Router, Arc<ExecutorComponents>) {
@@ -74,7 +74,7 @@ async fn mount_parts_on_lifecycle(
 }
 
 pub(super) async fn mount_parts_with_model_publication_resolver(
-    host: HostDependencies,
+    host: SessionExecutorBuilder,
     resources: awaken_resource_application::ResourcesApplication,
     resolver: Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>,
     dream_executor_decorator: Option<awaken_coordinator::ScenarioDreamExecutorDecorator>,
@@ -149,7 +149,7 @@ pub(super) async fn mount_with_agent_source_on_lifecycle(
 }
 
 pub(super) async fn mount_parts_with_agent_source_on_lifecycle(
-    host: HostDependencies,
+    host: SessionExecutorBuilder,
     resources: awaken_resource_application::ResourcesApplication,
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,

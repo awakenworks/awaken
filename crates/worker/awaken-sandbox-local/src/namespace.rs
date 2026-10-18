@@ -29,9 +29,10 @@ use std::sync::Arc;
 use crate::provider::{resolve_source, verify};
 use crate::read_only_tree::materialize_read_only_tree_at;
 use crate::{
-    DiscoveredSkillFile, IsolatedRoot, content_fingerprint, list_files_at, provision_repo_at,
-    push_repo_to_at, scan_skill_dir_at,
+    DiscoveredSkillFile, IsolatedRoot, list_files_at, provision_repo_at, push_repo_to_at,
+    scan_skill_dir_at,
 };
+use awaken_resource_contract::content_id;
 
 mod control;
 mod process;
@@ -644,7 +645,7 @@ impl NamespaceProvider {
                 mount_path: req.mount_path.clone(),
                 access: req.access,
                 realization: pc::Realization::Bind,
-                content_hash: bytes.as_ref().map(|b| content_fingerprint(b)),
+                content_hash: bytes.as_ref().map(|b| content_id(b)),
             });
         }
         Ok((layout, realized))

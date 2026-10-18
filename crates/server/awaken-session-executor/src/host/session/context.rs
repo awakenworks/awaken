@@ -11,7 +11,7 @@ mod extensions;
 mod plan;
 mod resources;
 
-use crate::HostError;
+use crate::SessionExecutionError;
 use crate::host::{SessionCtx, session_ctx::RuntimeContextPurpose};
 use std::sync::Arc;
 
@@ -32,7 +32,7 @@ pub(super) async fn construct(
     agent: Option<&str>,
     request: super::SessionOpenRequest,
     requested_purpose: RuntimeContextPurpose,
-) -> Result<Arc<SessionCtx>, HostError> {
+) -> Result<Arc<SessionCtx>, SessionExecutionError> {
     let super::SessionOpenRequest {
         published_snapshot,
         claimed_attempt,
@@ -72,7 +72,7 @@ async fn install(
     host: &crate::RunAssembly,
     thread: &str,
     prepared: PreparedContext,
-) -> Result<Arc<SessionCtx>, HostError> {
+) -> Result<Arc<SessionCtx>, SessionExecutionError> {
     let PreparedContext { ctx, active_mcp } = prepared;
     host.install_mcp_input_handlers(
         &active_mcp,
@@ -97,7 +97,7 @@ async fn install(
             .commit
             .authoritative_latest_run(&ctx.thread_id)
             .await
-            .map_err(HostError::internal)?
+            .map_err(SessionExecutionError::internal)?
         && run.state.is_terminal()
     {
         let _ = awaken_runtime_contract::terminal::redeliver_committed_terminal(

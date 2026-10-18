@@ -33,7 +33,7 @@ use awaken_ext_goal::controller::{CommittedOutcome, Controller};
 use awaken_ext_goal::outcome::Id;
 use awaken_session_application_contract::{DelegatedRun, Pending};
 
-use crate::HostError;
+use crate::SessionExecutionError;
 use crate::store::HostCommit;
 
 /// Committed Thread readback over the selected Session authority. Consumers:
@@ -62,7 +62,10 @@ impl ThreadReads {
     /// context already owns the exact adapter (including a Worker's recovery
     /// projection); otherwise reconstruct the configured durable adapter without
     /// selecting, creating, or adopting a Session environment.
-    pub(crate) async fn commit_for_read(&self, thread: &str) -> Result<Arc<HostCommit>, HostError> {
+    pub(crate) async fn commit_for_read(
+        &self,
+        thread: &str,
+    ) -> Result<Arc<HostCommit>, SessionExecutionError> {
         let realizations = self.installed_sessions.realizations();
         let _lifecycle = realizations.lock_lifecycle_if_installed(thread).await?;
         self.open_commit_for_read(thread).await
@@ -75,7 +78,7 @@ impl ThreadReads {
     pub(crate) fn commit_for_read_under_lifecycle<'s>(
         &'s self,
         lifecycle: crate::session_realizations::LifecycleHeld<'_>,
-    ) -> impl std::future::Future<Output = Result<Arc<HostCommit>, HostError>> + Send + use<'s>
+    ) -> impl std::future::Future<Output = Result<Arc<HostCommit>, SessionExecutionError>> + Send + use<'s>
     {
         let thread = lifecycle.session().to_owned();
         async move { self.open_commit_for_read(&thread).await }
@@ -83,7 +86,10 @@ impl ThreadReads {
 
     /// The resident context's commit, or the configured durable adapter. The
     /// caller decides which lifecycle lock, if any, the read happens under.
-    async fn open_commit_for_read(&self, thread: &str) -> Result<Arc<HostCommit>, HostError> {
+    async fn open_commit_for_read(
+        &self,
+        thread: &str,
+    ) -> Result<Arc<HostCommit>, SessionExecutionError> {
         if let Some(commit) = self
             .installed_sessions
             .read_run(thread, |run| {
@@ -103,21 +109,27 @@ impl ThreadReads {
     /// True when the durable store already holds `thread` — WITHOUT building a
     /// session context (the layout probe lives with the commit boundary in
     /// [`crate::store`]).
-    pub async fn has_durable_thread(&self, thread: &str) -> Result<bool, HostError> {
+    pub async fn has_durable_thread(&self, thread: &str) -> Result<bool, SessionExecutionError> {
         self.authority.durable_thread_exists(thread).await
     }
 
-    pub async fn committed_messages(&self, thread: &str) -> Result<Vec<Message>, HostError> {
+    pub async fn committed_messages(
+        &self,
+        thread: &str,
+    ) -> Result<Vec<Message>, SessionExecutionError> {
         let commit = self.commit_for_read(thread).await?;
         commit
             .authoritative_committed_messages(&ThreadId(thread.to_string()))
             .await
-            .map_err(HostError::internal)
+            .map_err(SessionExecutionError::internal)
     }
 
     /// Rebuild the neutral child-Run projection from the one durable owner:
     /// `RunDelegations` entries committed in each parent Run's ordinary state log.
-    pub async fn delegated_runs(&self, thread: &str) -> Result<Vec<DelegatedRun>, HostError> {
+    pub async fn delegated_runs(
+        &self,
+        thread: &str,
+    ) -> Result<Vec<DelegatedRun>, SessionExecutionError> {
         self.delegated_run_snapshot(thread)
             .await
             .map(|snapshot| snapshot.delegated_runs)
@@ -129,8 +141,9 @@ impl ThreadReads {
     pub(crate) fn delegated_runs_under_lifecycle<'s>(
         &'s self,
         lifecycle: crate::session_realizations::LifecycleHeld<'_>,
-    ) -> impl std::future::Future<Output = Result<Vec<DelegatedRun>, HostError>> + Send + use<'s>
-    {
+    ) -> impl std::future::Future<Output = Result<Vec<DelegatedRun>, SessionExecutionError>>
+    + Send
+    + use<'s> {
         let thread = lifecycle.session().to_owned();
         let commit = self.commit_for_read_under_lifecycle(lifecycle);
         async move {
@@ -148,8 +161,9 @@ impl ThreadReads {
         &'s self,
         thread: String,
         lifecycle: Option<crate::session_realizations::LifecycleHeld<'_>>,
-    ) -> impl std::future::Future<Output = Result<Vec<DelegatedRun>, HostError>> + Send + use<'s>
-    {
+    ) -> impl std::future::Future<Output = Result<Vec<DelegatedRun>, SessionExecutionError>>
+    + Send
+    + use<'s> {
         let held = lifecycle.map(|lifecycle| self.delegated_runs_under_lifecycle(lifecycle));
         async move {
             match held {
@@ -167,7 +181,8 @@ impl ThreadReads {
     async fn delegated_run_snapshot(
         &self,
         thread: &str,
-    ) -> Result<awaken_session_application_contract::DelegatedRunSnapshot, HostError> {
+    ) -> Result<awaken_session_application_contract::DelegatedRunSnapshot, SessionExecutionError>
+    {
         self.delegated_runs_and_root(thread)
             .await
             .map(|(snapshot, _)| snapshot)
@@ -183,7 +198,7 @@ impl ThreadReads {
             awaken_session_application_contract::DelegatedRunSnapshot,
             Option<RunRecoverySnapshot>,
         ),
-        HostError,
+        SessionExecutionError,
     > {
         let commit = self.commit_for_read(thread).await?;
         self.delegated_run_snapshot_from_commit(thread, commit)
@@ -199,19 +214,19 @@ impl ThreadReads {
             awaken_session_application_contract::DelegatedRunSnapshot,
             Option<RunRecoverySnapshot>,
         ),
-        HostError,
+        SessionExecutionError,
     > {
         let root_thread = ThreadId(thread.to_string());
         let recovery = match commit
             .authoritative_latest_run(&root_thread)
             .await
-            .map_err(HostError::internal)?
+            .map_err(SessionExecutionError::internal)?
         {
             Some(run) => Some(
                 commit
                     .recovery_snapshot(&root_thread, &run.id)
                     .await
-                    .map_err(|error| HostError::internal(error.to_string()))?,
+                    .map_err(|error| SessionExecutionError::internal(error.to_string()))?,
             ),
             None => None,
         };
@@ -220,7 +235,7 @@ impl ThreadReads {
             .map(|snapshot| snapshot.state.as_slice())
             .unwrap_or_default();
         let watermark = u64::try_from(commands.len())
-            .map_err(|_| HostError::internal("delegation watermark exceeds u64"))?;
+            .map_err(|_| SessionExecutionError::internal("delegation watermark exceeds u64"))?;
         let runtime_commit_cursor = recovery
             .as_ref()
             .map_or(0, |snapshot| snapshot.store_cursor);
@@ -260,7 +275,10 @@ impl ThreadReads {
     }
 
     /// The tool an awaiting run on `thread` is awaiting on, if any.
-    pub async fn pending_tool(&self, thread: &str) -> Result<Option<Pending>, HostError> {
+    pub async fn pending_tool(
+        &self,
+        thread: &str,
+    ) -> Result<Option<Pending>, SessionExecutionError> {
         self.pending_tool_in_partition(thread, &ThreadId(thread.to_string()))
             .await
     }
@@ -272,7 +290,7 @@ impl ThreadReads {
         &self,
         partition: &str,
         logical_thread: &ThreadId,
-    ) -> Result<Option<Pending>, HostError> {
+    ) -> Result<Option<Pending>, SessionExecutionError> {
         // The committed ticket is the lifecycle authority. In particular, an
         // observer on another protocol can see the committed tool-call message
         // before the foreground caller reaches `finish_step` and publishes its
@@ -286,7 +304,7 @@ impl ThreadReads {
             Ok(Some(waiting)) => waiting,
             Ok(None) => return Ok(None),
             Err(error) => {
-                return Err(HostError::internal(format!(
+                return Err(SessionExecutionError::internal(format!(
                     "failed to read authoritative pending tool for {}: {error}",
                     logical_thread.0
                 )));
@@ -300,7 +318,7 @@ impl ThreadReads {
                 Ok(snapshot) => snapshot,
                 Err(error) => {
                     tracing::warn!(thread = %logical_thread.0, %error, "failed to read pending delegation snapshot");
-                    return Err(HostError::internal(format!(
+                    return Err(SessionExecutionError::internal(format!(
                         "failed to read pending delegation snapshot: {error}"
                     )));
                 }
@@ -309,7 +327,7 @@ impl ThreadReads {
                 Ok(registry) => registry,
                 Err(error) => {
                     tracing::warn!(thread = %logical_thread.0, %error, "failed to rebuild pending delegation registry");
-                    return Err(HostError::internal(format!(
+                    return Err(SessionExecutionError::internal(format!(
                         "failed to rebuild pending delegation registry: {error}"
                     )));
                 }
@@ -326,7 +344,7 @@ impl ThreadReads {
         &self,
         thread: &str,
         outcome_id: &str,
-    ) -> Result<Option<CommittedOutcome>, HostError> {
+    ) -> Result<Option<CommittedOutcome>, SessionExecutionError> {
         let commit = self.commit_for_read(thread).await?;
         let thread_id = awaken_runtime_contract::ThreadId(thread.to_owned());
         let state = awaken_ext_goal::state::ThreadOutcomeState::new(
@@ -347,7 +365,7 @@ pub(crate) async fn authoritative_child_ticket(
     commit: &HostCommit,
     registry: Option<&awaken_agent_contract::agent::delegation::DelegationRegistry>,
     parent_call_id: Option<&str>,
-) -> Result<Option<ResumeTicket>, HostError> {
+) -> Result<Option<ResumeTicket>, SessionExecutionError> {
     let Some(child_run_id) = parent_call_id.and_then(|parent_call_id| {
         registry?
             .delegations()
@@ -360,7 +378,7 @@ pub(crate) async fn authoritative_child_ticket(
     let committed = commit
         .recovery_snapshot(&child_thread_id, &child_run_id)
         .await
-        .map_err(|error| HostError::internal(error.to_string()))?;
+        .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
     recovery_ticket(&committed, &child_run_id)
 }
 
@@ -372,7 +390,7 @@ pub(crate) async fn visible_pending_tool(
     commit: &HostCommit,
     ticket: &ResumeTicket,
     registry: Option<&awaken_agent_contract::agent::delegation::DelegationRegistry>,
-) -> Result<Option<Pending>, HostError> {
+) -> Result<Option<Pending>, SessionExecutionError> {
     if ticket.reason() != AwaitReason::Delegation {
         return Ok(Pending::from_resume_ticket(ticket));
     }

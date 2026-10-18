@@ -52,7 +52,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     // Each rule owns its filesystem, including the durable Removed marker.
     // Reusing a thread id across independent rows must not reuse that marker.
     let storage = tempfile::tempdir().expect("terminal owner rule storage");
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_store_dir(storage.path())
         .await)
@@ -589,7 +589,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
             scenario: TerminalRecoveryScenario::Restoring,
             fence_refresh_probe: Some(probe.clone()),
         });
-        let mut host = crate::HostDependencies::ephemeral(
+        let mut host = crate::SessionExecutorBuilder::ephemeral(
             Arc::new(crate::no_model::NoModelConfiguredExecutor),
             "stub",
         )
@@ -810,7 +810,7 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
     // | P3 | T | F | child | F | E3 |
     // | P4 | T | T | root | F | E4 |
     // | P5 | T | T | none | T | E5 |
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     let session_id = "terminal-retire-root";
@@ -977,7 +977,7 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
 
 #[tokio::test]
 async fn terminal_quiescence_never_materializes_a_cold_environment() {
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
 
@@ -1015,7 +1015,7 @@ async fn terminal_quiescence_rejects_an_unstarted_cancelled_reservation_without_
     // guarded rejection stutters and the existing Pending cancellation Worker
     // owns settlement; the sibling parent/child tests cover that branch.
 
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     let dispatch = host
@@ -1102,7 +1102,7 @@ async fn terminal_physical_claim_fixture(
             .await
             .expect("physical Dispatch fixture"),
     );
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_ephemeral_coordinator_dispatch(dispatch.clone()))
     .build()
@@ -1318,7 +1318,7 @@ async fn terminal_quiescence_fences_ephemeral_children_before_cold_link_enrichme
     // exercised by the terminal cleanup integration tests, while the sibling
     // cold-empty test owns !C2. This rule prevents persistence mode from
     // masquerading as dispatch authority ownership.
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     assert!(!host.dispatch.topology().ingress.is_durable(), "R1/C3");
@@ -1392,7 +1392,7 @@ async fn coordinator_terminal_quiescence_waits_for_remote_parent_and_child_settl
             .await
             .expect("remote quiescence dispatch"),
     );
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_ephemeral_coordinator_dispatch(dispatch.clone()))
     .build()
@@ -1487,7 +1487,7 @@ async fn checkpoint_source_disposal_separates_preparation_and_current_authority(
             scenario: TerminalRecoveryScenario::Disposing,
             fence_refresh_probe: Some(probe.clone()),
         });
-        let mut dependencies = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        let mut dependencies = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_session_container_provider(
                 provider,

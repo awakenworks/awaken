@@ -17,13 +17,13 @@ impl crate::RunAssembly {
         commit: Arc<crate::store::HostCommit>,
     ) -> Result<
         Option<Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>>,
-        crate::HostError,
+        crate::SessionExecutionError,
     > {
         let manifest =
             awaken_dispatch_execution::session_envelope::decode_dispatched_resource_manifest(
                 dispatch,
             )
-            .map_err(crate::HostError::internal)?;
+            .map_err(crate::SessionExecutionError::internal)?;
         let workspace = dispatch
             .execution_scope
             .as_ref()
@@ -34,7 +34,7 @@ impl crate::RunAssembly {
                 &dispatch.agent_publications,
                 workspace,
             )
-            .map_err(crate::HostError::internal)?;
+            .map_err(crate::SessionExecutionError::internal)?;
         self.memory_terminal_observer(
             &dispatch.session_thread_id().0,
             &dispatch.activation.snapshot,
@@ -121,7 +121,7 @@ impl awaken_dispatch_execution::session_execution::RunMcpAttachments for RunMcpE
         Ok(self
             .assembly
             .active_mcp_projections(session)
-            .map_err(crate::host_error::to_run_error)?
+            .map_err(crate::session_execution_error::to_run_error)?
             .into_iter()
             .map(|projection| projection.request)
             .collect())

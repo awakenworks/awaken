@@ -48,7 +48,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
 
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
-    let host = (((crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let host = (((crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .with_credentials(credentials.clone(), secrets.clone()))
     .with_session_execution(
         crate::SessionExecutionDependencies::default()
@@ -621,7 +621,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         launch,
     ));
     let executor = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
-    let acp_host = ((crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let acp_host = ((crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_acp(executor.clone()))
     .with_credentials(credentials.clone(), secrets.clone()))
@@ -913,7 +913,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     // outbound proxy. Effects: missing issuer refuses before Worker Ready;
     // installed issuer permits transport staging without asserting public
     // upstream reachability. R1 no issuer -> refusal; R2 issuer -> bind.
-    let missing_proxy_host = (crate::HostDependencies::ephemeral_with_deployment(
+    let missing_proxy_host = (crate::SessionExecutorBuilder::ephemeral_with_deployment(
         Arc::new(OkModel),
         "stub",
         secure_deployment.clone(),
@@ -929,7 +929,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             .is_err(),
         "R1 external relay without signed CONNECT issuer"
     );
-    let secure_acp_host = (crate::HostDependencies::ephemeral_with_deployment(
+    let secure_acp_host = (crate::SessionExecutorBuilder::ephemeral_with_deployment(
         Arc::new(OkModel),
         "stub",
         secure_deployment,
@@ -1074,16 +1074,17 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     // H31 preserves only the established loopback compatibility behavior. The
     // provider fixture does not observe network topology, so this is not evidence
     // that loopback is reachable from an isolated container or of G43 custody.
-    let default_relay_host = ((crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
-        .await
-        .with_acp(executor.clone())
-        .with_session_container_provider(
-            Arc::new(SecureExternalProvider),
-            Arc::new(UnusedHandFactory),
-        ))
-    .with_credentials(credentials.clone(), secrets.clone()))
-    .build()
-    .expect("validated Host dependencies");
+    let default_relay_host =
+        ((crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
+            .await
+            .with_acp(executor.clone())
+            .with_session_container_provider(
+                Arc::new(SecureExternalProvider),
+                Arc::new(UnusedHandFactory),
+            ))
+        .with_credentials(credentials.clone(), secrets.clone()))
+        .build()
+        .expect("validated Host dependencies");
     default_relay_host
         .run_assembly
         .capabilities
@@ -1200,7 +1201,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         )
         .unwrap(),
     );
-    let mut backend_secure_host = (crate::HostDependencies::ephemeral_with_deployment(
+    let mut backend_secure_host = (crate::SessionExecutorBuilder::ephemeral_with_deployment(
         Arc::new(OkModel),
         "stub",
         backend_deployment,
@@ -1259,13 +1260,14 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         .expect("H26 selected BackendOwned provider admits WorkerRelay");
 
     let weak_backend_root = tempfile::tempdir().expect("H27 weak BackendOwned root");
-    let mut default_secure_host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
-        .await
-        .with_acp(executor.clone())
-        .with_session_container_provider(
-            Arc::new(SecureExternalProvider),
-            Arc::new(UnusedHandFactory),
-        );
+    let mut default_secure_host =
+        crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
+            .await
+            .with_acp(executor.clone())
+            .with_session_container_provider(
+                Arc::new(SecureExternalProvider),
+                Arc::new(UnusedHandFactory),
+            );
     default_secure_host.env.backend_owned_session_provider = Some(
         awaken_session_environment::SandboxEnvironmentProvider::workdir(weak_backend_root.path())
             .into_session_provider(),
@@ -1555,7 +1557,7 @@ async fn published_mcp_envelope_uses_the_authoring_target_binding_at_realization
         ),
         holder: holder.clone(),
     });
-    let host = ((crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let host = ((crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .with_credential_materializer(
             awaken_credential_materializer::PinnedCredentialMaterializer::external_only(
                 resolver,
@@ -1603,7 +1605,7 @@ async fn session_mcp_realizer_is_constructed_once_without_a_host_cycle() {
     // assembly the Host constructed; R2 C2 => typed construction refusal;
     // R3 C3 => that assembly is released with the Host: nothing it holds
     // refers back to it, so no installation, mirror or retained cycle exists.
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .unwrap();
     let assembly = host.run_assembly.clone();
@@ -1621,7 +1623,7 @@ async fn session_mcp_realizer_is_constructed_once_without_a_host_cycle() {
     let weak = Arc::downgrade(&assembly);
     drop((assembly, roles, host));
     assert!(weak.upgrade().is_none(), "R3 no cycle");
-    let invalid = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let invalid = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_local_workspace("");
     assert!((invalid).build().is_err(), "R2");
@@ -1695,7 +1697,7 @@ async fn injected_mcp_realizer_is_exclusive_and_fails_without_local_fallback() {
     }
 
     let external = Arc::new(RecordingRealizer::default());
-    let host = ((crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let host = ((crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .with_session_execution(
             crate::SessionExecutionDependencies::default()
                 .with_mcp_attachment_realizer(external.clone()),

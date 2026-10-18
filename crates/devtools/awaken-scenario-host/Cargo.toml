@@ -19,7 +19,8 @@ path = "src/main.rs"
 [dependencies]
 awaken-sandbox-memoryd.workspace = true
 awaken-tool-contract.workspace = true
-awaken-execution-composition.workspace = true
+# Deterministic scenarios reuse the composition's existing local Git admission.
+awaken-execution-composition = { workspace = true, features = ["test-support"] }
 awaken-protocol-mcp.workspace = true
 # The extracted service layer: ExecutorComponents / ManagedHost / RunApplicationHost and all
 # host modules live here; this binary only selects and serves scenario modes.
@@ -32,10 +33,6 @@ awaken-ext-builtin-tools.workspace = true
 awaken-ext-memory.workspace = true
 awaken-ext-skills.workspace = true
 awaken-dispatch = { workspace = true, features = ["durable"] }
-# Deterministic scenarios seed absolute local bare repositories. Reuse the
-# sandbox adapter's existing test-only transport admission; product roots never
-# enable this feature and keep the HTTPS-only boundary.
-awaken-sandbox-local = { workspace = true, features = ["test-support"] }
 awaken-worker-transport-security.workspace = true
 awaken-admin-assistant = { workspace = true }
 awaken-tenancy = { workspace = true }

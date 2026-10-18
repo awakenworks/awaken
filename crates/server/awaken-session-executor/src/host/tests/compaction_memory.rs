@@ -34,7 +34,7 @@ async fn memory_test_host(
         )])
         .expect("valid Memory Agent publication");
     let (dependencies, versions) = crate::host::tests::fixtures::with_test_memory_history(
-        crate::HostDependencies::ephemeral(model, "stub")
+        crate::SessionExecutorBuilder::ephemeral(model, "stub")
             .await
             .with_agent_publications(Arc::new(publications)),
     )
@@ -156,7 +156,7 @@ async fn compaction_summary_reaches_the_same_long_run() {
     // it must remain model-visible while contributing no conversational prefix
     // to compaction. C1+C3 => still E1; C2+C3 => E2 over actual Thread history.
     let (host, _managed) = dispatch_test_host(
-        (crate::HostDependencies::ephemeral(Arc::new(CompactHostModel), "stub")
+        (crate::SessionExecutorBuilder::ephemeral(Arc::new(CompactHostModel), "stub")
             .await
             .with_compaction_tokens(1, 1))
         .build()
@@ -205,7 +205,7 @@ async fn compaction_keeps_full_history_until_a_summary_activates_the_window() {
     // coverage from a summary. Decision rule: keep C1 false for summary activation
     // and require both user messages remain visible.
     let (host, _managed) = dispatch_test_host(
-        (crate::HostDependencies::ephemeral(Arc::new(CompactHostModel), "stub")
+        (crate::SessionExecutorBuilder::ephemeral(Arc::new(CompactHostModel), "stub")
             .await
             .with_compaction_tokens(100, 1))
         .build()
@@ -250,7 +250,7 @@ async fn compaction_keeps_full_history_until_a_summary_activates_the_window() {
 #[tokio::test]
 async fn generated_compaction_config_survives_claimed_rebuild() {
     let host = (crate::host::with_test_resource_validation(
-        crate::HostDependencies::ephemeral(Arc::new(CompactHostModel), "stub")
+        crate::SessionExecutorBuilder::ephemeral(Arc::new(CompactHostModel), "stub")
             .await
             .with_compaction_tokens(2, 1),
     ))
@@ -330,7 +330,7 @@ async fn published_compact_plugin_is_installed_from_the_immutable_agent() {
     let (host, managed) = dispatch_test_host(
         roots
             .configure(
-                crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+                crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
                     .await
                     .with_agent_publications(Arc::new(publications)),
             )
@@ -755,7 +755,7 @@ async fn reopening_a_direct_terminal_thread_recovers_a_missing_extraction_outbox
     // for the legacy root. The test injects authority because runtime-host no
     // longer opens a commit Store.
     let (first, first_managed) = dispatch_test_host(
-        (crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub")
+        (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub")
             .await
             .with_store_dir(&dir)
             .await
@@ -789,7 +789,7 @@ async fn reopening_a_direct_terminal_thread_recovers_a_missing_extraction_outbox
     // derives the missing outbox identity from the latest terminal run and inserts
     // the same durable intent normal after-commit delivery would have produced.
     let (second, second_managed) = dispatch_test_host(
-        (crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub")
+        (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub")
             .await
             .with_store_dir(&dir)
             .await
@@ -880,7 +880,7 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
         .expect("valid publication");
     let roots = ManagedSessionRootFixture::new().await;
     let dependencies = crate::host::with_test_resource_validation(with_test_memory_mounter(
-        crate::HostDependencies::ephemeral(Arc::new(MemLoopModel), "stub")
+        crate::SessionExecutorBuilder::ephemeral(Arc::new(MemLoopModel), "stub")
             .await
             .with_agent_publications(Arc::new(publications)),
     ));
@@ -1056,7 +1056,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     let sandbox_roots = tempfile::tempdir().unwrap();
     let roots = Arc::new(ManagedSessionRootFixture::new().await);
     let dependencies = crate::host::with_test_resource_validation(with_test_memory_mounter(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_fallback_session_environment_provider(
                 awaken_session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
@@ -1377,7 +1377,7 @@ async fn published_agent_memory_config_can_disable_recall_and_extraction() {
         .expect("valid publication");
     let roots = ManagedSessionRootFixture::new().await;
     let dependencies = crate::host::with_test_resource_validation(with_test_memory_mounter(
-        crate::HostDependencies::ephemeral(Arc::new(MemLoopModel), "stub")
+        crate::SessionExecutorBuilder::ephemeral(Arc::new(MemLoopModel), "stub")
             .await
             .with_agent_publications(Arc::new(publications)),
     ));
@@ -1513,7 +1513,7 @@ async fn resume_ended_run_triggers_memory_extraction() {
         .expect("valid Memory Agent publication");
     let roots = ManagedSessionRootFixture::new().await;
     let dependencies = crate::host::with_test_resource_validation(with_test_memory_mounter(
-        crate::HostDependencies::ephemeral(Arc::new(ResumeMemModel), "stub")
+        crate::SessionExecutorBuilder::ephemeral(Arc::new(ResumeMemModel), "stub")
             .await
             .with_gate_override(write_confirmation_gate())
             .with_agent_publications(Arc::new(publications)),

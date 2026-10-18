@@ -8,10 +8,11 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_runtime_contract::live_inbox::{LiveInbox, LiveInboxMessageId, MessageOrigin, Offer};
+use awaken_runtime_contract::live_inbox::{
+    EditError, LiveInbox, LiveInboxMessageId, MessageOrigin, Offer,
+};
 use awaken_session_execution_contract::{LiveInboxEntry, LiveInboxError, LiveInboxSnapshot};
 
-use crate::managed_adapter_error::to_live_inbox_error;
 use crate::managed_input_projection::user_message;
 
 /// The live inboxes of the attempts this process currently owns, one per
@@ -127,5 +128,13 @@ impl awaken_session_execution_contract::LiveInboxRuntime for LiveInboxes {
         let inbox = self.active_inbox(thread).await?;
         let order: Vec<LiveInboxMessageId> = order.into_iter().map(LiveInboxMessageId).collect();
         inbox.reorder(&order).map_err(to_live_inbox_error)
+    }
+}
+
+fn to_live_inbox_error(error: EditError) -> LiveInboxError {
+    match error {
+        EditError::Closed => LiveInboxError::Inactive,
+        EditError::UnknownMessage => LiveInboxError::UnknownMessage,
+        EditError::StaleOrder => LiveInboxError::StaleOrder,
     }
 }

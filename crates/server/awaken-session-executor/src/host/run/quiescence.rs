@@ -35,7 +35,8 @@ impl crate::SessionRuns {
     pub async fn quiesce_terminal_delegations(
         &self,
         thread: &str,
-    ) -> Result<awaken_session_application_contract::DelegatedRunSnapshot, HostError> {
+    ) -> Result<awaken_session_application_contract::DelegatedRunSnapshot, SessionExecutionError>
+    {
         // Terminal control is deliberately Environment-free. A cold projection
         // must never materialize the sandbox, MCP connections, or current Agent
         // configuration merely to tear the Session down.
@@ -55,7 +56,7 @@ impl crate::SessionRuns {
                 let dispatches = store
                     .list_dispatches()
                     .await
-                    .map_err(|error| HostError::internal(error.to_string()))?;
+                    .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
                 for dispatch in dispatches.into_iter().filter(|dispatch| {
                     dispatch.thread_id == thread_id
                         || dispatch.session_thread_id.as_ref() == Some(&thread_id)
@@ -106,7 +107,7 @@ impl crate::SessionRuns {
                         store
                             .reject_session_run_reservation(&dispatch.run_id)
                             .await
-                            .map_err(|error| HostError::internal(error.to_string()))?;
+                            .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
                     }
                 }
             }
@@ -123,7 +124,7 @@ impl crate::SessionRuns {
                     awaken_time::mono::MonoDeadline::after(std::time::Duration::from_secs(10));
                 while ctx.foreground.has_run()? {
                     if deadline.has_passed() {
-                        return Err(HostError::internal(format!(
+                        return Err(SessionExecutionError::internal(format!(
                             "terminal quiescence timed out for Thread `{thread}`"
                         )));
                     }
@@ -144,7 +145,7 @@ impl crate::SessionRuns {
                     let dispatches = store
                         .list_dispatches()
                         .await
-                        .map_err(|error| HostError::internal(error.to_string()))?;
+                        .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
                     let active_here = |dispatch: &awaken_dispatch_contract::DispatchSummary| {
                         (dispatch.thread_id == thread_id
                             || dispatch.session_thread_id.as_ref() == Some(&thread_id))
@@ -158,11 +159,11 @@ impl crate::SessionRuns {
                             .await?
                             .authoritative_run(&dispatch.run_id)
                             .await
-                            .map_err(HostError::unavailable)?;
+                            .map_err(SessionExecutionError::unavailable)?;
                         if let Some(run) = &committed
                             && (run.id != dispatch.run_id || run.thread_id != dispatch.thread_id)
                         {
-                            return Err(HostError::internal(
+                            return Err(SessionExecutionError::internal(
                                 "terminal dispatch Run belongs to another Thread",
                             ));
                         }
@@ -182,7 +183,7 @@ impl crate::SessionRuns {
                                     Ok(Some(physical))
                                         if awaken_dispatch_execution::exact_expired_slot_remains(claim, Some(&physical)) =>
                                     {
-                                        return Err(HostError::internal(format!(
+                                        return Err(SessionExecutionError::internal(format!(
                                             "terminal dispatch quiescence awaits exact retirement of an expired physical attempt for Session `{thread}`"
                                         )));
                                     }
@@ -197,7 +198,7 @@ impl crate::SessionRuns {
                         inspect_expired_physical = false;
                     }
                     if deadline.has_passed() {
-                        return Err(HostError::internal(format!(
+                        return Err(SessionExecutionError::internal(format!(
                             "terminal dispatch quiescence timed out for Session `{thread}`"
                         )));
                     }

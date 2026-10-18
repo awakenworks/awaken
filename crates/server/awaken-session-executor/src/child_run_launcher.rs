@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use awaken_runtime_contract::delegation::RunDelegationService;
 
-use crate::HostError;
+use crate::SessionExecutionError;
 
 /// Child-Run launching for one process. Consumers: Session context assembly
 /// and claimed child-Run construction.
@@ -51,7 +51,7 @@ impl ChildRunLauncher {
         parent_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
         publication_source: Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
         tool_configuration: crate::delegate::CallerToolConfiguration,
-    ) -> Result<Option<Arc<dyn RunDelegationService>>, HostError> {
+    ) -> Result<Option<Arc<dyn RunDelegationService>>, SessionExecutionError> {
         let Some(parent_snapshot) = parent_snapshot else {
             return Ok(None);
         };
@@ -68,7 +68,7 @@ impl ChildRunLauncher {
             Some(crate::agent_runner::RunScheduler {
                 clock: self.clock.clone(),
                 binding: self.authority.dispatch_binding().ok_or_else(|| {
-                    HostError::internal("child scheduling requires a dispatch binding")
+                    SessionExecutionError::internal("child scheduling requires a dispatch binding")
                 })?,
                 commit: commit.clone(),
                 reader: commit,
@@ -98,7 +98,7 @@ impl ChildRunLauncher {
             Some(publication_source),
             workspace,
         )
-        .map_err(|error| HostError::bad_request(error.to_string()))?
+        .map_err(|error| SessionExecutionError::bad_request(error.to_string()))?
         .with_scheduler(scheduler)
         .with_tool_configuration(tool_configuration);
         Ok(Some(Arc::new(service)))

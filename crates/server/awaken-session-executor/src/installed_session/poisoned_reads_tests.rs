@@ -26,7 +26,7 @@ use awaken_session_types::RunError;
 const SESSION: &str = "poisoned-session";
 
 async fn poisoned_host() -> Arc<crate::ExecutorComponents> {
-    let host = crate::HostDependencies::ephemeral(
+    let host = crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
         "stub",
     )

@@ -1012,13 +1012,14 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
             .await
             .expect("R2 reopen extraction repository"),
     );
-    let recovered_host = (crate::HostDependencies::ephemeral(Arc::new(ExtractorModel), "stub")
-        .await
-        .with_memory_extraction_repository(Arc::new(FailFirstRecoverableRead::new(
-            recovered_repository.clone(),
-        ))))
-    .build()
-    .expect("validated Host dependencies");
+    let recovered_host =
+        (crate::SessionExecutorBuilder::ephemeral(Arc::new(ExtractorModel), "stub")
+            .await
+            .with_memory_extraction_repository(Arc::new(FailFirstRecoverableRead::new(
+                recovered_repository.clone(),
+            ))))
+        .build()
+        .expect("validated Host dependencies");
     let parent_commit = Arc::new(HostCommit::Local(Arc::new(
         crate::LocalCommitAdapter::projected(awaken_store_inmem::MemoryCommitCoordinator::new(
             awaken_time::system_clock(),
@@ -1172,7 +1173,7 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
     let content = Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
         awaken_time::system_clock(),
     ));
-    let host = (crate::HostDependencies::for_worker(
+    let host = (crate::SessionExecutorBuilder::for_worker(
         Arc::new(ExtractorModel),
         "stub",
         {
@@ -1185,7 +1186,7 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
             }
         },
         crate::DeploymentConfig::ephemeral()
-            .host_process(
+            .session_execution_process(
                 ExecutorComponents::mint_local_workspace(),
                 awaken_time::system_clock(),
             )

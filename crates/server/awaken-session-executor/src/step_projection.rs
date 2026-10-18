@@ -6,8 +6,9 @@ use awaken_agent_contract::agent::run::RunState;
 use awaken_session_application_contract::StepOutcome;
 use awaken_session_types::RunError;
 
-use crate::host::{CommittedStepReceipt, HostError};
-use crate::managed_adapter_error::to_run_error;
+use crate::SessionExecutionError;
+use crate::host::CommittedStepReceipt;
+use crate::session_execution_error::to_run_error;
 
 /// Closed projection plan consumed by [`settled_step`]. The plan carries only
 /// the authority-relevant choices: whether the boundary is open at all,
@@ -73,7 +74,7 @@ pub(crate) fn settled_step(result: CommittedStepReceipt) -> Result<StepOutcome, 
 /// Cross the shared Host receipt boundary once, preserving the existing error
 /// classifier and the canonical settled-step projection in this module.
 pub(crate) fn finish_managed_step(
-    result: Result<CommittedStepReceipt, HostError>,
+    result: Result<CommittedStepReceipt, SessionExecutionError>,
 ) -> Result<StepOutcome, RunError> {
     result.map_err(to_run_error).and_then(settled_step)
 }

@@ -26,7 +26,7 @@ use awaken_resource_contract::{
 };
 use awaken_session_executor::HostOutcomeDrive;
 
-async fn live_dependencies() -> Option<(awaken_session_executor::HostDependencies, String)> {
+async fn live_dependencies() -> Option<(awaken_session_executor::SessionExecutorBuilder, String)> {
     let key = std::env::var("KIMI_API_KEY").ok()?;
     let base = std::env::var("KIMI_BASE_URL")
         .unwrap_or_else(|_| "https://api.kimi.com/coding/v1/".to_string());

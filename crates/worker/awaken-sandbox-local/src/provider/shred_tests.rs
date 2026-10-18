@@ -210,7 +210,7 @@ async fn resolve_source_handles_every_mount_variant() {
     let binary = vec![0, 0xff, 0x80, b'\n'];
     let carried = MountSource::InlineBytes {
         contents: binary.clone(),
-        content_hash: Some(content_fingerprint(&binary)),
+        content_hash: Some(content_id(&binary)),
     };
     assert_eq!(
         resolve_source(&carried, &blobs, &none_store, None)
@@ -274,7 +274,7 @@ fn declared_hash_and_verify_are_fail_closed_per_variant() {
 
     let src = MountSource::File {
         file_id: "f".into(),
-        content_hash: Some(content_fingerprint(b"right")),
+        content_hash: Some(content_id(b"right")),
     };
     assert!(verify(&src, b"right").is_ok());
     assert!(verify(&src, b"wrong").is_err());

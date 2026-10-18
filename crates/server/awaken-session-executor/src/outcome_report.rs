@@ -14,7 +14,7 @@ use awaken_session_execution_contract::{
     CommittedOutcomeProjection, OutcomeDrive, OutcomeFailure, OutcomeIteration, OutcomeReport,
 };
 
-use crate::{HostError, HostOutcomeDrive, HostOutcomeIteration, HostOutcomeReport};
+use crate::{HostOutcomeDrive, HostOutcomeIteration, HostOutcomeReport, SessionExecutionError};
 
 pub(crate) fn project_report(report: awaken_ext_goal::controller::Report) -> HostOutcomeReport {
     HostOutcomeReport {
@@ -34,17 +34,17 @@ pub(crate) fn project_report(report: awaken_ext_goal::controller::Report) -> Hos
     }
 }
 
-pub(crate) fn controller_error(error: ControllerError) -> HostError {
+pub(crate) fn controller_error(error: ControllerError) -> SessionExecutionError {
     match error {
         ControllerError::Busy { .. } | ControllerError::WorkerRunning { .. } => {
-            HostError::unavailable_classified(OUTCOME_BUSY_CODE, error.to_string())
+            SessionExecutionError::unavailable_classified(OUTCOME_BUSY_CODE, error.to_string())
         }
         ControllerError::ActiveDefinitionConflict { .. }
         | ControllerError::WorkerAwaiting { .. }
-        | ControllerError::Domain(_) => HostError::bad_request(error.to_string()),
+        | ControllerError::Domain(_) => SessionExecutionError::bad_request(error.to_string()),
         ControllerError::Persistence(_)
         | ControllerError::Execution(_)
-        | ControllerError::Serialization(_) => HostError::internal(error.to_string()),
+        | ControllerError::Serialization(_) => SessionExecutionError::internal(error.to_string()),
     }
 }
 
