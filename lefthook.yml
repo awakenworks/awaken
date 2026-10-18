@@ -85,7 +85,7 @@ pre-commit:
     # The existing formal-surface L4 test owns that decision table.
     formal-evidence:
       # >>> generated glob from check_formal_surface.py INPUT_GLOBS — do not edit
-      glob: "{crates/**/*.rs,crates/**/Cargo.toml,formal/*.json,formal/coverage.toml,formal/obligations/**/*,scripts/ci/_crate_boundary_workspace.py,scripts/ci/check_formal_surface.py,scripts/ci/formal_ledger.py,web/src/**/*}"
+      glob: "{crates/**/*.rs,crates/**/Cargo.toml,formal/*.json,formal/coverage.toml,formal/obligations/**/*,scripts/ci/_crate_boundary_workspace.py,scripts/ci/check_formal_surface.py,scripts/ci/formal_ledger.py,scripts/ci/formal_sources.py,web/src/**/*}"
       # <<< generated glob
       run: python3 scripts/ci/check_formal_surface.py --staged {staged_files}
 

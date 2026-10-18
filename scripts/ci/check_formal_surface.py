@@ -7,9 +7,11 @@ high ratio while whole authorization, state-machine, concurrency, durability,
 or secret-handling modules are absent from the denominator discussion.
 
 Two modes, one predicate.  ``--require-complete`` walks the whole tree because
-the coverage ratio it prints is global.  ``--staged <paths...>`` asks the same
+the coverage ratio it prints is global.  ``--staged [paths...]`` asks the same
 question -- "does this production source carry a risk signal nobody has
-classified or excluded?" -- about the given paths only, so the pre-commit hook
+classified or excluded?" -- about explicit paths or the actual staged changes.
+Incremental classification and Rust bytes come from the same index; only an explicit
+non-repository fixture reads disk. The pre-commit hook
 can legitimately trigger on ``crates/**/*.rs`` without a whole-repository walk.
 """
 
@@ -19,11 +21,13 @@ import argparse
 import json
 import pathlib
 import re
+import subprocess
 import sys
 
 import _crate_boundary_workspace
 import formal_anchors
 import formal_ledger
+import formal_sources
 
 
 # Input set: every production Rust source it inventories, the Cargo manifests
@@ -43,6 +47,7 @@ INPUT_GLOBS: tuple[str, ...] = (
     "web/src/**/*",
     "scripts/ci/_crate_boundary_workspace.py",
     "scripts/ci/formal_ledger.py",
+    "scripts/ci/formal_sources.py",
 )
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -323,10 +328,11 @@ def surface_anchors() -> dict[str, formal_anchors.Surface]:
 
 def load_exclusions() -> dict[str, dict[str, object]]:
     exclusions: dict[str, dict[str, object]] = {}
+    existing = set(formal_sources.tracked_files(ROOT, allow_nonrepository=True))
     for path, surface in surface_anchors().items():
         if surface.exclude is None:
             continue
-        missing = [owner for owner in surface.owners if not (ROOT / owner).is_file()]
+        missing = [owner for owner in surface.owners if owner not in existing]
         if missing:
             fail(f"{surface.path}:{surface.line}: surface exclusion names missing owner(s) {', '.join(missing)}")
         exclusions[path] = {
@@ -337,7 +343,13 @@ def load_exclusions() -> dict[str, dict[str, object]]:
 
 
 def load_requirement_ids() -> set[str]:
-    raw = json.loads(FEATURES.read_text(encoding="utf-8"))
+    relative = FEATURES.relative_to(ROOT).as_posix()
+    text = formal_sources.file_text(
+        ROOT, relative, staged=formal_sources.repository_environment(ROOT) is not None,
+    )
+    if text is None:
+        raise formal_sources.SourceError(f"Missing formal requirement input: {relative}")
+    raw = json.loads(text)
     requirement_ids: set[str] = set()
     for feature in raw.get("features", []):
         feature_id = str(feature.get("id", ""))
@@ -401,54 +413,72 @@ def under_production_root(path: pathlib.Path) -> bool:
 
 
 def check_staged(paths: list[str]) -> None:
-    """Incremental mode: the whole-tree predicate, restricted to given paths.
+    """Apply the existing surface predicate to one selected index subject.
 
-    A path is answered when the obligation ledger cites it as evidence, or when
-    its own opening lines classify it (``// @formal surface ...``) -- the same
-    ways the whole-tree walk marks a surface covered. Everything else that is a reachable-root production source
-    and still carries a risk signal is refused, by name and with its signals.
-
-    Cost is O(changed): the ledger and the anchors are read once, and only the
-    given files are lexed. The global coverage *ratio* still needs the whole walk, so
-    ``--require-complete`` keeps that job on the push and release gates.
+    Explicit paths retain their scope. With no paths, the canonical Git reader
+    selects changed index entries; absence is never an implicit empty argument
+    list. Classification, requirements, owners and risk signals use index bytes
+    together. Only an explicitly selected non-repository fixture reads disk.
     """
-
-    registered = (
-        set(ledger_sources())
-        | set(load_exclusions())
-        | set(load_classifications(
-            {item["id"] for item in ledger_obligations()},
-            load_requirement_ids(),
-        ))
-    )
-    unclassified: list[tuple[str, list[str]]] = []
-    for argument in paths:
-        path = pathlib.Path(argument)
-        path = path if path.is_absolute() else ROOT / path
-        if not path.is_file() or path.suffix != ".rs":
-            continue
-        try:
-            relative = path.resolve().relative_to(ROOT).as_posix()
-        except ValueError:
-            continue
-        candidate = ROOT / relative
-        if not under_production_root(candidate) or not is_production_source(candidate):
-            continue
-        if relative in registered:
-            continue
-        signals = detect_signals(candidate.read_text(encoding="utf-8"))
-        if signals:
-            unclassified.append((relative, signals))
-    if unclassified:
-        fail(
-            "staged production sources carry unclassified safety surfaces; classify each in "
-            "its own opening lines (`// @formal surface requirement=|obligation=|exclude=` "
-            "with a `// @formal reason:`):\n"
-            + "\n".join(
-                f"  {relative} [{','.join(signals)}]" for relative, signals in unclassified
+    try:
+        staged = formal_sources.repository_environment(ROOT) is not None
+        if not paths:
+            paths = formal_sources.git_paths(
+                ROOT, "diff", "--cached", "--name-only", "--diff-filter=ACMRT", "-z", "--",
             )
+            staged = True
+        elif not staged and ((ROOT / ".git").exists() or (ROOT / ".git").is_symlink()):
+            raise formal_sources.SourceError("The repository index cannot be selected")
+        indexed = set(formal_sources.tracked_files(ROOT)) if staged else set()
+        deleted = set(formal_sources.git_paths(
+            ROOT, "diff", "--cached", "--name-only", "--diff-filter=D", "-z", "--",
+        )) if staged else set()
+        registered = (
+            set(ledger_sources())
+            | set(load_exclusions())
+            | set(load_classifications(
+                {item["id"] for item in ledger_obligations()}, load_requirement_ids(),
+            ))
         )
-    print(f"formal source surface: {len(paths)} staged path(s) checked, 0 unclassified")
+        unclassified: list[tuple[str, list[str]]] = []
+        checked = 0
+        for argument in paths:
+            path = pathlib.Path(argument)
+            path = path if path.is_absolute() else ROOT / path
+            if path.suffix != ".rs":
+                continue
+            try:
+                relative = path.resolve().relative_to(ROOT).as_posix()
+            except ValueError:
+                raise formal_sources.SourceError(f"Selected Rust path is outside the source root: {argument}")
+            candidate = ROOT / relative
+            if not under_production_root(candidate) or not is_production_source(candidate):
+                continue
+            if staged and relative not in indexed:
+                if relative in deleted:
+                    continue
+                raise formal_sources.SourceError(f"Selected Rust path is absent from the index: {relative}")
+            source = formal_sources.file_text(ROOT, relative, staged=staged)
+            if source is None:
+                continue
+            checked += 1
+            if relative in registered:
+                continue
+            signals = detect_signals(source)
+            if signals:
+                unclassified.append((relative, signals))
+        if unclassified:
+            fail(
+                "staged production sources carry unclassified safety surfaces; classify each in "
+                "its own opening lines (`// @formal surface requirement=|obligation=|exclude=` "
+                "with a `// @formal reason:`):\n"
+                + "\n".join(f"  {relative} [{','.join(signals)}]" for relative, signals in unclassified)
+            )
+        subject = "index" if staged else "explicit disk fixture"
+        print(f"formal source surface: {checked} production Rust candidate(s) checked "
+              f"({len(paths)} selected path(s), source={subject}), 0 unclassified")
+    except (OSError, subprocess.CalledProcessError, formal_sources.SourceError) as error:
+        fail(f"Cannot read staged formal source: {error}")
 
 
 def main() -> None:
@@ -462,7 +492,7 @@ def main() -> None:
         "--staged",
         nargs="*",
         metavar="PATH",
-        help="check only these paths for an unclassified risk signal (O(changed))",
+        help="check index sources at these paths; without paths select actual staged changes (O(changed))",
     )
     parser.add_argument(
         "--json",
