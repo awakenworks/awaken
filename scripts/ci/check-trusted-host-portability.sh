@@ -72,6 +72,13 @@ namespace_publication_closed=${namespace_publication}terminal_repository_publica
 run_required_rust_tests -p awaken-session-executor --lib terminal_ -- \
   --skip "$namespace_publication_ready" --skip "$namespace_publication_closed"
 if [[ "$linux_supervision" == true ]]; then
+  # These provider process rows require Linux Namespace effects. Their former
+  # early returns appeared green on Windows and on Linux without bwrap.
+  # Require their exact executions here; absence is a failure, never a skip.
+  namespace_workspace=namespace::tests::opaque_processes_and_runtime_projections_share_the_workspace_root
+  namespace_spawn=namespace::tests::spawn_agent_launches_an_opaque_process_confined_by_bwrap
+  run_required_rust_tests -p awaken-sandbox-local --lib namespace::tests:: \
+    --require-case="$namespace_workspace" --require-case="$namespace_spawn" -- --ignored
   # Both case identities are required: an ignored/missing row cannot qualify
   # publication, and an unavailable Namespace must fail inside the fixture.
   run_required_rust_tests -p awaken-session-executor --lib terminal_repository_publication \

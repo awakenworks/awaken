@@ -20,6 +20,10 @@ PUBLICATION = (
     PREFIX + "managed_terminal_repository_publication_pushes_exact_commit_and_replays",
     PREFIX + "terminal_repository_publication_closed_source_converges_without_git",
 )
+NAMESPACE_PROCESSES = (
+    "namespace::tests::opaque_processes_and_runtime_projections_share_the_workspace_root",
+    "namespace::tests::spawn_agent_launches_an_opaque_process_confined_by_bwrap",
+)
 
 
 def select(system: str, arguments: tuple[str, ...]) -> tuple[int, list[list[str]]]:
@@ -89,6 +93,24 @@ class PortabilitySelectionTests(unittest.TestCase):
                                        "--require-case=" + identity, "--", "--exact"]])
 
     def assert_terminal_plan(self, calls: list[list[str]], supervision: bool) -> None:
+        # N1 Windows/macOS/default Linux: do not claim a Namespace process.
+        # N2 the Linux substrate lane must execute BOTH real provider paths;
+        # ignoring the rows in ordinary unit runs cannot remove qualification.
+        process = [call for call in calls
+                   if call[:4] == ["-p", "awaken-sandbox-local", "--lib", "namespace::tests::"]]
+        self.assertEqual(len(process), int(supervision))
+        if supervision:
+            self.assertEqual(process[0][4:], [*("--require-case=" + name for name in NAMESPACE_PROCESSES),
+                                             "--", "--ignored"])
+            source = (ROOT / "crates/worker/awaken-sandbox-local/src/namespace/tests.rs").read_text(encoding="utf-8")
+            for identity in NAMESPACE_PROCESSES:
+                name = identity.rsplit("::", 1)[1]
+                row = re.search(r'#\[cfg\(target_os = "linux"\)\]\s*#\[tokio::test\]\s*'
+                                r'#\[ignore = "required real Namespace substrate[^\n]+\]\s*'
+                                r'async fn ' + name + r'\(\) \{([^}]+)', source)
+                self.assertIsNotNone(row, name)
+                self.assertIn('assert!(bwrap_usable().await', row[1], name)
+                self.assertNotIn('return;', row[1], name)
         host_calls = [call for call in calls if call[:3] == ["-p", "awaken-session-executor", "--lib"]]
         portable = [call for call in host_calls if call[3] == "terminal_"]
         self.assertEqual(len(portable), 1, "portable terminal cases must execute once")

@@ -1,5 +1,6 @@
 use super::*;
 use pc::Sandbox as _;
+#[cfg(target_os = "linux")]
 use tokio::io::AsyncReadExt as _;
 
 struct Broker;
@@ -857,11 +858,11 @@ async fn live_inline_mount_updates_and_revokes_the_namespace_bind_layout() {
     assert!(sandbox.layout.read().unwrap().is_empty());
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
+#[ignore = "required real Namespace substrate supplied by the Linux portability gate"]
 async fn opaque_processes_and_runtime_projections_share_the_workspace_root() {
-    if !bwrap_usable().await {
-        return;
-    }
+    assert!(bwrap_usable().await, "required real Namespace substrate");
     // Cause-effect graph: C1=runtime projects a workspace-relative file;
     // C2=an opaque process reads the same sandbox path; C3=a same-named path
     // does not exist at the outer namespace root. E1=projected bytes are
@@ -903,6 +904,7 @@ async fn opaque_processes_and_runtime_projections_share_the_workspace_root() {
     );
 }
 
+#[cfg(target_os = "linux")]
 async fn bwrap_usable() -> bool {
     tokio::process::Command::new("bwrap")
         .args(["--ro-bind", "/", "/", "true"])
@@ -912,12 +914,11 @@ async fn bwrap_usable() -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
+#[ignore = "required real Namespace substrate supplied by the Linux portability gate"]
 async fn spawn_agent_launches_an_opaque_process_confined_by_bwrap() {
-    if !bwrap_usable().await {
-        eprintln!("skipping: no usable bwrap / user namespaces");
-        return;
-    }
+    assert!(bwrap_usable().await, "required real Namespace substrate");
     let tmp = tempfile::tempdir().unwrap();
     let provider = NamespaceProvider::new(tmp.path());
     let sandbox = provider
