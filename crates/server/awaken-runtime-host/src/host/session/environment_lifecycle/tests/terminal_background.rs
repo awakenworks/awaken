@@ -335,7 +335,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
                 "C1 public revocation transition"
             );
             assert_eq!(
-                host.run_assembly
+                host.capabilities
                     .registered_thread_workspace(thread)
                     .as_deref(),
                 Some("workspace"),
@@ -484,7 +484,8 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             "E1 zero harvest"
         );
         assert!(
-            host.tools
+            host.capabilities
+                .tools
                 .skills
                 .definitions("workspace")
                 .await
@@ -545,7 +546,8 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             "E3 one durable Artifact"
         );
         assert!(
-            host.tools
+            host.capabilities
+                .tools
                 .skills
                 .definitions("workspace")
                 .await

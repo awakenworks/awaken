@@ -61,7 +61,7 @@ fn acp_web_tool_disposition(
     )))
 }
 
-impl crate::RunAssembly {
+impl crate::RunCapabilities {
     /// Both web plugins consume the same Workspace-pinned credential boundary.
     /// The extension registry and the exact materializer remain their existing
     /// owners; assembling this resolver twice would let their custody drift.
@@ -508,11 +508,13 @@ mod tests {
         );
         let empty = host
             .run_assembly
+            .capabilities
             .realize_configured_web_tools_for_acp("codex", &AgentBindings::default(), None, None)
             .expect("R1 absent pair");
         assert!(empty.0.is_empty() && empty.1.is_empty(), "R1");
         let (host_tools, provider_tools) = host
             .run_assembly
+            .capabilities
             .realize_configured_web_tools_for_acp(
                 "codex",
                 &AgentBindings::default(),
@@ -547,12 +549,15 @@ mod tests {
             }],
             ..AgentBindings::default()
         };
-        let provider_error = match host.run_assembly.realize_configured_web_tools_for_acp(
-            "codex",
-            &policy(awaken_ext_builtin_tools::WEB_SEARCH_TOOL_ID),
-            Some(provider_search.clone()),
-            Some(host_fetch.clone()),
-        ) {
+        let provider_error = match host
+            .run_assembly
+            .capabilities
+            .realize_configured_web_tools_for_acp(
+                "codex",
+                &policy(awaken_ext_builtin_tools::WEB_SEARCH_TOOL_ID),
+                Some(provider_search.clone()),
+                Some(host_fetch.clone()),
+            ) {
             Ok(_) => panic!("R3 provider-owned call cannot promise approval"),
             Err(error) => error,
         };
@@ -564,6 +569,7 @@ mod tests {
         );
         let host_ask = host
             .run_assembly
+            .capabilities
             .realize_configured_web_tools_for_acp(
                 "codex",
                 &policy(awaken_ext_builtin_tools::WEB_FETCH_TOOL_ID),
@@ -581,6 +587,7 @@ mod tests {
         );
         assert!(
             host.run_assembly
+                .capabilities
                 .realize_configured_web_tools_for_acp(
                     "codex",
                     &AgentBindings::default(),
@@ -791,7 +798,11 @@ mod tests {
         .with_web_search_provider_registry(providers.clone()))
         .build()
         .expect("validated Host dependencies");
-        let resolver = host.run_assembly.web_credentials("bound-thread").unwrap();
+        let resolver = host
+            .run_assembly
+            .capabilities
+            .web_credentials("bound-thread")
+            .unwrap();
         assert_eq!(
             resolver.resolve(&access, "brave").await.unwrap().header(),
             Some(("X-Subscription-Token".into(), "paid-search-key".into()))
@@ -814,6 +825,7 @@ mod tests {
         assert!(
             without_materializer
                 .run_assembly
+                .capabilities
                 .web_search_plugin("bound-thread", None)
                 .configured_tool(Some(&published))
                 .is_err(),
@@ -822,6 +834,7 @@ mod tests {
         assert!(
             without_materializer
                 .run_assembly
+                .capabilities
                 .web_fetch_plugin("bound-thread", None)
                 .configured_tool(Some(&published))
                 .is_err(),
@@ -840,11 +853,13 @@ mod tests {
         .expect("validated Host dependencies");
         let (_, foreign_search) = foreign
             .run_assembly
+            .capabilities
             .web_search_plugin("bound-thread", None)
             .configured_tool(Some(&published))
             .unwrap();
         let (_, foreign_fetch) = foreign
             .run_assembly
+            .capabilities
             .web_fetch_plugin("bound-thread", None)
             .configured_tool(Some(&published))
             .unwrap();
@@ -873,11 +888,13 @@ mod tests {
 
         let (_, paid_search) = host
             .run_assembly
+            .capabilities
             .web_search_plugin("bound-thread", None)
             .configured_tool(Some(&published))
             .unwrap();
         let (_, paid_fetch) = host
             .run_assembly
+            .capabilities
             .web_fetch_plugin("bound-thread", None)
             .configured_tool(Some(&published))
             .unwrap();
@@ -961,6 +978,7 @@ mod tests {
         assert!(
             foreign
                 .run_assembly
+                .capabilities
                 .web_credentials("bound-thread")
                 .unwrap()
                 .resolve(&access, "brave")

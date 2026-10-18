@@ -121,7 +121,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         "C11 installed Workspace"
     );
     assert_eq!(
-        host.run_assembly.thread_workspace(thread),
+        host.capabilities.thread_workspace(thread),
         "ws-view",
         "C11 public thin delegate"
     );
@@ -140,7 +140,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         "C11 absent fallback"
     );
     assert_eq!(
-        host.run_assembly.thread_workspace("unknown"),
+        host.capabilities.thread_workspace("unknown"),
         host.run_assembly.local_workspace(),
         "C11 same public fallback"
     );
@@ -558,7 +558,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         "C11 current whole Frozen Arc, no cached Workspace"
     );
     assert_eq!(
-        host.run_assembly.thread_workspace(thread),
+        host.capabilities.thread_workspace(thread),
         "ws-published",
         "C11 delegate observes new publication"
     );

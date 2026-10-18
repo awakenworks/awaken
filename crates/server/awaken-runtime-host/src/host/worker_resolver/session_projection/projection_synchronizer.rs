@@ -1448,7 +1448,7 @@ mod tests {
             .run_assembly
             .install_test_environment_binding_sink(sink.clone());
         let snapshot = test_activation(thread, run).snapshot;
-        host.run_assembly
+        host.capabilities
             .register_thread_agent_projection(thread, snapshot.root_agent_id.0.as_str());
         host.realization_executor
             .environments()

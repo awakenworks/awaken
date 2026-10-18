@@ -41,9 +41,9 @@ async fn dispatched_mcp_effect_projection_decision_table() {
         .build()
         .expect("validated Host dependencies");
     let _managed = crate::ManagedHost::new(host.clone());
-    host.run_assembly
+    host.capabilities
         .register_thread_agent_projection("mcp-dispatch", "agent-a");
-    host.run_assembly
+    host.capabilities
         .register_thread_backend_projection("mcp-dispatch", "acp:gemini");
     host.run_assembly
         .install_environment_projection("mcp-dispatch", &deferred_environment())

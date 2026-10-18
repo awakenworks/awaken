@@ -593,7 +593,7 @@ async fn workspace_narrowing_tightens_the_deployment_ceiling_for_each_run() {
         ("narrow-closed", "ws-closed"),
         ("narrow-broken", "ws-broken"),
     ] {
-        host.run_assembly
+        host.capabilities
             .register_thread_workspace(thread, workspace);
     }
 

@@ -1023,7 +1023,7 @@ async fn install_test_session_init_overlays_the_environment_sandbox_onto_the_spe
         .await
         .unwrap();
     assert_eq!(
-        host.run_assembly
+        host.capabilities
             .registered_thread_workspace("t-bare")
             .as_deref(),
         Some("ws"),

@@ -278,7 +278,8 @@ async fn cold_resource_replacement_and_revocation_never_return_old_skill_bytes()
     let mut v2 = frozen_skill_version("change", "Change", "change", "NEW-SECRET", &[]);
     v2.version = 2;
     v2.id = "skver-change-2".into();
-    host.tools
+    host.capabilities
+        .tools
         .skills
         .append_version(host.run_assembly.local_workspace(), "change", v2.clone())
         .await
@@ -576,7 +577,8 @@ async fn failed_skill_file_write_blocks_tools_and_repaired_pin_reuses_environmen
     );
     v2.version = 2;
     v2.id = "skver-write-fault-2".into();
-    host.tools
+    host.capabilities
+        .tools
         .skills
         .append_version(
             host.run_assembly.local_workspace(),
@@ -906,6 +908,7 @@ async fn cold_skill_read_keeps_pin_after_catalog_update_and_rejects_stale_projec
     v2.version = 2;
     v2.id = "skver-pinned-2".into();
     original
+        .capabilities
         .tools
         .skills
         .append_version(original.local_workspace(), "pinned", v2)

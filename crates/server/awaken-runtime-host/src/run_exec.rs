@@ -1018,7 +1018,7 @@ pub(crate) mod tests {
         host.installed_sessions.update_run(thread, |run| {
             run.dispatch_claim = Some(expected_claim.clone());
         });
-        host.run_assembly
+        host.capabilities
             .register_thread_workspace(thread, "workspace-a");
         let spec = crate::sandbox_projection::agent_run_sandbox_spec(thread);
         assert_eq!(
@@ -1299,7 +1299,7 @@ pub(crate) mod tests {
             Arc::new(awaken_resource_contract::UnavailableArtifactPublisher);
         let failed_host = (raw_host).build().expect("validated Host dependencies");
         failed_host
-            .run_assembly
+            .capabilities
             .register_thread_workspace(thread, "workspace-a");
         let failed_environment = Arc::new(
             awaken_session_environment::SandboxEnvironment::workdir(

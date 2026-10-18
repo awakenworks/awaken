@@ -644,18 +644,23 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     .expect("validated Host dependencies");
     acp_host
         .run_assembly
+        .capabilities
         .register_thread_backend_projection("mcp-acp-forbidden", "acp:test");
     acp_host
         .run_assembly
+        .capabilities
         .register_thread_backend_projection("mcp-acp-protected", "acp:test");
     acp_host
         .run_assembly
+        .capabilities
         .register_thread_backend_projection("mcp-acp-anonymous", "acp:test");
     acp_host
         .run_assembly
+        .capabilities
         .register_thread_backend_projection("mcp-acp-prompt-skill", "acp:test");
     acp_host
         .run_assembly
+        .capabilities
         .register_thread_backend_projection("mcp-acp-client-basic", "acp:claude");
     let host_acp_snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("assistant")
         .resolved_model(
@@ -671,6 +676,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     let protected_session = "mcp-acp-protected";
     acp_host
         .run_assembly
+        .capabilities
         .register_thread_agent_projection(protected_session, "assistant");
     acp_host
         .realization_executor
@@ -959,21 +965,27 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     .expect("validated Host dependencies");
     secure_acp_host
         .run_assembly
+        .capabilities
         .register_thread_backend_projection("mcp-acp-secure", "acp:test");
     secure_acp_host
         .run_assembly
+        .capabilities
         .register_thread_backend_projection("mcp-acp-client", "acp:claude");
     secure_acp_host
         .run_assembly
+        .capabilities
         .register_thread_backend_projection("mcp-acp-refresh", "acp:claude");
     secure_acp_host
         .run_assembly
+        .capabilities
         .register_thread_backend_projection("mcp-acp-unstarted", "acp:test");
     secure_acp_host
         .run_assembly
+        .capabilities
         .register_thread_backend_projection("mcp-acp-wrong-network", "acp:test");
     secure_acp_host
         .run_assembly
+        .capabilities
         .register_thread_backend_projection("mcp-acp-dead-relay", "acp:test");
     secure_acp_host
         .run_assembly
@@ -994,6 +1006,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     ] {
         secure_acp_host
             .run_assembly
+            .capabilities
             .register_thread_agent_projection(session, "assistant");
         secure_acp_host
             .realization_executor
@@ -1068,6 +1081,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     );
     secure_acp_host
         .run_assembly
+        .capabilities
         .register_thread_agent_projection("mcp-acp-secure", "assistant");
     secure_acp_host
         .realization_executor
@@ -1091,9 +1105,11 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     .expect("validated Host dependencies");
     default_relay_host
         .run_assembly
+        .capabilities
         .register_thread_backend_projection("mcp-acp-default-relay", "acp:test");
     default_relay_host
         .run_assembly
+        .capabilities
         .register_thread_agent_projection("mcp-acp-default-relay", "assistant");
     default_relay_host
         .realization_executor
@@ -1225,6 +1241,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     let backend_secure_host = (backend_secure_host).build().unwrap();
     backend_secure_host
         .run_assembly
+        .capabilities
         .register_thread_backend_projection("mcp-acp-backend-secure", "acp:test");
     backend_secure_host
         .run_assembly
@@ -1245,6 +1262,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         .expect("H26 external relay transport is bound before staging");
     backend_secure_host
         .run_assembly
+        .capabilities
         .register_thread_agent_projection("mcp-acp-backend-secure", "assistant");
     backend_secure_host
         .realization_executor
@@ -1275,9 +1293,11 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     let default_secure_host = (default_secure_host).build().unwrap();
     default_secure_host
         .run_assembly
+        .capabilities
         .register_thread_backend_projection("mcp-acp-backend-weak", "acp:test");
     default_secure_host
         .run_assembly
+        .capabilities
         .register_thread_agent_projection("mcp-acp-backend-weak", "assistant");
     default_secure_host
         .realization_executor

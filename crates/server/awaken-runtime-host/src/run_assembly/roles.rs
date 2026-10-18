@@ -257,7 +257,8 @@ impl awaken_session_runtime_contract::EnvironmentRuntime for RunAssembly {
         if skills.is_empty() {
             return Ok(Vec::new());
         }
-        self.tools
+        self.capabilities
+            .tools
             .skills
             .resolve(workspace_id, skills)
             .await

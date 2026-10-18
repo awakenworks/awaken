@@ -67,7 +67,7 @@ pub(super) async fn prepare(
             awaken_runtime_contract::resolved::Backend::Acp(backend) => backend.cli(),
             _ => unreachable!("is_acp is derived from the execution backend"),
         };
-        let policy = host.acp_adapter_policy()?;
+        let policy = host.capabilities.acp_adapter_policy()?;
         if !policy.contains(cli) {
             return Err(HostError::internal(format!(
                 "unknown ACP adapter `acp:{cli}`"
@@ -115,20 +115,16 @@ pub(super) async fn prepare(
             awaken_runtime_contract::resolved::Backend::Acp(backend) => backend.cli(),
             _ => unreachable!("is_acp is derived from the execution backend"),
         };
-        let (host_web_tools, provider_server_tools) = host.realize_configured_web_tools_for_acp(
-            acp_cli_id,
-            &config.resolved_spec.plugin_config.agent,
-            web_search,
-            web_fetch,
-        )?;
+        let (host_web_tools, provider_server_tools) =
+            host.capabilities.realize_configured_web_tools_for_acp(
+                acp_cli_id,
+                &config.resolved_spec.plugin_config.agent,
+                web_search,
+                web_fetch,
+            )?;
         acp_provider_server_tools = provider_server_tools;
 
-        let mut descriptors = Vec::new();
-        let mut executors = Vec::new();
-        for (descriptor, tool) in host_web_tools {
-            descriptors.push(descriptor);
-            executors.push(tool);
-        }
+        let (mut descriptors, mut executors): (Vec<_>, Vec<_>) = host_web_tools.into_iter().unzip();
         // Project the exact publication-selected Hand subset. The
         // Session environment supplies rooted executors; the immutable
         // snapshot supplies model-visible descriptors. Neither side may
@@ -197,7 +193,7 @@ pub(super) async fn prepare(
                     )) as Arc<dyn awaken_tool_contract::tool::RawTool>
                 })
                 .collect();
-            let exporter = host.exec.acp_tool_exporter.as_ref().ok_or_else(|| {
+            let exporter = host.capabilities.exec.acp_tool_exporter.as_ref().ok_or_else(|| {
                 HostError::internal("ACP_TOOL_BRIDGE_MISSING: ACP Session tools require an installed tool-export adapter")
             })?;
             if env
@@ -230,6 +226,7 @@ pub(super) async fn prepare(
     }
     let runtime = Arc::new(runtime);
     let acp_executor = host
+        .capabilities
         .exec
         .acp
         .as_ref()

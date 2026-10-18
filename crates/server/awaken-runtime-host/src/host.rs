@@ -190,8 +190,6 @@ pub struct SharedHost {
     /// Durable dispatch: queue transport, process pool, and the weak Session
     /// application edges the pool's Workers call back into.
     pub(crate) dispatch: capability::DispatchCapability,
-    /// Claim-fenced transports a database-less Worker installs.
-    pub(crate) worker: Arc<capability::WorkerTransports>,
     /// Default inference, per-thread model routing, remote attempts, and the
     /// immutable Agent publications/Judge the Host executes.
     pub(crate) agent: Arc<capability::AgentExecution>,
@@ -201,12 +199,12 @@ pub struct SharedHost {
     pub(crate) thread_reads: Arc<crate::ThreadReads>,
     /// The live inboxes of the attempts this process owns.
     pub(crate) live_inboxes: Arc<crate::LiveInboxes>,
+    /// Capability assembly for Runs.
+    pub(crate) capabilities: Arc<crate::RunCapabilities>,
     /// Session context assembly.
     pub(crate) run_assembly: Arc<crate::RunAssembly>,
     /// Session Run delivery.
     pub(crate) session_runs: Arc<crate::SessionRuns>,
-    /// Tool, Skill, plugin, and gate offering installed on every thread.
-    pub(crate) tools: Arc<capability::ToolOffering>,
     /// Resources-context ports: Memory, Files, Artifacts.
     pub(crate) resources: Arc<capability::ResourcePorts>,
     /// Content capture (ADR-0050): sink, deployment ceiling, consent source.

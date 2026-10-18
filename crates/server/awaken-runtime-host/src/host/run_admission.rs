@@ -43,7 +43,7 @@ impl crate::RunAssembly {
                 self.installed_sessions.realizations(),
             )),
             self.local_workspace(),
-            self.agent.agent_publications.as_deref(),
+            self.capabilities.agent.agent_publications.as_deref(),
             crate::agent_catalog::RUN_PUBLICATIONS,
             self.runs_local_dispatch_pool(),
             configured,

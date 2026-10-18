@@ -31,6 +31,7 @@ pub struct SessionRuns {
     pub(crate) agent: Arc<capability::AgentExecution>,
     pub(crate) exec: Arc<capability::AttemptBackends>,
     pub(crate) execution: crate::ExecutionTopology,
+    pub(crate) capabilities: Arc<crate::RunCapabilities>,
     pub(crate) run_assembly: Arc<crate::RunAssembly>,
     pub(crate) thread_reads: Arc<crate::ThreadReads>,
     pub(crate) local_pool: capability::LocalDispatchPool,
@@ -51,10 +52,11 @@ impl SessionRuns {
             authority: run_assembly.authority.clone(),
             clock: run_assembly.clock.clone(),
             hub: run_assembly.hub.clone(),
-            agent: run_assembly.agent.clone(),
-            exec: run_assembly.exec.clone(),
+            agent: run_assembly.capabilities.agent.clone(),
+            exec: run_assembly.capabilities.exec.clone(),
             execution: run_assembly.execution.clone(),
             thread_reads: run_assembly.thread_reads.clone(),
+            capabilities: run_assembly.capabilities.clone(),
             completion,
             local_pool,
             dispatch_hint,
@@ -70,7 +72,7 @@ impl SessionRuns {
 
     /// The model id echoed for Runs that select no other model.
     pub fn model(&self) -> String {
-        self.run_assembly.model()
+        self.capabilities.model()
     }
 
     /// The Coordinator dispatch owner, when this process's authority holds it.

@@ -98,7 +98,7 @@ impl crate::RunAssembly {
         let mut attempt_context = match warm_context {
             Some(context) => context.attempt_context.for_child_run(),
             None => {
-                let workspace = self.thread_workspace(thread);
+                let workspace = self.capabilities.thread_workspace(thread);
                 let mut context = awaken_runtime_contract::RuntimeRunContext::new()
                     .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
                         awaken_tenancy::ScopeId::from(workspace),
@@ -120,7 +120,7 @@ impl crate::RunAssembly {
                     .installed_sessions
                     .read_run(thread, |run| run.session_dispatch)
                     .unwrap_or(false)
-                    && let Some(endpoint) = self.coordination_endpoint()
+                    && let Some(endpoint) = self.capabilities.coordination_endpoint()
                 {
                     context = context.with_model_request_gate(Arc::new(
                         crate::coordination::HostModelRequestGate::new(endpoint, thread),

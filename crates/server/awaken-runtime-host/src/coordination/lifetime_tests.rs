@@ -87,12 +87,20 @@ async fn remote_cached_consumers_release_original_slots() {
             .unwrap()
     );
     assert!(host.dispatch.dispatch_pool.get().is_none() && host.run_assembly.mcp.relay().is_none());
-    let endpoint = host.run_assembly.coordination_endpoint().unwrap();
+    let endpoint = host
+        .run_assembly
+        .capabilities
+        .coordination_endpoint()
+        .unwrap();
     assert!(matches!(endpoint, CoordinationEndpoint::Remote { .. }));
     let coordinator = HostAgentCoordinator::new(endpoint.clone());
     let gate = HostModelRequestGate::new(endpoint.clone(), "session");
     let factory = claimed_model_request_gate_factory(endpoint.clone(), "session");
-    let observer = host.run_assembly.dispatch_settlement_observer().unwrap();
+    let observer = host
+        .run_assembly
+        .capabilities
+        .dispatch_settlement_observer()
+        .unwrap();
     let weak_host = Arc::downgrade(&host);
     let weak_slots = Arc::downgrade(&host.installed_sessions);
     let weak_context = Arc::downgrade(&context);
@@ -130,7 +138,11 @@ async fn current_claim_queries_fail_closed_after_original_owner_drops() {
         let host = remote_host(control.clone()).await;
         host.installed_sessions
             .update_run("session", |run| run.dispatch_claim = Some(claim()));
-        let endpoint = host.run_assembly.coordination_endpoint().unwrap();
+        let endpoint = host
+            .run_assembly
+            .capabilities
+            .coordination_endpoint()
+            .unwrap();
         let weak = Arc::downgrade(&host.installed_sessions);
         drop(host);
         assert!(weak.upgrade().is_none());
@@ -161,7 +173,13 @@ async fn current_claim_queries_reject_missing_or_foreign_claim_before_control_io
                     .update_run("session", |run| run.dispatch_claim = Some(other));
             }
             let error = query
-                .run(&host.run_assembly.coordination_endpoint().unwrap())
+                .run(
+                    &host
+                        .run_assembly
+                        .capabilities
+                        .coordination_endpoint()
+                        .unwrap(),
+                )
                 .await
                 .unwrap_err();
             assert!(matches!(error, ToolError::DefinitiveFailure(_)));
@@ -197,7 +215,11 @@ async fn active_remote_queries_retain_original_slots_until_completion_or_cancell
             let host = remote_host(control.clone()).await;
             host.installed_sessions
                 .update_run("session", |run| run.dispatch_claim = Some(claim()));
-            let endpoint = host.run_assembly.coordination_endpoint().unwrap();
+            let endpoint = host
+                .run_assembly
+                .capabilities
+                .coordination_endpoint()
+                .unwrap();
             let weak = Arc::downgrade(&host.installed_sessions);
             let mut call = Box::pin(query.run(&endpoint));
             tokio::select! {
@@ -265,7 +287,11 @@ async fn explicit_claim_controls_continue_after_original_slots_drop() {
     other.run_id = RunId("other-run".into());
     host.installed_sessions
         .update_run("session", |run| run.dispatch_claim = Some(other));
-    let endpoint = host.run_assembly.coordination_endpoint().unwrap();
+    let endpoint = host
+        .run_assembly
+        .capabilities
+        .coordination_endpoint()
+        .unwrap();
     let factory = claimed_model_request_gate_factory(endpoint.clone(), "session");
     let weak = Arc::downgrade(&host.installed_sessions);
     drop(host);

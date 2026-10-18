@@ -80,7 +80,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     host.realization_executor
         .staging()
         .register_thread_resources("t-end", crate::staged_resources::StagedResources::default());
-    host.run_assembly
+    host.capabilities
         .register_thread_model("t-end", "private-model");
     let mut lease = crate::session_resource::SessionRealizationLease {
         owner: "terminal-test-worker".into(),
@@ -418,7 +418,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         .acknowledge_terminal_cleanup_disposal(&disposal_effect)
         .await;
     assert!(
-        host.run_assembly
+        host.capabilities
             .registered_thread_workspace("t-end")
             .is_none(),
         "T3/E5"
@@ -823,7 +823,7 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
         .await
         .expect("P1-P4 install the aggregate-derived root projection");
     for child in ["terminal-retire-done", "terminal-retire-pending"] {
-        host.run_assembly
+        host.capabilities
             .register_thread_workspace(child, "terminal-retire-workspace");
         host.installed_sessions
             .realizations()
@@ -833,7 +833,7 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
             .expect("installed Sessions");
     }
     let foreign = "terminal-retire-foreign";
-    host.run_assembly
+    host.capabilities
         .register_thread_workspace(foreign, "foreign-workspace");
     host.installed_sessions
         .realizations()

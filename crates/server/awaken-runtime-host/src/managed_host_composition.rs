@@ -44,6 +44,6 @@ pub fn session_execution_roles(
         terminal_cleanup: managed.host.run_assembly.clone(),
         outcomes: core.clone(),
         live_inbox: managed.host.live_inboxes.clone(),
-        capability: core,
+        capability: managed.host.capabilities.clone(),
     }
 }

@@ -98,7 +98,7 @@ impl RunApplication for SessionRuns {
     }
 
     fn model(&self) -> String {
-        self.run_assembly.model()
+        self.capabilities.model()
     }
 
     async fn usage(&self, thread: &str) -> Result<(u64, u64), RunApplicationError> {

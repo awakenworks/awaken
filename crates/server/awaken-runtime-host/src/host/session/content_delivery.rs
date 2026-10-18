@@ -285,8 +285,8 @@ impl crate::RunAssembly {
                             .any(crate::skills::version_requires_environment)
                     });
             if frozen_requires_filesystem
-                || self.tools.skills.requires_environment_in(
-                    &self.thread_workspace(thread),
+                || self.capabilities.tools.skills.requires_environment_in(
+                    &self.capabilities.thread_workspace(thread),
                     selected_skills.as_ref(),
                 )
             {
@@ -372,11 +372,12 @@ impl crate::RunAssembly {
                 )
             })
             .unwrap_or((false, false, false));
-        let workspace = self.thread_workspace(thread);
+        let workspace = self.capabilities.thread_workspace(thread);
         let filesystem_skill_projection = !managed_session
             && filesystem_delivery
             && (frozen_has_selected
                 || self
+                    .capabilities
                     .tools
                     .skills
                     .has_selected_in(&workspace, selected_skills.as_ref()));
@@ -384,6 +385,7 @@ impl crate::RunAssembly {
             || filesystem_skill_projection
             || (!managed_session
                 && self
+                    .capabilities
                     .tools
                     .skills
                     .requires_environment_in(&workspace, selected_skills.as_ref()))
@@ -440,18 +442,22 @@ impl crate::RunAssembly {
                         })
             })
             .unwrap_or(false);
-        let workspace = self.thread_workspace(thread);
+        let workspace = self.capabilities.thread_workspace(thread);
         let published_backend_is_acp = published_snapshot
             .cloned()
             .or_else(|| {
-                self.agent.agent_publications.as_ref().and_then(|source| {
-                    source.current(
-                        &workspace,
-                        &awaken_runtime_contract::snapshot::AgentId(
-                            agent.unwrap_or("assistant").to_string(),
-                        ),
-                    )
-                })
+                self.capabilities
+                    .agent
+                    .agent_publications
+                    .as_ref()
+                    .and_then(|source| {
+                        source.current(
+                            &workspace,
+                            &awaken_runtime_contract::snapshot::AgentId(
+                                agent.unwrap_or("assistant").to_string(),
+                            ),
+                        )
+                    })
             })
             .is_some_and(|snapshot| {
                 awaken_runtime_contract::resolved::Backend::from_ref(

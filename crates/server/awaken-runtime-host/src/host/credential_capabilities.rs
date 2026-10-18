@@ -48,7 +48,7 @@ pub(crate) fn acp_mcp_client_injection_capabilities(
     Some(capabilities)
 }
 
-impl crate::RunAssembly {
+impl crate::RunCapabilities {
     /// Root delegation and cold child recovery carry the same installed adapter
     /// set. Custody evidence is composed here, never narrowed by transport or
     /// inferred from the child's requested backend.
@@ -286,10 +286,12 @@ mod tests {
                     let host = (host).build().expect("validated Host dependencies");
                     let adapters = host
                         .run_assembly
+                        .capabilities
                         .child_execution_adapters("profiles", environment.clone());
                     assert_eq!(
                         adapters.credential_capabilities,
                         host.run_assembly
+                            .capabilities
                             .local_credential_realization_capabilities()
                     );
                     assert_eq!(
@@ -345,6 +347,7 @@ mod tests {
             !has_worker_relay(
                 &without
                     .run_assembly
+                    .capabilities
                     .local_credential_realization_capabilities()
             ),
             "R1: a host without a relay-capable adapter must fail closed"
@@ -353,6 +356,7 @@ mod tests {
             !has_acp_mcp_client_injection(
                 &acp_without_materializer
                     .run_assembly
+                    .capabilities
                     .local_credential_realization_capabilities(),
                 "acp:claude",
             ),
@@ -376,6 +380,7 @@ mod tests {
             has_worker_relay(
                 &with_remote
                     .run_assembly
+                    .capabilities
                     .local_credential_realization_capabilities()
             ),
             "R3: the installed Remote adapter must be visible to claim admission"
@@ -393,6 +398,7 @@ mod tests {
             has_worker_relay(
                 &with
                     .run_assembly
+                    .capabilities
                     .local_credential_realization_capabilities()
             ),
             "R2: the installed exact materializer must be visible to claim admission"
@@ -401,6 +407,7 @@ mod tests {
             !has_acp_mcp_client_injection(
                 &with
                     .run_assembly
+                    .capabilities
                     .local_credential_realization_capabilities(),
                 "acp:claude",
             ),
@@ -418,6 +425,7 @@ mod tests {
         .expect("validated Host dependencies");
         let capabilities = with_acp
             .run_assembly
+            .capabilities
             .local_credential_realization_capabilities();
         assert!(
             has_worker_relay(&capabilities),

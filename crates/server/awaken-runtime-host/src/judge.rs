@@ -39,11 +39,11 @@ impl Grader for HostAgentGrader<'_> {
         let thread = grader_thread_id(&input.outcome_id, input.iteration);
         let workspace = self
             .host
-            .run_assembly
+            .capabilities
             .thread_workspace(&input.transcript_snapshot.thread_id.0);
         if self
             .host
-            .run_assembly
+            .capabilities
             .registered_thread_workspace(&thread.0)
             .is_some_and(|existing| existing != workspace)
         {
@@ -52,7 +52,7 @@ impl Grader for HostAgentGrader<'_> {
             ));
         }
         self.host
-            .run_assembly
+            .capabilities
             .register_thread_workspace(&thread.0, &workspace);
         tracing::debug!(thread = %thread.0, "Outcome grader context opening");
         let context = if crate::sandbox_projection::environment_free_inference(snapshot) {
@@ -273,7 +273,7 @@ mod tests {
             requests: Mutex::new(Vec::new()),
         });
         let host = judge_test_host(model.clone()).await;
-        host.run_assembly
+        host.capabilities
             .register_thread_workspace("worker", "workspace-judge-source");
         let snapshot = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS)
             .expect("literal model reference");
@@ -302,7 +302,7 @@ mod tests {
         // environment-free grader inherits it and carries it in ordinary Dispatch.
         // Resource absence must not erase the credential/execution ownership boundary.
         assert_eq!(
-            host.run_assembly
+            host.capabilities
                 .registered_thread_workspace(&thread.0)
                 .as_deref(),
             Some("workspace-judge-source")
@@ -347,11 +347,11 @@ mod tests {
             requests: Mutex::new(Vec::new()),
         });
         let host = judge_test_host(model.clone()).await;
-        host.run_assembly
+        host.capabilities
             .register_thread_workspace("worker", "workspace-a");
         let input = grading_input("grader-workspace-conflict");
         let thread = grader_thread_id(&input.outcome_id, input.iteration);
-        host.run_assembly
+        host.capabilities
             .register_thread_workspace(&thread.0, "workspace-b");
         let snapshot = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS)
             .expect("literal model reference");
@@ -364,7 +364,7 @@ mod tests {
         assert!(matches!(result, Err(GraderError::Execution(_))));
         assert!(model.requests.lock().unwrap().is_empty());
         assert_eq!(
-            host.run_assembly
+            host.capabilities
                 .registered_thread_workspace(&thread.0)
                 .as_deref(),
             Some("workspace-b")

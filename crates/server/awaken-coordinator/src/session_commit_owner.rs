@@ -53,7 +53,7 @@ mod tests {
         let binding = SessionCommitOwner::new(host.clone());
         assert!(Arc::ptr_eq(&binding.0, &host));
         assert!(
-            host.run_assembly()
+            host.capabilities()
                 .registered_thread_workspace(&thread.0)
                 .is_none()
         );
@@ -65,7 +65,7 @@ mod tests {
             .await
             .expect("shared binding reuses the Host boundary");
         assert!(
-            host.run_assembly()
+            host.capabilities()
                 .registered_thread_workspace(&thread.0)
                 .is_none()
         );

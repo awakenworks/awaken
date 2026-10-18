@@ -28,14 +28,16 @@ pub(super) async fn construct_claimed_child(
         &snapshot.resolved_spec.plugin_config.agent.toolsets,
     );
     let runtime = crate::config::build_runtime_with_authorization(
-        host.agent.llm.clone(),
+        host.capabilities.agent.llm.clone(),
         host.clock.clone(),
         environment.as_ref(),
         &authorization,
-        Some(host.background_supervisor.clone()),
+        Some(host.capabilities.background_supervisor.clone()),
     );
     let commit = substrate.commit;
-    let adapters = host.child_execution_adapters(&session_thread_id.0, environment.clone());
+    let adapters = host
+        .capabilities
+        .child_execution_adapters(&session_thread_id.0, environment.clone());
     let mut runtime = crate::agent_runner::configure_child_native_runtime(
         runtime,
         snapshot,
@@ -46,7 +48,8 @@ pub(super) async fn construct_claimed_child(
         awaken_dispatch_execution::session_execution::execution_error(error.to_string())
     })?;
     if let Some(delegation) = host
-        .run_delegation(
+        .child_runs
+        .delegation_service(
             &session_thread_id.0,
             environment.clone(),
             commit.clone(),

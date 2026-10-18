@@ -1414,7 +1414,8 @@ async fn agent_authored_skill_remains_run_scoped_until_explicit_publication() {
     .unwrap();
 
     assert!(
-        host.tools
+        host.capabilities
+            .tools
             .skills
             .definitions(host.run_assembly.local_workspace())
             .await
@@ -1432,7 +1433,8 @@ async fn agent_authored_skill_remains_run_scoped_until_explicit_publication() {
 
     env.lifecycle().dispose().await.unwrap();
     assert!(
-        host.tools
+        host.capabilities
+            .tools
             .skills
             .definitions(host.run_assembly.local_workspace())
             .await
@@ -1457,7 +1459,8 @@ async fn a_durable_skill_is_advertised_by_a_resolvable_catalog_id() {
         .with_skill_store(dir.join("store")))
     .build()
     .expect("validated Host dependencies");
-    host.tools
+    host.capabilities
+        .tools
         .skills
         .persist_authored(
             host.run_assembly.local_workspace(),
@@ -1468,7 +1471,8 @@ async fn a_durable_skill_is_advertised_by_a_resolvable_catalog_id() {
 
     let cid = "Greeter".to_string();
     assert_eq!(
-        host.tools
+        host.capabilities
+            .tools
             .skills
             .managed_ids_in(host.run_assembly.local_workspace()),
         vec![cid.clone()],
@@ -1476,6 +1480,7 @@ async fn a_durable_skill_is_advertised_by_a_resolvable_catalog_id() {
     );
 
     let version = host
+        .capabilities
         .tools
         .skills
         .cache_snapshot_in(host.run_assembly.local_workspace())
@@ -1484,7 +1489,8 @@ async fn a_durable_skill_is_advertised_by_a_resolvable_catalog_id() {
         .expect("the advertised resource id must resolve to the Skill version");
     assert!(version.skill_md().unwrap().ends_with(b"say hi"));
     assert!(
-        host.tools
+        host.capabilities
+            .tools
             .skills
             .cache_snapshot_in(host.run_assembly.local_workspace())
             .into_iter()

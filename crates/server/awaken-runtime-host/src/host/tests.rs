@@ -461,7 +461,8 @@ async fn install_pinned_managed_skill_session_with_tools(
 ) -> Result<(), awaken_session_types::RunError> {
     let workspace = host.run_assembly.local_workspace().to_string();
     if seed_version {
-        host.tools
+        host.capabilities
+            .tools
             .skills
             .create(
                 awaken_skill_store::SkillDefinition {
@@ -1163,7 +1164,9 @@ fn compile_complete_test_session_projection(
     let runtime = runtime.unwrap_or_else(|| "default".into());
     let tools = tools.unwrap_or_else(|| {
         awaken_session_configuration_contract::SessionToolConfiguration::from_capabilities(
-            &awaken_session_runtime_contract::CapabilityRuntime::capabilities(managed),
+            &awaken_session_runtime_contract::CapabilityRuntime::capabilities(
+                managed.host.capabilities.as_ref(),
+            ),
         )
     });
     let publication = managed

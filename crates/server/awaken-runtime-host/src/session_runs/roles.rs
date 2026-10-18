@@ -71,7 +71,7 @@ impl awaken_session_runtime_contract::SessionRuntime for SessionRuns {
     }
 
     fn model(&self) -> String {
-        self.run_assembly.model()
+        self.capabilities.model()
     }
 }
 
@@ -152,7 +152,7 @@ impl awaken_session_runtime_contract::StreamingRunRuntime for SessionRuns {
         // R5: re-stage the thread's model and evict its cached context so the next
         // Run rebuilds with the newly resolved executor (native switch is O(1); an
         // ACP thread's cached context relaunches its CLI on rebuild).
-        self.run_assembly.register_thread_model(thread, model);
+        self.capabilities.register_thread_model(thread, model);
         self.run_assembly
             .realization_executor
             .environments()
@@ -163,7 +163,7 @@ impl awaken_session_runtime_contract::StreamingRunRuntime for SessionRuns {
 
     async fn supports_mid_conversation_system(&self, thread: &str) -> bool {
         crate::managed_model_capability::supports_mid_conversation_system(
-            &self.run_assembly.model_for_thread(thread),
+            &self.capabilities.model_for_thread(thread),
         )
     }
 

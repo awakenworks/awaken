@@ -1888,7 +1888,7 @@ async fn claimed_inference_only_context_keeps_scope_without_a_resource_transitio
     install_test_session_application(&host);
     let _managed = install_test_dispatch_runtime(&host);
     let thread = "inference-only-claimed";
-    host.run_assembly
+    host.capabilities
         .register_thread_workspace(thread, "workspace-inference");
     let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("judge")
         .model(test_model_binding())

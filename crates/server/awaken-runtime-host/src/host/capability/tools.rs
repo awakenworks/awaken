@@ -51,36 +51,3 @@ impl ToolOffering {
         }
     }
 }
-
-impl SharedHost {
-    /// Read-only provider discovery for an embedding capability endpoint. The
-    /// returned registry is the same value Session dispatch uses.
-    #[must_use]
-    pub fn web_search_provider_registry(
-        &self,
-    ) -> &awaken_ext_builtin_tools::WebSearchProviderRegistry {
-        &self.tools.web_search_providers
-    }
-
-    /// The set of client-executed tool ids (model-visible, host-unregistered).
-    pub fn client_tools(&self) -> &HashSet<String> {
-        &self.tools.client_tools
-    }
-
-    /// The registered built-in tools advertised on a managed session's agent object:
-    /// each hand-tool id and whether its calls require confirmation. Folded into the
-    /// public `agent_toolset` by the adapter. Deterministic from host config.
-    pub fn builtin_tools(&self) -> Vec<(String, bool)> {
-        crate::config::builtin_hand_tools()
-    }
-
-    /// The client-executed (custom) tools advertised on a managed session: their
-    /// descriptors, so the adapter can shape each as a `custom` tool definition.
-    pub fn custom_tools(&self) -> Vec<awaken_runtime_contract::resolved::ToolDescriptor> {
-        self.tools
-            .client_tools
-            .iter()
-            .map(|id| crate::config::client_tool_descriptor(id))
-            .collect()
-    }
-}

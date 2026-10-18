@@ -50,10 +50,11 @@ pub(super) async fn prepare(
         || {
             let frozen_model_ref = installed
                 .as_ref()
-                .map_or(host.agent.model_ref.as_str(), |root| {
+                .map_or(host.capabilities.agent.model_ref.as_str(), |root| {
                     root.resolved_spec.model_binding.identity().1
                 });
-            host.agent
+            host.capabilities
+                .agent
                 .inference_routing
                 .model_ref(thread, frozen_model_ref)
         },
@@ -70,7 +71,7 @@ pub(super) async fn prepare(
             .map(|root| {
                 crate::agent_catalog::RUN_PUBLICATIONS.freeze(
                     root,
-                    host.agent.agent_publications.as_deref(),
+                    host.capabilities.agent.agent_publications.as_deref(),
                     &workspace,
                 )
             })
@@ -140,7 +141,8 @@ pub(super) async fn prepare(
         None
     };
     if !session_dispatch && frozen_skill_versions.is_none() {
-        host.tools
+        host.capabilities
+            .tools
             .skills
             .reload_cache_in(&workspace)
             .await
@@ -166,7 +168,7 @@ pub(super) async fn prepare(
     // physical Session side effect for work that can never be admitted.
     let plugin_ids = installed
         .as_ref()
-        .map_or(host.tools.plugin_ids.as_slice(), |snapshot| {
+        .map_or(host.capabilities.tools.plugin_ids.as_slice(), |snapshot| {
             snapshot.resolved_spec.plugin_ids.as_slice()
         });
     let background_tasks_enabled = plugin_ids
@@ -183,7 +185,8 @@ pub(super) async fn prepare(
         ));
     }
     let background_attention = if background_tasks_enabled {
-        host.session_application
+        host.capabilities
+            .session_application
             .background_run_submission()
             .cloned()
             .filter(|application| application.strong_count() > 0)

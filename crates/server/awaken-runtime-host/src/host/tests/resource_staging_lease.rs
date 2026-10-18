@@ -887,7 +887,7 @@ async fn local_runtime_renewal_port_selects_exact_owner_without_requiring_mcp_or
             .expect("installed Sessions");
         initial.push((rule, lease));
     }
-    assert!(host.worker.session_control.is_none());
+    assert!(host.capabilities.worker.session_control.is_none());
     let runtime = crate::ManagedHost::new(host.clone());
     let timing = awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000);
     assert_eq!(
@@ -1137,7 +1137,7 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
             .is_err(),
         "no-due early return must not bypass physical refresh"
     );
-    assert!(host.worker.session_control.is_none());
+    assert!(host.capabilities.worker.session_control.is_none());
     host.installed_sessions
         .realizations()
         .update_realization(SESSION, |r| {

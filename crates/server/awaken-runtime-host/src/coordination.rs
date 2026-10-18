@@ -36,7 +36,7 @@ pub(crate) enum CoordinationEndpoint {
     },
 }
 
-impl crate::RunAssembly {
+impl crate::RunCapabilities {
     /// Select the one Session coordination authority for every consumer. A live
     /// co-located application wins; an expired Weak falls through to the claimed
     /// remote control instead of becoming a dead local endpoint.
@@ -768,6 +768,7 @@ mod tests {
         // cannot prevent the following B3 drop/fallback transition.
         let observer = host
             .run_assembly
+            .capabilities
             .dispatch_settlement_observer()
             .expect("B2/O1a");
         assert!(
@@ -782,7 +783,7 @@ mod tests {
 
         assert!(
             matches!(
-                host.run_assembly.coordination_endpoint(),
+                host.run_assembly.capabilities.coordination_endpoint(),
                 Some(CoordinationEndpoint::Remote { .. })
             ),
             "R2/E1-E2"
@@ -794,6 +795,7 @@ mod tests {
         // second endpoint selection can change between the two installations.
         let observer = host
             .run_assembly
+            .capabilities
             .dispatch_settlement_observer()
             .expect("R2/E1");
         assert!(

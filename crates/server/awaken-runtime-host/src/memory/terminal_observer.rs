@@ -173,7 +173,8 @@ impl crate::RunAssembly {
             }
             None => {
                 let config = awaken_ext_memory::MemoryConfig::from_value(
-                    self.tools
+                    self.capabilities
+                        .tools
                         .plugin_config
                         .get(awaken_ext_memory::MEMORY_PLUGIN_ID),
                 )

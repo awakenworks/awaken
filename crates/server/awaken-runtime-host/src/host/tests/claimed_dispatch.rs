@@ -44,7 +44,7 @@ async fn claimed_inference_only_grader_keeps_execution_authority_without_a_sandb
             .expect("validated Host dependencies"),
     );
     let thread = "claim-inference-only-judge";
-    host.run_assembly
+    host.capabilities
         .register_thread_workspace(thread, "workspace-judge");
     let identity = RuntimePublicationIdentity::from_publications(&published, &[], "stub");
     let publications = Arc::new(
@@ -171,7 +171,7 @@ async fn background_task_fails_closed_on_a_database_less_worker() {
             .expect("validated Host dependencies"),
     );
     local
-        .run_assembly
+        .capabilities
         .register_thread_agent_projection("background-local", "background-agent");
     local
         .run_assembly

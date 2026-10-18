@@ -24,7 +24,7 @@ pub(crate) async fn construct_boundary_worker(
         commit.clone(),
         claimed.lease.owner().to_owned(),
     );
-    if let Some(observer) = host.dispatch_settlement_observer() {
+    if let Some(observer) = host.capabilities.dispatch_settlement_observer() {
         worker = worker
             .with_settlement_observer(observer.clone())
             .with_session_run_admission_observer(observer);
@@ -60,11 +60,16 @@ pub(crate) async fn construct_boundary_worker(
             awaken_runtime_contract::resolved::Backend::Remote(_)
         )
     {
-        let executor = host.agent.remote_attempt_executor.clone().ok_or_else(|| {
-            awaken_dispatch_execution::session_execution::execution_error(
-                "remote cancellation requires a configured remote attempt executor",
-            )
-        })?;
+        let executor = host
+            .capabilities
+            .agent
+            .remote_attempt_executor
+            .clone()
+            .ok_or_else(|| {
+                awaken_dispatch_execution::session_execution::execution_error(
+                    "remote cancellation requires a configured remote attempt executor",
+                )
+            })?;
         worker.install_attempt_executor(executor);
     }
 

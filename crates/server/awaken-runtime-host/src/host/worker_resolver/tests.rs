@@ -1390,7 +1390,8 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
         &[],
     );
     let skill_hash = skill.bundle_sha256.clone();
-    host.tools
+    host.capabilities
+        .tools
         .skills
         .create(
             awaken_resource_contract::SkillDefinition {

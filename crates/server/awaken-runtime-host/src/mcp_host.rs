@@ -283,6 +283,7 @@ impl crate::RunAssembly {
     ) -> Result<(), HostError> {
         let recipients = || {
             let application = self
+                .capabilities
                 .session_application
                 .background_run_submission()
                 .cloned()

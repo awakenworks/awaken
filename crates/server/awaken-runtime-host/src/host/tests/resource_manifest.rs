@@ -705,7 +705,8 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
         },
     ];
     let hash = bundle_sha256(&files);
-    host.tools
+    host.capabilities
+        .tools
         .skills
         .create(
             SkillDefinition {

@@ -54,7 +54,7 @@ pub(crate) fn session_worker_resolver(
             terminals,
         ));
     }
-    let projection = host.worker.session_control.clone().map_or(
+    let projection = host.capabilities.worker.session_control.clone().map_or(
         ProjectionAuthority::CoLocated,
         ProjectionAuthority::RemoteControl,
     );
@@ -329,7 +329,9 @@ impl ClaimedRunWorkers for ClaimedRunAssembly {
     fn credential_capabilities(
         &self,
     ) -> awaken_credential_contract::CredentialRealizationCapabilities {
-        self.assembly.local_credential_realization_capabilities()
+        self.assembly
+            .capabilities
+            .local_credential_realization_capabilities()
     }
 
     async fn root_worker(

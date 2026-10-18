@@ -205,7 +205,7 @@ async fn managed_claim_projection_loss_never_enters_ordinary_mcp_staging() {
     let source = observed.get().unwrap();
     assert!(Arc::ptr_eq(&source.original, &host.installed_sessions));
     assert!(
-        host.worker.session_control.is_none(),
+        host.capabilities.worker.session_control.is_none(),
         "exercise the real co-located admission path"
     );
     let activation = test_activation(

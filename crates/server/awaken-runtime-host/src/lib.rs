@@ -37,7 +37,6 @@ mod authority;
 mod auxiliary_sandbox;
 mod background;
 mod background_task;
-mod capabilities;
 mod commit_ingest;
 mod compact;
 mod config;
@@ -75,6 +74,10 @@ mod outcome_report;
 mod redact;
 mod run_assembly;
 pub use run_assembly::RunAssembly;
+mod run_capabilities;
+pub use run_capabilities::RunCapabilities;
+mod child_run_launcher;
+pub use child_run_launcher::ChildRunLauncher;
 mod session_runs;
 pub use session_runs::SessionRuns;
 mod run_exec;
@@ -100,7 +103,6 @@ pub(crate) use awaken_session_realization_contract::ResourceOperationFence;
 use std::sync::Arc;
 
 use awaken_session_application_contract::{DelegatedRun, StepOutcome};
-use awaken_session_configuration_contract::{AgentCapabilities, BuiltinTool, CustomTool};
 use awaken_session_runtime_contract::OutcomeDrive;
 use awaken_session_types::RunError;
 
@@ -681,26 +683,6 @@ impl awaken_session_runtime_contract::OutcomeRuntime for ManagedHost {
 
     async fn continue_outcome(&self, thread: &str) -> Result<Option<OutcomeDrive>, RunError> {
         managed_outcome::resume(&self.host, thread).await
-    }
-}
-
-#[async_trait::async_trait]
-impl awaken_session_runtime_contract::CapabilityRuntime for ManagedHost {
-    /// Advertise the host's provisioned surface on the created session: its built-in
-    /// tools (folded into the agent toolset by the adapter), client tools, offered
-    /// skills, and delegate roster. (MCP servers and file resources are not advertised
-    /// — the local host wires no MCP capability and has no Files-API resource yet.)
-    fn capabilities(&self) -> AgentCapabilities {
-        self.capabilities_for_workspace(self.host.run_assembly.local_workspace())
-    }
-
-    fn capabilities_for(&self, thread: &str) -> AgentCapabilities {
-        let workspace = self.host.run_assembly.thread_workspace(thread);
-        let mut capabilities = self.capabilities_for_workspace(&workspace);
-        if let Some(delegate_ids) = self.host.run_assembly.thread_delegate_ids(thread) {
-            capabilities.delegates = delegate_ids;
-        }
-        capabilities
     }
 }
 

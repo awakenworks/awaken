@@ -43,7 +43,7 @@ async fn host_accepts_only_backend_projections_that_match_the_publication() {
 
     let (matching, _matching_managed) = published_host().await;
     matching
-        .run_assembly
+        .capabilities
         .register_thread_backend_projection("backend-h1", "default");
     assert!(
         matching
@@ -61,6 +61,7 @@ async fn host_accepts_only_backend_projections_that_match_the_publication() {
     let (mismatch, _mismatch_managed) = published_host().await;
     mismatch
         .run_assembly
+        .capabilities
         .register_thread_backend_projection("backend-h2", "acp:claude");
     let error = match mismatch
         .run_assembly
@@ -89,6 +90,7 @@ async fn host_accepts_only_backend_projections_that_match_the_publication() {
     );
     orphan
         .run_assembly
+        .capabilities
         .register_thread_backend_projection("backend-h4", "acp:claude");
     let error = match orphan
         .run_assembly
@@ -1402,14 +1404,14 @@ async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_read
         .expect("R1 internal history read resolves the frozen Agent");
     assert_eq!(recovered.config.root_agent_id.0, "agent-a", "R1");
 
-    host.run_assembly
+    host.capabilities
         .register_thread_agent_projection("same-agent", "agent-a");
     host.run_assembly
         .ctx_for("same-agent", Some("agent-a"))
         .await
         .expect("R2 repeated exact Agent");
 
-    host.run_assembly
+    host.capabilities
         .register_thread_agent_projection("mismatch-agent", "agent-a");
     let error = match host
         .run_assembly
@@ -1695,7 +1697,7 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
         "P2/E2"
     );
     assert!(
-        host.run_assembly
+        host.capabilities
             .thread_agent_projection("active-projection")
             .is_none(),
         "P2 rejection precedes every projection mutation"
@@ -2244,5 +2246,5 @@ async fn executor_components_supply_every_session_role() {
         &roles.live_inbox
     ));
     let bindings = awaken_session_runtime_contract::SessionExecutor::from(roles);
-    assert_eq!(bindings.core().model(), host.host.run_assembly.model());
+    assert_eq!(bindings.core().model(), host.host.capabilities.model());
 }

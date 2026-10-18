@@ -31,9 +31,9 @@ async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
     let snapshot = test_activation(thread, "cached-resume-publication").snapshot;
     // C1 is ordinary local ownership: install its exact configuration and
     // publication without a Control-frozen baseline/Session execution marker.
-    host.run_assembly
+    host.capabilities
         .register_thread_workspace(thread, "workspace");
-    host.run_assembly
+    host.capabilities
         .register_thread_agent_projection(thread, snapshot.root_agent_id.0.as_str());
     host.realization_executor
         .environments()

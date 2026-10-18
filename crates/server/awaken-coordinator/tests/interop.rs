@@ -449,7 +449,7 @@ async fn guarded_application_protocols_keep_the_external_thread_identity() {
     let guarded = guard_application(
         app,
         session_id.clone(),
-        host.run_assembly().thread_workspace(&session_id),
+        host.capabilities().thread_workspace(&session_id),
     );
 
     let (status, body) = call_application(
@@ -569,7 +569,7 @@ async fn guarded_ag_ui_resume_keeps_the_external_thread_identity() {
     let guarded = guard_application(
         app,
         session_id.clone(),
-        host.run_assembly().thread_workspace(&session_id),
+        host.capabilities().thread_workspace(&session_id),
     );
 
     let (status, body) = call_application(
