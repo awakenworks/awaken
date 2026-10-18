@@ -89,7 +89,10 @@ async fn cold_unmaterialized_recovery_uses_the_saved_create_not_the_cleanup_leas
 async fn cold_host(
     provider: Arc<TerminalRecoveryProvider>,
     fence: &pc::SandboxEffectFence,
-) -> (Arc<crate::SharedHost>, Arc<crate::SharedHost>) {
+) -> (
+    Arc<crate::ExecutorComponents>,
+    Arc<crate::ExecutorComponents>,
+) {
     let mut deps = crate::HostDependencies::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
         "stub",

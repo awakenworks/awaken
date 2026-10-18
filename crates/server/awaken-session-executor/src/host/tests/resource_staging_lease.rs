@@ -579,7 +579,7 @@ impl crate::FileContentSource<crate::ResourceOperationFence> for GatedFileSource
 }
 
 struct StagingFixture {
-    host: Arc<SharedHost>,
+    host: Arc<ExecutorComponents>,
     control: Arc<RemoteTerminalCleanupControl>,
     source: Arc<GatedFileSource>,
     projection: awaken_session_realization_contract::FrozenSessionProjection,

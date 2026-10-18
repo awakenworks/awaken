@@ -133,7 +133,7 @@ async fn durable_child_run_scenario() {
             ],
         },
     ];
-    let host = (awaken_runtime_host_testkit::with_durable_store_dir(
+    let host = (awaken_session_executor_testkit::with_durable_store_dir(
         awaken_scenario_host::build_unmounted_dependencies(
             Arc::new(ParentChildModel {
                 parent_calls: AtomicUsize::new(0),

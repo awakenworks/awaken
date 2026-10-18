@@ -363,9 +363,9 @@ async fn runtime_constructor_installs_the_exact_file_content_source() {
                 memory: awaken_resource_contract::MemoryExecutionContent::new(memory),
             }
         },
-        SharedHost::test_memory_extraction_repository(None).await,
+        ExecutorComponents::test_memory_extraction_repository(None).await,
         crate::DeploymentConfig::ephemeral()
-            .host_process(SharedHost::mint_local_workspace(), system_clock())
+            .host_process(ExecutorComponents::mint_local_workspace(), system_clock())
             .expect("ephemeral process"),
         Arc::new(crate::EphemeralRuntimeAuthority::new(system_clock())),
     ))
@@ -1195,7 +1195,7 @@ async fn managed_primary_interrupt_recovers_the_active_dispatch_without_a_local_
     // Cause/effect graph: C1 a Managed primary Run is already leased from the
     // one durable Dispatch store; C2 its immutable backend is remote; C3 the Run
     // bypassed BoundRunExecutor, so SessionCtx has no `active_run`; C4 the same
-    // accepted user interrupt reaches SharedHost. Effects: E1 C4 resolves the
+    // accepted user interrupt reaches ExecutorComponents. Effects: E1 C4 resolves the
     // unique executable Session-affined row instead of succeeding as a no-op;
     // E2 the ordinary pool cancellation claim invokes the installed remote
     // executor exactly once with that Run id; E3 the claim commits Cancelled and

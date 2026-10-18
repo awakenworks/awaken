@@ -1217,7 +1217,7 @@ mod tests {
     /// Reuse the production provider/create owner to establish the one legacy
     /// V1 revocation fixture shared by claimed pre-install ordering tests.
     async fn revoked_legacy_v1_environment(
-        host: &SharedHost,
+        host: &ExecutorComponents,
         thread: &str,
     ) -> (
         Arc<crate::session_environment::SessionEnvironment>,

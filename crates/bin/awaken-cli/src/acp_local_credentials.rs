@@ -91,7 +91,8 @@ fn uses_host_acp_discovery(deployment: &crate::config::ResolvedDeployment) -> bo
             .is_none_or(|cli_ids| !cli_ids.is_empty())
         && matches!(
             deployment.runtime.sandbox_tier,
-            awaken_session_executor::SandboxTier::Local | awaken_session_executor::SandboxTier::Namespace
+            awaken_session_executor::SandboxTier::Local
+                | awaken_session_executor::SandboxTier::Namespace
         )
 }
 
@@ -1018,7 +1019,7 @@ mod tests {
 
         let workspace = awaken_installation_workspace::provision_at(
             &deployment.data_dir,
-            awaken_session_executor::SharedHost::mint_local_workspace,
+            awaken_session_executor::ExecutorComponents::mint_local_workspace,
         );
         let prepared = prepare_local_acp_with(
             &mut deployment,
@@ -1229,7 +1230,7 @@ mod tests {
 
         let workspace = awaken_installation_workspace::provision_at(
             &deployment.data_dir,
-            awaken_session_executor::SharedHost::mint_local_workspace,
+            awaken_session_executor::ExecutorComponents::mint_local_workspace,
         );
         let prepared = prepare_local_acp_with(
             &mut deployment,

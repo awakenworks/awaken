@@ -399,7 +399,8 @@ struct RecordingSessionControl {
 struct RecordingMcpRealizer {
     calls: std::sync::Mutex<Vec<&'static str>>,
     fail_stage: std::sync::atomic::AtomicBool,
-    required_physical_environment: std::sync::OnceLock<(std::sync::Weak<SharedHost>, String)>,
+    required_physical_environment:
+        std::sync::OnceLock<(std::sync::Weak<ExecutorComponents>, String)>,
 }
 
 #[async_trait::async_trait]
@@ -2591,7 +2592,7 @@ async fn outcome_projection_read_does_not_adopt_worker_owned_environment() {
 }
 
 /// Whether the realizer holds a live Environment for `thread`.
-async fn has_environment(host: &SharedHost, thread: &str) -> bool {
+async fn has_environment(host: &ExecutorComponents, thread: &str) -> bool {
     host.run_assembly
         .resident_session_environment(thread)
         .await
@@ -2600,7 +2601,7 @@ async fn has_environment(host: &SharedHost, thread: &str) -> bool {
 
 /// The Session's active Resource manifest as Resource staging recorded it.
 fn active_manifest(
-    host: &SharedHost,
+    host: &ExecutorComponents,
     thread: &str,
 ) -> Option<crate::session_resource::SessionResourceManifest> {
     host.realization_executor

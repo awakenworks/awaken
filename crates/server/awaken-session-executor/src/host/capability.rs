@@ -1,4 +1,4 @@
-//! The capability groups a [`SharedHost`] owns beside its CORE fields.
+//! The capability groups a [`ExecutorComponents`] owns beside its CORE fields.
 //!
 //! Each group is a plain owned struct defined in its own module, so the
 //! modules that read a capability name exactly one group. A composition

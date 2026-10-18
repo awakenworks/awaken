@@ -1,6 +1,6 @@
 // @formal entrypoint worker_drain.bounded_cleanup_eventually_exits_without_fabricating_quiescence
 // @formal entrypoint worker_drain.grace_expiry_retains_cancellation_observer
-//! Run driving for [`SharedHost`]: the neutral `run`/`resume`/`define_outcome`
+//! Run driving for [`ExecutorComponents`]: the neutral `run`/`resume`/`define_outcome`
 //! entry points, step finalization, queries, and the durable-ops verbs.
 
 use super::types::VerifiedStepProjection;
@@ -225,7 +225,7 @@ impl crate::SessionRuns {
         .await
     }
 
-    /// Like [`SharedHost::run`] but forwards the engine's best-effort live
+    /// Like [`ExecutorComponents::run`] but forwards the engine's best-effort live
     /// progress to `sink` as the Run executes (the streaming protocol path). The
     /// committed result is identical; the sink only mirrors in-flight events.
     pub async fn run_streaming(

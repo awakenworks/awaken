@@ -4,9 +4,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use awaken_session_executor::{DeploymentConfig, HostDependencies, SandboxTier};
 use awaken_session_environment::SandboxEnvironmentProvider;
 use awaken_session_environment_contract::HandExecutorFactory;
+use awaken_session_executor::{DeploymentConfig, HostDependencies, SandboxTier};
 
 /// The readiness probe of a local tier's backend (ADR-0092 decision 5): the
 /// Worker runs it before registration and again on every heartbeat, so a
@@ -544,7 +544,7 @@ mod startup_tests {
     }
 
     async fn host(deployment: DeploymentConfig) -> HostDependencies {
-        awaken_runtime_host_testkit::volatile_dependencies_with_deployment(
+        awaken_session_executor_testkit::volatile_dependencies_with_deployment(
             Arc::new(NoLlm),
             "test",
             deployment,

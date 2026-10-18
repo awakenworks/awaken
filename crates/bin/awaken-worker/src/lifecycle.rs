@@ -1126,7 +1126,7 @@ mod tests {
             Arc::new(super::WorkerSupervisor {
                 authority: Default::default(),
                 roles: awaken_session_executor::WorkerRoles::of(
-                    &*awaken_runtime_host_testkit::volatile_host(
+                    &*awaken_session_executor_testkit::volatile_host(
                         Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
                         "worker-test",
                     )
@@ -1686,7 +1686,7 @@ mod tests {
             let lifecycle = Arc::new(WorkerSupervisor {
                 authority: authority.clone(),
                 roles: awaken_session_executor::WorkerRoles::of(
-                    &*awaken_runtime_host_testkit::volatile_host(
+                    &*awaken_session_executor_testkit::volatile_host(
                         Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
                         "none",
                     )

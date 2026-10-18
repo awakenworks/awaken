@@ -52,7 +52,7 @@ awaken-coordinator = { workspace = true }
 # The production Worker executor: the Worker role delegates lifecycle to it while
 # this CLI startup still supplies the selected Credential/Resource adapters.
 awaken-worker = { workspace = true }
-# The service layer: SharedHost / ManagedHost / ConfigService / ConfigPlane and the
+# The service layer: ExecutorComponents / ManagedHost / ConfigService / ConfigPlane and the
 # durable session repositories the startup opens.
 awaken-session-executor.workspace = true
 # The live MCP credential probe and the container MCP relay exposure value.
@@ -60,7 +60,7 @@ awaken-session-mcp.workspace = true
 # The container Hand residency the runtime settings select.
 awaken-session-environment-contract.workspace = true
 # Local Resource ports for the test-support runtime process without a Deployment.
-awaken-runtime-host-testkit = { workspace = true, optional = true }
+awaken-session-executor-testkit = { workspace = true, optional = true }
 # The installation platform Workspace marker this startup reads or publishes.
 awaken-installation-workspace.workspace = true
 awaken-resource-worker-http.workspace = true
@@ -174,7 +174,7 @@ test-support = [
     "awaken-protocol-managed/test-support",
     "awaken-coordinator/test-support",
     "awaken-session-executor/test-support",
-    "dep:awaken-runtime-host-testkit",
+    "dep:awaken-session-executor-testkit",
     "awaken-resource-persistence/test-support",
 ]
 # Container ACP tiers (AWAKEN_SANDBOX_TIER=docker/podman/k8s): enable the backend a
@@ -230,7 +230,7 @@ awaken-ext-mcp = { workspace = true }
 awaken-iam-contract = { workspace = true }
 awaken-iam-core = { workspace = true }
 awaken-lease-testkit.workspace = true
-awaken-runtime-host-testkit.workspace = true
+awaken-session-executor-testkit.workspace = true
 # sqlite_process_store_contract holds an independent writer on the shared file.
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
 tempfile = "3"

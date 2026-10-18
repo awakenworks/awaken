@@ -20,8 +20,8 @@ Counted from production code (comments and `cfg(test)` code are not scanned):
   to-module) pair as the set of host items named; a new pair or a new item is
   an error, a recorded item that is no longer named is an error until it is
   removed from `module_layer_baseline.json` in the same commit.
-* `shared-host-impl`: methods in `impl ... SharedHost` blocks inside a
-  `realization` module. `SharedHost` lives in the host, so such a block is an
+* `shared-host-impl`: methods in `impl ... ExecutorComponents` blocks inside a
+  `realization` module. `ExecutorComponents` lives in the host, so such a block is an
   upward edge by construction; it is expected to shrink when the realization
   state gets its own owner, and is held per module at or below the baseline
   instead of being reported item by item. Paths inside those blocks are not
@@ -62,7 +62,7 @@ LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "host",
         "host::session",
     )),
-    (HOST, "SharedHost run, coordination and capability assembly stay in the host (plan 10.2)", (
+    (HOST, "executor component assembly, Run delivery, coordination and capabilities stay in the host (plan 10.2)", (
         "host::build",
         "host::capability",
         "host::completion",
@@ -164,7 +164,7 @@ _PATH_ATTRIBUTE = re.compile(r'#\[\s*path\s*=\s*"([^"]+)"\s*\]')
 _VISIBILITY_PATH = re.compile(r"\bpub\s*\(\s*in\s+[^)]*\)")
 _PATH_ROOT = re.compile(r"(?<![\w$])(crate|super)\s*::")
 _SHARED_HOST_IMPL = re.compile(
-    r"^\s*impl(?:<[^>{]*>)?\s+(?:[A-Za-z_][\w:]*(?:<[^>{]*>)?\s+for\s+)?(?:crate::(?:host::)?)?SharedHost\b[^{;]*\{", re.M
+    r"^\s*impl(?:<[^>{]*>)?\s+(?:[A-Za-z_][\w:]*(?:<[^>{]*>)?\s+for\s+)?(?:crate::(?:host::)?)?ExecutorComponents\b[^{;]*\{", re.M
 )
 _FN = re.compile(r"\bfn\s+[A-Za-z_]\w*")
 
@@ -271,7 +271,7 @@ def _resolve(module: Module, root: str, path: tuple[str, ...]) -> Module | None:
 
 
 def measure(sources: dict[Module, str], table: dict[Module, str]) -> tuple[dict[str, set[str]], dict[str, int]]:
-    """(upward edges per `from -> to` pair with the host items named, SharedHost impl methods per module)."""
+    """(upward edges per `from -> to` pair with the host items named, ExecutorComponents impl methods per module)."""
     edges: dict[str, set[str]] = defaultdict(set)
     shared_host: dict[str, int] = defaultdict(int)
     for module, source in sources.items():
@@ -388,8 +388,8 @@ def selftest() -> None:
     | L4   | realization path names a host item: recorded / new / recorded but gone  | accept / error / error (lower) |
     | L5   | realization -> realization, host -> realization, `pub(in crate::host)`        | not an edge |
     | L6   | `use super::*` in a realization child of a host module                  | edge to `*` of the parent |
-    | L7   | path inside `impl SharedHost` / `impl T for SharedHost` in realization  | counted as methods, not edges |
-    | L8   | SharedHost methods above / below / at the baseline                   | error / error (lower) / accept |
+    | L7   | path inside `impl ExecutorComponents` / `impl T for ExecutorComponents` in realization | counted as methods, not edges |
+    | L8   | ExecutorComponents methods above / below / at the baseline           | error / error (lower) / accept |
     | L9   | `--tighten`: gone item / gone pair / lower count / new item or more  | drop / drop / lower / never added |
     """
     table = layer_table((
@@ -407,8 +407,8 @@ def selftest() -> None:
     sources = {
         (): "",
         ("real",): "use crate::top::{Alpha, Beta};\nuse crate::mix::env::Gamma;\npub(in crate::top) fn f() {}\n"
-                   "impl SharedHost { fn a(&self) { crate::top::Hidden; } fn b(&self) {} }\n"
-                   "impl Port for SharedHost { fn c(&self) {} }\nimpl crate::SharedHost { fn d(&self) {} }\n",
+                   "impl ExecutorComponents { fn a(&self) { crate::top::Hidden; } fn b(&self) {} }\n"
+                   "impl Port for ExecutorComponents { fn c(&self) {} }\nimpl crate::ExecutorComponents { fn d(&self) {} }\n",
         ("mix", "env"): "use super::*;\nuse super::run::Delta;\n",
         ("top",): "use crate::real::Epsilon;\n",
     }

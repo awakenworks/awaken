@@ -31,7 +31,7 @@ fn awaiting_tool_batch_state(
     awaken_tool_contract::ActiveToolBatch::write(&Some(batch))
 }
 
-async fn host_requiring_write_confirmation(model: Arc<dyn LlmExecutor>) -> Arc<SharedHost> {
+async fn host_requiring_write_confirmation(model: Arc<dyn LlmExecutor>) -> Arc<ExecutorComponents> {
     let host = (crate::HostDependencies::ephemeral(model, "stub")
         .await
         .with_gate_override(write_confirmation_gate()))

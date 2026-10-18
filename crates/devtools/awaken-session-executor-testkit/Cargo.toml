@@ -1,5 +1,5 @@
 [package]
-name = "awaken-runtime-host-testkit"
+name = "awaken-session-executor-testkit"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

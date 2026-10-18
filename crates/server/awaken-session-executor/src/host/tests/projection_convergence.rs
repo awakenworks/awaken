@@ -8,7 +8,7 @@ use awaken_session_realization_contract::SessionProjectionInstallMode;
 use awaken_session_execution_contract::RealizationRuntime as _;
 use awaken_session_state_contract::SessionEnvironmentState;
 
-fn observation(host: &SharedHost) -> serde_json::Value {
+fn observation(host: &ExecutorComponents) -> serde_json::Value {
     host.run_assembly.installed_sessions.realizations().read_realization("projection-convergence", |realization| {
         let receipt = realization.execution().frozen_receipt.as_ref();
         let binding = match &realization.environment().owner {
@@ -20,8 +20,8 @@ fn observation(host: &SharedHost) -> serde_json::Value {
 }
 
 async fn deliver(
-    host: &SharedHost,
-    managed: &Arc<crate::SharedHost>,
+    host: &ExecutorComponents,
+    managed: &Arc<crate::ExecutorComponents>,
     projection: awaken_session_realization_contract::FrozenSessionProjection,
     rule: String,
     trace: &mut Vec<serde_json::Value>,

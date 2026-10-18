@@ -1,4 +1,4 @@
-//! RES capability of [`SharedHost`]: the Resources-context ports the Host
+//! RES capability of [`ExecutorComponents`]: the Resources-context ports the Host
 //! consumes (Memory content and extraction, File content) and the test-support
 //! local File/Skill/reclamation authorities. Artifact publication belongs to
 //! the realization executor.
@@ -15,7 +15,7 @@ pub struct WorkerContentAdapters {
 
 /// Local Resource authorities a test or scenario composition hands to the
 /// Host as one unit: the ports its Resources application exposes. Consumer:
-/// `HostDependencies::for_local_resources`; `awaken-runtime-host-testkit` builds it
+/// `HostDependencies::for_local_resources`; `awaken-session-executor-testkit` builds it
 /// from a Resources application, which this crate no longer links.
 #[cfg(any(test, feature = "test-support"))]
 pub struct LocalResourcePorts {
@@ -282,10 +282,10 @@ impl ResourceSelection {
     }
 }
 
-impl SharedHost {
+impl ExecutorComponents {
     /// The local extraction repository the Host's own volatile/local unit
     /// fixtures use. Other compositions obtain theirs from
-    /// `awaken-runtime-host-testkit` or inject a role-owned one.
+    /// `awaken-session-executor-testkit` or inject a role-owned one.
     #[cfg(test)]
     pub async fn test_memory_extraction_repository(
         storage_dir: Option<&std::path::Path>,
@@ -351,6 +351,8 @@ pub(in crate::host) async fn local_memory_extraction_repository(
 
 /// Return the exact controlled content held by this Host for fixture identity checks.
 #[cfg(any(test, feature = "test-support"))]
-pub fn test_memory_content(host: &SharedHost) -> awaken_resource_contract::MemoryExecutionContent {
+pub fn test_memory_content(
+    host: &ExecutorComponents,
+) -> awaken_resource_contract::MemoryExecutionContent {
     host.resources.memory_stores.clone()
 }

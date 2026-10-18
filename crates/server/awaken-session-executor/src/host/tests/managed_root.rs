@@ -47,7 +47,7 @@ impl ManagedSessionRootFixture {
 
     pub(super) async fn install_complete_test_session(
         &self,
-        managed: &Arc<crate::SharedHost>,
+        managed: &Arc<crate::ExecutorComponents>,
         thread: &str,
         init: awaken_session_configuration_contract::SessionInit,
     ) -> Result<
@@ -68,7 +68,7 @@ impl ManagedSessionRootFixture {
     /// different assignment remains an error until the original command changes it.
     pub(crate) async fn install_projection(
         &self,
-        managed: &Arc<crate::SharedHost>,
+        managed: &Arc<crate::ExecutorComponents>,
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
     ) -> Result<
@@ -142,7 +142,7 @@ impl ManagedSessionRootFixture {
     /// method calls this command, and it never changes the original Create fact.
     pub(crate) async fn advance_assignment(
         &self,
-        managed: &Arc<crate::SharedHost>,
+        managed: &Arc<crate::ExecutorComponents>,
         thread: &str,
     ) -> Result<
         awaken_session_realization_contract::FrozenSessionProjection,
@@ -202,8 +202,8 @@ impl ManagedSessionRootFixture {
     /// only the next test assignment, never a physical-domain takeover proof.
     pub(crate) async fn reassign_closed(
         &self,
-        source: &Arc<crate::SharedHost>,
-        target: &Arc<crate::SharedHost>,
+        source: &Arc<crate::ExecutorComponents>,
+        target: &Arc<crate::ExecutorComponents>,
         thread: &str,
         template: awaken_session_realization_contract::FrozenSessionProjection,
         target_actor: (&str, &str),
@@ -288,7 +288,7 @@ impl ManagedSessionRootFixture {
     /// commands, not another reducer or receipt writer.
     fn application(
         &self,
-        managed: &Arc<crate::SharedHost>,
+        managed: &Arc<crate::ExecutorComponents>,
     ) -> Arc<awaken_session_application::SessionApplication> {
         self.application
             .get_or_init(|| {
@@ -332,7 +332,7 @@ impl ManagedSessionRootFixture {
     /// the existing manifest command. Unchanged desired input stays unchanged.
     pub(crate) async fn prepare_resource_update(
         &self,
-        managed: &Arc<crate::SharedHost>,
+        managed: &Arc<crate::ExecutorComponents>,
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         desired: crate::session_resource::ResolvedSessionResources,
@@ -386,7 +386,7 @@ impl ManagedSessionRootFixture {
     /// an Environment binding or staged-only desired manifest is insufficient.
     pub(crate) async fn settle_resource_stage(
         &self,
-        managed: &Arc<crate::SharedHost>,
+        managed: &Arc<crate::ExecutorComponents>,
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
     ) -> Result<
@@ -484,7 +484,7 @@ impl ManagedSessionRootFixture {
 
     pub(super) async fn install_committed_projection(
         &self,
-        managed: &Arc<crate::SharedHost>,
+        managed: &Arc<crate::ExecutorComponents>,
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         root: awaken_session_state_contract::PersistedSession,
@@ -565,7 +565,7 @@ impl ManagedSessionRootFixture {
 
     async fn install_projection_for_assignment(
         &self,
-        managed: &Arc<crate::SharedHost>,
+        managed: &Arc<crate::ExecutorComponents>,
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         root: awaken_session_state_contract::PersistedSession,

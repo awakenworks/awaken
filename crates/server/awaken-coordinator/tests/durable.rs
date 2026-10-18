@@ -1,6 +1,6 @@
 //! Level 0 — durable pause/resume across a restart.
 //!
-//! A run awaits on a client-executed tool and its `SharedHost` is dropped
+//! A run awaits on a client-executed tool and its `ExecutorComponents` is dropped
 //! (simulating a process exit). A brand-new host built over the *same* store
 //! directory recovers the awaiting position from committed truth and resumes the
 //! run to completion — proving the pause survives a restart when the commit
@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_coordinator::{HostResume, SharedHost};
+use awaken_coordinator::{ExecutorComponents, HostResume};
 use awaken_scenario_host::{
     CustomToolModel, HostDependencies, build_unmounted_dependencies,
     build_unmounted_dependencies_with_deployment,
@@ -32,14 +32,14 @@ fn text_of(message: &Message) -> String {
         .collect()
 }
 
-fn host_with_client_tool(dependencies: HostDependencies) -> Arc<SharedHost> {
+fn host_with_client_tool(dependencies: HostDependencies) -> Arc<ExecutorComponents> {
     let client_tools = HashSet::from(["submit_answer".to_string()]);
     (dependencies.with_client_tools(client_tools))
         .build()
         .expect("validated Host dependencies")
 }
 
-async fn host_over(dir: &std::path::Path, process: &str) -> Arc<SharedHost> {
+async fn host_over(dir: &std::path::Path, process: &str) -> Arc<ExecutorComponents> {
     let mut authority_deployment = awaken_session_executor::DeploymentConfig::ephemeral();
     authority_deployment.storage_dir = Some(dir.to_path_buf());
     let authority = awaken_coordinator::init_scenario_runtime(

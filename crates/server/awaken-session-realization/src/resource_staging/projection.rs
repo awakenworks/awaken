@@ -306,7 +306,7 @@ impl crate::resource_staging::ResourceStaging {
         // Direct protocol Sessions do not own a frozen Managed baseline, but
         // their Environment still enters through this one aggregate transition
         // authority. Admit only the exact empty legacy generation synthesized
-        // by `SharedHost::run`; any claimed, Managed, non-empty, advancing, or
+        // by `ExecutorComponents::run`; any claimed, Managed, non-empty, advancing, or
         // replacement transition without its frozen projection remains closed.
         let direct_empty_revision_zero_noop = claim.is_none()
             && !baseline_is_staged

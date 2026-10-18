@@ -164,7 +164,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingMcpRealizer {
         calls: Mutex<Vec<&'static str>>,
-        required_environment: std::sync::OnceLock<(std::sync::Weak<SharedHost>, String)>,
+        required_environment: std::sync::OnceLock<(std::sync::Weak<ExecutorComponents>, String)>,
         stage_entered: Option<Arc<tokio::sync::Notify>>,
         release_stage: Option<Arc<tokio::sync::Notify>>,
     }
@@ -613,7 +613,7 @@ mod tests {
     /// synchronizer and call the sole driver directly so they can assert its
     /// un-erased `DidNotConverge` result.
     async fn drive_test_session_realization(
-        host: &SharedHost,
+        host: &ExecutorComponents,
         control: &dyn awaken_session_realization_contract::SessionRealizationControl,
         session_id: &awaken_session_types::SessionId,
         directive: awaken_session_realization_contract::SessionRealizationDirective,
@@ -1352,7 +1352,7 @@ mod tests {
         thread: &str,
         publication: &awaken_runtime_contract::ExecutableAgentSnapshot,
     ) -> (
-        Arc<SharedHost>,
+        Arc<ExecutorComponents>,
         RecoveryControl,
         awaken_session_realization_contract::SessionRealizationDirective,
         awaken_provisioning_contract::SandboxHandle,

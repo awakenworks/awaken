@@ -1,7 +1,7 @@
 // @formal surface requirement=credential.plaintext_boundary.exact_holder
 // @formal reason: Holds the exact credential materializer and ACP session-blob adapter shared by attempt
 // @formal reason: executors; classified against the plaintext boundary; this link is not a formal-proof claim.
-//! EXEC capability of [`SharedHost`]: the ACP runtime backend, the tool
+//! EXEC capability of [`ExecutorComponents`]: the ACP runtime backend, the tool
 //! exporter and attempt decorator around the per-Session attempt router, and
 //! the credential/session-blob adapters those executors share.
 

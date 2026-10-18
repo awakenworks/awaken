@@ -14,7 +14,7 @@
   [ADR-0089](0089-session-realization-single-owner.md) (realization decisions in the
   aggregate, effects in one executor).
 - Affects: `awaken-session-state-contract`, `awaken-session-application`,
-  `awaken-protocol-managed`, `awaken-session-executor`, `awaken-session-store`; wire shapes
+  `awaken-protocol-managed`, `awaken-runtime-host`, `awaken-session-store`; wire shapes
   are unchanged.
 
 ## Context

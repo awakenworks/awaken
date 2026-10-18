@@ -16,7 +16,7 @@ use awaken_resource_application::{
 use awaken_resource_contract::SkillStore;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_session_executor::{
-    DeploymentConfig, HostDependencies, LocalResourcePorts, LocalSkillPorts, SharedHost,
+    DeploymentConfig, ExecutorComponents, HostDependencies, LocalResourcePorts, LocalSkillPorts,
 };
 use awaken_time::WallClock;
 
@@ -89,7 +89,7 @@ pub async fn memory_extraction_repository(
 pub async fn volatile_host(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
-) -> Arc<SharedHost> {
+) -> Arc<ExecutorComponents> {
     (volatile_dependencies(llm, model_ref).await)
         .build()
         .expect("validated Host dependencies")
@@ -131,7 +131,7 @@ pub async fn volatile_dependencies_with_deployment(
             model_ref,
             resources,
             memory_extraction_repository(None).await,
-            SharedHost::mint_local_workspace(),
+            ExecutorComponents::mint_local_workspace(),
             deployment,
             authority,
         ),
@@ -167,7 +167,10 @@ pub fn volatile_runtime_authority(
         None,
     );
     Arc::new(
-        awaken_session_executor::EphemeralRuntimeAuthority::with_dispatch(clock, Arc::new(dispatch)),
+        awaken_session_executor::EphemeralRuntimeAuthority::with_dispatch(
+            clock,
+            Arc::new(dispatch),
+        ),
     )
 }
 

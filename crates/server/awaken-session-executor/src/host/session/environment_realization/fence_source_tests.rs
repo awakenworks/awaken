@@ -22,7 +22,7 @@ async fn dependencies() -> crate::HostDependencies {
         .await
 }
 
-async fn host() -> Arc<SharedHost> {
+async fn host() -> Arc<ExecutorComponents> {
     (dependencies().await)
         .build()
         .expect("validated Host dependencies")
@@ -39,7 +39,7 @@ fn lease() -> SessionRealizationLease {
     }
 }
 
-fn install(host: &SharedHost, lease: SessionRealizationLease) {
+fn install(host: &ExecutorComponents, lease: SessionRealizationLease) {
     let proof = SessionRealizationLeaseReceipt::issued_at(lease, 0)
         .unwrap()
         .observed(awaken_authority_clock::authority_proof_started().unwrap());

@@ -14,9 +14,9 @@
 
 use std::sync::Arc;
 
-use awaken_session_executor::{DeploymentConfig, HostDependencies};
 use awaken_session_environment::SandboxEnvironmentProvider;
 use awaken_session_environment_contract::HandExecutorFactory;
+use awaken_session_executor::{DeploymentConfig, HostDependencies};
 
 mod acp_backend;
 mod acp_policy;

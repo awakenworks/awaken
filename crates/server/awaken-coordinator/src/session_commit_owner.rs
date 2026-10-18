@@ -6,18 +6,18 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::coordinator::OperationCoordinator;
 use awaken_dispatch::ClaimedOperationCoordinatorResolver;
-use awaken_session_executor::SharedHost;
+use awaken_session_executor::ExecutorComponents;
 use awaken_session_execution_contract::ApplicationError;
 
 /// Binds [`ClaimedOperationCoordinatorResolver`] to
 /// [`awaken_session_executor::session_commit_owner`]. The Host only resolves the existing
 /// owner; `ClaimedCommitService` remains the sole caller of its write method.
-pub struct SessionCommitOwner(Arc<SharedHost>);
+pub struct SessionCommitOwner(Arc<ExecutorComponents>);
 
 impl SessionCommitOwner {
     /// Select the Host already installed by the Coordinator composition.
     #[must_use]
-    pub fn new(host: Arc<SharedHost>) -> Self {
+    pub fn new(host: Arc<ExecutorComponents>) -> Self {
         Self(host)
     }
 }
@@ -44,7 +44,7 @@ mod tests {
         // commit_ingest tests own valid/stale claims,
         // child partitioning, replay and persistence. This test covers only
         // the newly shared binding, not a second implementation of those rules.
-        let host = awaken_runtime_host_testkit::volatile_host(
+        let host = awaken_session_executor_testkit::volatile_host(
             Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
             "stub",
         )

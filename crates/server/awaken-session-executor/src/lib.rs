@@ -132,9 +132,9 @@ pub use crate::host::capability::WorkerContentAdapters;
 #[cfg(any(test, feature = "test-support"))]
 pub use crate::host::capability::{LocalResourcePorts, LocalSkillPorts, test_memory_content};
 pub use crate::host::{
-    AttemptExecutorDecorator, HostDependencies, HostProcess, HostResume, RemoteAttemptInstallation,
-    SessionApplicationBindingError, SessionApplicationBindings, SessionExecutionDependencies,
-    SharedHost, TrustedHostPolicy, WarmPool,
+    AttemptExecutorDecorator, ExecutorComponents, HostDependencies, HostProcess, HostResume,
+    RemoteAttemptInstallation, SessionApplicationBindingError, SessionApplicationBindings,
+    SessionExecutionDependencies, TrustedHostPolicy, WarmPool,
 };
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::no_model::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};

@@ -313,7 +313,7 @@ impl ResolvedDeployment {
             // The registered Worker receives durable claims through its injected
             // HTTP dispatch store. Everything it owns locally is ephemeral
             // execution state; retaining the product data directory here would
-            // make `SharedHost` silently open Session/File/Memory SQLite stores.
+            // make `ExecutorComponents` silently open Session/File/Memory SQLite stores.
             runtime.storage_dir = None;
             runtime.database_url = None;
             runtime.dispatch_backend = DispatchBackend::Sqlite;

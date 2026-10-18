@@ -8,7 +8,7 @@ use awaken_session_configuration_contract::resource as session_resource;
 use awaken_session_realization::peers::EnvironmentPeer as _;
 
 async fn install_active_worker_relay(
-    host: &SharedHost,
+    host: &ExecutorComponents,
     thread: &str,
 ) -> (awaken_session_mcp::McpRelay, session_mcp::McpGenerationRef) {
     let generation = crate::test_mcp::mcp_fence(thread, "docs", 1, "runtime-1", 1, u64::MAX);

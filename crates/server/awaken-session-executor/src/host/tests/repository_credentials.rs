@@ -1200,7 +1200,7 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
         .await
         .expect("compile the exact initial Repository transition");
 
-    let clone_credential_id = |h: &SharedHost| {
+    let clone_credential_id = |h: &ExecutorComponents| {
         h.realization_executor
             .staging()
             .thread_repository_activations("t-rot")[0]

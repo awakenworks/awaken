@@ -1,7 +1,7 @@
 // @formal surface requirement=runtime.builtin_tools.tool_registration
 // @formal reason: Installers of the tool, Skill, plugin, and gate offering registered on every thread;
 // @formal reason: classified against its product requirement; this link is not a formal-proof claim.
-//! TOOLS capability of [`SharedHost`]: client tools, the Skill offering,
+//! TOOLS capability of [`ExecutorComponents`]: client tools, the Skill offering,
 //! runtime plugins and their configuration, WebSearch providers, the gate
 //! override, and management tools installed on every thread.
 

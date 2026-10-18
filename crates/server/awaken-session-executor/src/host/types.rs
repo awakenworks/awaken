@@ -5,7 +5,7 @@
 // @formal reason: bare executor state cannot become application completion. Evidence:
 // @formal reason: runtime.agent_loop.runtime_execution and settled-step projection tests; this is a
 // @formal reason: product-requirement classification, not a direct proof claim.
-//! Neutral value types produced/consumed by [`SharedHost`]: pending tools,
+//! Neutral value types produced/consumed by [`ExecutorComponents`]: pending tools,
 //! run results, resume commands, host errors, and outcome reports.
 
 use super::*;

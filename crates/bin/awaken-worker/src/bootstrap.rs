@@ -483,7 +483,8 @@ impl WorkerDaemonConfig {
         let mut builder = crate::WorkerNodeBuilder::new(upstream, clock.clone());
         if matches!(
             runtime.sandbox_tier,
-            awaken_session_executor::SandboxTier::Local | awaken_session_executor::SandboxTier::Namespace
+            awaken_session_executor::SandboxTier::Local
+                | awaken_session_executor::SandboxTier::Namespace
         ) && let Some(profile) = &runtime.acp
         {
             use awaken_run_executor_acp::host::{

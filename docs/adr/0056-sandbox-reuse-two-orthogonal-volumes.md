@@ -116,7 +116,7 @@ that. Therefore:
   awaken neither keeps it warm nor reclaims it.**
 - The **application / product plane** owns the Cache-Volume lifecycle. Awaken's own
   hosted product, if it wants directory warmth, owns a Cache-Volume provisioner in
-  its **server/product plane** (`awaken-session-executor` or above), never in the
+  its **server/product plane** (`awaken-runtime-host` or above), never in the
   runtime or the neutral worker contract. Any external consumer that wants directory
   warmth likewise owns its own provisioner and reaches awaken only through the mount
   seam below — awaken exposes the substrate, never the warmth policy.
@@ -167,7 +167,7 @@ claim drain and before deregistration.
 |---|---|---|---|---|
 | Immutable Environment image | `awaken-environment-image-build` | Environment build digest | Environment registration enqueues one build demand; execution readiness waits for its receipt | Environment remains unready; no alternate image builder |
 | Never-used container environment | `WarmContainerPool` through `ContainerEnvironmentCapacity` | normalized mount-less `SandboxSpec` shape | Worker startup, before the first Ready heartbeat; adaptive replenish after a hit | log and retain cold create; selected isolation never downgrades |
-| Cache Volume bytes/location | product-side `CacheVolumePrewarmer` in `awaken-session-executor` with an injected `CacheVolumeInitializer` | caller `(key, CacheVolumeLocation)`; `HostPath` and Kubernetes PVC are equally valid identities | explicit eager call or automatically before Session provider creation | Session creation fails; failed preparation is removed and may retry |
+| Cache Volume bytes/location | product-side `CacheVolumePrewarmer` in `awaken-runtime-host` with an injected `CacheVolumeInitializer` | caller `(key, CacheVolumeLocation)`; `HostPath` and Kubernetes PVC are equally valid identities | explicit eager call or automatically before Session provider creation | Session creation fails; failed preparation is removed and may retry |
 
 Static dependency direction:
 

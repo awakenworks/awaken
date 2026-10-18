@@ -10,7 +10,9 @@ use axum::Json;
 use axum::Router;
 use axum::routing::get;
 
-use crate::{SharedHost, build_router_and_host_with_model_publication_resolver, scenario_model};
+use crate::{
+    ExecutorComponents, build_router_and_host_with_model_publication_resolver, scenario_model,
+};
 use awaken_dream_application::{
     DreamCancellation, DreamExecutor, DreamFailure, DreamPreparation, DreamRequest,
 };
@@ -144,7 +146,7 @@ impl DreamExecutor for PreparedDreamBarrier {
 }
 
 /// Return the same router plus its Host for focused cross-module assertions.
-pub async fn build_dream_router_and_host() -> (Router, Arc<SharedHost>) {
+pub async fn build_dream_router_and_host() -> (Router, Arc<ExecutorComponents>) {
     // Keep the Dream lifecycle fixture deterministic by default, but route an
     // explicitly requested HTTP model through the same production provider
     // adapter as every other scenario. Dream used to bypass `scenario_model`,

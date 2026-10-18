@@ -151,7 +151,7 @@ async fn detached_executor() -> (
     );
     let realization_executor = {
         let owner = owner;
-        let crate::SharedHost {
+        let crate::ExecutorComponents {
             realization_executor,
             ..
         } = owner;

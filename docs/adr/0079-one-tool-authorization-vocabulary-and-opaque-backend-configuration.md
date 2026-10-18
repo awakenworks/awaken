@@ -89,7 +89,7 @@ background-task management tools (`run_in_background`, `list_background_tasks`,
 `get_background_task`, `cancel_background_task`); the target tool is still
 authorized on its own. The baseline also allows `agent_run` (delegation), the
 advisor tool, `list_skills`, `Skill`, `list_memories` and `read_memory`
-(`crates/server/awaken-session-executor/src/config.rs:59-102`). It still never grants a
+(`crates/server/awaken-runtime-host/src/config.rs:59-102`). It still never grants a
 controlled-modification member of the Agent toolset or an MCP tool.
 
 The open item "`auto` needs an ordering decision first" is closed in code: `auto`

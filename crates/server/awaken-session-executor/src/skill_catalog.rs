@@ -2,7 +2,7 @@
 // @formal entrypoint session_resources.external_io_requires_durable_prepared_state
 //! `SkillCatalog` — the host's skill offering plus its durable-catalog cache coherence.
 //!
-//! Groups the three skill fields that were flat on [`crate::SharedHost`] (the static
+//! Groups the three skill fields that were flat on [`crate::ExecutorComponents`] (the static
 //! configured `specs`, the optional durable `/v1/skills` `store`, and the sync-read
 //! `cache` snapshot) behind one type that owns their single invariant: the in-memory
 //! `cache` stays coherent with the async `store`, refreshed on every write and at each

@@ -1,5 +1,5 @@
 use super::*;
-use crate::SharedHost;
+use crate::ExecutorComponents;
 use async_trait::async_trait;
 use awaken_ext_memory::{MEMORY_AGENT_ID, MemoryExtractionStatus, RecallSelector as _};
 use awaken_resource_contract::{MemoryVersionQueries as _, MemoryWriter as _};
@@ -1098,7 +1098,7 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
         },
         crate::DeploymentConfig::ephemeral()
             .host_process(
-                SharedHost::mint_local_workspace(),
+                ExecutorComponents::mint_local_workspace(),
                 awaken_time::system_clock(),
             )
             .expect("ephemeral process"),

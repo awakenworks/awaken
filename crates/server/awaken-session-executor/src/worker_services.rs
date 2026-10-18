@@ -14,7 +14,7 @@ use awaken_dispatch_contract::{
     DispatchSettlementError, DispatchSettlementObserver, RunDispatch,
 };
 
-use crate::{FileContentSource, SharedHost};
+use crate::{ExecutorComponents, FileContentSource};
 
 /// Recovery of a claimed Run from committed Thread truth, read through the
 /// parent Session's partition.
@@ -56,7 +56,7 @@ impl RunRecoverySource for ThreadRecoverySource {
     }
 }
 
-impl SharedHost {
+impl ExecutorComponents {
     pub fn worker_recovery_source(&self) -> Arc<dyn RunRecoverySource> {
         thread_recovery_source(self.thread_reads.clone())
     }

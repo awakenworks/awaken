@@ -114,7 +114,7 @@ pub type RegisteredMemoryMounterFactory = Arc<
 >;
 
 use awaken_credential_materializer::InferenceExecutorMaterializer;
-use awaken_session_executor::SharedHost;
+use awaken_session_executor::ExecutorComponents;
 use awaken_worker_contract::{RegistryMutation, WorkerManifest};
 use awaken_coordinator_client::WorkerControlClient;
 use awaken_worker_transport_security::WorkerUpstream;
@@ -232,7 +232,9 @@ const fn worker_realization_scope_source(
     sandbox_tier: awaken_session_executor::SandboxTier,
 ) -> WorkerRealizationScopeSource {
     match sandbox_tier {
-        awaken_session_executor::SandboxTier::K8s => WorkerRealizationScopeSource::KubernetesNamespace,
+        awaken_session_executor::SandboxTier::K8s => {
+            WorkerRealizationScopeSource::KubernetesNamespace
+        }
         awaken_session_executor::SandboxTier::Local
         | awaken_session_executor::SandboxTier::Namespace
         | awaken_session_executor::SandboxTier::Docker
@@ -293,7 +295,7 @@ pub fn worker_realization_namespace(
             })?;
             std::borrow::Cow::Owned(awaken_installation_workspace::provision_at(
                 installation_root,
-                awaken_session_executor::SharedHost::mint_local_workspace,
+                awaken_session_executor::ExecutorComponents::mint_local_workspace,
             ))
         }
     };
@@ -1313,22 +1315,24 @@ fn configured_container_acp_targets(
 
 fn configured_container_acp_capability_source(
     deployment: &awaken_session_executor::DeploymentConfig,
-    host: Arc<SharedHost>,
+    host: Arc<ExecutorComponents>,
 ) -> Result<Option<Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>>, String> {
     let targets = configured_container_acp_targets(deployment)?;
     if targets.is_empty() {
         return Ok(None);
     }
     let clock = host.clock();
-    let negotiator = Arc::new(awaken_session_executor::SessionAcpCapabilityNegotiator::new(
-        host.run_assembly().clone(),
-        deployment.dispatch_owner.clone(),
-        // Some native adapters perform image-local plugin discovery before
-        // opening their first prompt-free Session. Keep the probe bounded while
-        // allowing that deterministic cold start to complete.
-        std::time::Duration::from_secs(30),
-        Arc::new(awaken_protocol_acp::ProtocolAcpCapabilityHandshake),
-    ));
+    let negotiator = Arc::new(
+        awaken_session_executor::SessionAcpCapabilityNegotiator::new(
+            host.run_assembly().clone(),
+            deployment.dispatch_owner.clone(),
+            // Some native adapters perform image-local plugin discovery before
+            // opening their first prompt-free Session. Keep the probe bounded while
+            // allowing that deterministic cold start to complete.
+            std::time::Duration::from_secs(30),
+            Arc::new(awaken_protocol_acp::ProtocolAcpCapabilityHandshake),
+        ),
+    );
     Ok(Some(Arc::new(
         acp_capability::ConfiguredAcpCapabilityObservationSource::new(
             targets,
@@ -1560,9 +1564,9 @@ impl WorkerNode {
         let local_workspace = match deployment.storage_dir.as_deref() {
             Some(root) => awaken_installation_workspace::provision_at(
                 root,
-                SharedHost::mint_local_workspace,
+                ExecutorComponents::mint_local_workspace,
             ),
-            None => SharedHost::mint_local_workspace(),
+            None => ExecutorComponents::mint_local_workspace(),
         };
         // Claimed Runs commit back to the Coordinator under this registered
         // identity; the Host holds only the neutral claim-fenced port.

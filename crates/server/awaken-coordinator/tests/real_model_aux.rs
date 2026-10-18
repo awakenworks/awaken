@@ -1,5 +1,5 @@
 //! Real-model e2e for the auxiliary agents (memory extraction, context
-//! compaction) driven by [`SharedHost`] over a **live** Anthropic-compatible
+//! compaction) driven by [`ExecutorComponents`] over a **live** Anthropic-compatible
 //! endpoint (e.g. Kimi) through the genai provider. These prove the real effect:
 //! a live model, triggered after a Run, actually writes a memory file / produces
 //! a summary that keeps a long conversation going.
@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::RunState;
-use awaken_coordinator::SharedHost;
+use awaken_coordinator::ExecutorComponents;
 use awaken_provider_genai::GenaiExecutor;
 use awaken_resource_contract::{
     ConfigVersion, LiveResourceBindingVerifier, MemoryStoreConfigVersion, ResourceAccess,
@@ -43,7 +43,7 @@ async fn live_dependencies() -> Option<(awaken_session_executor::HostDependencie
     ))
 }
 
-async fn live_host() -> Option<(Arc<SharedHost>, String)> {
+async fn live_host() -> Option<(Arc<ExecutorComponents>, String)> {
     live_dependencies().await.map(|(dependencies, model)| {
         (
             (dependencies).build().expect("validated Host dependencies"),
@@ -56,7 +56,7 @@ fn user(text: &str) -> Vec<Message> {
     vec![Message::text(MessageId("u".into()), Role::User, text)]
 }
 
-fn bind_memory(host: &SharedHost, thread: &str, store: &str) {
+fn bind_memory(host: &ExecutorComponents, thread: &str, store: &str) {
     struct ActiveMemory;
     #[async_trait::async_trait]
     impl LiveResourceBindingVerifier for ActiveMemory {

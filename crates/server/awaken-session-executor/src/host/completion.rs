@@ -1,7 +1,7 @@
 // @formal surface obligation=session_run.execution_requires_dispatch_work_and_realization_owner
 // @formal reason: Foreground submit and completion observe the one dispatch owner and exact committed Run result.
 // @formal reason: This classifies the Host observation edge, not a proof claim.
-//! Durable-foreground observation: the [`SharedHost`] pool-submit/await methods
+//! Durable-foreground observation: the [`ExecutorComponents`] pool-submit/await methods
 //! and the [`CompletionRegistry`] that owns temporary completion observers plus
 //! best-effort live routes for each foreground Run.
 

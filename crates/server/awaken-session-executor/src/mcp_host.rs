@@ -5,7 +5,7 @@
 // @formal reason: classification, not a direct proof claim.
 //! The Runtime Host side of Session MCP: the slot registry and root
 //! authority the MCP lifecycle reads, the Host error projection of its
-//! failures, and the `SharedHost` methods other Host modules call, each a thin
+//! failures, and the `ExecutorComponents` methods other Host modules call, each a thin
 //! delegate to [`awaken_session_mcp::McpSessions`].
 
 use std::sync::{Arc, Weak};

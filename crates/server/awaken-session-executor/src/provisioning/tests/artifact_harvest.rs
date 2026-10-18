@@ -330,7 +330,11 @@ impl BatchArtifactContainer {
     }
 }
 
-async fn install_batch_artifact_environment(host: &SharedHost, thread: &str, workspace: &str) {
+async fn install_batch_artifact_environment(
+    host: &ExecutorComponents,
+    thread: &str,
+    workspace: &str,
+) {
     host.capabilities
         .register_thread_workspace(thread, workspace)
         .expect("installed Sessions");

@@ -14,7 +14,7 @@ pub(crate) fn local_dispatch_owner(
     }
 }
 
-impl SharedHost {
+impl ExecutorComponents {
     /// This process's dispatch: topology, pool, terminal reconciliation, hint.
     #[must_use]
     pub fn dispatch(&self) -> &Arc<awaken_dispatch_execution::ProcessDispatch> {

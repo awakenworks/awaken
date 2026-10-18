@@ -10,7 +10,7 @@
   [ADR-0059](0059-neutral-core-and-leaf-evolution.md) (neutral core boundaries)
 - Supersedes:
   - the Native-only `GoalPlugin` / `GoalGuard` Outcome loop;
-  - the intermediate design in which `awaken-session-executor` owns the normative
+  - the intermediate design in which `awaken-runtime-host` owns the normative
     Outcome state machine;
   - `AgentToolGrader` and the Judge-specific `RawTool` bridge;
   - the in-memory `consumed_rounds` cursor and Thread-derived Outcome id.
@@ -22,7 +22,7 @@ deliverable, a separately contextualized Grader evaluates it against a rubric,
 and feedback drives bounded revisions. The former implementation compressed this
 workflow into forced continuations inside one Native Run. A later implementation
 moved Worker and Grader work onto ordinary backend-neutral Runs, but placed the
-normative controller and persistence codec in `awaken-session-executor`.
+normative controller and persistence codec in `awaken-runtime-host`.
 
 The second implementation improved execution parity and recovery, but assigned
 domain ownership to the composition application. That prevents Outcome from

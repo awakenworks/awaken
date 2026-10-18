@@ -1,4 +1,4 @@
-//! WORKER capability of [`SharedHost`]: the role-neutral claim-fenced Control
+//! WORKER capability of [`ExecutorComponents`]: the role-neutral claim-fenced Control
 //! clients a Host installs before it accepts claimed Session work. The
 //! transports only a database-less Worker holds (claimed commit, live-progress
 //! publisher, terminal cleanup, Memory reference encoder) belong to its

@@ -1,5 +1,5 @@
 use super::*;
-use crate::host::SharedHost;
+use crate::host::ExecutorComponents;
 use awaken_runtime_contract::llm::{ChatRequest, ChatResponse};
 use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_sandbox_container::{
@@ -98,7 +98,7 @@ async fn dependencies() -> crate::HostDependencies {
     crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test").await
 }
 
-async fn host() -> Arc<SharedHost> {
+async fn host() -> Arc<ExecutorComponents> {
     (dependencies().await)
         .build()
         .expect("validated Host dependencies")
@@ -229,7 +229,7 @@ fn frozen_projection_with_model_override(
 /// expectation, and exact revision-zero Resource transition; E2 later Sandbox
 /// creation cannot precede those frozen facts. Decision rule P1+P2 => E1+E2.
 async fn install_terminal_artifact_projection_before_environment(
-    host: &SharedHost,
+    host: &ExecutorComponents,
     session_id: &str,
     workspace_id: &str,
 ) {
@@ -253,7 +253,7 @@ async fn install_terminal_artifact_projection_before_environment(
 /// adopt and publish that exact Arc once. Rule F1+F2+F3=>E1+E2. A direct-only
 /// test receipt is not interchangeable with aggregate durable truth.
 fn install_terminal_artifact_environment(
-    host: &SharedHost,
+    host: &ExecutorComponents,
     session_id: &str,
     workspace_id: &str,
     environment: Arc<crate::session_environment::SessionEnvironment>,
@@ -291,7 +291,7 @@ fn install_terminal_artifact_environment(
 }
 
 async fn root_terminal_cleanup_effect(
-    host: &SharedHost,
+    host: &ExecutorComponents,
     session_id: &str,
     lease: session_resource::SessionRealizationLease,
 ) -> (

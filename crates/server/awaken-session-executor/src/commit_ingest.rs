@@ -16,14 +16,14 @@ use std::sync::Arc;
 use awaken_agent_contract::thread::commit::coordinator::OperationCoordinator;
 use awaken_session_execution_contract::ApplicationError;
 
-use crate::host::SharedHost;
+use crate::host::ExecutorComponents;
 
 /// Resolve the Session's existing commit owner for a claim-guarded remote
 /// commit. Coordinator composition installs this in its sole
 /// `ClaimedCommitService`, which remains the only caller of the owner's
 /// authoritative write method.
 pub async fn session_commit_owner(
-    host: &SharedHost,
+    host: &ExecutorComponents,
     session_thread: &awaken_agent_contract::agent::thread::Id,
 ) -> Result<Arc<dyn OperationCoordinator>, ApplicationError> {
     // Physical commit authority is Session-scoped. A child keeps its logical
@@ -66,7 +66,7 @@ mod tests {
 
     /// The Coordinator composition's resolver, rebuilt here over the same
     /// Host method so these tests drive the real claimed-commit service.
-    struct SessionCommitOwner(Arc<SharedHost>);
+    struct SessionCommitOwner(Arc<ExecutorComponents>);
 
     #[async_trait::async_trait]
     impl awaken_dispatch::ClaimedOperationCoordinatorResolver for SessionCommitOwner {
@@ -87,7 +87,7 @@ mod tests {
     /// observation after committed truth already exists. Production claimed
     /// writes always enter through `ClaimedCommitService` below.
     async fn apply_host_operation(
-        host: &Arc<SharedHost>,
+        host: &Arc<ExecutorComponents>,
         trusted_dispatch: &RunDispatch,
         operation: CommitOperation,
     ) -> Result<CommitReceipt, HostError> {
@@ -242,8 +242,8 @@ mod tests {
     }
 
     async fn cold_claimed_memory_host() -> (
-        Arc<SharedHost>,
-        Arc<SharedHost>,
+        Arc<ExecutorComponents>,
+        Arc<ExecutorComponents>,
         Arc<dyn awaken_resource_contract::MemoryVersionQueries>,
     ) {
         let (dependencies, versions) = crate::host::tests::fixtures::with_test_memory_history(
@@ -262,7 +262,7 @@ mod tests {
         (host, managed, versions)
     }
 
-    fn assert_no_resident_session_projection(host: &SharedHost, thread: &str, rule: &str) {
+    fn assert_no_resident_session_projection(host: &ExecutorComponents, thread: &str, rule: &str) {
         assert!(
             host.run_assembly
                 .installed_sessions
@@ -282,7 +282,7 @@ mod tests {
 
     async fn assert_completed_memory(
         memory: (
-            &SharedHost,
+            &ExecutorComponents,
             &dyn awaken_resource_contract::MemoryVersionQueries,
         ),
         intent_id: &str,

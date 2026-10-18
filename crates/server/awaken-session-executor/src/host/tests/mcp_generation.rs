@@ -2,7 +2,7 @@
 
 use super::*;
 
-async fn host_with_process_reaper() -> Arc<SharedHost> {
+async fn host_with_process_reaper() -> Arc<ExecutorComponents> {
     (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_mcp_process_reaper(Arc::new(awaken_run_executor_acp::Supervisor)))

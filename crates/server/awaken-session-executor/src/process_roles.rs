@@ -43,7 +43,7 @@ struct ProcessOperations {
 }
 
 impl ProcessOperations {
-    fn of(host: &crate::SharedHost) -> Self {
+    fn of(host: &crate::ExecutorComponents) -> Self {
         Self {
             dispatch: host.dispatch.clone(),
             assembly: host.run_assembly.clone(),
@@ -85,7 +85,7 @@ impl ProcessOperations {
 impl CoordinatorRoles {
     /// The Coordinator role set over `host`'s components.
     #[must_use]
-    pub fn of(host: &crate::SharedHost) -> Self {
+    pub fn of(host: &crate::ExecutorComponents) -> Self {
         Self {
             session_execution: host.session_execution_roles(),
             process: ProcessOperations::of(host),
@@ -131,7 +131,7 @@ impl CoordinatorRoles {
 impl WorkerRoles {
     /// The Worker role set over `host`'s components.
     #[must_use]
-    pub fn of(host: &crate::SharedHost) -> Self {
+    pub fn of(host: &crate::ExecutorComponents) -> Self {
         Self {
             process: ProcessOperations::of(host),
         }

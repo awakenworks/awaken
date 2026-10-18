@@ -68,7 +68,7 @@ MAX_FUNCTION_LINES = 150
 BUDGET_LINE_SLACK = 1000
 CRATE_REVIEW_LINES = 15000
 
-# An inherent impl may name its type through a crate path (`impl crate::host::SharedHost`);
+# An inherent impl may name its type through a crate path (`impl crate::host::ExecutorComponents`);
 # that block belongs to the same type, so the path prefix is part of the match.
 _IMPL = re.compile(
     r"^\s*impl(?:<[^>{]*>)?\s+(?:crate::(?:[a-z_][a-z0-9_]*::)*)?([A-Z][A-Za-z0-9_]*)(?:<[^>{]*>)?\s*(?:where[^{]*)?\{",

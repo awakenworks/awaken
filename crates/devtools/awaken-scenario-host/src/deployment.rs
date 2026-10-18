@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use awaken_runtime_contract::llm::LlmExecutor;
-use awaken_session_executor::{HostDependencies, SharedHost};
+use awaken_session_executor::{ExecutorComponents, HostDependencies};
 
 /// One runnable Scenario platform instance: the Host's dependencies, not yet
 /// turned into a Host, beside the Resources application they were selected
@@ -69,7 +69,7 @@ impl ScenarioPlatform {
     pub(crate) fn into_parts(
         self,
     ) -> (
-        Arc<SharedHost>,
+        Arc<ExecutorComponents>,
         awaken_resource_application::ResourcesApplication,
     ) {
         let (dependencies, resources) = self.into_dependencies();
@@ -227,12 +227,15 @@ fn scenario_deployment_from(
 
 /// The scenario installation's platform Workspace: the durable marker under a
 /// configured storage root (published on first use), else a volatile mint.
-pub(crate) fn installation_workspace(deployment: &awaken_session_executor::DeploymentConfig) -> String {
+pub(crate) fn installation_workspace(
+    deployment: &awaken_session_executor::DeploymentConfig,
+) -> String {
     match deployment.storage_dir.as_deref() {
-        Some(root) => {
-            awaken_installation_workspace::provision_at(root, SharedHost::mint_local_workspace)
-        }
-        None => SharedHost::mint_local_workspace(),
+        Some(root) => awaken_installation_workspace::provision_at(
+            root,
+            ExecutorComponents::mint_local_workspace,
+        ),
+        None => ExecutorComponents::mint_local_workspace(),
     }
 }
 
@@ -285,7 +288,7 @@ async fn resource_host_with_selected_runtime(
     // resource application must preserve the caller's complete typed Deployment;
     // rebuilding through the convenience constructor here silently replaced an
     // explicit Local sandbox tier with the fail-closed Namespace default.
-    let extraction_repository = awaken_runtime_host_testkit::memory_extraction_repository(
+    let extraction_repository = awaken_session_executor_testkit::memory_extraction_repository(
         deployment.storage_dir.as_deref(),
     )
     .await;
@@ -296,7 +299,7 @@ async fn resource_host_with_selected_runtime(
         .ok()
         .filter(|workspace| !workspace.trim().is_empty());
     let resource_ports =
-        awaken_runtime_host_testkit::local_resource_ports(&resources.authorities());
+        awaken_session_executor_testkit::local_resource_ports(&resources.authorities());
     let authority =
         select_scenario_runtime_authority(&deployment, resource_ports.clock.clone(), selected);
     let dependencies = HostDependencies::for_local_resources(
@@ -342,11 +345,12 @@ fn select_scenario_runtime_authority(
                 !deployment.durable
                     && deployment.database_url.is_none()
                     && deployment.store == awaken_session_executor::StoreKind::Sqlite
-                    && deployment.dispatch_backend == awaken_session_executor::DispatchBackend::Sqlite
+                    && deployment.dispatch_backend
+                        == awaken_session_executor::DispatchBackend::Sqlite
                     && deployment.wake == awaken_session_executor::Wake::None,
                 "durable or distributed Scenario Runtime requires an installed Coordinator authority"
             );
-            awaken_runtime_host_testkit::volatile_runtime_authority(clock)
+            awaken_session_executor_testkit::volatile_runtime_authority(clock)
         }
     }
 }
@@ -468,7 +472,10 @@ mod tests {
             deployment.dispatch_backend,
             awaken_session_executor::DispatchBackend::Postgres
         );
-        assert_eq!(deployment.store, awaken_session_executor::StoreKind::Postgres);
+        assert_eq!(
+            deployment.store,
+            awaken_session_executor::StoreKind::Postgres
+        );
         assert_eq!(
             deployment.database_url.as_deref(),
             Some("postgres://fixture")

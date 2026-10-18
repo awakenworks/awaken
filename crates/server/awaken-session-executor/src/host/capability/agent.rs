@@ -1,7 +1,7 @@
 // @formal surface requirement=model.routing.exact_binding
 // @formal reason: Installers of the default executor, per-thread model routing, remote attempts, and the Judge;
 // @formal reason: classified against the routing product boundary; this link is not a formal-proof claim.
-//! AGENT capability of [`SharedHost`]: the default inference executor and
+//! AGENT capability of [`ExecutorComponents`]: the default inference executor and
 //! model, per-thread model routing, the remote attempt adapter, the Outcome
 //! Judge, and the immutable Agent publications the Host executes.
 

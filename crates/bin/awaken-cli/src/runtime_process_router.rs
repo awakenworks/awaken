@@ -514,7 +514,7 @@ fn assemble_control_surface(
 /// The execution Host and the Session persistence it records Environment
 /// bindings through.
 struct ExecutionHost {
-    host: Arc<awaken_session_executor::SharedHost>,
+    host: Arc<awaken_session_executor::ExecutorComponents>,
     /// Consumed once by the Session application that shares these exact handles.
     session_persistence: Option<awaken_session_application::SessionPersistence>,
     artifact_fence: Option<Arc<awaken_coordinator::ClaimFencedArtifactPublisher>>,
@@ -565,7 +565,9 @@ async fn assemble_execution_host(
             let host_builder = HostDependencies::for_local_resources(
                 cloud.model_wiring.executor.clone(),
                 cloud.model_wiring.model_ref.clone(),
-                awaken_runtime_host_testkit::local_resource_ports(&resources.resource_authorities),
+                awaken_session_executor_testkit::local_resource_ports(
+                    &resources.resource_authorities,
+                ),
                 execution.memory_extractions.clone(),
                 base.stores.platform_workspace.clone(),
                 deployment.clone(),
