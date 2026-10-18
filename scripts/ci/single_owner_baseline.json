@@ -13,11 +13,19 @@
     "awaken-dispatch-http": 793,
     "awaken-session-executor": 273,
     "awaken-scenario-host": 78,
-    "awaken-session-application": 2930,
+    "awaken-session-application": 2929,
     "awaken-session-configuration-contract": 84,
     "awaken-session-environment": 76,
     "awaken-session-environment-contract": 253,
     "awaken-session-realization-driver": 265,
     "awaken-session-state-contract": 16
+  },
+  "environment-rewrite": {
+    "awaken-store-conformance": 5
+  },
+  "growth_reasons": {
+    "environment-rewrite": {
+      "awaken-store-conformance": "store conformance fixtures write arbitrary persisted Environment rows (bound, Restoring, worker-owned) to exercise the store contract; test-support crate outside every production closure"
+    }
   }
 }
