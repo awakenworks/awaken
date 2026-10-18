@@ -1,6 +1,7 @@
 //! Host tests, split by capability topic. Shared fixtures live here; the
 //! crate-wide ones live in [`fixtures`].
 use super::*;
+use awaken_dispatch_execution::DEFAULT_LEASE_MS;
 use awaken_session_environment::test_support::SandboxEnvironmentAccess;
 use awaken_time::system_clock;
 

@@ -258,7 +258,7 @@ impl WorkerSupervisor {
 
     async fn publish_registry_drain(
         &self,
-        _local_fence: awaken_session_executor::PoolDrainFence,
+        _local_fence: awaken_dispatch_execution::PoolDrainFence,
         deadline_ms: Option<u64>,
     ) -> Result<(), String> {
         match self
@@ -275,7 +275,7 @@ impl WorkerSupervisor {
         // The process-local claim gate is the drain linearization point. Fence it
         // before publishing Draining to the Registry so no still-open claim loop
         // can race the remote state transition and receive a predictable rejection.
-        let local_fence = self.host.begin_pool_drain().await.ok_or_else(|| {
+        let local_fence = self.host.dispatch().begin_drain().await.ok_or_else(|| {
             "worker drain rejected: local claim pool is not installed".to_string()
         })?;
         self.publish_registry_drain(local_fence, deadline_ms).await
@@ -510,14 +510,14 @@ async fn renew_registry_authority(lifecycle: &WorkerSupervisor, mut sequence: u6
             break;
         };
         let timing = receipt.timing;
-        let ready = lifecycle.host.pool_can_resume_work().await;
+        let ready = lifecycle.host.dispatch().can_resume_work().await;
         let heartbeat_timeout = timing
             .request_timeout()
             .min(lifecycle.authority.remaining());
         let heartbeat = lifecycle.observations.snapshot().into_heartbeat(
             sequence,
             ready,
-            lifecycle.host.pool_in_flight(),
+            lifecycle.host.dispatch().in_flight(),
             lifecycle.warm_environment_shapes(),
         );
         let mutation = tokio::time::timeout(
@@ -562,7 +562,7 @@ async fn renew_registry_authority(lifecycle: &WorkerSupervisor, mut sequence: u6
                 }
                 consecutive_failures = 0;
                 if admission_suspended {
-                    if lifecycle.host.resume_pool_admission().await {
+                    if lifecycle.host.dispatch().resume_admission().await {
                         tracing::info!(
                             "worker registry authority re-proven; claim admission resumed"
                         );
@@ -671,7 +671,7 @@ async fn pause_authority_admission_for_retry(
     timing: AuthorityLeaseTiming,
 ) -> Option<Instant> {
     if !*admission_suspended {
-        lifecycle.host.suspend_pool_admission().await;
+        lifecycle.host.dispatch().suspend_admission().await;
         *admission_suspended = true;
     }
     let now = mono::now();
@@ -833,10 +833,10 @@ pub(crate) fn spawn_session_preparation_reconciliation(
             // The same absorbing pool drain that stops Run claims also stops
             // new preparation claims. Temporary heartbeat suspension skips a
             // tick but can resume; it never turns into terminal drain.
-            if !lifecycle.host.pool_can_resume_work().await {
+            if !lifecycle.host.dispatch().can_resume_work().await {
                 break;
             }
-            if !lifecycle.host.pool_accepting_work().await {
+            if !lifecycle.host.dispatch().accepting_work().await {
                 continue;
             }
             let Some(target) = session_realization_claim_target(
@@ -1009,9 +1009,14 @@ pub(crate) async fn revoke_worker_session_authority_before(
     let outcome = complete_worker_revocation_before(
         deadline,
         async {
-            let _local_fence = lifecycle.host.begin_pool_drain().await.ok_or_else(|| {
-                "Worker revocation could not install the local claim fence".to_string()
-            })?;
+            let _local_fence = lifecycle
+                .host
+                .dispatch()
+                .begin_drain()
+                .await
+                .ok_or_else(|| {
+                    "Worker revocation could not install the local claim fence".to_string()
+                })?;
             Ok(lifecycle
                 .host
                 .session_runs()

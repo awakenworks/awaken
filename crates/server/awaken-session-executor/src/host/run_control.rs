@@ -248,10 +248,9 @@ impl crate::SessionRuns {
 
     /// The canonical durable control owner over this process's dispatch queue and pool.
     pub(crate) fn durable_run_control(&self) -> Result<DurableRunControl, HostError> {
-        Ok(DurableRunControl::new(
-            self.coordinator_dispatch()?,
-            self.local_pool.get().map(|_| self.dispatch_hint.clone()),
-        ))
+        Ok(self
+            .dispatch
+            .durable_run_control(self.coordinator_dispatch()?))
     }
 
     pub async fn cancel_durable(&self, thread: &str, run: &str) -> Result<(), HostError> {

@@ -126,7 +126,7 @@ impl crate::SessionRuns {
                 .and_then(|ctx| ctx.delivery.is_durable().then_some(&ctx.claimed_worker)),
             active_run,
         ) {
-            if self.local_pool.get().is_some() {
+            if self.dispatch.pool().is_some() {
                 // The process pool is the sole durable claim driver. This edge
                 // accepts the cancellation intent and returns; its drainer owns
                 // the claim-fenced Runtime commit and settlement.

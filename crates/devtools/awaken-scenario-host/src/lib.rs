@@ -1529,6 +1529,7 @@ pub async fn build_config_router() -> Router {
     )
     .await;
     let scenario_dispatch = host
+        .session_runs()
         .coordinator_dispatch()
         .expect("config scenario installs one Dispatch authority");
     let flat = flat

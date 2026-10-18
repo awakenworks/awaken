@@ -1314,7 +1314,7 @@ async fn terminal_quiescence_fences_ephemeral_children_before_cold_link_enrichme
     let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
-    assert!(!host.dispatch.durable_ingress(), "R1/C3");
+    assert!(!host.dispatch.topology().ingress.is_durable(), "R1/C3");
     let dispatch = host
         .session_runs
         .coordinator_dispatch()

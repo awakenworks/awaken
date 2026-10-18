@@ -265,7 +265,7 @@ async fn managed_claim_projection_loss_never_enters_ordinary_mcp_staging() {
         .unwrap();
     assert!(awaken_dispatch_execution::session_worker_resolver::claimed_session::has_session_projection_authority(&claimed));
     source.armed.store(true, Ordering::SeqCst);
-    let error = crate::host::session_worker_resolver(&host)
+    let error = crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
         .expect("Host dispatch resolver")
         .worker_for_claimed(&claimed)
         .await

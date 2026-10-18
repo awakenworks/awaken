@@ -1,5 +1,3 @@
-// @formal evidence worker_drain.bounded_cleanup_eventually_exits_without_fabricating_quiescence
-// @formal evidence worker_drain.grace_expiry_retains_cancellation_observer
 //! `SharedHost` — the protocol-neutral, thread-keyed session substrate.
 //!
 //! This is the "waist" both protocol adapters (Managed Agents, AI SDK) drive. It
@@ -30,7 +28,7 @@ use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::recovery::{RunRecoverySnapshot, RunRecoverySource};
 use awaken_dispatch_erasure::AnyDispatchStore;
-use awaken_dispatch_execution::{CompletionSink, DEFAULT_LEASE_MS, DispatchPool, WorkerResolver};
+use awaken_dispatch_execution::{CompletionSink, WorkerResolver};
 use awaken_ext_skills::{SkillRegistry, SkillSpec};
 #[cfg(any(test, feature = "test-support"))]
 use awaken_resource_contract::{FileCatalog, FileStore};
@@ -76,19 +74,6 @@ pub struct RemoteAttemptInstallation {
     pub credential_realization: awaken_credential_contract::CredentialRealizationCapabilities,
 }
 
-/// Retain the actual pool-drain fence future until the caller's absolute
-/// deadline. `Some(None)` is the valid direct-host case with no local pool;
-/// `None` alone means the fence owner did not return before the deadline.
-async fn await_runtime_drain_fence_before<F, T>(
-    deadline: tokio::time::Instant,
-    fence: F,
-) -> Option<T>
-where
-    F: std::future::Future<Output = T>,
-{
-    tokio::time::timeout_at(deadline, fence).await.ok()
-}
-
 mod build;
 pub use build::HostProcess;
 mod dependencies;
@@ -98,10 +83,7 @@ pub use dependencies::{
     SessionExecutionDependencies,
 };
 pub(crate) mod capability;
-pub use capability::{
-    DispatchPoolSizing, ExecutionTopology, LeaseOwnerId, LocalExecution, QueueDepthSource,
-    RunIngress, TrustedHostPolicy, WarmPool,
-};
+pub use capability::{TrustedHostPolicy, WarmPool};
 pub(crate) mod boundary_run;
 mod claimed_run;
 mod completion;
@@ -184,9 +166,8 @@ pub struct SharedHost {
     /// Injected into the pool as its `CompletionSink` and into each local Session
     /// worker as its `StreamSink`.
     pub(crate) completion: Arc<CompletionRegistry>,
-    /// Durable dispatch: queue transport, process pool, and the weak Session
-    /// application edges the pool's Workers call back into.
-    pub(crate) dispatch: capability::DispatchCapability,
+    /// This process's dispatch: topology, pool, terminal reconciliation, hint.
+    pub(crate) dispatch: Arc<awaken_dispatch_execution::ProcessDispatch>,
     /// The realization executor and the sandbox providers it realizes through.
     pub(crate) realization_executor: Arc<crate::realization_executor::RealizationExecutor>,
     /// Committed Thread readback over the selected authority.

@@ -88,7 +88,7 @@ async fn remote_cached_consumers_release_original_slots() {
                 .is_some_and(|cached| Arc::ptr_eq(cached, &context)))
             .unwrap()
     );
-    assert!(host.dispatch.dispatch_pool.get().is_none() && host.run_assembly.mcp.relay().is_none());
+    assert!(host.dispatch.pool().is_none() && host.run_assembly.mcp.relay().is_none());
     let endpoint = host
         .run_assembly
         .capabilities

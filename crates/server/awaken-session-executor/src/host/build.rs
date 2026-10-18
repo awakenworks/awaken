@@ -330,20 +330,26 @@ fn dispatch_execution(
         .map(|binding| binding.queue() as Arc<dyn awaken_dispatch_contract::DispatchExecution>)
 }
 
-/// The dispatch capability and the Session Run component that shares its local
-/// pool handle and wake hint.
+/// The process dispatch and the Session Run component that submits, cancels
+/// and publishes through it.
 fn session_run_delivery(
     run_assembly: &Arc<crate::RunAssembly>,
     completion: &Arc<CompletionRegistry>,
     hint: awaken_dispatch_execution::DispatchHint,
-) -> (capability::DispatchCapability, Arc<crate::SessionRuns>) {
-    let dispatch =
-        capability::DispatchCapability::new(run_assembly.execution.clone(), hint.clone());
+) -> (
+    Arc<awaken_dispatch_execution::ProcessDispatch>,
+    Arc<crate::SessionRuns>,
+) {
+    let dispatch = Arc::new(awaken_dispatch_execution::ProcessDispatch::new(
+        run_assembly.execution.clone(),
+        run_assembly.clock.clone(),
+        completion.clone(),
+        hint,
+    ));
     let runs = Arc::new(crate::SessionRuns::new(
         run_assembly.clone(),
         completion.clone(),
-        dispatch.dispatch_pool.clone(),
-        hint,
+        dispatch.clone(),
     ));
     (dispatch, runs)
 }

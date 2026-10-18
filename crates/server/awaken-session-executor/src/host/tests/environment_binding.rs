@@ -651,11 +651,14 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
     let ephemeral = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
-    assert!(!ephemeral.dispatch.durable_ingress(), "T1 precondition");
+    assert!(
+        !ephemeral.dispatch.topology().ingress.is_durable(),
+        "T1 precondition"
+    );
     ephemeral
         .ensure_dispatch_pool()
         .expect("valid test dispatch composition");
-    assert!(ephemeral.dispatch.dispatch_pool.get().is_some(), "T1/E1");
+    assert!(ephemeral.dispatch.pool().is_some(), "T1/E1");
 
     let local_store = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store(":memory:", system_clock())
@@ -685,7 +688,7 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
     local
         .ensure_dispatch_pool()
         .expect("valid test dispatch composition");
-    assert!(local.dispatch.dispatch_pool.get().is_some(), "T2/E1");
+    assert!(local.dispatch.pool().is_some(), "T2/E1");
 
     let coordinator_store = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store(":memory:", system_clock())
@@ -711,7 +714,7 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
     coordinator
         .ensure_dispatch_pool()
         .expect("valid test dispatch composition");
-    assert!(coordinator.dispatch.dispatch_pool.get().is_none(), "T3/E2");
+    assert!(coordinator.dispatch.pool().is_none(), "T3/E2");
 }
 
 #[tokio::test]
@@ -731,7 +734,7 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
         .build()
         .expect("validated Host dependencies");
     assert_eq!(
-        local.dispatch.execution.local,
+        local.dispatch.topology().local,
         crate::LocalExecution::InProcessPool(crate::DispatchPoolSizing::LocalParallelism(default)),
         "R1"
     );
@@ -780,18 +783,18 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
             .ensure_dispatch_pool()
             .expect("valid test dispatch composition");
         assert_eq!(
-            worker.dispatch.dispatch_pool.get().unwrap().concurrency(),
+            worker.dispatch.pool().unwrap().concurrency(),
             capacity,
             "R2 actual slots"
         );
         assert_eq!(
-            worker.dispatch.execution.local,
+            worker.dispatch.topology().local,
             crate::LocalExecution::InProcessPool(crate::DispatchPoolSizing::Registered(
                 std::num::NonZeroUsize::new(capacity).expect("R2")
             )),
             "R2 registered branch"
         );
-        let _local_fence = worker.begin_pool_drain().await;
+        let _local_fence = worker.dispatch.begin_drain().await;
         let mut coordinator_only = process();
         coordinator_only.execution.local = crate::LocalExecution::RemoteWorkersOnly;
         assert!(

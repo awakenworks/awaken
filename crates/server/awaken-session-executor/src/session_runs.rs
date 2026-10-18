@@ -34,18 +34,16 @@ pub struct SessionRuns {
     pub(crate) capabilities: Arc<crate::RunCapabilities>,
     pub(crate) run_assembly: Arc<crate::RunAssembly>,
     pub(crate) thread_reads: Arc<crate::ThreadReads>,
-    pub(crate) local_pool: capability::LocalDispatchPool,
-    pub(crate) dispatch_hint: awaken_dispatch_execution::DispatchHint,
+    pub(crate) dispatch: Arc<awaken_dispatch_execution::ProcessDispatch>,
 }
 
 impl SessionRuns {
     /// Session Run delivery over the contexts `run_assembly` builds, the
-    /// completion relay foreground Runs settle through, and the local pool.
+    /// completion relay foreground Runs settle through, and the process dispatch.
     pub(crate) fn new(
         run_assembly: Arc<crate::RunAssembly>,
         completion: Arc<crate::host::CompletionRegistry>,
-        local_pool: capability::LocalDispatchPool,
-        dispatch_hint: awaken_dispatch_execution::DispatchHint,
+        dispatch: Arc<awaken_dispatch_execution::ProcessDispatch>,
     ) -> Self {
         Self {
             installed_sessions: run_assembly.installed_sessions.clone(),
@@ -58,8 +56,7 @@ impl SessionRuns {
             thread_reads: run_assembly.thread_reads.clone(),
             capabilities: run_assembly.capabilities.clone(),
             completion,
-            local_pool,
-            dispatch_hint,
+            dispatch,
             run_assembly,
         }
     }
@@ -97,17 +94,10 @@ impl SessionRuns {
         &Arc<awaken_dispatch_execution::DispatchPool<awaken_dispatch_erasure::AnyDispatchStore>>,
         HostError,
     > {
-        self.local_pool.get().ok_or_else(|| {
+        self.dispatch.pool().ok_or_else(|| {
             HostError::bad_request(
                 "durable dispatch not enabled (set typed durable ingress to run the pool)",
             )
         })
-    }
-
-    /// Hint the local pool after a durable dispatch change, when one runs.
-    pub(crate) async fn notify_local_pool(&self) {
-        if self.local_pool.get().is_some() {
-            self.dispatch_hint.publish().await;
-        }
     }
 }

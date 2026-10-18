@@ -68,7 +68,11 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
         )
         .await
         .expect("R1 queue root continuation");
-    let ephemeral_store = ephemeral.dispatch_store().expect("R1 dispatch authority");
+    let ephemeral_store = ephemeral
+        .authority
+        .dispatch_binding()
+        .map(|binding| binding.queue())
+        .expect("R1 dispatch authority");
     let now = awaken_time::system_clock().now().as_epoch_ms();
     let claimed = ephemeral_store
         .claim(
@@ -80,7 +84,8 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
         .expect("R1 claim root continuation")
         .expect("R1 root continuation is runnable");
     let ephemeral_resolver =
-        crate::host::session_worker_resolver(&ephemeral).expect("Host dispatch resolver");
+        crate::host::session_worker_resolver(&ephemeral.run_assembly, &ephemeral.dispatch)
+            .expect("Host dispatch resolver");
     let worker = ephemeral_resolver
         .worker_for_claimed(&claimed)
         .await
@@ -128,7 +133,8 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
         .expect("R2 durable context");
     assert!(durable_ctx.delivery.is_durable(), "R2 precondition");
     let durable_resolver =
-        crate::host::session_worker_resolver(&durable).expect("Host dispatch resolver");
+        crate::host::session_worker_resolver(&durable.run_assembly, &durable.dispatch)
+            .expect("Host dispatch resolver");
     let resolved = durable_resolver
         .worker_for(&durable_thread, None)
         .await
@@ -159,7 +165,8 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
     )
     .await;
     let coordinator_resolver =
-        crate::host::session_worker_resolver(&coordinator).expect("Host dispatch resolver");
+        crate::host::session_worker_resolver(&coordinator.run_assembly, &coordinator.dispatch)
+            .expect("Host dispatch resolver");
     let error = match coordinator_resolver
         .worker_for_claimed(&coordinator_claim)
         .await
@@ -218,7 +225,8 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
         .build()
         .expect("validated Root-backed Host dependencies");
     let managed = managed_test_host(host.clone());
-    let resolver = crate::host::session_worker_resolver(&host).expect("Host dispatch resolver");
+    let resolver = crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
+        .expect("Host dispatch resolver");
     let child = awaken_runtime_contract::ExecutableAgentSnapshot::builder("researcher")
         .model(ModelBinding::new("test", "model", "native"))
         .fingerprint("researcher-v2")
@@ -312,7 +320,8 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
     let missing_host = adoption_host_over(missing_store.clone()).await;
     let _missing_managed = missing_host.clone();
     let missing_resolver =
-        crate::host::session_worker_resolver(&missing_host).expect("Host dispatch resolver");
+        crate::host::session_worker_resolver(&missing_host.run_assembly, &missing_host.dispatch)
+            .expect("Host dispatch resolver");
     missing_store
         .enqueue(with_empty_session_resources(
             ingress::RunDispatch::new(delegated(
@@ -454,7 +463,8 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
         &claimed.request.agent_publications,
         claimed.request.activation.effective_model_ref(),
     );
-    let resolver = crate::host::session_worker_resolver(&host).expect("Host dispatch resolver");
+    let resolver = crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
+        .expect("Host dispatch resolver");
     resolver
         .worker_for_claimed(&claimed)
         .await

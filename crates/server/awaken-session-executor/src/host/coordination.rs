@@ -16,7 +16,6 @@ mod session_reply_receipt;
 pub(super) use session_reply_receipt::{SessionReplyReceipt, validate_awaiting_tool_authority};
 
 use awaken_dispatch_execution::coordinated_run_activation;
-use awaken_dispatch_contract::Outbox as _;
 use awaken_session_execution_contract::{
     CoordinatedRunCommand, CoordinatedRunIntent, CoordinatedThreadKind, CoordinatedThreadTarget,
     SessionAgentMessageCommand, SessionAgentMessageReceipt, SessionAgentReportContinuation,
@@ -98,7 +97,7 @@ async fn finish_coordinated_child_admission(
             "Agent Thread terminated after a failed Run"
         }));
     }
-    host.session_runs.notify_local_pool().await;
+    host.session_runs.dispatch.hint_local_pool().await;
     Ok(SessionAgentMessageReceipt { thread_id })
 }
 
@@ -388,14 +387,11 @@ impl crate::ChildRunCoordination {
             )
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
-        if self.session_runs.local_pool.get().is_some() {
-            self.session_runs.dispatch_hint.publish().await;
-        } else {
-            store
-                .relay()
-                .await
-                .map_err(|error| HostError::internal(error.to_string()))?;
-        }
+        self.session_runs
+            .dispatch
+            .publish_staged(store.as_ref())
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
         Ok(())
     }
 
@@ -638,7 +634,7 @@ impl crate::ChildRunCoordination {
             .enqueue(request)
             .await
             .map_err(dispatch_admission_error)?;
-        self.session_runs.notify_local_pool().await;
+        self.session_runs.dispatch.hint_local_pool().await;
         Ok(())
     }
 

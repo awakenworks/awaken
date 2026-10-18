@@ -198,9 +198,10 @@ async fn undecodable_dispatched_runtime_projection_is_an_absorbing_resolution_fa
         .await
         .expect("claim")
         .expect("C1 the published requirements admit the claim");
-    let error = match (crate::host::session_worker_resolver(&host).expect("Host dispatch resolver"))
-        .worker_for_claimed(&claimed)
-        .await
+    let error = match (crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
+        .expect("Host dispatch resolver"))
+    .worker_for_claimed(&claimed)
+    .await
     {
         Ok(_) => panic!("C2 an undecodable projection must not execute"),
         Err(error) => error,

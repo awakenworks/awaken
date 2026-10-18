@@ -1,8 +1,8 @@
 //! How this process takes part in Run execution, decided by the composition
-//! root before the Host exists (ADR-0091 D6: only process compositions read
+//! root before the Session executor exists (ADR-0091 D6: only process compositions read
 //! deployment configuration).
 //!
-//! The Host never derives these choices from a configuration file. Each value
+//! Dispatch never derives these choices from a configuration file. Each value
 //! names the one decision it carries: whether a foreground Run is delivered
 //! through the durable queue ([`RunIngress`]), whether this process drains that
 //! queue itself and with how many slots ([`LocalExecution`]), the identity its
@@ -37,14 +37,14 @@ impl RunIngress {
 /// because both numbers had the same type. Now the CPU guess is a named branch
 /// that only an unregistered composition produces, and [`Registered`] is
 /// produced by moving a [`RegisteredCapacity`] into
-/// [`crate::HostDependencies::for_worker`].
+/// the Session executor's Worker constructor.
 ///
 /// [`Registered`]: DispatchPoolSizing::Registered
 /// [`RegisteredCapacity`]: awaken_dispatch_contract::RegisteredCapacity
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DispatchPoolSizing {
     /// No Worker registration in this topology (a direct or coordinator-embedded
-    /// Host). No registry ever published a capacity for this process, so local
+    /// process). No registry ever published a capacity for this process, so local
     /// parallelism is the whole truth and cannot contradict anything.
     LocalParallelism(std::num::NonZeroUsize),
     /// A registered Worker installed its validated manifest capacity. This is
@@ -72,7 +72,7 @@ impl DispatchPoolSizing {
         }
     }
 
-    /// The CPU-derived sizing used by a Host that registered no capacity.
+    /// The CPU-derived sizing used by a process that registered no capacity.
     #[must_use]
     pub fn local_parallelism() -> Self {
         Self::LocalParallelism(
@@ -160,7 +160,7 @@ pub struct ExecutionTopology {
 }
 
 impl ExecutionTopology {
-    /// The one admission rule for the recovery bound, applied by the Host
+    /// The one admission rule for the recovery bound, applied by the executor
     /// constructor and by every composition that parses it.
     pub fn validate(&self) -> Result<(), String> {
         if self.lost_wake_recovery_bound.is_zero()
@@ -173,13 +173,11 @@ impl ExecutionTopology {
 
     /// Project the recovery bound and depth observer into the one dispatch
     /// service schedule shared by local pools and coordinator-only repair.
-    pub(crate) fn dispatch_service_config(
-        &self,
-    ) -> awaken_dispatch_execution::DispatchServiceConfig {
-        awaken_dispatch_execution::DispatchServiceConfig {
+    pub(crate) fn dispatch_service_config(&self) -> crate::DispatchServiceConfig {
+        crate::DispatchServiceConfig {
             poll_interval: self.lost_wake_recovery_bound,
             sample_dispatch_queue_depth: self.queue_depth == QueueDepthSource::BuiltInSampler,
-            ..awaken_dispatch_execution::DispatchServiceConfig::default()
+            ..crate::DispatchServiceConfig::default()
         }
     }
 }
@@ -188,14 +186,23 @@ impl ExecutionTopology {
 mod tests {
     use super::*;
 
+    /// A standalone process: direct ingress, CPU-sized pool, built-in sampler.
+    fn standalone() -> ExecutionTopology {
+        ExecutionTopology {
+            ingress: RunIngress::Direct,
+            local: LocalExecution::in_process_pool(),
+            lease_owner: LeaseOwnerId::new("node-a").unwrap(),
+            lost_wake_recovery_bound: std::time::Duration::from_millis(250),
+            queue_depth: QueueDepthSource::BuiltInSampler,
+        }
+    }
+
     #[test]
     fn recovery_bound_has_one_validated_projection() {
         // C1 a positive bound within 60s; C2 zero or more than 60s. E1 the same
         // value reaches the shared local-pool/reconciler schedule; E2 invalid
-        // values fail before a Host starts. Rules: D1=C1 -> E1, D2=C2 -> E2.
-        let mut topology = crate::DeploymentConfig::ephemeral()
-            .execution_topology()
-            .expect("ephemeral topology");
+        // values fail before a process starts. Rules: D1=C1 -> E1, D2=C2 -> E2.
+        let mut topology = standalone();
         topology.lost_wake_recovery_bound = std::time::Duration::from_millis(750);
         topology.validate().expect("D1 valid");
         assert_eq!(
@@ -221,9 +228,7 @@ mod tests {
         // composition names an external observer. E1 the sampler stays on; E2
         // pool and coordinator-only reconciliation both receive it disabled
         // through their shared DispatchServiceConfig. No lease setting changes.
-        let mut topology = crate::DeploymentConfig::ephemeral()
-            .execution_topology()
-            .expect("ephemeral topology");
+        let mut topology = standalone();
         assert!(
             topology
                 .dispatch_service_config()
