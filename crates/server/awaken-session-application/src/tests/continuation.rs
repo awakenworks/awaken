@@ -676,7 +676,7 @@ pub(super) fn checkpoint_release_retention()
     }
 }
 
-fn generated_session(id: &str) -> PersistedSession {
+pub(super) fn generated_session(id: &str) -> PersistedSession {
     let mut session = persisted(id, false, "idle");
     let baseline = match &mut session.baseline {
         awaken_session_configuration_contract::SessionBaselineState::Frozen(baseline) => baseline,

@@ -815,6 +815,21 @@ impl SessionEnvironmentFacts {
         Self::project(session, now_unix_ms, asserted)
     }
 
+    /// The lifecycle supervisor's continuation hint, read from the
+    /// aggregate's own decision: whether `AdvanceContinuation`, projected at
+    /// `now`, instructs an effect. A refusal is not work; the root re-enters
+    /// the hint in the cycle its facts admit the effect.
+    #[must_use]
+    pub fn continuation_due(session: &crate::PersistedSession, now_unix_ms: u64) -> bool {
+        matches!(
+            transition_environment(
+                Self::project_continuation(session, now_unix_ms),
+                SessionEnvironmentEvent::AdvanceContinuation,
+            ),
+            Ok(decision) if decision.instruction().is_some()
+        )
+    }
+
     /// Project the facts of a terminal cleanup event (`RetireForCleanup`,
     /// `CleanedUp`). Terminal cleanup acts under the root's own lease
     /// generation, so the event asserts no lease, and both rows read only the

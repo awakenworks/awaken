@@ -1171,18 +1171,17 @@ impl SessionApplication {
 
     /// Reconcile every local durable Resource projection requiring convergence.
     pub async fn reconcile_resource_activations(&self) -> SessionReconciliation {
-        let candidates =
-            match super::scan_recovery_candidates(self.session_repository(), true).await {
-                Ok(candidates) => candidates,
-                Err(error) => {
-                    let mut report = SessionReconciliation::default();
-                    report.failures.push(SessionReconciliationFailure {
-                        session_id: "<repository>".to_string(),
-                        message: error.to_string(),
-                    });
-                    return report;
-                }
-            };
+        let candidates = match super::recovery_scan::recovery_candidates(self, true).await {
+            Ok(candidates) => candidates,
+            Err(error) => {
+                let mut report = SessionReconciliation::default();
+                report.failures.push(SessionReconciliationFailure {
+                    session_id: "<repository>".to_string(),
+                    message: error.to_string(),
+                });
+                return report;
+            }
+        };
         self.reconcile_resource_activations_from(&candidates).await
     }
 

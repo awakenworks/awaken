@@ -475,6 +475,7 @@ impl SessionApplication {
         reconcile_work_dispatches(
             self.sessions_repo.as_ref(),
             self.environments.assignment.as_ref(),
+            self.clock.now_ms(),
         )
         .await
     }
@@ -833,9 +834,10 @@ async fn dispatch_session_work(
 async fn reconcile_work_dispatches(
     sessions: &dyn SessionRepository,
     assignments: &dyn awaken_session_application_contract::SessionWorkerAssignment,
+    now_unix_ms: u64,
 ) -> WorkDispatchReconciliation {
     let mut report = WorkDispatchReconciliation::default();
-    let candidates = match scan_recovery_candidates(sessions, false).await {
+    let candidates = match scan_recovery_candidates(sessions, false, now_unix_ms).await {
         Ok(candidates) => candidates,
         Err(error) => {
             report.failures.push(WorkDispatchFailure {

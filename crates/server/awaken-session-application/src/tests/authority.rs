@@ -7498,12 +7498,12 @@ async fn durable_session_truth_owns_one_work_projection_path() {
     create(&repo, persisted("terminal", true, "terminated")).await;
     let environments = RecordingEnvironmentSource::default();
 
-    let first = reconcile_work_dispatches(&repo, &environments).await;
+    let first = reconcile_work_dispatches(&repo, &environments, 0).await;
     assert_eq!(first.settled, 1, "R1/R3/R4");
     assert!(first.failures.is_empty());
     assert_eq!(environments.dispatched.lock().unwrap().len(), 1, "R1");
 
-    let replay = reconcile_work_dispatches(&repo, &environments).await;
+    let replay = reconcile_work_dispatches(&repo, &environments, 0).await;
     assert_eq!(replay.settled, 1, "R2");
     assert!(replay.failures.is_empty());
     assert_eq!(environments.dispatched.lock().unwrap().len(), 1, "R2");
@@ -7527,7 +7527,7 @@ async fn work_dispatch_reconciliation_isolates_each_session_failure() {
     let environments = RecordingEnvironmentSource::default();
     environments.fail_for("external-failed");
 
-    let report = reconcile_work_dispatches(&repo, &environments).await;
+    let report = reconcile_work_dispatches(&repo, &environments, 0).await;
     assert_eq!(report.settled, 1, "W1/W2");
     assert_eq!(
         environments
@@ -7608,7 +7608,7 @@ async fn complete_recovery_scan_reaches_page_two_and_purge_fails_closed() {
     failing_recovery.fail_recovery_scan_on_call(2);
     let incomplete_environments = RecordingEnvironmentSource::default();
     let incomplete =
-        reconcile_work_dispatches(failing_recovery.as_ref(), &incomplete_environments).await;
+        reconcile_work_dispatches(failing_recovery.as_ref(), &incomplete_environments, 0).await;
     assert_eq!(incomplete.settled, 0, "F2/E3");
     assert_eq!(
         incomplete_environments
@@ -7620,7 +7620,7 @@ async fn complete_recovery_scan_reaches_page_two_and_purge_fails_closed() {
     assert_eq!(incomplete.failures.len(), 1, "F2/E3 repository failure");
 
     let environments = RecordingEnvironmentSource::default();
-    let recovery = reconcile_work_dispatches(repo.as_ref(), &environments).await;
+    let recovery = reconcile_work_dispatches(repo.as_ref(), &environments, 0).await;
     assert!(recovery.failures.is_empty(), "F1/E1: {recovery:?}");
     assert_eq!(recovery.settled, 257, "F1/E1 every page is recovered");
     assert!(
