@@ -44,7 +44,11 @@ async fn delayed_interruption_preserves_the_successor(start_with_active_run: boo
     } else {
         "idle-interrupt-later-run"
     };
-    let ctx = host.ctx_for(thread, None).await.expect("idle resident");
+    let ctx = host
+        .run_assembly
+        .ctx_for(thread, None)
+        .await
+        .expect("idle resident");
     assert!(!ctx.foreground.has_run().unwrap(), "C1 idle Run");
     assert!(
         ctx.foreground.observe().unwrap().cancellation.is_none(),

@@ -28,23 +28,31 @@ async fn assigned_staging_requires_a_root_and_direct_assertions_never_override_a
         credential: None,
         selected_plaintext_holder: None,
     };
-    assert_eq!(host.mcp_generation_root_authority(&generation), None);
+    assert_eq!(
+        host.run_assembly.mcp_generation_root_authority(&generation),
+        None
+    );
     let error = managed
+        .host
+        .run_assembly
         .stage_mcp_attachment(request.clone())
         .await
         .unwrap_err();
     assert_eq!(error.code, "mcp_stale_ownership");
-    assert!(host.mcp_projection(&generation).is_none());
+    assert!(host.run_assembly.mcp_projection(&generation).is_none());
     assert!(
         seen.lock().unwrap().is_empty(),
         "unknown assignment cannot enter transport I/O"
     );
 
     let direct = managed
+        .host
+        .run_assembly
         .stage_direct_mcp_attachment(request.clone())
         .await
         .unwrap();
     let projection = host
+        .run_assembly
         .mcp_projection(&generation)
         .expect("original direct projection");
     assert_eq!(projection.receipt, direct);
@@ -52,6 +60,8 @@ async fn assigned_staging_requires_a_root_and_direct_assertions_never_override_a
     let requests_before = seen.lock().unwrap().len();
     assert_eq!(
         managed
+            .host
+            .run_assembly
             .stage_mcp_attachment(request.clone())
             .await
             .unwrap_err()
@@ -64,19 +74,28 @@ async fn assigned_staging_requires_a_root_and_direct_assertions_never_override_a
         "an existing projection grants no assigned-root fallback"
     );
 
-    host.install_session_realization_lease(
-        session,
-        crate::session_resource::SessionRealizationLease {
-            owner: "worker".into(),
-            runtime_incarnation: "runtime-1".into(),
-            epoch: 1,
-            expires_at_unix_ms: u64::MAX,
-        },
-    )
-    .unwrap();
-    assert_eq!(host.mcp_generation_root_authority(&generation), Some(true));
+    host.run_assembly
+        .install_session_realization_lease(
+            session,
+            crate::session_resource::SessionRealizationLease {
+                owner: "worker".into(),
+                runtime_incarnation: "runtime-1".into(),
+                epoch: 1,
+                expires_at_unix_ms: u64::MAX,
+            },
+        )
+        .unwrap();
     assert_eq!(
-        managed.stage_mcp_attachment(request.clone()).await.unwrap(),
+        host.run_assembly.mcp_generation_root_authority(&generation),
+        Some(true)
+    );
+    assert_eq!(
+        managed
+            .host
+            .run_assembly
+            .stage_mcp_attachment(request.clone())
+            .await
+            .unwrap(),
         direct
     );
     assert_eq!(
@@ -85,10 +104,15 @@ async fn assigned_staging_requires_a_root_and_direct_assertions_never_override_a
         "exact replay retains the original transport"
     );
 
-    let _closed = host.begin_session_realization_revocation();
-    assert_eq!(host.mcp_generation_root_authority(&generation), Some(false));
+    let _closed = host.run_assembly.begin_session_realization_revocation();
+    assert_eq!(
+        host.run_assembly.mcp_generation_root_authority(&generation),
+        Some(false)
+    );
     assert_eq!(
         managed
+            .host
+            .run_assembly
             .stage_mcp_attachment(request.clone())
             .await
             .unwrap_err()
@@ -97,6 +121,8 @@ async fn assigned_staging_requires_a_root_and_direct_assertions_never_override_a
     );
     assert_eq!(
         managed
+            .host
+            .run_assembly
             .stage_direct_mcp_attachment(request)
             .await
             .unwrap_err()
@@ -104,5 +130,11 @@ async fn assigned_staging_requires_a_root_and_direct_assertions_never_override_a
         "mcp_stale_ownership"
     );
     assert_eq!(seen.lock().unwrap().len(), requests_before);
-    assert_eq!(host.mcp_projection(&generation).unwrap().receipt, direct);
+    assert_eq!(
+        host.run_assembly
+            .mcp_projection(&generation)
+            .unwrap()
+            .receipt,
+        direct
+    );
 }

@@ -31,9 +31,13 @@ async fn ordinary_run_and_managed_session_use_distinct_mcp_admission() {
             .unwrap();
     let (url, seen) = crate::test_mcp::start(None).await;
     let stage = request("constructor-mcp-admission", &url);
-    let run = &host.dispatch.run_mcp_effects;
-    let session = SessionProjectionExecution::mcp_effects(host.as_ref());
-    assert_eq!(host.mcp_generation_root_authority(&stage.generation), None);
+    let run = &crate::session_effects::RunMcpEffects::new(host.run_assembly.clone());
+    let session = SessionProjectionExecution::mcp_effects(host.run_assembly.as_ref());
+    assert_eq!(
+        host.run_assembly
+            .mcp_generation_root_authority(&stage.generation),
+        None
+    );
     assert_eq!(
         session
             .stage_mcp_attachment(stage.clone())
@@ -42,7 +46,11 @@ async fn ordinary_run_and_managed_session_use_distinct_mcp_admission() {
             .code,
         "mcp_stale_ownership"
     );
-    assert!(host.mcp_projection(&stage.generation).is_none());
+    assert!(
+        host.run_assembly
+            .mcp_projection(&stage.generation)
+            .is_none()
+    );
     assert!(seen.lock().unwrap().is_empty());
     let receipt = run.stage_mcp_attachment(stage.clone()).await.unwrap();
     run.publish_mcp_generation(stage.generation.clone())
@@ -54,25 +62,27 @@ async fn ordinary_run_and_managed_session_use_distinct_mcp_admission() {
         vec![stage.clone()]
     );
     assert_eq!(
-        host.mcp_generation_root_authority(&stage.generation),
+        host.run_assembly
+            .mcp_generation_root_authority(&stage.generation),
         None,
         "ordinary dispatch must not manufacture a Session root"
     );
-    host.install_session_realization_lease(
-        stage.generation.session_id().as_str(),
-        crate::session_resource::SessionRealizationLease {
-            owner: "worker".into(),
-            runtime_incarnation: "runtime".into(),
-            epoch: 1,
-            expires_at_unix_ms: u64::MAX,
-        },
-    )
-    .unwrap();
+    host.run_assembly
+        .install_session_realization_lease(
+            stage.generation.session_id().as_str(),
+            crate::session_resource::SessionRealizationLease {
+                owner: "worker".into(),
+                runtime_incarnation: "runtime".into(),
+                epoch: 1,
+                expires_at_unix_ms: u64::MAX,
+            },
+        )
+        .unwrap();
     assert_eq!(
         session.stage_mcp_attachment(stage.clone()).await.unwrap(),
         receipt
     );
-    let _closed = host.begin_session_realization_revocation();
+    let _closed = host.run_assembly.begin_session_realization_revocation();
     let requests_before = seen.lock().unwrap().len();
     for effects in [session, run as &dyn McpAttachmentRealizer] {
         assert_eq!(
@@ -146,8 +156,8 @@ async fn configured_realizer_is_exclusive_for_both_mcp_roles() {
             .unwrap();
     let (url, seen) = crate::test_mcp::start(None).await;
     let stage = request("configured-mcp-admission", &url);
-    let run = &host.dispatch.run_mcp_effects;
-    let session = SessionProjectionExecution::mcp_effects(host.as_ref());
+    let run = &crate::session_effects::RunMcpEffects::new(host.run_assembly.clone());
+    let session = SessionProjectionExecution::mcp_effects(host.run_assembly.as_ref());
     for effects in [session, run as &dyn McpAttachmentRealizer] {
         let error = effects
             .stage_mcp_attachment(stage.clone())
@@ -181,6 +191,10 @@ async fn configured_realizer_is_exclusive_for_both_mcp_roles() {
             ("drain", stage.generation.clone())
         ]
     );
-    assert!(host.mcp_projection(&stage.generation).is_none());
+    assert!(
+        host.run_assembly
+            .mcp_projection(&stage.generation)
+            .is_none()
+    );
     assert!(seen.lock().unwrap().is_empty());
 }

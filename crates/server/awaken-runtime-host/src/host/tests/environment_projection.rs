@@ -65,7 +65,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     install_complete_test_session_for_realization(
         &managed,
         "t-attach",
-        bare_session("agent", host.local_workspace()),
+        bare_session("agent", host.run_assembly.local_workspace()),
     )
     .await
     .expect("install complete empty Session projection");
@@ -75,7 +75,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         .file_application()
         .expect("test startup installs File application")
         .create_uploaded_file(
-            host.local_workspace(),
+            host.run_assembly.local_workspace(),
             "data.txt".into(),
             "text/plain".into(),
             b"hello-attached",
@@ -130,10 +130,12 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     };
     let attached = effective_resources(vec![res.clone()]);
     managed
+        .host
+        .run_assembly
         .apply_session_inputs(
             "t-attach",
             &resource_transition(
-                host.local_workspace(),
+                host.run_assembly.local_workspace(),
                 0,
                 Default::default(),
                 1,
@@ -152,6 +154,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         "attach evicts the cached ctx so the next Run rebuilds with the mount"
     );
     let handle_after_attach = host
+        .run_assembly
         .session_environment_handle("t-attach")
         .await
         .expect("live attach retains one Session environment");
@@ -211,9 +214,17 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
 
     // Detach removes exactly that mount again.
     managed
+        .host
+        .run_assembly
         .apply_session_inputs(
             "t-attach",
-            &resource_transition(host.local_workspace(), 1, attached, 2, Default::default()),
+            &resource_transition(
+                host.run_assembly.local_workspace(),
+                1,
+                attached,
+                2,
+                Default::default(),
+            ),
         )
         .await
         .expect("detach");
@@ -234,7 +245,9 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         "detach removes the projected file from the same live environment"
     );
     assert_eq!(
-        host.session_environment_handle("t-attach").await,
+        host.run_assembly
+            .session_environment_handle("t-attach")
+            .await,
         Some(handle_after_attach),
         "detachment retains conservative path evidence for crash recovery"
     );
@@ -274,7 +287,7 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
         .file_application()
         .expect("File application")
         .create_uploaded_file(
-            host.local_workspace(),
+            host.run_assembly.local_workspace(),
             "retained.txt".into(),
             "text/plain".into(),
             b"retained-generation",
@@ -291,7 +304,7 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
         initial_branch: None,
         initial_commit: None,
     }]);
-    let mut init = bare_session("agent", host.local_workspace());
+    let mut init = bare_session("agent", host.run_assembly.local_workspace());
     init.resources = installed;
     install_complete_test_session_for_realization(&managed, "invalid-live-repository", init)
         .await
@@ -347,6 +360,8 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
     durable["inputs"][0]["mount_path"] = serde_json::Value::String("/repo".into());
     let invalid = serde_json::from_value(durable).expect("decode historical Resource manifest");
     let error = managed
+        .host
+        .run_assembly
         .apply_session_inputs(
             "invalid-live-repository",
             &resource_transition(
@@ -376,7 +391,8 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
         "L1/L2 mounts"
     );
     assert_eq!(
-        host.session_environment_handle("invalid-live-repository")
+        host.run_assembly
+            .session_environment_handle("invalid-live-repository")
             .await,
         Some(before_handle),
         "L1/L2 environment"
@@ -468,7 +484,7 @@ async fn applying_repository_detach_removes_the_resident_namespace_checkout() {
         &managed,
         "t-repo-detach",
         awaken_session_configuration_contract::SessionInit {
-            workspace_id: host.local_workspace().into(),
+            workspace_id: host.run_assembly.local_workspace().into(),
             agent_id: "agent".into(),
             delegate_ids: Vec::new(),
             tools: None,
@@ -545,6 +561,8 @@ async fn applying_repository_detach_removes_the_resident_namespace_checkout() {
     );
 
     managed
+        .host
+        .run_assembly
         .apply_session_inputs(
             "t-repo-detach",
             &resource_transition(
@@ -562,7 +580,9 @@ async fn applying_repository_detach_removes_the_resident_namespace_checkout() {
         "RD1 detached checkout must not remain readable"
     );
     assert_eq!(
-        host.session_environment_handle("t-repo-detach").await,
+        host.run_assembly
+            .session_environment_handle("t-repo-detach")
+            .await,
         Some(handle),
         "RD1 mutation retains the one Session environment"
     );
@@ -604,7 +624,7 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
         .file_application()
         .expect("test startup installs File application")
         .create_uploaded_file(
-            host.local_workspace(),
+            host.run_assembly.local_workspace(),
             "data.txt".into(),
             "text/plain".into(),
             b"must-remain-unmounted",
@@ -619,7 +639,7 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
         .expect("installed Sessions")
         .unwrap_or_else(|| {
             crate::session_resource::SessionResourceManifest::at_revision(
-                host.local_workspace(),
+                host.run_assembly.local_workspace(),
                 0,
                 crate::session_resource::ResolvedSessionResources::default(),
             )
@@ -636,6 +656,8 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
     }]);
 
     let error = managed
+        .host
+        .run_assembly
         .apply_session_inputs(
             "t-local-attach",
             &resource_transition(
@@ -713,7 +735,7 @@ async fn committed_queries_do_not_provision_a_failed_session_environment() {
         .file_application()
         .expect("test startup installs File application")
         .create_uploaded_file(
-            host.local_workspace(),
+            host.run_assembly.local_workspace(),
             "query.txt".into(),
             "text/plain".into(),
             b"read-only",
@@ -726,7 +748,7 @@ async fn committed_queries_do_not_provision_a_failed_session_environment() {
             &managed,
             "t-query-after-provisioning-denial",
             awaken_session_configuration_contract::SessionInit {
-                workspace_id: host.local_workspace().into(),
+                workspace_id: host.run_assembly.local_workspace().into(),
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
                 tools: None,
@@ -752,6 +774,7 @@ async fn committed_queries_do_not_provision_a_failed_session_environment() {
         .expect("stage frozen Session");
 
     let reservation_error = match host
+        .run_assembly
         .ctx_for_session_coordination("t-query-after-provisioning-denial", Some("assistant"))
         .await
     {
@@ -880,10 +903,12 @@ async fn frozen_environment_network_follows_the_decision_table() {
     for (id, network, sandbox, expected_network, expected_denial) in rules {
         let thread = format!("environment-{id}");
         managed
+            .host
+            .run_assembly
             .install_test_session_init(
                 &thread,
                 SessionInit {
-                    workspace_id: host.local_workspace().into(),
+                    workspace_id: host.run_assembly.local_workspace().into(),
                     agent_id: "a".into(),
                     delegate_ids: Vec::new(),
                     tools: None,
@@ -997,11 +1022,14 @@ async fn install_test_session_init_overlays_the_environment_sandbox_onto_the_spe
         .await
         .unwrap();
     assert_eq!(
-        host.registered_thread_workspace("t-bare").as_deref(),
+        host.run_assembly
+            .registered_thread_workspace("t-bare")
+            .as_deref(),
         Some("ws"),
         "W2"
     );
     let context = host
+        .run_assembly
         .ctx_for("t-bare", None)
         .await
         .expect("W2 runtime context")
@@ -1054,7 +1082,7 @@ async fn install_test_session_init_is_lazy_and_first_run_materializes_the_enviro
             &managed,
             "lazy-environment",
             SessionInit {
-                workspace_id: host.local_workspace().into(),
+                workspace_id: host.run_assembly.local_workspace().into(),
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
                 tools: None,
@@ -1128,10 +1156,12 @@ async fn coordinator_dispatch_context_never_materializes_an_eager_environment() 
 
     install_test_session_application(&host);
     install_test_dispatch_runtime(&host)
+        .host
+        .run_assembly
         .install_test_session_init(
             "coordinator-dispatch-only",
             SessionInit {
-                workspace_id: host.local_workspace().into(),
+                workspace_id: host.run_assembly.local_workspace().into(),
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
                 tools: None,
@@ -1179,6 +1209,7 @@ async fn coordinator_dispatch_context_never_materializes_an_eager_environment() 
         .expect("installed Sessions");
 
     let context = host
+        .run_assembly
         .ctx_for("coordinator-dispatch-only", Some("assistant"))
         .await
         .expect("D1 builds a sandbox-free dispatch context");
@@ -1255,6 +1286,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
         .build();
 
     let context = host
+        .run_assembly
         .ctx_for_snapshot(
             "coordinator-backend-owned",
             Some("local-codex"),
@@ -1304,7 +1336,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
     };
     let layout = |runtime_placement, mounts, resources| {
         awaken_session_configuration_contract::SessionSandboxLayout {
-            workspace_id: host.local_workspace().into(),
+            workspace_id: host.run_assembly.local_workspace().into(),
             agent_id: "local-codex".into(),
             agent_revision: None,
             runtime_placement,
@@ -1318,6 +1350,8 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
     };
     let managed = crate::ManagedHost::new(host.clone());
     managed
+        .host
+        .run_assembly
         .validate_session_sandbox_layout(
             "worker-prospective-valid",
             &layout(
@@ -1328,6 +1362,8 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
         )
         .expect("P1 Worker admission needs no Coordinator provider");
     let conflict = managed
+        .host
+        .run_assembly
         .validate_session_sandbox_layout(
             "worker-prospective-conflict",
             &layout(
@@ -1339,6 +1375,8 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
         .expect_err("P2 structural conflict remains fail-closed");
     assert!(conflict.to_string().contains("overlaps"), "P2: {conflict}");
     let local_error = managed
+        .host
+        .run_assembly
         .validate_session_sandbox_layout(
             "local-prospective-valid",
             &layout(
@@ -1375,7 +1413,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
             },
         );
         awaken_session_realization_contract::FrozenSessionProjection {
-            workspace_id: host.local_workspace().into(),
+            workspace_id: host.run_assembly.local_workspace().into(),
             revision: awaken_session_types::SessionRevision(1),
             baseline,
             agent_publication: None,
@@ -1385,7 +1423,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
             resources,
             previous_resource_manifest: Some(
                 crate::session_resource::SessionResourceManifest::new(
-                    host.local_workspace(),
+                    host.run_assembly.local_workspace(),
                     crate::session_resource::ResolvedSessionResources::default(),
                 ),
             ),
@@ -1394,15 +1432,16 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
             request_context: Vec::new(),
         }
     };
-    host.install_dispatch_frozen_session_projection(
-        "worker-dispatch-valid",
-        projection(
-            Vec::new(),
-            crate::session_resource::ResolvedSessionResources::default(),
-        ),
-    )
-    .await
-    .expect("P4 Worker Dispatch needs no Coordinator provider");
+    host.run_assembly
+        .install_dispatch_frozen_session_projection(
+            "worker-dispatch-valid",
+            projection(
+                Vec::new(),
+                crate::session_resource::ResolvedSessionResources::default(),
+            ),
+        )
+        .await
+        .expect("P4 Worker Dispatch needs no Coordinator provider");
     assert!(
         host.realization_executor
             .environments()
@@ -1413,6 +1452,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
         "P4/E5"
     );
     let dispatch_conflict = host
+        .run_assembly
         .install_dispatch_frozen_session_projection(
             "worker-dispatch-conflict",
             projection(
@@ -1449,6 +1489,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
         .build()
         .expect("validated Host dependencies");
     let realization_error = physical_without_provider
+        .run_assembly
         .install_frozen_session_projection(
             "worker-realization-missing-provider",
             projection(
@@ -1477,6 +1518,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
     );
     let physical = (physical).build().expect("validated Host dependencies");
     physical
+        .run_assembly
         .install_frozen_session_projection(
             "worker-realization-valid",
             projection(
@@ -1494,6 +1536,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
         .build()
         .expect("validated Host dependencies");
     let error = match local
+        .run_assembly
         .ctx_for_snapshot("local-backend-owned", Some("local-codex"), Some(snapshot))
         .await
     {
@@ -1556,7 +1599,9 @@ async fn frozen_environment_selects_trusted_host_exactly() {
         }),
     );
     trusted.self_hosted = true;
-    host.install_environment_projection("T1", &trusted).unwrap();
+    host.run_assembly
+        .install_environment_projection("T1", &trusted)
+        .unwrap();
     let selected = host
         .realization_executor
         .environments()
@@ -1580,6 +1625,7 @@ async fn frozen_environment_selects_trusted_host_exactly() {
         .into_session_provider();
     let absent = (absent).build().expect("validated Host dependencies");
     absent
+        .run_assembly
         .install_environment_projection("T2", &trusted)
         .unwrap();
     let error = match absent
@@ -1602,7 +1648,8 @@ async fn frozen_environment_selects_trusted_host_exactly() {
         serde_json::json!({"isolation": "namespace"}),
     );
     isolated.self_hosted = true;
-    host.install_environment_projection("I1", &isolated)
+    host.run_assembly
+        .install_environment_projection("I1", &isolated)
         .unwrap();
     let backend_owned =
         awaken_runtime_contract::resolved::ResolvedModelCandidate::try_backend_owned(
@@ -1642,10 +1689,12 @@ async fn on_tool_use_text_only_run_keeps_the_environment_absent() {
     install_test_session_application(&host);
     let managed = install_test_dispatch_runtime(&host);
     managed
+        .host
+        .run_assembly
         .install_test_session_init(
             "deferred-text",
             SessionInit {
-                workspace_id: host.local_workspace().into(),
+                workspace_id: host.run_assembly.local_workspace().into(),
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
                 tools: None,
@@ -1732,7 +1781,7 @@ async fn on_tool_use_published_delegate_forces_one_eager_environment() {
             &managed,
             "deferred-delegate",
             SessionInit {
-                workspace_id: host.local_workspace().into(),
+                workspace_id: host.run_assembly.local_workspace().into(),
                 agent_id: "parent".into(),
                 delegate_ids: vec!["child".into()],
                 tools: None,
@@ -1746,7 +1795,11 @@ async fn on_tool_use_published_delegate_forces_one_eager_environment() {
         .await
         .expect("prepare exact publication");
 
-    let missing = match host.ctx_for("deferred-delegate", Some("parent")).await {
+    let missing = match host
+        .run_assembly
+        .ctx_for("deferred-delegate", Some("parent"))
+        .await
+    {
         Err(error) => error,
         Ok(_) => panic!("L9/E4 missing coordination authority must fail closed"),
     };
@@ -1783,6 +1836,7 @@ async fn on_tool_use_published_delegate_forces_one_eager_environment() {
     );
 
     let context = host
+        .run_assembly
         .ctx_for("deferred-delegate", Some("parent"))
         .await
         .expect("L9 delegate context");
@@ -1822,7 +1876,11 @@ async fn model_request_gate_follows_the_session_dispatch_decision_table() {
         .build()
         .expect("validated Host dependencies");
     let _direct_runtime = install_test_dispatch_runtime(&direct);
-    let direct_context = direct.ctx_for("gate-direct-absent", None).await.unwrap();
+    let direct_context = direct
+        .run_assembly
+        .ctx_for("gate-direct-absent", None)
+        .await
+        .unwrap();
     assert!(
         direct_context.attempt_context.model_request_gate.is_none(),
         "G1"
@@ -1840,6 +1898,7 @@ async fn model_request_gate_follows_the_session_dispatch_decision_table() {
         .bind_agent_coordination(coordination.clone())
         .unwrap();
     let direct_context = direct_with_endpoint
+        .run_assembly
         .ctx_for("gate-direct-present", None)
         .await
         .unwrap();
@@ -1864,6 +1923,8 @@ async fn model_request_gate_follows_the_session_dispatch_decision_table() {
         .expect("validated Host dependencies");
     let managed_runtime = install_test_dispatch_runtime(&managed);
     managed_runtime
+        .host
+        .run_assembly
         .install_test_session_init("gate-managed-present", session_init())
         .await
         .unwrap();
@@ -1872,7 +1933,11 @@ async fn model_request_gate_follows_the_session_dispatch_decision_table() {
         .session_application_bindings()
         .bind_agent_coordination(coordination.clone())
         .unwrap();
-    let managed_context = managed.ctx_for("gate-managed-present", None).await.unwrap();
+    let managed_context = managed
+        .run_assembly
+        .ctx_for("gate-managed-present", None)
+        .await
+        .unwrap();
     assert!(
         managed_context.attempt_context.model_request_gate.is_some(),
         "G3"
@@ -1899,10 +1964,16 @@ async fn model_request_gate_follows_the_session_dispatch_decision_table() {
         .build()
         .expect("validated Host dependencies");
     install_test_dispatch_runtime(&missing)
+        .host
+        .run_assembly
         .install_test_session_init("gate-managed-absent", session_init())
         .await
         .unwrap();
-    let error = match missing.ctx_for("gate-managed-absent", None).await {
+    let error = match missing
+        .run_assembly
+        .ctx_for("gate-managed-absent", None)
+        .await
+    {
         Ok(_) => panic!("G4 must fail closed"),
         Err(error) => error,
     };

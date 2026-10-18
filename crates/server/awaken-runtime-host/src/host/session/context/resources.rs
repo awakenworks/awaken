@@ -3,13 +3,13 @@
 //! Acquire the lifecycle-owned Environment and authoritative read/commit ports.
 
 use super::plan::ContextPlan;
+use crate::HostError;
 use crate::config::effective_tool_authorization;
 use crate::host::session::SkillDeliveryEvidence;
 use crate::host::session::input_projection::pre_authorized_tool_ids;
 use crate::host::session_ctx::{
     RuntimeContextPurpose, RuntimeEnvironmentAdmission, runtime_environment_admission,
 };
-use crate::{HostError, SharedHost};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use std::sync::Arc;
 
@@ -36,7 +36,7 @@ pub(super) struct ContextResources {
 }
 
 pub(super) async fn acquire(
-    host: &SharedHost,
+    host: &crate::RunAssembly,
     lifecycle: crate::session_realizations::LifecycleHeld<'_>,
     thread: &str,
     plan: ContextPlan,

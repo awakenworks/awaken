@@ -330,7 +330,8 @@ impl BatchArtifactContainer {
 }
 
 async fn install_batch_artifact_environment(host: &SharedHost, thread: &str, workspace: &str) {
-    host.register_thread_workspace(thread, workspace);
+    host.run_assembly
+        .register_thread_workspace(thread, workspace);
     let spec = host.realization_executor.sandbox_spec(thread);
     let environment = Arc::new(
         host.realization_executor
@@ -347,7 +348,8 @@ async fn install_batch_artifact_environment(host: &SharedHost, thread: &str, wor
             .await
             .expect("create batch Artifact Container Environment"),
     );
-    host.install_test_resident_session_environment(thread, environment);
+    host.run_assembly
+        .install_test_resident_session_environment(thread, environment);
 }
 
 #[tokio::test]
@@ -442,7 +444,8 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         .await)
         .build()
         .expect("validated Host dependencies");
-    host.register_thread_workspace("session-artifacts", "workspace-a");
+    host.run_assembly
+        .register_thread_workspace("session-artifacts", "workspace-a");
     install_terminal_artifact_projection_before_environment(
         host.as_ref(),
         "session-artifacts",
@@ -516,6 +519,8 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         .expect("R4 frozen aggregate Repository inputs");
     let authorization = root_terminal_preparation_authorization(&session, &effect, &workspace_id);
     let preparation = managed
+        .host
+        .run_assembly
         .prepare_terminal_cleanup_for_effect(effect.clone(), authorization)
         .await
         .unwrap();
@@ -557,11 +562,14 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         effect.lease,
     );
     managed
+        .host
+        .run_assembly
         .dispose_terminal_cleanup_for_effect(disposal)
         .await
         .unwrap();
     assert!(
-        host.resident_session_environment("session-artifacts")
+        host.run_assembly
+            .resident_session_environment("session-artifacts")
             .await
             .is_none()
     );
@@ -600,7 +608,8 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
         .await)
         .build()
         .expect("validated Host dependencies");
-    host.register_thread_workspace("artifact-response-loss", "workspace-a");
+    host.run_assembly
+        .register_thread_workspace("artifact-response-loss", "workspace-a");
     install_terminal_artifact_projection_before_environment(
         host.as_ref(),
         "artifact-response-loss",
@@ -986,7 +995,8 @@ async fn retained_artifact_harvester_observes_late_realization_without_retaining
         "R1"
     );
 
-    host.register_thread_workspace("late-output", "workspace-late");
+    host.run_assembly
+        .register_thread_workspace("late-output", "workspace-late");
     let spec = agent_run_sandbox_spec("late-output");
     let environment = Arc::new(
         awaken_session_environment::SandboxEnvironment::workdir(
@@ -997,7 +1007,8 @@ async fn retained_artifact_harvester_observes_late_realization_without_retaining
         )
         .into_session_environment(),
     );
-    host.install_test_resident_session_environment("late-output", environment);
+    host.run_assembly
+        .install_test_resident_session_environment("late-output", environment);
     let output = storage
         .path()
         .join("late-output")
@@ -1041,7 +1052,8 @@ async fn artifact_harvest_has_one_file_authority_and_no_magic_bundle_gate() {
     let host = (crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test").await)
         .build()
         .expect("validated Host dependencies");
-    host.register_thread_workspace("plain-files", "workspace-a");
+    host.run_assembly
+        .register_thread_workspace("plain-files", "workspace-a");
     let spec = agent_run_sandbox_spec("plain-files");
     let environment = Arc::new(
         awaken_session_environment::SandboxEnvironment::workdir(
@@ -1052,7 +1064,8 @@ async fn artifact_harvest_has_one_file_authority_and_no_magic_bundle_gate() {
         )
         .into_session_environment(),
     );
-    host.install_test_resident_session_environment("plain-files", environment);
+    host.run_assembly
+        .install_test_resident_session_environment("plain-files", environment);
     let output = storage
         .path()
         .join("plain-files")
@@ -1251,7 +1264,8 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
         Arc::new(awaken_resource_application::ApplicationArtifactPublisher::new(application)),
     );
     let host = (raw_host).build().expect("validated Host dependencies");
-    host.register_thread_workspace("session-harvest-failure", "test");
+    host.run_assembly
+        .register_thread_workspace("session-harvest-failure", "test");
     install_terminal_artifact_projection_before_environment(
         host.as_ref(),
         "session-harvest-failure",
@@ -1299,10 +1313,12 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
     let (cleanup, effect) =
         root_terminal_cleanup_effect(host.as_ref(), "session-harvest-failure", lease).await;
     let workspace_id = host
+        .run_assembly
         .registered_thread_workspace("session-harvest-failure")
         .expect("harvest failure retains the frozen Workspace");
     let authorization = root_terminal_preparation_authorization(&cleanup, &effect, &workspace_id);
-    let error = crate::ManagedHost::new(host.clone())
+    let error = (host.clone())
+        .run_assembly
         .prepare_terminal_cleanup_for_effect(effect, authorization)
         .await
         .unwrap_err();

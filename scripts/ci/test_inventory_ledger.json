@@ -26,6 +26,7 @@
     "an_mcp_variant_is_claimed_only_with_the_server_name_it_requires": "classified_faults_select_only_sdk_variants_their_fields_can_satisfy",
     "host_resolution_preserves_admission_and_retry_classes_by_kind": "host_resolution_projects_the_contract_class_like_the_driver",
     "selected_hand_recovery_uses_the_canonical_catalog_membership": "builtin_hand_catalog_is_the_versioned_hand_toolset",
-    "managed_host_owns_every_session_runtime_role": "executor_components_supply_every_session_role"
+    "managed_host_owns_every_session_runtime_role": "executor_components_supply_every_session_role",
+    "dispatch_session_runtime_is_constructed_once_with_weak_host_ownership": "session_mcp_realizer_is_constructed_once_without_a_host_cycle"
   }
 }

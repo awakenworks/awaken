@@ -19,7 +19,7 @@ use std::sync::Arc;
 pub(crate) const MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS: usize =
     MAX_CONCURRENT_SESSION_REALIZATION_REQUESTS;
 
-impl crate::SharedHost {
+impl crate::RunAssembly {
     #[tracing::instrument(name = "session.realization.renew", skip_all, fields(session_id, epoch = lease.epoch, owner = %lease.owner, incarnation = %lease.runtime_incarnation))]
     async fn reconcile_one_session_realization(
         &self,

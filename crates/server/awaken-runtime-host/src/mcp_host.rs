@@ -10,8 +10,8 @@
 
 use std::sync::{Arc, Weak};
 
+use crate::HostError;
 use crate::installed_session::InstalledSessions;
-use crate::{HostError, SharedHost};
 use awaken_session_mcp::{
     McpError, McpGenerationAuthority, McpInputHost, McpInputRecipients, McpQuiescenceProof,
     SessionMcpStates,
@@ -83,27 +83,82 @@ impl SessionMcpStates for InstalledSessions {
     }
 }
 
-impl McpGenerationAuthority for SharedHost {
+/// The root authority the Session MCP relay and effect admission read: the
+/// installed Session's current realization generation. It reads only the
+/// installed Sessions, so the relay that holds it keeps nothing else alive.
+pub(crate) struct McpRootAuthority {
+    installed_sessions: Arc<InstalledSessions>,
+}
+
+impl McpRootAuthority {
+    pub(crate) fn new(installed_sessions: Arc<InstalledSessions>) -> Self {
+        Self { installed_sessions }
+    }
+}
+
+impl McpGenerationAuthority for McpRootAuthority {
+    /// One root-authority decision shared by effect admission and the relay.
+    /// Absence is explicit: it is never a live lease or proof of renewal.
     fn mcp_generation_root_authority(
         &self,
         generation: &crate::session_mcp::McpGenerationRef,
     ) -> Option<bool> {
-        SharedHost::mcp_generation_root_authority(self, generation)
+        self.installed_sessions
+            .read(generation.session_id().as_str(), |slot| {
+                slot.realization.mcp_generation_root_authority(generation)
+            })
+            .flatten()
+    }
+}
+
+/// What a Session MCP application-input handler reaches: the active MCP
+/// projections of its Session and the cancellation of a durable Run it admitted.
+/// Every delivery rechecks the same root authority the relay reads.
+pub(crate) struct McpApplicationInputs {
+    installed_sessions: Arc<InstalledSessions>,
+    mcp: awaken_session_mcp::McpSessions,
+    authority: Arc<McpRootAuthority>,
+    cancellation: crate::host::DurableRunCancellation,
+}
+
+impl McpApplicationInputs {
+    pub(crate) fn new(
+        installed_sessions: Arc<InstalledSessions>,
+        mcp: awaken_session_mcp::McpSessions,
+        authority: Arc<McpRootAuthority>,
+        cancellation: crate::host::DurableRunCancellation,
+    ) -> Self {
+        Self {
+            installed_sessions,
+            mcp,
+            authority,
+            cancellation,
+        }
+    }
+}
+
+impl McpGenerationAuthority for McpApplicationInputs {
+    fn mcp_generation_root_authority(
+        &self,
+        generation: &crate::session_mcp::McpGenerationRef,
+    ) -> Option<bool> {
+        self.authority.mcp_generation_root_authority(generation)
     }
 }
 
 #[async_trait::async_trait]
-impl McpInputHost for SharedHost {
+impl McpInputHost for McpApplicationInputs {
     fn active_mcp_projections(&self, session: &str) -> Vec<McpGenerationProjection> {
-        SharedHost::active_mcp_projections(self, session)
+        self.mcp
+            .active_projections(self.installed_sessions.as_ref(), session)
     }
 
     async fn cancel_durable_run(&self, session: &str, run_id: &str) -> bool {
-        self.cancel_durable(session, run_id).await.is_ok()
+        self.cancellation.cancel(session, run_id).await.is_ok()
     }
 }
 
-impl SharedHost {
+impl crate::RunAssembly {
     pub(crate) fn active_mcp_projections(&self, thread: &str) -> Vec<McpGenerationProjection> {
         self.mcp
             .active_projections(self.installed_sessions.as_ref(), thread)
@@ -235,7 +290,7 @@ impl SharedHost {
                 .ok_or_else(|| {
                     McpError::internal("MCP application input has no Session admission authority")
                 })?;
-            let host: Weak<dyn McpInputHost> = self.session_effects().host;
+            let host: Weak<dyn McpInputHost> = Arc::downgrade(&self.mcp_application_inputs) as _;
             Ok(McpInputRecipients { application, host })
         };
         Ok(self
@@ -246,8 +301,9 @@ impl SharedHost {
     /// Bind the configured external relay before a Worker can publish Ready.
     /// The endpoint is still only a transport prerequisite: provider-owned
     /// substitution and no-bypass evidence remain independent admission facts.
-    pub async fn prepare_container_mcp_relay(self: &Arc<Self>) -> Result<(), std::io::Error> {
-        let authority = Arc::downgrade(self) as Weak<dyn McpGenerationAuthority>;
+    pub async fn prepare_container_mcp_relay(&self) -> Result<(), std::io::Error> {
+        let authority =
+            Arc::downgrade(&self.mcp_root_authority) as Weak<dyn McpGenerationAuthority>;
         self.mcp.prepare_container_relay(authority).await
     }
 }
@@ -293,12 +349,16 @@ mod tests {
             credential: None,
             selected_plaintext_holder: None,
         };
-        let error = crate::ManagedHost::new(host.clone())
+        let error = (host.clone())
+            .run_assembly
             .stage_direct_mcp_attachment(request)
             .await
             .expect_err("S0 missing process owner");
         assert_eq!(error.code, "mcp_generation_process_reaper_missing", "S0/E1");
-        assert!(host.mcp_projection(&generation).is_none(), "S0/no Staging");
+        assert!(
+            host.run_assembly.mcp_projection(&generation).is_none(),
+            "S0/no Staging"
+        );
         assert!(
             host.realization_executor
                 .environments()

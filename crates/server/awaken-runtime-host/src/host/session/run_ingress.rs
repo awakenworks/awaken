@@ -19,7 +19,7 @@
 use super::*;
 use crate::host::session_ctx::ForegroundRunDelivery;
 
-impl SharedHost {
+impl crate::RunAssembly {
     /// Build the one claimed Worker for this Thread, then select its independent
     /// foreground-delivery policy. Durable foreground delivery retains the
     /// durable coordinator that owns that same Worker; direct foreground delivery
@@ -103,7 +103,7 @@ impl SharedHost {
         // with every other, so a claim would grab foreign threads' runs. The
         // process-level `DispatchPool` owns recovery — it claims each crashed run and
         // routes it to the session (this one included) that owns its thread.
-        if self.dispatch.durable_ingress() {
+        if self.execution.ingress.is_durable() {
             Ok((ForegroundRunDelivery::Durable, claimed_worker))
         } else {
             let direct = Arc::new(DirectAttemptDriver::with_attempt_executor(

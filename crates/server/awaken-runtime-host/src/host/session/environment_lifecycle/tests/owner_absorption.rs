@@ -627,7 +627,8 @@ async fn source_free_projection_does_not_reopen_mcp_before_retiring_owner_is_dis
     .await)
         .build()
         .expect("validated Host dependencies");
-    host.install_test_resident_session_environment(thread, environment.clone());
+    host.run_assembly
+        .install_test_resident_session_environment(thread, environment.clone());
     let generation = generation(thread);
     let operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
         "workspace",
@@ -652,15 +653,19 @@ async fn source_free_projection_does_not_reopen_mcp_before_retiring_owner_is_dis
         .unwrap();
 
     assert!(
-        !host.discard_session_environment(thread, &environment).await,
+        !host
+            .run_assembly
+            .discard_session_environment(thread, &environment)
+            .await,
         "Q2 keeps a live source in Retiring"
     );
-    host.install_session_environment_owner_projection(
-        thread,
-        "workspace",
-        &awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
-    )
-    .unwrap();
+    host.run_assembly
+        .install_session_environment_owner_projection(
+            thread,
+            "workspace",
+            &awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
+        )
+        .unwrap();
     assert!(
         !host
             .installed_sessions
@@ -672,15 +677,18 @@ async fn source_free_projection_does_not_reopen_mcp_before_retiring_owner_is_dis
 
     dispose_current_environment(&environment, thread).await;
     assert!(
-        host.discard_session_environment(thread, &environment).await,
+        host.run_assembly
+            .discard_session_environment(thread, &environment)
+            .await,
         "Q4 exact retry confirms Terminated/Vacant"
     );
-    host.install_session_environment_owner_projection(
-        thread,
-        "workspace",
-        &awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
-    )
-    .unwrap();
+    host.run_assembly
+        .install_session_environment_owner_projection(
+            thread,
+            "workspace",
+            &awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
+        )
+        .unwrap();
     assert!(
         host.installed_sessions
             .realizations()
@@ -709,10 +717,14 @@ async fn discard_keeps_live_owner_and_exact_retry_clears_after_termination() {
     .await)
         .build()
         .expect("validated Host dependencies");
-    host.install_test_resident_session_environment(thread, environment.clone());
+    host.run_assembly
+        .install_test_resident_session_environment(thread, environment.clone());
 
     assert!(
-        !host.discard_session_environment(thread, &environment).await,
+        !host
+            .run_assembly
+            .discard_session_environment(thread, &environment)
+            .await,
         "R19/E1 live owner is retained"
     );
     assert!(
@@ -737,7 +749,9 @@ async fn discard_keeps_live_owner_and_exact_retry_clears_after_termination() {
 
     dispose_current_environment(&environment, thread).await;
     assert!(
-        host.discard_session_environment(thread, &environment).await,
+        host.run_assembly
+            .discard_session_environment(thread, &environment)
+            .await,
         "R21/E2 exact retry clears"
     );
     assert!(
@@ -961,7 +975,8 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
         .join("retired-owner-sentinel");
     std::fs::write(&retired_sentinel, b"owned by the retiring Environment")
         .expect("C1 retiring root sentinel");
-    host.install_test_resident_session_environment(thread, environment.clone());
+    host.run_assembly
+        .install_test_resident_session_environment(thread, environment.clone());
 
     let lifecycle = host
         .installed_sessions
@@ -976,7 +991,7 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
                 .environments()
                 .retire_session_environment_for_revocation(
                     thread,
-                    (&host.mcp, host.installed_sessions.as_ref()),
+                    (&host.run_assembly.mcp, host.installed_sessions.as_ref()),
                     None,
                 )
                 .await
@@ -1007,6 +1022,7 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
     );
 
     let unclaimed = match host
+        .run_assembly
         .ctx_for_snapshot(
             thread,
             Some(snapshot.root_agent_id.0.as_str()),

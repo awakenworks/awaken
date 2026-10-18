@@ -6,6 +6,7 @@
 //! owned by the completed context, or dropped if construction fails/cancels.
 
 use super::{PreparedContext, execution, extensions, resources::ContextResources};
+use crate::HostError;
 use crate::config::{build_runtime_with_authorization, server_config};
 use crate::host::session::{
     ManagedCoordinationRole, SessionToolsetProjection, project_managed_coordination_surface,
@@ -13,12 +14,11 @@ use crate::host::session::{
 };
 use crate::host::session_ctx::RuntimeContextPurpose;
 use crate::host::{RuntimePublicationIdentity, SessionCtx};
-use crate::{HostError, SharedHost};
 use std::collections::HashSet;
 use std::sync::Arc;
 
 pub(super) async fn assemble(
-    host: &SharedHost,
+    host: &crate::RunAssembly,
     thread: &str,
     mut resources: ContextResources,
     requested_purpose: RuntimeContextPurpose,

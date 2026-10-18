@@ -48,7 +48,7 @@ pub(crate) fn acp_mcp_client_injection_capabilities(
     Some(capabilities)
 }
 
-impl SharedHost {
+impl crate::RunAssembly {
     /// Root delegation and cold child recovery carry the same installed adapter
     /// set. Custody evidence is composed here, never narrowed by transport or
     /// inferred from the child's requested backend.
@@ -284,10 +284,13 @@ mod tests {
                         ));
                     }
                     let host = (host).build().expect("validated Host dependencies");
-                    let adapters = host.child_execution_adapters("profiles", environment.clone());
+                    let adapters = host
+                        .run_assembly
+                        .child_execution_adapters("profiles", environment.clone());
                     assert_eq!(
                         adapters.credential_capabilities,
-                        host.local_credential_realization_capabilities()
+                        host.run_assembly
+                            .local_credential_realization_capabilities()
                     );
                     assert_eq!(
                         has_worker_relay(&adapters.credential_capabilities),
@@ -339,12 +342,18 @@ mod tests {
         .build()
         .expect("validated Host dependencies");
         assert!(
-            !has_worker_relay(&without.local_credential_realization_capabilities()),
+            !has_worker_relay(
+                &without
+                    .run_assembly
+                    .local_credential_realization_capabilities()
+            ),
             "R1: a host without a relay-capable adapter must fail closed"
         );
         assert!(
             !has_acp_mcp_client_injection(
-                &acp_without_materializer.local_credential_realization_capabilities(),
+                &acp_without_materializer
+                    .run_assembly
+                    .local_credential_realization_capabilities(),
                 "acp:claude",
             ),
             "R1: an ACP executor without material access cannot advertise client injection"
@@ -364,7 +373,11 @@ mod tests {
         with_remote.agent.remote_credential_realization = remote_profile;
         let with_remote = (with_remote).build().expect("validated Host dependencies");
         assert!(
-            has_worker_relay(&with_remote.local_credential_realization_capabilities()),
+            has_worker_relay(
+                &with_remote
+                    .run_assembly
+                    .local_credential_realization_capabilities()
+            ),
             "R3: the installed Remote adapter must be visible to claim admission"
         );
 
@@ -377,12 +390,18 @@ mod tests {
         .build()
         .expect("validated Host dependencies");
         assert!(
-            has_worker_relay(&with.local_credential_realization_capabilities()),
+            has_worker_relay(
+                &with
+                    .run_assembly
+                    .local_credential_realization_capabilities()
+            ),
             "R2: the installed exact materializer must be visible to claim admission"
         );
         assert!(
             !has_acp_mcp_client_injection(
-                &with.local_credential_realization_capabilities(),
+                &with
+                    .run_assembly
+                    .local_credential_realization_capabilities(),
                 "acp:claude",
             ),
             "R2: material access alone does not declare an ACP client"
@@ -397,7 +416,9 @@ mod tests {
         .with_acp(executor))
         .build()
         .expect("validated Host dependencies");
-        let capabilities = with_acp.local_credential_realization_capabilities();
+        let capabilities = with_acp
+            .run_assembly
+            .local_credential_realization_capabilities();
         assert!(
             has_worker_relay(&capabilities),
             "R3: legacy relay remains installed"

@@ -2,11 +2,11 @@
 //! Skill and Memory/compaction extension assembly from one acquired context.
 
 use super::{SemanticSkillTools, resources::ContextResources};
+use crate::HostError;
 use crate::compact::{
     compact_backend as build_compact_backend, compact_runner as build_compact_runner,
 };
 use crate::host::session::content_delivery;
-use crate::{HostError, SharedHost};
 use awaken_ext_compact::CompactPlugin;
 use awaken_ext_skills::{SkillRegistry, SkillSpec};
 use awaken_runtime::Runtime;
@@ -24,7 +24,7 @@ pub(super) struct SkillWiring {
 }
 
 pub(super) async fn skills(
-    host: &SharedHost,
+    host: &crate::RunAssembly,
     thread: &str,
     resources: &mut ContextResources,
     mut runtime: Runtime,
@@ -205,7 +205,7 @@ pub(super) struct MemoryWiring {
 }
 
 pub(super) async fn memory(
-    host: &SharedHost,
+    host: &crate::RunAssembly,
     thread: &str,
     resources: &ContextResources,
     mut runtime: Runtime,
@@ -339,7 +339,7 @@ pub(super) async fn memory(
 }
 
 fn compact(
-    host: &SharedHost,
+    host: &crate::RunAssembly,
     thread: &str,
     resources: &ContextResources,
     mut runtime: Runtime,

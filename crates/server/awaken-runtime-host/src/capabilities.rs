@@ -27,7 +27,7 @@ impl ManagedHost {
             // direct compatibility adapter and cannot truthfully satisfy a
             // Managed AgentSkillBinding.
             skills: self.host.tools.skills.managed_ids_in(workspace),
-            delegates: self.host.delegate_ids_in(workspace),
+            delegates: self.host.run_assembly.delegate_ids_in(workspace),
         }
     }
 }

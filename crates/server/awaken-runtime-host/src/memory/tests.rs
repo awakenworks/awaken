@@ -969,7 +969,7 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
         &direct_config,
         true,
     ));
-    recovered_host.register_thread_memory_bindings(
+    recovered_host.run_assembly.register_thread_memory_bindings(
         parent,
         std::collections::HashMap::from([
             ("child-memory".into(), parent_binding.clone()),
@@ -985,6 +985,7 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
         })
         .expect("installed Sessions");
     let first_recovery = recovered_host
+        .run_assembly
         .bind_thread_memory_recovery(parent, parent_commit.clone())
         .await;
     assert!(
@@ -996,6 +997,7 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
     );
     assert_eq!(
         recovered_host
+            .run_assembly
             .bind_thread_memory_recovery(parent, parent_commit.clone())
             .await
             .unwrap(),
@@ -1127,12 +1129,12 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
         &config,
         true,
     ));
-    host.register_thread_memory_bindings(
+    host.run_assembly.register_thread_memory_bindings(
         session,
         std::collections::HashMap::from([("memory".into(), binding.clone())]),
     );
     assert!(
-        host.memory_for_thread(session).is_none(),
+        host.run_assembly.memory_for_thread(session).is_none(),
         "R4/C5 no automatic Memory binding is selected"
     );
     let commit = Arc::new(
@@ -1143,7 +1145,8 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
     );
 
     assert_eq!(
-        host.bind_thread_memory_recovery(session, commit)
+        host.run_assembly
+            .bind_thread_memory_recovery(session, commit)
             .await
             .expect("R4 skips Coordinator-owned extraction recovery"),
         0,

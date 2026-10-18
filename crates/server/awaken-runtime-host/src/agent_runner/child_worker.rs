@@ -23,7 +23,6 @@ use awaken_runtime_contract::execution::RunAttemptExecutor;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
 use super::RunScheduler;
-use crate::host::SharedHost;
 use crate::store::HostCommit;
 
 /// Assembles one child Worker from the already-selected dispatch and committed
@@ -123,7 +122,7 @@ impl ChildWorkerFactory {
     /// boundary Worker. Its constructor installs the local RunRecoverySource;
     /// replacing it with `from_parts` would lose committed-snapshot recovery.
     pub(crate) async fn claimed_recovery(
-        host: &SharedHost,
+        host: &crate::RunAssembly,
         claimed: &Claimed,
         commit: Arc<HostCommit>,
         session_thread_id: &ThreadId,

@@ -53,6 +53,34 @@ pub async fn publish_dispatch_hint(wake: &dyn WakeSignal, shutdown: &Cancellatio
     }
 }
 
+/// The latency hint a command publisher gives the local dispatch claimer after
+/// it changed durable dispatch state. It carries the same wake signal the
+/// claimer waits on, selected once by the composition before the claimer
+/// exists, so a publisher never needs the claimer itself. Like every wake, it
+/// is never admission or settlement evidence.
+#[derive(Clone)]
+pub struct DispatchHint {
+    wake: Arc<dyn WakeSignal>,
+}
+
+impl DispatchHint {
+    #[must_use]
+    pub fn new(wake: Arc<dyn WakeSignal>) -> Self {
+        Self { wake }
+    }
+
+    /// The wake signal the local claimer is spawned with.
+    #[must_use]
+    pub fn wake(&self) -> Arc<dyn WakeSignal> {
+        self.wake.clone()
+    }
+
+    /// Publish one hint within the shared publication budget.
+    pub async fn publish(&self) {
+        publish_dispatch_hint(self.wake.as_ref(), &CancellationToken::new()).await;
+    }
+}
+
 /// Single-process wake signal over a shared `tokio` notify. A hint published when
 /// no one is awaiting is held for the next `wait` (one permit), so an in-process
 /// nudge is never lost.

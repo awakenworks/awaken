@@ -19,11 +19,13 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
         epoch: 2,
         expires_at_unix_ms: u64::MAX,
     };
-    host.install_session_realization_lease(session, lease.clone())
+    host.run_assembly
+        .install_session_realization_lease(session, lease.clone())
         .unwrap();
     let relay = host
+        .run_assembly
         .mcp
-        .start_relay(Arc::downgrade(&host) as _)
+        .start_relay(Arc::downgrade(&host.run_assembly.mcp_root_authority) as _)
         .await
         .unwrap();
     let (upstream, seen) = crate::test_mcp::start(Some("Bearer test-relay-secret")).await;
@@ -124,12 +126,14 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
         // Independent R5 allocations: a closed/expired owner cannot be revived
         // by reinstallation. Retain the relay route to test its stale authority.
         host.installed_sessions.remove(session);
-        host.install_session_realization_lease(session, lease.clone())
+        host.run_assembly
+            .install_session_realization_lease(session, lease.clone())
             .unwrap();
         if remove {
             host.installed_sessions.remove(session);
         } else {
-            host.invalidate_session_realization_lease(session, &lease);
+            host.run_assembly
+                .invalidate_session_realization_lease(session, &lease);
         }
         assert_eq!(
             invoke(relay.route_url(&live).unwrap())

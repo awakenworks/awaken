@@ -48,6 +48,7 @@ async fn missing_terminal_work_preserves_successor(delayed: bool) {
     };
     let session = SessionId::new(thread);
     let ctx = host
+        .run_assembly
         .ctx_for(thread, None)
         .await
         .expect("original idle resident");
@@ -57,7 +58,8 @@ async fn missing_terminal_work_preserves_successor(delayed: bool) {
         epoch: 1,
         expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms() + 300_000,
     };
-    host.install_session_realization_lease(thread, original.clone())
+    host.run_assembly
+        .install_session_realization_lease(thread, original.clone())
         .expect("original Control-observed lease");
     let control = Arc::new(RemoteTerminalCleanupControl::default());
     control
@@ -71,7 +73,8 @@ async fn missing_terminal_work_preserves_successor(delayed: bool) {
             let session = session.clone();
             let original = original.clone();
             async move {
-                host.reconcile_terminal_cleanup_for_lease(control.as_ref(), &session, &original)
+                host.run_assembly
+                    .reconcile_terminal_cleanup_for_lease(control.as_ref(), &session, &original)
                     .await
             }
         });
@@ -89,7 +92,8 @@ async fn missing_terminal_work_preserves_successor(delayed: bool) {
         epoch: 2,
         ..original.clone()
     };
-    host.install_session_realization_lease(thread, successor.clone())
+    host.run_assembly
+        .install_session_realization_lease(thread, successor.clone())
         .expect("C2 successor Control-observed generation");
     let mut run = tokio::spawn({
         let host = host.clone();
@@ -122,7 +126,8 @@ async fn missing_terminal_work_preserves_successor(delayed: bool) {
             .expect("join recovery")
             .expect("old terminal lookup was handled");
     } else {
-        host.reconcile_terminal_cleanup_for_lease(control.as_ref(), &session, &original)
+        host.run_assembly
+            .reconcile_terminal_cleanup_for_lease(control.as_ref(), &session, &original)
             .await
             .expect("C4 stale terminal lookup was handled");
     }
@@ -192,14 +197,19 @@ async fn missing_current_terminal_work_retires_original(renew: bool) {
     } else {
         "terminal-original-current"
     };
-    let ctx = host.ctx_for(thread, None).await.expect("original resident");
+    let ctx = host
+        .run_assembly
+        .ctx_for(thread, None)
+        .await
+        .expect("original resident");
     let original = crate::session_resource::SessionRealizationLease {
         owner: "local".into(),
         runtime_incarnation: "boot".into(),
         epoch: 1,
         expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms() + 300_000,
     };
-    host.install_session_realization_lease(thread, original.clone())
+    host.run_assembly
+        .install_session_realization_lease(thread, original.clone())
         .unwrap();
     let mut run = tokio::spawn({
         let host = host.clone();
@@ -233,12 +243,13 @@ async fn missing_current_terminal_work_retires_original(renew: bool) {
         let control = control.clone();
         let original = original.clone();
         async move {
-            host.reconcile_terminal_cleanup_for_lease(
-                control.as_ref(),
-                &SessionId::new(thread),
-                &original,
-            )
-            .await
+            host.run_assembly
+                .reconcile_terminal_cleanup_for_lease(
+                    control.as_ref(),
+                    &SessionId::new(thread),
+                    &original,
+                )
+                .await
         }
     });
     tokio::time::timeout(
@@ -248,14 +259,15 @@ async fn missing_current_terminal_work_retires_original(renew: bool) {
     .await
     .expect("original lookup reached Control");
     if renew {
-        host.install_session_realization_lease(
-            thread,
-            crate::session_resource::SessionRealizationLease {
-                expires_at_unix_ms: original.expires_at_unix_ms + 5_000,
-                ..original
-            },
-        )
-        .expect("same-generation monotonic renewal");
+        host.run_assembly
+            .install_session_realization_lease(
+                thread,
+                crate::session_resource::SessionRealizationLease {
+                    expires_at_unix_ms: original.expires_at_unix_ms + 5_000,
+                    ..original
+                },
+            )
+            .expect("same-generation monotonic renewal");
     }
     control.terminal_work_release.notify_one();
     tokio::time::timeout(std::time::Duration::from_secs(5), recovery)
@@ -313,14 +325,19 @@ async fn completed_terminal_projection_not_found_cancels_its_original_real_run()
     let host = dependencies.build().expect("complete Host composition");
     let _managed = install_test_dispatch_runtime(&host);
     let thread = "terminal-completed-projection";
-    let ctx = host.ctx_for(thread, None).await.expect("original resident");
+    let ctx = host
+        .run_assembly
+        .ctx_for(thread, None)
+        .await
+        .expect("original resident");
     let original = crate::session_resource::SessionRealizationLease {
         owner: "local".into(),
         runtime_incarnation: "boot".into(),
         epoch: 1,
         expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms() + 300_000,
     };
-    host.install_session_realization_lease(thread, original.clone())
+    host.run_assembly
+        .install_session_realization_lease(thread, original.clone())
         .unwrap();
     let mut run = tokio::spawn({
         let host = host.clone();
@@ -364,6 +381,7 @@ async fn completed_terminal_projection_not_found_cancels_its_original_real_run()
         .terminal_work_not_found
         .store(true, Ordering::SeqCst);
     let handled = host
+        .run_assembly
         .reconcile_terminal_cleanup_for_lease(&control, &SessionId::new(thread), &original)
         .await
         .expect("C3 terminal absence was handled");

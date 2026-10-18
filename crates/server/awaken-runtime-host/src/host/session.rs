@@ -34,7 +34,7 @@ struct SessionOpenRequest {
     recover_revoked_legacy: bool,
 }
 
-impl SharedHost {
+impl crate::RunAssembly {
     pub(crate) async fn ctx_for(
         &self,
         thread: &str,

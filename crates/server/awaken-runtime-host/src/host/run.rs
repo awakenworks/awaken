@@ -201,7 +201,7 @@ impl SharedHost {
                 awaken_dispatch_execution::LiveRunControlService::from_local_owner(
                     (*ingress).clone(),
                     self.coordinator_dispatch()?,
-                    self.clock(),
+                    self.run_assembly.clock(),
                 )
                 .map_err(|error| HostError::internal(error.to_string()))?
                 .cancel(&run_id.0)
@@ -370,7 +370,7 @@ impl SharedHost {
                 "Managed Session roots must use Session-owned Run ingress",
             ));
         }
-        let ctx = self.ctx_for(thread, agent).await?;
+        let ctx = self.run_assembly.ctx_for(thread, agent).await?;
         let _command = ctx.command.lock().await;
         if ctx
             .commit
@@ -500,7 +500,7 @@ impl SharedHost {
         thread: &str,
     ) -> Result<Arc<awaken_dispatch_execution::DispatchWorker<AnyDispatchStore>>, HostError> {
         self.require_durable_delivery()?;
-        let ctx = self.ctx_for(thread, None).await?;
+        let ctx = self.run_assembly.ctx_for(thread, None).await?;
         ctx.delivery
             .is_durable()
             .then(|| ctx.claimed_worker.clone())
@@ -673,7 +673,10 @@ impl SharedHost {
         //    physical candidate. Calling `ctx_for` here violated B1 by realizing
         //    before the queue commit and let the local pool become a second
         //    effect owner.
-        let ctx = self.ctx_for_session_coordination(thread, agent).await?;
+        let ctx = self
+            .run_assembly
+            .ctx_for_session_coordination(thread, agent)
+            .await?;
         let mut messages: Vec<Message> = Vec::new();
         messages.extend(input);
         let (uid, mut activation) = ctx
@@ -683,7 +686,7 @@ impl SharedHost {
         // snapshot, so the claiming worker resolves the effective model itself.
         activation.model_ref_override = self.agent.inference_routing.override_for(thread);
         activation.run_id = uid.clone();
-        let request = self.prepare_dispatch(activation).fresh()?;
+        let request = self.run_assembly.prepare_dispatch(activation).fresh()?;
         match self.dispatch_pool_or_err() {
             // Normal server: the local pool claims and drives it.
             Ok(pool) => pool
@@ -721,7 +724,7 @@ impl SharedHost {
             ));
         }
         let store = self.coordinator_dispatch()?;
-        let ctx = self.ctx_for(session_id, None).await?;
+        let ctx = self.run_assembly.ctx_for(session_id, None).await?;
         if ticket.inherited_toolsets.is_none()
             && !ctx
                 .config
@@ -739,6 +742,7 @@ impl SharedHost {
             .resume_activation(ticket)
             .with_model_ref_override(self.agent.inference_routing.override_for(session_id));
         let request = self
+            .run_assembly
             .prepare_dispatch(activation)
             .resume()?
             .for_session(ThreadId(session_id.to_string()))
@@ -959,7 +963,7 @@ impl SharedHost {
         tool_use_id: &str,
         resume: HostResume,
     ) -> Result<CommittedStepReceipt, HostError> {
-        let ctx = self.ctx_for_resume(thread).await?;
+        let ctx = self.run_assembly.ctx_for_resume(thread).await?;
         let _command = ctx.command.lock().await;
         let (run_id, ticket) = ctx
             .commit

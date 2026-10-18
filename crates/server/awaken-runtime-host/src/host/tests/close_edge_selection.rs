@@ -60,14 +60,15 @@ async fn rebuilt_successor_is_not_interrupted(original_run_active: bool) {
     } else {
         "retirement-post-check-rebuilt-successor"
     };
-    let original_ctx = host.ctx_for(thread, None).await.unwrap();
+    let original_ctx = host.run_assembly.ctx_for(thread, None).await.unwrap();
     let original = crate::session_resource::SessionRealizationLease {
         owner: "local".into(),
         runtime_incarnation: "boot".into(),
         epoch: 1,
         expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms() + 300_000,
     };
-    host.install_session_realization_lease(thread, original.clone())
+    host.run_assembly
+        .install_session_realization_lease(thread, original.clone())
         .unwrap();
     let phase = host
         .installed_sessions
@@ -115,20 +116,21 @@ async fn rebuilt_successor_is_not_interrupted(original_run_active: bool) {
         let checked = checked.clone();
         let release = release.0.clone();
         async move {
-            host.retire_selected_session_realization_with_post_check(
-                thread,
-                selected,
-                true,
-                move || {
-                    checked.notify_one();
-                    let (mutex, changed) = &*release;
-                    let mut released = mutex.lock().unwrap();
-                    while !*released {
-                        released = changed.wait(released).unwrap();
-                    }
-                },
-            )
-            .await
+            host.run_assembly
+                .retire_selected_session_realization_with_post_check(
+                    thread,
+                    selected,
+                    true,
+                    move || {
+                        checked.notify_one();
+                        let (mutex, changed) = &*release;
+                        let mut released = mutex.lock().unwrap();
+                        while !*released {
+                            released = changed.wait(released).unwrap();
+                        }
+                    },
+                )
+                .await
         }
     });
     tokio::time::timeout(std::time::Duration::from_secs(5), checked.notified())
@@ -167,13 +169,14 @@ async fn rebuilt_successor_is_not_interrupted(original_run_active: bool) {
         .dispose()
         .await
         .expect("dispose only the original fixture");
-    let successor_ctx = host.ctx_for(thread, None).await.unwrap();
+    let successor_ctx = host.run_assembly.ctx_for(thread, None).await.unwrap();
     assert!(!Arc::ptr_eq(&original_ctx, &successor_ctx));
     let successor = crate::session_resource::SessionRealizationLease {
         epoch: 2,
         ..original.clone()
     };
-    host.install_session_realization_lease(thread, successor.clone())
+    host.run_assembly
+        .install_session_realization_lease(thread, successor.clone())
         .unwrap();
     let mut run = tokio::spawn({
         let host = host.clone();

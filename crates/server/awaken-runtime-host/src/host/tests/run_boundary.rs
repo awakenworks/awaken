@@ -197,7 +197,7 @@ async fn worker_authority_loss_interrupts_active_session_before_revocation() {
     await_interrupt_inference_gate(&reached, &mut task).await;
     // The outcome owns both its Worker Session and its Judge Session; authority
     // loss must fence every process-local projection, not only the caller thread.
-    let revocation = host.begin_session_realization_revocation();
+    let revocation = host.run_assembly.begin_session_realization_revocation();
     assert!(
         host.installed_sessions.session_ids().iter().all(|id| {
             host.installed_sessions
@@ -217,7 +217,8 @@ async fn worker_authority_loss_interrupts_active_session_before_revocation() {
         "interrupted"
     );
     assert_eq!(
-        host.finish_session_realization_revocation(revocation)
+        host.run_assembly
+            .finish_session_realization_revocation(revocation)
             .await
             .unwrap(),
         2
@@ -243,7 +244,11 @@ async fn worker_interrupt_uses_resident_claim_without_coordinator_queue_operatio
         .build()
         .expect("validated Host dependencies");
     let _managed = install_test_dispatch_runtime(&local);
-    let ctx = local.ctx_for("worker-stop", None).await.unwrap();
+    let ctx = local
+        .run_assembly
+        .ctx_for("worker-stop", None)
+        .await
+        .unwrap();
     let worker = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_authority(crate::UpstreamAuthority::default()))
@@ -578,7 +583,8 @@ async fn workspace_narrowing_tightens_the_deployment_ceiling_for_each_run() {
         ("narrow-closed", "ws-closed"),
         ("narrow-broken", "ws-broken"),
     ] {
-        host.register_thread_workspace(thread, workspace);
+        host.run_assembly
+            .register_thread_workspace(thread, workspace);
     }
 
     host.run_attributed(None, "narrow-open", user("hello open"), subject())
@@ -619,7 +625,11 @@ async fn bound_executor_is_the_ordinary_run_execution_boundary() {
             .build()
             .expect("validated Host dependencies"),
     );
-    let ctx = host.ctx_for("snapshot-run", None).await.expect("context");
+    let ctx = host
+        .run_assembly
+        .ctx_for("snapshot-run", None)
+        .await
+        .expect("context");
     let before = ctx.commit.committed_messages(&ctx.thread_id).len();
     let activation = RunActivation::new(
         RunId("snapshot-run-1".into()),
@@ -701,7 +711,11 @@ async fn host_application_decorator_wraps_the_complete_session_boundary() {
         .build()
         .expect("validated Host dependencies"),
     );
-    let ctx = host.ctx_for("injected-attempt", None).await.unwrap();
+    let ctx = host
+        .run_assembly
+        .ctx_for("injected-attempt", None)
+        .await
+        .unwrap();
     let activation = RunActivation::new(
         RunId("injected-attempt-run".into()),
         ctx.thread_id.clone(),
@@ -728,7 +742,11 @@ async fn tool_bearing_snapshot_can_be_restricted_at_the_run_boundary() {
             .build()
             .expect("validated Host dependencies"),
     );
-    let ctx = host.ctx_for("unsafe-grader", None).await.expect("context");
+    let ctx = host
+        .run_assembly
+        .ctx_for("unsafe-grader", None)
+        .await
+        .expect("context");
     let mut snapshot = ctx.config.clone();
     snapshot
         .resolved_spec
@@ -905,7 +923,11 @@ async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finis
         after[0].physical_attempt_active,
         "R1: dropping inference cannot acknowledge physical termination"
     );
-    let ctx = host.ctx_for("durable-interrupt", None).await.unwrap();
+    let ctx = host
+        .run_assembly
+        .ctx_for("durable-interrupt", None)
+        .await
+        .unwrap();
     assert_eq!(
         ctx.commit.run_state(&original.run_id),
         Some(RunState::Ended(EndCause::Indeterminate)),
@@ -1227,6 +1249,7 @@ async fn managed_primary_interrupt_recovers_the_active_dispatch_without_a_local_
     install_recording_session_application(&host);
     let _managed = install_test_dispatch_runtime(&host);
     let ctx = host
+        .run_assembly
         .ctx_for(thread, None)
         .await
         .expect("M1 resident Session");

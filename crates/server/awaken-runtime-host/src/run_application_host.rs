@@ -117,7 +117,7 @@ impl RunApplication for RunApplicationHost {
     }
 
     fn model(&self) -> String {
-        self.host.model()
+        self.host.run_assembly.model()
     }
 
     async fn usage(&self, thread: &str) -> Result<(u64, u64), RunApplicationError> {

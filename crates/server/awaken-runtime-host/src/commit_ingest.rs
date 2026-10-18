@@ -383,6 +383,7 @@ mod tests {
             .register_thread_resource_manifest(thread, manifest)
             .expect("installed Sessions");
         let dispatch = admission
+            .run_assembly
             .prepare_dispatch(activation)
             .fresh()
             .expect("production root dispatch decoration");
@@ -589,6 +590,7 @@ mod tests {
             .register_thread_resource_manifest(thread, manifest)
             .expect("installed Sessions");
         let dispatch = admission
+            .run_assembly
             .prepare_dispatch(activation)
             .fresh()
             .expect("production root dispatch decoration");

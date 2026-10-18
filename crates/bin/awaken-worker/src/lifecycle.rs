@@ -780,7 +780,7 @@ pub(crate) fn spawn_session_realization_reconciliation(
                     // | R3 | no | any | any | E4 |
                     if let Err(error) = lifecycle
                         .host
-                        .renew_due_session_realizations(timing)
+                        .run_assembly().renew_due_session_realizations(timing)
                         .boxed()
                         .await
                     {
@@ -803,7 +803,7 @@ pub(crate) fn spawn_session_realization_reconciliation(
                     };
                     if let Err(error) = lifecycle
                         .host
-                        .recover_terminal_cleanup_assignments(cleanup_target)
+                        .run_assembly().recover_terminal_cleanup_assignments(cleanup_target)
                         .boxed()
                         .await
                     {
@@ -853,6 +853,7 @@ pub(crate) fn spawn_session_preparation_reconciliation(
                 Ok(Some(assignment)) => {
                     if let Err(error) = lifecycle
                         .host
+                        .run_assembly()
                         .prepare_session_without_run(&assignment)
                         .await
                     {
@@ -995,7 +996,10 @@ pub(crate) async fn revoke_worker_session_authority_before(
     // A late/new Session cannot install authority outside this selected cohort.
     lifecycle.authority.close();
     awaken_observability::set_worker_authority_proof_remaining(std::time::Duration::ZERO);
-    let revocation = lifecycle.host.begin_session_realization_revocation();
+    let revocation = lifecycle
+        .host
+        .run_assembly()
+        .begin_session_realization_revocation();
     // Fail closed without racing terminal sandbox disposal against in-flight
     // native tools. Every revocation await shares one absolute deadline:
     // cancellation and return observation retain the existing owner for the
@@ -1014,6 +1018,7 @@ pub(crate) async fn revoke_worker_session_authority_before(
         async {
             lifecycle
                 .host
+                .run_assembly()
                 .finish_session_realization_revocation(revocation)
                 .await
                 .map(|_| ())

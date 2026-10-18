@@ -192,7 +192,9 @@ async fn unknown_candidate_retry_never_authorizes_or_relabels_its_owner() {
         .build()
         .unwrap();
         let sink = Arc::new(NonOwningEnvironmentBindingSink::default());
-        crate::ManagedHost::new(host.clone()).install_test_environment_binding_sink(sink.clone());
+        (host.clone())
+            .run_assembly
+            .install_test_environment_binding_sink(sink.clone());
         host.installed_sessions.install(thread);
         let candidate = host
             .realization_executor
@@ -294,21 +296,24 @@ async fn durable_adoption_without_an_owning_sink_preserves_exact_projected_ident
         .await)
             .build()
             .expect("validated Host dependencies");
-        host.install_session_environment_owner_projection(
-            &thread,
-            "workspace",
-            &awaken_session_state_contract::SessionEnvironmentState::Resident {
-                binding,
-                effect_id: None,
-                generation: None,
-                idle_since_unix_ms: None,
-            },
-        )
-        .expect("C1 exact durable projection");
+        host.run_assembly
+            .install_session_environment_owner_projection(
+                &thread,
+                "workspace",
+                &awaken_session_state_contract::SessionEnvironmentState::Resident {
+                    binding,
+                    effect_id: None,
+                    generation: None,
+                    idle_since_unix_ms: None,
+                },
+            )
+            .expect("C1 exact durable projection");
         if install_non_owner {
-            crate::ManagedHost::new(host.clone()).install_test_environment_binding_sink(Arc::new(
-                NonOwningEnvironmentBindingSink::default(),
-            ));
+            (host.clone())
+                .run_assembly
+                .install_test_environment_binding_sink(Arc::new(
+                    NonOwningEnvironmentBindingSink::default(),
+                ));
         }
         let candidate = host
             .realization_executor
@@ -326,6 +331,7 @@ async fn durable_adoption_without_an_owning_sink_preserves_exact_projected_ident
             "C1+C2"
         );
         let actual = host
+            .run_assembly
             .persist_environment_before_publish(&thread, &candidate)
             .await
             .expect("D1/D2 direct adoption fallback");
@@ -388,6 +394,7 @@ async fn ordinary_candidate_without_a_sink_gets_an_explicit_direct_receipt() {
             } => unreachable!("O1/O2 enumerate only direct Create and Adopt effects"),
         };
         let actual = host
+            .run_assembly
             .persist_environment_before_publish(thread, &candidate)
             .await
             .expect("O1/O2 direct fallback");
@@ -437,18 +444,20 @@ async fn durable_projection_cannot_publish_a_hidden_candidate() {
         .expect("C1 Candidate");
     let generation = generation(thread);
     let effect_id = "store-read-effect".to_string();
-    host.install_session_environment_owner_projection(
-        thread,
-        "workspace",
-        &awaken_session_state_contract::SessionEnvironmentState::Resident {
-            binding: candidate.binding.clone(),
-            effect_id: Some(effect_id.clone()),
-            generation: Some(generation.clone()),
-            idle_since_unix_ms: None,
-        },
-    )
-    .expect("C2 matching projection");
+    host.run_assembly
+        .install_session_environment_owner_projection(
+            thread,
+            "workspace",
+            &awaken_session_state_contract::SessionEnvironmentState::Resident {
+                binding: candidate.binding.clone(),
+                effect_id: Some(effect_id.clone()),
+                generation: Some(generation.clone()),
+                idle_since_unix_ms: None,
+            },
+        )
+        .expect("C2 matching projection");
     let retained = host
+        .run_assembly
         .prepared_session_environment(thread)
         .expect("E1 Candidate remains hidden");
     assert!(candidate.exact_matches(&retained), "E1");
@@ -502,17 +511,18 @@ async fn adopted_candidate_retains_successor_receipt_after_dispatch_fencing() {
         .await)
             .build()
             .expect("validated Host dependencies");
-        host.install_session_environment_owner_projection(
-            thread,
-            "workspace",
-            &awaken_session_state_contract::SessionEnvironmentState::Resident {
-                binding,
-                effect_id: Some(format!("effect-{thread}")),
-                generation: Some(generation(thread)),
-                idle_since_unix_ms: None,
-            },
-        )
-        .unwrap();
+        host.run_assembly
+            .install_session_environment_owner_projection(
+                thread,
+                "workspace",
+                &awaken_session_state_contract::SessionEnvironmentState::Resident {
+                    binding,
+                    effect_id: Some(format!("effect-{thread}")),
+                    generation: Some(generation(thread)),
+                    idle_since_unix_ms: None,
+                },
+            )
+            .unwrap();
         let candidate = host
             .realization_executor
             .environments()
@@ -547,7 +557,10 @@ async fn adopted_candidate_retains_successor_receipt_after_dispatch_fencing() {
                 })
                 .expect("installed Sessions");
         }
-        let candidate = host.prepared_session_environment(thread).unwrap();
+        let candidate = host
+            .run_assembly
+            .prepared_session_environment(thread)
+            .unwrap();
         let successor = BoundSessionEnvironmentIdentity::Durable {
             effect_id: "successor-adopt".into(),
             generation: generation(thread),
@@ -576,7 +589,8 @@ async fn adopted_candidate_retains_successor_receipt_after_dispatch_fencing() {
             };
             assert!(result.is_err(), "A4");
             assert!(
-                host.prepared_session_environment(thread)
+                host.run_assembly
+                    .prepared_session_environment(thread)
                     .unwrap()
                     .exact_matches(&candidate)
             );
@@ -610,7 +624,8 @@ async fn adopted_candidate_retains_successor_receipt_after_dispatch_fencing() {
             "A3"
         );
         assert!(
-            host.prepared_session_environment(thread)
+            host.run_assembly
+                .prepared_session_environment(thread)
                 .unwrap()
                 .exact_matches(&retained)
         );
@@ -667,7 +682,9 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
         .expect("validated Host dependencies");
         let sink = Arc::new(BlockingBindingSink::blocked());
         sink.unblock();
-        crate::ManagedHost::new(host.clone()).install_test_environment_binding_sink(sink.clone());
+        (host.clone())
+            .run_assembly
+            .install_test_environment_binding_sink(sink.clone());
         let source_intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
             thread,
             awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
@@ -683,7 +700,8 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
             )
             .await
             .unwrap();
-        host.install_session_environment_owner_projection(thread, "workspace", &source)
+        host.run_assembly
+            .install_session_environment_owner_projection(thread, "workspace", &source)
             .unwrap();
         let old = claim(&store, thread, "adoption-run", "worker-old", 1, &clock).await;
         let current = if fenced {
@@ -738,7 +756,10 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
         if fenced {
             let error = result.err().expect("B1 derivative fence");
             assert_eq!(error.code(), "dispatch_claim_stale");
-            let candidate = host.prepared_session_environment(thread).unwrap();
+            let candidate = host
+                .run_assembly
+                .prepared_session_environment(thread)
+                .unwrap();
             let expected = candidate.durable_identity().cloned().unwrap();
             assert!(
                 matches!(&expected, BoundSessionEnvironmentIdentity::Durable { effect_id, .. } if effect_id == effect.authorization.intent().effect_id())
@@ -762,7 +783,8 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
                     .expect("B2 repeated fence");
                 assert_eq!(error.code(), "dispatch_claim_stale");
                 assert!(
-                    host.prepared_session_environment(thread)
+                    host.run_assembly
+                        .prepared_session_environment(thread)
                         .unwrap()
                         .exact_matches(&candidate)
                 );
@@ -1276,13 +1298,15 @@ async fn stale_unmaterialized_projection_cannot_unbind_a_candidate_or_resident()
         )
         .expect("S1 Candidate");
 
-    host.install_session_environment_owner_projection(
-        thread,
-        "workspace",
-        &awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
-    )
-    .expect("S1 stale projection is a no-write replay");
+    host.run_assembly
+        .install_session_environment_owner_projection(
+            thread,
+            "workspace",
+            &awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
+        )
+        .expect("S1 stale projection is a no-write replay");
     let retained = host
+        .run_assembly
         .prepared_session_environment(thread)
         .expect("S1 Candidate retained");
     assert!(candidate.exact_matches(&retained), "S1 exact Candidate");
@@ -1301,12 +1325,13 @@ async fn stale_unmaterialized_projection_cannot_unbind_a_candidate_or_resident()
         .environments()
         .publish_prepared_session_environment(thread, &candidate, identity(thread))
         .expect("S2 publish exact Candidate");
-    host.install_session_environment_owner_projection(
-        thread,
-        "workspace",
-        &awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
-    )
-    .expect("S2 stale projection is a no-write replay");
+    host.run_assembly
+        .install_session_environment_owner_projection(
+            thread,
+            "workspace",
+            &awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
+        )
+        .expect("S2 stale projection is a no-write replay");
     let resident = host
         .realization_executor
         .environments()

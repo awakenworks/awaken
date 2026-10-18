@@ -134,9 +134,11 @@ impl SharedHost {
                         == awaken_session_types::SessionRuntimePlacement::Worker
                 });
         let ctx = if worker_placement {
-            self.ctx_for_session_coordination(thread, None).await?
+            self.run_assembly
+                .ctx_for_session_coordination(thread, None)
+                .await?
         } else {
-            self.ctx_for(thread, None).await?
+            self.run_assembly.ctx_for(thread, None).await?
         };
         let binding = outcome_binding(&ctx.config, self.agent.judge_snapshot.as_ref());
         let host_grader = HostAgentGrader {
@@ -378,6 +380,7 @@ mod tests {
         let model = Arc::new(SequenceModel::new(&[]));
         let host = outcome_test_host(model.clone()).await;
         let ctx = host
+            .run_assembly
             .ctx_for("concurrent-read", None)
             .await
             .expect("R1 Session context");

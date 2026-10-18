@@ -1681,7 +1681,7 @@ impl WorkerNode {
         deps = deps.with_session_execution(execution);
         let authority = Arc::new(lifecycle::WorkerAuthorityProof::default());
         let host = (deps.with_execution_authority(authority.clone())).build().map_err(std::io::Error::other)?;
-        host.prepare_container_mcp_relay().await.map_err(|error| {
+        host.run_assembly().prepare_container_mcp_relay().await.map_err(|error| {
             std::io::Error::other(format!(
                 "container MCP relay transport failed before Ready: {error}"
             ))

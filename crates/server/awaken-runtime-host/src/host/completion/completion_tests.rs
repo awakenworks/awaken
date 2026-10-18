@@ -514,6 +514,7 @@ async fn unconfigured_model_is_rejected_before_durable_enqueue() {
         .expect("validated Host dependencies");
     let _managed = crate::ManagedHost::new(host.clone());
     let ctx = host
+        .run_assembly
         .ctx_for("unconfigured-model", None)
         .await
         .expect("Session context");
@@ -525,6 +526,7 @@ async fn unconfigured_model_is_rejected_before_durable_enqueue() {
     );
 
     let error = host
+        .run_assembly
         .prepare_dispatch(activation)
         .fresh()
         .expect_err("an unconfigured model must never enter durable dispatch");

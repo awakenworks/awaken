@@ -18,7 +18,7 @@ use awaken_session_realization::environment_holding::lifecycle::*;
 mod tests;
 
 #[cfg(test)]
-impl crate::host::SharedHost {
+impl crate::RunAssembly {
     /// The resident Environment of a Session, observed by a test whose
     /// registry is healthy.
     pub async fn resident_session_environment(

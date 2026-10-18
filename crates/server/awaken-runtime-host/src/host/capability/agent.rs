@@ -89,7 +89,7 @@ impl AgentExecution {
     }
 }
 
-impl SharedHost {
+impl crate::RunAssembly {
     /// Bind `model_ref` to `thread` (R2/R5), staged before its first Run.
     pub fn register_thread_model(&self, thread: &str, model_ref: impl Into<String>) {
         self.agent.inference_routing.register(thread, model_ref);

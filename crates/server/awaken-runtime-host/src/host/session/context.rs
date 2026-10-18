@@ -11,8 +11,8 @@ mod extensions;
 mod plan;
 mod resources;
 
+use crate::HostError;
 use crate::host::{SessionCtx, session_ctx::RuntimeContextPurpose};
-use crate::{HostError, SharedHost};
 use std::sync::Arc;
 
 type SemanticSkillTools = (
@@ -26,7 +26,7 @@ struct PreparedContext {
 }
 
 pub(super) async fn construct(
-    host: &SharedHost,
+    host: &crate::RunAssembly,
     lifecycle: crate::session_realizations::LifecycleHeld<'_>,
     thread: &str,
     agent: Option<&str>,
@@ -69,7 +69,7 @@ pub(super) async fn construct(
 }
 
 async fn install(
-    host: &SharedHost,
+    host: &crate::RunAssembly,
     thread: &str,
     prepared: PreparedContext,
 ) -> Result<Arc<SessionCtx>, HostError> {

@@ -57,7 +57,7 @@ where
     )))
 }
 
-impl SharedHost {
+impl crate::RunAssembly {
     /// Repair direct-ingress terminal Memory work before ordinary Session
     /// construction can enter the physical Environment lifecycle. This is a
     /// cold recovery wake only: resident contexts already own their observer and
@@ -67,7 +67,7 @@ impl SharedHost {
         thread: &str,
         agent: Option<&str>,
     ) -> Result<bool, HostError> {
-        if self.dispatch.durable_ingress()
+        if self.execution.ingress.is_durable()
             || !self.authority.observes_terminal_memory_locally()
             || self
                 .installed_sessions
@@ -501,7 +501,11 @@ mod tests {
         .await
         .expect("terminal truth");
 
-        let error = match host.ctx_for("direct-terminal-observer-failure", None).await {
+        let error = match host
+            .run_assembly
+            .ctx_for("direct-terminal-observer-failure", None)
+            .await
+        {
             Ok(_) => panic!("C3/E1 terminal observer failure must abort recovery"),
             Err(error) => error,
         };

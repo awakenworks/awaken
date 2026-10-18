@@ -104,7 +104,10 @@ impl SharedHost {
     ) -> Result<CommittedStepReceipt, HostError> {
         let session_id = admission.session_id().to_string();
         let run_id = admission.run_id().clone();
-        let ctx = self.ctx_for_session_coordination(&session_id, None).await?;
+        let ctx = self
+            .run_assembly
+            .ctx_for_session_coordination(&session_id, None)
+            .await?;
         let state = activate_and_await_session_run(
             &self.completion,
             &run_id,
@@ -146,6 +149,7 @@ impl SharedHost {
         let run_id = delivery.command.expected_run_id.clone();
         let correlation_id = delivery.command.expected_correlation_id.clone();
         let ctx = self
+            .run_assembly
             .ctx_for_session_coordination(session_id.as_str(), None)
             .await?;
         let messages_before = self
@@ -183,9 +187,9 @@ impl SharedHost {
         // settles — held to the end of this method.
         let (settled, _waiter_guard) = self.completion.register(&run_id, stream_sink);
         let request = if associate_prepared_session {
-            self.prepare_dispatch(activation).fresh()?
+            self.run_assembly.prepare_dispatch(activation).fresh()?
         } else {
-            self.prepare_dispatch(activation).extension()?
+            self.run_assembly.prepare_dispatch(activation).extension()?
         };
         tracing::debug!(run_id = %run_id.0, scope = ?request.execution_scope,
             required_capabilities = ?request.placement.required_capabilities,

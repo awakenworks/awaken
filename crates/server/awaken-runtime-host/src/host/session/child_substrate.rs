@@ -3,7 +3,7 @@
 
 use super::*;
 
-impl SharedHost {
+impl crate::RunAssembly {
     /// Realize only the parent Session's physical execution substrate for a
     /// separately dispatched child. Parent Agent plugins are runtime concerns
     /// and must never be constructed merely to borrow Environment/commit state.

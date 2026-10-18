@@ -43,7 +43,7 @@ impl MemoryTerminalExtraction for BoundMemoryTerminalExtraction {
     }
 }
 
-impl crate::host::SharedHost {
+impl crate::RunAssembly {
     fn published_memory_terminal_configuration(
         snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
         effective_model_ref: &str,

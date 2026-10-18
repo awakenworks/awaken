@@ -50,7 +50,6 @@ use awaken_tool_contract::tool::ToolOutput;
 use awaken_ext_compact::CompactConfig;
 
 use crate::background::BackgroundRuns;
-use crate::delegate::HostRunDelegationService;
 use crate::hub::{ThreadEvent, ThreadEventHub};
 use crate::store::HostCommit;
 use awaken_ext_goal::grader::{DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent};
@@ -135,7 +134,9 @@ mod worker_resolver;
 pub(crate) use awaken_dispatch_execution::session_worker_resolver::SessionWorkerResolver;
 pub(crate) use completion::CompletionRegistry;
 pub(crate) use foreground_run::{ForegroundRun, ForegroundRunPoisoned, ForegroundRunRecord};
-pub(crate) use run_control::{LiveAttemptControl, SelectedAttemptInterruption};
+pub(crate) use run_control::{
+    DurableRunCancellation, LiveAttemptControl, SelectedAttemptInterruption,
+};
 pub(crate) use session_ctx::{
     ChildExecutionSubstrate, ClaimedRuntimeInput, RuntimePublicationIdentity, SessionCtx,
 };
@@ -181,40 +182,36 @@ pub struct SharedHost {
     /// schedulers all drive their Workers on it, so every time the attempt
     /// itself judges shares one timeline.
     pub(crate) clock: Arc<dyn awaken_time::WallClock>,
-    /// The Host's one process-local BackgroundTask slot registry. Native tool
-    /// submission and committed terminal observation share this exact owner.
-    pub(crate) background_supervisor: Arc<awaken_ext_background_task::BackgroundTaskSupervisor>,
     /// Owns temporary run-id registrations for event-driven durable completion,
     /// foreground stream relay, and publication into the existing Thread hub.
     /// Injected into the pool as its `CompletionSink` and into each local Session
     /// worker as its `StreamSink`.
     pub(crate) completion: Arc<CompletionRegistry>,
-    pub(crate) session_execution: dependencies::SessionExecutionDependencies,
     /// Durable dispatch: queue transport, process pool, and the weak Session
     /// application edges the pool's Workers call back into.
     pub(crate) dispatch: capability::DispatchCapability,
     /// Claim-fenced transports a database-less Worker installs.
-    pub(crate) worker: capability::WorkerTransports,
+    pub(crate) worker: Arc<capability::WorkerTransports>,
     /// Default inference, per-thread model routing, remote attempts, and the
     /// immutable Agent publications/Judge the Host executes.
-    pub(crate) agent: capability::AgentExecution,
+    pub(crate) agent: Arc<capability::AgentExecution>,
     /// ACP backend, attempt decoration, and the credential/session-blob
     /// adapters the attempt executors share.
-    pub(crate) exec: capability::AttemptBackends,
+    pub(crate) exec: Arc<capability::AttemptBackends>,
     /// The realization executor and the sandbox providers it realizes through.
     pub(crate) realization_executor: Arc<crate::realization_executor::RealizationExecutor>,
     /// Committed Thread readback over the selected authority.
     pub(crate) thread_reads: Arc<crate::ThreadReads>,
     /// The live inboxes of the attempts this process owns.
     pub(crate) live_inboxes: Arc<crate::LiveInboxes>,
+    /// Session context assembly.
+    pub(crate) run_assembly: Arc<crate::RunAssembly>,
     /// Tool, Skill, plugin, and gate offering installed on every thread.
-    pub(crate) tools: capability::ToolOffering,
+    pub(crate) tools: Arc<capability::ToolOffering>,
     /// Resources-context ports: Memory, Files, Artifacts.
-    pub(crate) resources: capability::ResourcePorts,
-    /// The Session MCP lifecycle and its Worker relay for sandboxed ACP sessions.
-    pub(crate) mcp: awaken_session_mcp::McpSessions,
+    pub(crate) resources: Arc<capability::ResourcePorts>,
     /// Content capture (ADR-0050): sink, deployment ceiling, consent source.
-    pub(crate) capture: capability::ContentCaptureCapability,
+    pub(crate) capture: Arc<capability::ContentCaptureCapability>,
     /// The edges back into the Session application built over this Host.
     pub(crate) session_application: SessionApplicationBindings,
 }
