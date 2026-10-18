@@ -78,7 +78,7 @@ async fn lifecycle_readyz(State(binding): State<LifecycleBinding>) -> impl IntoR
     let Some(lifecycle) = binding.get() else {
         return (StatusCode::SERVICE_UNAVAILABLE, "not ready\n");
     };
-    if lifecycle.host.pool_accepting_work().await {
+    if lifecycle.host.dispatch().accepting_work().await {
         (StatusCode::OK, "ready\n")
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, "not ready\n")

@@ -68,7 +68,7 @@ async fn idle_resident_context_releases_slots_when_last_host_owner_drops() {
         "the real assembled Session projection chain is reachable from the cache"
     );
     assert!(
-        host.dispatch.dispatch_pool.get().is_none(),
+        host.dispatch.pool().is_none(),
         "no process pool task started"
     );
     assert!(

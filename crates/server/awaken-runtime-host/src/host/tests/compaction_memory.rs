@@ -631,7 +631,11 @@ async fn claimed_child_terminal_memory_uses_parent_physical_commit_partition() {
                 "I really enjoy tea in the morning",
             )],
         );
-        let dispatch = host.dispatch_store().expect("shared dispatch authority");
+        let dispatch = host
+            .authority
+            .dispatch_binding()
+            .map(|binding| binding.queue())
+            .expect("shared dispatch authority");
         let request = crate::agent_runner::child_dispatch_request(
             activation,
             ThreadId(parent.clone()),
@@ -661,7 +665,8 @@ async fn claimed_child_terminal_memory_uses_parent_physical_commit_partition() {
                 .is_some(),
             "C1/C3 frozen child Memory publication and parent binding produce an observer"
         );
-        let resolver = crate::host::session_worker_resolver(&host).expect("Host dispatch resolver");
+        let resolver = crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
+            .expect("Host dispatch resolver");
         let worker = resolver
             .worker_for_claimed(&claimed)
             .await

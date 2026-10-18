@@ -1930,7 +1930,7 @@ impl WorkerNode {
         cleanup = lifecycle::shutdown_worker_capacity_before(&lifecycle, deadline, cleanup).await;
         // A timeout carries no authority to publish quiescence, even when the
         // instantaneous process-local counter happens to read zero.
-        if cleanup.permits_quiescence_publication(host.pool_in_flight()) {
+        if cleanup.permits_quiescence_publication(host.dispatch().in_flight()) {
             let _ = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
                 control.mark_quiesced(&lifecycle.identity),

@@ -46,7 +46,8 @@ mod tests {
             .with_ephemeral_dispatch(store.clone()))
         .build()
         .expect("validated Host dependencies");
-        let resolver = crate::host::session_worker_resolver(&host).expect("Host dispatch resolver");
+        let resolver = crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
+            .expect("Host dispatch resolver");
 
         let eager_environment = eager_environment();
         let eager_activation = test_activation("cold-legacy", "run-legacy");

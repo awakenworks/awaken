@@ -329,7 +329,7 @@ async fn handle_domain(
         Ok(None) => return StatusCode::CONFLICT.into_response(),
         Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
     };
-    let dispatch = match state.host.coordinator_dispatch() {
+    let dispatch = match state.host.session_runs().coordinator_dispatch() {
         Ok(store) => store,
         Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
     };

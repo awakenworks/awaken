@@ -28,24 +28,32 @@ use awaken_session_realization_contract::{
 /// execution; a process owning the Coordinator's committed truth scans
 /// committed terminals; a co-located process does both.
 pub(crate) fn session_worker_resolver(
-    host: &Arc<SharedHost>,
+    run_assembly: &Arc<crate::RunAssembly>,
+    dispatch: &awaken_dispatch_execution::ProcessDispatch,
 ) -> Result<SessionWorkerResolver, HostError> {
-    let queue = host.dispatch_store()?;
-    let clock = host.realization_executor.clock().clone();
-    let assembly = Arc::new(ClaimedRunAssembly::new(host.run_assembly.clone()));
-    let terminal_state = host.dispatch.terminal_reconciliation.clone();
+    let queue = run_assembly
+        .authority
+        .dispatch_binding()
+        .map(|binding| binding.queue())
+        .ok_or_else(|| {
+            HostError::internal("database-less Worker requires an injected dispatch binding")
+        })?;
+    let clock = run_assembly.realization_executor.clock().clone();
+    let assembly = Arc::new(ClaimedRunAssembly::new(run_assembly.clone()));
+    let terminal_state = dispatch.terminal_reconciliation().clone();
+    let topology = dispatch.topology();
     // Only a Coordinator-owned durable authority holds committed truth; it
     // always carries its local dispatch owner.
-    let terminals = host
+    let terminals = run_assembly
         .authority
         .scans_committed_terminals()
-        .then(|| host.optional_dispatch_store())
+        .then(|| capability::local_dispatch_owner(run_assembly.authority.as_ref()))
         .flatten()
         .map(|dispatch| CommittedTerminalScan {
             dispatch,
-            lease_owner: host.run_assembly.dispatch_owner().to_owned(),
+            lease_owner: topology.lease_owner.as_str().to_owned(),
         });
-    if !host.run_assembly.runs_local_dispatch_pool() {
+    if !topology.local.runs_local_pool() {
         return Ok(SessionWorkerResolver::coordinator(
             queue,
             clock,
@@ -54,16 +62,21 @@ pub(crate) fn session_worker_resolver(
             terminals,
         ));
     }
-    let projection = host.capabilities.worker.session_control.clone().map_or(
-        ProjectionAuthority::CoLocated,
-        ProjectionAuthority::RemoteControl,
-    );
+    let projection = run_assembly
+        .capabilities
+        .worker
+        .session_control
+        .clone()
+        .map_or(
+            ProjectionAuthority::CoLocated,
+            ProjectionAuthority::RemoteControl,
+        );
     let execution = ClaimedExecution {
         installation: assembly.clone(),
         preparation: assembly.clone(),
         runs: assembly.clone(),
         mcp: Arc::new(crate::session_effects::RunMcpEffects::new(
-            host.run_assembly.clone(),
+            run_assembly.clone(),
         )),
         projection,
         publication_closure: crate::agent_catalog::RUN_PUBLICATIONS,
