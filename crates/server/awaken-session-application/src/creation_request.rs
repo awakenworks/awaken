@@ -359,7 +359,7 @@ impl SessionApplication {
             ))
             .into());
         }
-        let capabilities = self.capabilities_for(&session_id);
+        let capabilities = self.capabilities_for(&session_id)?;
         let (tools, clears_all_tools) = compile_creation_tools(
             self.tool_configuration_compiler.as_ref(),
             profile.as_ref(),

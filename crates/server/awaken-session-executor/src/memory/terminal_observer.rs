@@ -128,7 +128,7 @@ impl crate::RunAssembly {
                 .map_err(|error| crate::HostError::internal(error.to_string()))?;
             memory
         } else {
-            let Some(memory) = self.memory_for_thread(session_thread) else {
+            let Some(memory) = self.memory_for_thread(session_thread)? else {
                 return Ok(None);
             };
             // Resident Session construction has already attached `commit` to
@@ -159,7 +159,7 @@ impl crate::RunAssembly {
         Option<Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>>,
         crate::HostError,
     > {
-        let Some(memory) = self.memory_for_thread(session_thread) else {
+        let Some(memory) = self.memory_for_thread(session_thread)? else {
             return Ok(None);
         };
         let (config, model) = match published {

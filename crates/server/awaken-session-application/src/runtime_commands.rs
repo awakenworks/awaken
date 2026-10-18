@@ -1105,7 +1105,7 @@ impl SessionApplication {
             .await
     }
 
-    pub async fn supports_mid_conversation_system(&self, thread: &str) -> bool {
+    pub async fn supports_mid_conversation_system(&self, thread: &str) -> Result<bool, RunError> {
         let streaming_runtime = self.runtime().streaming_runs();
 
         streaming_runtime
@@ -1224,8 +1224,7 @@ impl SessionApplication {
         execution.model()
     }
 
-    #[must_use]
-    pub fn capabilities_for(&self, thread: &str) -> AgentCapabilities {
+    pub fn capabilities_for(&self, thread: &str) -> Result<AgentCapabilities, RunError> {
         let capabilities = self.runtime().capability();
 
         capabilities.capabilities_for(thread)

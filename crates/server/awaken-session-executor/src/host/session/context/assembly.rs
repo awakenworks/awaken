@@ -188,7 +188,7 @@ pub(super) async fn assemble(
                 .capabilities
                 .agent
                 .inference_routing
-                .model_ref(thread, &host.capabilities.agent.model_ref);
+                .model_ref(thread, &host.capabilities.agent.model_ref)?;
             server_config(
                 selected_agent,
                 &model_ref,
@@ -344,7 +344,7 @@ pub(super) async fn assemble(
         Arc::new(crate::run_exec::CaptureContextAttemptExecutor::new(
             attempt_executor,
             &host.capture,
-            host.capabilities.thread_workspace(thread),
+            host.capabilities.thread_workspace(thread)?,
         ));
     // This is the one post-attempt output edge. Because it wraps the final
     // executor shared by direct delivery and the durable Worker, claimed
@@ -406,7 +406,7 @@ pub(super) async fn assemble(
     // Cause/effect rules: terminal observers and Session plugins
     // are additive; an Environment/placement hand overrides only the tool
     // executor; one canonical RuntimeRunContext crosses the ingress boundary.
-    let workspace_id = host.capabilities.thread_workspace(thread).to_owned();
+    let workspace_id = host.capabilities.thread_workspace(thread)?;
     let (environment_generation, resource_origin) = match env.as_ref() {
         Some(environment) => host
             .realization_executor
@@ -426,7 +426,7 @@ pub(super) async fn assemble(
             host.resources
                 .memory
                 .background()
-                .tool_execution_admission(thread, &environment_generation),
+                .tool_execution_admission(thread, &environment_generation)?,
         )
         .with_model_content_materializer(Arc::new(
             crate::model_content_materializer::ResourceModelContentMaterializer::new(

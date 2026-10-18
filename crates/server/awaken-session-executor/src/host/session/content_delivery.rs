@@ -47,13 +47,9 @@ impl crate::RunAssembly {
         thread: &str,
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
         tool: &str,
-    ) -> bool {
+    ) -> Result<bool, crate::realization_error::RealizationError> {
         let realizations = self.installed_sessions.realizations();
-        let session_tools = realizations
-            .frozen(thread)
-            .expect("session runtime slots mutex poisoned")
-            .tools
-            .clone();
+        let session_tools = realizations.frozen(thread)?.tools.clone();
         let toolsets = session_tools
             .as_ref()
             .map(|tools| tools.toolsets.as_slice())
@@ -75,25 +71,28 @@ impl crate::RunAssembly {
                 )
             })
         }) {
-            return agent.policy_for(tool).enabled;
+            return Ok(agent.policy_for(tool).enabled);
         }
-        published_snapshot.is_none_or(|snapshot| {
+        Ok(published_snapshot.is_none_or(|snapshot| {
             snapshot
                 .resolved_spec
                 .tool_descriptors
                 .iter()
                 .any(|descriptor| descriptor.id == tool)
-        })
+        }))
     }
 
     pub(crate) fn session_allows_filesystem_tools(
         &self,
         thread: &str,
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
-    ) -> bool {
-        ["bash", "read", "write", "edit", "glob", "grep"]
-            .into_iter()
-            .any(|tool| self.session_allows_agent_tool(thread, published_snapshot, tool))
+    ) -> Result<bool, crate::realization_error::RealizationError> {
+        for tool in ["bash", "read", "write", "edit", "glob", "grep"] {
+            if self.session_allows_agent_tool(thread, published_snapshot, tool)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Repository Skill discovery follows the exact `read` capability rule,
@@ -104,7 +103,7 @@ impl crate::RunAssembly {
         &self,
         thread: &str,
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
-    ) -> bool {
+    ) -> Result<bool, crate::realization_error::RealizationError> {
         self.session_allows_agent_tool(thread, published_snapshot, "read")
     }
 
@@ -128,7 +127,7 @@ impl crate::RunAssembly {
             .read_run(thread, |run| run.session_dispatch)?
             .unwrap_or(false);
         let read_enabled =
-            self.session_allows_repository_skill_discovery(thread, published_snapshot);
+            self.session_allows_repository_skill_discovery(thread, published_snapshot)?;
         // A Managed cold recovery may carry its complete Session tool policy in
         // the durable slot without a catalog-backed publication snapshot. The
         // slot policy remains sufficient authority. Direct callers retain the
@@ -247,7 +246,7 @@ impl crate::RunAssembly {
             }
             return Ok(existing);
         }
-        let allows_filesystem = self.session_allows_filesystem_tools(thread, published_snapshot);
+        let allows_filesystem = self.session_allows_filesystem_tools(thread, published_snapshot)?;
         if managed_has_skill && !allows_filesystem {
             return Err(HostError::bad_request(
                 "Managed Agent Skills require filesystem progressive disclosure, but this Session disables every filesystem tool",
@@ -285,9 +284,9 @@ impl crate::RunAssembly {
                     });
             if frozen_requires_filesystem
                 || self.capabilities.tools.skills.requires_environment_in(
-                    &self.capabilities.thread_workspace(thread),
+                    &self.capabilities.thread_workspace(thread)?,
                     selected_skills.as_ref(),
-                )
+                )?
             {
                 return Err(HostError::bad_request(
                     "a selected Skill requires filesystem tools, but this Session disables every filesystem tool",
@@ -303,7 +302,8 @@ impl crate::RunAssembly {
         thread: &str,
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
     ) -> Result<bool, HostError> {
-        let filesystem_delivery = self.session_allows_filesystem_tools(thread, published_snapshot);
+        let filesystem_delivery =
+            self.session_allows_filesystem_tools(thread, published_snapshot)?;
         let selected_skills = published_skill_ids(published_snapshot);
         let (managed_session, slot_requires, frozen_has_selected) = self
             .installed_sessions
@@ -369,7 +369,7 @@ impl crate::RunAssembly {
                 )
             })?
             .unwrap_or((false, false, false));
-        let workspace = self.capabilities.thread_workspace(thread);
+        let workspace = self.capabilities.thread_workspace(thread)?;
         let filesystem_skill_projection = !managed_session
             && filesystem_delivery
             && (frozen_has_selected
@@ -377,7 +377,7 @@ impl crate::RunAssembly {
                     .capabilities
                     .tools
                     .skills
-                    .has_selected_in(&workspace, selected_skills.as_ref()));
+                    .has_selected_in(&workspace, selected_skills.as_ref())?);
         Ok(slot_requires
             || filesystem_skill_projection
             || (!managed_session
@@ -385,7 +385,7 @@ impl crate::RunAssembly {
                     .capabilities
                     .tools
                     .skills
-                    .requires_environment_in(&workspace, selected_skills.as_ref())))
+                    .requires_environment_in(&workspace, selected_skills.as_ref())?))
     }
 
     pub(super) fn can_defer_session_environment(
@@ -439,7 +439,7 @@ impl crate::RunAssembly {
                         })
             })?
             .unwrap_or(false);
-        let workspace = self.capabilities.thread_workspace(thread);
+        let workspace = self.capabilities.thread_workspace(thread)?;
         let published_backend_is_acp = published_snapshot
             .cloned()
             .or_else(|| {

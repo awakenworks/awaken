@@ -432,7 +432,10 @@ async fn artifact_decorator_holds_same_owner_until_real_publication_finishes() {
             let owner = host.realization_executor.effects().artifacts().clone();
             let weak_owner = Arc::downgrade(&owner);
             let weak_slots = Arc::downgrade(&host.run_assembly.installed_sessions);
-            let workspace = host.capabilities.thread_workspace("lifetime-thread");
+            let workspace = host
+                .capabilities
+                .thread_workspace("lifetime-thread")
+                .expect("healthy registry");
             let probe = Arc::new(AttemptProbe::new(false, fails));
             let executor =
                 ArtifactHarvestAttemptExecutor::new(probe.clone(), Arc::downgrade(&owner));

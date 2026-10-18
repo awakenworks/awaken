@@ -1031,6 +1031,7 @@ async fn install_test_session_init_overlays_the_environment_sandbox_onto_the_spe
     assert_eq!(
         host.capabilities
             .registered_thread_workspace("t-bare")
+            .expect("healthy registry")
             .as_deref(),
         Some("ws"),
         "W2"

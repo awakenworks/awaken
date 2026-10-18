@@ -218,7 +218,7 @@ impl crate::RunAssembly {
         &self,
         session_id: &str,
         failed: &crate::session_resource::SessionRealizationLease,
-    ) {
+    ) -> Result<(), crate::realization_error::RealizationError> {
         let realizations = self.installed_sessions.realizations();
         realizations
             .modify_realization(session_id, |r| {
@@ -230,7 +230,7 @@ impl crate::RunAssembly {
                     r.close_authority(None);
                 }
             })
-            .expect("session runtime slots mutex poisoned");
+            .map(|_| ())
     }
 
     /// Authorize an MCP effect admitted before a same-epoch lease extension.
@@ -241,8 +241,9 @@ impl crate::RunAssembly {
         &self,
         generation: &crate::session_mcp::McpGenerationRef,
         now_unix_ms: u64,
-    ) -> bool {
-        self.mcp_generation_root_authority(generation)
+    ) -> Result<bool, awaken_session_types::RunError> {
+        Ok(self
+            .mcp_generation_root_authority(generation)?
             // Direct realization executor callers can present a live Control assertion
             // before installing a complete local Session projection. A relay
             // capability, by contrast, always requires the current root.
@@ -251,14 +252,14 @@ impl crate::RunAssembly {
                     generation.lease_expires_at_unix_ms(),
                     now_unix_ms,
                 )
-            })
+            }))
     }
 
     /// One root-authority decision shared by effect admission and the relay.
     pub(crate) fn mcp_generation_root_authority(
         &self,
         generation: &crate::session_mcp::McpGenerationRef,
-    ) -> Option<bool> {
+    ) -> Result<Option<bool>, awaken_session_types::RunError> {
         use awaken_session_mcp::McpGenerationAuthority as _;
         self.mcp_root_authority
             .mcp_generation_root_authority(generation)
@@ -1061,11 +1062,13 @@ impl crate::RunAssembly {
     pub(crate) fn thread_credential_realization(
         &self,
         thread: &str,
-    ) -> Option<awaken_credential_contract::CredentialRealizationProfile> {
+    ) -> Result<
+        Option<awaken_credential_contract::CredentialRealizationProfile>,
+        crate::realization_error::RealizationError,
+    > {
         self.installed_sessions
             .realizations()
             .credential_realization(thread)
-            .expect("session runtime slots mutex poisoned")
     }
 
     #[cfg(test)]

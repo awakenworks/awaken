@@ -51,7 +51,7 @@ impl awaken_session_mcp::McpStagingSession for RunAssembly {
         &self,
         generation: &crate::session_mcp::McpGenerationRef,
         now_unix_ms: u64,
-    ) -> bool {
+    ) -> Result<bool, RunError> {
         self.mcp_generation_is_authorized_at(generation, now_unix_ms)
     }
 
@@ -63,14 +63,13 @@ impl awaken_session_mcp::McpStagingSession for RunAssembly {
     fn execution_backend(
         &self,
         session: &str,
-    ) -> Option<awaken_runtime_contract::resolved::Backend> {
+    ) -> Result<Option<awaken_runtime_contract::resolved::Backend>, RunError> {
         let realizations = self.installed_sessions.realizations();
-        realizations
-            .frozen(session)
-            .expect("session runtime slots mutex poisoned")
+        Ok(realizations
+            .frozen(session)?
             .backend_ref
             .clone()
-            .map(|backend_ref| awaken_runtime_contract::resolved::Backend::from_ref(&backend_ref))
+            .map(|backend_ref| awaken_runtime_contract::resolved::Backend::from_ref(&backend_ref)))
     }
 
     fn supports_secret_egress_without_bypass(&self, session: &str) -> Result<bool, RunError> {
@@ -85,14 +84,16 @@ impl awaken_session_mcp::McpStagingSession for RunAssembly {
             .supports_secret_egress_without_bypass())
     }
 
-    fn frozen_network(&self, session: &str) -> Option<awaken_provisioning_contract::NetworkPolicy> {
+    fn frozen_network(
+        &self,
+        session: &str,
+    ) -> Result<Option<awaken_provisioning_contract::NetworkPolicy>, RunError> {
         let realizations = self.installed_sessions.realizations();
-        realizations
-            .frozen(session)
-            .expect("session runtime slots mutex poisoned")
+        Ok(realizations
+            .frozen(session)?
             .environment_projection
             .as_ref()
-            .map(|projection| projection.network.clone())
+            .map(|projection| projection.network.clone()))
     }
 
     fn acp_client_injection_capabilities(

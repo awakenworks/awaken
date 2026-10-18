@@ -635,6 +635,7 @@ async fn memory_activation_enforces_catalog_workspace_without_iam_policy_logic()
     assert!(
         host.run_assembly
             .memory_for_thread("wrong-workspace")
+            .expect("healthy registry")
             .is_none()
     );
 }

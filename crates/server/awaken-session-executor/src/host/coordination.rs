@@ -618,7 +618,7 @@ impl crate::ChildRunCoordination {
             self.capabilities
                 .agent
                 .inference_routing
-                .override_for(command.session_id.as_str()),
+                .override_for(command.session_id.as_str())?,
         );
         // The report command itself is durable Session provenance. Do not rely
         // on a process-local prepared slot to rediscover self-affinity after a

@@ -360,7 +360,9 @@ mod tests {
                 );
                 let commit = local_commit();
                 let background = Arc::new(BackgroundRuns::new());
-                let admission = background.tool_execution_admission("session", "generation");
+                let admission = background
+                    .tool_execution_admission("session", "generation")
+                    .expect("healthy registry");
                 let held = admission.clone().acquire(held_claim).await.unwrap();
                 let entered = Arc::new(tokio::sync::Notify::new());
                 let claims = Arc::new(std::sync::Mutex::new(Vec::new()));

@@ -424,6 +424,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     assert!(
         host.capabilities
             .registered_thread_workspace("t-end")
+            .expect("healthy registry")
             .is_none(),
         "T3/E5"
     );
@@ -436,6 +437,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
             .agent
             .inference_routing
             .override_for("t-end")
+            .expect("healthy registry")
             .is_none(),
         "T3/E5"
     );

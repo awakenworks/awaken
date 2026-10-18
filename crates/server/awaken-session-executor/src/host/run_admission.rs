@@ -11,7 +11,12 @@ impl crate::RunAssembly {
         activation: &RunActivation,
     ) -> Result<Option<awaken_runtime_contract::PlaintextHolder>, HostError> {
         awaken_dispatch_execution::session_dispatch::inference_plaintext_holder(activation, || {
-            Ok(self.thread_credential_realization(&activation.thread_id.0))
+            self.thread_credential_realization(&activation.thread_id.0)
+                .map_err(|error| {
+                    awaken_dispatch_execution::AdmissionError::from(
+                        awaken_session_types::RunError::from(error),
+                    )
+                })
         })
         .map_err(HostError::from)
     }

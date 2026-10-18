@@ -59,7 +59,7 @@ impl ChildRunLauncher {
         if agent_bindings.delegates.is_empty() && agent_bindings.advisor.is_none() {
             return Ok(None);
         }
-        let workspace = self.capabilities.thread_workspace(thread);
+        let workspace = self.capabilities.thread_workspace(thread)?;
         // Use the same topology decision as pool startup. Ephemeral and durable
         // Runtime authorities both own dispatch; gating children on persistence
         // durability leaves a claim-bound parent executing its child with the
@@ -89,7 +89,7 @@ impl ChildRunLauncher {
         };
         let adapters = self
             .capabilities
-            .child_execution_adapters(thread, sandbox.clone());
+            .child_execution_adapters(thread, sandbox.clone())?;
         let service = crate::delegate::HostRunDelegationService::new(
             self.capabilities.agent.llm.clone(),
             sandbox,

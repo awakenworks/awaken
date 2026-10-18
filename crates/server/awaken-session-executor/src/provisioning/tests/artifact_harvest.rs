@@ -1327,6 +1327,7 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
     let workspace_id = host
         .capabilities
         .registered_thread_workspace("session-harvest-failure")
+        .expect("healthy registry")
         .expect("harvest failure retains the frozen Workspace");
     let authorization = root_terminal_preparation_authorization(&cleanup, &effect, &workspace_id);
     let error = (host.clone())

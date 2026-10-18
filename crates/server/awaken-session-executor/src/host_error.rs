@@ -154,6 +154,50 @@ impl From<HostError> for awaken_dispatch_execution::AdmissionError {
     }
 }
 
+/// A process-local executor lock whose holder panicked. Its state may be
+/// half-written, so the operation that needed it is refused; the class is
+/// decided once, here, as a retryable `Unavailable` with one stable code.
+/// The installed-Session registry has its own class
+/// ([`awaken_session_realization::realization_error::RealizationLock`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ExecutorLock {
+    #[error("shared tool admission lock poisoned")]
+    ToolAdmission,
+    #[error("Skill catalog cache lock poisoned")]
+    SkillCatalogCache,
+    #[error("foreground completion registry lock poisoned")]
+    CompletionRegistry,
+    #[error("Thread event hub lock poisoned")]
+    ThreadEventHub,
+    #[error("captured Memory writes lock poisoned")]
+    CapturedMemoryWrites,
+}
+
+/// Poison `lock` the way production can: a holder panics while holding it.
+#[cfg(test)]
+pub(crate) fn poison_for_test<T>(lock: &std::sync::Mutex<T>) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _held = lock.lock();
+        panic!("poison the lock under test");
+    }));
+    assert!(lock.is_poisoned());
+}
+
+/// Stable code of every [`ExecutorLock`] refusal.
+pub const EXECUTOR_LOCK_POISONED_CODE: &str = "session_executor_lock_poisoned";
+
+impl From<ExecutorLock> for HostError {
+    fn from(error: ExecutorLock) -> Self {
+        Self::unavailable_classified(EXECUTOR_LOCK_POISONED_CODE, error.to_string())
+    }
+}
+
+impl From<ExecutorLock> for RunError {
+    fn from(error: ExecutorLock) -> Self {
+        to_run_error(HostError::from(error))
+    }
+}
+
 impl From<McpError> for HostError {
     fn from(error: McpError) -> Self {
         Self {
@@ -171,6 +215,31 @@ impl From<McpError> for HostError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_poisoned_executor_lock_is_one_retryable_class() {
+        // Cause: any executor-owned lock is poisoned. Effect: one Unavailable
+        // refusal with one stable code, identical in the Host and Run
+        // vocabularies, so no caller re-classifies it from text.
+        for lock in [
+            ExecutorLock::ToolAdmission,
+            ExecutorLock::SkillCatalogCache,
+            ExecutorLock::CompletionRegistry,
+            ExecutorLock::ThreadEventHub,
+            ExecutorLock::CapturedMemoryWrites,
+        ] {
+            let host = HostError::from(lock);
+            assert_eq!(host.kind, HostErrorKind::Unavailable, "{lock}");
+            assert_eq!(host.code, EXECUTOR_LOCK_POISONED_CODE, "{lock}");
+            let run = RunError::from(lock);
+            assert_eq!(
+                run.kind,
+                awaken_session_types::RunErrorKind::Unavailable,
+                "{lock}"
+            );
+            assert_eq!(run.code, EXECUTOR_LOCK_POISONED_CODE, "{lock}");
+        }
+    }
 
     #[test]
     fn run_and_host_error_projection_preserves_fault_and_code() {

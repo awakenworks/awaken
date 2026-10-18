@@ -598,7 +598,7 @@ mod tests {
         // Test design — Causes: each closed LiveInbox failure variant is rendered.
         // Effects: it produces its exact distinct operator-facing text.
         // Constraints/invariants: display text is a pinned wire/debug boundary;
-        // variants never alias. Decision rule L1: enumerate all variants=>three
+        // variants never alias. Decision rule L1: enumerate all variants=>four
         // exact, pairwise-distinct messages.
         assert_eq!(
             LiveInboxError::Inactive.to_string(),
@@ -611,6 +611,10 @@ mod tests {
         assert_eq!(
             LiveInboxError::StaleOrder.to_string(),
             "proposed order does not match the current queue",
+        );
+        assert_eq!(
+            LiveInboxError::Unavailable.to_string(),
+            "the live-inbox owner registry is unreadable",
         );
     }
 

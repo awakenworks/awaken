@@ -55,10 +55,16 @@ pub(super) async fn skills(
     // Its separate admitted repository source is derived below from the
     // already-realized Resource projection. Only a direct Session without a
     // frozen manifest may fall back to the live compatibility catalog.
-    let delivered = frozen_skill_versions.or_else(|| {
-        (!session_dispatch && host.capabilities.tools.skills.has_application())
-            .then(|| host.capabilities.tools.skills.cache_snapshot_in(workspace))
-    });
+    let delivered = match frozen_skill_versions {
+        Some(frozen) => Some(frozen),
+        None if !session_dispatch && host.capabilities.tools.skills.has_application() => Some(
+            host.capabilities
+                .tools
+                .skills
+                .cache_snapshot_in(workspace)?,
+        ),
+        None => None,
+    };
     // A published Agent receives exactly its selected Skills. Embedded direct
     // Sessions without a publication use the host-configured catalog.
     let selected_skills = content_delivery::published_skill_ids(installed.as_ref());
@@ -256,7 +262,7 @@ pub(super) async fn memory(
     } else {
         // Direct embedders opt in through `bind_resolved_memory`; Managed
         // compatibility Sessions merely register standard mount bindings.
-        host.memory_for_thread(thread)
+        host.memory_for_thread(thread)?
     };
     // Recovery is owned by the frozen Resource bindings, not by whichever
     // Memory plugin the parent Agent selects. This also resumes delegated

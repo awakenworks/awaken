@@ -455,7 +455,8 @@ async fn managed_session_ignores_unbound_host_skill_sources() {
         host.capabilities
             .tools
             .skills
-            .managed_ids_in(host.run_assembly.local_workspace()),
+            .managed_ids_in(host.run_assembly.local_workspace())
+            .expect("healthy registry"),
         vec!["cached".to_string()],
         "A1/C4 proves the live catalog contains an otherwise advertisable Skill"
     );
@@ -900,6 +901,7 @@ async fn on_tool_use_legacy_delivered_filesystem_skill_forces_an_eager_environme
             .tools
             .skills
             .cache_snapshot_in(&workspace)
+            .expect("healthy registry")
             .is_empty(),
         "L8 starts from a cold process cache"
     );

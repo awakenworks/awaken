@@ -116,15 +116,16 @@ impl McpGenerationAuthority for McpRootAuthority {
     fn mcp_generation_root_authority(
         &self,
         generation: &crate::session_mcp::McpGenerationRef,
-    ) -> Option<bool> {
-        // A poisoned registry proves no root: it answers the explicit refusal,
-        // never absence, so neither admission nor the relay can fall back.
-        self.installed_sessions
+    ) -> Result<Option<bool>, awaken_session_types::RunError> {
+        // A poisoned registry proves no root and is not absence either: it is
+        // refused as an error, so no caller can fall back to the lease alone.
+        Ok(self
+            .installed_sessions
             .read(generation.session_id().as_str(), |slot| {
                 slot.realization.mcp_generation_root_authority(generation)
             })
-            .unwrap_or(Some(Some(false)))
-            .flatten()
+            .map_err(crate::installed_session::registry_run_error)?
+            .flatten())
     }
 }
 
@@ -158,18 +159,20 @@ impl McpGenerationAuthority for McpApplicationInputs {
     fn mcp_generation_root_authority(
         &self,
         generation: &crate::session_mcp::McpGenerationRef,
-    ) -> Option<bool> {
+    ) -> Result<Option<bool>, awaken_session_types::RunError> {
         self.authority.mcp_generation_root_authority(generation)
     }
 }
 
 #[async_trait::async_trait]
 impl McpInputHost for McpApplicationInputs {
-    fn active_mcp_projections(&self, session: &str) -> Vec<McpGenerationProjection> {
-        // An unreadable registry names no recipient: every input is refused.
+    fn active_mcp_projections(
+        &self,
+        session: &str,
+    ) -> Result<Vec<McpGenerationProjection>, awaken_session_types::RunError> {
         self.mcp
             .active_projections(self.installed_sessions.as_ref(), session)
-            .unwrap_or_default()
+            .map_err(|error| crate::host_error::to_run_error(HostError::from(error)))
     }
 
     async fn cancel_durable_run(&self, session: &str, run_id: &str) -> bool {

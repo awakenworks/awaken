@@ -68,16 +68,17 @@ impl crate::RunCapabilities {
     fn web_credentials(
         &self,
         thread: &str,
-    ) -> Option<Arc<dyn awaken_ext_builtin_tools::WebSearchCredentialResolver>> {
-        self.exec
-            .credential_materializer
-            .clone()
-            .map(|materializer| {
-                Arc::new(HostWebSearchCredentialResolver::new(
-                    materializer,
-                    self.thread_workspace(thread),
-                )) as Arc<dyn awaken_ext_builtin_tools::WebSearchCredentialResolver>
-            })
+    ) -> Result<
+        Option<Arc<dyn awaken_ext_builtin_tools::WebSearchCredentialResolver>>,
+        crate::realization_error::RealizationError,
+    > {
+        let Some(materializer) = self.exec.credential_materializer.clone() else {
+            return Ok(None);
+        };
+        Ok(Some(Arc::new(HostWebSearchCredentialResolver::new(
+            materializer,
+            self.thread_workspace(thread)?,
+        ))))
     }
 
     /// Build the one configured WebSearch plugin used by both root and delegated
@@ -87,14 +88,17 @@ impl crate::RunCapabilities {
         &self,
         thread: &str,
         execution_configuration: Option<awaken_ext_builtin_tools::WebSearchExecutionConfiguration>,
-    ) -> Arc<awaken_ext_builtin_tools::WebSearchPlugin> {
-        Arc::new(
+    ) -> Result<
+        Arc<awaken_ext_builtin_tools::WebSearchPlugin>,
+        crate::realization_error::RealizationError,
+    > {
+        Ok(Arc::new(
             awaken_ext_builtin_tools::WebSearchPlugin::new(
                 self.tools.web_search_providers.clone(),
-                self.web_credentials(thread),
+                self.web_credentials(thread)?,
             )
             .with_execution_configuration(execution_configuration),
-        )
+        ))
     }
 
     /// Build the configured WebFetch plugin from the same provider catalog and
@@ -103,14 +107,17 @@ impl crate::RunCapabilities {
         &self,
         thread: &str,
         execution_configuration: Option<awaken_ext_builtin_tools::WebFetchExecutionConfiguration>,
-    ) -> Arc<awaken_ext_builtin_tools::WebFetchPlugin> {
-        Arc::new(
+    ) -> Result<
+        Arc<awaken_ext_builtin_tools::WebFetchPlugin>,
+        crate::realization_error::RealizationError,
+    > {
+        Ok(Arc::new(
             awaken_ext_builtin_tools::WebFetchPlugin::new(
                 self.tools.web_search_providers.clone(),
-                self.web_credentials(thread),
+                self.web_credentials(thread)?,
             )
             .with_execution_configuration(execution_configuration),
-        )
+        ))
     }
 
     /// Apply the one published Web selection to a Session runtime. Native
@@ -139,7 +146,7 @@ impl crate::RunCapabilities {
             let execution_configuration =
                 awaken_ext_builtin_tools::web_search_execution_configuration(toolsets)
                     .map_err(crate::HostError::bad_request)?;
-            let plugin = self.web_search_plugin(thread, execution_configuration);
+            let plugin = self.web_search_plugin(thread, execution_configuration)?;
             if is_acp {
                 Some(
                     plugin
@@ -166,7 +173,7 @@ impl crate::RunCapabilities {
                     thread,
                     awaken_ext_builtin_tools::web_fetch_execution_configuration(toolsets)
                         .map_err(crate::HostError::bad_request)?,
-                ))
+                )?)
                 .clone()
                 .with_tool_source_catalogue(&spec.tool_descriptors),
             );
@@ -802,6 +809,7 @@ mod tests {
             .run_assembly
             .capabilities
             .web_credentials("bound-thread")
+            .expect("installed Sessions")
             .unwrap();
         assert_eq!(
             resolver.resolve(&access, "brave").await.unwrap().header(),
@@ -827,6 +835,7 @@ mod tests {
                 .run_assembly
                 .capabilities
                 .web_search_plugin("bound-thread", None)
+                .expect("installed Sessions")
                 .configured_tool(Some(&published))
                 .is_err(),
             "R8 Search requires a materializer"
@@ -836,6 +845,7 @@ mod tests {
                 .run_assembly
                 .capabilities
                 .web_fetch_plugin("bound-thread", None)
+                .expect("installed Sessions")
                 .configured_tool(Some(&published))
                 .is_err(),
             "R8 Fetch requires a materializer"
@@ -855,12 +865,14 @@ mod tests {
             .run_assembly
             .capabilities
             .web_search_plugin("bound-thread", None)
+            .expect("installed Sessions")
             .configured_tool(Some(&published))
             .unwrap();
         let (_, foreign_fetch) = foreign
             .run_assembly
             .capabilities
             .web_fetch_plugin("bound-thread", None)
+            .expect("installed Sessions")
             .configured_tool(Some(&published))
             .unwrap();
         for (tool, call) in [
@@ -890,12 +902,14 @@ mod tests {
             .run_assembly
             .capabilities
             .web_search_plugin("bound-thread", None)
+            .expect("installed Sessions")
             .configured_tool(Some(&published))
             .unwrap();
         let (_, paid_fetch) = host
             .run_assembly
             .capabilities
             .web_fetch_plugin("bound-thread", None)
+            .expect("installed Sessions")
             .configured_tool(Some(&published))
             .unwrap();
         let search_output = paid_search
@@ -980,6 +994,7 @@ mod tests {
                 .run_assembly
                 .capabilities
                 .web_credentials("bound-thread")
+                .expect("healthy registry")
                 .unwrap()
                 .resolve(&access, "brave")
                 .await

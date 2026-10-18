@@ -37,7 +37,9 @@ impl LiveInboxSnapshot {
 }
 
 /// Why a live-inbox operation failed. Mirrors the runtime contract's edit
-/// errors, plus `Inactive` for "no native Run in flight on this Session".
+/// errors, plus `Inactive` for "no native Run in flight on this Session" and
+/// `Unavailable` for "the process cannot read which attempts it owns" -- a
+/// fault, never reported as an inactive queue the caller may route around.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum LiveInboxError {
     #[error("no Run is in flight; send the message as a normal event")]
@@ -46,6 +48,8 @@ pub enum LiveInboxError {
     UnknownMessage,
     #[error("proposed order does not match the current queue")]
     StaleOrder,
+    #[error("the live-inbox owner registry is unreadable")]
+    Unavailable,
 }
 
 /// Protocol-neutral application failure for the editable in-flight inbox.

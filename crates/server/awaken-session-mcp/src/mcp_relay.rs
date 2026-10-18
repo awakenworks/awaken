@@ -115,6 +115,31 @@ struct RelayState {
     outbound_proxy: Option<Arc<dyn McpRelayOutboundProxy>>,
 }
 
+/// The relay's answer to one root-authority read. The sandbox-facing relay
+/// never reveals why a route is refused (every refusal is the same 404), so
+/// an unreadable authority is refused exactly like an unauthorized one; the
+/// fault is reported here instead of to the sandbox.
+///
+/// | Rule | root authority read   | admitted | reported |
+/// |---|---|---|---|
+/// | A1 | `Ok(Some(true))`      | yes      | no       |
+/// | A2 | `Ok(Some(false))`     | no       | no       |
+/// | A3 | `Ok(None)` (absent)   | no       | no       |
+/// | A4 | `Err(_)` (unreadable) | no       | yes      |
+fn relay_admits_root(root: Result<Option<bool>, awaken_session_types::RunError>) -> bool {
+    match root {
+        Ok(root) => root == Some(true),
+        Err(error) => {
+            tracing::error!(
+                code = %error.code,
+                error = %error.message,
+                "MCP relay refused a route: the Session root authority is unreadable"
+            );
+            false
+        }
+    }
+}
+
 impl RelayState {
     fn admits(&self, route: &Route, capability: &str) -> bool {
         !self.stopping.is_cancelled()
@@ -197,9 +222,7 @@ impl McpRelay {
         Self::start_with_authority_and_exposure(
             Arc::new(move |generation, _now| {
                 authority.upgrade().is_some_and(|authority| {
-                    authority
-                        .mcp_generation_root_authority(generation)
-                        .unwrap_or(false)
+                    relay_admits_root(authority.mcp_generation_root_authority(generation))
                 })
             }),
             exposure,
@@ -676,6 +699,22 @@ async fn forward(
 mod tests {
     use super::*;
     use awaken_ext_mcp::{Credential, HttpTransportBuilder, McpToolTransport};
+
+    #[test]
+    fn relay_admits_only_a_readable_live_root() {
+        // Rows A1-A4 of `relay_admits_root`: the sandbox-facing answer is the
+        // same refusal for refused, absent and unreadable roots.
+        assert!(relay_admits_root(Ok(Some(true))), "A1");
+        assert!(!relay_admits_root(Ok(Some(false))), "A2");
+        assert!(!relay_admits_root(Ok(None)), "A3");
+        assert!(
+            !relay_admits_root(Err(awaken_session_types::RunError::unavailable_classified(
+                "session_realization_lock_poisoned",
+                "installed Sessions lock poisoned",
+            ))),
+            "A4"
+        );
+    }
 
     fn generation(
         session: &str,

@@ -134,7 +134,8 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
             host.run_assembly.installed_sessions.remove(session);
         } else {
             host.run_assembly
-                .invalidate_session_realization_lease(session, &lease);
+                .invalidate_session_realization_lease(session, &lease)
+                .expect("healthy registry");
         }
         assert_eq!(
             invoke(relay.route_url(&live).unwrap())

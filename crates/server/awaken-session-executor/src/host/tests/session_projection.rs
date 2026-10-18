@@ -487,13 +487,15 @@ async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool()
 
     assert!(
         host.run_assembly
-            .session_allows_filesystem_tools("repository-policy", None),
+            .session_allows_filesystem_tools("repository-policy", None)
+            .expect("installed Sessions"),
         "R3 filesystem delivery"
     );
     assert!(
         !host
             .run_assembly
-            .session_allows_repository_skill_discovery("repository-policy", Some(&snapshot)),
+            .session_allows_repository_skill_discovery("repository-policy", Some(&snapshot))
+            .expect("installed Sessions"),
         "R3 exact read denial"
     );
     assert_eq!(
@@ -520,7 +522,8 @@ async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool()
         .expect("installed Sessions");
     assert!(
         host.run_assembly
-            .session_allows_repository_skill_discovery("repository-policy", Some(&snapshot)),
+            .session_allows_repository_skill_discovery("repository-policy", Some(&snapshot))
+            .expect("installed Sessions"),
         "R2 exact read admission"
     );
     assert_eq!(
@@ -897,7 +900,8 @@ async fn session_content_delivery_is_frozen_across_auxiliary_agent_snapshots() {
     assert!(
         !host
             .run_assembly
-            .session_allows_filesystem_tools("filesystem-session", Some(&restricted)),
+            .session_allows_filesystem_tools("filesystem-session", Some(&restricted))
+            .expect("healthy registry"),
         "CD2 auxiliary snapshot would independently derive semantic delivery"
     );
     host.run_assembly
@@ -947,7 +951,8 @@ async fn session_content_delivery_is_frozen_across_auxiliary_agent_snapshots() {
         .expect("installed Sessions");
     assert!(
         host.run_assembly
-            .session_allows_filesystem_tools("semantic-session", None),
+            .session_allows_filesystem_tools("semantic-session", None)
+            .expect("healthy registry"),
         "CD3 later snapshot would independently derive filesystem delivery"
     );
     assert_eq!(
@@ -1740,6 +1745,7 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
     assert!(
         host.capabilities
             .thread_agent_projection("active-projection")
+            .expect("healthy registry")
             .is_none(),
         "P2 rejection precedes every projection mutation"
     );
@@ -1822,6 +1828,7 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
             .live_inboxes
             .live_inbox("direct-live")
             .await
+            .expect("healthy registry")
             .is_none(),
         "L1/E2"
     );
@@ -1837,6 +1844,7 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
             .live_inboxes
             .live_inbox("direct-live")
             .await
+            .expect("healthy registry")
             .is_some(),
         "L2/E1"
     );
@@ -1846,6 +1854,7 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
             .live_inboxes
             .live_inbox("direct-live")
             .await
+            .expect("healthy registry")
             .is_none(),
         "L3/E2+E3 a settled scope is not a fallback authority"
     );
@@ -1865,6 +1874,7 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
         .live_inboxes
         .live_inbox("direct-live")
         .await
+        .expect("healthy registry")
         .expect("L4/E1 pool-owned Session Event inbox");
     let _ = discovered.offer(Message::text(
         MessageId("event-live-message".into()),
@@ -1878,6 +1888,7 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
             .live_inboxes
             .live_inbox("direct-live")
             .await
+            .expect("healthy registry")
             .is_none(),
         "L5/E3"
     );
@@ -1908,12 +1919,22 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
         awaken_runtime_contract::execution::LiveInput::SafeBoundary,
     );
     assert!(
-        local.live_inboxes.live_inbox("local-live").await.is_some(),
+        local
+            .live_inboxes
+            .live_inbox("local-live")
+            .await
+            .expect("healthy registry")
+            .is_some(),
         "L6/E1"
     );
     drop(tracking);
     assert!(
-        local.live_inboxes.live_inbox("local-live").await.is_none(),
+        local
+            .live_inboxes
+            .live_inbox("local-live")
+            .await
+            .expect("healthy registry")
+            .is_none(),
         "L6/E3 settled"
     );
 
@@ -1941,6 +1962,7 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
             .live_inboxes
             .live_inbox("remote-live")
             .await
+            .expect("healthy registry")
             .is_none(),
         "L7/E3"
     );

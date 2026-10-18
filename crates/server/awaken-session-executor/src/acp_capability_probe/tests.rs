@@ -358,3 +358,20 @@ fn the_probe_scope_is_a_stable_function_of_owner_and_probe_inputs() {
         "the scope must be admissible as a label, an object name and a path leaf: {scope}"
     );
 }
+
+/// Rows S1 and S2 of `StrandedProbeEnvironments::lock`: a poisoned ledger
+/// reads like the empty ledger a restart leaves and decides no lifecycle.
+#[test]
+fn a_poisoned_stranded_probe_ledger_reads_as_empty() {
+    let ledger = StrandedProbeEnvironments::default();
+    ledger.record("scope-a".into());
+    assert!(ledger.contains("scope-a"), "S1 record");
+    ledger.settle("scope-a");
+    assert!(!ledger.contains("scope-a"), "S1 settle");
+    ledger.record("scope-a".into());
+    crate::host_error::poison_for_test(&ledger.scopes);
+    assert!(!ledger.contains("scope-a"), "S2 no strand hint");
+    ledger.record("scope-b".into());
+    ledger.settle("scope-a");
+    assert!(!ledger.contains("scope-b"), "S2 no effect");
+}

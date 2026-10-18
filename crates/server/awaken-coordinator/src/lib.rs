@@ -1578,8 +1578,8 @@ async fn mount_with_managed_over_and_models(
     let session_runs = Arc::new(awaken_session_application::SessionRunApplication::new(
         host_runs,
         session_application.clone(),
-        move |thread| workspace_host.capabilities().thread_workspace(thread),
-        move |thread| agent_host.capabilities().thread_agent_projection(thread),
+        move |thread| Ok(workspace_host.capabilities().thread_workspace(thread)?),
+        move |thread| Ok(agent_host.capabilities().thread_agent_projection(thread)?),
     ));
     let background_runs: Arc<
         dyn awaken_session_application_contract::SessionRunBackgroundApplication,

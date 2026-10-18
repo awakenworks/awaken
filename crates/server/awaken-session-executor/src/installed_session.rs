@@ -634,4 +634,7 @@ impl InstalledSessions {
 mod tests;
 
 #[cfg(test)]
+mod poisoned_reads_tests;
+
+#[cfg(test)]
 mod owner_release_tests;

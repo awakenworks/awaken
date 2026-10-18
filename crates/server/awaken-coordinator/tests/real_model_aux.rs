@@ -78,17 +78,19 @@ fn bind_memory(host: &ExecutorComponents, thread: &str, store: &str) {
             Ok(())
         }
     }
-    host.run_assembly().bind_resolved_memory(
-        thread,
-        "default",
-        &MemoryStoreConfigVersion {
-            memory_store_id: store.into(),
-            version: ConfigVersion::INITIAL,
-            retention_policy: Default::default(),
-        },
-        ResourceAccess::ReadWrite,
-        Arc::new(ActiveMemory),
-    );
+    host.run_assembly()
+        .bind_resolved_memory(
+            thread,
+            "default",
+            &MemoryStoreConfigVersion {
+                memory_store_id: store.into(),
+                version: ConfigVersion::INITIAL,
+                retention_policy: Default::default(),
+            },
+            ResourceAccess::ReadWrite,
+            Arc::new(ActiveMemory),
+        )
+        .expect("healthy registry");
 }
 
 #[tokio::test]

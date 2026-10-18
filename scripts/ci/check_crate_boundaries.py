@@ -49,6 +49,7 @@ import _execution_ownership_fitness
 import _managed_protocol_boundary
 import _migration_fitness
 import _ownership_fence_fitness
+import _poisoned_lock_fitness
 import _provider_env_fitness
 import _realization_error_fitness
 import _realization_permit_fitness
@@ -1754,6 +1755,7 @@ def check() -> int:
     _managed_protocol_boundary.selftest()
     _provider_env_fitness.selftest()
     _realization_error_fitness.selftest()
+    _poisoned_lock_fitness.selftest()
     _dispatch_boundary_fitness.selftest()
     _realization_permit_fitness.selftest()
     _ownership_fence_fitness.selftest()
@@ -1800,6 +1802,7 @@ def check() -> int:
         + _cancel_safety_fitness.check_all(REPO_ROOT, CRATES)
         + _provider_env_fitness.check_all(REPO_ROOT, CRATES)
         + _realization_error_fitness.check_all(REPO_ROOT)
+        + _poisoned_lock_fitness.check_all(REPO_ROOT)
         + _dispatch_boundary_fitness.check_all()
         + _realization_permit_fitness.check_all(REPO_ROOT)
         + _ownership_fence_fitness.check_all(REPO_ROOT)

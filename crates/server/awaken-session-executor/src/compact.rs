@@ -57,14 +57,28 @@ struct HostCompactBackend {
     cells: Mutex<BTreeMap<String, ArtifactCell>>,
 }
 
+/// Every compaction failure already means "no artifact": the caller keeps the
+/// uncompacted transcript. A poisoned artifact index is one more such
+/// failure, reported once per read instead of unwinding through the Run.
+///
+/// | Rule | index lock | `prefetch` | `summarize` | `latest_ready` |
+/// |---|---|---|---|---|
+/// | K1 | healthy  | schedules once per key | resolves the key's cell | best ready artifact |
+/// | K2 | poisoned | no effect, reported   | `None`, reported        | `None`, reported   |
+fn compaction_index_poisoned() {
+    tracing::error!(
+        code = crate::host_error::EXECUTOR_LOCK_POISONED_CODE,
+        "compaction artifact index lock poisoned; the Run keeps its uncompacted transcript"
+    );
+}
+
 impl HostCompactBackend {
-    fn cell(&self, key: &str) -> ArtifactCell {
-        self.cells
-            .lock()
-            .expect("compact cache lock poisoned")
-            .entry(key.to_string())
-            .or_default()
-            .clone()
+    fn cell(&self, key: &str) -> Option<ArtifactCell> {
+        let Ok(mut cells) = self.cells.lock() else {
+            compaction_index_poisoned();
+            return None;
+        };
+        Some(cells.entry(key.to_string()).or_default().clone())
     }
 
     async fn execute(
@@ -98,7 +112,9 @@ impl HostCompactBackend {
 #[async_trait]
 impl CompactBackend for HostCompactBackend {
     async fn prefetch(&self, request: CompactRequest) {
-        let cell = self.cell(&request.key);
+        let Some(cell) = self.cell(&request.key) else {
+            return;
+        };
         if cell.get().is_some() {
             return;
         }
@@ -113,9 +129,11 @@ impl CompactBackend for HostCompactBackend {
     }
 
     async fn latest_ready(&self, scope: &str, at_most_messages: usize) -> Option<CompactArtifact> {
-        self.cells
-            .lock()
-            .expect("compact cache lock poisoned")
+        let Ok(cells) = self.cells.lock() else {
+            compaction_index_poisoned();
+            return None;
+        };
+        cells
             .values()
             .filter_map(|cell| cell.get().cloned().flatten())
             .filter(|artifact| {
@@ -125,7 +143,7 @@ impl CompactBackend for HostCompactBackend {
     }
 
     async fn summarize(&self, request: CompactRequest) -> Option<CompactArtifact> {
-        let cell = self.cell(&request.key);
+        let cell = self.cell(&request.key)?;
         let agent_tool = self.agent_tool.clone();
         cell.get_or_init(|| Self::execute(agent_tool, request))
             .await
@@ -242,6 +260,46 @@ mod tests {
             assert_eq!(reply.text(), "summary of 5 messages");
         }
         assert_eq!(model.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_poisoned_artifact_index_yields_no_artifact_instead_of_unwinding() {
+        // Row K2 of the compaction backend table.
+        let clock = awaken_time::system_clock();
+        let runner = compact_runner(
+            Arc::new(SummaryModel(AtomicU64::new(0))),
+            default_compact_agent("stub", DEFAULT_COMPACT_INSTRUCTIONS)
+                .expect("literal model reference"),
+            Arc::new(HostCommit::Local(Arc::new(
+                crate::LocalCommitAdapter::projected(
+                    awaken_store_inmem::MemoryCommitCoordinator::new(clock.clone()),
+                ),
+            ))),
+            clock,
+            awaken_session_environment_contract::AuxiliarySandboxFactory::provider(
+                &awaken_sandbox_local::LocalAuxiliarySandboxes::in_process_temp_dir(),
+                "compact",
+            ),
+        );
+        let backend = HostCompactBackend {
+            agent_tool: runner,
+            background: Arc::new(BackgroundRuns::new()),
+            cells: Mutex::new(BTreeMap::new()),
+        };
+        crate::host_error::poison_for_test(&backend.cells);
+        let request = CompactRequest {
+            agent_id: awaken_ext_compact::COMPACT_AGENT_ID.to_string(),
+            scope: "thread-a".into(),
+            key: "poisoned".into(),
+            covered_messages: 1,
+            seed: vec![user(1)],
+        };
+        backend.prefetch(request.clone()).await;
+        assert!(backend.summarize(request).await.is_none(), "K2 summarize");
+        assert!(
+            backend.latest_ready("thread-a", 10).await.is_none(),
+            "K2 latest"
+        );
     }
 
     #[tokio::test]

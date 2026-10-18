@@ -19,8 +19,12 @@ use crate::mcp_material::McpGenerationProjection;
 /// generations, their root authority, and durable Run cancellation.
 #[async_trait::async_trait]
 pub trait McpInputHost: McpGenerationAuthority {
-    /// The Session's visible exact generations.
-    fn active_mcp_projections(&self, session: &str) -> Vec<McpGenerationProjection>;
+    /// The Session's visible exact generations; an unreadable installed-Session
+    /// registry is an error, never an empty set.
+    fn active_mcp_projections(
+        &self,
+        session: &str,
+    ) -> Result<Vec<McpGenerationProjection>, awaken_session_types::RunError>;
 
     /// Cancel one exact durable Run; `false` when cancellation was not accepted.
     async fn cancel_durable_run(&self, session: &str, run_id: &str) -> bool;
@@ -39,6 +43,50 @@ struct SessionMcpInput {
     generation: McpGenerationRef,
     server: String,
     policy: McpNotificationConfig,
+}
+
+/// Whether an MCP application input bound to `bound` is admitted: one visible
+/// generation renews the bound fence and holds the current root. A notification
+/// has no caller to answer, so an unreadable registry is refused and reported.
+///
+/// | Rule | visible generations      | renews bound fence | root authority | effect   |
+/// |---|---|---|---|---|
+/// | I1 | readable, one matches    | yes                | `Some(true)`   | admitted |
+/// | I2 | readable, one matches    | yes                | `Some(false)` / `None` | refused |
+/// | I3 | readable, none renews    | no                 | any            | refused  |
+/// | I4 | unreadable registry      | -                  | -              | error (refused, reported) |
+/// | I5 | readable, matches        | yes                | unreadable     | error (refused, reported) |
+fn admitted_by_root(
+    host: &dyn McpInputHost,
+    bound: &McpGenerationRef,
+) -> Result<bool, awaken_session_types::RunError> {
+    let projections = host.active_mcp_projections(bound.session_id().as_str())?;
+    input_admitted(
+        bound,
+        projections
+            .iter()
+            .map(|projection| &projection.request.generation),
+        |current| host.mcp_generation_root_authority(current),
+    )
+}
+
+/// Rows I1-I3 and I5 of [`admitted_by_root`] over the visible generations.
+fn input_admitted<'a>(
+    bound: &McpGenerationRef,
+    visible: impl IntoIterator<Item = &'a McpGenerationRef>,
+    root: impl Fn(&McpGenerationRef) -> Result<Option<bool>, awaken_session_types::RunError>,
+) -> Result<bool, awaken_session_types::RunError> {
+    for current in visible {
+        // The canonical realization owner may extend the same lease without
+        // reconnecting this stream: only a renewal of the bound fence (same
+        // Session, generation, owner and epoch; expiry never shortened) keeps it.
+        if awaken_session_realization_contract::realization_generation_authorizes(current, bound)
+            && root(current)? == Some(true)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn operation_id(session: &str, server: &str, method: &str, event: &str) -> String {
@@ -63,20 +111,17 @@ impl McpNotificationHandler for SessionMcpInput {
         // The recipient is frozen by the exact connection owner, never chosen
         // by the notification payload. Existing root authority and transport
         // drain fences both apply to this incoming effect.
-        let admitted = host
-            .active_mcp_projections(self.generation.session_id().as_str())
-            .iter()
-            .any(|projection| {
-                let current = &projection.request.generation;
-                // The canonical realization owner may extend the same lease
-                // without reconnecting this stream: only a renewal of the bound
-                // fence (same Session, generation, owner and epoch; expiry never
-                // shortened) keeps it.
-                awaken_session_realization_contract::realization_generation_authorizes(
-                    current,
-                    &self.generation,
-                ) && host.mcp_generation_root_authority(current) == Some(true)
-            });
+        let admitted = match admitted_by_root(host.as_ref(), &self.generation) {
+            Ok(admitted) => admitted,
+            Err(error) => {
+                tracing::error!(
+                    code = %error.code,
+                    error = %error.message,
+                    "MCP application input refused: the Session root authority is unreadable"
+                );
+                false
+            }
+        };
         if !admitted {
             return;
         }
@@ -315,6 +360,104 @@ mod tests {
                 "{rule}"
             );
         }
+    }
+
+    fn phone_fence(session: &str, expiry: u64) -> McpGenerationRef {
+        use {
+            awaken_agent_contract::McpTarget,
+            awaken_session_configuration_contract::mcp::{McpAttachmentId, McpGeneration},
+        };
+        McpGenerationRef::from_persisted(
+            session.into(),
+            McpGeneration::of_bare_target(
+                McpAttachmentId("phone".into()),
+                1,
+                &McpTarget::parse_http("https://phone.test/mcp").unwrap(),
+            ),
+            "worker-1".into(),
+            1,
+            expiry,
+        )
+        .expect("nonzero epoch")
+    }
+
+    #[test]
+    fn input_admission_requires_a_renewing_generation_with_a_readable_live_root() {
+        // Rows I1-I3 and I5 of `admitted_by_root`; I4 is the unreadable
+        // registry, covered by the next test.
+        let bound = phone_fence("s1", 100);
+        let renewed = phone_fence("s1", 200);
+        let foreign = phone_fence("s2", 200);
+        let poisoned = || {
+            Err(awaken_session_types::RunError::unavailable_classified(
+                "session_realization_lock_poisoned",
+                "installed Sessions lock poisoned",
+            ))
+        };
+        assert!(
+            input_admitted(&bound, [&renewed], |_| Ok(Some(true))).unwrap(),
+            "I1"
+        );
+        assert!(
+            !input_admitted(&bound, [&renewed], |_| Ok(Some(false))).unwrap(),
+            "I2 refused"
+        );
+        assert!(
+            !input_admitted(&bound, [&renewed], |_| Ok(None)).unwrap(),
+            "I2 absent"
+        );
+        assert!(
+            !input_admitted(&bound, [&foreign], |_| Ok(Some(true))).unwrap(),
+            "I3"
+        );
+        assert!(
+            !input_admitted(&bound, [], |_| Ok(Some(true))).unwrap(),
+            "I3 none visible"
+        );
+        let error = input_admitted(&bound, [&renewed], |_| poisoned()).unwrap_err();
+        assert_eq!(error.code, "session_realization_lock_poisoned", "I5");
+        // A foreign generation is never asked for its root, so an unreadable
+        // root there cannot turn into an admission or an error.
+        assert!(
+            !input_admitted(&bound, [&foreign], |_| poisoned()).unwrap(),
+            "I3 before I5"
+        );
+    }
+
+    struct UnreadableRegistry;
+
+    impl McpGenerationAuthority for UnreadableRegistry {
+        fn mcp_generation_root_authority(
+            &self,
+            _generation: &McpGenerationRef,
+        ) -> Result<Option<bool>, awaken_session_types::RunError> {
+            Ok(Some(true))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl McpInputHost for UnreadableRegistry {
+        fn active_mcp_projections(
+            &self,
+            _session: &str,
+        ) -> Result<Vec<McpGenerationProjection>, awaken_session_types::RunError> {
+            Err(awaken_session_types::RunError::unavailable_classified(
+                "session_realization_lock_poisoned",
+                "installed Sessions lock poisoned",
+            ))
+        }
+
+        async fn cancel_durable_run(&self, _session: &str, _run_id: &str) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn an_unreadable_registry_refuses_input_as_an_error_not_an_empty_recipient_set() {
+        // Row I4: the root authority would admit, but the visible generations
+        // cannot be read, so the input is refused with the typed fault.
+        let error = admitted_by_root(&UnreadableRegistry, &phone_fence("s1", 100)).unwrap_err();
+        assert_eq!(error.code, "session_realization_lock_poisoned", "I4");
     }
 
     #[test]

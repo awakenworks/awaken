@@ -100,7 +100,7 @@ impl crate::RunAssembly {
                     .capabilities
                     .agent
                     .inference_routing
-                    .model_ref(thread, frozen_model_ref);
+                    .model_ref(thread, frozen_model_ref)?;
                 let frozen = installed
                     .as_ref()
                     .map(|root| {
