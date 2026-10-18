@@ -79,9 +79,9 @@ pub use awaken_protocol_managed::{
     default_models, files_router, memory_stores_router, models_router, skills_router,
 };
 pub use awaken_dispatch_http::durable_ops_router;
-pub use awaken_sandbox_local::content_fingerprint;
 pub use awaken_session_executor::{
-    ExecutorComponents, HostDependencies, HostResume, ThreadEvent, ThreadEventHub, advertised_tools,
+    ExecutorComponents, HostResume, SessionExecutorBuilder, ThreadEvent, ThreadEventHub,
+    advertised_tools,
 };
 pub use awaken_session_mcp::ExtMcpProbe;
 
@@ -425,7 +425,7 @@ pub async fn build_router_and_host(
 pub async fn build_unmounted_dependencies(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
-) -> HostDependencies {
+) -> SessionExecutorBuilder {
     build_unmounted_dependencies_with_deployment(llm, model_ref, scenario_deployment()).await
 }
 
@@ -436,7 +436,7 @@ pub async fn build_unmounted_dependencies_with_deployment(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
     deployment: awaken_session_executor::DeploymentConfig,
-) -> HostDependencies {
+) -> SessionExecutorBuilder {
     resource_host_with_deployment(llm, model_ref, deployment)
         .await
         .into_dependencies()
@@ -473,7 +473,7 @@ pub async fn build_unmounted_dependencies_with_agent_publications(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
     publications: Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
-) -> HostDependencies {
+) -> SessionExecutorBuilder {
     build_unmounted_platform_with_agent_publications(llm, model_ref, publications)
         .await
         .0
@@ -486,7 +486,7 @@ pub async fn build_unmounted_platform_with_agent_publications(
     model_ref: impl Into<String>,
     publications: Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
 ) -> (
-    HostDependencies,
+    SessionExecutorBuilder,
     awaken_resource_application::ResourcesApplication,
 ) {
     resource_host(llm, model_ref)

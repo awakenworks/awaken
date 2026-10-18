@@ -31,7 +31,6 @@ awaken-credential-materializer.workspace = true
 awaken-ext-skills.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-dispatch = { workspace = true, features = ["durable"] }
-awaken-sandbox-local.workspace = true
 awaken-local-process.workspace = true
 awaken-fs-durability.workspace = true
 awaken-worker-transport-security.workspace = true

@@ -20,7 +20,7 @@ where
 async fn attach_claim_credential_deliveries(
     service: &WorkerDispatchService,
     claimed: Option<awaken_dispatch::Claimed>,
-) -> Result<Option<awaken_dispatch::Claimed>, HostError> {
+) -> Result<Option<awaken_dispatch::Claimed>, ApplicationError> {
     let Some(mut claimed) = claimed else {
         return Ok(None);
     };
@@ -37,7 +37,7 @@ async fn attach_claim_credential_deliveries(
     let mut deliveries = Vec::new();
     for candidate in candidates {
         let fingerprint = awaken_credential_contract::candidate_fingerprint(candidate)
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| ApplicationError::internal(error.to_string()))?;
         let Some(binding) = claimed
             .credential_bindings
             .iter()
@@ -60,31 +60,31 @@ async fn attach_claim_credential_deliveries(
                         binding: material_binding,
                         expected_provider:
                             awaken_credential_contract::candidate_provider_expectation(candidate)
-                                .map_err(HostError::internal)?,
+                                .map_err(ApplicationError::internal)?,
                         claim_epoch: claimed.lease.epoch(),
                     },
                 )
                 .await
-                .map_err(HostError::unavailable)?;
+                .map_err(ApplicationError::unavailable)?;
             awaken_credential_contract::verify_attempt_credential_delivery(
                 binding,
                 published_access,
                 &delivery,
             )
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| ApplicationError::internal(error.to_string()))?;
             deliveries.push(delivery);
         } else if let Some(envelope) = &published_access.envelope {
             envelope
                 .validate_for_holder(&binding.selected_plaintext_holder, service.clock.now_ms())
                 .map_err(|_| {
-                    HostError::unavailable(
+                    ApplicationError::unavailable(
                         "claim credential delivery expired and no delivery source is installed",
                     )
                 })?;
         }
     }
     if source.is_some() && deliveries.len() != claimed.credential_bindings.len() {
-        return Err(HostError::internal(
+        return Err(ApplicationError::internal(
             "claim credential delivery did not cover every frozen binding",
         ));
     }
@@ -96,7 +96,7 @@ async fn finalize_claim(
     service: &WorkerDispatchService,
     authority: &ClaimAuthority,
     claimed: Option<awaken_dispatch::Claimed>,
-) -> Result<Option<awaken_dispatch::Claimed>, HostError> {
+) -> Result<Option<awaken_dispatch::Claimed>, ApplicationError> {
     let claim = claimed
         .as_ref()
         .map(|claimed| awaken_dispatch::RunClaim::from(&claimed.lease));
@@ -108,7 +108,7 @@ async fn finalize_claim(
                     .dispatch
                     .relinquish_claim(&claim)
                     .await
-                    .map_err(|release| HostError::unavailable(release.to_string()))?;
+                    .map_err(|release| ApplicationError::unavailable(release.to_string()))?;
             }
             Err(error)
         }
@@ -125,7 +125,7 @@ pub(super) async fn enqueue(
             .dispatch
             .enqueue_with(request.request, request.options.unwrap_or_default())
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| ApplicationError::internal(error.to_string()))?;
         Ok(json!({ "enqueued": true }))
     }
     .await;
@@ -155,7 +155,7 @@ pub(super) async fn claim_new_run(
                 )
                 .await
         }
-        .map_err(|error| HostError::internal(error.to_string()))?;
+        .map_err(|error| ApplicationError::internal(error.to_string()))?;
         let claimed = finalize_claim(&service, &authority, claimed).await?;
         Ok(json!({ "claimed": claimed }))
     }
@@ -186,7 +186,7 @@ pub(super) async fn deliver_and_claim(
                 )
                 .await
         }
-        .map_err(|error| HostError::internal(error.to_string()))?;
+        .map_err(|error| ApplicationError::internal(error.to_string()))?;
         let claimed = finalize_claim(&service, &authority, claimed).await?;
         Ok(json!({ "claimed": claimed }))
     }
@@ -206,7 +206,7 @@ pub(super) async fn claim(
                 let workers = directory(&service)?
                     .list()
                     .await
-                    .map_err(|error| HostError::internal(error.to_string()))?
+                    .map_err(|error| ApplicationError::internal(error.to_string()))?
                     .into_iter()
                     .map(|record| record.snapshot)
                     .collect();
@@ -230,7 +230,7 @@ pub(super) async fn claim(
                 )
                 .await
         }
-        .map_err(|error| HostError::internal(error.to_string()))?;
+        .map_err(|error| ApplicationError::internal(error.to_string()))?;
         let claimed = finalize_claim(&service, &authority, claimed).await?;
         Ok(json!({ "claimed": claimed }))
     }
@@ -249,7 +249,7 @@ pub(super) async fn claim_retry_exhausted(
             .dispatch
             .claim_retry_exhausted(&authority.owner, authority.lease_ms, service.max_attempts)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| ApplicationError::internal(error.to_string()))?;
         let claimed = finalize_claim(&service, &authority, claimed).await?;
         Ok(json!({ "claimed": claimed }))
     }
@@ -281,7 +281,7 @@ pub(super) async fn claim_run(
                 )
                 .await
         }
-        .map_err(|error| HostError::internal(error.to_string()))?;
+        .map_err(|error| ApplicationError::internal(error.to_string()))?;
         let claimed = finalize_claim(&service, &authority, claimed).await?;
         Ok(json!({ "claimed": claimed }))
     }
@@ -308,7 +308,7 @@ pub(super) async fn renew(
                 authority.lease_ms,
             )
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| ApplicationError::internal(error.to_string()))?;
         Ok(json!({ "outcome": outcome }))
     }
     .await;
@@ -338,15 +338,15 @@ async fn admit_attempt(
     worker: &VerifiedWorkerContext,
     request: &AttemptExecutionReq,
     handoff: bool,
-) -> Result<Value, HostError> {
+) -> Result<Value, ApplicationError> {
     if request.return_cause.is_some() {
-        return Err(HostError::bad_request(
+        return Err(ApplicationError::bad_request(
             "only physical finish accepts a return cause",
         ));
     }
     let authority = claim_authority(service, worker, request.identity.as_ref(), false).await?;
     if authority.owner != request.claim.owner {
-        return Err(HostError::bad_request(
+        return Err(ApplicationError::bad_request(
             "authenticated Worker does not own the physical attempt claim",
         ));
     }
@@ -357,12 +357,12 @@ async fn admit_attempt(
             .dispatch
             .claim_is_current(&request.claim)
             .await
-            .map_err(|error| HostError::unavailable(error.to_string()))?
+            .map_err(|error| ApplicationError::unavailable(error.to_string()))?
         {
             return Ok(json!({ "admission": awaken_dispatch::AttemptAdmission::Fenced }));
         }
         let snapshot = authority.snapshot.as_ref().ok_or_else(|| {
-            HostError::bad_request("execution binding requires a registered Worker")
+            ApplicationError::bad_request("execution binding requires a registered Worker")
         })?;
         // No database transaction/Thread lock is held across provider I/O. The
         // request budget limits waiting, never manufactures an unbound fallback.
@@ -371,15 +371,15 @@ async fn admit_attempt(
             source.binding_for(&snapshot.identity),
         )
         .await
-        .map_err(|_| HostError::unavailable("execution binding observation timed out"))??;
+        .map_err(|_| ApplicationError::unavailable("execution binding observation timed out"))??;
         if binding.worker() != &snapshot.identity {
-            return Err(HostError::internal(
+            return Err(ApplicationError::internal(
                 "execution binding source returned another Worker incarnation",
             ));
         }
         binding
             .validate_for(&request.claim)
-            .map_err(|e| HostError::internal(e.to_string()))?;
+            .map_err(|e| ApplicationError::internal(e.to_string()))?;
         // Registry replacement/expiry while the provider was awaited must not
         // reuse the first authentication snapshot. Dispatch separately rechecks
         // the exact claim and freezes the binding within its own transaction.
@@ -390,14 +390,18 @@ async fn admit_attempt(
     };
     let incarnation_guard = if service.execution_bindings.is_some() {
         let identity = request.identity.as_ref().ok_or_else(|| {
-            HostError::bad_request("registered Worker identity is required for physical admission")
+            ApplicationError::bad_request(
+                "registered Worker identity is required for physical admission",
+            )
         })?;
         let guard = super::directory(service)?
             .lock_incarnation(identity)
             .await
-            .map_err(|e| HostError::unavailable(e.to_string()))?
+            .map_err(|e| ApplicationError::unavailable(e.to_string()))?
             .ok_or_else(|| {
-                HostError::bad_request("Worker incarnation changed before physical admission")
+                ApplicationError::bad_request(
+                    "Worker incarnation changed before physical admission",
+                )
             })?;
         let snapshot = guard.snapshot();
         if snapshot.expires_at_ms <= service.clock.now_ms()
@@ -406,8 +410,11 @@ async fn admit_attempt(
                 awaken_dispatch::WorkerState::Quiesced | awaken_dispatch::WorkerState::Dead
             )
         {
-            guard.release().await.map_err(HostError::unavailable)?;
-            return Err(HostError::bad_request(
+            guard
+                .release()
+                .await
+                .map_err(ApplicationError::unavailable)?;
+            return Err(ApplicationError::bad_request(
                 "Worker incarnation closed before physical admission",
             ));
         }
@@ -430,13 +437,13 @@ async fn admit_attempt(
         } else {
             dispatch.begin_attempt(&claim, binding.as_ref()).await
         };
-        Ok::<_, HostError>(admission)
+        Ok::<_, ApplicationError>(admission)
     })
     .await
-    .map_err(|_| HostError::unavailable("physical admission completion unavailable"))??;
+    .map_err(|_| ApplicationError::unavailable("physical admission completion unavailable"))??;
     let admission = admission.map_err(|error| match error {
-        awaken_dispatch::DispatchError::Conflict(message) => HostError::conflict(message),
-        error => HostError::internal(error.to_string()),
+        awaken_dispatch::DispatchError::Conflict(message) => ApplicationError::conflict(message),
+        error => ApplicationError::internal(error.to_string()),
     })?;
     if admission == awaken_dispatch::AttemptAdmission::Blocked {
         let observation =
@@ -464,7 +471,7 @@ pub(super) async fn finish_attempt(
             .dispatch
             .finish_attempt(&request.claim, request.return_cause)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?
+            .map_err(|error| ApplicationError::internal(error.to_string()))?
             .applied();
         Ok(json!({ "finished": finished }))
     }
@@ -481,7 +488,7 @@ pub(super) async fn relinquish(
         let authority =
             claim_authority(&service, &worker, request.identity.as_ref(), false).await?;
         if authority.owner != request.claim.owner {
-            return Err(HostError::bad_request(
+            return Err(ApplicationError::bad_request(
                 "authenticated worker does not own the relinquished claim",
             ));
         }
@@ -499,13 +506,13 @@ pub(super) async fn relinquish(
                     .await
             }
             (None, true) => {
-                return Err(HostError::bad_request(
+                return Err(ApplicationError::bad_request(
                     "a failed attempt is released behind a retry deadline",
                 ));
             }
             (None, false) => service.dispatch.relinquish_claim(&request.claim).await,
         }
-        .map_err(|error| HostError::internal(error.to_string()))?
+        .map_err(|error| ApplicationError::internal(error.to_string()))?
         .applied();
         Ok(json!({ "relinquished": relinquished }))
     }
@@ -522,7 +529,7 @@ pub(super) async fn resolve_session_run_reservation(
         let authority =
             claim_authority(&service, &worker, request.identity.as_ref(), false).await?;
         if authority.owner != request.claim.owner {
-            return Err(HostError::bad_request(
+            return Err(ApplicationError::bad_request(
                 "authenticated Worker does not own the Session reservation claim",
             ));
         }
@@ -530,7 +537,7 @@ pub(super) async fn resolve_session_run_reservation(
             .dispatch
             .resolve_claimed_session_run_reservation(&request.claim, request.resolution)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?
+            .map_err(|error| ApplicationError::internal(error.to_string()))?
             .applied();
         Ok(json!({ "applied": applied }))
     }
@@ -541,16 +548,16 @@ pub(super) async fn resolve_session_run_reservation(
 fn exact_attempt_return_identity<'a>(
     worker: &VerifiedWorkerContext,
     request: &'a AttemptExecutionReq,
-) -> Result<&'a WorkerIdentity, HostError> {
+) -> Result<&'a WorkerIdentity, ApplicationError> {
     let identity = request.identity.as_ref().ok_or_else(|| {
-        HostError::bad_request("registered Worker identity is required for quiescence")
+        ApplicationError::bad_request("registered Worker identity is required for quiescence")
     })?;
     // Unlike begin/commit, a quiescence ACK may arrive after the registry or
     // Run lease advanced. Authenticate the exact signed incarnation, then let
     // the Dispatch aggregate clear only its matching predecessor slot.
-    verify_worker_identity(worker, identity).map_err(HostError::bad_request)?;
+    verify_worker_identity(worker, identity).map_err(ApplicationError::bad_request)?;
     if identity.lease_owner() != request.claim.owner {
-        return Err(HostError::bad_request(
+        return Err(ApplicationError::bad_request(
             "authenticated Worker does not own the quiesced physical attempt",
         ));
     }
@@ -562,18 +569,17 @@ fn exact_attempt_return_identity<'a>(
 async fn require_attempt_observation_protocol(
     service: &WorkerDispatchService,
     identity: &WorkerIdentity,
-) -> Result<(), HostError> {
-    let directory = service
-        .directory
-        .as_ref()
-        .ok_or_else(|| HostError::bad_request("entry closure requires a registered Worker"))?;
+) -> Result<(), ApplicationError> {
+    let directory = service.directory.as_ref().ok_or_else(|| {
+        ApplicationError::bad_request("entry closure requires a registered Worker")
+    })?;
     let record = directory
         .incarnation(identity)
         .await
-        .map_err(|error| HostError::unavailable(error.to_string()))?
-        .ok_or_else(|| HostError::bad_request("Worker incarnation is unknown"))?;
+        .map_err(|error| ApplicationError::unavailable(error.to_string()))?
+        .ok_or_else(|| ApplicationError::bad_request("Worker incarnation is unknown"))?;
     if !record.snapshot.manifest.supports_current_runtime_protocol() {
-        return Err(HostError::bad_request(
+        return Err(ApplicationError::bad_request(
             "Worker cannot attest the current attempt-closure protocol",
         ));
     }
@@ -587,7 +593,7 @@ pub(super) async fn close_attempt(
 ) -> (StatusCode, Json<Value>) {
     let result = async {
         if request.return_cause.is_some() {
-            return Err(HostError::bad_request(
+            return Err(ApplicationError::bad_request(
                 "only physical finish accepts a return cause",
             ));
         }
@@ -597,7 +603,7 @@ pub(super) async fn close_attempt(
             .dispatch
             .close_attempt(&request.claim)
             .await
-            .map_err(|error| HostError::unavailable(error.to_string()))?
+            .map_err(|error| ApplicationError::unavailable(error.to_string()))?
             .applied();
         Ok(json!({"closed": closed}))
     }
@@ -614,7 +620,7 @@ pub(super) async fn record_credential_realization(
         let authority =
             claim_authority(&service, &worker, request.identity.as_ref(), false).await?;
         if authority.owner != request.claim.owner {
-            return Err(HostError::bad_request(
+            return Err(ApplicationError::bad_request(
                 "authenticated worker does not own the credential realization claim",
             ));
         }
@@ -622,7 +628,7 @@ pub(super) async fn record_credential_realization(
             .dispatch
             .record_credential_realization(&request.claim, request.receipt)
             .await
-            .map_err(|error| HostError::bad_request(error.to_string()))?;
+            .map_err(|error| ApplicationError::bad_request(error.to_string()))?;
         Ok(json!({ "applied": outcome.applied() }))
     }
     .await;
@@ -638,7 +644,7 @@ pub(super) async fn refresh_credential_delivery(
         let authority =
             claim_authority(&service, &worker, request.identity.as_ref(), false).await?;
         if authority.owner != request.claim.owner {
-            return Err(HostError::bad_request(
+            return Err(ApplicationError::bad_request(
                 "authenticated worker does not own the credential delivery claim",
             ));
         }
@@ -648,7 +654,7 @@ pub(super) async fn refresh_credential_delivery(
             .dispatch
             .current_credential_binding(&request.claim, &fingerprint)
             .await
-            .map_err(|error| HostError::unavailable(error.to_string()))?
+            .map_err(|error| ApplicationError::unavailable(error.to_string()))?
         else {
             return Ok(json!({ "delivery": null }));
         };
@@ -656,23 +662,23 @@ pub(super) async fn refresh_credential_delivery(
             || binding.selected_plaintext_holder != delivery_request.selected_plaintext_holder
             || binding.claim_epoch != delivery_request.claim_epoch
         {
-            return Err(HostError::bad_request(
+            return Err(ApplicationError::bad_request(
                 "credential delivery request differs from the persisted claim binding",
             ));
         }
         let source = service.credential_deliveries.as_deref().ok_or_else(|| {
-            HostError::unavailable("claim credential delivery source is not installed")
+            ApplicationError::unavailable("claim credential delivery source is not installed")
         })?;
         let delivery = source
             .deliver(delivery_request.clone())
             .await
-            .map_err(HostError::unavailable)?;
+            .map_err(ApplicationError::unavailable)?;
         awaken_credential_contract::verify_attempt_credential_delivery(
             &binding,
             &delivery_request.published_access,
             &delivery,
         )
-        .map_err(|error| HostError::internal(error.to_string()))?;
+        .map_err(|error| ApplicationError::internal(error.to_string()))?;
         // The signer is external to the Dispatch transaction. Re-read the exact
         // binding so a lease loss, cancellation or re-claim during issuance can
         // never return a usable carrier to the stale Worker.
@@ -680,7 +686,7 @@ pub(super) async fn refresh_credential_delivery(
             .dispatch
             .current_credential_binding(&request.claim, &fingerprint)
             .await
-            .map_err(|error| HostError::unavailable(error.to_string()))?
+            .map_err(|error| ApplicationError::unavailable(error.to_string()))?
             .as_ref()
             != Some(&binding)
         {

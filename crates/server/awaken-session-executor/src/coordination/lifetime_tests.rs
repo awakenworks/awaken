@@ -6,9 +6,11 @@ use awaken_agent_contract::agent::{run::Id as RunId, thread::Id as ThreadId};
 use std::time::Duration;
 
 async fn remote_host(control: Arc<RemoteControl>) -> Arc<crate::ExecutorComponents> {
-    let mut deps =
-        crate::HostDependencies::ephemeral(Arc::new(crate::NoModelConfiguredExecutor), "stub")
-            .await;
+    let mut deps = crate::SessionExecutorBuilder::ephemeral(
+        Arc::new(crate::NoModelConfiguredExecutor),
+        "stub",
+    )
+    .await;
     deps.worker.session_coordination_control = Some(control);
     deps.build()
         .expect("normal Host composition with the existing coordination port")

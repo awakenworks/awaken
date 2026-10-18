@@ -1895,7 +1895,7 @@ async fn recovery_mode_controls_the_production_adoption_seam() {
     };
     assert_eq!(
         error.kind,
-        crate::HostErrorKind::Internal,
+        crate::SessionExecutionErrorKind::Internal,
         "A2 context requires the original binding to be adopted"
     );
     assert_eq!(error.code, "internal", "A2 existing context precondition");

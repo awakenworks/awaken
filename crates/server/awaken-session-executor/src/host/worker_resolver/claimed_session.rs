@@ -300,7 +300,7 @@ mod tests {
         // can lend authority to a newly created Session slot. The admissions below
         // traverse SessionRealizations, the same view used by migrated dispatch.
         for remove_slot in [false, true] {
-            let host = (crate::HostDependencies::ephemeral(
+            let host = (crate::SessionExecutorBuilder::ephemeral(
                 Arc::new(crate::no_model::NoModelConfiguredExecutor),
                 "stub",
             )

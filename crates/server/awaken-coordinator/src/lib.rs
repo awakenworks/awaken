@@ -101,8 +101,7 @@ pub use awaken_ext_skills::{SkillContext, SkillSpec, parse_skill_md};
 pub use awaken_protocol_managed::{ResourcesRouterInput, models_router, resources_router};
 
 pub use awaken_dispatch_http::durable_ops_router;
-pub use awaken_sandbox_local::content_fingerprint;
-use awaken_session_executor::HostDependencies;
+use awaken_session_executor::SessionExecutorBuilder;
 pub use awaken_session_executor::{
     ExecutorComponents, HostResume, NoModelConfiguredExecutor, ThreadEvent, ThreadEventHub,
     UNCONFIGURED_MODEL_REF, advertised_tools,
@@ -163,11 +162,11 @@ fn platform_memory_projection(
 /// composition that mounts this Coordinator selects it before building the Host.
 #[must_use]
 pub fn with_platform_memory_data_plane(
-    dependencies: HostDependencies,
+    dependencies: SessionExecutorBuilder,
     tier: awaken_session_executor::SandboxTier,
     resources: &awaken_resource_application::ResourceAuthorities,
     invalidator: Arc<awaken_sandbox_memoryd::LocalInvalidator>,
-) -> HostDependencies {
+) -> SessionExecutorBuilder {
     if dependencies.has_memory_mounter() {
         return dependencies;
     }
@@ -381,7 +380,7 @@ pub struct ScenarioManagedState {
 /// unaware of principals, API keys, roles, or authorization policy.
 #[cfg(feature = "test-support")]
 pub async fn local_managed_state(
-    dependencies: HostDependencies,
+    dependencies: SessionExecutorBuilder,
     catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
 ) -> ScenarioManagedState {
     local_managed_state_over(dependencies, catalog, None, None, None, None).await
@@ -392,7 +391,7 @@ pub async fn local_managed_state(
 /// reference differs from the built-in Agent's deterministic default.
 #[cfg(feature = "test-support")]
 pub async fn local_managed_state_with_model_publication_resolver(
-    dependencies: HostDependencies,
+    dependencies: SessionExecutorBuilder,
     catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     resolver: Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>,
 ) -> ScenarioManagedState {
@@ -404,7 +403,7 @@ pub async fn local_managed_state_with_model_publication_resolver(
 /// resolver selects a candidate, while the Agent snapshot proves its backend.
 #[cfg(feature = "test-support")]
 pub async fn local_managed_state_with_agent_source_and_model_publication_resolver(
-    dependencies: HostDependencies,
+    dependencies: SessionExecutorBuilder,
     catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
     resolver: Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>,
@@ -425,7 +424,7 @@ pub async fn local_managed_state_with_agent_source_and_model_publication_resolve
 /// a second authoring plane.
 #[cfg(feature = "test-support")]
 pub async fn local_managed_state_with_agent_source(
-    dependencies: HostDependencies,
+    dependencies: SessionExecutorBuilder,
     catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
 ) -> ScenarioManagedState {
@@ -437,7 +436,7 @@ pub async fn local_managed_state_with_agent_source(
 /// installed before sharing, so callers never unwrap or mutate an `Arc`.
 #[cfg(feature = "test-support")]
 pub async fn local_managed_state_with_agent_source_and_list_prices(
-    dependencies: HostDependencies,
+    dependencies: SessionExecutorBuilder,
     catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
     list_prices: Arc<dyn awaken_session_budget_contract::ManagedListPriceProvider>,
@@ -459,7 +458,7 @@ pub async fn local_managed_state_with_agent_source_and_list_prices(
 /// registry that authored them.
 #[cfg(feature = "test-support")]
 pub async fn local_managed_state_with_environments(
-    dependencies: HostDependencies,
+    dependencies: SessionExecutorBuilder,
     catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     environments: Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
 ) -> ScenarioManagedState {
@@ -470,7 +469,7 @@ pub async fn local_managed_state_with_environments(
 /// Agent projection used by production before the Managed aggregate starts its supervisors.
 #[cfg(feature = "test-support")]
 pub async fn local_managed_state_with_environments_and_agent_source(
-    dependencies: HostDependencies,
+    dependencies: SessionExecutorBuilder,
     catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     environments: Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
@@ -509,7 +508,7 @@ fn volatile_environment_execution(
 
 #[cfg(feature = "test-support")]
 async fn local_managed_state_over(
-    dependencies: HostDependencies,
+    dependencies: SessionExecutorBuilder,
     catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     environments: Option<
         Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,

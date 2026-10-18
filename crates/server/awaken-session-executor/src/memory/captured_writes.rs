@@ -16,9 +16,11 @@ pub(super) struct CapturedMemoryWrites {
 impl CapturedMemoryWrites {
     /// The writes captured from the auxiliary Run, unless the capture lock is
     /// poisoned (the map may be half-written).
-    pub(super) fn take(&self) -> Result<BTreeMap<String, String>, crate::host_error::ExecutorLock> {
+    pub(super) fn take(
+        &self,
+    ) -> Result<BTreeMap<String, String>, crate::session_execution_error::ExecutorLock> {
         Ok(std::mem::take(&mut *self.writes.lock().map_err(|_| {
-            crate::host_error::ExecutorLock::CapturedMemoryWrites
+            crate::session_execution_error::ExecutorLock::CapturedMemoryWrites
         })?))
     }
 }
@@ -70,10 +72,10 @@ mod tests {
         // Row X3: `take` refuses; the extraction then decodes the committed
         // auxiliary transcript (rows X1/X2 live with the extraction tests).
         let capture = CapturedMemoryWrites::default();
-        crate::host_error::poison_for_test(&capture.writes);
+        crate::session_execution_error::poison_for_test(&capture.writes);
         assert_eq!(
             capture.take().unwrap_err(),
-            crate::host_error::ExecutorLock::CapturedMemoryWrites
+            crate::session_execution_error::ExecutorLock::CapturedMemoryWrites
         );
     }
 }

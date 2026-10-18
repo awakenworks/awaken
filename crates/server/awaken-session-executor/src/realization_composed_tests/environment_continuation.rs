@@ -28,7 +28,7 @@ mod tests {
             ("F4", false),
             ("F5", false),
         ] {
-            let host = (crate::HostDependencies::ephemeral(
+            let host = (crate::SessionExecutorBuilder::ephemeral(
                 Arc::new(crate::no_model::NoModelConfiguredExecutor),
                 "stub",
             )
@@ -95,7 +95,7 @@ mod tests {
         // clock expires preparation even while the renewed local proof is live.
         let thread = "continuation-preparation-clock";
         let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
-        let mut dependencies = crate::HostDependencies::ephemeral(
+        let mut dependencies = crate::SessionExecutorBuilder::ephemeral(
             Arc::new(crate::no_model::NoModelConfiguredExecutor),
             "stub",
         )

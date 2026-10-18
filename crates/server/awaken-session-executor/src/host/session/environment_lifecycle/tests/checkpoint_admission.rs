@@ -94,7 +94,7 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                     puts: AtomicUsize::new(0),
                     gate: tokio::sync::Semaphore::new(usize::from(wait == "lifecycle")),
                 });
-                let mut raw = crate::HostDependencies::ephemeral(
+                let mut raw = crate::SessionExecutorBuilder::ephemeral(
                     Arc::new(crate::no_model::NoModelConfiguredExecutor),
                     "stub",
                 )
@@ -271,7 +271,7 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
         let worker = Arc::new(pc::test_support::EffectAuthority::new(&fence));
         let events = Arc::new(Mutex::new(Vec::new()));
         let gate = Arc::new(tokio::sync::Semaphore::new(0));
-        let host = (crate::HostDependencies::ephemeral(
+        let host = (crate::SessionExecutorBuilder::ephemeral(
             Arc::new(crate::no_model::NoModelConfiguredExecutor),
             "stub",
         )
@@ -450,7 +450,7 @@ async fn suspension_and_terminal_admission_use_live_observation_and_never_reopen
         ("S14", "uninstalled", "same", false, false),
         ("S15", "absent", "same", false, false),
     ] {
-        let host = (crate::HostDependencies::ephemeral(
+        let host = (crate::SessionExecutorBuilder::ephemeral(
             Arc::new(crate::no_model::NoModelConfiguredExecutor),
             "stub",
         )

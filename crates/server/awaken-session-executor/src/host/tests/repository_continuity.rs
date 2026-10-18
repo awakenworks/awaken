@@ -53,7 +53,8 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
     git(&seed, &["commit", "-m", "base"]);
     git(&seed, &["push", "origin", "main"]);
 
-    let mut dependencies = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await;
+    let mut dependencies =
+        crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await;
     dependencies.env.session_provider =
         awaken_session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             sandbox_root,

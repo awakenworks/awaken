@@ -162,7 +162,7 @@ async fn probe_negotiator(
     owner: &str,
     handshake: Arc<dyn AcpCapabilityHandshake>,
 ) -> SessionAcpCapabilityNegotiator {
-    let mut dependencies = crate::HostDependencies::ephemeral(Arc::new(NoLlm), "stub")
+    let mut dependencies = crate::SessionExecutorBuilder::ephemeral(Arc::new(NoLlm), "stub")
         .await
         .with_local_workspace(owner);
     dependencies.env.session_provider =
@@ -369,7 +369,7 @@ fn a_poisoned_stranded_probe_ledger_reads_as_empty() {
     ledger.settle("scope-a");
     assert!(!ledger.contains("scope-a"), "S1 settle");
     ledger.record("scope-a".into());
-    crate::host_error::poison_for_test(&ledger.scopes);
+    crate::session_execution_error::poison_for_test(&ledger.scopes);
     assert!(!ledger.contains("scope-a"), "S2 no strand hint");
     ledger.record("scope-b".into());
     ledger.settle("scope-a");

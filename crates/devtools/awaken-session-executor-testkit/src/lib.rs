@@ -4,7 +4,7 @@
 //! link the Resources application or any store. A test or scenario
 //! composition that wants a local Host builds its ports here, from the same
 //! Resources authorities its process selected, and hands them to
-//! `HostDependencies::for_local_resources`.
+//! `SessionExecutorBuilder::for_local_resources`.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -16,7 +16,8 @@ use awaken_resource_application::{
 use awaken_resource_contract::SkillStore;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_session_executor::{
-    DeploymentConfig, ExecutorComponents, HostDependencies, LocalResourcePorts, LocalSkillPorts,
+    DeploymentConfig, ExecutorComponents, LocalResourcePorts, LocalSkillPorts,
+    SessionExecutorBuilder,
 };
 use awaken_time::WallClock;
 
@@ -107,7 +108,7 @@ pub async fn volatile_host(
 pub async fn volatile_dependencies(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
-) -> HostDependencies {
+) -> SessionExecutorBuilder {
     volatile_dependencies_with_deployment(llm, model_ref, DeploymentConfig::ephemeral()).await
 }
 
@@ -121,12 +122,12 @@ pub async fn volatile_dependencies_with_deployment(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
     deployment: DeploymentConfig,
-) -> HostDependencies {
+) -> SessionExecutorBuilder {
     let resources = volatile_resource_ports().await;
     let authority = volatile_runtime_authority(resources.clock.clone());
     let base = awaken_session_executor::session_sandbox_base(&deployment);
     with_workdir_fallback(
-        HostDependencies::for_local_resources(
+        SessionExecutorBuilder::for_local_resources(
             llm,
             model_ref,
             resources,
@@ -142,9 +143,9 @@ pub async fn volatile_dependencies_with_deployment(
 /// Select the Workdir adapter under the Deployment's sandbox root `base` as
 /// the non-authoritative fallback Session provider.
 fn with_workdir_fallback(
-    dependencies: HostDependencies,
+    dependencies: SessionExecutorBuilder,
     base: std::path::PathBuf,
-) -> HostDependencies {
+) -> SessionExecutorBuilder {
     dependencies.with_fallback_session_environment_provider(
         awaken_session_environment::SandboxEnvironmentProvider::workdir(base)
             .into_session_provider(),
@@ -182,9 +183,9 @@ pub fn volatile_runtime_authority(
 /// When `dir` or its extraction database cannot be opened.
 #[must_use]
 pub async fn with_durable_store_dir(
-    dependencies: HostDependencies,
+    dependencies: SessionExecutorBuilder,
     dir: &Path,
-) -> HostDependencies {
+) -> SessionExecutorBuilder {
     dependencies.with_durable_store_dir(
         dir,
         memory_extraction_repository(Some(dir)).await,

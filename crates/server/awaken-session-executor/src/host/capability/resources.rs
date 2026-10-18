@@ -15,7 +15,7 @@ pub struct WorkerContentAdapters {
 
 /// Local Resource authorities a test or scenario composition hands to the
 /// Host as one unit: the ports its Resources application exposes. Consumer:
-/// `HostDependencies::for_local_resources`; `awaken-session-executor-testkit` builds it
+/// `SessionExecutorBuilder::for_local_resources`; `awaken-session-executor-testkit` builds it
 /// from a Resources application, which this crate no longer links.
 #[cfg(any(test, feature = "test-support"))]
 pub struct LocalResourcePorts {
@@ -45,7 +45,7 @@ pub struct LocalSkillPorts {
 
 /// The Resource inputs of one Host construction, selected together so
 /// [`ResourceSelection::assemble`] sees every source at once. Consumer:
-/// the `HostDependencies` constructors.
+/// the `SessionExecutorBuilder` constructors.
 pub(in crate::host) struct ResourceInputs {
     /// Local authorities of a test/scenario composition.
     #[cfg(any(test, feature = "test-support"))]
@@ -95,7 +95,7 @@ pub(crate) struct ResourcePorts {
 /// The Resources-context ports a composition selects before the Host
 /// exists: [`ResourcePorts`] without the Host-owned Memory runtime, plus the
 /// Memory extraction authority that runtime is built over. Consumer:
-/// [`crate::HostDependencies`].
+/// [`crate::SessionExecutorBuilder`].
 pub(crate) struct ResourceSelection {
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) file_store: Arc<dyn FileStore>,

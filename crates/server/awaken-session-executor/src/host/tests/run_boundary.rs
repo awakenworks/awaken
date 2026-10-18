@@ -14,7 +14,7 @@ fn completed_outcome(progress: HostOutcomeDrive) -> HostOutcomeReport {
 /// precondition into an unbounded `Notify` wait.
 async fn await_interrupt_inference_gate<T>(
     reached: &tokio::sync::Notify,
-    task: &mut tokio::task::JoinHandle<Result<T, HostError>>,
+    task: &mut tokio::task::JoinHandle<Result<T, SessionExecutionError>>,
 ) {
     tokio::select! {
         () = reached.notified() => {}
@@ -35,7 +35,7 @@ async fn interrupt_cancels_the_run_and_reports_interrupted() {
         reached: reached.clone(),
         calls: AtomicUsize::new(0),
     });
-    let host = (crate::HostDependencies::ephemeral(model, "scripted").await)
+    let host = (crate::SessionExecutorBuilder::ephemeral(model, "scripted").await)
         .build()
         .expect("validated Host dependencies");
     let _managed = install_test_dispatch_runtime(&host);
@@ -92,7 +92,7 @@ async fn interrupting_acknowledgment_replaces_the_budget_terminal() {
         reached: reached.clone(),
         calls: AtomicUsize::new(0),
     });
-    let host = (crate::HostDependencies::ephemeral(model, "scripted").await)
+    let host = (crate::SessionExecutorBuilder::ephemeral(model, "scripted").await)
         .build()
         .expect("validated Host dependencies");
     let _managed = install_test_dispatch_runtime(&host);
@@ -134,7 +134,7 @@ async fn worker_authority_loss_interrupts_active_session_before_revocation() {
         reached: reached.clone(),
         calls: AtomicUsize::new(0),
     });
-    let host = (crate::HostDependencies::ephemeral(model, "scripted").await)
+    let host = (crate::SessionExecutorBuilder::ephemeral(model, "scripted").await)
         .build()
         .expect("validated Host dependencies");
     let _managed = install_test_dispatch_runtime(&host);
@@ -208,7 +208,7 @@ async fn worker_interrupt_uses_resident_claim_without_coordinator_queue_operatio
     // A later registration of the same Run after selection is the
     // dispatch-execution selection test; it is never signalled.
     // Coordinator user interruption keeps its existing durable-intent tests.
-    let local = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let local = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     let _managed = install_test_dispatch_runtime(&local);
@@ -217,7 +217,7 @@ async fn worker_interrupt_uses_resident_claim_without_coordinator_queue_operatio
         .ctx_for("worker-stop", None)
         .await
         .unwrap();
-    let worker = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let worker = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_authority(crate::UpstreamAuthority::default()))
     .build()
@@ -297,7 +297,7 @@ async fn worker_interrupt_uses_resident_claim_without_coordinator_queue_operatio
 
 #[tokio::test]
 async fn interrupt_is_a_noop_when_nothing_runs() {
-    let host = (crate::HostDependencies::ephemeral(
+    let host = (crate::SessionExecutorBuilder::ephemeral(
         Arc::new(GatedModel {
             gate: Arc::new(tokio::sync::Notify::new()),
             reached: Arc::new(tokio::sync::Notify::new()),
@@ -346,7 +346,7 @@ async fn runtime_constructor_installs_the_exact_file_content_source() {
     // that same port serves immutable bytes; R2 no post-construction override -> the
     // default-feature CLI remains compilable without exposing the volatile fixture mutator.
     // Unavailable-source failure semantics are owned by awaken-resource-contract and tested there.
-    let host = (crate::HostDependencies::for_coordinator(
+    let host = (crate::SessionExecutorBuilder::for_coordinator(
         Arc::new(MemoryHostModel),
         "stub",
         {
@@ -365,7 +365,7 @@ async fn runtime_constructor_installs_the_exact_file_content_source() {
         },
         ExecutorComponents::test_memory_extraction_repository(None).await,
         crate::DeploymentConfig::ephemeral()
-            .host_process(ExecutorComponents::mint_local_workspace(), system_clock())
+            .session_execution_process(ExecutorComponents::mint_local_workspace(), system_clock())
             .expect("ephemeral process"),
         Arc::new(crate::EphemeralRuntimeAuthority::new(system_clock())),
     ))
@@ -430,7 +430,7 @@ async fn attributed_run_meets_deployment_capture_with_control_consent() {
     deployment.content_capture.level = awaken_runtime_contract::ContentCapture::Full;
     let captured = Arc::new(CountingCaptureSink::default());
     let (host, _managed) = dispatch_test_host(
-        (crate::HostDependencies::ephemeral_with_deployment(
+        (crate::SessionExecutorBuilder::ephemeral_with_deployment(
             Arc::new(MemoryHostModel),
             "stub",
             deployment,
@@ -545,7 +545,7 @@ async fn workspace_narrowing_tightens_the_deployment_ceiling_for_each_run() {
     );
     narrowing.set("ws-broken", None);
     let (host, _managed) = dispatch_test_host(
-        (crate::HostDependencies::ephemeral_with_deployment(
+        (crate::SessionExecutorBuilder::ephemeral_with_deployment(
             Arc::new(MemoryHostModel),
             "stub",
             deployment,
@@ -610,7 +610,7 @@ async fn bound_executor_is_the_ordinary_run_execution_boundary() {
     use awaken_runtime_contract::execution::RunExecutor;
 
     let (host, _managed) = dispatch_test_host(
-        (crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub").await)
+        (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub").await)
             .build()
             .expect("validated Host dependencies"),
     );
@@ -689,7 +689,7 @@ async fn host_application_decorator_wraps_the_complete_session_boundary() {
     let calls = Arc::new(AtomicUsize::new(0));
     let decorator_calls = calls.clone();
     let (host, _managed) = dispatch_test_host(
-        (crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub")
+        (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub")
             .await
             .with_attempt_decorator(Arc::new(move |inner| {
                 Arc::new(ObservingAttemptExecutor {
@@ -727,7 +727,7 @@ async fn tool_bearing_snapshot_can_be_restricted_at_the_run_boundary() {
     use awaken_runtime_contract::resolved::ToolDescriptor;
 
     let (host, _managed) = dispatch_test_host(
-        (crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub").await)
+        (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub").await)
             .build()
             .expect("validated Host dependencies"),
     );
@@ -805,7 +805,7 @@ async fn interrupt_ends_an_in_flight_run_as_cancelled() {
     // only. Decision rule: C0, block, interrupt, release inference, require E0+E1.
     let reached = Arc::new(tokio::sync::Notify::new());
     let gate = Arc::new(tokio::sync::Notify::new());
-    let host = (crate::HostDependencies::ephemeral(
+    let host = (crate::SessionExecutorBuilder::ephemeral(
         Arc::new(BlockOnceModel {
             reached: reached.clone(),
             gate: gate.clone(),
@@ -861,7 +861,7 @@ async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finis
             .await
             .expect("dispatch store"),
     );
-    let host = (crate::HostDependencies::ephemeral(
+    let host = (crate::SessionExecutorBuilder::ephemeral(
         Arc::new(BlockOnceModel {
             reached: reached.clone(),
             gate: gate.clone(),
@@ -961,7 +961,7 @@ async fn live_only_durable_control_never_materializes_a_cold_session() {
     // tests retain W2/W3, so this Host test adds no parallel attempt registry.
     let cold_thread = "cold-live-only-control";
     let run_id = "cold-live-only-run";
-    let direct = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let direct = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     let unsupported = direct
@@ -969,7 +969,11 @@ async fn live_only_durable_control_never_materializes_a_cold_session() {
         .wake_durable(cold_thread, run_id)
         .await
         .expect_err("W0 direct ingress rejects durable control");
-    assert_eq!(unsupported.kind, HostErrorKind::BadRequest, "W0/E1");
+    assert_eq!(
+        unsupported.kind,
+        SessionExecutionErrorKind::BadRequest,
+        "W0/E1"
+    );
     assert!(
         unsupported.message.contains("durable ingress not enabled"),
         "W0/E1: {}",
@@ -990,7 +994,7 @@ async fn live_only_durable_control_never_materializes_a_cold_session() {
             .await
             .expect("live-control dispatch store"),
     );
-    let durable = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let durable = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_ephemeral_dispatch(dispatch.clone()))
     .build()
@@ -1000,7 +1004,7 @@ async fn live_only_durable_control_never_materializes_a_cold_session() {
         .wake_durable(cold_thread, run_id)
         .await
         .expect_err("W1 cold wake has no subscriber");
-    assert_eq!(wake.kind, HostErrorKind::BadRequest, "W1/E2");
+    assert_eq!(wake.kind, SessionExecutionErrorKind::BadRequest, "W1/E2");
     assert_eq!(
         wake.message,
         format!("no live subscriber for run: {run_id}"),
@@ -1012,14 +1016,22 @@ async fn live_only_durable_control_never_materializes_a_cold_session() {
         .pause_durable(cold_thread, Some(run_id))
         .await
         .expect_err("W1 cold explicit pause has no subscriber");
-    assert_eq!(explicit_pause.kind, HostErrorKind::BadRequest, "W1/E2");
+    assert_eq!(
+        explicit_pause.kind,
+        SessionExecutionErrorKind::BadRequest,
+        "W1/E2"
+    );
     assert_eq!(explicit_pause.message, wake.message, "W1/E2");
     let implicit_pause = durable
         .session_runs
         .pause_durable(cold_thread, None)
         .await
         .expect_err("W1 cold implicit pause has no active attempt");
-    assert_eq!(implicit_pause.kind, HostErrorKind::BadRequest, "W1/E2");
+    assert_eq!(
+        implicit_pause.kind,
+        SessionExecutionErrorKind::BadRequest,
+        "W1/E2"
+    );
     assert_eq!(
         implicit_pause.message, "thread has no locally owned active run",
         "W1/E2"
@@ -1093,7 +1105,7 @@ async fn managed_interrupt_cancels_cold_dispatch_without_realizing_an_environmen
         1,
         "C1 exact dead letter"
     );
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_ephemeral_dispatch(dispatch.clone()))
     .build()
@@ -1250,7 +1262,7 @@ async fn managed_primary_interrupt_recovers_the_active_dispatch_without_a_local_
         cancelled: Mutex::new(Vec::new()),
         cancellation_seen: tokio::sync::Notify::new(),
     });
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_ephemeral_dispatch(dispatch.clone())
         .with_remote_attempt_executor(RemoteAttemptInstallation {
@@ -1384,7 +1396,7 @@ async fn managed_primary_interrupt_cancels_every_exact_session_dispatch() {
             .await
             .expect("A1 foreign admission");
     }
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_ephemeral_dispatch(dispatch.clone()))
     .build()

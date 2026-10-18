@@ -2,16 +2,16 @@
 //! Install physical execution only for the selected local Session placement.
 
 use awaken_session_application::SessionExecutionPlacement;
-use awaken_session_executor::{DeploymentConfig, HostDependencies};
+use awaken_session_executor::{DeploymentConfig, SessionExecutorBuilder};
 use std::path::PathBuf;
 
 pub(super) async fn prepare(
-    host: HostDependencies,
+    host: SessionExecutorBuilder,
     deployment: &DeploymentConfig,
     placement: SessionExecutionPlacement,
     namespace_hand_path: Option<PathBuf>,
     credentials: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
-) -> Result<HostDependencies, String> {
+) -> Result<SessionExecutorBuilder, String> {
     let host = if placement == SessionExecutionPlacement::LocalWorker {
         let hand_factory = awaken_worker::relay_hand_executor_factory();
         let containers = awaken_execution_composition::ContainerTierPolicy::default();

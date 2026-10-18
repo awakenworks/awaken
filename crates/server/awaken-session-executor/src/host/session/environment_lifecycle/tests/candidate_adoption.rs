@@ -184,7 +184,7 @@ async fn unknown_candidate_retry_never_authorizes_or_relabels_its_owner() {
             awaken_session_environment::SandboxEnvironmentProvider::workdir(directory.path())
                 .into_session_provider();
         let owned = environment(&provider, thread).await;
-        let host = crate::HostDependencies::ephemeral(
+        let host = crate::SessionExecutorBuilder::ephemeral(
             Arc::new(crate::no_model::NoModelConfiguredExecutor),
             "stub",
         )
@@ -292,7 +292,7 @@ async fn durable_adoption_without_an_owning_sink_preserves_exact_projected_ident
                 effect: crate::environment_owner::LegacyEnvironmentEffect::Absent,
             },
         );
-        let host = (crate::HostDependencies::ephemeral(
+        let host = (crate::SessionExecutorBuilder::ephemeral(
             Arc::new(crate::no_model::NoModelConfiguredExecutor),
             "stub",
         )
@@ -376,7 +376,7 @@ async fn ordinary_candidate_without_a_sink_gets_an_explicit_direct_receipt() {
         ) {
             intent = intent.from_binding(binding.clone());
         }
-        let host = (crate::HostDependencies::ephemeral(
+        let host = (crate::SessionExecutorBuilder::ephemeral(
             Arc::new(crate::no_model::NoModelConfiguredExecutor),
             "stub",
         )
@@ -430,7 +430,7 @@ async fn durable_projection_cannot_publish_a_hidden_candidate() {
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let environment = environment(&provider, thread).await;
-    let host = (crate::HostDependencies::ephemeral(
+    let host = (crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
         "stub",
     )
@@ -513,7 +513,7 @@ async fn adopted_candidate_retains_successor_receipt_after_dispatch_fencing() {
         let environment = environment(&provider, thread).await;
         let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
         let source = identity(thread);
-        let host = (crate::HostDependencies::ephemeral(
+        let host = (crate::SessionExecutorBuilder::ephemeral(
             Arc::new(crate::no_model::NoModelConfiguredExecutor),
             "stub",
         )
@@ -682,7 +682,7 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
                 .await
                 .unwrap(),
         );
-        let host = (crate::HostDependencies::ephemeral(
+        let host = (crate::SessionExecutorBuilder::ephemeral(
             Arc::new(crate::no_model::NoModelConfiguredExecutor),
             "stub",
         )
@@ -891,7 +891,7 @@ async fn committed_hidden_create_candidate_is_terminally_retired_without_publica
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let environment = environment(&provider, thread).await;
-    let host = (crate::HostDependencies::ephemeral(
+    let host = (crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
         "stub",
     )
@@ -1220,7 +1220,7 @@ async fn unacknowledged_candidate_adoption_requires_aggregate_authority() {
         .into_session_provider();
     let thread = "unacknowledged-no-authority";
     let environment = environment(&provider, thread).await;
-    let host = (crate::HostDependencies::ephemeral(
+    let host = (crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
         "stub",
     )
@@ -1302,7 +1302,7 @@ async fn stale_unmaterialized_projection_cannot_unbind_a_candidate_or_resident()
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let environment = environment(&provider, thread).await;
-    let host = (crate::HostDependencies::ephemeral(
+    let host = (crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
         "stub",
     )

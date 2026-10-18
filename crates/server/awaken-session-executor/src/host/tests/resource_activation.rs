@@ -9,7 +9,7 @@ use super::*;
 async fn install_test_session_init_mounts_an_effective_memory_resource() {
     use awaken_session_configuration_contract::SessionInit;
     let host = (crate::host::with_test_resource_validation(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
+        crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await,
     ))
     .build()
     .expect("validated Host dependencies");
@@ -168,7 +168,7 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         fetch_url: Mutex::new(None),
     });
     let host = (crate::host::with_test_resource_validation(
-        crate::HostDependencies::ephemeral(model.clone(), "stub").await,
+        crate::SessionExecutorBuilder::ephemeral(model.clone(), "stub").await,
     ))
     .build()
     .expect("validated Host dependencies");
@@ -508,7 +508,7 @@ async fn activation_applies_current_resource_state_as_a_deny_only_overlay() {
     };
 
     let catalog = resource_registry().await;
-    let host = ((crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let host = ((crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .with_session_execution(
             crate::SessionExecutionDependencies::default().with_resource_validator(catalog.clone()),
         ))
@@ -580,7 +580,7 @@ async fn memory_activation_enforces_catalog_workspace_without_iam_policy_logic()
     };
 
     let catalog = resource_registry().await;
-    let host = ((crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let host = ((crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .with_session_execution(
             crate::SessionExecutionDependencies::default().with_resource_validator(catalog.clone()),
         ))
@@ -647,7 +647,7 @@ async fn install_test_session_init_mounts_effective_file_and_stages_effective_re
     use awaken_provisioning_contract::{MountAccess, MountSource};
     use awaken_session_configuration_contract::SessionInit;
     let host = (crate::host::with_test_resource_validation(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
+        crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await,
     ))
     .build()
     .expect("validated Host dependencies");
@@ -760,7 +760,7 @@ async fn complete_projection_preserves_the_canonical_repository_path_without_rel
     let verifier = Arc::new(FixedRepositoryTransport(
         awaken_resource_contract::RepositoryTransport::Direct,
     ));
-    let host = ((crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let host = ((crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .with_session_execution(
             crate::host::test_resource_execution().with_repository_binding_verifier(verifier),
         ))
@@ -901,7 +901,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     git(&seed, &["push", "-u", "origin", "HEAD"]);
 
     let control = Arc::new(RemoteTerminalCleanupControl::default());
-    let mut raw_host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let mut raw_host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_session_realization_control(control.clone());
     raw_host.env.session_provider =
@@ -1502,7 +1502,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     drop(managed);
     drop(host);
 
-    let mut raw_replacement = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let mut raw_replacement = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_session_realization_control(control.clone())
         .with_authority(
@@ -1662,8 +1662,8 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
         }
     }
 
-    let declared_blob_id = awaken_sandbox_local::content_fingerprint(b"declared bytes");
-    let mut raw_host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await;
+    let declared_blob_id = awaken_resource_contract::content_id(b"declared bytes");
+    let mut raw_host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await;
     let corrupt_store = Arc::new(CorruptFileStore);
     raw_host.resources.file_store = corrupt_store.clone();
     let application = Arc::new(awaken_resource_application::FileApplication::new(
@@ -1732,7 +1732,7 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
 
 #[tokio::test]
 async fn file_activation_enforces_workspace_ownership_without_iam_policy_logic() {
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     let file_id = host

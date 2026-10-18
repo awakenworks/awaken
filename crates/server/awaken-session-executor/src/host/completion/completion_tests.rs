@@ -484,7 +484,7 @@ async fn exported_dispatch_completion_sink_is_the_host_owned_projection() {
     // | coordinator-only | exact host registry | remote settle wakes Session |
     // Mode does not alter sink identity, so pointer identity covers both rules
     // without manufacturing two deployment configurations in this unit test.
-    let host = (crate::HostDependencies::ephemeral(
+    let host = (crate::SessionExecutorBuilder::ephemeral(
         Arc::new(NoModelConfiguredExecutor),
         UNCONFIGURED_MODEL_REF,
     )
@@ -505,7 +505,7 @@ async fn unconfigured_model_is_rejected_before_durable_enqueue() {
     // Cause/effect rule: C0 the ordinary Dispatch runtime composition is
     // present and C1 its frozen model is explicitly unconfigured. E1 context
     // creation succeeds through C0; E2 dispatch rejects C1 before enqueue.
-    let host = (crate::HostDependencies::ephemeral(
+    let host = (crate::SessionExecutorBuilder::ephemeral(
         Arc::new(NoModelConfiguredExecutor),
         UNCONFIGURED_MODEL_REF,
     )
@@ -1145,11 +1145,11 @@ fn explicit_empty_manifest_still_requires_the_revocation_capability() {
 async fn a_poisoned_completion_registry_refuses_new_observations_and_stops_notifying() {
     let hub = Arc::new(crate::ThreadEventHub::new());
     let registry = Arc::new(CompletionRegistry::new(hub, Default::default()));
-    crate::host_error::poison_for_test(&registry.waiters);
+    crate::session_execution_error::poison_for_test(&registry.waiters);
     assert!(
         matches!(
             registry.register(&RunId("poisoned-run".into()), None),
-            Err(crate::host_error::ExecutorLock::CompletionRegistry)
+            Err(crate::session_execution_error::ExecutorLock::CompletionRegistry)
         ),
         "W2"
     );

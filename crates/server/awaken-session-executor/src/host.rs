@@ -1,10 +1,13 @@
 //! [`ExecutorComponents`] — the Session executor's components, assembled once.
 //!
-//! The composition root builds it from [`HostDependencies`] and selects
+//! The composition root builds it from [`SessionExecutorBuilder`] and selects
 //! [`crate::CoordinatorRoles`] or [`crate::WorkerRoles`] from it. It holds each
 //! component and the process-level facts they share; behaviour lives in the
 //! components, which every protocol adapter drives on the same thread ids.
 
+use crate::SessionExecutionError;
+#[cfg(test)]
+use crate::SessionExecutionErrorKind;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -72,12 +75,12 @@ pub struct RemoteAttemptInstallation {
 }
 
 mod build;
-pub use build::HostProcess;
+pub use build::SessionExecutionProcess;
 mod dependencies;
 pub(crate) use dependencies::ApplicationPortBinding;
 pub use dependencies::{
-    HostDependencies, SessionApplicationBindingError, SessionApplicationBindings,
-    SessionExecutionDependencies,
+    SessionApplicationBindingError, SessionApplicationBindings, SessionExecutionDependencies,
+    SessionExecutorBuilder,
 };
 pub(crate) mod capability;
 pub use capability::{TrustedHostPolicy, WarmPool};
@@ -120,8 +123,7 @@ pub(crate) use session_ctx::{
     ChildExecutionSubstrate, ClaimedRuntimeInput, RuntimePublicationIdentity, SessionCtx,
 };
 pub use types::{
-    CommittedStepReceipt, HostError, HostErrorKind, HostOutcomeDrive, HostOutcomeIteration,
-    HostOutcomeReport, HostResume,
+    CommittedStepReceipt, HostOutcomeDrive, HostOutcomeIteration, HostOutcomeReport, HostResume,
 };
 #[cfg(test)]
 pub(crate) use worker_resolver::test_support::{
@@ -132,7 +134,7 @@ pub(crate) use worker_resolver::test_support::{
 /// composition roots, which select a typed role set from it, and the
 /// protocol adapters and tests that drive individual components.
 ///
-/// The one constructor is `From<`[`HostDependencies`]`>`: every dependency is
+/// The one constructor is `From<`[`SessionExecutorBuilder`]`>`: every dependency is
 /// selected on that value before the components exist, and nothing installs
 /// one into an assembled value.
 pub struct ExecutorComponents {

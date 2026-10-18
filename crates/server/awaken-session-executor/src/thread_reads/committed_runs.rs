@@ -14,7 +14,7 @@ use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_runtime_contract::RunDelegations;
 use awaken_session_application_contract::DelegatedRun;
 
-use crate::HostError;
+use crate::SessionExecutionError;
 
 pub(crate) fn project_delegated_runs(
     registry: Option<&awaken_agent_contract::agent::delegation::DelegationRegistry>,
@@ -35,7 +35,10 @@ pub(crate) fn project_delegated_runs(
 pub(crate) fn delegation_registry_from_snapshot(
     snapshot: &RunRecoverySnapshot,
     run_id: &RunId,
-) -> Result<Option<awaken_agent_contract::agent::delegation::DelegationRegistry>, HostError> {
+) -> Result<
+    Option<awaken_agent_contract::agent::delegation::DelegationRegistry>,
+    SessionExecutionError,
+> {
     delegation_registries_from_commands(&snapshot.state, Some(run_id))
         .map(|mut registries| registries.pop())
 }
@@ -46,7 +49,8 @@ pub(crate) fn delegation_registry_from_snapshot(
 pub(crate) fn delegation_registries_from_commands(
     commands: &[awaken_agent_contract::agent::state::Command],
     selected_run: Option<&RunId>,
-) -> Result<Vec<awaken_agent_contract::agent::delegation::DelegationRegistry>, HostError> {
+) -> Result<Vec<awaken_agent_contract::agent::delegation::DelegationRegistry>, SessionExecutionError>
+{
     let mut stores: HashMap<RunId, Store> = HashMap::new();
     for command in commands {
         let Some(run_id) = command.run_id.as_ref().filter(|run_id| {
@@ -58,8 +62,8 @@ pub(crate) fn delegation_registries_from_commands(
     }
     let mut registries = Vec::new();
     for store in stores.values() {
-        if let Some(registry) =
-            RunDelegations::load(store).map_err(|error| HostError::internal(error.to_string()))?
+        if let Some(registry) = RunDelegations::load(store)
+            .map_err(|error| SessionExecutionError::internal(error.to_string()))?
         {
             registries.push(registry);
         }
@@ -72,11 +76,11 @@ pub(crate) fn delegation_registries_from_commands(
 pub(crate) fn recovery_ticket(
     committed: &RunRecoverySnapshot,
     run_id: &RunId,
-) -> Result<Option<ResumeTicket>, HostError> {
+) -> Result<Option<ResumeTicket>, SessionExecutionError> {
     committed
         .answerable_ticket(run_id)
         .map(|ticket| ticket.cloned())
-        .map_err(|error| HostError::internal(error.to_string()))
+        .map_err(|error| SessionExecutionError::internal(error.to_string()))
 }
 
 #[cfg(test)]

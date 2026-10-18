@@ -7,7 +7,7 @@
 
 use crate::host::*;
 
-impl HostDependencies {
+impl SessionExecutorBuilder {
     /// Replace the built-in registry with one process-owned registry. Use
     /// the same clone for capability projection and semantic publication
     /// validation to keep discovery, validation, and dispatch identical.

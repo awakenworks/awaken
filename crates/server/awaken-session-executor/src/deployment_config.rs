@@ -649,13 +649,13 @@ impl DeploymentConfig {
     }
 
     /// The process a Host is constructed in, projected from this file by the
-    /// composition root. Consumer: every `HostDependencies` constructor.
-    pub fn host_process(
+    /// composition root. Consumer: every `SessionExecutorBuilder` constructor.
+    pub fn session_execution_process(
         &self,
         local_workspace: String,
         clock: std::sync::Arc<dyn awaken_time::WallClock>,
-    ) -> Result<crate::HostProcess, String> {
-        Ok(crate::HostProcess {
+    ) -> Result<crate::SessionExecutionProcess, String> {
+        Ok(crate::SessionExecutionProcess {
             local_workspace,
             execution: self.execution_topology()?,
             content_capture: self.content_capture,

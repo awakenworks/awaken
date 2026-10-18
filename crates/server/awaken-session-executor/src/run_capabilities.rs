@@ -129,14 +129,16 @@ impl RunCapabilities {
         &dyn awaken_acp_contract::AcpAdapterPolicy<
             awaken_runtime_contract::resolved::ProviderServerTool,
         >,
-        crate::HostError,
+        crate::SessionExecutionError,
     > {
         self.exec
             .acp
             .as_ref()
             .map(|factory| factory.adapter_policy())
             .or(self.exec.acp_projection_policy)
-            .ok_or_else(|| crate::HostError::bad_request("ACP backend is not installed"))
+            .ok_or_else(|| {
+                crate::SessionExecutionError::bad_request("ACP backend is not installed")
+            })
     }
 
     /// The model id echoed by adapters in their session/agent objects.

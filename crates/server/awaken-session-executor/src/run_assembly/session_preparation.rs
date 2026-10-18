@@ -7,11 +7,11 @@
 use awaken_session_types::RunError;
 
 use super::RunAssembly;
-use crate::managed_adapter_error::to_run_error;
+use crate::session_execution_error::to_run_error;
 
 impl RunAssembly {
     /// Unit-test receipt failure injection; product composition selects this
-    /// ordinary port in HostDependencies before constructing the Host.
+    /// ordinary port in SessionExecutorBuilder before constructing the Host.
     #[cfg(test)]
     pub(crate) fn install_test_environment_binding_sink(
         &self,
@@ -54,7 +54,7 @@ impl RunAssembly {
             .unwrap_or((Ok(None), false, false));
         let (active_run, installed, coordination) = active_projection;
         let active_run = active_run
-            .map_err(|poisoned| crate::managed_adapter_error::to_run_error(poisoned.into()))?;
+            .map_err(|poisoned| crate::session_execution_error::to_run_error(poisoned.into()))?;
         match (active_run, installed, coordination) {
             // A coordination envelope owns no execution projection. Even when
             // it wins the cache race before a Worker claim, the Worker must run

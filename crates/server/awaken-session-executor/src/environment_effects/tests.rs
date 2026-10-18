@@ -133,7 +133,7 @@ async fn detached_executor() -> (
     crate::realization_executor::RealizationExecutor,
     Arc<crate::installed_session::InstalledSessions>,
 ) {
-    let host = crate::HostDependencies::ephemeral(
+    let host = crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
         "stub",
     )

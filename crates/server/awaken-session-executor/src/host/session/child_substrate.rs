@@ -11,7 +11,7 @@ impl crate::RunAssembly {
         &self,
         thread: &str,
         frozen_parent: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
-    ) -> Result<ChildExecutionSubstrate, HostError> {
+    ) -> Result<ChildExecutionSubstrate, SessionExecutionError> {
         let realizations = self.installed_sessions.realizations();
         let lifecycle_guard = realizations.lock_lifecycle(thread).await?;
         self.realization_executor
@@ -35,14 +35,14 @@ impl crate::RunAssembly {
                         |parent| Ok(Some(parent)),
                     )?
                     .ok_or_else(|| {
-                        HostError::internal(
+                        SessionExecutionError::internal(
                             "a cold child requires the frozen parent Session publication",
                         )
                     })?;
                 if !awaken_session_realization_contract::requires_local_environment(
                     &parent.resolved_spec,
                 ) {
-                    return Err(HostError::internal(
+                    return Err(SessionExecutionError::internal(
                         "a delegated child has no parent Session environment",
                     ));
                 }
@@ -81,7 +81,7 @@ impl crate::RunAssembly {
         thread: &str,
         warm_context: Option<Arc<SessionCtx>>,
         environment: Arc<crate::session_environment::SessionEnvironment>,
-    ) -> Result<ChildExecutionSubstrate, HostError> {
+    ) -> Result<ChildExecutionSubstrate, SessionExecutionError> {
         let parent_commit = match &warm_context {
             Some(context) => context.commit.clone(),
             None => self.thread_reads.commit_for_read(thread).await?,
@@ -185,7 +185,7 @@ mod tests {
         let roots = crate::host::tests::ManagedSessionRootFixture::new().await;
         let host = roots
             .configure(
-                crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+                crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
                     .await
                     .with_ephemeral_dispatch(store.clone()),
             )

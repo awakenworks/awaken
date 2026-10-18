@@ -33,7 +33,7 @@ async fn host_accepts_only_backend_projections_that_match_the_publication() {
             awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot])
                 .expect("valid publication");
         dispatch_test_host(
-            (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+            (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
                 .await
                 .with_agent_publications(Arc::new(publications)))
             .build()
@@ -86,7 +86,7 @@ async fn host_accepts_only_backend_projections_that_match_the_publication() {
         .expect("H3 publication without redundant projection");
 
     let (orphan, _orphan_managed) = dispatch_test_host(
-        (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+        (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
             .build()
             .expect("validated Host dependencies"),
     );
@@ -244,7 +244,7 @@ async fn session_tool_policy_preserves_the_published_snapshot_identity() {
         awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([publication.clone()])
             .expect("valid publication");
     let (host, _managed) = dispatch_test_host(
-        (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_agent_publications(Arc::new(publications)))
         .build()
@@ -355,7 +355,7 @@ async fn session_web_policy_overlay_reaches_the_configured_plugin_before_inferen
             .expect("valid provider-server publication");
     let inferences = Arc::new(AtomicUsize::new(0));
     let (host, _managed) = dispatch_test_host(
-        (crate::HostDependencies::ephemeral(
+        (crate::SessionExecutorBuilder::ephemeral(
             Arc::new(SessionInferenceProbe(inferences.clone())),
             "stub",
         )
@@ -432,7 +432,7 @@ async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool()
         ToolsetSource,
     };
 
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     let enabled = ToolExecutionPolicy {
@@ -620,7 +620,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
         "Think carefully.",
         &[],
     )];
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_skills(vec![awaken_ext_skills::SkillSpec::new(
             "think",
@@ -688,7 +688,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
         "M3/E3: {denied}"
     );
 
-    let empty_host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let empty_host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     empty_host
@@ -891,7 +891,7 @@ async fn session_content_delivery_is_frozen_across_auxiliary_agent_snapshots() {
         ToolsetSource,
     };
 
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     let restricted = awaken_runtime_contract::ExecutableAgentSnapshot::builder("grader")
@@ -1283,7 +1283,7 @@ async fn session_client_tools_replace_the_published_surface_with_exact_ownership
         awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([publication.clone()])
             .expect("valid publication");
     let (host, _managed) = dispatch_test_host(
-        (crate::HostDependencies::ephemeral(Arc::new(ClientLookupModel), "stub")
+        (crate::SessionExecutorBuilder::ephemeral(Arc::new(ClientLookupModel), "stub")
             .await
             .with_agent_publications(Arc::new(publications)))
         .build()
@@ -1415,7 +1415,7 @@ async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_read
     .expect("literal model reference");
     let publications = awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot])
         .expect("valid publication");
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_agent_publications(Arc::new(publications)))
     .build()
@@ -1468,7 +1468,7 @@ async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_read
     };
     assert!(error.to_string().contains("projection"), "R3");
 
-    let fallback_host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let fallback_host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     install_test_session_application(&fallback_host);
@@ -1555,7 +1555,7 @@ async fn frozen_session_resolves_its_exact_agent_revision_instead_of_current() {
         current.clone(),
     ])
     .expect("valid revisioned publications");
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_agent_publications(Arc::new(publications)))
     .build()
@@ -1664,7 +1664,7 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
     .expect("literal model reference");
     let publications = awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot])
         .expect("valid publication");
-    let mut host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let mut host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_agent_publications(Arc::new(publications));
     host.execution.local = crate::LocalExecution::RemoteWorkersOnly;
@@ -1810,7 +1810,7 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
     // | L6 | durable local Worker | current | E1 exact inbox |
     // | L7 | Coordinator-only | absent | E3 inactive |
     // Decision rule: execute L1-L7; only a current registry entry may produce E1.
-    let direct = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let direct = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     let _direct_managed = install_test_dispatch_runtime(&direct);
@@ -1895,7 +1895,7 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
 
     let mut local_deployment = crate::DeploymentConfig::ephemeral();
     local_deployment.durable = true;
-    let local = (crate::HostDependencies::ephemeral_with_deployment(
+    let local = (crate::SessionExecutorBuilder::ephemeral_with_deployment(
         Arc::new(OkModel),
         "stub",
         local_deployment,
@@ -1941,7 +1941,7 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
     let mut remote_deployment = crate::DeploymentConfig::ephemeral();
     remote_deployment.durable = true;
     remote_deployment.disable_local_pool = true;
-    let remote = (crate::HostDependencies::ephemeral_with_deployment(
+    let remote = (crate::SessionExecutorBuilder::ephemeral_with_deployment(
         Arc::new(OkModel),
         "stub",
         remote_deployment,
@@ -1993,7 +1993,7 @@ async fn session_creation_and_explicit_cache_warmup_share_one_preparation_path()
     }
 
     let initializer = Arc::new(RecordingInitializer(AtomicUsize::new(0)));
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_cache_volume_initializer(initializer.clone()))
     .build()
@@ -2070,7 +2070,7 @@ async fn repository_layout_conflict_fails_before_cache_prewarm() {
 
     let initializer = Arc::new(CountingInitializer(AtomicUsize::new(0)));
     let host = (crate::host::with_test_resource_validation(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_cache_volume_initializer(initializer.clone()),
     ))
@@ -2176,7 +2176,7 @@ async fn platform_held_mcp_is_mediated_without_resolving_material_into_the_host(
         }
     }
 
-    let dependencies = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await;
+    let dependencies = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await;
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
     let host = (dependencies.with_credentials(credentials.clone(), secrets.clone()))
@@ -2251,7 +2251,7 @@ async fn platform_held_mcp_is_mediated_without_resolving_material_into_the_host(
         "G1"
     );
 
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_credentials(credentials, secrets)
         .with_session_execution(
@@ -2292,7 +2292,7 @@ async fn platform_held_mcp_is_mediated_without_resolving_material_into_the_host(
 // each component-owned role is the component itself, not a forwarding adapter.
 #[tokio::test]
 async fn executor_components_supply_every_session_role() {
-    let shared = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let shared = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     let host = shared.clone();

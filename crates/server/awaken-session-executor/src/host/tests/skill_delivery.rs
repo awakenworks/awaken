@@ -126,7 +126,7 @@ async fn published_agent_receives_managed_filesystem_skill_discovery() {
     let observed = recorder.0.clone();
     let storage = tempfile::tempdir().expect("selected Skill fixture storage");
     let host = (crate::host::with_test_resource_validation(
-        crate::HostDependencies::ephemeral(Arc::new(recorder), "stub")
+        crate::SessionExecutorBuilder::ephemeral(Arc::new(recorder), "stub")
             .await
             .with_skill_store(storage.path().join("skills"))
             .with_store_dir(storage.path())
@@ -225,7 +225,7 @@ async fn published_agent_receives_managed_filesystem_skill_discovery() {
     let missing_observed = missing_recorder.0.clone();
     let missing_storage = tempfile::tempdir().expect("missing Skill fixture storage");
     let missing_host = (crate::host::with_test_resource_validation(
-        crate::HostDependencies::ephemeral(Arc::new(missing_recorder), "stub")
+        crate::SessionExecutorBuilder::ephemeral(Arc::new(missing_recorder), "stub")
             .await
             .with_skill_store(missing_storage.path().join("skills"))
             .with_store_dir(missing_storage.path())
@@ -320,7 +320,7 @@ async fn direct_on_tool_use_brain_skill_adapter_keeps_the_environment_absent() {
         ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
         ToolsetSource,
     };
-    let host = (crate::HostDependencies::ephemeral(Arc::new(BrainSkillModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(BrainSkillModel), "stub")
         .await
         .with_skills(vec![awaken_ext_skills::SkillSpec::new(
             "think",
@@ -421,7 +421,7 @@ async fn managed_session_ignores_unbound_host_skill_sources() {
         ..awaken_ext_skills::SkillSpec::new("think", "Think", "reason", "Think carefully.")
     };
     let storage = tempfile::tempdir().expect("Managed Skill authority test storage");
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_skills(vec![host_static])
         .with_skill_store(storage.path().join("skills")))
@@ -547,7 +547,7 @@ async fn on_tool_use_runtime_hand_call_materializes_before_tool_execution() {
     use awaken_session_configuration_contract::SessionInit;
     let roots = ManagedSessionRootFixture::new().await;
     let host = roots
-        .configure(crate::HostDependencies::ephemeral(Arc::new(HandReadModel), "stub").await)
+        .configure(crate::SessionExecutorBuilder::ephemeral(Arc::new(HandReadModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     install_test_session_application(&host);
@@ -615,7 +615,7 @@ async fn on_tool_use_runtime_hand_call_materializes_before_tool_execution() {
 async fn managed_filesystem_skill_path_survives_deferred_reservation() {
     let storage = tempfile::tempdir().expect("deferred Skill fixture storage");
     let host = (crate::host::with_test_resource_validation(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_skill_store(storage.path().join("skills"))
             .with_store_dir(storage.path())
@@ -837,7 +837,7 @@ async fn on_tool_use_legacy_delivered_filesystem_skill_forces_an_eager_environme
 
     let storage = tempfile::tempdir().expect("storage");
     let skill_store = storage.path().join("skills");
-    let catalog_host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let catalog_host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_skill_store(skill_store.clone()))
     .build()
@@ -888,7 +888,7 @@ async fn on_tool_use_legacy_delivered_filesystem_skill_forces_an_eager_environme
     drop(catalog_host);
 
     let host = (crate::host::with_test_resource_validation(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_skill_store(skill_store)
             .with_store_dir(storage.path())

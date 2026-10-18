@@ -82,7 +82,7 @@ impl crate::SessionRuns {
     /// (an outcome loop then reports `interrupted`). A no-op when nothing is
     /// running. Never blocks on the run's own execution lock — it only touches the
     /// separate cancel slot — so it works from a concurrent request.
-    pub async fn interrupt(&self, thread: &str) -> Result<(), HostError> {
+    pub async fn interrupt(&self, thread: &str) -> Result<(), SessionExecutionError> {
         self.interrupt_with_commit_read(thread, self.thread_reads.commit_for_read(thread))
             .await
     }
@@ -93,8 +93,8 @@ impl crate::SessionRuns {
     pub(crate) async fn interrupt_with_commit_read(
         &self,
         thread: &str,
-        commit_read: impl std::future::Future<Output = Result<Arc<HostCommit>, HostError>>,
-    ) -> Result<(), HostError> {
+        commit_read: impl std::future::Future<Output = Result<Arc<HostCommit>, SessionExecutionError>>,
+    ) -> Result<(), SessionExecutionError> {
         // Snapshot original controls under the canonical Slot lock before
         // durable I/O. Physical revocation consumes this same selection kernel.
         // An unreadable foreground record refuses the request before any effect.
@@ -142,10 +142,10 @@ impl crate::SessionRuns {
                     self.coordinator_dispatch()?,
                     self.run_assembly.clock(),
                 )
-                .map_err(|error| HostError::internal(error.to_string()))?
+                .map_err(|error| SessionExecutionError::internal(error.to_string()))?
                 .cancel(&run_id.0)
                 .await
-                .map_err(|error| HostError::internal(error.to_string()))?;
+                .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
             }
             if let Some(local) = &selected.local {
                 local.interrupt();
@@ -206,7 +206,7 @@ impl crate::SessionRuns {
         agent: Option<&str>,
         thread: &str,
         input: Vec<Message>,
-    ) -> Result<CommittedStepReceipt, HostError> {
+    ) -> Result<CommittedStepReceipt, SessionExecutionError> {
         self.deliver_run(HostRunDelivery::command(agent, thread, input))
             .await
     }
@@ -218,7 +218,7 @@ impl crate::SessionRuns {
         thread: &str,
         input: Vec<Message>,
         data_subject_id: Option<awaken_runtime_contract::DataSubjectId>,
-    ) -> Result<CommittedStepReceipt, HostError> {
+    ) -> Result<CommittedStepReceipt, SessionExecutionError> {
         self.deliver_run(
             HostRunDelivery::command(agent, thread, input).with_data_subject_id(data_subject_id),
         )
@@ -234,7 +234,7 @@ impl crate::SessionRuns {
         thread: &str,
         input: Vec<Message>,
         sink: Arc<dyn StreamSink>,
-    ) -> Result<CommittedStepReceipt, HostError> {
+    ) -> Result<CommittedStepReceipt, SessionExecutionError> {
         self.deliver_run(HostRunDelivery::command(agent, thread, input).with_stream_sink(sink))
             .await
     }
@@ -247,7 +247,7 @@ impl crate::SessionRuns {
         input: Vec<Message>,
         sink: Arc<dyn StreamSink>,
         data_subject_id: Option<awaken_runtime_contract::DataSubjectId>,
-    ) -> Result<CommittedStepReceipt, HostError> {
+    ) -> Result<CommittedStepReceipt, SessionExecutionError> {
         self.deliver_run(
             HostRunDelivery::command(agent, thread, input)
                 .with_stream_sink(sink)
@@ -266,7 +266,7 @@ impl crate::SessionRuns {
         agent: Option<&str>,
         thread: &str,
         input: Vec<Message>,
-    ) -> Result<CommittedStepReceipt, HostError> {
+    ) -> Result<CommittedStepReceipt, SessionExecutionError> {
         self.deliver_run(HostRunDelivery::command(agent, thread, input).superseding())
             .await
     }
@@ -281,7 +281,7 @@ impl crate::SessionRuns {
         agent: Option<&str>,
         thread: &str,
         input: Vec<Message>,
-    ) -> Result<CommittedStepReceipt, HostError> {
+    ) -> Result<CommittedStepReceipt, SessionExecutionError> {
         self.deliver_run(HostRunDelivery::thread_extension(agent, thread, input))
             .await
     }
@@ -289,7 +289,7 @@ impl crate::SessionRuns {
     async fn deliver_run(
         &self,
         delivery: HostRunDelivery<'_>,
-    ) -> Result<CommittedStepReceipt, HostError> {
+    ) -> Result<CommittedStepReceipt, SessionExecutionError> {
         let HostRunDelivery {
             agent,
             thread,
@@ -305,7 +305,7 @@ impl crate::SessionRuns {
                 .read_run(thread, |run| run.session_dispatch)?
                 .unwrap_or(false)
         {
-            return Err(HostError::bad_request(
+            return Err(SessionExecutionError::bad_request(
                 "Managed Session roots must use Session-owned Run ingress",
             ));
         }
@@ -315,14 +315,16 @@ impl crate::SessionRuns {
             .commit
             .open_wait_for_thread(&ctx.thread_id)
             .await
-            .map_err(HostError::internal)?
+            .map_err(SessionExecutionError::internal)?
             .is_some()
             && !supersede
         {
-            return Err(HostError::bad_request("thread is awaiting a tool decision"));
+            return Err(SessionExecutionError::bad_request(
+                "thread is awaiting a tool decision",
+            ));
         }
         if supersede && !ctx.delivery.is_durable() {
-            return Err(HostError::bad_request(
+            return Err(SessionExecutionError::bad_request(
                 "supersede requires durable ingress (set typed durable ingress)",
             ));
         }
@@ -333,7 +335,7 @@ impl crate::SessionRuns {
         let input = match &ctx.skill_registry {
             Some(registry) => {
                 awaken_ext_skills::expand_slash_commands(registry.as_ref(), thread, input)
-                    .map_err(HostError::internal)?
+                    .map_err(SessionExecutionError::internal)?
             }
             None => input,
         };
@@ -378,7 +380,7 @@ impl crate::SessionRuns {
             Ok(state) => state,
             Err(error) => {
                 Self::clear_active_run(&ctx, &run_id)?;
-                return Err(HostError::internal(error.to_string()));
+                return Err(SessionExecutionError::internal(error.to_string()));
             }
         };
         let _projection = ctx.projection.lock().await;
@@ -405,7 +407,7 @@ impl crate::SessionRuns {
         ctx: &Arc<SessionCtx>,
         activation: RunActivation,
         command: ResumeCommand,
-    ) -> Result<RunState, HostError> {
+    ) -> Result<RunState, SessionExecutionError> {
         let run_id = activation.run_id.clone();
         ctx.foreground.begin(run_id.clone())?;
         if ctx.delivery.is_durable() {
@@ -422,13 +424,15 @@ impl crate::SessionRuns {
         let result = ctx
             .delivery
             .direct()
-            .ok_or_else(|| HostError::internal("direct delivery driver is unavailable"))?
+            .ok_or_else(|| {
+                SessionExecutionError::internal("direct delivery driver is unavailable")
+            })?
             .resume(activation, command, context)
             .await;
         if result.is_err() {
             Self::clear_active_run(ctx, &run_id)?;
         }
-        result.map_err(|error| HostError::internal(error.to_string()))
+        result.map_err(|error| SessionExecutionError::internal(error.to_string()))
     }
 
     /// The exact Worker composition for a durable Thread. The Worker and its
@@ -437,14 +441,19 @@ impl crate::SessionRuns {
     pub(crate) async fn durable_worker(
         &self,
         thread: &str,
-    ) -> Result<Arc<awaken_dispatch_execution::DispatchWorker<AnyDispatchStore>>, HostError> {
+    ) -> Result<
+        Arc<awaken_dispatch_execution::DispatchWorker<AnyDispatchStore>>,
+        SessionExecutionError,
+    > {
         self.require_durable_delivery()?;
         let ctx = self.run_assembly.ctx_for(thread, None).await?;
         ctx.delivery
             .is_durable()
             .then(|| ctx.claimed_worker.clone())
             .ok_or_else(|| {
-                HostError::bad_request("durable delivery not enabled (set typed durable ingress)")
+                SessionExecutionError::bad_request(
+                    "durable delivery not enabled (set typed durable ingress)",
+                )
             })
     }
 
@@ -452,11 +461,11 @@ impl crate::SessionRuns {
     /// capability before it can materialize a Session or query the dispatch
     /// store. The queue remains delivery truth; this guard only selects whether
     /// the deployment exposes that authority.
-    pub(super) fn require_durable_delivery(&self) -> Result<(), HostError> {
+    pub(super) fn require_durable_delivery(&self) -> Result<(), SessionExecutionError> {
         if self.execution.ingress.is_durable() {
             Ok(())
         } else {
-            Err(HostError::bad_request(
+            Err(SessionExecutionError::bad_request(
                 "durable ingress not enabled (set typed durable ingress)",
             ))
         }
@@ -468,13 +477,13 @@ impl crate::SessionRuns {
     async fn durable_dispatch_rows(
         &self,
         thread: &str,
-    ) -> Result<Vec<awaken_dispatch_contract::DispatchSummary>, HostError> {
+    ) -> Result<Vec<awaken_dispatch_contract::DispatchSummary>, SessionExecutionError> {
         self.require_durable_delivery()?;
         let thread_id = ThreadId(thread.to_owned());
         self.coordinator_dispatch()?
             .list_dispatches()
             .await
-            .map_err(|error| HostError::internal(error.to_string()))
+            .map_err(|error| SessionExecutionError::internal(error.to_string()))
             .map(|rows| {
                 rows.into_iter()
                     .filter(|row| row.thread_id == thread_id)
@@ -484,18 +493,18 @@ impl crate::SessionRuns {
 
     /// Reconcile `thread`'s dispatch queue (ADR-0011, slice E): reclaim and re-run
     /// any dispatch left runnable by a crash. Returns the recovered run ids.
-    pub async fn reconcile(&self, thread: &str) -> Result<Vec<String>, HostError> {
+    pub async fn reconcile(&self, thread: &str) -> Result<Vec<String>, SessionExecutionError> {
         let worker = self.durable_worker(thread).await?;
         let clock = self.clock.clone();
         let mut processed = worker
             .reconcile_committed_terminals(256, self.coordinator_dispatch()?.as_ref())
             .await
-            .map_err(|e| HostError::internal(e.to_string()))?;
+            .map_err(|e| SessionExecutionError::internal(e.to_string()))?;
         processed.extend(
             worker
                 .run_until_idle(clock)
                 .await
-                .map_err(|e| HostError::internal(e.to_string()))?,
+                .map_err(|e| SessionExecutionError::internal(e.to_string()))?,
         );
         Ok(processed.into_iter().map(|(id, _)| id.0).collect())
     }
@@ -508,16 +517,16 @@ impl crate::SessionRuns {
         thread: &str,
         max_attempts: u64,
         now_ms: u64,
-    ) -> Result<usize, HostError> {
+    ) -> Result<usize, SessionExecutionError> {
         self.durable_worker(thread).await?;
         self.coordinator_dispatch()?
             .quarantine_retry_exhausted(max_attempts, now_ms)
             .await
-            .map_err(|e| HostError::internal(e.to_string()))
+            .map_err(|e| SessionExecutionError::internal(e.to_string()))
     }
 
     /// The run ids currently dead-lettered on `thread` (ADR-0015, slice E).
-    pub async fn dead_letters(&self, thread: &str) -> Result<Vec<String>, HostError> {
+    pub async fn dead_letters(&self, thread: &str) -> Result<Vec<String>, SessionExecutionError> {
         let rows = self.durable_dispatch_rows(thread).await?;
         Ok(rows
             .into_iter()
@@ -528,13 +537,17 @@ impl crate::SessionRuns {
 
     /// Return one dead-lettered run to the durable queue with a fresh retry
     /// budget after the operator has repaired the external failure.
-    pub async fn requeue_dead_letter(&self, thread: &str, run_id: &str) -> Result<bool, HostError> {
+    pub async fn requeue_dead_letter(
+        &self,
+        thread: &str,
+        run_id: &str,
+    ) -> Result<bool, SessionExecutionError> {
         self.require_durable_delivery()?;
         let store = self.coordinator_dispatch()?;
         let belongs_to_thread = store
             .list_dispatches()
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?
+            .map_err(|error| SessionExecutionError::internal(error.to_string()))?
             .into_iter()
             .any(|row| {
                 row.run_id.0 == run_id
@@ -547,17 +560,17 @@ impl crate::SessionRuns {
         store
             .requeue(&RunId(run_id.to_owned()))
             .await
-            .map_err(|error| HostError::internal(error.to_string()))
+            .map_err(|error| SessionExecutionError::internal(error.to_string()))
     }
 
     /// Operator GC: purge every dead-lettered dispatch on `thread` (ADR-0015,
     /// slice E). Returns how many were removed.
-    pub async fn purge_dead_letters(&self, thread: &str) -> Result<usize, HostError> {
+    pub async fn purge_dead_letters(&self, thread: &str) -> Result<usize, SessionExecutionError> {
         self.durable_worker(thread).await?;
         self.coordinator_dispatch()?
             .purge_dead_letters()
             .await
-            .map_err(|e| HostError::internal(e.to_string()))
+            .map_err(|e| SessionExecutionError::internal(e.to_string()))
     }
 
     /// An operational snapshot of `thread`'s dispatch queue (ADR-0025): every row
@@ -565,7 +578,7 @@ impl crate::SessionRuns {
     pub async fn list_dispatches(
         &self,
         thread: &str,
-    ) -> Result<Vec<(String, String, u64, bool)>, HostError> {
+    ) -> Result<Vec<(String, String, u64, bool)>, SessionExecutionError> {
         let rows = self.durable_dispatch_rows(thread).await?;
         Ok(rows
             .into_iter()
@@ -582,7 +595,7 @@ impl crate::SessionRuns {
 
     /// The run ids superseded by a newer submission on `thread` (ADR-0022,
     /// slice E).
-    pub async fn superseded(&self, thread: &str) -> Result<Vec<String>, HostError> {
+    pub async fn superseded(&self, thread: &str) -> Result<Vec<String>, SessionExecutionError> {
         let rows = self.durable_dispatch_rows(thread).await?;
         Ok(rows
             .into_iter()
@@ -602,7 +615,7 @@ impl crate::SessionRuns {
         agent: Option<&str>,
         thread: &str,
         input: Vec<Message>,
-    ) -> Result<String, HostError> {
+    ) -> Result<String, SessionExecutionError> {
         // Cause/effect table for durable background admission:
         // B1 cold Thread + enqueue => freeze/validate an environment-free
         //    dispatch; only the later claim owner may realize the Environment.
@@ -631,7 +644,7 @@ impl crate::SessionRuns {
             Ok(pool) => pool
                 .submit_dispatch(request)
                 .await
-                .map_err(|e| HostError::internal(e.to_string()))?,
+                .map_err(|e| SessionExecutionError::internal(e.to_string()))?,
             // Coordinator-only durable server (no local pool): enqueue straight into
             // the shared store so a remote database-less worker drains it over the
             // dispatch transport. Non-durable keeps the original "enable the pool" error.
@@ -641,7 +654,7 @@ impl crate::SessionRuns {
                 store
                     .enqueue(request)
                     .await
-                    .map_err(|e| HostError::internal(e.to_string()))?;
+                    .map_err(|e| SessionExecutionError::internal(e.to_string()))?;
             }
             Err(e) => return Err(e),
         }
@@ -656,9 +669,9 @@ impl crate::SessionRuns {
         session_id: &str,
         ticket: &ResumeTicket,
         session_activity_epoch: u64,
-    ) -> Result<Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>, HostError> {
+    ) -> Result<Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>, SessionExecutionError> {
         if ticket.thread_id.0 != session_id || session_activity_epoch == 0 {
-            return Err(HostError::internal(
+            return Err(SessionExecutionError::internal(
                 "only an exact foreground Session root can enter durable resume",
             ));
         }
@@ -673,7 +686,7 @@ impl crate::SessionRuns {
                 .delegates
                 .is_empty()
         {
-            return Err(HostError::bad_request(
+            return Err(SessionExecutionError::bad_request(
                 "legacy Run ticket cannot resume a delegation-capable root without frozen tool sources",
             ));
         }
@@ -692,7 +705,7 @@ impl crate::SessionRuns {
         store
             .enqueue(request)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
         Ok(store)
     }
 
@@ -707,9 +720,9 @@ impl crate::SessionRuns {
         &self,
         session_id: &str,
         child_thread_id: &ThreadId,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), SessionExecutionError> {
         if child_thread_id.0 == session_id {
-            return Err(HostError::bad_request(
+            return Err(SessionExecutionError::bad_request(
                 "a coordinated child Thread must differ from its parent Session",
             ));
         }
@@ -736,13 +749,13 @@ impl crate::SessionRuns {
         session_id: &str,
         logical_thread_id: &ThreadId,
         commit: &HostCommit,
-    ) -> Result<Vec<RunId>, HostError> {
+    ) -> Result<Vec<RunId>, SessionExecutionError> {
         let store = self.coordinator_dispatch()?;
         let parent = ThreadId(session_id.to_string());
         let rows = store
             .list_dispatches()
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
         Ok(rows
             .into_iter()
             .filter(|dispatch| {
@@ -772,25 +785,25 @@ impl crate::SessionRuns {
         thread: &str,
         tool_use_id: &str,
         resume: HostResume,
-    ) -> Result<CommittedStepReceipt, HostError> {
+    ) -> Result<CommittedStepReceipt, SessionExecutionError> {
         let ctx = self.run_assembly.ctx_for_resume(thread).await?;
         let _command = ctx.command.lock().await;
         let (run_id, ticket) = ctx
             .commit
             .open_wait_for_thread(&ctx.thread_id)
             .await
-            .map_err(HostError::internal)?
-            .ok_or_else(|| HostError::bad_request("no awaiting run to resume"))?;
+            .map_err(SessionExecutionError::internal)?
+            .ok_or_else(|| SessionExecutionError::bad_request("no awaiting run to resume"))?;
         let awaiting_snapshot = self.authoritative_step_snapshot(&ctx, &run_id).await?;
 
         if matches!(ticket.target(), AwaitTarget::RemoteInput { .. }) {
             if ticket.call_id() != Some(tool_use_id) {
-                return Err(HostError::bad_request(format!(
+                return Err(SessionExecutionError::bad_request(format!(
                     "tool_use_id {tool_use_id:?} does not match the pending remote input"
                 )));
             }
             let HostResume::ClientResult { content, .. } = resume else {
-                return Err(HostError::bad_request(
+                return Err(SessionExecutionError::bad_request(
                     "awaiting remote input requires a client result",
                 ));
             };
@@ -846,12 +859,12 @@ impl crate::SessionRuns {
                 // committed child ticket. Keep that adapter boundary as typed user
                 // input while still validating the parent call identity.
                 if ticket.call_id() != Some(tool_use_id) {
-                    return Err(HostError::bad_request(format!(
+                    return Err(SessionExecutionError::bad_request(format!(
                         "tool_use_id {tool_use_id:?} does not match the pending delegate"
                     )));
                 }
                 let HostResume::ClientResult { content, .. } = resume else {
-                    return Err(HostError::bad_request(
+                    return Err(SessionExecutionError::bad_request(
                         "awaiting remote Agent input requires a client result",
                     ));
                 };
@@ -884,9 +897,9 @@ impl crate::SessionRuns {
         }
 
         self.check_pending(&ticket, tool_use_id, resume.wants_client())?;
-        let (call_id, _) = ticket
-            .tool_call()
-            .ok_or_else(|| HostError::internal("awaiting run has no pending tool call"))?;
+        let (call_id, _) = ticket.tool_call().ok_or_else(|| {
+            SessionExecutionError::internal("awaiting run has no pending tool call")
+        })?;
         let result = match resume {
             HostResume::Permission(decision) => ResumeResult::Permission(decision),
             HostResume::ClientResult { content, is_error } => {
@@ -922,7 +935,7 @@ impl crate::SessionRuns {
         Ok(result)
     }
 
-    fn clear_active_run(ctx: &SessionCtx, run_id: &RunId) -> Result<(), HostError> {
+    fn clear_active_run(ctx: &SessionCtx, run_id: &RunId) -> Result<(), SessionExecutionError> {
         ctx.foreground.release(run_id)?;
         Ok(())
     }
@@ -934,7 +947,7 @@ impl crate::SessionRuns {
         state: RunState,
         expectation: StepCommitExpectation<'_>,
         thread: &str,
-    ) -> Result<CommittedStepReceipt, HostError> {
+    ) -> Result<CommittedStepReceipt, SessionExecutionError> {
         let active_run = run_id.clone();
         let result = self
             .finish_step(ctx, run_id, state, expectation, thread)
@@ -950,11 +963,11 @@ impl crate::SessionRuns {
         &self,
         ctx: &SessionCtx,
         run_id: &RunId,
-    ) -> Result<RunRecoverySnapshot, HostError> {
+    ) -> Result<RunRecoverySnapshot, SessionExecutionError> {
         ctx.commit
             .recovery_snapshot(&ctx.thread_id, run_id)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))
+            .map_err(|error| SessionExecutionError::internal(error.to_string()))
     }
 
     /// Project an admitted Session Run from its exact committed input identities.
@@ -966,7 +979,7 @@ impl crate::SessionRuns {
         run_id: RunId,
         state: RunState,
         input_message_ids: &[String],
-    ) -> Result<CommittedStepReceipt, HostError> {
+    ) -> Result<CommittedStepReceipt, SessionExecutionError> {
         let committed = self.authoritative_step_snapshot(ctx, &run_id).await?;
         let messages_before = message_prefix_before_exact_inputs(&committed, input_message_ids)?;
         let _projection = ctx.projection.lock().await;
@@ -993,7 +1006,7 @@ impl crate::SessionRuns {
         run_id: RunId,
         state: RunState,
         messages_before: usize,
-    ) -> Result<CommittedStepReceipt, HostError> {
+    ) -> Result<CommittedStepReceipt, SessionExecutionError> {
         let _projection = ctx.projection.lock().await;
         self.finish_step(
             ctx,
@@ -1017,7 +1030,7 @@ impl crate::SessionRuns {
         state: RunState,
         expectation: StepCommitExpectation<'_>,
         thread: &str,
-    ) -> Result<CommittedStepReceipt, HostError> {
+    ) -> Result<CommittedStepReceipt, SessionExecutionError> {
         // Cause/effect: when peer P commits this Run, this Coordinator's local
         // projection is stale but the recovery snapshot contains P's messages,
         // state, and tickets. Project that one committed truth or fail closed;

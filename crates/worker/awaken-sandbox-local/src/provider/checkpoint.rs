@@ -4,8 +4,9 @@
 use std::io::{Read as _, Write};
 use std::path::Path;
 
-use super::{LocalProvider, LocalSandbox, content_fingerprint, pc};
+use super::{LocalProvider, LocalSandbox, pc};
 use crate::realization_marker::CheckpointParticipantGuard;
+use awaken_resource_contract::content_id;
 
 /// Borrow the original Ready/Removing participant through the shared effect
 /// authority. This adapter owns no lock, journal, lease or cached receipt.
@@ -174,7 +175,7 @@ impl LocalProvider {
         let sandbox = target.into_target();
         let bytes = store.get(&request.checkpoint.id).await?;
         if u64::try_from(bytes.len()).unwrap_or(u64::MAX) != request.checkpoint.size_bytes
-            || content_fingerprint(&bytes) != request.checkpoint.digest
+            || content_id(&bytes) != request.checkpoint.digest
         {
             return Err(pc::SandboxError::conflict(
                 "checkpoint size or digest mismatch",
@@ -356,7 +357,7 @@ impl LocalSandbox {
                 request.max_bytes
             )));
         }
-        let digest = content_fingerprint(&bytes);
+        let digest = content_id(&bytes);
         if let Some((operation, request_fingerprint)) = operation.as_mut() {
             if let Some(reference) =
                 (*operation).begin_checkpoint_upload(request_fingerprint, &digest, size_bytes)?

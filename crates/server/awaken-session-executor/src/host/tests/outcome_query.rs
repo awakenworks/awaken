@@ -22,7 +22,7 @@ async fn outcome_queries_need_no_frozen_runtime_or_environment_and_preserve_comm
             reached: Arc::new(tokio::sync::Notify::new()),
             calls: AtomicUsize::new(0),
         });
-        let host = (crate::HostDependencies::ephemeral(model.clone(), "stub").await)
+        let host = (crate::SessionExecutorBuilder::ephemeral(model.clone(), "stub").await)
             .build()
             .expect("validated Host dependencies");
         let managed = install_test_dispatch_runtime(&host);

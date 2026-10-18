@@ -5,8 +5,8 @@ use crate::environment_owner::{
     RetiringEnvironmentOwner, RetiringSessionEnvironment, SessionEnvironmentOwner,
     SessionEnvironmentPreparation, SessionEnvironmentRetirementCause, UnboundSessionEnvironment,
 };
-use crate::host_error::HostError;
 use crate::session_environment::SessionEnvironmentAdoptionDisposition;
+use crate::session_execution_error::SessionExecutionError;
 
 use state::RetirementSelection;
 use std::sync::Arc;
@@ -49,7 +49,7 @@ impl crate::RunAssembly {
         thread: &str,
         workspace_id: &str,
         state: &awaken_session_state_contract::SessionEnvironmentState,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), SessionExecutionError> {
         self.installed_sessions
             .install(thread)
             .expect("installed Sessions");
@@ -133,20 +133,20 @@ impl crate::RunAssembly {
         &self,
         thread: &str,
         retirement: &RetiringSessionEnvironment,
-    ) -> Result<bool, HostError> {
+    ) -> Result<bool, SessionExecutionError> {
         use awaken_session_environment::test_support::SandboxEnvironmentAccess as _;
         let environment = retirement.owned.environment();
         environment
             .lifecycle()
             .stop_bound_processes()
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
         self.observe_retirement_status(
             thread,
             retirement,
             environment.sandbox_environment().status().await,
         )
-        .map_err(|error| HostError::internal(error.to_string()))
+        .map_err(|error| SessionExecutionError::internal(error.to_string()))
     }
 
     pub async fn discard_session_environment(
@@ -192,7 +192,7 @@ impl crate::RunAssembly {
         &self,
         thread: &str,
         candidate: &UnboundSessionEnvironment,
-    ) -> Result<BoundSessionEnvironmentIdentity, HostError> {
+    ) -> Result<BoundSessionEnvironmentIdentity, SessionExecutionError> {
         let effect = self
             .realization_executor
             .environments()

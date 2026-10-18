@@ -414,7 +414,7 @@ impl PreparedLocalSandbox {
 pub(crate) fn ensure_registered_local_provider(
     prepared: &Option<PreparedLocalSandbox>,
     manifest: &awaken_worker_contract::WorkerManifest,
-    deps: &awaken_session_executor::HostDependencies,
+    deps: &awaken_session_executor::SessionExecutorBuilder,
 ) -> std::io::Result<()> {
     let Some(PreparedLocalSandbox { backend, .. }) = prepared else {
         return Ok(());

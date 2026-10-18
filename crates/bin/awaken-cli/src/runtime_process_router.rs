@@ -67,7 +67,9 @@ pub(super) async fn prepare_runtime_routers(
     // does not own (e.g. an ACP executor for `acp:*` threads) without this
     // module naming that backend's crate. `None` in production; `Some` in a scenario that
     // serves external-CLI sessions.
-    customize_host: Option<Box<dyn FnOnce(HostDependencies) -> HostDependencies + Send>>,
+    customize_host: Option<
+        Box<dyn FnOnce(SessionExecutorBuilder) -> SessionExecutorBuilder + Send>,
+    >,
 ) -> Result<ProcessRouters, String> {
     let mut base = open_process_base(stores, iam, remote_iam, process).await?;
     let resources = assemble_deployment_and_resources(&mut base).await?;
@@ -531,7 +533,9 @@ async fn assemble_execution_host(
     cloud: &mut CloudPlane,
     control: &ControlSurface,
     execution: &ExecutionStores,
-    customize_host: Option<Box<dyn FnOnce(HostDependencies) -> HostDependencies + Send>>,
+    customize_host: Option<
+        Box<dyn FnOnce(SessionExecutorBuilder) -> SessionExecutorBuilder + Send>,
+    >,
 ) -> Result<ExecutionHost, String> {
     let clock = base.stores.clock.clone();
     let runtime_authority = base
@@ -546,7 +550,7 @@ async fn assemble_execution_host(
     // below selects the Session environment and ACP routes from it.
     let (deployment, host_builder) = match base.process.deployment.take() {
         Some(deployment) => {
-            let host_builder = HostDependencies::for_coordinator(
+            let host_builder = SessionExecutorBuilder::for_coordinator(
                 cloud.model_wiring.executor.clone(),
                 cloud.model_wiring.model_ref.clone(),
                 awaken_session_executor::WorkerContentAdapters {
@@ -554,7 +558,10 @@ async fn assemble_execution_host(
                     memory: resources.resource_authorities.memory_execution_content(),
                 },
                 execution.memory_extractions.clone(),
-                deployment.host_process(base.stores.platform_workspace.clone(), clock.clone())?,
+                deployment.session_execution_process(
+                    base.stores.platform_workspace.clone(),
+                    clock.clone(),
+                )?,
                 runtime_authority.clone(),
             );
             (deployment, host_builder)
@@ -562,7 +569,7 @@ async fn assemble_execution_host(
         #[cfg(any(test, feature = "test-support"))]
         None => {
             let deployment = awaken_session_executor::DeploymentConfig::ephemeral();
-            let host_builder = HostDependencies::for_local_resources(
+            let host_builder = SessionExecutorBuilder::for_local_resources(
                 cloud.model_wiring.executor.clone(),
                 cloud.model_wiring.model_ref.clone(),
                 awaken_session_executor_testkit::local_resource_ports(

@@ -19,8 +19,8 @@ use awaken_dispatch_contract::{
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_session_types::RunError;
 
-use crate::HostError;
-use crate::managed_adapter_error::to_run_error;
+use crate::SessionExecutionError;
+use crate::session_execution_error::to_run_error;
 use crate::thread_reads::recovery_ticket;
 
 /// Budget accounting for one process. Consumer: the Session application's
@@ -41,15 +41,17 @@ impl BudgetAccounting {
     pub(crate) async fn session_budget_resume_tickets(
         &self,
         session_id: &str,
-    ) -> Result<Vec<awaken_session_application_contract::SessionBudgetResumeTicket>, HostError>
-    {
+    ) -> Result<
+        Vec<awaken_session_application_contract::SessionBudgetResumeTicket>,
+        SessionExecutionError,
+    > {
         let parent = ThreadId(session_id.to_string());
         let mut thread_ids = vec![parent.clone()];
         let dispatch_rows = if let Some(store) = self.session_runs.optional_dispatch_store() {
             store
                 .list_dispatches()
                 .await
-                .map_err(|error| HostError::internal(error.to_string()))?
+                .map_err(|error| SessionExecutionError::internal(error.to_string()))?
         } else {
             Vec::new()
         };
@@ -72,14 +74,14 @@ impl BudgetAccounting {
             let Some(latest) = commit
                 .authoritative_latest_run(&thread_id)
                 .await
-                .map_err(HostError::internal)?
+                .map_err(SessionExecutionError::internal)?
             else {
                 continue;
             };
             let snapshot = commit
                 .recovery_snapshot(&thread_id, &latest.id)
                 .await
-                .map_err(|error| HostError::internal(error.to_string()))?;
+                .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
             if let Some(ticket) = recovery_ticket(&snapshot, &latest.id)?
                 && ticket.reason() == AwaitReason::BudgetReached
             {
@@ -104,10 +106,12 @@ impl BudgetAccounting {
     pub(crate) async fn resume_budget_reached(
         &self,
         delivery: awaken_session_application_contract::SessionBudgetResumeDelivery,
-    ) -> Result<awaken_session_application_contract::SessionBudgetResumeDisposition, HostError>
-    {
+    ) -> Result<
+        awaken_session_application_contract::SessionBudgetResumeDisposition,
+        SessionExecutionError,
+    > {
         if delivery.session_activity_epoch == 0 {
-            return Err(HostError::bad_request(
+            return Err(SessionExecutionError::bad_request(
                 "budget resume requires a newly admitted Session activity",
             ));
         }
@@ -118,7 +122,7 @@ impl BudgetAccounting {
         let snapshot = commit
             .recovery_snapshot(&delivery.thread_id, &delivery.run_id)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
         let Some(ticket) = recovery_ticket(&snapshot, &delivery.run_id)? else {
             return Ok(awaken_session_application_contract::SessionBudgetResumeDisposition::Stale);
         };
@@ -135,7 +139,7 @@ impl BudgetAccounting {
             Some(store) => store
                 .list_dispatches()
                 .await
-                .map_err(|error| HostError::internal(error.to_string()))?
+                .map_err(|error| SessionExecutionError::internal(error.to_string()))?
                 .into_iter()
                 .find(|row| row.run_id == delivery.run_id),
             None => None,
@@ -145,7 +149,7 @@ impl BudgetAccounting {
                 || dispatch.session_thread_id.as_ref()
                     != Some(&ThreadId(delivery.session_id.to_string()))
             {
-                return Err(HostError::bad_request(
+                return Err(SessionExecutionError::bad_request(
                     "budget resume dispatch affinity is inconsistent",
                 ));
             }
@@ -169,7 +173,7 @@ impl BudgetAccounting {
             if delivery.thread_id.0 != delivery.session_id
                 || delivery.prior_session_activity_epoch.is_some()
             {
-                return Err(HostError::internal(
+                return Err(SessionExecutionError::internal(
                     "budget-paused child Run has no durable dispatch row",
                 ));
             }
@@ -214,12 +218,12 @@ impl BudgetAccounting {
                 Some(delivery.session_activity_epoch),
             )
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
         self.session_runs
             .dispatch
             .publish_staged(&store)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
         Ok(awaken_session_application_contract::SessionBudgetResumeDisposition::Dispatched)
     }
 }

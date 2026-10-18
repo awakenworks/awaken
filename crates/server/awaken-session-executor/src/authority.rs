@@ -510,8 +510,10 @@ impl RuntimeAuthority for EphemeralRuntimeAuthority {
 #[async_trait::async_trait]
 pub(crate) trait SessionAuthority: Send + Sync {
     /// The commit boundary a Session writes through.
-    async fn open_commit(&self, thread: &str)
-    -> Result<crate::store::HostCommit, crate::HostError>;
+    async fn open_commit(
+        &self,
+        thread: &str,
+    ) -> Result<crate::store::HostCommit, crate::SessionExecutionError>;
 
     /// The durable interrupted-stream checkpoint store, when this process owns
     /// one. A Worker persists checkpoints through its claim-fenced dispatch
@@ -519,14 +521,17 @@ pub(crate) trait SessionAuthority: Send + Sync {
     fn stream_checkpoint(
         &self,
         thread: &str,
-    ) -> Result<Option<Arc<dyn StreamCheckpointStore>>, crate::HostError>;
+    ) -> Result<Option<Arc<dyn StreamCheckpointStore>>, crate::SessionExecutionError>;
 
     /// The claim-fenced commit transport claimed Runs write through; `None`
     /// when they commit through this process's own authority.
     #[cfg(test)]
     fn claimed_commit(
         &self,
-    ) -> Result<Option<Arc<dyn awaken_dispatch_contract::ClaimedRunCommit>>, crate::HostError>;
+    ) -> Result<
+        Option<Arc<dyn awaken_dispatch_contract::ClaimedRunCommit>>,
+        crate::SessionExecutionError,
+    >;
 
     /// The claim-fenced live-progress publisher; `None` relays progress through
     /// this process's completion registry.
@@ -540,7 +545,10 @@ pub(crate) trait SessionAuthority: Send + Sync {
     ) -> Option<Arc<dyn awaken_session_realization_contract::SessionTerminalCleanupControl>>;
 
     /// Whether committed Thread truth for `thread` already exists durably.
-    async fn durable_thread_exists(&self, thread: &str) -> Result<bool, crate::HostError>;
+    async fn durable_thread_exists(
+        &self,
+        thread: &str,
+    ) -> Result<bool, crate::SessionExecutionError>;
 
     /// The durable dispatch store this process owns, if any.
     fn dispatch_binding(&self) -> Option<awaken_dispatch_erasure::DispatchBinding>;
@@ -595,7 +603,7 @@ impl SessionAuthority for LocalAuthority {
     async fn open_commit(
         &self,
         thread: &str,
-    ) -> Result<crate::store::HostCommit, crate::HostError> {
+    ) -> Result<crate::store::HostCommit, crate::SessionExecutionError> {
         Ok(crate::store::HostCommit::Local(
             self.runtime.open_commit(thread).await?,
         ))
@@ -604,15 +612,17 @@ impl SessionAuthority for LocalAuthority {
     fn stream_checkpoint(
         &self,
         thread: &str,
-    ) -> Result<Option<Arc<dyn StreamCheckpointStore>>, crate::HostError> {
+    ) -> Result<Option<Arc<dyn StreamCheckpointStore>>, crate::SessionExecutionError> {
         Ok(Some(self.runtime.stream_checkpoint(thread)?))
     }
 
     #[cfg(test)]
     fn claimed_commit(
         &self,
-    ) -> Result<Option<Arc<dyn awaken_dispatch_contract::ClaimedRunCommit>>, crate::HostError>
-    {
+    ) -> Result<
+        Option<Arc<dyn awaken_dispatch_contract::ClaimedRunCommit>>,
+        crate::SessionExecutionError,
+    > {
         Ok(None)
     }
 
@@ -628,7 +638,10 @@ impl SessionAuthority for LocalAuthority {
         None
     }
 
-    async fn durable_thread_exists(&self, thread: &str) -> Result<bool, crate::HostError> {
+    async fn durable_thread_exists(
+        &self,
+        thread: &str,
+    ) -> Result<bool, crate::SessionExecutionError> {
         Ok(self.runtime.durable_thread_exists(thread).await?)
     }
 
@@ -684,7 +697,7 @@ impl UpstreamAuthority {
     /// Required executable-Worker wiring, checked before Host construction.
     /// These are connection selections, not evidence that any remote effect
     /// was authorized or completed; actual calls still verify their fences.
-    pub(crate) fn validate_worker_connections(&self) -> Result<(), crate::HostError> {
+    pub(crate) fn validate_worker_connections(&self) -> Result<(), crate::SessionExecutionError> {
         let required = [
             (self.dispatch.is_some(), "upstream dispatch transport"),
             (
@@ -701,7 +714,7 @@ impl UpstreamAuthority {
             ),
         ];
         if let Some((_, name)) = required.into_iter().find(|(present, _)| !present) {
-            return Err(crate::HostError::bad_request(format!(
+            return Err(crate::SessionExecutionError::bad_request(format!(
                 "Worker construction requires {name}",
             )));
         }
@@ -762,7 +775,7 @@ impl SessionAuthority for UpstreamAuthority {
     async fn open_commit(
         &self,
         _thread: &str,
-    ) -> Result<crate::store::HostCommit, crate::HostError> {
+    ) -> Result<crate::store::HostCommit, crate::SessionExecutionError> {
         Ok(crate::store::HostCommit::Remote(
             crate::store::RemoteHostCommit::new(),
         ))
@@ -771,15 +784,17 @@ impl SessionAuthority for UpstreamAuthority {
     fn stream_checkpoint(
         &self,
         _thread: &str,
-    ) -> Result<Option<Arc<dyn StreamCheckpointStore>>, crate::HostError> {
+    ) -> Result<Option<Arc<dyn StreamCheckpointStore>>, crate::SessionExecutionError> {
         Ok(None)
     }
 
     #[cfg(test)]
     fn claimed_commit(
         &self,
-    ) -> Result<Option<Arc<dyn awaken_dispatch_contract::ClaimedRunCommit>>, crate::HostError>
-    {
+    ) -> Result<
+        Option<Arc<dyn awaken_dispatch_contract::ClaimedRunCommit>>,
+        crate::SessionExecutionError,
+    > {
         self.dispatch
             .as_ref()
             .and_then(|binding| match binding.placement() {
@@ -790,7 +805,7 @@ impl SessionAuthority for UpstreamAuthority {
             })
             .map(Some)
             .ok_or_else(|| {
-                crate::HostError::internal(
+                crate::SessionExecutionError::internal(
                     "database-less Worker requires an injected claimed-commit transport",
                 )
             })
@@ -808,7 +823,10 @@ impl SessionAuthority for UpstreamAuthority {
         self.terminal_cleanup_control.clone()
     }
 
-    async fn durable_thread_exists(&self, _thread: &str) -> Result<bool, crate::HostError> {
+    async fn durable_thread_exists(
+        &self,
+        _thread: &str,
+    ) -> Result<bool, crate::SessionExecutionError> {
         Ok(false)
     }
 

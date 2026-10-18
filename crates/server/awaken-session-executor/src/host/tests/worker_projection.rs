@@ -120,7 +120,7 @@ async fn missing_projection_admits_only_the_direct_empty_revision_zero_noop() {
         initial_commit: None,
     }]);
     for rule in rules {
-        let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+        let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
             .build()
             .expect("validated Host dependencies");
         let _runtime = host.clone();
@@ -380,10 +380,10 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         // E2 B2 preserves the same projection; E3 B3-B5 publish no conflicting
         // projection; E4 B6 installs the baseline and evicts only the stale
         // coordination envelope so a later File attachment can be realized.
-        let baseline_host = (crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub")
-            .await)
-            .build()
-            .expect("validated Host dependencies");
+        let baseline_host =
+            (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub").await)
+                .build()
+                .expect("validated Host dependencies");
         let _baseline_runtime = baseline_host.clone();
         let first_projection = projection("baseline-a", true);
         baseline_host
@@ -555,14 +555,14 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         // Agent, manifest, prompt, or lease fragment may survive independently. An
         // empty process-local coordination slot is not Session truth and may remain
         // to serialize a concurrent retry.
-        let failed_host = ((crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub")
-            .await)
-            .with_session_execution(
-                crate::SessionExecutionDependencies::default()
-                    .with_repository_binding_verifier(Arc::new(FailingRepositoryVerifier)),
-            ))
-        .build()
-        .expect("validated Host dependencies");
+        let failed_host =
+            ((crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub").await)
+                .with_session_execution(
+                    crate::SessionExecutionDependencies::default()
+                        .with_repository_binding_verifier(Arc::new(FailingRepositoryVerifier)),
+                ))
+            .build()
+            .expect("validated Host dependencies");
         let _failed_runtime = failed_host.clone();
         let mut rejected = projection("must not publish", false);
         rejected.resources = effective_repository(
@@ -615,7 +615,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
     let roots = ManagedSessionRootFixture::new().await;
     let host = roots
         .configure(
-            crate::HostDependencies::ephemeral(Arc::new(recorder), "stub")
+            crate::SessionExecutorBuilder::ephemeral(Arc::new(recorder), "stub")
                 .await
                 .with_session_execution(
                     crate::SessionExecutionDependencies::default()
@@ -648,7 +648,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         // | A1 | T | T | T | Worker claim | E2 |
         // | A2 | T | T | T | Coordinator Dispatch | E1 |
         let amendment_host =
-            ((crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub").await)
+            ((crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub").await)
                 .with_session_execution(
                     crate::SessionExecutionDependencies::default()
                         .with_repository_binding_verifier(Arc::new(
@@ -842,7 +842,8 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
     // | Rule | C1 | C2 changed | C3 replay | Effect |
     // | B1   | T  | T          | F         | E1+E3  |
     // | B2   | T  | F          | T         | E2+E3  |
-    let branch_host = (crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub").await)
+    let branch_host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub")
+        .await)
         .build()
         .expect("validated Host dependencies");
     install_test_session_application(&branch_host);
@@ -1209,7 +1210,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
             .await
             .expect("reservation dispatch"),
     );
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_ephemeral_dispatch(dispatch.clone()))
     .build()
@@ -1640,7 +1641,7 @@ async fn acp_execution_rebuilds_an_envelope_only_reservation_context() {
     ));
     let sandbox_root = tempfile::tempdir().expect("Namespace fixture root");
     let exporter = Arc::new(crate::acp_tool_export::RecordingAcpToolExporter::default());
-    let mut raw_host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let mut raw_host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_agent_publications(Arc::new(publications))
         .with_acp(Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(
@@ -1713,7 +1714,7 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
         .await
         .expect("report continuation queue"),
     );
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_ephemeral_dispatch(dispatch.clone()))
     .build()
@@ -1871,7 +1872,7 @@ async fn rebuilt_coordination_context_never_borrows_a_retained_environment() {
     // of truth. Rules: R1=C1+C2+coordination=>E1;
     // R2=C1+C2+execution=>E2.
     let thread = "retained-environment-coordination";
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     install_test_session_application(&host);
@@ -1932,7 +1933,7 @@ async fn claimed_inference_only_context_keeps_scope_without_a_resource_transitio
     // or fabricated Resource transition, retaining Execution purpose; R2 dispatch still carries Workspace
     // scope even without resource bytes. The live template Outcome E2E verifies
     // the same path through the remote Worker and official Managed API.
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "model").await)
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "model").await)
         .build()
         .expect("validated Host dependencies");
     install_test_session_application(&host);

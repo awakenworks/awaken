@@ -10,8 +10,8 @@
 use awaken_session_execution_contract::OutcomeDrive;
 use awaken_session_types::RunError;
 
-use crate::managed_adapter_error::to_run_error;
 use crate::outcome_report::progress;
+use crate::session_execution_error::to_run_error;
 
 pub(crate) async fn define(
     host: &crate::Outcomes,

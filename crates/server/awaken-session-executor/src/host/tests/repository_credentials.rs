@@ -130,7 +130,7 @@ impl awaken_provisioning_contract::RepositoryRealizer for RecordingRepositoryRea
 #[tokio::test]
 async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
     for (rule, install_credentials) in [("D1", true), ("D2", false)] {
-        let host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await;
+        let host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await;
         let workspace = host.local_workspace().to_owned();
         let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
         let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
@@ -368,7 +368,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         epoch: 7,
     };
     let sequenced = Arc::new(SequencedRepositoryTransport::default());
-    let host = ((crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let host = ((crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .with_session_execution(
             crate::SessionExecutionDependencies::default()
                 .with_repository_binding_verifier(sequenced.clone()),
@@ -542,7 +542,8 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
     );
 
     let downgrade = Arc::new(GatewayThenDirectRepositoryTransport(AtomicUsize::new(0)));
-    let downgrade_host = ((crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let downgrade_host = ((crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
+        .await)
         .with_session_execution(
             crate::SessionExecutionDependencies::default()
                 .with_repository_binding_verifier(downgrade.clone()),
@@ -580,7 +581,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
     assert_eq!(downgrade.0.load(Ordering::SeqCst), 2, "P6");
     assert!(downgrade_realizer.0.lock().unwrap().is_empty(), "P6");
 
-    let direct_host = ((crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let direct_host = ((crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .with_session_execution(
             crate::SessionExecutionDependencies::default().with_repository_binding_verifier(
                 Arc::new(FixedRepositoryTransport(
@@ -643,7 +644,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
     );
     Box::pin(async {
         let remote_verifier = Arc::new(SequencedRepositoryTransport::default());
-        let remote = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await
+        let remote = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await
             .with_authority(crate::UpstreamAuthority::default())
             .with_session_execution(crate::SessionExecutionDependencies::default()
                 .with_repository_binding_verifier(remote_verifier.clone())))
@@ -729,7 +730,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
 
         // C12: upstream publication checks a missing verifier BEFORE looking up
         // Workspace; ordinary Platform clone performs that Slot read FIRST.
-        let missing = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await
+        let missing = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await
             .with_authority(crate::UpstreamAuthority::default()))
             .build().expect("C12 upstream has no verifier");
         missing.run_assembly.installed_sessions.replace_frozen_with(session, |next| next.workspace = Some("terminal-original-workspace".into())).expect("installed Sessions");
@@ -912,7 +913,7 @@ async fn repository_credential_realization_follows_the_decision_table() {
     ];
 
     for rule in rules {
-        let host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await;
+        let host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await;
         let workspace = host.local_workspace().to_owned();
         let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
         let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
@@ -1137,7 +1138,7 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
     let host = ((crate::host::with_test_resource_validation(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
+        crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await,
     ))
     .with_credentials(credentials.clone(), secrets.clone()))
     .build()

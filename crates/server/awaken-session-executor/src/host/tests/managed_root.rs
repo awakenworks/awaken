@@ -40,8 +40,8 @@ impl ManagedSessionRootFixture {
 
     pub(crate) fn configure(
         &self,
-        dependencies: crate::HostDependencies,
-    ) -> crate::HostDependencies {
+        dependencies: crate::SessionExecutorBuilder,
+    ) -> crate::SessionExecutorBuilder {
         dependencies.with_environment_binding_sink(self.binding_sink.clone())
     }
 

@@ -3,7 +3,7 @@
 use super::*;
 
 async fn host_with_process_reaper() -> Arc<ExecutorComponents> {
-    (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_mcp_process_reaper(Arc::new(awaken_run_executor_acp::Supervisor)))
     .build()
@@ -609,7 +609,8 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
             state: McpProjectionState::Active,
         }
     };
-    let missing_reaper_host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let missing_reaper_host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
+        .await)
         .build()
         .expect("validated Host dependencies");
     let missing = generation("mcp-reaper-missing", 9);
@@ -1711,7 +1712,7 @@ async fn worker_authority_loss_revokes_every_session_projection() {
 #[tokio::test]
 async fn a_github_repository_resource_does_not_create_a_parallel_mcp_projection() {
     use awaken_session_configuration_contract::SessionInit;
-    let dependencies = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let dependencies = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_mcp_process_reaper(Arc::new(awaken_run_executor_acp::Supervisor));
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());

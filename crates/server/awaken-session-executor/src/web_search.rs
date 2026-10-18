@@ -44,19 +44,19 @@ fn acp_web_tool_disposition(
     acp_cli_id: &str,
     descriptor: &awaken_runtime_contract::resolved::ToolDescriptor,
     display_name: &str,
-) -> Result<AcpWebToolDisposition, crate::HostError> {
+) -> Result<AcpWebToolDisposition, crate::SessionExecutionError> {
     let Some(projection) = descriptor.provider_server_tool.as_ref() else {
         return Ok(AcpWebToolDisposition::ExportHostTool);
     };
     if !policy.contains(acp_cli_id) {
-        return Err(crate::HostError::bad_request(format!(
+        return Err(crate::SessionExecutionError::bad_request(format!(
             "unknown ACP adapter `{acp_cli_id}`"
         )));
     }
     if policy.realizes_provider_server_tool(acp_cli_id, projection) {
         return Ok(AcpWebToolDisposition::UseAcpBuiltin);
     }
-    Err(crate::HostError::bad_request(format!(
+    Err(crate::SessionExecutionError::bad_request(format!(
         "ACP `{acp_cli_id}` cannot realize the selected provider-server {display_name}"
     )))
 }
@@ -136,7 +136,7 @@ impl crate::RunCapabilities {
             Option<ConfiguredWebTool>,
             Option<ConfiguredWebTool>,
         ),
-        crate::HostError,
+        crate::SessionExecutionError,
     > {
         let search = if spec
             .plugin_ids
@@ -145,7 +145,7 @@ impl crate::RunCapabilities {
         {
             let execution_configuration =
                 awaken_ext_builtin_tools::web_search_execution_configuration(toolsets)
-                    .map_err(crate::HostError::bad_request)?;
+                    .map_err(crate::SessionExecutionError::bad_request)?;
             let plugin = self.web_search_plugin(thread, execution_configuration)?;
             if is_acp {
                 Some(
@@ -154,7 +154,9 @@ impl crate::RunCapabilities {
                             spec.plugin_config
                                 .get(awaken_ext_builtin_tools::WEB_SEARCH_PLUGIN_ID),
                         )
-                        .map_err(|error| crate::HostError::bad_request(error.to_string()))?,
+                        .map_err(|error| {
+                            crate::SessionExecutionError::bad_request(error.to_string())
+                        })?,
                 )
             } else {
                 runtime = runtime.with_plugin(plugin);
@@ -172,7 +174,7 @@ impl crate::RunCapabilities {
                 (*self.web_fetch_plugin(
                     thread,
                     awaken_ext_builtin_tools::web_fetch_execution_configuration(toolsets)
-                        .map_err(crate::HostError::bad_request)?,
+                        .map_err(crate::SessionExecutionError::bad_request)?,
                 )?)
                 .clone()
                 .with_tool_source_catalogue(&spec.tool_descriptors),
@@ -184,7 +186,9 @@ impl crate::RunCapabilities {
                             spec.plugin_config
                                 .get(awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID),
                         )
-                        .map_err(|error| crate::HostError::bad_request(error.to_string()))?,
+                        .map_err(|error| {
+                            crate::SessionExecutionError::bad_request(error.to_string())
+                        })?,
                 )
             } else {
                 runtime = runtime.with_plugin(plugin);
@@ -204,7 +208,7 @@ impl crate::RunCapabilities {
         acp_cli_id: &str,
         display_name: &str,
         configured: Option<ConfiguredWebTool>,
-    ) -> Result<AcpWebToolRealization, crate::HostError> {
+    ) -> Result<AcpWebToolRealization, crate::SessionExecutionError> {
         let Some((descriptor, tool)) = configured else {
             return Ok(AcpWebToolRealization::NotConfigured);
         };
@@ -254,7 +258,7 @@ impl crate::RunCapabilities {
             Vec<ConfiguredWebTool>,
             Vec<awaken_runtime_contract::resolved::ProviderServerTool>,
         ),
-        crate::HostError,
+        crate::SessionExecutionError,
     > {
         let mut host_tools = Vec::new();
         let mut provider_server_tools = Vec::new();
@@ -272,7 +276,7 @@ impl crate::RunCapabilities {
                             )
                     })
             }) {
-                return Err(crate::HostError::bad_request(format!(
+                return Err(crate::SessionExecutionError::bad_request(format!(
                     "PROVIDER_SERVER_TOOL_APPROVAL_UNSUPPORTED: {label} is executed inside the model provider and cannot satisfy per-call Awaken approval; select an Awaken-hosted provider or change the permission to always_allow"
                 )));
             }
@@ -493,7 +497,7 @@ mod tests {
             ToolsetPolicy, ToolsetSource,
         };
         let host = (crate::acp_backend::with_fixture_acp(
-            crate::HostDependencies::ephemeral(
+            crate::SessionExecutorBuilder::ephemeral(
                 Arc::new(crate::no_model::NoModelConfiguredExecutor),
                 "stub",
             )
@@ -795,7 +799,7 @@ mod tests {
                 calls: fetch_calls.clone(),
             }))
             .unwrap();
-        let host = (crate::HostDependencies::ephemeral(
+        let host = (crate::SessionExecutorBuilder::ephemeral(
             Arc::new(crate::no_model::NoModelConfiguredExecutor),
             "stub",
         )
@@ -821,7 +825,7 @@ mod tests {
             "credential_access": access,
             "options": {},
         });
-        let without_materializer = (crate::HostDependencies::ephemeral(
+        let without_materializer = (crate::SessionExecutorBuilder::ephemeral(
             Arc::new(crate::no_model::NoModelConfiguredExecutor),
             "stub",
         )
@@ -851,7 +855,7 @@ mod tests {
             "R8 Fetch requires a materializer"
         );
 
-        let foreign = (crate::HostDependencies::ephemeral(
+        let foreign = (crate::SessionExecutorBuilder::ephemeral(
             Arc::new(crate::no_model::NoModelConfiguredExecutor),
             "stub",
         )

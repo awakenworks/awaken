@@ -2,7 +2,7 @@
 //! Skill and Memory/compaction extension assembly from one acquired context.
 
 use super::{SemanticSkillTools, resources::ContextResources};
-use crate::HostError;
+use crate::SessionExecutionError;
 use crate::compact::{
     compact_backend as build_compact_backend, compact_runner as build_compact_runner,
 };
@@ -28,7 +28,7 @@ pub(super) async fn skills(
     thread: &str,
     resources: &mut ContextResources,
     mut runtime: Runtime,
-) -> Result<SkillWiring, HostError> {
+) -> Result<SkillWiring, SessionExecutionError> {
     let realizations = host.realization_executor.sessions();
     let frozen_skill_versions = resources.plan.frozen_skill_versions.take();
     let installed = &resources.plan.installed;
@@ -136,15 +136,15 @@ pub(super) async fn skills(
         session_dispatch,
     )
     .await
-    .map_err(HostError::internal)?
+    .map_err(SessionExecutionError::internal)?
     {
         if content_delivery == crate::frozen_inputs::ManagedContentDelivery::ManagedFilesystem {
             let prompt = crate::skill_delivery::filesystem_skill_prompt(registry.as_ref())
-                .map_err(HostError::internal)?;
+                .map_err(SessionExecutionError::internal)?;
             realizations.update_realization(thread, |r| r.project_skill_prompt(prompt))?;
         } else {
             if session_dispatch {
-                return Err(HostError::bad_request(
+                return Err(SessionExecutionError::bad_request(
                     "Managed Agent Skills require filesystem progressive disclosure, but this Session disables every filesystem tool",
                 ));
             }
@@ -175,7 +175,7 @@ pub(super) async fn skills(
                         adapter.descriptors.clone(),
                         vec![adapter.list_tool.clone(), adapter.activate_tool.clone()],
                     )
-                    .map_err(HostError::internal)?,
+                    .map_err(SessionExecutionError::internal)?,
                 ));
             }
             if !is_acp {
@@ -216,7 +216,7 @@ pub(super) async fn memory(
     thread: &str,
     resources: &ContextResources,
     mut runtime: Runtime,
-) -> Result<MemoryWiring, HostError> {
+) -> Result<MemoryWiring, SessionExecutionError> {
     let installed = &resources.plan.installed;
     let fallback_model_ref = &resources.plan.fallback_model_ref;
     let publication_source = &resources.plan.publication_source;
@@ -248,7 +248,7 @@ pub(super) async fn memory(
     let selected_memory = if installed.is_some() {
         let binding_id = if published_memory_selected {
             Some(authored_memory.binding_id.as_deref().ok_or_else(|| {
-                HostError::bad_request(
+                SessionExecutionError::bad_request(
                     "the Awaken memory extension requires an explicit `memory.binding_id`",
                 )
             })?)
@@ -275,7 +275,7 @@ pub(super) async fn memory(
     let memory_selector = recalled_memory
         .as_ref()
         .map(
-            |_| -> Result<Arc<dyn awaken_ext_memory::RecallSelector>, HostError> {
+            |_| -> Result<Arc<dyn awaken_ext_memory::RecallSelector>, SessionExecutionError> {
                 let agent_id = authored_memory
                     .selector_agent_id
                     .as_deref()
@@ -289,7 +289,7 @@ pub(super) async fn memory(
                         .unwrap_or(awaken_ext_memory::DEFAULT_SELECTOR_INSTRUCTIONS),
                 )
                 .map_err(|error| {
-                    HostError::bad_request(format!(
+                    SessionExecutionError::bad_request(format!(
                         "host default model reference `{fallback_model_ref}` for the \
                          Memory selector is not an executable binding: {error}"
                     ))
@@ -301,7 +301,7 @@ pub(super) async fn memory(
                     fallback,
                     authored_memory.selector_instructions.as_deref(),
                 )
-                .map_err(HostError::bad_request)?;
+                .map_err(SessionExecutionError::bad_request)?;
                 Ok(Arc::new(crate::memory::AgentSelector::new(
                     host.capabilities.agent.llm.clone(),
                     snapshot,
@@ -351,7 +351,7 @@ fn compact(
     resources: &ContextResources,
     mut runtime: Runtime,
     plugin_ids: &mut Vec<String>,
-) -> Result<(Runtime, ContextPolicy), HostError> {
+) -> Result<(Runtime, ContextPolicy), SessionExecutionError> {
     let installed = &resources.plan.installed;
     let fallback_model_ref = &resources.plan.fallback_model_ref;
     let publication_source = &resources.plan.publication_source;
@@ -380,7 +380,7 @@ fn compact(
                 .map(serde_json::from_value::<awaken_ext_compact::CompactConfig>)
                 .transpose()
                 .map_err(|error| {
-                    HostError::bad_request(format!(
+                    SessionExecutionError::bad_request(format!(
                         "invalid published compact plugin config: {error}"
                     ))
                 })?
@@ -403,7 +403,7 @@ fn compact(
                     .map(serde_json::from_value::<awaken_ext_compact::CompactConfig>)
                     .transpose()
                     .map_err(|error| {
-                        HostError::bad_request(format!(
+                        SessionExecutionError::bad_request(format!(
                             "invalid host compact plugin config: {error}"
                         ))
                     })?
@@ -423,7 +423,7 @@ fn compact(
                     .unwrap_or(awaken_ext_compact::DEFAULT_COMPACT_INSTRUCTIONS),
             )
             .map_err(|error| {
-                HostError::bad_request(format!(
+                SessionExecutionError::bad_request(format!(
                     "host default model reference `{fallback_model_ref}` for the \
                      compactor is not an executable binding: {error}"
                 ))
@@ -435,7 +435,7 @@ fn compact(
                 fallback,
                 compact_config.agent_instructions.as_deref(),
             )
-            .map_err(HostError::bad_request)?;
+            .map_err(SessionExecutionError::bad_request)?;
             let agent_tool = build_compact_runner(
                 host.capabilities.agent.llm.clone(),
                 snapshot,

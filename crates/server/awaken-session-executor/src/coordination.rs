@@ -753,7 +753,7 @@ mod tests {
         // routing. A cloned binding cannot silently hold a second connection.
         let local = Arc::new(RecordingSessionAgentCoordination::default());
         let local_port: Arc<dyn SessionAgentCoordination> = local.clone();
-        let host = (crate::HostDependencies::ephemeral(Arc::new(EndpointModel), "stub")
+        let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(EndpointModel), "stub")
             .await
             .with_session_control(Arc::new(RemoteControl::default())))
         .build()

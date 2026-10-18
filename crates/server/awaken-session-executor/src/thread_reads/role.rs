@@ -6,7 +6,7 @@
 
 use awaken_session_types::RunError;
 
-use crate::managed_adapter_error::to_run_error;
+use crate::session_execution_error::to_run_error;
 
 use super::ThreadReads;
 

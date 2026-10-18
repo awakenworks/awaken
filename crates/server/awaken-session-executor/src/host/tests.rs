@@ -26,7 +26,7 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
             .unwrap(),
     );
     let (host, _managed) = dispatch_test_host(
-        (crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub")
+        (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub")
             .await
             .with_ephemeral_dispatch(dispatch.clone()))
         .build()

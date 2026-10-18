@@ -45,7 +45,7 @@ pub(super) async fn session_preparation_claim_next(
 ) -> (StatusCode, Json<Value>) {
     let result: Result<Value, RealizationHttpError> = async {
         verify_worker_identity(&worker, &request.identity)
-            .map_err(HostError::bad_request)
+            .map_err(ApplicationError::bad_request)
             .map_err(RealizationHttpError::from)?;
         let authority = claim_authority(&service, &worker, Some(&request.identity), false)
             .await
@@ -60,7 +60,7 @@ pub(super) async fn session_preparation_claim_next(
                 authority.now_ms,
             )
         {
-            return Err(RealizationHttpError::from(HostError::bad_request(
+            return Err(RealizationHttpError::from(ApplicationError::bad_request(
                 "Session preparation requires one live Ready Worker without reassignment",
             )));
         }
@@ -71,7 +71,7 @@ pub(super) async fn session_preparation_claim_next(
             authority.now_ms,
         )
         .ok_or_else(|| {
-            RealizationHttpError::from(HostError::bad_request(
+            RealizationHttpError::from(ApplicationError::bad_request(
                 "Session preparation claim outlives Worker authority",
             ))
         })?;
@@ -79,7 +79,7 @@ pub(super) async fn session_preparation_claim_next(
             .session_preparation_control
             .as_ref()
             .ok_or_else(|| {
-                RealizationHttpError::from(HostError::internal(
+                RealizationHttpError::from(ApplicationError::internal(
                     "Session preparation control is not configured",
                 ))
             })?;
@@ -126,12 +126,12 @@ pub(super) async fn session_cleanup_claim_next(
 ) -> (StatusCode, Json<Value>) {
     let result: Result<Value, RealizationHttpError> = async {
         verify_worker_identity(&worker, &request.identity)
-            .map_err(HostError::bad_request)
+            .map_err(ApplicationError::bad_request)
             .map_err(RealizationHttpError::from)?;
         if request.sweep_cursor_version
             != awaken_session_realization_contract::TERMINAL_CLEANUP_SWEEP_CURSOR_VERSION
         {
-            return Err(RealizationHttpError::from(HostError::bad_request(
+            return Err(RealizationHttpError::from(ApplicationError::bad_request(
                 "unsupported Session cleanup sweep cursor protocol",
             )));
         }
@@ -147,7 +147,7 @@ pub(super) async fn session_cleanup_claim_next(
                 authority.now_ms,
             )
         {
-            return Err(RealizationHttpError::from(HostError::bad_request(
+            return Err(RealizationHttpError::from(ApplicationError::bad_request(
                 "Session cleanup recovery claim exceeds authenticated Worker authority",
             )));
         }
@@ -164,7 +164,7 @@ pub(super) async fn session_cleanup_claim_next(
             authority.now_ms,
         )
         .ok_or_else(|| {
-            RealizationHttpError::from(HostError::bad_request(
+            RealizationHttpError::from(ApplicationError::bad_request(
                 "Session cleanup recovery claim outlives the authenticated Worker authority",
             ))
         })?;
@@ -186,7 +186,7 @@ pub(super) async fn verify_terminal_cleanup_authority(
     lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
 ) -> Result<ClaimAuthority, RealizationHttpError> {
     verify_worker_identity(worker, identity)
-        .map_err(HostError::bad_request)
+        .map_err(ApplicationError::bad_request)
         .map_err(RealizationHttpError::from)?;
     let authority = claim_authority(service, worker, Some(identity), false)
         .await
@@ -197,7 +197,7 @@ pub(super) async fn verify_terminal_cleanup_authority(
     // the current authenticated Worker incarnation prevent a stale owner from
     // submitting effects. The Session aggregate rechecks the generation again.
     if lease.owner != identity.worker_id || lease.runtime_incarnation != identity.lease_owner() {
-        return Err(RealizationHttpError::from(HostError::bad_request(
+        return Err(RealizationHttpError::from(ApplicationError::bad_request(
             "Session cleanup lease is not owned by the authenticated Worker incarnation",
         )));
     }
@@ -210,7 +210,7 @@ fn terminal_cleanup_snapshot(
     // claim_authority already enforces the canonical current protocol floor.
     // Terminal effects additionally forbid the no-directory local/test path.
     authority.snapshot.as_ref().ok_or_else(|| {
-        RealizationHttpError::from(HostError::internal(
+        RealizationHttpError::from(ApplicationError::internal(
             "Worker directory is required for terminal-cleanup transport",
         ))
     })
@@ -334,7 +334,7 @@ pub(super) async fn session_resume(
             .await
             .map_err(RealizationHttpError::from)?;
         if authority.owner != request.claim.owner {
-            return Err(RealizationHttpError::from(HostError::bad_request(
+            return Err(RealizationHttpError::from(ApplicationError::bad_request(
                 "authenticated worker does not own the Session resume claim",
             )));
         }
@@ -342,24 +342,24 @@ pub(super) async fn session_resume(
             .dispatch
             .lock_commit_epoch(&request.claim)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))
+            .map_err(|error| ApplicationError::internal(error.to_string()))
             .map_err(RealizationHttpError::from)?
             .ok_or_else(|| {
-                RealizationHttpError::from(HostError::bad_request("Session resume claim is stale"))
+                RealizationHttpError::from(ApplicationError::bad_request("Session resume claim is stale"))
             })?;
         if !guard.is_live_at(authority.now_ms) {
-            return Err(RealizationHttpError::from(HostError::bad_request(
+            return Err(RealizationHttpError::from(ApplicationError::bad_request(
                 "Session resume claim lease has expired",
             )));
         }
         let dispatch = guard.request();
         if dispatch.run_id() != &request.claim.run_id {
-            return Err(RealizationHttpError::from(HostError::bad_request(
+            return Err(RealizationHttpError::from(ApplicationError::bad_request(
                 "guarded dispatch does not match the Session resume claim",
             )));
         }
         if dispatch.session_thread_id().0 != request.session_id {
-            return Err(RealizationHttpError::from(HostError::bad_request(
+            return Err(RealizationHttpError::from(ApplicationError::bad_request(
                 "Session resume target does not match the claimed Run",
             )));
         }
@@ -369,17 +369,17 @@ pub(super) async fn session_resume(
             .map(|envelope| envelope.decode_with(SessionResourceManifest::decode_resources))
             .transpose()
             .map_err(|error| {
-                RealizationHttpError::from(HostError::bad_request(error.to_string()))
+                RealizationHttpError::from(ApplicationError::bad_request(error.to_string()))
             })?;
         let receipt = request.session_work_authority.as_ref().ok_or_else(|| {
-            RealizationHttpError::from(HostError::bad_request(
+            RealizationHttpError::from(ApplicationError::bad_request(
                 "Session resume requires exact Work authority",
             ))
         })?;
         if receipt.session_id().as_str() != request.session_id
             || receipt.worker_owner() != request.identity.lease_owner()
         {
-            return Err(RealizationHttpError::from(HostError::bad_request(
+            return Err(RealizationHttpError::from(ApplicationError::bad_request(
                 "Session resume Work authority identity does not match the claim",
             )));
         }
@@ -393,12 +393,12 @@ pub(super) async fn session_resume(
         .await
         .map_err(RealizationHttpError::from)?;
         if !receipt.matches_observation(&observed) {
-            return Err(RealizationHttpError::from(HostError::bad_request(
+            return Err(RealizationHttpError::from(ApplicationError::bad_request(
                 "Session resume Work authority is stale",
             )));
         }
         let control = service.session_control.as_ref().ok_or_else(|| {
-            RealizationHttpError::from(HostError::internal("Session control is not configured"))
+            RealizationHttpError::from(ApplicationError::internal("Session control is not configured"))
         })?;
         let registry_expiry = authority
             .snapshot
@@ -414,7 +414,7 @@ pub(super) async fn session_resume(
                 || asserted.runtime_incarnation != request.identity.lease_owner()
                 || asserted.expires_at_unix_ms > registry_expiry
             {
-                return Err(RealizationHttpError::from(HostError::bad_request(
+                return Err(RealizationHttpError::from(ApplicationError::bad_request(
                     "Session continuation exceeds authenticated Worker authority",
                 )));
             }
@@ -472,7 +472,7 @@ pub(super) async fn session_resume(
                 Some(realization)
             }
             Ok(_) => {
-                return Err(RealizationHttpError::from(HostError::bad_request(
+                return Err(RealizationHttpError::from(ApplicationError::bad_request(
                     "Session realization directive does not match claimed Work authority",
                 )));
             }
@@ -497,7 +497,7 @@ pub(super) async fn session_resume(
             ));
         }
         if !guard.is_live_at(service.clock.now_ms()) {
-            return Err(RealizationHttpError::from(HostError::bad_request(
+            return Err(RealizationHttpError::from(ApplicationError::bad_request(
                 "Session resume claim expired before realization assignment",
             )));
         }
@@ -533,7 +533,7 @@ pub(super) async fn authorize_session_environment_effect(
 ) -> (StatusCode, Json<Value>) {
     let result: Result<Value, RealizationHttpError> = async {
         let lease = request.intent.realization().ok_or_else(|| {
-            RealizationHttpError::from(HostError::bad_request(
+            RealizationHttpError::from(ApplicationError::bad_request(
                 "remote Session Environment effects require a realization lease",
             ))
         })?;
@@ -550,7 +550,7 @@ pub(super) async fn authorize_session_environment_effect(
             .session_environment_bindings
             .as_ref()
             .ok_or_else(|| {
-                RealizationHttpError::from(HostError::internal(
+                RealizationHttpError::from(ApplicationError::internal(
                     "Session Environment binding authority is not configured",
                 ))
             })?
@@ -581,7 +581,7 @@ pub(super) async fn persist_session_environment_receipt(
 ) -> (StatusCode, Json<Value>) {
     let result: Result<Value, RealizationHttpError> = async {
         let lease = request.receipt.realization.as_ref().ok_or_else(|| {
-            RealizationHttpError::from(HostError::bad_request(
+            RealizationHttpError::from(ApplicationError::bad_request(
                 "remote Session Environment receipts require a realization lease",
             ))
         })?;
@@ -598,7 +598,7 @@ pub(super) async fn persist_session_environment_receipt(
             .session_environment_bindings
             .as_ref()
             .ok_or_else(|| {
-                RealizationHttpError::from(HostError::internal(
+                RealizationHttpError::from(ApplicationError::internal(
                     "Session Environment binding authority is not configured",
                 ))
             })?
@@ -642,34 +642,38 @@ async fn session_work_ownership(
     worker_owner: &str,
     now_ms: u64,
     acquisition: awaken_session_application_contract::SessionWorkAcquisition,
-) -> Result<awaken_session_application_contract::SessionWorkOwnership, HostError> {
+) -> Result<awaken_session_application_contract::SessionWorkOwnership, ApplicationError> {
     let authority = service
         .session_work
         .as_ref()
-        .ok_or_else(|| HostError::internal("Session Work authority is not configured"))?;
+        .ok_or_else(|| ApplicationError::internal("Session Work authority is not configured"))?;
     authority
         .acquire_session_work(session_id, worker_owner, now_ms, acquisition)
         .await
-        .map_err(|error| HostError::internal(error.to_string()))
+        .map_err(|error| ApplicationError::internal(error.to_string()))
 }
 
 pub(super) fn session_control(
     service: &WorkerDispatchService,
-) -> Result<&Arc<dyn awaken_session_realization_contract::SessionRealizationControl>, HostError> {
+) -> Result<
+    &Arc<dyn awaken_session_realization_contract::SessionRealizationControl>,
+    ApplicationError,
+> {
     service
         .session_control
         .as_ref()
-        .ok_or_else(|| HostError::internal("Session control is not configured"))
+        .ok_or_else(|| ApplicationError::internal("Session control is not configured"))
 }
 
 pub(super) fn terminal_cleanup_control(
     service: &WorkerDispatchService,
-) -> Result<&Arc<dyn awaken_session_realization_contract::SessionTerminalCleanupControl>, HostError>
-{
-    service
-        .terminal_cleanup_control
-        .as_ref()
-        .ok_or_else(|| HostError::internal("Session terminal cleanup control is not configured"))
+) -> Result<
+    &Arc<dyn awaken_session_realization_contract::SessionTerminalCleanupControl>,
+    ApplicationError,
+> {
+    service.terminal_cleanup_control.as_ref().ok_or_else(|| {
+        ApplicationError::internal("Session terminal cleanup control is not configured")
+    })
 }
 
 #[tracing::instrument(name = "worker.session.realization.renew", skip_all, fields(session_id = %request.command.session_id, worker_id = %request.identity.worker_id, epoch = request.command.asserted_lease.epoch))]
@@ -682,7 +686,7 @@ pub(super) async fn renew_session_realization(
 ) -> (StatusCode, Json<Value>) {
     let result: Result<Value, RealizationHttpError> = async {
         verify_worker_identity(&worker, &request.identity)
-            .map_err(HostError::bad_request)?;
+            .map_err(ApplicationError::bad_request)?;
         let authority = claim_authority(&service, &worker, Some(&request.identity), false)
             .instrument(tracing::info_span!("session.realization.registry_authority"))
             .await?;
@@ -704,7 +708,7 @@ pub(super) async fn renew_session_realization(
                 authority.now_ms,
             )
         {
-            return Err(RealizationHttpError::from(HostError::bad_request(
+            return Err(RealizationHttpError::from(ApplicationError::bad_request(
                 "Session realization renewal does not match authenticated Worker authority",
             )));
         }
@@ -718,12 +722,12 @@ pub(super) async fn renew_session_realization(
             authority.now_ms,
         )
         .ok_or_else(|| {
-            RealizationHttpError::from(HostError::bad_request(
+            RealizationHttpError::from(ApplicationError::bad_request(
                 "Session realization renewal outlives the authenticated Worker authority",
             ))
         })?;
         if command.requested_expires_at_unix_ms < command.asserted_lease.expires_at_unix_ms {
-            return Err(RealizationHttpError::from(HostError::bad_request(
+            return Err(RealizationHttpError::from(ApplicationError::bad_request(
                 "Worker registry authority cannot extend the asserted Session realization lease",
             )));
         }

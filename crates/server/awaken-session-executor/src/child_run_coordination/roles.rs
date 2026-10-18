@@ -13,7 +13,7 @@ use awaken_session_application_contract::{DelegatedRun, StepOutcome};
 use awaken_session_types::RunError;
 
 use super::ChildRunCoordination;
-use crate::managed_adapter_error::to_run_error;
+use crate::session_execution_error::to_run_error;
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::CoordinationRuntime for ChildRunCoordination {

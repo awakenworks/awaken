@@ -40,7 +40,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     // | R3 | create/adopt | any | stale | n/a | E3; fail closed |
     //
     // This test owns R2. Run-ingress sandbox-binding conformance owns R3.
-    let mut raw_host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await;
+    let mut raw_host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await;
     raw_host.env.session_provider =
         awaken_session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             std::env::temp_dir().join(format!(
@@ -271,7 +271,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
 )]
 async fn invalid_repository_live_replacement_preserves_the_installed_generation() {
     let storage = tempfile::tempdir().unwrap();
-    let mut raw_host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await;
+    let mut raw_host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await;
     raw_host.env.session_provider =
         awaken_session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             storage.path().join("sandboxes"),
@@ -458,7 +458,7 @@ async fn applying_repository_detach_removes_the_resident_namespace_checkout() {
     git(&["add", "README.md"]);
     git(&["commit", "-q", "-m", "seed"]);
 
-    let mut raw_host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await;
+    let mut raw_host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await;
     raw_host.env.session_provider =
         awaken_session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             fixture.path().join("sandboxes"),
@@ -606,8 +606,12 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
     let mut deployment = crate::DeploymentConfig::ephemeral();
     deployment.sandbox_tier = crate::SandboxTier::Local;
     let host = (crate::host::with_test_resource_validation(
-        crate::HostDependencies::ephemeral_with_deployment(Arc::new(OkModel), "stub", deployment)
-            .await,
+        crate::SessionExecutorBuilder::ephemeral_with_deployment(
+            Arc::new(OkModel),
+            "stub",
+            deployment,
+        )
+        .await,
     ))
     .build()
     .expect("validated Host dependencies");
@@ -728,7 +732,7 @@ async fn committed_queries_do_not_provision_a_failed_session_environment() {
     let roots = ManagedSessionRootFixture::new().await;
     let host = (crate::host::with_test_resource_validation(
         roots.configure(
-            crate::HostDependencies::ephemeral_with_deployment(
+            crate::SessionExecutorBuilder::ephemeral_with_deployment(
                 Arc::new(OkModel),
                 "stub",
                 deployment,
@@ -877,7 +881,7 @@ async fn committed_queries_do_not_provision_a_failed_session_environment() {
 async fn frozen_environment_network_follows_the_decision_table() {
     use awaken_session_configuration_contract::SessionInit;
     let host = (crate::host::with_test_resource_validation(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
+        crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await,
     ))
     .build()
     .expect("validated Host dependencies");
@@ -951,7 +955,7 @@ async fn install_test_session_init_overlays_the_environment_sandbox_onto_the_spe
     use awaken_session_configuration_contract::SessionInit;
     let roots = ManagedSessionRootFixture::new().await;
     let host = roots
-        .configure(crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+        .configure(crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     install_test_session_application(&host);
@@ -1080,7 +1084,7 @@ async fn install_test_session_init_is_lazy_and_first_run_materializes_the_enviro
     use awaken_session_configuration_contract::SessionInit;
     let roots = ManagedSessionRootFixture::new().await;
     let host = roots
-        .configure(crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+        .configure(crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     install_test_session_application(&host);
@@ -1158,7 +1162,7 @@ async fn coordinator_dispatch_context_never_materializes_an_eager_environment() 
     // the dispatch context and require the zero-materialization effects below.
     use awaken_session_configuration_contract::SessionInit;
     use awaken_skill_store::{SkillBundleFile, SkillVersion, bundle_sha256};
-    let mut host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await;
+    let mut host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await;
     host.execution.local = crate::LocalExecution::RemoteWorkersOnly;
     let host = (host).build().expect("validated Host dependencies");
 
@@ -1275,7 +1279,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
     // exact ACP executor factory remains installed so this test isolates the
     // Coordinator-versus-Worker placement decision.
     let mut dependencies = crate::acp_backend::with_fixture_acp(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
+        crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await,
     );
     dependencies.execution.local = crate::LocalExecution::RemoteWorkersOnly;
     let host = (dependencies).build().expect("validated Host dependencies");
@@ -1493,10 +1497,10 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
         "P5/E2"
     );
 
-    let physical_without_provider = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
-        .await)
-        .build()
-        .expect("validated Host dependencies");
+    let physical_without_provider =
+        (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
+            .build()
+            .expect("validated Host dependencies");
     let realization_error = physical_without_provider
         .run_assembly
         .install_frozen_session_projection(
@@ -1517,7 +1521,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
             .contains("BackendOwned provisioning requires a trusted-host Session provider"),
         "P6: {realization_error:?}"
     );
-    let mut physical = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await;
+    let mut physical = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await;
     physical.env.backend_owned_session_provider = Some(
         awaken_session_environment::SandboxEnvironmentProvider::workdir_with_agent_stderr(
             std::env::temp_dir().join("awaken-worker-layout-provider"),
@@ -1541,7 +1545,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
         .await
         .expect("P7 claimed Worker validates its exact trusted provider");
 
-    let local = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let local = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     let error = match local
@@ -1583,7 +1587,7 @@ async fn frozen_environment_selects_trusted_host_exactly() {
     // provider strength cannot substitute for the exact trust decision.
     let namespace_root = tempfile::tempdir().unwrap();
     let trusted_root = tempfile::tempdir().unwrap();
-    let mut host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await;
+    let mut host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await;
     host.env.trusted_host = crate::TrustedHostPolicy::Admitted;
     host.env.session_provider =
         awaken_session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
@@ -1621,7 +1625,7 @@ async fn frozen_environment_selects_trusted_host_exactly() {
         .unwrap();
     assert!(selected.realizer().supports_host_identity(), "T1/E1");
 
-    let mut absent = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await;
+    let mut absent = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await;
     absent.env.trusted_host = crate::TrustedHostPolicy::Admitted;
     absent.env.session_provider =
         awaken_session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
@@ -1692,7 +1696,7 @@ async fn on_tool_use_text_only_run_keeps_the_environment_absent() {
     // Invariant: tool demand, not Run existence, owns lazy materialization.
     // Decision rule: complete the text-only partition and require E1.
     use awaken_session_configuration_contract::SessionInit;
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     install_test_session_application(&host);
@@ -1777,7 +1781,7 @@ async fn on_tool_use_published_delegate_forces_one_eager_environment() {
     let roots = ManagedSessionRootFixture::new().await;
     let host = roots
         .configure(
-            crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+            crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
                 .await
                 .with_agent_publications(Arc::new(publications)),
         )
@@ -1878,7 +1882,7 @@ async fn model_request_gate_follows_the_session_dispatch_decision_table() {
     // | G3   | yes| yes| E1     |
     // | G4   | yes| no | E3     |
     // | G5   | inherited child of G3 | yes | E1 with the same authority |
-    let direct = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let direct = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     let _direct_runtime = install_test_dispatch_runtime(&direct);
@@ -1894,10 +1898,10 @@ async fn model_request_gate_follows_the_session_dispatch_decision_table() {
 
     let coordination: Arc<dyn awaken_session_execution_contract::SessionAgentCoordination> =
         Arc::new(RejectingSessionAgentCoordination);
-    let direct_with_endpoint = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
-        .await)
-        .build()
-        .expect("validated Host dependencies");
+    let direct_with_endpoint =
+        (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
+            .build()
+            .expect("validated Host dependencies");
     install_test_dispatch_runtime(&direct_with_endpoint)
         .session_application_bindings()
         .bind_agent_coordination(coordination.clone())
@@ -1923,7 +1927,7 @@ async fn model_request_gate_follows_the_session_dispatch_decision_table() {
         runtime: None,
         environment: on_tool_use_environment(),
     };
-    let managed = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let managed = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     let managed_runtime = install_test_dispatch_runtime(&managed);
@@ -1963,7 +1967,7 @@ async fn model_request_gate_follows_the_session_dispatch_decision_table() {
         "G5 a synchronous child inherits the exact Session request authority"
     );
 
-    let missing = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let missing = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     install_test_dispatch_runtime(&missing)

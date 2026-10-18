@@ -21,7 +21,7 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
     let physical_id = environment.lifecycle().handle().sandbox_id;
     let durable_generation = generation(thread);
     assert_ne!(physical_id, durable_generation.id(), "C2");
-    let host = (crate::HostDependencies::ephemeral(
+    let host = (crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
         "stub",
     )
@@ -183,7 +183,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
         ("terminal-background-retiring-legacy", true, false),
     ] {
         let root = tempfile::tempdir().unwrap();
-        let host = (crate::HostDependencies::ephemeral(
+        let host = (crate::SessionExecutorBuilder::ephemeral(
             Arc::new(crate::no_model::NoModelConfiguredExecutor),
             "stub",
         )
@@ -448,7 +448,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
                     &*(host.clone()).run_assembly,
                     guarded_effect.clone(),
                     guarded_authorization.clone().with_source_dispatch(source),
-                ).await.map_err(crate::host_error::from_run_error)
+                ).await.map_err(crate::session_execution_error::from_run_error)
                     .unwrap_err();
                 assert_eq!(
                     error.code, "session_terminal_source_dispatch_not_settled",
@@ -474,14 +474,18 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
                     &*(host.clone()).run_assembly,
                     effect,
                     authorization,
-                ).await.map_err(crate::host_error::from_run_error)
+                ).await.map_err(crate::session_execution_error::from_run_error)
             }
         });
         // A paused Tokio runtime may auto-advance once the quiescence timeout
         // is the only runnable future, so the classified timeout itself is the
         // stable evidence; observing an intermediate scheduler state is not.
         let error = blocked.await.unwrap().unwrap_err();
-        assert_eq!(error.kind, HostErrorKind::Unavailable, "E1: {error:?}");
+        assert_eq!(
+            error.kind,
+            SessionExecutionErrorKind::Unavailable,
+            "E1: {error:?}"
+        );
         assert_eq!(
             error.code, "session_terminal_background_not_quiescent",
             "E1"
@@ -541,7 +545,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
                     &*(host.clone()).run_assembly,
                     effect.clone(),
                     authorization,
-                ).await.map_err(crate::host_error::from_run_error)
+                ).await.map_err(crate::session_execution_error::from_run_error)
             .expect("C4 identical Preparation retry");
         assert_eq!(
             preparation.artifact_receipts.len(),
@@ -661,7 +665,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     // aggregate owns both receipt gates; an empty dispatch queue is no proof.
     let thread = "terminal-unmaterialized-replay";
     let root = tempfile::tempdir().unwrap();
-    let host = (crate::HostDependencies::ephemeral(
+    let host = (crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
         "stub",
     )
@@ -757,7 +761,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
                     &*(host.clone()).run_assembly,
                     effect.clone(),
                     authorization.clone(),
-                ).await.map_err(crate::host_error::from_run_error)
+                ).await.map_err(crate::session_execution_error::from_run_error)
         .expect("U1 provider-proved reconstruction");
     assert!(
         first.artifact_receipts.is_empty(),
@@ -811,7 +815,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
                     &*(host.clone()).run_assembly,
                     effect.clone(),
                     authorization.clone(),
-                ).await.map_err(crate::host_error::from_run_error)
+                ).await.map_err(crate::session_execution_error::from_run_error)
             .expect_err("U6 wrong ownership cannot prepare");
         assert!(
             output.exists(),
@@ -838,14 +842,14 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         stale_authorization,
     )
     .await
-    .map_err(crate::host_error::from_run_error)
+    .map_err(crate::session_execution_error::from_run_error)
     .expect_err("U6 foreign realization cannot prepare");
     assert!(output.exists(), "U6 stale Preparation keeps physical bytes");
     let preparation = awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
                     &*(host.clone()).run_assembly,
                     effect.clone(),
                     authorization,
-                ).await.map_err(crate::host_error::from_run_error)
+                ).await.map_err(crate::session_execution_error::from_run_error)
         .expect("U2 identical Preparation after response loss");
     assert_eq!(first, preparation, "U2 stable receipt");
     let same_owner = || {
@@ -969,7 +973,7 @@ async fn cold_checkpoint_disposal_cannot_seed_an_owner_without_preparation() {
     // Cold adoption belongs exclusively to the preceding source Preparation
     // phase and is covered end-to-end by the canonical Host continuation tests.
     let thread = "cold-checkpoint-source";
-    let host = (crate::HostDependencies::ephemeral(
+    let host = (crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
         "stub",
     )

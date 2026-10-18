@@ -8,11 +8,13 @@ async fn assigned_staging_requires_a_root_and_direct_assertions_never_override_a
     // root -> Assigned can replay the exact receipt; closed root -> both reject.
     // Keep the real transport and its original projection visible to the test:
     // no replacement slot, fabricated root, or alternate material store exists.
-    let host =
-        crate::HostDependencies::ephemeral(Arc::new(crate::NoModelConfiguredExecutor), "stub")
-            .await
-            .build()
-            .unwrap();
+    let host = crate::SessionExecutorBuilder::ephemeral(
+        Arc::new(crate::NoModelConfiguredExecutor),
+        "stub",
+    )
+    .await
+    .build()
+    .unwrap();
     let managed = host.clone();
     let session = "explicit-staging-admission";
     let generation = crate::test_mcp::mcp_fence(session, "docs", 1, "runtime-1", 1, u64::MAX);

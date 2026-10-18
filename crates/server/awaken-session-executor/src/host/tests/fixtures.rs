@@ -32,8 +32,8 @@ pub(crate) fn test_resource_execution() -> crate::SessionExecutionDependencies {
 
 /// Prepare the same fixture validation ports before Host publication.
 pub(crate) fn with_test_resource_validation(
-    dependencies: crate::HostDependencies,
-) -> crate::HostDependencies {
+    dependencies: crate::SessionExecutorBuilder,
+) -> crate::SessionExecutorBuilder {
     dependencies.with_session_execution(test_resource_execution())
 }
 
@@ -155,8 +155,8 @@ impl awaken_provisioning_contract::MemoryMounter for TestMemoryMounter {
 }
 
 pub(crate) fn with_test_memory_mounter(
-    dependencies: crate::HostDependencies,
-) -> crate::HostDependencies {
+    dependencies: crate::SessionExecutorBuilder,
+) -> crate::SessionExecutorBuilder {
     let fs = dependencies.resources.memory_stores.snapshots();
     dependencies.with_memory_mounter(Arc::new(TestMemoryMounter { fs }))
 }
@@ -982,9 +982,9 @@ pub(crate) fn test_upstream_authority() -> crate::UpstreamAuthority {
 /// Select one physical Memory store before Host construction and retain its
 /// audit role at the test root. Host receives only execution content roles.
 pub(crate) async fn with_test_memory_history(
-    mut dependencies: crate::HostDependencies,
+    mut dependencies: crate::SessionExecutorBuilder,
 ) -> (
-    crate::HostDependencies,
+    crate::SessionExecutorBuilder,
     Arc<dyn awaken_resource_contract::MemoryVersionQueries>,
 ) {
     let backend = Arc::new(

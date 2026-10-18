@@ -8,7 +8,7 @@
 
 use crate::host::*;
 
-impl HostDependencies {
+impl SessionExecutorBuilder {
     /// Select the sole checkpoint-byte adapter. This does not install lifecycle
     /// state; Session root CAS remains authoritative.
     #[must_use]

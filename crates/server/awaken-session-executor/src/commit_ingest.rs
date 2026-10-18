@@ -34,13 +34,13 @@ pub async fn session_commit_owner(
         .commit_for_read(&session_thread.0)
         .await
         .map(|coordinator| coordinator as Arc<dyn OperationCoordinator>)
-        .map_err(crate::durable_operations::application_error)
+        .map_err(crate::session_execution_error::to_durable_error)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::HostError;
+    use crate::SessionExecutionError;
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
     use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
     use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -90,14 +90,14 @@ mod tests {
         host: &Arc<ExecutorComponents>,
         trusted_dispatch: &RunDispatch,
         operation: CommitOperation,
-    ) -> Result<CommitReceipt, HostError> {
+    ) -> Result<CommitReceipt, SessionExecutionError> {
         let session_thread = trusted_dispatch.session_thread_id();
         host.thread_reads
             .commit_for_read(&session_thread.0)
             .await?
             .commit_operation(operation)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))
+            .map_err(|error| SessionExecutionError::internal(error.to_string()))
     }
 
     fn claimed_memory_snapshot() -> (
@@ -247,8 +247,11 @@ mod tests {
         Arc<dyn awaken_resource_contract::MemoryVersionQueries>,
     ) {
         let (dependencies, versions) = crate::host::tests::fixtures::with_test_memory_history(
-            crate::HostDependencies::ephemeral(Arc::new(crate::host::MemoryHostModel), "stub")
-                .await,
+            crate::SessionExecutorBuilder::ephemeral(
+                Arc::new(crate::host::MemoryHostModel),
+                "stub",
+            )
+            .await,
         )
         .await;
         let host = dependencies
@@ -374,12 +377,14 @@ mod tests {
         let publications =
             awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([extractor.clone()])
                 .expect("one exact Memory extractor publication");
-        let admission =
-            (crate::HostDependencies::ephemeral(Arc::new(crate::host::MemoryHostModel), "stub")
-                .await
-                .with_agent_publications(Arc::new(publications)))
-            .build()
-            .expect("validated Host dependencies");
+        let admission = (crate::SessionExecutorBuilder::ephemeral(
+            Arc::new(crate::host::MemoryHostModel),
+            "stub",
+        )
+        .await
+        .with_agent_publications(Arc::new(publications)))
+        .build()
+        .expect("validated Host dependencies");
         admission
             .run_assembly
             .installed_sessions
@@ -542,12 +547,14 @@ mod tests {
             ])
             .expect("exact root and Memory extractor publications"),
         );
-        let admission =
-            (crate::HostDependencies::ephemeral(Arc::new(crate::host::MemoryHostModel), "stub")
-                .await
-                .with_agent_publications(publications.clone()))
-            .build()
-            .expect("validated Host dependencies");
+        let admission = (crate::SessionExecutorBuilder::ephemeral(
+            Arc::new(crate::host::MemoryHostModel),
+            "stub",
+        )
+        .await
+        .with_agent_publications(publications.clone()))
+        .build()
+        .expect("validated Host dependencies");
         let queue = Arc::new(
             awaken_dispatch::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
                 .await
@@ -556,10 +563,13 @@ mod tests {
         let roots = crate::host::tests::ManagedSessionRootFixture::new().await;
         let (dependencies, versions) = crate::host::tests::fixtures::with_test_memory_history(
             roots.configure(
-                crate::HostDependencies::ephemeral(Arc::new(crate::host::MemoryHostModel), "stub")
-                    .await
-                    .with_ephemeral_dispatch(queue.clone())
-                    .with_agent_publications(publications),
+                crate::SessionExecutorBuilder::ephemeral(
+                    Arc::new(crate::host::MemoryHostModel),
+                    "stub",
+                )
+                .await
+                .with_ephemeral_dispatch(queue.clone())
+                .with_agent_publications(publications),
             ),
         )
         .await;
@@ -971,7 +981,10 @@ mod tests {
         use crate::host::SelectedOnly;
         let injected: Arc<dyn ClaimedRunCommit> = Arc::new(SelectedOnly);
         let dependencies = || {
-            crate::HostDependencies::ephemeral(Arc::new(crate::NoModelConfiguredExecutor), "stub")
+            crate::SessionExecutorBuilder::ephemeral(
+                Arc::new(crate::NoModelConfiguredExecutor),
+                "stub",
+            )
         };
         assert!(
             (dependencies().await)
@@ -1019,6 +1032,6 @@ mod tests {
             Ok(_) => panic!("W3 must fail closed"),
             Err(error) => error,
         };
-        assert_eq!(error.kind, crate::HostErrorKind::Internal, "W3");
+        assert_eq!(error.kind, crate::SessionExecutionErrorKind::Internal, "W3");
     }
 }
