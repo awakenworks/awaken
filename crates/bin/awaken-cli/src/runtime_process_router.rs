@@ -679,7 +679,6 @@ fn assemble_session_plane(
     let webhook_delivery = lifecycle_webhook_delivery(base, control.webhook_stores.take());
     // The canonical Coordinator component owns Runtime background drain.
     // This process does not register a second drain for the same Host.
-    let managed_host = Arc::new(ManagedHost::new(host.host.clone()));
     let credentials = match control.vault_state.as_ref() {
         Some(vault) => awaken_session_application::SessionCredentials::read_write(vault.clone()),
         None => awaken_session_application::SessionCredentials::read_only(
@@ -694,14 +693,15 @@ fn assemble_session_plane(
                 resources.resource_application.purge_scheduler(),
             );
     let mut builder = awaken_session_application::SessionApplicationBuilder::new(
-        awaken_session_executor::session_execution_roles(&managed_host),
+        host.host.session_execution_roles(),
         host.host.run_assembly().clone(),
         host.session_persistence
             .take()
             .ok_or("Session persistence was already consumed")?,
         execution.environment_execution.clone(),
         awaken_session_application::SessionExecutionAdmission::new(
-            managed_host
+            host.host
+                .coordination()
                 .dispatch_observation_source()
                 .map_err(|error| error.to_string())?,
             base.worker_directory.clone(),
@@ -737,7 +737,7 @@ fn assemble_session_plane(
     bind_session_lifecycle_hooks(base, host, &session_application)?;
     let event_batch_cutover_validation =
         session_application.session_event_batch_cutover_validation_source();
-    install_managed_agent_coordination(&host.host, &managed_host, &session_application)
+    install_managed_agent_coordination(&host.host, &session_application)
         .expect("Managed Session coordination application binds before dispatch starts");
     // The Session `content_capture` projection decides with the Host's own
     // ceiling and the very policy sources its Run boundary reads.

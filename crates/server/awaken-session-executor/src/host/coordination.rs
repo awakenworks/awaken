@@ -66,7 +66,7 @@ fn dispatch_admission_error(error: awaken_dispatch_contract::DispatchError) -> H
 }
 
 async fn finish_coordinated_child_admission(
-    host: &SharedHost,
+    host: &crate::ChildRunCoordination,
     session_id: &str,
     thread_id: ThreadId,
     intent: CoordinatedRunIntent,
@@ -98,13 +98,33 @@ async fn finish_coordinated_child_admission(
             "Agent Thread terminated after a failed Run"
         }));
     }
-    if let Some(pool) = host.dispatch.dispatch_pool.get() {
-        pool.notify().await;
-    }
+    host.session_runs.notify_local_pool().await;
     Ok(SessionAgentMessageReceipt { thread_id })
 }
 
-impl SharedHost {
+impl crate::ChildRunCoordination {
+    /// Register before publishing one Session-owned resume, then project only
+    /// the next committed Step. The durable reply ingress and Worker execution
+    /// are shared with background Managed Event reconciliation.
+    pub(crate) async fn reply_and_observe_session_thread_tool(
+        &self,
+        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+        stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
+    ) -> Result<CommittedStepReceipt, HostError> {
+        let session_id = delivery.command.session_id.clone();
+        let run_id = delivery.command.expected_run_id.clone();
+        let correlation_id = delivery.command.expected_correlation_id.clone();
+        self.session_runs
+            .observe_published_resume(
+                session_id.as_str(),
+                run_id,
+                correlation_id,
+                stream_sink,
+                self.reply_session_thread_tool(delivery),
+            )
+            .await
+    }
+
     /// Resolve a public reply to the one currently committed Awaiting ticket.
     /// Thread recovery remains the authority; the Session event identity and
     /// version are only admission fences against delayed or reused call ids.
@@ -204,7 +224,7 @@ impl SharedHost {
                 ));
             }
         }
-        self.check_pending(
+        self.session_runs.check_pending(
             &ticket,
             &command.tool_use_id,
             command.reply.client_executed(),
@@ -237,7 +257,7 @@ impl SharedHost {
         command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
     ) -> Result<awaken_session_execution_contract::SessionThreadToolReplyFence, HostError> {
         // Resolve topology before SessionApplication opens a reply activity.
-        self.coordinator_dispatch()?;
+        self.session_runs.coordinator_dispatch()?;
         let (thread_id, _ticket) = match self.validated_session_thread_tool_reply(command).await {
             Ok(active) => active,
             Err(active_error) => match self.session_thread_tool_reply_receipt(command).await? {
@@ -260,6 +280,7 @@ impl SharedHost {
         };
         let parent = ThreadId(command.session_id.to_string());
         let dispatch = self
+            .session_runs
             .coordinator_dispatch()?
             .list_dispatches()
             .await
@@ -313,7 +334,7 @@ impl SharedHost {
         let result =
             super::run::session_thread_reply_result(&ticket, &command.tool_use_id, &command.reply);
 
-        let store = self.coordinator_dispatch()?;
+        let store = self.session_runs.coordinator_dispatch()?;
         let parent = ThreadId(command.session_id.to_string());
         let dispatch = store
             .list_dispatches()
@@ -332,12 +353,13 @@ impl SharedHost {
         } else {
             let epoch = session_activity_epoch
                 .ok_or_else(|| HostError::internal("foreground Session reply requires activity"))?;
-            self.enqueue_foreground_session_resume_dispatch(
-                command.session_id.as_str(),
-                &ticket,
-                epoch,
-            )
-            .await?
+            self.session_runs
+                .enqueue_foreground_session_resume_dispatch(
+                    command.session_id.as_str(),
+                    &ticket,
+                    epoch,
+                )
+                .await?
         };
         let context_messages = command
             .accompanying_system
@@ -366,8 +388,8 @@ impl SharedHost {
             )
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
-        if let Some(pool) = self.dispatch.dispatch_pool.get() {
-            pool.notify().await;
+        if self.session_runs.local_pool.get().is_some() {
+            self.session_runs.dispatch_hint.publish().await;
         } else {
             store
                 .relay()
@@ -541,7 +563,7 @@ impl SharedHost {
             activation,
             ThreadId(session_id.to_string()),
             Some(resources),
-            self.agent.agent_publications.as_deref(),
+            self.capabilities.agent.agent_publications.as_deref(),
         )
         .map_err(|error| HostError::bad_request(error.to_string()))?
         .with_session_activity_epoch(session_activity_epoch);
@@ -553,7 +575,7 @@ impl SharedHost {
                 max_unarchived_threads,
             )
             .await?;
-        let store = self.coordinator_dispatch()?;
+        let store = self.session_runs.coordinator_dispatch()?;
 
         store
             .enqueue_session_child(request, admission)
@@ -581,7 +603,7 @@ impl SharedHost {
                 "coordinated Agent report has inconsistent provenance",
             ));
         }
-        let store = self.coordinator_dispatch()?;
+        let store = self.session_runs.coordinator_dispatch()?;
 
         // This is Coordinator admission, not a physical execution attempt.
         // A completed child may have left its Environment with a remote Worker.
@@ -597,7 +619,8 @@ impl SharedHost {
             vec![command.message],
         )
         .with_model_ref_override(
-            self.agent
+            self.capabilities
+                .agent
                 .inference_routing
                 .override_for(command.session_id.as_str()),
         );
@@ -615,9 +638,7 @@ impl SharedHost {
             .enqueue(request)
             .await
             .map_err(dispatch_admission_error)?;
-        if let Some(pool) = self.dispatch.dispatch_pool.get() {
-            pool.notify().await;
-        }
+        self.session_runs.notify_local_pool().await;
         Ok(())
     }
 
@@ -646,6 +667,7 @@ impl SharedHost {
     ) -> Result<Vec<awaken_dispatch_contract::DispatchSummary>, HostError> {
         let parent = ThreadId(session_id.to_string());
         Ok(self
+            .session_runs
             .coordinator_dispatch()?
             .list_dispatches()
             .await
@@ -663,7 +685,9 @@ impl SharedHost {
         session_id: &str,
         thread_id: &ThreadId,
     ) -> Result<(), HostError> {
-        self.interrupt_session_thread(session_id, thread_id).await?;
+        self.session_runs
+            .interrupt_session_thread(session_id, thread_id)
+            .await?;
         if let Some(wake) = self.authority.dispatch_wake() {
             // This is only a latency hint. The durable cancellation intent and
             // dispatch row remain the recovery authority if the hint is lost.
@@ -878,9 +902,8 @@ mod tests {
                 .await
                 .expect("R2 original dispatch owner"),
         );
-        let managed = crate::ManagedHost::new(
-            crate::host::worker_resolver::test_support::adoption_host_over(dispatch.clone()).await,
-        );
+        let managed =
+            crate::host::worker_resolver::test_support::adoption_host_over(dispatch.clone()).await;
         let session = awaken_session_types::SessionId::from("certainty-session");
         let parent = RunId("certainty-parent".into());
         let thread = awaken_session_execution_contract::coordinated_thread_id(
@@ -913,6 +936,7 @@ mod tests {
         };
         assert_eq!(
             managed
+                .coordination
                 .coordinated_admission_receipt(CoordinatedAdmissionRef::Child(&command))
                 .await
                 .unwrap(),
@@ -953,6 +977,7 @@ mod tests {
         // Changed Session/Thread/Run/parent/call /
         // message/publication/epoch cannot be projected as that accepted A.
         let receipt = managed
+            .coordination
             .coordinated_admission_receipt(CoordinatedAdmissionRef::Child(&command))
             .await
             .unwrap()
@@ -972,6 +997,7 @@ mod tests {
                 _ => changed.session_activity_epoch = Some(2),
             }
             let error = managed
+                .coordination
                 .coordinated_admission_receipt(CoordinatedAdmissionRef::Child(&changed))
                 .await
                 .expect_err("R5 mismatch is unknown");
@@ -1057,6 +1083,7 @@ mod tests {
         dispatch.enqueue(scoped_request).await.unwrap();
         assert!(
             managed
+                .coordination
                 .coordinated_admission_receipt(CoordinatedAdmissionRef::Child(&scoped))
                 .await
                 .is_err(),
@@ -1085,6 +1112,7 @@ mod tests {
             .await
             .unwrap();
         let completed = managed
+            .coordination
             .coordinated_admission_receipt(CoordinatedAdmissionRef::Child(&command))
             .await
             .expect_err("R7 insufficient tombstone");
@@ -1229,18 +1257,20 @@ mod tests {
             .with_ephemeral_dispatch(dispatch.clone()))
             .build()
             .expect("validated Host dependencies");
-            host.installed_sessions.update(&session_id, |slot| {
-                slot.run.session_dispatch = true;
-                slot.replace_frozen_with(|next| {
-                    next.baseline = Some(baseline);
-                    // This resource-generation fixture explicitly supplies the
-                    // coordinator's unrestricted configuration; missing input is
-                    // not evidence of an unrestricted parent.
-                    next.tools = Some(Default::default());
+            host.run_assembly
+                .installed_sessions
+                .update(&session_id, |slot| {
+                    slot.run.session_dispatch = true;
+                    slot.replace_frozen_with(|next| {
+                        next.baseline = Some(baseline);
+                        // This resource-generation fixture explicitly supplies the
+                        // coordinator's unrestricted configuration; missing input is
+                        // not evidence of an unrestricted parent.
+                        next.tools = Some(Default::default());
+                    });
+                    slot.realization.staging_mut().manifest = active.clone();
+                    slot.realization.staging_mut().transition = transition;
                 });
-                slot.realization.staging_mut().manifest = active.clone();
-                slot.realization.staging_mut().transition = transition;
-            });
             let mut snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent-a")
                 .model(awaken_runtime_contract::resolved::ModelBinding::new(
                     "test", "model-a", "native",
@@ -1253,6 +1283,7 @@ mod tests {
                 .expect("published child snapshot");
 
             let receipt = host
+                .coordination
                 .admit_coordinated_run(CoordinatedRunCommand {
                     intent: CoordinatedRunIntent::Spawn,
                     session_id: awaken_session_types::SessionId::from(&session_id),
@@ -1340,7 +1371,8 @@ mod tests {
                 }],
                 client_tools: Vec::new(),
             };
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .replace_frozen_with(&session_id, |next| next.tools = Some(updated_tools.clone()));
             let mut target = awaken_runtime_contract::ExecutableAgentSnapshot::builder("roster-b")
                 .model(awaken_runtime_contract::resolved::ModelBinding::new(
@@ -1352,21 +1384,22 @@ mod tests {
             target.recompute_fingerprint().unwrap();
             let own = target.resolved_spec.plugin_config.agent.toolsets.clone();
             let next_run = RunId(format!("coordinated-resource-next-{rule}"));
-            host.admit_coordinated_run(CoordinatedRunCommand {
-                intent: CoordinatedRunIntent::Spawn,
-                session_id: awaken_session_types::SessionId::from(&session_id),
-                thread_id: ThreadId(format!("coordinated-resource-next-thread-{rule}")),
-                run_id: next_run.clone(),
-                parent_run_id: RunId("parent-source-next".into()),
-                parent_call_id: "next-call".into(),
-                operation_id: format!("next-source-{rule}"),
-                snapshot: target,
-                message: "next turn".into(),
-                session_activity_epoch: Some(1),
-                max_unarchived_threads: 24,
-            })
-            .await
-            .unwrap();
+            host.coordination
+                .admit_coordinated_run(CoordinatedRunCommand {
+                    intent: CoordinatedRunIntent::Spawn,
+                    session_id: awaken_session_types::SessionId::from(&session_id),
+                    thread_id: ThreadId(format!("coordinated-resource-next-thread-{rule}")),
+                    run_id: next_run.clone(),
+                    parent_run_id: RunId("parent-source-next".into()),
+                    parent_call_id: "next-call".into(),
+                    operation_id: format!("next-source-{rule}"),
+                    snapshot: target,
+                    message: "next turn".into(),
+                    session_activity_epoch: Some(1),
+                    max_unarchived_threads: 24,
+                })
+                .await
+                .unwrap();
             let next = dispatch
                 .claim_run(&next_run, "source-inspection", 1_000, &Default::default())
                 .await
@@ -1399,8 +1432,9 @@ mod tests {
 
             use awaken_dispatch_contract::DispatchEnqueue as _;
             use awaken_session_execution_contract::SessionCoordinationReads as _;
-            let managed = crate::ManagedHost::new(host.clone());
+            let managed = host.clone();
             let baseline = host
+                .run_assembly
                 .installed_sessions
                 .read(&session_id, |slot| slot.inputs.baseline.clone())
                 .unwrap()
@@ -1430,6 +1464,7 @@ mod tests {
             let report_rows = dispatch.list_dispatches().await.unwrap();
             assert_eq!(
                 managed
+                    .coordination
                     .coordinated_admission_receipt(
                         awaken_session_execution_contract::CoordinatedAdmissionRef::Report(
                             &report, &baseline
@@ -1450,6 +1485,7 @@ mod tests {
             );
             assert!(
                 managed
+                    .coordination
                     .coordinated_admission_receipt(
                         awaken_session_execution_contract::CoordinatedAdmissionRef::Report(
                             &changed, &baseline
@@ -1468,6 +1504,7 @@ mod tests {
             unknown_root.agent_revision = None;
             assert!(
                 managed
+                    .coordination
                     .coordinated_admission_receipt(
                         awaken_session_execution_contract::CoordinatedAdmissionRef::Report(
                             &report,
@@ -1481,6 +1518,7 @@ mod tests {
             unknown_root.agent_revision = Some(2);
             assert!(
                 managed
+                    .coordination
                     .coordinated_admission_receipt(
                         awaken_session_execution_contract::CoordinatedAdmissionRef::Report(
                             &report,

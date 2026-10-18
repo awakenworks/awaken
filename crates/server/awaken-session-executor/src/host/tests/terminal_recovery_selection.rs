@@ -97,7 +97,7 @@ async fn missing_terminal_work_preserves_successor(delayed: bool) {
         .expect("C2 successor Control-observed generation");
     let mut run = tokio::spawn({
         let host = host.clone();
-        async move { host.run(None, thread, user("successor")).await }
+        async move { host.session_runs.run(None, thread, user("successor")).await }
     });
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         tokio::select! {
@@ -133,6 +133,7 @@ async fn missing_terminal_work_preserves_successor(delayed: bool) {
     }
     let cancelled = token.is_cancelled();
     let retained = host
+        .run_assembly
         .installed_sessions
         .read(thread, |slot| {
             slot.realization.execution().authority.lease() == Some(&successor)
@@ -213,7 +214,7 @@ async fn missing_current_terminal_work_retires_original(renew: bool) {
         .unwrap();
     let mut run = tokio::spawn({
         let host = host.clone();
-        async move { host.run(None, thread, user("original")).await }
+        async move { host.session_runs.run(None, thread, user("original")).await }
     });
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         tokio::select! {
@@ -277,6 +278,7 @@ async fn missing_current_terminal_work_retires_original(renew: bool) {
         .expect("original cleanup succeeded");
     let cancelled = token.is_cancelled();
     let closed_and_detached = host
+        .run_assembly
         .installed_sessions
         .read(thread, |slot| {
             slot.realization.execution().authority.is_closed() && slot.run.context.is_none()
@@ -341,7 +343,7 @@ async fn completed_terminal_projection_not_found_cancels_its_original_real_run()
         .unwrap();
     let mut run = tokio::spawn({
         let host = host.clone();
-        async move { host.run(None, thread, user("original")).await }
+        async move { host.session_runs.run(None, thread, user("original")).await }
     });
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         tokio::select! {
@@ -361,7 +363,8 @@ async fn completed_terminal_projection_not_found_cancels_its_original_real_run()
         .unwrap()
         .cancellation
         .expect("C1 actual original token");
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .realizations()
         .update_realization(thread, |r| {
             r.effects_mut().assignment = Some(
@@ -386,7 +389,7 @@ async fn completed_terminal_projection_not_found_cancels_its_original_real_run()
         .await
         .expect("C3 terminal absence was handled");
     let cancelled = token.is_cancelled();
-    let retired = !host.installed_sessions.contains(thread);
+    let retired = !host.run_assembly.installed_sessions.contains(thread);
     provider_gate.notify_one();
     tokio::time::timeout(std::time::Duration::from_secs(5), run)
         .await

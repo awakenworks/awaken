@@ -58,7 +58,7 @@ async fn delayed_interruption_preserves_the_successor(start_with_active_run: boo
     let original_run = if start_with_active_run {
         let mut run = tokio::spawn({
             let host = host.clone();
-            async move { host.run(None, thread, user("original")).await }
+            async move { host.session_runs.run(None, thread, user("original")).await }
         });
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             tokio::select! {
@@ -91,12 +91,13 @@ async fn delayed_interruption_preserves_the_successor(start_with_active_run: boo
         let read_entered = read_entered.clone();
         let release_read = release_read.clone();
         async move {
-            host.interrupt_with_commit_read(thread, async move {
-                read_entered.notify_one();
-                release_read.notified().await;
-                Ok(commit)
-            })
-            .await
+            host.session_runs
+                .interrupt_with_commit_read(thread, async move {
+                    read_entered.notify_one();
+                    release_read.notified().await;
+                    Ok(commit)
+                })
+                .await
         }
     });
     tokio::time::timeout(std::time::Duration::from_secs(5), read_entered.notified())
@@ -126,7 +127,7 @@ async fn delayed_interruption_preserves_the_successor(start_with_active_run: boo
 
     let mut later = tokio::spawn({
         let host = host.clone();
-        async move { host.run(None, thread, user("go")).await }
+        async move { host.session_runs.run(None, thread, user("go")).await }
     });
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         tokio::select! {
@@ -141,7 +142,8 @@ async fn delayed_interruption_preserves_the_successor(start_with_active_run: boo
     .await
     .expect("C3 later Run physically entered inference");
     assert!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .read_run(thread, |run| run
                 .context
                 .as_ref()

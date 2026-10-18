@@ -80,8 +80,7 @@ pub use awaken_protocol_managed::{
 };
 pub use awaken_dispatch_http::durable_ops_router;
 pub use awaken_session_executor::{
-    HostDependencies, HostResume, RunApplicationHost, SharedHost, ThreadEvent, ThreadEventHub,
-    advertised_tools,
+    HostDependencies, HostResume, SharedHost, ThreadEvent, ThreadEventHub, advertised_tools,
 };
 pub use awaken_sandbox_local::content_fingerprint;
 pub use awaken_session_mcp::ExtMcpProbe;

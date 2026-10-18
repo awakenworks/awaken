@@ -203,16 +203,19 @@ async fn managed_claim_projection_loss_never_enters_ordinary_mcp_staging() {
     }));
     let host = dependencies.build().unwrap();
     let source = observed.get().unwrap();
-    assert!(Arc::ptr_eq(&source.original, &host.installed_sessions));
+    assert!(Arc::ptr_eq(
+        &source.original,
+        &host.run_assembly.installed_sessions
+    ));
     assert!(
-        host.worker.session_control.is_none(),
+        host.capabilities.worker.session_control.is_none(),
         "exercise the real co-located admission path"
     );
     let activation = test_activation(
         "managed-projection-loss-child",
         "run-managed-projection-loss",
     );
-    let managed = crate::ManagedHost::new(host.clone());
+    let managed = host.clone();
     root.install_projection(
         &managed,
         session,
@@ -283,7 +286,10 @@ async fn managed_claim_projection_loss_never_enters_ordinary_mcp_staging() {
         "E1: {error}"
     );
     assert!(
-        host.installed_sessions.read(session, |_| ()).is_none(),
+        host.run_assembly
+            .installed_sessions
+            .read(session, |_| ())
+            .is_none(),
         "E2 no replacement root or Direct slot was manufactured"
     );
 }

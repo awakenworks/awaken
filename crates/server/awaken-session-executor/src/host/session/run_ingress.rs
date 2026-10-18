@@ -57,7 +57,9 @@ impl crate::RunAssembly {
         let inference_materializer = self.worker_inference_materializer();
         // Transport presence does not remove installed adapters. Both local
         // claims and remote claims revalidate against this same Host evidence.
-        let local_credential_capabilities = self.local_credential_realization_capabilities();
+        let local_credential_capabilities = self
+            .capabilities
+            .local_credential_realization_capabilities();
         let recovery_projection = commit.recovery_projection();
         // The recovered dispatch a crash left mid-flight is re-executed by this
         // worker; giving it the same checkpoint store lets that re-execution resume
@@ -78,7 +80,7 @@ impl crate::RunAssembly {
         if let Some(factory) = claimed_model_gate {
             worker = worker.with_claimed_model_request_gate_factory(factory);
         }
-        if let Some(observer) = self.dispatch_settlement_observer() {
+        if let Some(observer) = self.capabilities.dispatch_settlement_observer() {
             worker = worker
                 .with_settlement_observer(observer.clone())
                 .with_session_run_admission_observer(observer);
@@ -88,7 +90,7 @@ impl crate::RunAssembly {
             None => worker.with_stream_sink(self.completion.clone()),
         };
         worker = worker.with_local_credential_capabilities(local_credential_capabilities);
-        if let Some(resolver) = &self.worker.worker_credential_resolver {
+        if let Some(resolver) = &self.capabilities.worker.worker_credential_resolver {
             worker = worker.with_worker_credential_resolver(resolver.clone());
         }
 
@@ -122,7 +124,8 @@ impl crate::RunAssembly {
     pub(crate) fn worker_inference_materializer(
         &self,
     ) -> Option<awaken_dispatch_execution::InferenceMaterializerFn> {
-        self.agent
+        self.capabilities
+            .agent
             .inference_routing
             .materializer()
             .map(|materializer| {

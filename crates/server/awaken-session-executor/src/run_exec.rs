@@ -11,7 +11,7 @@
 use awaken_credential_contract as credential;
 use std::sync::Arc;
 
-use crate::host::{HostError, SessionCtx, SharedHost};
+use crate::host::{HostError, SessionCtx};
 use awaken_agent_contract::agent::run::RunState;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_runtime_contract::activation::RunActivation;
@@ -275,7 +275,7 @@ impl RunAttemptExecutor for CaptureContextAttemptExecutor {
 /// Runtime extensions still submit an ordinary `RunActivation` and remain
 /// independent of `SharedHost`.
 pub(crate) struct BoundRunExecutor<'a> {
-    host: &'a SharedHost,
+    host: &'a crate::SessionRuns,
     ctx: Arc<SessionCtx>,
     supersede: bool,
     sink: Option<Arc<dyn StreamSink>>,
@@ -285,7 +285,7 @@ pub(crate) struct BoundRunExecutor<'a> {
 }
 
 impl<'a> BoundRunExecutor<'a> {
-    pub(crate) fn new(host: &'a SharedHost, ctx: Arc<SessionCtx>) -> Self {
+    pub(crate) fn new(host: &'a crate::SessionRuns, ctx: Arc<SessionCtx>) -> Self {
         Self {
             host,
             ctx,
@@ -412,7 +412,7 @@ pub(crate) fn session_attempt_executor(
     registry
 }
 
-impl SharedHost {
+impl crate::SessionRuns {
     /// Build the exact per-attempt runtime context shared by a fresh direct run and
     /// an awaiting direct run resumed later. Brokered grants and expiring provider
     /// credentials are attempt-scoped, so a resume must rematerialize from the
@@ -1015,10 +1015,12 @@ pub(crate) mod tests {
             dispatch: dispatch.clone(),
         });
         let host = (raw_host).build().expect("validated Host dependencies");
-        host.installed_sessions.update_run(thread, |run| {
-            run.dispatch_claim = Some(expected_claim.clone());
-        });
         host.run_assembly
+            .installed_sessions
+            .update_run(thread, |run| {
+                run.dispatch_claim = Some(expected_claim.clone());
+            });
+        host.capabilities
             .register_thread_workspace(thread, "workspace-a");
         let spec = crate::sandbox_projection::agent_run_sandbox_spec(thread);
         assert_eq!(
@@ -1123,7 +1125,7 @@ pub(crate) mod tests {
         let recorded_before = claims.lock().expect("recorded claims mutex poisoned").len();
         ArtifactHarvestAttemptExecutor::new(
             Arc::new(ReplacingClaimExecutor::succeeding(
-                host.installed_sessions.clone(),
+                host.run_assembly.installed_sessions.clone(),
                 thread,
                 replacement,
             )),
@@ -1144,9 +1146,11 @@ pub(crate) mod tests {
             "R6"
         );
 
-        host.installed_sessions.update_run(thread, |run| {
-            run.dispatch_claim = Some(expected_claim.clone());
-        });
+        host.run_assembly
+            .installed_sessions
+            .update_run(thread, |run| {
+                run.dispatch_claim = Some(expected_claim.clone());
+            });
 
         let replacement = awaken_dispatch_contract::RunClaim {
             run_id: expected_claim.run_id.clone(),
@@ -1162,7 +1166,7 @@ pub(crate) mod tests {
         let resumed = activation("awaken");
         ArtifactHarvestAttemptExecutor::new(
             Arc::new(ReplacingClaimExecutor::succeeding(
-                host.installed_sessions.clone(),
+                host.run_assembly.installed_sessions.clone(),
                 thread,
                 replacement,
             )),
@@ -1183,9 +1187,11 @@ pub(crate) mod tests {
             "R8"
         );
 
-        host.installed_sessions.update_run(thread, |run| {
-            run.dispatch_claim = Some(expected_claim.clone());
-        });
+        host.run_assembly
+            .installed_sessions
+            .update_run(thread, |run| {
+                run.dispatch_claim = Some(expected_claim.clone());
+            });
         let replacement = awaken_dispatch_contract::RunClaim {
             run_id: expected_claim.run_id.clone(),
             owner: "worker-failing-new".into(),
@@ -1199,7 +1205,7 @@ pub(crate) mod tests {
         let recorded_before = claims.lock().expect("recorded claims mutex poisoned").len();
         let error = ArtifactHarvestAttemptExecutor::new(
             Arc::new(ReplacingClaimExecutor::failing(
-                host.installed_sessions.clone(),
+                host.run_assembly.installed_sessions.clone(),
                 thread,
                 replacement,
                 "in-flight replacement failed",
@@ -1225,7 +1231,8 @@ pub(crate) mod tests {
             "R9"
         );
 
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .update_run(thread, |run| run.dispatch_claim = None);
         let replacement = awaken_dispatch_contract::RunClaim {
             run_id: expected_claim.run_id.clone(),
@@ -1236,7 +1243,7 @@ pub(crate) mod tests {
         let recorded_before = claims.lock().expect("recorded claims mutex poisoned").len();
         ArtifactHarvestAttemptExecutor::new(
             Arc::new(ReplacingClaimExecutor::succeeding(
-                host.installed_sessions.clone(),
+                host.run_assembly.installed_sessions.clone(),
                 thread,
                 replacement,
             )),
@@ -1257,9 +1264,11 @@ pub(crate) mod tests {
             "R10"
         );
 
-        host.installed_sessions.update_run(thread, |run| {
-            run.dispatch_claim = Some(expected_claim.clone());
-        });
+        host.run_assembly
+            .installed_sessions
+            .update_run(thread, |run| {
+                run.dispatch_claim = Some(expected_claim.clone());
+            });
 
         dispatch
             .settle(
@@ -1299,7 +1308,7 @@ pub(crate) mod tests {
             Arc::new(awaken_resource_contract::UnavailableArtifactPublisher);
         let failed_host = (raw_host).build().expect("validated Host dependencies");
         failed_host
-            .run_assembly
+            .capabilities
             .register_thread_workspace(thread, "workspace-a");
         let failed_environment = Arc::new(
             awaken_session_environment::SandboxEnvironment::workdir(

@@ -42,23 +42,23 @@ pub(super) async fn assemble(
     // configured model without a session-level registry.
     let mut runtime = match env.as_ref() {
         Some(env) => build_runtime_with_authorization(
-            host.agent.llm.clone(),
+            host.capabilities.agent.llm.clone(),
             host.clock.clone(),
             env.as_ref(),
             authorization,
-            Some(host.background_supervisor.clone()),
+            Some(host.capabilities.background_supervisor.clone()),
         ),
         None => build_runtime_with_authorization(
-            host.agent.llm.clone(),
+            host.capabilities.agent.llm.clone(),
             host.clock.clone(),
             &crate::config::DeferredHandToolSource,
             authorization,
-            Some(host.background_supervisor.clone()),
+            Some(host.capabilities.background_supervisor.clone()),
         ),
     };
     // Register the management tool executables globally (ADR-0052 D3): the
     // registry stays global, the compile-time scope fence is what restricts them.
-    for tool in &host.tools.admin_tools {
+    for tool in &host.capabilities.tools.admin_tools {
         runtime = runtime.with_tool(tool.clone());
     }
     // Delegation is a runtime concern: inject the executor so the kernel runs
@@ -86,7 +86,7 @@ pub(super) async fn assemble(
     // Advisor. Installing it cannot restore a removed AgentDelegation descriptor.
     if (!managed_coordination || has_published_advisor)
         && let Some(env) = env.clone()
-        && let Some(service) = host.run_delegation(
+        && let Some(service) = host.child_runs.delegation_service(
             thread,
             env,
             commit.clone(),
@@ -140,7 +140,7 @@ pub(super) async fn assemble(
     // This is the sole final gate replacement point. Skill wiring may decorate
     // the ordinary base gate above; an explicit host override intentionally
     // replaces that complete default chain (the scheduled-action scenario).
-    if let Some(gate) = &host.tools.gate_override {
+    if let Some(gate) = &host.capabilities.tools.gate_override {
         runtime = runtime.with_gate(gate.clone());
     }
     let extensions::MemoryWiring {
@@ -185,16 +185,17 @@ pub(super) async fn assemble(
         Some(installed) => installed,
         None => {
             let model_ref = host
+                .capabilities
                 .agent
                 .inference_routing
-                .model_ref(thread, &host.agent.model_ref);
+                .model_ref(thread, &host.capabilities.agent.model_ref);
             server_config(
                 selected_agent,
                 &model_ref,
-                &host.tools.client_tools,
+                &host.capabilities.tools.client_tools,
                 &session_delegates,
                 &plugin_ids,
-                &host.tools.plugin_config,
+                &host.capabilities.tools.plugin_config,
                 &dynamic_descriptors,
                 context_policy,
             )
@@ -246,7 +247,7 @@ pub(super) async fn assemble(
             .any(|id| id == awaken_ext_background_task::BACKGROUND_TASK_PLUGIN_ID),
         "Session projections must not rewrite BackgroundTask activation",
     );
-    let (web_runtime, web_search, web_fetch) = host.configure_web_tools_for_session(
+    let (web_runtime, web_search, web_fetch) = host.capabilities.configure_web_tools_for_session(
         thread,
         &config.resolved_spec,
         toolsets,
@@ -298,7 +299,8 @@ pub(super) async fn assemble(
     } = plan;
     let mut attempt_specs = vec![&config.resolved_spec];
     attempt_specs.extend(
-        host.agent
+        host.capabilities
+            .agent
             .judge_snapshot
             .as_ref()
             .map(|snapshot| &snapshot.resolved_spec),
@@ -307,7 +309,7 @@ pub(super) async fn assemble(
         Arc::new(crate::run_exec::session_attempt_executor(
             runtime.clone(),
             acp_executor,
-            host.agent.remote_attempt_executor.clone(),
+            host.capabilities.agent.remote_attempt_executor.clone(),
             &attempt_specs,
         ));
     let attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
@@ -328,6 +330,7 @@ pub(super) async fn assemble(
             ),
         );
     let attempt_executor = host
+        .capabilities
         .exec
         .attempt_decorator
         .as_ref()
@@ -341,7 +344,7 @@ pub(super) async fn assemble(
         Arc::new(crate::run_exec::CaptureContextAttemptExecutor::new(
             attempt_executor,
             &host.capture,
-            host.thread_workspace(thread),
+            host.capabilities.thread_workspace(thread),
         ));
     // This is the one post-attempt output edge. Because it wraps the final
     // executor shared by direct delivery and the durable Worker, claimed
@@ -403,7 +406,7 @@ pub(super) async fn assemble(
     // Cause/effect rules: terminal observers and Session plugins
     // are additive; an Environment/placement hand overrides only the tool
     // executor; one canonical RuntimeRunContext crosses the ingress boundary.
-    let workspace_id = host.thread_workspace(thread).to_owned();
+    let workspace_id = host.capabilities.thread_workspace(thread).to_owned();
     let (environment_generation, resource_origin) = match env.as_ref() {
         Some(environment) => host
             .realization_executor
@@ -477,7 +480,7 @@ pub(super) async fn assemble(
                 run_context.clone(),
                 background_commit,
                 host.resources.memory.background(),
-                host.background_supervisor.clone(),
+                host.capabilities.background_supervisor.clone(),
                 thread.to_string(),
                 environment_generation,
                 background_attention.clone(),

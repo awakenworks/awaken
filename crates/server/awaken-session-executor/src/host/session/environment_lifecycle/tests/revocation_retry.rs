@@ -122,7 +122,7 @@ async fn conflicting_revocation_preserves_active_worker_relay_until_compatible_d
     assert!(error.to_string().contains("lower-priority"), "R1/E1");
     assert!(
         matches!(
-            host.installed_sessions.realizations()
+            host.run_assembly.installed_sessions.realizations()
                 .read_realization(thread, |r| r.environment().owner.clone()).expect("installed Sessions"),
             Some(SessionEnvironmentOwner::Retiring(current))
                 if current.exact_matches(&terminal.owner)
@@ -194,9 +194,11 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
             "provider", "model", "backend",
         ))
         .build();
-    host.installed_sessions.replace_frozen_with(thread, |next| {
-        next.published_snapshot = Some(snapshot.clone())
-    });
+    host.run_assembly
+        .installed_sessions
+        .replace_frozen_with(thread, |next| {
+            next.published_snapshot = Some(snapshot.clone())
+        });
     host.realization_executor
         .staging()
         .register_thread_resources(
@@ -241,6 +243,7 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
     let route_before = relay.route_url(&mcp_generation).unwrap();
     let spec_before = host.realization_executor.sandbox_spec(thread);
     let lifecycle = host
+        .run_assembly
         .installed_sessions
         .realizations()
         .read_realization(thread, |r| r.environment().lifecycle.clone())
@@ -252,7 +255,10 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
             .environments()
             .retire_session_environment_for_revocation(
                 thread,
-                (&host.run_assembly.mcp, host.installed_sessions.as_ref()),
+                (
+                    &host.run_assembly.mcp,
+                    host.run_assembly.installed_sessions.as_ref()
+                ),
                 None,
             )
             .await
@@ -274,7 +280,8 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
         "R20/E3 mounts/projection"
     );
     assert_eq!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .published_snapshot(thread)
             .expect("installed Sessions")
@@ -342,9 +349,11 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
     host.run_assembly
         .install_session_realization_lease(thread, lease.clone())
         .unwrap();
-    host.installed_sessions.replace_frozen_with(thread, |next| {
-        next.published_snapshot = Some(snapshot.clone())
-    });
+    host.run_assembly
+        .installed_sessions
+        .replace_frozen_with(thread, |next| {
+            next.published_snapshot = Some(snapshot.clone())
+        });
     host.realization_executor
         .staging()
         .register_thread_resources(
@@ -378,12 +387,14 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
         &serde_json::to_string(&environment.lifecycle().handle()).unwrap(),
         &generation,
     );
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .realizations()
         .close_mcp_realization_admission(thread, fence.clone())
         .unwrap();
     let spec_before = host.realization_executor.sandbox_spec(thread);
     let lifecycle = host
+        .run_assembly
         .installed_sessions
         .realizations()
         .read_realization(thread, |r| r.environment().lifecycle.clone())
@@ -394,13 +405,17 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
         .environments()
         .retire_session_environment_for_revocation(
             thread,
-            (&host.run_assembly.mcp, host.installed_sessions.as_ref()),
+            (
+                &host.run_assembly.mcp,
+                host.run_assembly.installed_sessions.as_ref(),
+            ),
             None,
         )
         .await
         .expect("C2 live revocation");
     assert_eq!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .read_realization(thread, |r| r.execution().authority.clone())
             .expect("installed Sessions"),
@@ -413,12 +428,15 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
             .is_err()
     );
     assert!(
-        host.installed_sessions.realization_leases().is_empty(),
+        host.run_assembly
+            .installed_sessions
+            .realization_leases()
+            .is_empty(),
         "E4 replay stays closed"
     );
     assert!(
         matches!(
-            host.installed_sessions.realizations()
+            host.run_assembly.installed_sessions.realizations()
                 .read_realization(thread, |r| r.environment().owner.clone()).expect("installed Sessions"),
             Some(SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
                 cause: SessionEnvironmentRetirementCause::RealizationRevocation,
@@ -433,7 +451,8 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
         "E2 SandboxSpec"
     );
     assert_eq!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .published_snapshot(thread)
             .expect("installed Sessions")
@@ -442,7 +461,8 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
         "E2 provider publication"
     );
     assert_eq!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .read_realization(thread, |r| r.staging().mcp.quiescence_fence().cloned())
             .expect("installed Sessions"),
@@ -492,13 +512,12 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
     let first_sink = Arc::new(BlockingBindingSink::blocked());
     first_sink.unblock();
     first_managed
-        .host
         .run_assembly
         .install_test_environment_binding_sink(first_sink);
     tokio::time::timeout(
         std::time::Duration::from_secs(2),
         awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-            &*first_managed.host.run_assembly,
+            &*first_managed.run_assembly,
             thread,
             projection.clone(),
             awaken_session_realization_contract::SessionProjectionInstallMode::Realization {
@@ -531,6 +550,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
     // The source projection must carry the first sink's actual generation;
     // inventing another generation hid invalid adoption in the old publisher.
     let source_identity = first
+        .run_assembly
         .installed_sessions
         .realizations()
         .read_realization(thread, |r| match &r.environment().owner {
@@ -559,13 +579,12 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
     let managed = managed_test_host(host.clone());
     let sink = Arc::new(BlockingBindingSink::blocked());
     managed
-        .host
         .run_assembly
         .install_test_environment_binding_sink(sink.clone());
     tokio::time::timeout(
         std::time::Duration::from_secs(2),
         awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-            &*managed.host.run_assembly,
+            &*managed.run_assembly,
             thread,
             projection,
             awaken_session_realization_contract::SessionProjectionInstallMode::Realization {

@@ -243,7 +243,7 @@ async fn artifact_decorator_without_harvest_owner_refuses_effects_even_if_slots_
             .await
             .build()
             .unwrap();
-    let slots = host.installed_sessions.clone();
+    let slots = host.run_assembly.installed_sessions.clone();
     let weak_slots = Arc::downgrade(&slots);
     let owner = host.realization_executor.effects().artifacts().clone();
     let weak_owner = Arc::downgrade(&owner);
@@ -293,7 +293,7 @@ async fn artifact_decorator_active_future_holds_owner_through_attempt_success_or
             .await
             .build()
             .unwrap();
-            let weak_slots = Arc::downgrade(&host.installed_sessions);
+            let weak_slots = Arc::downgrade(&host.run_assembly.installed_sessions);
             let owner = host.realization_executor.effects().artifacts().clone();
             let weak_owner = Arc::downgrade(&owner);
             let probe = Arc::new(AttemptProbe::new(true, fails));
@@ -431,8 +431,8 @@ async fn artifact_decorator_holds_same_owner_until_real_publication_finishes() {
             let application = host.file_application().unwrap();
             let owner = host.realization_executor.effects().artifacts().clone();
             let weak_owner = Arc::downgrade(&owner);
-            let weak_slots = Arc::downgrade(&host.installed_sessions);
-            let workspace = host.run_assembly.thread_workspace("lifetime-thread");
+            let weak_slots = Arc::downgrade(&host.run_assembly.installed_sessions);
+            let workspace = host.capabilities.thread_workspace("lifetime-thread");
             let probe = Arc::new(AttemptProbe::new(false, fails));
             let executor =
                 ArtifactHarvestAttemptExecutor::new(probe.clone(), Arc::downgrade(&owner));
@@ -513,7 +513,7 @@ async fn abandoning_the_original_attempt_drops_both_decorator_owners_and_inner_f
                 .await
                 .build()
                 .unwrap();
-        let weak_slots = Arc::downgrade(&host.installed_sessions);
+        let weak_slots = Arc::downgrade(&host.run_assembly.installed_sessions);
         let owner = host.realization_executor.effects().artifacts().clone();
         let weak_owner = Arc::downgrade(&owner);
         let probe = Arc::new(AttemptProbe::new(true, false));
@@ -523,7 +523,7 @@ async fn abandoning_the_original_attempt_drops_both_decorator_owners_and_inner_f
         ));
         let executor = SessionContextAttemptExecutor::new(
             inner,
-            Arc::downgrade(&host.installed_sessions),
+            Arc::downgrade(&host.run_assembly.installed_sessions),
             "lifetime-thread",
             host.run_assembly.clock(),
         );

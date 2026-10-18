@@ -9,7 +9,7 @@ use awaken_session_execution_contract::RealizationRuntime as _;
 use awaken_session_state_contract::SessionEnvironmentState;
 
 fn observation(host: &SharedHost) -> serde_json::Value {
-    host.installed_sessions.realizations().read_realization("projection-convergence", |realization| {
+    host.run_assembly.installed_sessions.realizations().read_realization("projection-convergence", |realization| {
         let receipt = realization.execution().frozen_receipt.as_ref();
         let binding = match &realization.environment().owner {
             crate::environment_owner::SessionEnvironmentOwner::Preparing(crate::environment_owner::SessionEnvironmentPreparation::AwaitingAdoption { binding, .. }) => binding.as_str(),
@@ -21,7 +21,7 @@ fn observation(host: &SharedHost) -> serde_json::Value {
 
 async fn deliver(
     host: &SharedHost,
-    managed: &crate::ManagedHost,
+    managed: &Arc<crate::SharedHost>,
     projection: awaken_session_realization_contract::FrozenSessionProjection,
     rule: String,
     trace: &mut Vec<serde_json::Value>,
@@ -31,7 +31,6 @@ async fn deliver(
         crate::realization_state::FrozenProjectionReceipt::from_projection(&projection).unwrap();
     let incoming = serde_json::json!({"revision": receipt.revision.0, "fingerprint": receipt.fingerprint, "binding": projection.environment.binding().unwrap_or("none")});
     let result = managed
-        .host
         .run_assembly
         .install_session_projection(
             "projection-convergence",
@@ -166,6 +165,7 @@ async fn independent_coordinators_converge_after_binding_replacement_and_reject_
             );
             assert_eq!(before["binding"], "B", "E1 B retained");
             hosts[i]
+                .run_assembly
                 .installed_sessions
                 .read_run("projection-convergence", |run| {
                     assert!(run.context.is_none(), "no physical realization");

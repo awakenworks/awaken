@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_coordinator::{ManagedHost, SharedHost};
+use awaken_coordinator::SharedHost;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use tokio::sync::{Mutex, mpsc};
 use tokio::time::timeout;
@@ -60,7 +60,6 @@ async fn harness() -> Harness {
     let host = (awaken_scenario_host::build_unmounted_dependencies(Arc::new(llm), "gated").await)
         .build()
         .expect("validated Host dependencies");
-    let _runtime = ManagedHost::new(host.clone());
     Harness {
         host,
         started: Mutex::new(started_rx),
@@ -100,7 +99,11 @@ async fn a_message_queued_mid_run_reaches_the_same_run() {
 
     let run = {
         let host = h.host.clone();
-        tokio::spawn(async move { host.run(None, thread, vec![user("u1", "First.")]).await })
+        tokio::spawn(async move {
+            host.session_runs()
+                .run(None, thread, vec![user("u1", "First.")])
+                .await
+        })
     };
 
     // Step 1 is in flight (started, not yet permitted): the inbox is open.
@@ -176,7 +179,11 @@ async fn a_message_the_cancelled_run_never_consumed_is_discarded() {
 
     let run = {
         let host = h.host.clone();
-        tokio::spawn(async move { host.run(None, thread, vec![user("u1", "First.")]).await })
+        tokio::spawn(async move {
+            host.session_runs()
+                .run(None, thread, vec![user("u1", "First.")])
+                .await
+        })
     };
 
     // Queue while Step 1 is gated, then cancel the Run instead of permitting
@@ -190,6 +197,7 @@ async fn a_message_the_cancelled_run_never_consumed_is_discarded() {
         .expect("inbox open");
     let _ = inbox.offer(user("q1", "Survivor."));
     h.host
+        .session_runs()
         .interrupt(thread)
         .await
         .expect("interrupt the gated Run");
@@ -230,7 +238,9 @@ async fn a_message_the_cancelled_run_never_consumed_is_discarded() {
     // unsafe new attempt or fabricating termination evidence in the fixture.
     let result = timeout(
         Duration::from_secs(5),
-        h.host.run(None, thread, vec![user("u2", "Second.")]),
+        h.host
+            .session_runs()
+            .run(None, thread, vec![user("u2", "Second.")]),
     )
     .await
     .expect("reentry reaches a terminal admission decision");

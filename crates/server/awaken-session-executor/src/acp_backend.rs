@@ -52,31 +52,6 @@ impl LaunchObserver for HubLaunchObserver {
     }
 }
 
-impl crate::RunAssembly {
-    pub(crate) fn acp_adapter_policy(
-        &self,
-    ) -> Result<
-        &dyn awaken_acp_contract::AcpAdapterPolicy<
-            awaken_runtime_contract::resolved::ProviderServerTool,
-        >,
-        crate::HostError,
-    > {
-        self.exec
-            .acp
-            .as_ref()
-            .map(|factory| factory.adapter_policy())
-            .or(self.exec.acp_projection_policy)
-            .ok_or_else(|| crate::HostError::bad_request("ACP backend is not installed"))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn register_thread_backend_projection(&self, thread: &str, backend_ref: &str) {
-        self.installed_sessions.replace_frozen_with(thread, |next| {
-            next.backend_ref = crate::frozen_inputs::backend_projection(backend_ref);
-        });
-    }
-}
-
 /// Install the existing ACP executor's policy/factory port for Host unit tests
 /// that exercise ACP projection without launching a real CLI process.
 #[cfg(test)]
@@ -168,6 +143,7 @@ mod tests {
             .expect("validated Host dependencies");
         assert!(
             host.run_assembly
+                .capabilities
                 .acp_adapter_policy()
                 .err()
                 .expect("P1 absent policy")
@@ -181,10 +157,16 @@ mod tests {
         let host = (projection_only)
             .build()
             .expect("validated Host dependencies");
-        assert!(host.exec.acp.is_none(), "P2/E3 no execution factory");
+        assert!(
+            host.run_assembly.capabilities.exec.acp.is_none(),
+            "P2/E3 no execution factory"
+        );
         assert!(
             std::ptr::eq(
-                host.run_assembly.acp_adapter_policy().expect("P2 policy"),
+                host.run_assembly
+                    .capabilities
+                    .acp_adapter_policy()
+                    .expect("P2 policy"),
                 awaken_run_executor_acp::acp_adapter_policy()
             ),
             "P2/E2 one catalog instance"
@@ -197,11 +179,16 @@ mod tests {
         .build()
         .expect("validated Host dependencies");
         assert!(
-            host.exec.acp_projection_policy.is_none(),
+            host.run_assembly
+                .capabilities
+                .exec
+                .acp_projection_policy
+                .is_none(),
             "P3 one effective policy owner"
         );
         let policy = host
             .run_assembly
+            .capabilities
             .acp_adapter_policy()
             .expect("P3 installed policy");
         assert!(
@@ -227,10 +214,15 @@ mod tests {
                 .build()
                 .expect("validated Host dependencies");
         host.run_assembly
+            .capabilities
             .register_thread_backend_projection("t", "acp:claude");
-        assert!(host.exec.acp.is_some(), "A1 executor");
+        assert!(
+            host.run_assembly.capabilities.exec.acp.is_some(),
+            "A1 executor"
+        );
         assert_eq!(
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .realizations()
                 .frozen("t")
                 .expect("installed Sessions")
@@ -241,7 +233,8 @@ mod tests {
             "A1"
         );
         assert_eq!(
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .realizations()
                 .frozen("unstaged-thread")
                 .expect("installed Sessions")

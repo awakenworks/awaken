@@ -28,7 +28,6 @@ use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, Resolv
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_session_executor::ManagedHost;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -118,8 +117,7 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
         .with_ephemeral_dispatch(any))
     .build()
     .expect("validated Host dependencies");
-    let _managed = ManagedHost::new(host.clone());
-    let router = durable_ops_router(host, awaken_time::system_clock());
+    let router = durable_ops_router(host.session_runs().clone(), awaken_time::system_clock());
     let thread = "t-dur";
     let base = format!("/v1/durable/threads/{thread}");
 
@@ -299,7 +297,7 @@ async fn monitoring_reads_committed_dispatches_without_materializing_a_session()
         .await
         .unwrap();
 
-    let router = durable_ops_router(host, awaken_time::system_clock());
+    let router = durable_ops_router(host.session_runs().clone(), awaken_time::system_clock());
     let base = format!("/v1/durable/threads/{thread}");
     let (status, body) = call(&router, "GET", &format!("{base}/dispatches")).await;
     assert_eq!(status, StatusCode::OK, "R1: {body}");
@@ -330,7 +328,10 @@ async fn every_dispatch_read_and_repair_verb_requires_the_one_durable_capability
      * C1=F,C2=repair=>E2. This prevents monitoring from becoming a parallel
      * authority/capability path. */
     let router = durable_ops_router(
-        awaken_runtime_host_testkit::volatile_host(Arc::new(OkModel), "stub").await,
+        awaken_runtime_host_testkit::volatile_host(Arc::new(OkModel), "stub")
+            .await
+            .session_runs()
+            .clone(),
         awaken_time::system_clock(),
     );
     for (method, path) in [

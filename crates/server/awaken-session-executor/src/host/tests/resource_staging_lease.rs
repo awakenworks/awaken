@@ -23,16 +23,19 @@ async fn realization_revocation_selection_fences_removed_and_recreated_slots() {
                 epoch: 1,
                 expires_at_unix_ms: u64::MAX,
             };
-            host.installed_sessions.install_realization(SESSION, |r| {
-                if leased {
-                    r.install_lease(
-                        awaken_session_realization::test_support::test_observed_lease(
-                            lease.clone(),
-                        ),
-                    );
-                }
-            });
+            host.run_assembly
+                .installed_sessions
+                .install_realization(SESSION, |r| {
+                    if leased {
+                        r.install_lease(
+                            awaken_session_realization::test_support::test_observed_lease(
+                                lease.clone(),
+                            ),
+                        );
+                    }
+                });
             let lock = host
+                .run_assembly
                 .installed_sessions
                 .realizations()
                 .read_realization(SESSION, |r| {
@@ -46,24 +49,27 @@ async fn realization_revocation_selection_fences_removed_and_recreated_slots() {
                 .unwrap();
             let held = lock.lock().await;
             let selection = host.run_assembly.begin_session_realization_revocation();
-            host.installed_sessions.remove(SESSION);
+            host.run_assembly.installed_sessions.remove(SESSION);
             let claim = awaken_dispatch_contract::RunClaim {
                 run_id: RunId("replacement".into()),
                 owner: "worker".into(),
                 epoch: 2,
             };
-            host.installed_sessions.update(SESSION, |slot| {
-                if leased {
-                    slot.realization.install_lease(
-                        awaken_session_realization::test_support::test_observed_lease(
-                            lease.clone(),
-                        ),
-                    );
-                }
-                slot.run.dispatch_claim = Some(claim.clone());
-            });
+            host.run_assembly
+                .installed_sessions
+                .update(SESSION, |slot| {
+                    if leased {
+                        slot.realization.install_lease(
+                            awaken_session_realization::test_support::test_observed_lease(
+                                lease.clone(),
+                            ),
+                        );
+                    }
+                    slot.run.dispatch_claim = Some(claim.clone());
+                });
             let replacement = host.run_assembly.begin_session_realization_revocation();
             let replacement_lock = host
+                .run_assembly
                 .installed_sessions
                 .realizations()
                 .read_realization(SESSION, |r| r.environment().lifecycle.clone())
@@ -84,7 +90,8 @@ async fn realization_revocation_selection_fences_removed_and_recreated_slots() {
                 "old selection does not enter replacement locks or cleanup"
             );
             assert_eq!(
-                host.installed_sessions
+                host.run_assembly
+                    .installed_sessions
                     .read_run(SESSION, |run| run.dispatch_claim.clone()),
                 Some(Some(claim))
             );
@@ -112,29 +119,32 @@ async fn worker_revocation_closes_all_before_drain_and_joins_independent_cleanup
         .expect("validated Host dependencies");
     let mut cancellations = Vec::new();
     for session in ["held", "free"] {
-        host.installed_sessions.install_realization(session, |r| {
-            r.install_lease(
-                awaken_session_realization::test_support::test_observed_lease(
-                    crate::session_resource::SessionRealizationLease {
-                        owner: "worker".into(),
-                        runtime_incarnation: "worker/1".into(),
-                        epoch: 1,
-                        expires_at_unix_ms: u64::MAX,
-                    },
-                ),
-            );
-            let cancellation = Arc::new(awaken_runtime_contract::CancellationToken::new());
-            r.staging_mut().preparation = Some(cancellation.clone());
-            cancellations.push(cancellation);
-        });
+        host.run_assembly
+            .installed_sessions
+            .install_realization(session, |r| {
+                r.install_lease(
+                    awaken_session_realization::test_support::test_observed_lease(
+                        crate::session_resource::SessionRealizationLease {
+                            owner: "worker".into(),
+                            runtime_incarnation: "worker/1".into(),
+                            epoch: 1,
+                            expires_at_unix_ms: u64::MAX,
+                        },
+                    ),
+                );
+                let cancellation = Arc::new(awaken_runtime_contract::CancellationToken::new());
+                r.staging_mut().preparation = Some(cancellation.clone());
+                cancellations.push(cancellation);
+            });
     }
     // Observe the existing catalog order without inserting/removing keys.
     // Hold its FIRST selection so a serial-cleanup mutant cannot pass merely
     // because the free Session happened to be enumerated first.
-    let ids = host.installed_sessions.session_ids();
+    let ids = host.run_assembly.installed_sessions.session_ids();
     let held_session = &ids[0];
     let free_session = &ids[1];
     let held_lock = host
+        .run_assembly
         .installed_sessions
         .realizations()
         .realization_lock(held_session)
@@ -142,7 +152,10 @@ async fn worker_revocation_closes_all_before_drain_and_joins_independent_cleanup
     let held = held_lock.lock().await;
     let revocation = host.run_assembly.begin_session_realization_revocation();
     assert!(
-        host.installed_sessions.realization_leases().is_empty(),
+        host.run_assembly
+            .installed_sessions
+            .realization_leases()
+            .is_empty(),
         "W1 before any await"
     );
     assert!(
@@ -157,7 +170,7 @@ async fn worker_revocation_closes_all_before_drain_and_joins_independent_cleanup
             .await
     });
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        while host.installed_sessions.contains(free_session) {
+        while host.run_assembly.installed_sessions.contains(free_session) {
             tokio::task::yield_now().await;
         }
     })
@@ -170,7 +183,8 @@ async fn worker_revocation_closes_all_before_drain_and_joins_independent_cleanup
     cleanup.abort();
     assert!(cleanup.await.unwrap_err().is_cancelled());
     assert!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .read_realization(held_session, |r| r.execution().authority.is_closed())
             .expect("installed Sessions")
@@ -209,14 +223,15 @@ async fn worker_revocation_error_does_not_short_circuit_other_sessions() {
         .build()
         .expect("validated Host dependencies");
     for id in ["left", "right"] {
-        host.installed_sessions.update(id, |_| ());
+        host.run_assembly.installed_sessions.update(id, |_| ());
     }
     // As in W2, make the first selected slot fail, independently of the
     // HashMap seed. A short-circuit implementation must leave the peer behind.
-    let ids = host.installed_sessions.session_ids();
+    let ids = host.run_assembly.installed_sessions.session_ids();
     let unknown = &ids[0];
     let free = &ids[1];
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .realizations()
         .update_realization(unknown, |r| {
             r.environment_mut().owner = SessionEnvironmentOwner::Preparing(
@@ -247,11 +262,12 @@ async fn worker_revocation_error_does_not_short_circuit_other_sessions() {
             "session_environment_revocation_pending_adoption"
         );
         assert!(
-            !host.installed_sessions.contains(free),
+            !host.run_assembly.installed_sessions.contains(free),
             "W4 independent cleanup completed"
         );
         assert!(
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .realizations()
                 .read_realization(unknown, |r| {
                     r.execution().authority.is_closed()
@@ -338,6 +354,7 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                 .await
                 .expect("C2 request reached Control barrier");
                 let (lock, changed) = host
+                    .run_assembly
                     .installed_sessions
                     .realizations()
                     .read_realization(SESSION, |r| {
@@ -359,6 +376,7 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                 let h = host.clone();
                 let expected = lease.clone();
                 let realization = host
+                    .run_assembly
                     .installed_sessions
                     .realizations()
                     .realization_lock(SESSION)
@@ -380,7 +398,10 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                     .expect("C3 close precedes async lock wait");
                 assert!(!revocation.is_finished());
                 assert!(
-                    host.installed_sessions.realization_leases().is_empty(),
+                    host.run_assembly
+                        .installed_sessions
+                        .realization_leases()
+                        .is_empty(),
                     "E1"
                 );
                 assert!(
@@ -427,13 +448,16 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                         .is_err()
                 );
                 assert!(
-                    host.installed_sessions.realization_leases().is_empty(),
+                    host.run_assembly
+                        .installed_sessions
+                        .realization_leases()
+                        .is_empty(),
                     "E3 assertion cannot reopen"
                 );
-                let managed = crate::ManagedHost::new(host.clone());
+                let managed = host.clone();
                 assert!(
                     awaken_session_execution_contract::RealizationRuntime::renew_session_realization_lease(
-                        &*managed.host.run_assembly,
+                        &*managed.run_assembly,
                         SESSION,
                         awaken_session_realization::test_support::test_observed_lease(extended.clone()),
                     )
@@ -445,7 +469,10 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                     revocation.abort();
                     assert!((&mut revocation).await.unwrap_err().is_cancelled());
                     assert!(
-                        host.installed_sessions.realization_leases().is_empty(),
+                        host.run_assembly
+                            .installed_sessions
+                            .realization_leases()
+                            .is_empty(),
                         "E4"
                     );
                 }
@@ -458,7 +485,8 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                     owner: "worker".into(),
                     epoch: 2,
                 };
-                host.installed_sessions
+                host.run_assembly
+                    .installed_sessions
                     .update_run(SESSION, |run| run.dispatch_claim = Some(claim.clone()));
                 drop(held);
                 if replace {
@@ -472,7 +500,7 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                     );
                 }
                 assert_eq!(
-                    host.installed_sessions.read(SESSION, |slot| (
+                    host.run_assembly.installed_sessions.read(SESSION, |slot| (
                         slot.realization.execution().authority.lease().cloned(),
                         slot.run.dispatch_claim.clone(),
                     )),
@@ -554,6 +582,7 @@ async fn expired_session_receipt_cannot_publish_any_complete_projection_facts() 
         }
         let resource_lock = f
             .host
+            .run_assembly
             .installed_sessions
             .install_realization(SESSION, |r| r.staging().projection.clone());
         let held = resource_lock.lock().await;
@@ -587,6 +616,7 @@ async fn expired_session_receipt_cannot_publish_any_complete_projection_facts() 
         );
         assert!(
             f.host
+                .run_assembly
                 .installed_sessions
                 .read(SESSION, |slot| slot.inputs.workspace.is_none()
                     && slot.inputs.agent_id.is_none()
@@ -630,7 +660,7 @@ impl StagingFixture {
             host = host.with_execution_authority(authority);
         }
         let host = (host).build().expect("validated Host dependencies");
-        let _managed = crate::ManagedHost::new(host.clone());
+        let _managed = host.clone();
         let mut projection = remote_terminal_cleanup_projection();
         projection.resource_revision = 1;
         projection.resources = effective_resources(vec![TestInput {
@@ -677,8 +707,9 @@ impl StagingFixture {
         let projection = self.projection.clone();
         let lease = self.lease.clone();
         let task = tokio::spawn(async move {
-            host.installed_sessions.install(&session);
+            host.run_assembly.installed_sessions.install(&session);
             let lock = host
+                .run_assembly
                 .installed_sessions
                 .realizations()
                 .realization_lock(&session)
@@ -710,6 +741,7 @@ impl StagingFixture {
     fn assert_unpublished(&self) {
         assert!(
             self.host
+                .run_assembly
                 .installed_sessions
                 .read(SESSION, |slot| {
                     slot.inputs.baseline.is_none()
@@ -770,6 +802,7 @@ async fn claimed_reassignment_stages_resources_after_same_process_retirement() {
         .install_session_realization_lease(SESSION, old.clone())
         .unwrap();
     f.host
+        .run_assembly
         .installed_sessions
         .realizations()
         .update_realization(SESSION, |r| {
@@ -799,6 +832,7 @@ async fn claimed_reassignment_stages_resources_after_same_process_retirement() {
     let task = f.start().await;
     let lock = f
         .host
+        .run_assembly
         .installed_sessions
         .realizations()
         .realization_lock(SESSION)
@@ -817,7 +851,7 @@ async fn claimed_reassignment_stages_resources_after_same_process_retirement() {
         .unwrap()
         .expect("E1 successor publishes Resource projection");
     assert_eq!(
-        f.host.installed_sessions.realization_leases()[0]
+        f.host.run_assembly.installed_sessions.realization_leases()[0]
             .1
             .lease
             .epoch,
@@ -828,6 +862,7 @@ async fn claimed_reassignment_stages_resources_after_same_process_retirement() {
     // activation publishes the active manifest. Do not confuse these phases.
     assert_eq!(
         f.host
+            .run_assembly
             .installed_sessions
             .read(SESSION, |slot| {
                 assert!(
@@ -876,7 +911,8 @@ async fn local_runtime_renewal_port_selects_exact_owner_without_requiring_mcp_or
         host.run_assembly
             .install_session_realization_lease(rule, lease.clone())
             .unwrap();
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .update_realization(rule, |r| {
                 r.staging_mut().mcp.set_has_frozen_attachment(rule == "L2");
@@ -887,12 +923,12 @@ async fn local_runtime_renewal_port_selects_exact_owner_without_requiring_mcp_or
             .expect("installed Sessions");
         initial.push((rule, lease));
     }
-    assert!(host.worker.session_control.is_none());
-    let runtime = crate::ManagedHost::new(host.clone());
+    assert!(host.capabilities.worker.session_control.is_none());
+    let runtime = host.clone();
     let timing = awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000);
     assert_eq!(
         awaken_session_execution_contract::RealizationRuntime::renew_session_realization_projections(
-            runtime.host.run_assembly.as_ref(),
+            runtime.run_assembly.as_ref(),
             control.as_ref(),
             "local",
             "boot",
@@ -909,7 +945,8 @@ async fn local_runtime_renewal_port_selects_exact_owner_without_requiring_mcp_or
         if matches!(rule, "L1" | "L2") {
             lease.expires_at_unix_ms += 10_000;
         }
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .read(rule, |slot| {
                 assert_eq!(
                     slot.realization.execution().authority.lease(),
@@ -966,7 +1003,8 @@ async fn missing_control_is_required_only_for_due_leases_without_skipping_refres
         0,
         "D2"
     );
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .realizations()
         .update_realization(SESSION, |r| {
             r.execution_mut().authority =
@@ -985,7 +1023,8 @@ async fn missing_control_is_required_only_for_due_leases_without_skipping_refres
         "D3"
     );
     assert_eq!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .read_realization(SESSION, |r| r.execution().authority.lease().cloned())
             .expect("installed Sessions"),
@@ -1137,14 +1176,20 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
             .is_err(),
         "no-due early return must not bypass physical refresh"
     );
-    assert!(host.worker.session_control.is_none());
-    host.installed_sessions
+    assert!(host.capabilities.worker.session_control.is_none());
+    host.run_assembly
+        .installed_sessions
         .realizations()
         .update_realization(SESSION, |r| {
             assert!(r.close_authority(Some(&lease)));
         })
         .expect("installed Sessions");
-    assert!(host.installed_sessions.realization_leases().is_empty());
+    assert!(
+        host.run_assembly
+            .installed_sessions
+            .realization_leases()
+            .is_empty()
+    );
     assert!(
         host.run_assembly
             .renew_due_session_realizations(timing)
@@ -1225,12 +1270,16 @@ async fn worker_root_denies_fresh_and_replaced_projection_before_resource_io() {
             );
             f.assert_unpublished();
             assert_eq!(
-                f.host.installed_sessions.realization_leases().len(),
+                f.host
+                    .run_assembly
+                    .installed_sessions
+                    .realization_leases()
+                    .len(),
                 usize::from(existing)
             );
             if existing {
                 assert_eq!(
-                    f.host.installed_sessions.realization_leases()[0]
+                    f.host.run_assembly.installed_sessions.realization_leases()[0]
                         .1
                         .lease
                         .epoch,
@@ -1254,7 +1303,13 @@ async fn worker_root_close_during_preparation_prevents_completion_and_reentry() 
     f.source.release.notify_one();
     assert!(task.await.unwrap().is_err());
     f.assert_unpublished();
-    assert!(f.host.installed_sessions.realization_leases().is_empty());
+    assert!(
+        f.host
+            .run_assembly
+            .installed_sessions
+            .realization_leases()
+            .is_empty()
+    );
     let mut replacement = f.lease.clone();
     replacement.epoch += 1;
     assert!(
@@ -1285,12 +1340,11 @@ async fn worker_root_denies_renewal_even_before_cohort_close() {
     *gate.0.lock().unwrap() = false;
     // A7 the public SessionRuntime renewal delivery entrance has the same root
     // guard. Unlike the scheduler it reports denial without owning revocation.
-    let managed = crate::ManagedHost::new(f.host.clone());
+    let managed = f.host.clone();
     let mut renewed = f.lease.clone();
     renewed.expires_at_unix_ms += 10_000;
     assert!(
         managed
-            .host
             .run_assembly
             .renew_session_realization_lease(
                 SESSION,
@@ -1300,7 +1354,9 @@ async fn worker_root_denies_renewal_even_before_cohort_close() {
             .is_err()
     );
     assert_eq!(
-        f.host.installed_sessions.realization_leases()[0].1.lease,
+        f.host.run_assembly.installed_sessions.realization_leases()[0]
+            .1
+            .lease,
         f.lease,
         "A7 no mutation"
     );
@@ -1314,7 +1370,13 @@ async fn worker_root_denies_renewal_even_before_cohort_close() {
             .unwrap(),
         0
     );
-    assert!(f.host.installed_sessions.realization_leases().is_empty());
+    assert!(
+        f.host
+            .run_assembly
+            .installed_sessions
+            .realization_leases()
+            .is_empty()
+    );
 }
 
 // Cause/effect graph: C1 a cold exact lease is assigned; C2 immutable File I/O
@@ -1351,6 +1413,7 @@ async fn cold_resource_staging_is_renewable_before_projection_publication() {
     );
     assert_eq!(
         f.host
+            .run_assembly
             .installed_sessions
             .realizations()
             .read_realization(SESSION, |r| r.execution().authority.lease().cloned())
@@ -1382,6 +1445,7 @@ async fn failed_or_cancelled_resource_preparation_drops_only_its_unpublished_lea
         f.assert_unpublished();
         assert!(
             f.host
+                .run_assembly
                 .installed_sessions
                 .read(SESSION, |slot| {
                     slot.realization.execution().authority.lease().is_none()
@@ -1394,6 +1458,7 @@ async fn failed_or_cancelled_resource_preparation_drops_only_its_unpublished_lea
         );
         let lock = f
             .host
+            .run_assembly
             .installed_sessions
             .realizations()
             .realization_lock(SESSION)
@@ -1434,7 +1499,13 @@ async fn renewal_rejection_cancels_resource_io_before_waiting_for_realization_lo
         assert_eq!(renewal.expect("S4/S5 no lock cycle").unwrap(), 0);
         assert!(result.unwrap().is_err());
         f.assert_unpublished();
-        assert!(f.host.installed_sessions.realization_leases().is_empty());
+        assert!(
+            f.host
+                .run_assembly
+                .installed_sessions
+                .realization_leases()
+                .is_empty()
+        );
     }
 }
 
@@ -1471,7 +1542,7 @@ async fn temporary_renewal_failure_does_not_abort_live_resource_preparation() {
     f.source.release.notify_one();
     task.await.unwrap().unwrap();
     assert_eq!(
-        f.host.installed_sessions.realization_leases()[0]
+        f.host.run_assembly.installed_sessions.realization_leases()[0]
             .1
             .lease
             .expires_at_unix_ms,
@@ -1499,7 +1570,13 @@ async fn resource_preparation_expires_even_without_another_renewal_sweep() {
             .is_err()
     );
     f.assert_unpublished();
-    assert!(f.host.installed_sessions.realization_leases().is_empty());
+    assert!(
+        f.host
+            .run_assembly
+            .installed_sessions
+            .realization_leases()
+            .is_empty()
+    );
 }
 
 // S8/S9/S10: generation replacement / exact invalidation / slot removal while
@@ -1523,7 +1600,7 @@ async fn obsolete_resource_preparation_cannot_publish_or_erase_a_successor() {
                 .run_assembly
                 .invalidate_session_realization_lease(SESSION, &f.lease),
             _ => {
-                f.host.installed_sessions.remove(SESSION);
+                f.host.run_assembly.installed_sessions.remove(SESSION);
             }
         }
         // Make success and cancellation ready together: cancellation/fencing
@@ -1543,6 +1620,7 @@ async fn obsolete_resource_preparation_cannot_publish_or_erase_a_successor() {
         f.assert_unpublished();
         let current = f
             .host
+            .run_assembly
             .installed_sessions
             .realizations()
             .read_realization(SESSION, |r| r.execution().authority.lease().cloned())
@@ -1550,12 +1628,12 @@ async fn obsolete_resource_preparation_cannot_publish_or_erase_a_successor() {
             .flatten();
         assert_eq!(current, (mutation == "replace").then_some(successor));
         if mutation == "remove" {
-            assert!(!f.host.installed_sessions.contains(SESSION));
+            assert!(!f.host.run_assembly.installed_sessions.contains(SESSION));
             f.host
                 .run_assembly
                 .invalidate_session_realization_lease(SESSION, &f.lease);
             assert!(
-                !f.host.installed_sessions.contains(SESSION),
+                !f.host.run_assembly.installed_sessions.contains(SESSION),
                 "invalidation cannot resurrect a removed slot"
             );
         }
@@ -1584,7 +1662,13 @@ async fn preflight_failure_has_no_lease_and_failed_replay_preserves_existing_ren
             .await
             .is_err()
     );
-    assert!(f.host.installed_sessions.realization_leases().is_empty());
+    assert!(
+        f.host
+            .run_assembly
+            .installed_sessions
+            .realization_leases()
+            .is_empty()
+    );
     let f = StagingFixture::new().await;
     let mut renewed = f.lease.clone();
     renewed.expires_at_unix_ms += 30_000;
@@ -1594,14 +1678,18 @@ async fn preflight_failure_has_no_lease_and_failed_replay_preserves_existing_ren
         .unwrap();
     let task = f.start().await;
     assert_eq!(
-        f.host.installed_sessions.realization_leases()[0].1.lease,
+        f.host.run_assembly.installed_sessions.realization_leases()[0]
+            .1
+            .lease,
         renewed
     );
     f.source.fail.store(true, Ordering::SeqCst);
     f.source.release.notify_one();
     assert!(task.await.unwrap().is_err());
     assert_eq!(
-        f.host.installed_sessions.realization_leases()[0].1.lease,
+        f.host.run_assembly.installed_sessions.realization_leases()[0]
+            .1
+            .lease,
         renewed
     );
 }
@@ -1632,6 +1720,7 @@ async fn many_cold_resource_reads_share_the_existing_renewal_scheduler() {
         .await;
     let unpublished = (0..16).all(|index| {
         f.host
+            .run_assembly
             .installed_sessions
             .read(&format!("cold-{index}"), |slot| {
                 slot.inputs.baseline.is_none() && !slot.run.session_dispatch
@@ -1667,7 +1756,13 @@ async fn worker_revocation_cancels_blocked_resource_preparation() {
         .unwrap();
     assert!(result.unwrap().is_err());
     f.assert_unpublished();
-    assert!(f.host.installed_sessions.realization_leases().is_empty());
+    assert!(
+        f.host
+            .run_assembly
+            .installed_sessions
+            .realization_leases()
+            .is_empty()
+    );
 }
 
 // S15: crossing the initial deadline after a successful renewal is not lease
@@ -1768,7 +1863,9 @@ async fn cold_staging_discards_a_renewal_response_delivered_after_newer_authorit
         f.source.release.notify_one();
         assert_eq!(preparation.await.unwrap().is_err(), takeover);
         assert_eq!(
-            f.host.installed_sessions.realization_leases()[0].1.lease,
+            f.host.run_assembly.installed_sessions.realization_leases()[0]
+                .1
+                .lease,
             expected
         );
         if takeover {
@@ -1776,6 +1873,7 @@ async fn cold_staging_discards_a_renewal_response_delivered_after_newer_authorit
         } else {
             assert!(
                 f.host
+                    .run_assembly
                     .installed_sessions
                     .read(SESSION, |slot| slot.inputs.baseline.is_some()
                         && slot.run.session_dispatch
@@ -1840,6 +1938,7 @@ async fn cold_staging_renews_for_ten_ttls_with_mixed_control_latency() {
             assert!(!task.is_finished(), "L1 session {index}");
             assert!(
                 f.host
+                    .run_assembly
                     .installed_sessions
                     .read(&format!("soak-{index:02}"), |slot| slot
                         .inputs

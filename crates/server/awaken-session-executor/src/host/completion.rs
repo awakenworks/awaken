@@ -14,17 +14,34 @@ use awaken_dispatch_contract::{
 };
 use std::collections::HashMap;
 
-impl SharedHost {
-    /// The process dispatch pool, or a fail-closed error when durable ingress (and
-    /// thus the pool) is not enabled.
-    pub(crate) fn dispatch_pool_or_err(
+impl crate::SessionRuns {
+    /// Register before `publish` delivers one Session-owned resume, then
+    /// project only the next committed Step of `run_id`. Registering first
+    /// means a local pool cannot settle the resumed ticket unobserved.
+    pub(crate) async fn observe_published_resume(
         &self,
-    ) -> Result<&Arc<DispatchPool<AnyDispatchStore>>, HostError> {
-        self.dispatch.dispatch_pool.get().ok_or_else(|| {
-            HostError::bad_request(
-                "durable dispatch not enabled (set typed durable ingress to run the pool)",
-            )
-        })
+        session_id: &str,
+        run_id: RunId,
+        correlation_id: String,
+        stream_sink: Option<Arc<dyn StreamSink>>,
+        publish: impl std::future::Future<Output = Result<(), HostError>>,
+    ) -> Result<CommittedStepReceipt, HostError> {
+        let ctx = self
+            .run_assembly
+            .ctx_for_session_coordination(session_id, None)
+            .await?;
+        let messages_before = self
+            .authoritative_step_snapshot(&ctx, &run_id)
+            .await?
+            .messages
+            .len();
+        let (settled, _waiter_guard) = self.completion.register(&run_id, stream_sink);
+        publish.await?;
+        let state = self
+            .await_settled_event(&ctx, &run_id, Some(&correlation_id), settled)
+            .await?;
+        self.project_settled_session_resume(&ctx, run_id, state, messages_before)
+            .await
     }
 
     /// Publish one Session-approved reservation through the existing dispatch
@@ -81,8 +98,8 @@ impl SharedHost {
             awaken_session_execution_contract::SessionRunActivation::Activated
                 | awaken_session_execution_contract::SessionRunActivation::AlreadyActivated { .. }
         ) {
-            if let Some(pool) = self.dispatch.dispatch_pool.get() {
-                pool.notify().await;
+            if self.local_pool.get().is_some() {
+                self.dispatch_hint.publish().await;
             } else {
                 store
                     .relay()
@@ -134,35 +151,6 @@ impl SharedHost {
         )
         .await?;
         self.project_settled_session_run(&ctx, run_id, state, &input_message_ids)
-            .await
-    }
-
-    /// Register before publishing one Session-owned resume, then project only
-    /// the next committed Step. The durable reply ingress and Worker execution
-    /// are shared with background Managed Event reconciliation.
-    pub(crate) async fn reply_and_observe_session_thread_tool(
-        &self,
-        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
-        stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
-    ) -> Result<CommittedStepReceipt, HostError> {
-        let session_id = delivery.command.session_id.clone();
-        let run_id = delivery.command.expected_run_id.clone();
-        let correlation_id = delivery.command.expected_correlation_id.clone();
-        let ctx = self
-            .run_assembly
-            .ctx_for_session_coordination(session_id.as_str(), None)
-            .await?;
-        let messages_before = self
-            .authoritative_step_snapshot(&ctx, &run_id)
-            .await?
-            .messages
-            .len();
-        let (settled, _waiter_guard) = self.completion.register(&run_id, stream_sink);
-        self.reply_session_thread_tool(delivery).await?;
-        let state = self
-            .await_settled_event(&ctx, &run_id, Some(&correlation_id), settled)
-            .await?;
-        self.project_settled_session_resume(&ctx, run_id, state, messages_before)
             .await
     }
 
@@ -222,9 +210,7 @@ impl SharedHost {
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))?;
         }
-        if let Some(pool) = self.dispatch.dispatch_pool.get() {
-            pool.notify().await;
-        }
+        self.notify_local_pool().await;
         self.await_settled_event(ctx, &run_id, None, settled).await
     }
 
@@ -253,9 +239,7 @@ impl SharedHost {
             .append(input)
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
-        if let Some(pool) = self.dispatch.dispatch_pool.get() {
-            pool.notify().await;
-        }
+        self.notify_local_pool().await;
         self.await_settled_event(ctx, &run_id, Some(&correlation_id), settled)
             .await
     }

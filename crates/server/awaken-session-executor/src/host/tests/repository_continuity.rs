@@ -76,7 +76,6 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
         .unwrap();
     let managed = managed_with_resource_source(host.clone());
     managed
-        .host
         .run_assembly
         .install_test_environment_binding_sink(Arc::new(BindingOrderSink {
             host: Arc::downgrade(&host),
@@ -161,7 +160,7 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
         request_context: Vec::new(),
     };
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-        managed.host.run_assembly.as_ref(),
+        managed.run_assembly.as_ref(),
         thread,
         projection,
         awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
@@ -214,7 +213,8 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
     // process-local Resource completion cache must be re-established.
     // Rebased fixture rule: cold adoption updates the canonical installed
     // Session view; a legacy registry or forwarding alias must not participate.
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .realizations()
         .update_realization(thread, |state| {
             state.staging_mut().reconciliation =
@@ -225,7 +225,6 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
         crate::session_resource::SessionResourceTransition::new(manifest.clone(), manifest.clone())
             .unwrap();
     managed
-        .host
         .realization_executor
         .apply_session_inputs(thread, &transition, None, Some(&lease))
         .await

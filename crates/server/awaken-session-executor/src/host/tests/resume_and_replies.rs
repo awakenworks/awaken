@@ -90,6 +90,7 @@ async fn run_on_an_awaiting_thread_fails_closed() {
     // C1 and require the documented fail-closed effect with no new Run.
     let host = host_requiring_write_confirmation(Arc::new(AwaitOnWriteModel)).await;
     let r1 = host
+        .session_runs
         .run(None, "t-awaiting", user("hi"))
         .await
         .expect("Run 1");
@@ -99,6 +100,7 @@ async fn run_on_an_awaiting_thread_fails_closed() {
     );
 
     let err = host
+        .session_runs
         .run(None, "t-awaiting", user("again"))
         .await
         .err()
@@ -112,6 +114,7 @@ async fn run_on_an_awaiting_thread_fails_closed() {
 
     // The await still resumes cleanly afterwards — the rejected run was a no-op.
     let r2 = host
+        .session_runs
         .resume(
             "t-awaiting",
             "w1",
@@ -128,6 +131,7 @@ async fn run_on_an_awaiting_thread_fails_closed() {
 async fn resume_with_no_awaiting_run_fails_closed() {
     let host = host_requiring_write_confirmation(Arc::new(AwaitOnWriteModel)).await;
     let err = host
+        .session_runs
         .resume(
             "t-idle",
             "w1",
@@ -155,12 +159,14 @@ async fn resume_with_a_wrong_tool_use_id_fails_closed() {
     // Decision rule: exercise B != A and require E1 with no tool result commit.
     let host = host_requiring_write_confirmation(Arc::new(AwaitOnWriteModel)).await;
     let r1 = host
+        .session_runs
         .run(None, "t-wrongid", user("hi"))
         .await
         .expect("Run 1");
     assert!(matches!(r1.state, RunState::Awaiting));
 
     let err = host
+        .session_runs
         .resume(
             "t-wrongid",
             "not-the-pending-id",
@@ -178,6 +184,7 @@ async fn resume_with_a_wrong_tool_use_id_fails_closed() {
 
     // The genuine id still resumes — the mismatch did not consume the await.
     let r2 = host
+        .session_runs
         .resume(
             "t-wrongid",
             &r1.pending.expect("a pending tool").tool_use_id,
@@ -199,11 +206,16 @@ async fn client_result_cannot_answer_a_builtin_tool() {
     // client results answer only client-owned targets. Decision rule: exercise
     // the mismatch, then resume the same ticket correctly to prove E1+E2.
     let host = host_requiring_write_confirmation(Arc::new(AwaitOnWriteModel)).await;
-    let r1 = host.run(None, "t-bind1", user("hi")).await.expect("Run 1");
+    let r1 = host
+        .session_runs
+        .run(None, "t-bind1", user("hi"))
+        .await
+        .expect("Run 1");
     let pending = r1.pending.expect("awaiting on the built-in write");
     assert!(!pending.client_executed, "write is a built-in tool");
 
     let err = host
+        .session_runs
         .resume(
             "t-bind1",
             &pending.tool_use_id,
@@ -222,6 +234,7 @@ async fn client_result_cannot_answer_a_builtin_tool() {
         err.message
     );
     let resumed = host
+        .session_runs
         .resume(
             "t-bind1",
             &pending.tool_use_id,
@@ -248,11 +261,16 @@ async fn confirm_cannot_answer_a_client_tool() {
         .build()
         .expect("validated Host dependencies"),
     );
-    let r1 = host.run(None, "t-bind2", user("hi")).await.expect("Run 1");
+    let r1 = host
+        .session_runs
+        .run(None, "t-bind2", user("hi"))
+        .await
+        .expect("Run 1");
     let pending = r1.pending.expect("awaiting on the client tool");
     assert!(pending.client_executed, "lookup is client-executed");
 
     let err = host
+        .session_runs
         .resume(
             "t-bind2",
             &pending.tool_use_id,
@@ -268,6 +286,7 @@ async fn confirm_cannot_answer_a_client_tool() {
         err.message
     );
     let resumed = host
+        .session_runs
         .resume(
             "t-bind2",
             &pending.tool_use_id,
@@ -304,10 +323,15 @@ async fn client_result_delivers_a_client_tool_result_and_ends_the_run() {
         .build()
         .expect("validated Host dependencies"),
     );
-    let r1 = host.run(None, "t-client", user("hi")).await.expect("Run 1");
+    let r1 = host
+        .session_runs
+        .run(None, "t-client", user("hi"))
+        .await
+        .expect("Run 1");
     let pending = r1.pending.expect("awaiting on the client tool");
 
     let r2 = host
+        .session_runs
         .resume(
             "t-client",
             &pending.tool_use_id,
@@ -364,6 +388,7 @@ async fn durable_foreground_run_relays_live_progress_before_committed_completion
     let sink = Arc::new(awaken_store_inmem::MemoryStreamSink::new());
 
     let outcome = host
+        .session_runs
         .run_streaming(
             None,
             "t-durable-live",
@@ -421,10 +446,12 @@ async fn terminal_child_report_atomically_admits_one_deterministic_primary_run()
         ),
     };
 
-    host.continue_session_agent_report(command.clone())
+    host.coordination
+        .continue_session_agent_report(command.clone())
         .await
         .expect("R1 terminal continuation");
-    host.continue_session_agent_report(command)
+    host.coordination
+        .continue_session_agent_report(command)
         .await
         .expect("R2 exact replay");
     let rows = dispatch.list_dispatches().await.expect("R1 dispatch");
@@ -438,6 +465,7 @@ async fn terminal_child_report_atomically_admits_one_deterministic_primary_run()
 
     let bad_run = RunId("other-child".into());
     let rejected = host
+        .coordination
         .continue_session_agent_report(
             awaken_session_execution_contract::SessionAgentReportContinuation {
                 session_id: "primary-report".into(),
@@ -455,6 +483,7 @@ async fn terminal_child_report_atomically_admits_one_deterministic_primary_run()
     assert!(rejected.is_err(), "R3");
     assert_eq!(dispatch.list_dispatches().await.unwrap().len(), 1, "R3");
     let zero_epoch = host
+        .coordination
         .continue_session_agent_report(
             awaken_session_execution_contract::SessionAgentReportContinuation {
                 session_id: "primary-report".into(),
@@ -744,6 +773,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         }),
     };
     let fence = host
+        .coordination
         .session_thread_tool_reply_fence(&command)
         .await
         .expect("trusted Awaiting fence");
@@ -757,15 +787,16 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         panic!("this fixture starts from a coordinated activity");
     }
     assert!(
-        host.reply_session_thread_tool(
-            awaken_session_execution_contract::SessionThreadToolReplyDelivery {
-                command: command.clone(),
-                fence: stale_fence,
-                session_activity_epoch: Some(resumed_epoch),
-            }
-        )
-        .await
-        .is_err(),
+        host.coordination
+            .reply_session_thread_tool(
+                awaken_session_execution_contract::SessionThreadToolReplyDelivery {
+                    command: command.clone(),
+                    fence: stale_fence,
+                    session_activity_epoch: Some(resumed_epoch),
+                }
+            )
+            .await
+            .is_err(),
         "CR4/E5"
     );
     assert_eq!(
@@ -773,15 +804,16 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         0,
         "CR4/E5"
     );
-    host.reply_session_thread_tool(
-        awaken_session_execution_contract::SessionThreadToolReplyDelivery {
-            command: command.clone(),
-            fence: fence.clone(),
-            session_activity_epoch: Some(resumed_epoch),
-        },
-    )
-    .await
-    .expect("CR1 stage coordinated reply");
+    host.coordination
+        .reply_session_thread_tool(
+            awaken_session_execution_contract::SessionThreadToolReplyDelivery {
+                command: command.clone(),
+                fence: fence.clone(),
+                session_activity_epoch: Some(resumed_epoch),
+            },
+        )
+        .await
+        .expect("CR1 stage coordinated reply");
     clock.set(1);
     let resumed = dispatch
         .claim_run(
@@ -831,15 +863,16 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         "CR5/E6 the resumed old Run still owns the Thread"
     );
 
-    host.reply_session_thread_tool(
-        awaken_session_execution_contract::SessionThreadToolReplyDelivery {
-            command: command.clone(),
-            fence: fence.clone(),
-            session_activity_epoch: Some(resumed_epoch),
-        },
-    )
-    .await
-    .expect("CR2 exact reply replay");
+    host.coordination
+        .reply_session_thread_tool(
+            awaken_session_execution_contract::SessionThreadToolReplyDelivery {
+                command: command.clone(),
+                fence: fence.clone(),
+                session_activity_epoch: Some(resumed_epoch),
+            },
+        )
+        .await
+        .expect("CR2 exact reply replay");
     let retried_inbox = dispatch.list(&child).await.expect("CR2 Inbox");
     assert_eq!(
         retried_inbox.len(),
@@ -892,6 +925,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         .await
         .expect("commit the accepted reply receipt while consuming its ticket");
     let replay_fence = host
+        .coordination
         .session_thread_tool_reply_fence(&command)
         .await
         .expect("CR8 receipt replaces the consumed ticket for exact retry");
@@ -899,15 +933,16 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         replay_fence.already_applied,
         "CR8 exact receipt is terminal"
     );
-    host.reply_session_thread_tool(
-        awaken_session_execution_contract::SessionThreadToolReplyDelivery {
-            command: command.clone(),
-            fence: replay_fence,
-            session_activity_epoch: Some(resumed_epoch),
-        },
-    )
-    .await
-    .expect("CR8 exact response-loss retry is a no-op");
+    host.coordination
+        .reply_session_thread_tool(
+            awaken_session_execution_contract::SessionThreadToolReplyDelivery {
+                command: command.clone(),
+                fence: replay_fence,
+                session_activity_epoch: Some(resumed_epoch),
+            },
+        )
+        .await
+        .expect("CR8 exact response-loss retry is a no-op");
     assert_eq!(
         dispatch
             .list(&child)
@@ -925,15 +960,16 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         .expect("CR7 System")
         .content = vec![ContentBlock::text("changed reply context")];
     assert!(
-        host.reply_session_thread_tool(
-            awaken_session_execution_contract::SessionThreadToolReplyDelivery {
-                command: conflicting_system,
-                fence: fence.clone(),
-                session_activity_epoch: Some(resumed_epoch + 1),
-            }
-        )
-        .await
-        .is_err(),
+        host.coordination
+            .reply_session_thread_tool(
+                awaken_session_execution_contract::SessionThreadToolReplyDelivery {
+                    command: conflicting_system,
+                    fence: fence.clone(),
+                    session_activity_epoch: Some(resumed_epoch + 1),
+                }
+            )
+            .await
+            .is_err(),
         "CR7/E9"
     );
     assert_eq!(
@@ -959,6 +995,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         .expect("read later reply coordinate")
         .thread_version;
     let delayed_old_fence = host
+        .coordination
         .session_thread_tool_reply_fence(&command)
         .await
         .expect("CR10 old receipt absorbs a delayed old occurrence");
@@ -972,6 +1009,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         "CR11 each public Event occurrence owns a distinct durable operation"
     );
     let later_fence = host
+        .coordination
         .session_thread_tool_reply_fence(&later_occurrence)
         .await
         .expect("CR11 current occurrence targets the later active await");
@@ -984,15 +1022,16 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         },
     );
     assert!(
-        host.reply_session_thread_tool(
-            awaken_session_execution_contract::SessionThreadToolReplyDelivery {
-                command: conflicting,
-                fence,
-                session_activity_epoch: Some(resumed_epoch + 1),
-            },
-        )
-        .await
-        .is_err(),
+        host.coordination
+            .reply_session_thread_tool(
+                awaken_session_execution_contract::SessionThreadToolReplyDelivery {
+                    command: conflicting,
+                    fence,
+                    session_activity_epoch: Some(resumed_epoch + 1),
+                },
+            )
+            .await
+            .is_err(),
         "CR3/E4"
     );
     assert_eq!(
@@ -1211,7 +1250,8 @@ async fn remote_input_reply_uses_its_ticket_without_inventing_a_tool_batch() {
         accompanying_system: None,
     };
     assert!(
-        host.validated_session_thread_tool_reply(&command)
+        host.coordination
+            .validated_session_thread_tool_reply(&command)
             .await
             .is_ok(),
         "R2/E2"
@@ -1219,7 +1259,8 @@ async fn remote_input_reply_uses_its_ticket_without_inventing_a_tool_batch() {
     let mut stale = command;
     stale.tool_use_id = "another-task".into();
     assert!(
-        host.validated_session_thread_tool_reply(&stale)
+        host.coordination
+            .validated_session_thread_tool_reply(&stale)
             .await
             .is_err(),
         "R3/E3"
@@ -1289,6 +1330,7 @@ async fn remote_input_reply_uses_its_ticket_without_inventing_a_tool_batch() {
     };
     assert!(
         tool_host
+            .coordination
             .validated_session_thread_tool_reply(&tool_command)
             .await
             .is_err(),
@@ -1453,7 +1495,10 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
         let mut stale = command.clone();
         stale.expected_run_id = RunId("later-primary-run".into());
         assert!(
-            host.session_thread_tool_reply_fence(&stale).await.is_err(),
+            host.coordination
+                .session_thread_tool_reply_fence(&stale)
+                .await
+                .is_err(),
             "PR2/E3"
         );
         assert_eq!(
@@ -1496,7 +1541,8 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
             .await
             .expect("PR3 commit conflicting batch projection");
         assert!(
-            host.session_thread_tool_reply_fence(&command)
+            host.coordination
+                .session_thread_tool_reply_fence(&command)
                 .await
                 .is_err(),
             "PR3/E4"
@@ -1523,18 +1569,20 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
             .expect("restore exact PR1 batch fixture");
 
         let fence = host
+            .coordination
             .session_thread_tool_reply_fence(&command)
             .await
             .expect("PR1 exact primary fence");
-        host.reply_session_thread_tool(
-            awaken_session_execution_contract::SessionThreadToolReplyDelivery {
-                command,
-                fence,
-                session_activity_epoch: (!extension).then_some(resumed_epoch),
-            },
-        )
-        .await
-        .expect("PR1 stage primary result");
+        host.coordination
+            .reply_session_thread_tool(
+                awaken_session_execution_contract::SessionThreadToolReplyDelivery {
+                    command,
+                    fence,
+                    session_activity_epoch: (!extension).then_some(resumed_epoch),
+                },
+            )
+            .await
+            .expect("PR1 stage primary result");
         clock.set(1);
         let resumed = dispatch
             .claim_run(
@@ -1657,6 +1705,7 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
         .await
         .expect("B1 root budget pause");
     let root_pause = host
+        .budget
         .session_budget_resume_tickets(&root.0)
         .await
         .expect("B1 discover root pause")
@@ -1677,7 +1726,7 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
     let mut root_stale = root_delivery.clone();
     root_stale.pause_generation = root_stale.pause_generation.saturating_add(1);
     assert_eq!(
-        host.resume_budget_reached(root_stale).await.unwrap(),
+        host.budget.resume_budget_reached(root_stale).await.unwrap(),
         SessionBudgetResumeDisposition::Stale,
         "B4/E5"
     );
@@ -1686,14 +1735,18 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
         "B4/E5"
     );
     assert_eq!(
-        host.resume_budget_reached(root_delivery.clone())
+        host.budget
+            .resume_budget_reached(root_delivery.clone())
             .await
             .unwrap(),
         SessionBudgetResumeDisposition::Dispatched,
         "B1/E1"
     );
     assert_eq!(
-        host.resume_budget_reached(root_delivery).await.unwrap(),
+        host.budget
+            .resume_budget_reached(root_delivery)
+            .await
+            .unwrap(),
         SessionBudgetResumeDisposition::Dispatched,
         "B1 exact replay remains successful"
     );
@@ -1771,6 +1824,7 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
         .await
         .expect("B2 initial Awaiting settlement");
     let first_pause = host
+        .budget
         .session_budget_resume_tickets(&parent.0)
         .await
         .expect("B2 discover child pause")
@@ -1788,8 +1842,8 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
         session_activity_epoch: 42,
     };
     let (first, replay) = tokio::join!(
-        host.resume_budget_reached(first_delivery.clone()),
-        host.resume_budget_reached(first_delivery.clone()),
+        host.budget.resume_budget_reached(first_delivery.clone()),
+        host.budget.resume_budget_reached(first_delivery.clone()),
     );
     assert_eq!(
         first.unwrap(),
@@ -1849,6 +1903,7 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
         .await
         .expect("B3 settle second pause");
     let second_pause = host
+        .budget
         .session_budget_resume_tickets(&parent.0)
         .await
         .expect("B3 discover second pause")
@@ -1861,7 +1916,10 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
         "B3/E4 commit-derived generations differ"
     );
     assert_eq!(
-        host.resume_budget_reached(first_delivery).await.unwrap(),
+        host.budget
+            .resume_budget_reached(first_delivery)
+            .await
+            .unwrap(),
         SessionBudgetResumeDisposition::Stale,
         "B4/E5 old generation"
     );
@@ -1884,7 +1942,10 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
         session_activity_epoch: 43,
     };
     assert_eq!(
-        host.resume_budget_reached(second_delivery).await.unwrap(),
+        host.budget
+            .resume_budget_reached(second_delivery)
+            .await
+            .unwrap(),
         SessionBudgetResumeDisposition::Dispatched,
         "B3/E4"
     );
@@ -1984,7 +2045,8 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
         .await
         .expect("B5 action Awaiting settlement");
     assert!(
-        host.session_budget_resume_tickets(&action_parent.0)
+        host.budget
+            .session_budget_resume_tickets(&action_parent.0)
             .await
             .expect("B5 discovery")
             .is_empty(),
@@ -2040,7 +2102,7 @@ async fn durable_client_result_settles_the_authoritative_dispatch() {
 
     let first = bounded_stage(
         "initial host.run settlement",
-        host.run(None, "t-durable-client", user("hi")),
+        host.session_runs.run(None, "t-durable-client", user("hi")),
     )
     .await
     .expect("durable Run awaits");
@@ -2061,7 +2123,7 @@ async fn durable_client_result_settles_the_authoritative_dispatch() {
 
     let resumed = bounded_stage(
         "host.resume client-result settlement",
-        host.resume(
+        host.session_runs.resume(
             "t-durable-client",
             &pending.tool_use_id,
             HostResume::ClientResult {
@@ -2116,8 +2178,12 @@ async fn coordinator_only_foreground_admission_survives_request_drop_without_a_p
     assert!(host.dispatch.dispatch_pool.get().is_none(), "Q2/E2");
 
     let request = host.clone();
-    let foreground =
-        tokio::spawn(async move { request.run(None, "remote-dispatch", user("hi")).await });
+    let foreground = tokio::spawn(async move {
+        request
+            .session_runs
+            .run(None, "remote-dispatch", user("hi"))
+            .await
+    });
     let row = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
             if let Some(row) = dispatch
@@ -2180,6 +2246,7 @@ async fn pending_client_tool_query_uses_committed_ticket_during_projection_gap()
         .expect("validated Host dependencies"),
     );
     let first = host
+        .session_runs
         .run(None, "t-cross-protocol-pending", user("hi"))
         .await
         .expect("client tool awaits");
@@ -2204,6 +2271,7 @@ async fn pending_client_tool_query_uses_committed_ticket_during_projection_gap()
     );
 
     let error = match host
+        .session_runs
         .run(
             None,
             "t-cross-protocol-pending",
@@ -2217,6 +2285,7 @@ async fn pending_client_tool_query_uses_committed_ticket_during_projection_gap()
     assert_eq!(error.kind, HostErrorKind::BadRequest);
 
     let resumed = host
+        .session_runs
         .resume(
             "t-cross-protocol-pending",
             &observed.tool_use_id,
@@ -2248,10 +2317,15 @@ async fn supersede_run_without_durable_ingress_fails_closed() {
     let host = host_requiring_write_confirmation(Arc::new(AwaitOnWriteModel)).await;
     // Await first so the supersede path is not short-circuited by the awaiting guard
     // (supersede is allowed on an awaiting thread; the durable check is what must fire).
-    let r1 = host.run(None, "t-sup", user("hi")).await.expect("Run 1");
+    let r1 = host
+        .session_runs
+        .run(None, "t-sup", user("hi"))
+        .await
+        .expect("Run 1");
     assert!(matches!(r1.state, RunState::Awaiting));
 
     let err = host
+        .session_runs
         .supersede_run(None, "t-sup", user("newest wins"))
         .await
         .err()
@@ -2282,13 +2356,16 @@ async fn managed_session_root_rejects_legacy_host_run_ingress() {
         .with_ephemeral_dispatch(dispatch.clone()))
     .build()
     .expect("validated Host dependencies");
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .update_run("managed-root", |run| run.session_dispatch = true);
 
     for result in [
-        host.run(None, "managed-root", user("ordinary bypass"))
+        host.session_runs
+            .run(None, "managed-root", user("ordinary bypass"))
             .await,
-        host.supersede_run(None, "managed-root", user("supersede bypass"))
+        host.session_runs
+            .supersede_run(None, "managed-root", user("supersede bypass"))
             .await,
     ] {
         let error = match result {

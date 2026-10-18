@@ -318,6 +318,7 @@ mod tests {
                 ..old.clone()
             };
             let (first, ()) = host
+                .run_assembly
                 .installed_sessions
                 .realizations()
                 .acquire_realization_with("shared-session", |slot| {
@@ -331,6 +332,7 @@ mod tests {
                 let claim = new.clone();
                 tokio::spawn(async move {
                     let (guard, ()) = host
+                        .run_assembly
                         .installed_sessions
                         .realizations()
                         .acquire_realization_with("shared-session", |slot| {
@@ -344,30 +346,36 @@ mod tests {
             tokio::task::yield_now().await;
             assert!(!second_entered.load(Ordering::SeqCst), "R1");
             assert_eq!(
-                host.installed_sessions
+                host.run_assembly
+                    .installed_sessions
                     .read_run("shared-session", |run| run.dispatch_claim.clone())
                     .flatten(),
                 Some(old),
                 "R1"
             );
             if remove_slot {
-                host.installed_sessions.remove("shared-session");
+                host.run_assembly
+                    .installed_sessions
+                    .remove("shared-session");
             } else {
-                host.installed_sessions
+                host.run_assembly
+                    .installed_sessions
                     .update_run("shared-session", |run| run.dispatch_claim = None);
             }
             drop(first);
             let second = waiting.await.expect("next admission joins");
             assert!(second_entered.load(Ordering::SeqCst), "R2/R3");
             assert_eq!(
-                host.installed_sessions
+                host.run_assembly
+                    .installed_sessions
                     .read_run("shared-session", |run| run.dispatch_claim.clone())
                     .flatten(),
                 Some(new),
                 "R2/R3"
             );
             assert!(
-                host.installed_sessions
+                host.run_assembly
+                    .installed_sessions
                     .realizations()
                     .realization_lock("shared-session")
                     .expect("installed Sessions")

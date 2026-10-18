@@ -41,10 +41,12 @@ async fn captured_environment_intent_survives_renewal_without_rebuilding_adopt()
     )
     .unwrap()
     .observed(awaken_authority_clock::authority_proof_started().unwrap());
-    host.installed_sessions.install_realization(thread, |r| {
-        r.execution_mut().authority =
-            crate::realization_state::SessionRealizationAuthority::Live(proof);
-    });
+    host.run_assembly
+        .installed_sessions
+        .install_realization(thread, |r| {
+            r.execution_mut().authority =
+                crate::realization_state::SessionRealizationAuthority::Live(proof);
+        });
     *sink.original_intent.lock().unwrap() = Some(original.clone());
     for request_expiry in [60_000, 120_000] {
         let requested = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
@@ -115,7 +117,7 @@ async fn managed_projection_without_a_lease_never_falls_back_to_unowned() {
             .await
             .build()
             .unwrap();
-        host.installed_sessions.update(thread, |slot| {
+        host.run_assembly.installed_sessions.update(thread, |slot| {
             slot.run.session_dispatch = marker;
             if baseline {
                 slot.replace_frozen_with(|next| {
@@ -362,17 +364,18 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
         committed_environment: None,
     });
     install_test_dispatch_runtime(&host)
-        .host
         .run_assembly
         .install_test_environment_binding_sink(sink.clone());
     let thread = "claimed-ordinary-environment-authority";
-    host.installed_sessions.update_run(thread, |run| {
-        run.dispatch_claim = Some(awaken_dispatch_contract::RunClaim {
-            run_id: RunId("claimed-ordinary-run".into()),
-            owner: "worker-a".into(),
-            epoch: 1,
+    host.run_assembly
+        .installed_sessions
+        .update_run(thread, |run| {
+            run.dispatch_claim = Some(awaken_dispatch_contract::RunClaim {
+                run_id: RunId("claimed-ordinary-run".into()),
+                owner: "worker-a".into(),
+                epoch: 1,
+            });
         });
-    });
 
     let ordinary = host
         .realization_executor
@@ -401,7 +404,8 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
     );
     assert_eq!(sink.authorize_calls.load(Ordering::SeqCst), 0, "R1/E1");
 
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .update_run(thread, |run| run.session_dispatch = true);
     let managed = host
         .realization_executor
@@ -447,7 +451,6 @@ async fn new_environment_binding_commits_once_before_concurrent_contexts_can_use
         committed_environment: None,
     });
     install_test_dispatch_runtime(&host)
-        .host
         .run_assembly
         .install_test_environment_binding_sink(sink.clone());
 
@@ -483,7 +486,6 @@ async fn root_response_loss_is_read_back_without_recreating_the_environment() {
         .expect("validated Host dependencies");
     let sink = Arc::new(ResponseLossBindingSink::default());
     install_test_dispatch_runtime(&host)
-        .host
         .run_assembly
         .install_test_environment_binding_sink(sink.clone());
 
@@ -595,7 +597,6 @@ async fn already_applied_create_adopts_under_the_existing_lifecycle_lock() {
         ..Default::default()
     });
     managed
-        .host
         .run_assembly
         .install_test_environment_binding_sink(sink.clone());
 
@@ -667,13 +668,16 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
     .build()
     .expect("validated Host dependencies");
     assert!(
-        Arc::ptr_eq(&local_store, &local.coordinator_dispatch().unwrap()),
+        Arc::ptr_eq(
+            &local_store,
+            &local.session_runs.coordinator_dispatch().unwrap()
+        ),
         "T2 one selected queue"
     );
     assert!(
         Arc::ptr_eq(
-            &local.coordinator_dispatch().unwrap(),
-            &local.optional_dispatch_store().unwrap()
+            &local.session_runs.coordinator_dispatch().unwrap(),
+            &local.session_runs.optional_dispatch_store().unwrap()
         ),
         "T2 Host reads the sole authority"
     );
@@ -696,7 +700,7 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
     assert!(
         Arc::ptr_eq(
             &coordinator_store,
-            &coordinator.coordinator_dispatch().unwrap()
+            &coordinator.session_runs.coordinator_dispatch().unwrap()
         ),
         "T3 one selected queue"
     );
@@ -841,7 +845,6 @@ async fn recovered_environment_waits_for_replacement_realization_before_publish(
         committed_environment: None,
     });
     install_test_dispatch_runtime(&host)
-        .host
         .run_assembly
         .install_test_environment_binding_sink(sink.clone());
 
@@ -904,7 +907,6 @@ async fn environment_binding_catches_up_across_multiple_realization_fences() {
         accepted_epoch: AtomicU64::new(3),
     });
     install_test_dispatch_runtime(&host)
-        .host
         .run_assembly
         .install_test_environment_binding_sink(sink.clone());
 
@@ -1044,7 +1046,6 @@ async fn binding_commit_failure_is_retryable_and_never_publishes_the_environment
         committed_environment: None,
     });
     install_test_dispatch_runtime(&host)
-        .host
         .run_assembly
         .install_test_environment_binding_sink(sink.clone());
 
@@ -1106,7 +1107,6 @@ async fn on_tool_use_concurrent_hand_calls_create_and_persist_one_environment() 
     });
     let managed = install_test_dispatch_runtime(&host);
     managed
-        .host
         .run_assembly
         .install_test_environment_binding_sink(sink.clone());
     managed
@@ -1188,7 +1188,6 @@ async fn on_tool_use_binding_failure_never_publishes_the_environment() {
     });
     let managed = install_test_dispatch_runtime(&host);
     managed
-        .host
         .run_assembly
         .install_test_environment_binding_sink(sink.clone());
     managed

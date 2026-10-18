@@ -164,9 +164,6 @@ pub struct SharedHost {
     /// Platform-managed workspace for flat, no-login local requests. It is
     /// generated (and persisted with durable storage), never compiled in.
     pub(crate) local_workspace: String,
-    /// Process-local projections materialized for prepared Sessions. The private
-    /// slot makes their lifecycle atomic while the durable manifest stays authoritative.
-    pub(crate) installed_sessions: Arc<crate::installed_session::InstalledSessions>,
     pub(crate) hub: Arc<ThreadEventHub>,
     /// When set, each thread commits to a durable SQLite database at
     /// `store_dir/<thread>.db`, so an awaiting run survives a process restart. When
@@ -190,24 +187,24 @@ pub struct SharedHost {
     /// Durable dispatch: queue transport, process pool, and the weak Session
     /// application edges the pool's Workers call back into.
     pub(crate) dispatch: capability::DispatchCapability,
-    /// Claim-fenced transports a database-less Worker installs.
-    pub(crate) worker: Arc<capability::WorkerTransports>,
-    /// Default inference, per-thread model routing, remote attempts, and the
-    /// immutable Agent publications/Judge the Host executes.
-    pub(crate) agent: Arc<capability::AgentExecution>,
-    /// ACP backend, attempt decoration, and the credential/session-blob
-    /// adapters the attempt executors share.
-    pub(crate) exec: Arc<capability::AttemptBackends>,
     /// The realization executor and the sandbox providers it realizes through.
     pub(crate) realization_executor: Arc<crate::realization_executor::RealizationExecutor>,
     /// Committed Thread readback over the selected authority.
     pub(crate) thread_reads: Arc<crate::ThreadReads>,
     /// The live inboxes of the attempts this process owns.
     pub(crate) live_inboxes: Arc<crate::LiveInboxes>,
+    /// Capability assembly for Runs.
+    pub(crate) capabilities: Arc<crate::RunCapabilities>,
     /// Session context assembly.
     pub(crate) run_assembly: Arc<crate::RunAssembly>,
-    /// Tool, Skill, plugin, and gate offering installed on every thread.
-    pub(crate) tools: Arc<capability::ToolOffering>,
+    /// Session Run delivery.
+    pub(crate) session_runs: Arc<crate::SessionRuns>,
+    /// Session root and child Run coordination.
+    pub(crate) coordination: Arc<crate::ChildRunCoordination>,
+    /// Session Outcome orchestration.
+    pub(crate) outcomes: Arc<crate::Outcomes>,
+    /// Session usage and budget-paused Runs.
+    pub(crate) budget: Arc<crate::BudgetAccounting>,
     /// Resources-context ports: Memory, Files, Artifacts.
     pub(crate) resources: Arc<capability::ResourcePorts>,
     /// Content capture (ADR-0050): sink, deployment ceiling, consent source.

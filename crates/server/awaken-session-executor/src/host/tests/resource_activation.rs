@@ -55,7 +55,6 @@ async fn install_test_session_init_mounts_an_effective_memory_resource() {
 
     // An effective Session input mounts without an authoring repository on the host.
     managed
-        .host
         .run_assembly
         .install_test_session_init("t-bound", bare("a"))
         .await
@@ -80,7 +79,6 @@ async fn install_test_session_init_mounts_an_effective_memory_resource() {
         })
         .unwrap();
     managed
-        .host
         .run_assembly
         .install_test_session_init("t-read-only", read_only)
         .await
@@ -92,7 +90,6 @@ async fn install_test_session_init_mounts_an_effective_memory_resource() {
 
     // An empty effective input set mounts nothing.
     managed
-        .host
         .run_assembly
         .install_test_session_init("t-unbound", bare("no-bindings"))
         .await
@@ -232,7 +229,6 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         },
     ]);
     managed
-        .host
         .run_assembly
         .install_test_session_init("semantic-memory", init)
         .await
@@ -370,6 +366,7 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
     );
 
     let bindings = host
+        .run_assembly
         .installed_sessions
         .realizations()
         .read_realization("semantic-memory", |r| r.staging().memory_bindings.clone())
@@ -463,7 +460,8 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         Some("v2"),
         "M4 never clobbers"
     );
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .update_run("semantic-memory", |run| {
             run.context = None;
         });
@@ -473,7 +471,8 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         .await
         .expect("M6 rebuilds from the frozen Session projection");
     assert_eq!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .read_realization("semantic-memory", |r| r.staging().content_delivery)
             .expect("installed Sessions")
@@ -554,12 +553,11 @@ async fn activation_applies_current_resource_state_as_a_deny_only_overlay() {
         })
         .await
         .expect("suspend test MemoryStore");
-    let managed = crate::ManagedHost::new(host.clone());
+    let managed = host.clone();
     let mut init = bare_session("a", host.run_assembly.local_workspace());
     init.resources = manifest;
 
     let error = managed
-        .host
         .run_assembly
         .install_test_session_init("t-suspended", init)
         .await
@@ -610,7 +608,7 @@ async fn memory_activation_enforces_catalog_workspace_without_iam_policy_logic()
         })
         .await
         .expect("register workspace-fenced MemoryStore");
-    let managed = crate::ManagedHost::new(host.clone());
+    let managed = host.clone();
     let mut init = bare_session("agent", "workspace-b");
     init.resources = effective_resources(vec![TestInput {
         kind: "memory_store".into(),
@@ -623,7 +621,6 @@ async fn memory_activation_enforces_catalog_workspace_without_iam_policy_logic()
     }]);
 
     let error = managed
-        .host
         .run_assembly
         .install_test_session_init("wrong-workspace", init)
         .await
@@ -671,7 +668,6 @@ async fn install_test_session_init_mounts_effective_file_and_stages_effective_re
     let managed = managed_with_resource_source(host.clone());
 
     managed
-        .host
         .run_assembly
         .install_test_session_init(
             "t-multi",
@@ -801,7 +797,6 @@ async fn complete_projection_preserves_the_canonical_repository_path_without_rel
         .await
         .expect("canonical Repository path stages through the complete projection");
     managed
-        .host
         .run_assembly
         .apply_session_inputs(
             "canonical-repository-path",
@@ -950,7 +945,6 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         committed_environment: None,
     });
     managed
-        .host
         .run_assembly
         .install_test_environment_binding_sink(initial_binding_sink.clone());
     let resources = effective_repository(
@@ -1006,7 +1000,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     // owns both effects; no test-only preparation or direct slot write may
     // create a competing partial projection.
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-        &*managed.host.run_assembly,
+        &*managed.run_assembly,
         session_id,
         ordinary_projection.clone(),
         awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
@@ -1148,6 +1142,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         .expect("P1 command");
     let mut terminal_projection = ordinary_projection.clone();
     let retained = host
+        .run_assembly
         .installed_sessions
         .realizations()
         .read_realization(session_id, |r| {
@@ -1180,7 +1175,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         ),
     );
     awaken_session_execution_contract::TerminalCleanupRuntime::install_terminal_cleanup_assignment(
-        &*managed.host.run_assembly,
+        &*managed.run_assembly,
         &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
             environment_creation_not_attempted: false,
             session_id: session_id.into(),
@@ -1217,7 +1212,6 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         assert_eq!(sources.len(), 1, "S1 one fixture-owned realization");
         std::fs::remove_dir_all(&sources[0]).expect("S1 remove owned fixture source");
         let outcome = managed
-            .host
             .run_assembly
             .execute_terminal_repository_publication_for_lease(command, &lease)
             .await
@@ -1242,14 +1236,16 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         // retained this exact bound Arc behind retirement. Provider remains Ready;
         // publication must reuse it under the current terminal assignment, without
         // reopening ordinary execution. A cold Host does not reproduce this shape.
-        host.installed_sessions.update(session_id, |slot| {
-            let owned = slot
-                .realization
-                .environment()
-                .owner
-                .terminal_bound_environment()
-                .unwrap();
-            slot.realization.environment_mut().owner =
+        host.run_assembly
+            .installed_sessions
+            .update(session_id, |slot| {
+                let owned = slot
+                    .realization
+                    .environment()
+                    .owner
+                    .terminal_bound_environment()
+                    .unwrap();
+                slot.realization.environment_mut().owner =
                 crate::environment_owner::SessionEnvironmentOwner::Retiring(
                     crate::environment_owner::RetiringSessionEnvironment {
                         cause:
@@ -1259,8 +1255,8 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
                         owned: crate::environment_owner::RetiringEnvironmentOwner::Bound(owned),
                     },
                 );
-            slot.run.context = None;
-        });
+                slot.run.context = None;
+            });
         assert!(
             host.realization_executor
                 .environments()
@@ -1302,7 +1298,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             ordinary.is_err(),
             "P6 terminal retirement remains hidden from ordinary live IO"
         );
-        host.installed_sessions.realizations().update_realization(session_id, |r| {
+        host.run_assembly.installed_sessions.realizations().update_realization(session_id, |r| {
             if let crate::environment_owner::SessionEnvironmentOwner::Retiring(retiring) =
                 &mut r.environment_mut().owner
             {
@@ -1313,6 +1309,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             }
         }).expect("installed Sessions");
         let before = host
+            .run_assembly
             .installed_sessions
             .realizations()
             .read_realization(session_id, |r| {
@@ -1321,12 +1318,12 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             .expect("installed Sessions")
             .unwrap();
         managed
-            .host
             .run_assembly
             .execute_terminal_repository_publication_for_lease(command.clone(), &lease)
             .await
             .expect("P7 fresh wrapper resumes exact terminal publication");
         let after = host
+            .run_assembly
             .installed_sessions
             .realizations()
             .read_realization(session_id, |r| {
@@ -1366,13 +1363,11 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         );
     }
     let first = managed
-        .host
         .run_assembly
         .execute_terminal_repository_publication_for_lease(command.clone(), &lease)
         .await
         .expect("P1 publish");
     let replay = managed
-        .host
         .run_assembly
         .execute_terminal_repository_publication_for_lease(command.clone(), &lease)
         .await
@@ -1431,7 +1426,8 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         "P1-P2/P5 publication preserves ordinary residency or retirement",
     );
     assert!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .read_realization(session_id, |r| {
                 r.environment().owner.terminal_bound_environment().is_some()
@@ -1534,13 +1530,18 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         committed_environment: None,
     });
     replacement_managed
-        .host
         .run_assembly
         .install_test_environment_binding_sink(replacement_binding_sink.clone());
 
     assert!(
-        !replacement_host.installed_sessions.contains(session_id)
-            && !replacement_host.installed_sessions.contains(child_id),
+        !replacement_host
+            .run_assembly
+            .installed_sessions
+            .contains(session_id)
+            && !replacement_host
+                .run_assembly
+                .installed_sessions
+                .contains(child_id),
         "P4 replacement starts without root or child process-local slots"
     );
     assert!(
@@ -1618,8 +1619,14 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         "P4 physical disposal runs only after publication and both durable preparations"
     );
     assert!(
-        !replacement_host.installed_sessions.contains(session_id)
-            && !replacement_host.installed_sessions.contains(child_id),
+        !replacement_host
+            .run_assembly
+            .installed_sessions
+            .contains(session_id)
+            && !replacement_host
+                .run_assembly
+                .installed_sessions
+                .contains(child_id),
         "P4 completion retires replacement root and child slots"
     );
 }
@@ -1694,7 +1701,7 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
         })
         .await
         .unwrap();
-    let managed = crate::ManagedHost::new(host.clone());
+    let managed = host.clone();
     let mut init = bare_session("a", host.run_assembly.local_workspace());
     init.resources = effective_resources(vec![TestInput {
         kind: "file".into(),
@@ -1707,7 +1714,6 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
     }]);
 
     let error = managed
-        .host
         .run_assembly
         .install_test_session_init("t-corrupt-file", init)
         .await;
@@ -1738,7 +1744,7 @@ async fn file_activation_enforces_workspace_ownership_without_iam_policy_logic()
         .await
         .unwrap()
         .id;
-    let managed = crate::ManagedHost::new(host);
+    let managed = host;
     let mut init = bare_session("a", "workspace-b");
     init.resources = effective_resources(vec![TestInput {
         kind: "file".into(),
@@ -1751,7 +1757,6 @@ async fn file_activation_enforces_workspace_ownership_without_iam_policy_logic()
     }]);
 
     let error = managed
-        .host
         .run_assembly
         .install_test_session_init("t-cross-workspace", init)
         .await;

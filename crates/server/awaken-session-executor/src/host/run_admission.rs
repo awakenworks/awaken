@@ -43,7 +43,7 @@ impl crate::RunAssembly {
                 self.installed_sessions.realizations(),
             )),
             self.local_workspace(),
-            self.agent.agent_publications.as_deref(),
+            self.capabilities.agent.agent_publications.as_deref(),
             crate::agent_catalog::RUN_PUBLICATIONS,
             self.runs_local_dispatch_pool(),
             configured,
@@ -81,7 +81,8 @@ mod tests {
                 .expect("validated Host dependencies");
                 if poisoned {
                     let poison = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        host.installed_sessions
+                        host.run_assembly
+                            .installed_sessions
                             .update("admission-order", |_| panic!("fixture poison"));
                     }));
                     assert!(poison.is_err(), "C2 uses the original registry lock");
@@ -157,7 +158,8 @@ mod tests {
                 .await)
                 .build()
                 .expect("validated Host dependencies");
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .update_run("format-root", |run| run.session_dispatch = true);
         let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("assistant")
             .model(ModelBinding::parse("test", "model", "native").expect("valid fixture"))

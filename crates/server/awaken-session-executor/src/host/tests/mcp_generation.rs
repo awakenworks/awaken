@@ -679,12 +679,14 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
     assert_eq!(query("mcp-missing-query"), None, "RQ0 no callback");
     assert!(
         runtime_host
+            .run_assembly
             .installed_sessions
             .read("mcp-missing-query", |_| ())
             .is_none(),
         "RQ0 never creates a slot"
     );
     runtime_host
+        .run_assembly
         .installed_sessions
         .update("mcp-empty-query", |_| ());
     assert_eq!(query("mcp-empty-query"), Some((false, false)), "RQ1");
@@ -742,6 +744,7 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
     let _ = cancelled.await;
     assert!(
         runtime_host
+            .run_assembly
             .installed_sessions
             .read_run(runtime_thread, |run| run
                 .context
@@ -773,6 +776,7 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
     );
     assert!(
         runtime_host
+            .run_assembly
             .installed_sessions
             .read_run(runtime_thread, |run| run
                 .context
@@ -819,6 +823,7 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
     );
     assert!(
         runtime_host
+            .run_assembly
             .installed_sessions
             .read_run(runtime_thread, |run| run
                 .context
@@ -957,7 +962,8 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
         None,
         None,
     );
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .realizations()
         .close_mcp_realization_admission(
             "mcp-staging-quiescence",
@@ -986,6 +992,7 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
         .unwrap();
     assert!(
         !host
+            .run_assembly
             .installed_sessions
             .realizations()
             .mcp_realization_admitted("mcp-staging-quiescence")
@@ -1144,7 +1151,8 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
         )
         .unwrap();
     assert!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .mcp_realization_admitted("mcp-staging-quiescence")
             .expect("installed Sessions"),
@@ -1249,11 +1257,13 @@ async fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epo
             } else {
                 awaken_session_realization::test_support::test_observed_lease(lease)
             };
-            host.installed_sessions
-                .install_realization(expired.session_id().as_str(), |r| {
+            host.run_assembly.installed_sessions.install_realization(
+                expired.session_id().as_str(),
+                |r| {
                     r.execution_mut().authority =
                         crate::realization_state::SessionRealizationAuthority::Live(proof);
-                });
+                },
+            );
         }
         assert_eq!(
             host.run_assembly
@@ -1346,7 +1356,8 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
             McpProjectionState::Active,
             McpProjectionState::Draining,
         ] {
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .realizations()
                 .modify_realization(old_generation.session_id().as_str(), |r| {
                     r.staging_mut().mcp.projections_mut()[0].state = live_state
@@ -1363,7 +1374,8 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
                 "R6 retains owner"
             );
         }
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .modify_realization(old_generation.session_id().as_str(), |r| {
                 r.staging_mut().mcp.projections_mut()[0].state = state
@@ -1406,7 +1418,8 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
             "{rule}/E1"
         );
         assert_eq!(
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .realizations()
                 .read_realization(renewed.generation.session_id().as_str(), |r| {
                     r.staging().mcp.projection_count()
@@ -1652,7 +1665,13 @@ async fn worker_authority_loss_revokes_every_session_projection() {
         1,
         "A1"
     );
-    assert!(!host.installed_sessions.contains("authority-loss"), "A1");
+    assert!(
+        !host
+            .run_assembly
+            .installed_sessions
+            .contains("authority-loss"),
+        "A1"
+    );
     assert!(relay.route_url(&generation).is_none(), "A1");
     assert_eq!(
         host.run_assembly
@@ -1697,7 +1716,6 @@ async fn a_github_repository_resource_does_not_create_a_parallel_mcp_projection(
     let managed = managed_with_resource_source(host.clone());
 
     managed
-        .host
         .run_assembly
         .install_test_session_init(
             "t-gh",

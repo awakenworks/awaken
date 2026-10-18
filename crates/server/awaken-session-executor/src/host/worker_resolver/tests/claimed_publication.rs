@@ -56,6 +56,7 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
     let child_run = RunId("reported-child-run".into());
     let report_id = MessageId::agent_thread_report(&child_run);
     ephemeral
+        .coordination
         .continue_session_agent_report(
             awaken_session_execution_contract::SessionAgentReportContinuation {
                 session_id: session_id.into(),
@@ -85,6 +86,7 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
         .await
         .expect("R1/E2 resolve direct Session claim");
     let resident = ephemeral
+        .run_assembly
         .installed_sessions
         .read_run(session_id, |run| run.context.clone())
         .flatten()
@@ -171,6 +173,7 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
     );
     assert!(
         coordinator
+            .run_assembly
             .installed_sessions
             .read_run(coordinator_thread, |run| run.context.is_none())
             .unwrap_or(true),
@@ -307,7 +310,7 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
             .expect("missing dispatch store"),
     );
     let missing_host = adoption_host_over(missing_store.clone()).await;
-    let _missing_managed = crate::ManagedHost::new(missing_host.clone());
+    let _missing_managed = missing_host.clone();
     let missing_resolver =
         crate::host::session_worker_resolver(&missing_host).expect("Host dispatch resolver");
     missing_store
@@ -457,6 +460,7 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
         .await
         .expect("K1 claimed resolve");
     let claimed_ctx = host
+        .run_assembly
         .installed_sessions
         .read_run("claimed-cache", |run| run.context.clone())
         .flatten()
@@ -478,6 +482,7 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
         .await
         .expect("K2 same publications under a different claim");
     let retried = host
+        .run_assembly
         .installed_sessions
         .read_run("claimed-cache", |run| run.context.clone())
         .flatten()
@@ -511,6 +516,7 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
         .await
         .expect("K3 effective-model change");
     let model_changed_ctx = host
+        .run_assembly
         .installed_sessions
         .read_run("claimed-cache", |run| run.context.clone())
         .flatten()

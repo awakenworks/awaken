@@ -127,7 +127,7 @@ mod tests {
         );
 
         assert!(
-            host.installed_sessions
+            host.run_assembly.installed_sessions
                 .read("cold-deferred", |slot| slot.run.deferred_executor.is_some()
                     && slot.inputs.tools.as_ref().is_some_and(|tools| {
                         tools == &awaken_session_configuration_contract::SessionToolConfiguration::default()
@@ -145,7 +145,8 @@ mod tests {
             );
             let claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
             assert!(
-                host.installed_sessions
+                host.run_assembly
+                    .installed_sessions
                     .read(thread, |slot| slot.inputs.baseline.is_none()
                         && !slot.run.session_dispatch
                         && slot.realization.execution().authority.lease().is_none()
@@ -193,7 +194,8 @@ mod tests {
                 .get()
                 .is_none_or(|(host, thread)| {
                     host.upgrade().is_some_and(|host| {
-                        host.installed_sessions
+                        host.run_assembly
+                            .installed_sessions
                             .realizations()
                             .read_realization(thread, |r| r.environment().owner.is_resident())
                             .expect("installed Sessions")
@@ -615,6 +617,7 @@ mod tests {
         directive: awaken_session_realization_contract::SessionRealizationDirective,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationDriveError> {
         let realization = host
+            .run_assembly
             .installed_sessions
             .acquire_realization_with(session_id.as_str(), |_| ())
             .await
@@ -800,7 +803,7 @@ mod tests {
         let host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub").await)
             .build()
             .expect("validated Host dependencies");
-        let _managed = crate::ManagedHost::new(host.clone());
+        let _managed = host.clone();
         let resident = frozen_projection();
         host.run_assembly
             .install_frozen_session_projection(thread, resident.clone(), None, true, None)
@@ -852,7 +855,8 @@ mod tests {
             "M1"
         );
         assert_eq!(
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .realizations()
                 .read_realization(thread, |r| r.execution().authority.lease().cloned())
                 .expect("installed Sessions")
@@ -907,7 +911,7 @@ mod tests {
         let host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub").await)
             .build()
             .expect("validated Host dependencies");
-        let _managed = crate::ManagedHost::new(host.clone());
+        let _managed = host.clone();
         let mut projection = frozen_projection();
         projection.baseline.agent_revision = Some(7);
         projection.baseline.runtime = Some("acp:claude".into());
@@ -965,6 +969,7 @@ mod tests {
         .await
         .expect("lease renewal reuses the retained immutable publication");
         let retained = host
+            .run_assembly
             .installed_sessions
             .realizations()
             .published_snapshot(thread)
@@ -1001,7 +1006,8 @@ mod tests {
         .await
         .expect("P3 Session-effective Run snapshot shares the frozen coordinates");
         assert_eq!(
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .realizations()
                 .published_snapshot(thread)
                 .expect("installed Sessions")
@@ -1139,7 +1145,7 @@ mod tests {
         ))
         .build()
         .expect("validated Host dependencies");
-        let _managed = crate::ManagedHost::new(host.clone());
+        let _managed = host.clone();
         let directive = awaken_session_realization_contract::SessionRealizationDirective {
             projection,
             authority: awaken_session_realization::test_support::test_lease_receipt(lease),
@@ -1203,7 +1209,8 @@ mod tests {
             "R1/E2-E3 catches up before publishing only the current fence"
         );
         assert_eq!(
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .realizations()
                 .read_realization(thread, |r| r
                     .execution()
@@ -1251,7 +1258,7 @@ mod tests {
         ))
         .build()
         .expect("validated Host dependencies");
-        let _managed = crate::ManagedHost::new(host.clone());
+        let _managed = host.clone();
         drive_test_session_realization(
             &host,
             control.as_ref(),
@@ -1298,7 +1305,7 @@ mod tests {
         ))
         .build()
         .expect("validated Host dependencies");
-        let _managed = crate::ManagedHost::new(host.clone());
+        let _managed = host.clone();
         let error = drive_test_session_realization(
             &host,
             control.as_ref(),
@@ -1373,6 +1380,7 @@ mod tests {
             .await
             .expect("C1 original materialization readback");
         let old_lease = source_host
+            .run_assembly
             .installed_sessions
             .realizations()
             .read_realization(thread, |r| r.execution().authority.lease().cloned())
@@ -1380,7 +1388,7 @@ mod tests {
             .flatten()
             .expect("C1 actual original assignment");
         awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-            &*source.host.run_assembly,
+            &*source.run_assembly,
             thread,
             resident.clone(),
             awaken_session_realization_contract::SessionProjectionInstallMode::Realization {
@@ -1403,7 +1411,7 @@ mod tests {
                     thread,
                     (
                         &source_host.run_assembly.mcp,
-                        source_host.installed_sessions.as_ref()
+                        source_host.run_assembly.installed_sessions.as_ref()
                     ),
                     None,
                 )
@@ -1431,6 +1439,7 @@ mod tests {
             "E1 current assignment preserves immutable original materialization"
         );
         let lease = host
+            .run_assembly
             .installed_sessions
             .realizations()
             .read_realization(thread, |r| r.execution().authority.lease().cloned())
@@ -1454,7 +1463,6 @@ mod tests {
             .environment_binding_sink()
             .expect("C4 already-configured actual Root authority");
         managed
-            .host
             .run_assembly
             .install_test_environment_binding_sink(Arc::new(
                 RecoveryEnvironmentBindingSink::rooted(&control, roots.clone(), delegate),
@@ -1521,11 +1529,10 @@ mod tests {
         let original_binding_sink =
             Arc::new(RecoveryEnvironmentBindingSink::new(&original_control));
         original_managed
-            .host
             .run_assembly
             .install_test_environment_binding_sink(original_binding_sink.clone());
         awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-            &*original_managed.host.run_assembly,
+            &*original_managed.run_assembly,
             thread,
             original_projection,
             awaken_session_realization_contract::SessionProjectionInstallMode::Realization {
@@ -1603,11 +1610,9 @@ mod tests {
             .required_environment
             .set((Arc::downgrade(&host), thread.into()))
             .unwrap();
-        let managed =
-            super::test_support::complete_managed_test_host(crate::ManagedHost::new(host.clone()));
+        let managed = super::test_support::complete_managed_test_host(host.clone());
         let binding_sink = Arc::new(RecoveryEnvironmentBindingSink::new(&control));
         managed
-            .host
             .run_assembly
             .install_test_environment_binding_sink(binding_sink);
         crate::application::worker_projection::realize_session(
@@ -1635,7 +1640,8 @@ mod tests {
             "R1/E1"
         );
         assert!(
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .read_run(thread, |run| run.session_dispatch)
                 .unwrap_or(false),
             "R1/E1 Control synchronization publishes the existing Managed Session marker so a later empty compatibility envelope cannot drain this MCP generation"
@@ -1650,7 +1656,8 @@ mod tests {
             .await
             .expect("installed Sessions");
         assert!(
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .read(thread, |slot| slot.run.context.is_none()
                     && slot.realization.environment().owner.is_resident())
                 .unwrap_or(false),
@@ -1705,7 +1712,8 @@ mod tests {
                     .expect("installed Sessions");
             }
             assert_eq!(
-                host.installed_sessions
+                host.run_assembly
+                    .installed_sessions
                     .read_run(thread, |run| run.context.is_some())
                     .unwrap_or(false),
                 runtime_cached,
@@ -1765,7 +1773,7 @@ mod tests {
             );
             assert!(
                 matches!(
-                    host.installed_sessions.realizations().read_realization(thread, |r| r.execution().authority.clone()).expect("installed Sessions"),
+                    host.run_assembly.installed_sessions.realizations().read_realization(thread, |r| r.execution().authority.clone()).expect("installed Sessions"),
                     Some(crate::realization_state::SessionRealizationAuthority::Closed(Some(ref closed)))
                         if closed == &recovery_authority.lease
                 ),
@@ -1910,9 +1918,8 @@ mod tests {
             .unwrap();
         let first_use_control = RecoveryControl::fixed(first_use_projection);
         let first_use_sink = Arc::new(RecoveryEnvironmentBindingSink::new(&first_use_control));
-        let first_use_managed = crate::ManagedHost::new(first_use_host.clone());
+        let first_use_managed = first_use_host.clone();
         first_use_managed
-            .host
             .run_assembly
             .install_test_environment_binding_sink(first_use_sink.clone());
         let _managed = first_use_managed;
@@ -1938,6 +1945,7 @@ mod tests {
         );
         assert!(
             first_use_host
+                .run_assembly
                 .installed_sessions
                 .realizations()
                 .read_realization(first_use_thread, |r| r.environment().owner.is_resident())
@@ -1958,9 +1966,8 @@ mod tests {
         .build()
         .expect("validated Host dependencies");
 
-        let unpinned_managed = crate::ManagedHost::new(unpinned_host.clone());
+        let unpinned_managed = unpinned_host.clone();
         unpinned_managed
-            .host
             .run_assembly
             .install_test_environment_binding_sink(Arc::new(ToggleBindingSink {
                 fail: std::sync::atomic::AtomicBool::new(false),

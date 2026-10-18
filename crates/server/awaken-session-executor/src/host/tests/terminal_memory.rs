@@ -204,7 +204,7 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         ))
     .build()
     .expect("validated Host dependencies");
-    let managed = crate::ManagedHost::new(host);
+    let managed = host;
     let input = crate::session_resource::ResolvedInput {
         created_at_unix_ms: None,
         updated_at_unix_ms: None,
@@ -247,23 +247,21 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     )
     .expect("R2 exact aggregate transition");
     managed
-        .host
+        .run_assembly
         .installed_sessions
         .install("realization-memory-session");
     managed
-        .host
         .realization_executor
         .staging()
         .stage_prevalidated_resource_transition_under_resource_projection(
             managed
-                .host
                 .realization_executor
                 .sessions()
                 .lock_resource_projection("realization-memory-session")
                 .await
                 .unwrap()
                 .held(),
-            managed.host.realization_executor.peers(),
+            managed.realization_executor.peers(),
             "realization-memory-session",
             &transition,
             None,
@@ -273,7 +271,7 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         .await
         .expect("R2/E2 realization-fenced remote Memory staging");
     let staged = managed
-        .host
+        .run_assembly
         .installed_sessions
         .realizations()
         .read_realization("realization-memory-session", |r| {
@@ -300,19 +298,17 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     );
 
     managed
-        .host
         .realization_executor
         .staging()
         .stage_prevalidated_resource_transition_under_resource_projection(
             managed
-                .host
                 .realization_executor
                 .sessions()
                 .lock_resource_projection("realization-memory-session")
                 .await
                 .unwrap()
                 .held(),
-            managed.host.realization_executor.peers(),
+            managed.realization_executor.peers(),
             "realization-memory-session",
             &transition,
             None,
@@ -327,19 +323,17 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         ..lease.clone()
     };
     managed
-        .host
         .realization_executor
         .staging()
         .stage_prevalidated_resource_transition_under_resource_projection(
             managed
-                .host
                 .realization_executor
                 .sessions()
                 .lock_resource_projection("realization-memory-session")
                 .await
                 .unwrap()
                 .held(),
-            managed.host.realization_executor.peers(),
+            managed.realization_executor.peers(),
             "realization-memory-session",
             &transition,
             None,
@@ -370,7 +364,6 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         epoch: 2,
     };
     let run_only = managed
-        .host
         .realization_executor
         .staging()
         .stage_resolved_input("realization-workspace", &input, Some(&claim), None, None)
@@ -383,7 +376,6 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         "R1 does not call the Session encoder"
     );
     let both = managed
-        .host
         .realization_executor
         .staging()
         .stage_resolved_input(
@@ -417,7 +409,6 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         ..lease.clone()
     };
     let stale_error = match managed
-        .host
         .realization_executor
         .staging()
         .stage_resolved_input(
@@ -440,7 +431,6 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     let mut foreign_input = input.clone();
     foreign_input.binding_id = awaken_resource_contract::BindingId::from("foreign-memory");
     let foreign_error = match managed
-        .host
         .realization_executor
         .staging()
         .stage_resolved_input(
@@ -467,7 +457,6 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     );
     assert_eq!(events.lock().unwrap().len(), 4, "R4/R5 no mount reference");
     let zero_error = match managed
-        .host
         .realization_executor
         .staging()
         .stage_resolved_input(
@@ -495,23 +484,21 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
 
     // Holding the resource-projection lock requires an installed Session.
     managed
-        .host
+        .run_assembly
         .installed_sessions
         .install("unfenced-realization-memory-session");
     let error = match managed
-        .host
         .realization_executor
         .staging()
         .stage_prevalidated_resource_transition_under_resource_projection(
             managed
-                .host
                 .realization_executor
                 .sessions()
                 .lock_resource_projection("unfenced-realization-memory-session")
                 .await
                 .unwrap()
                 .held(),
-            managed.host.realization_executor.peers(),
+            managed.realization_executor.peers(),
             "unfenced-realization-memory-session",
             &transition,
             None,
@@ -544,7 +531,7 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     // ingress replay above skips IO. C4/C5's removal between the two Slot reads
     // is a source-level race invariant: no deterministic interleaving hook
     // exists here, so this test does not claim to execute those two schedules.
-    let stage = managed.host.realization_executor.staging();
+    let stage = managed.realization_executor.staging();
     let key = stage
         .sessions()
         .read_realization("realization-memory-session", |r| {
@@ -697,23 +684,21 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     // Skill set. No Resource compilation, complete key, Workspace publication
     // or active-generation receipt may precede adoption of that original domain.
     managed
-        .host
+        .run_assembly
         .installed_sessions
         .install("awaiting-memory-adoption");
     managed
-        .host
         .realization_executor
         .staging()
         .stage_prevalidated_resource_transition_under_resource_projection(
             managed
-                .host
                 .realization_executor
                 .sessions()
                 .lock_resource_projection("awaiting-memory-adoption")
                 .await
                 .unwrap()
                 .held(),
-            managed.host.realization_executor.peers(),
+            managed.realization_executor.peers(),
             "awaiting-memory-adoption",
             &transition,
             Some(&claim),
@@ -728,7 +713,7 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         "R9 no Memory encoder or content IO"
     );
     managed
-        .host
+        .run_assembly
         .installed_sessions
         .read("awaiting-memory-adoption", |slot| {
             assert!(
@@ -882,7 +867,7 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
         .clone()
         .expect("HS1 frozen source manifest");
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-        &*managed.host.run_assembly,
+        &*managed.run_assembly,
         thread,
         projection,
         awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
@@ -915,7 +900,8 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
             },
         )
         .expect("HS1 project the exact durable source binding");
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .realizations()
         .update_realization(thread, |r| {
             r.execution_mut().authority =
@@ -949,7 +935,7 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
 
     let error =
         awaken_session_execution_contract::EnvironmentRuntime::prepare_checkpoint_source_disposal(
-            &*managed.host.run_assembly,
+            &*managed.run_assembly,
             thread,
             &preparation,
             &generation,
@@ -964,7 +950,8 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
         "HS1/E1 zero preparation/disposal"
     );
     assert_eq!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .read_realization(thread, |r| {
                 r.environment().owner.durable_binding().map(str::to_owned)
@@ -1172,7 +1159,8 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
         &projection,
     );
 
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .install_realization(session_id, |r| {
             r.execution_mut().authority =
                 crate::realization_state::SessionRealizationAuthority::Live(
@@ -1208,7 +1196,8 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
         )
         .unwrap()
         .observed(awaken_authority_clock::authority_proof_started().unwrap());
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .realizations()
         .update_realization(session_id, |r| {
             r.execution_mut().authority =
@@ -1233,7 +1222,8 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
             .unwrap(),
         "R4 preserve exact aggregate preparation and successor identity"
     );
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .realizations()
         .update_realization(session_id, |r| {
             r.execution_mut().authority =
@@ -1262,7 +1252,8 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
         crate::realization_state::SessionRealizationAuthority::Closed(Some(renewed_lease.clone())),
         crate::realization_state::SessionRealizationAuthority::Uninstalled,
     ] {
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .update_realization(session_id, |r| r.execution_mut().authority = closed)
             .expect("installed Sessions");
@@ -1282,7 +1273,8 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
         );
     }
 
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .realizations()
         .update_realization(session_id, |r| {
             r.execution_mut().authority =
@@ -1313,7 +1305,8 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
         expires_at_unix_ms: now_unix_ms.saturating_add(30_000),
         ..expired_lease
     };
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .realizations()
         .update_realization(session_id, |r| {
             r.execution_mut().authority =
@@ -1470,7 +1463,6 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
     let asserted_effect = effect.clone();
     let mut preparation = tokio::spawn(async move {
         managed
-            .host
             .run_assembly
             .prepare_terminal_cleanup_for_effect(effect, authorization)
             .await
@@ -1633,7 +1625,6 @@ async fn total_absence_recovers_artifacts_before_separate_terminal_disposal() {
     let preparation_authorization =
         terminal_preparation_authorization(&effect, &terminal_projection);
     let preparation = managed
-        .host
         .run_assembly
         .prepare_terminal_cleanup_for_effect(effect.clone(), preparation_authorization)
         .await
@@ -1654,14 +1645,13 @@ async fn total_absence_recovers_artifacts_before_separate_terminal_disposal() {
         "HS2/E1->E2"
     );
     assert!(
-        host.installed_sessions.contains(thread),
+        host.run_assembly.installed_sessions.contains(thread),
         "HS2 preparation is not disposal"
     );
 
     events.lock().unwrap().clear();
     let disposal_effect = terminal_disposal_effect(preparation, lease, &terminal_projection);
     let disposal = managed
-        .host
         .run_assembly
         .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
         .await
@@ -1747,7 +1737,6 @@ async fn disposing_cleanup_prepares_durability_before_resuming_physical_disposal
     let preparation_authorization =
         terminal_preparation_authorization(&effect, &terminal_projection);
     let preparation = managed
-        .host
         .run_assembly
         .prepare_terminal_cleanup_for_effect(effect.clone(), preparation_authorization)
         .await
@@ -1794,7 +1783,6 @@ async fn disposing_cleanup_prepares_durability_before_resuming_physical_disposal
         "HS3/E1 physical disposal inherits continuation fpA exactly",
     );
     let disposal = managed
-        .host
         .run_assembly
         .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
         .await
@@ -1872,7 +1860,7 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
 
     let mut projection = terminal_memory_projection();
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-        &*managed.host.run_assembly,
+        &*managed.run_assembly,
         thread,
         projection.clone(),
         awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
@@ -1915,7 +1903,6 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
         "A1/E1 closed authorization carries exact continuation A/fpA",
     );
     let preparation = managed
-        .host
         .run_assembly
         .prepare_terminal_cleanup_for_effect(effect, authorization)
         .await
@@ -1944,7 +1931,6 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
         "A1/E3 aggregate disposal keeps exact A/fpA",
     );
     managed
-        .host
         .run_assembly
         .dispose_terminal_cleanup_for_effect(disposal_effect)
         .await
@@ -2002,7 +1988,7 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
 
         let mut projection = terminal_memory_projection();
         awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-            &*managed.host.run_assembly,
+            &*managed.run_assembly,
             thread,
             projection.clone(),
             awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
@@ -2082,7 +2068,6 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
             let preparation_authorization =
                 terminal_preparation_authorization(&effect, &projection);
             let error = managed
-                .host
                 .run_assembly
                 .prepare_terminal_cleanup_for_effect(effect.clone(), preparation_authorization)
                 .await
@@ -2105,7 +2090,7 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
                 "M0/E2 publish/ack/checkpoint/provider-prep/dispose are all zero",
             );
             assert!(
-                host.installed_sessions.realizations()
+                host.run_assembly.installed_sessions.realizations()
                     .read_realization(thread, |r| {
                         match &r.environment().owner {
                             crate::environment_owner::SessionEnvironmentOwner::Retiring(retiring) => {
@@ -2168,7 +2153,7 @@ async fn provider_proved_unmaterialized_absence_closes_missing_memory_evidence()
     // effect. The separate missing-history row remains pending/zero-I/O.
     fresh_terminal_fixture_before_create(thread, &mut projection, &lease);
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-        &*managed.host.run_assembly,
+        &*managed.run_assembly,
         thread,
         projection.clone(),
         awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
@@ -2190,7 +2175,6 @@ async fn provider_proved_unmaterialized_absence_closes_missing_memory_evidence()
 
     let preparation_authorization = terminal_preparation_authorization(&effect, &projection);
     let preparation = managed
-        .host
         .run_assembly
         .prepare_terminal_cleanup_for_effect(effect, preparation_authorization)
         .await
@@ -2200,7 +2184,10 @@ async fn provider_proved_unmaterialized_absence_closes_missing_memory_evidence()
         events.lock().unwrap().is_empty(),
         "HM0b/E2+E3 no Artifact publisher or Memory source effect"
     );
-    assert!(host.installed_sessions.contains(thread), "HM0b/E4");
+    assert!(
+        host.run_assembly.installed_sessions.contains(thread),
+        "HM0b/E4"
+    );
 }
 
 #[tokio::test]
@@ -2441,7 +2428,8 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                 .await
                 .unwrap_or_else(|error| panic!("{} prepares resident owner: {error}", rule.name));
             assert!(
-                host.installed_sessions
+                host.run_assembly
+                    .installed_sessions
                     .realizations()
                     .read_realization(&thread, |r| {
                         r.environment().owner.terminal_bound_environment().is_some()
@@ -2467,7 +2455,6 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
             for _ in 0..2 {
                 let authorization = terminal_preparation_authorization(&effect, &projection);
                 let error = managed
-                    .host
                     .run_assembly
                     .prepare_terminal_cleanup_for_effect(effect.clone(), authorization)
                     .await
@@ -2484,7 +2471,8 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                     );
                 }
                 assert_eq!(
-                    host.installed_sessions
+                    host.run_assembly
+                        .installed_sessions
                         .realizations()
                         .read_realization(&thread, |r| {
                             r.environment().owner.physical_binding().map(str::to_owned)
@@ -2502,7 +2490,6 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
 
         let preparation_authorization = terminal_preparation_authorization(&effect, &projection);
         let preparation = managed
-            .host
             .run_assembly
             .prepare_terminal_cleanup_for_effect(effect.clone(), preparation_authorization)
             .await
@@ -2551,7 +2538,8 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
             "HM1/E3 old RunV1 reference is never reused"
         );
         assert!(
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .realizations()
                 .read_realization(&thread, |r| {
                     matches!(
@@ -2564,7 +2552,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
             "HM1/E4 exact owner remains Retiring until Disposal"
         );
         if rule.candidate_unmaterialized.is_some() {
-            assert!(host.installed_sessions.realizations().read_realization(&thread, |r| matches!(
+            assert!(host.run_assembly.installed_sessions.realizations().read_realization(&thread, |r| matches!(
                 &r.environment().owner,
                 crate::environment_owner::SessionEnvironmentOwner::Retiring(crate::environment_owner::RetiringSessionEnvironment {
                     owned: crate::environment_owner::RetiringEnvironmentOwner::Unbound(candidate), ..
@@ -2621,7 +2609,6 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
 
         let disposal_effect = terminal_disposal_effect(preparation, lease, &projection);
         let disposal = managed
-            .host
             .run_assembly
             .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
             .await

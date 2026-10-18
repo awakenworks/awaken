@@ -243,7 +243,7 @@ mod tests {
 
     async fn cold_claimed_memory_host() -> (
         Arc<SharedHost>,
-        crate::ManagedHost,
+        Arc<SharedHost>,
         Arc<dyn awaken_resource_contract::MemoryVersionQueries>,
     ) {
         let (dependencies, versions) = crate::host::tests::fixtures::with_test_memory_history(
@@ -258,13 +258,14 @@ mod tests {
             )
             .build()
             .expect("validated Host dependencies");
-        let managed = crate::ManagedHost::new(host.clone());
+        let managed = host.clone();
         (host, managed, versions)
     }
 
     fn assert_no_resident_session_projection(host: &SharedHost, thread: &str, rule: &str) {
         assert!(
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .read(thread, |slot| {
                     slot.run.context.is_none()
                         && !slot.realization.environment().owner.has_local_environment()
@@ -376,7 +377,7 @@ mod tests {
                 .with_agent_publications(Arc::new(publications)))
             .build()
             .expect("validated Host dependencies");
-        admission.installed_sessions.install(thread);
+        admission.run_assembly.installed_sessions.install(thread);
         admission
             .realization_executor
             .staging()
@@ -394,7 +395,10 @@ mod tests {
         );
         let (host, _managed, versions) = cold_claimed_memory_host().await;
         assert!(
-            host.installed_sessions.read(thread, |_| ()).is_none(),
+            host.run_assembly
+                .installed_sessions
+                .read(thread, |_| ())
+                .is_none(),
             "R1-R3/C3 target starts cold"
         );
 
@@ -557,11 +561,10 @@ mod tests {
         ))
         .build()
         .expect("validated Host dependencies");
-        let managed = crate::ManagedHost::new(host.clone());
+        let managed = host.clone();
         let application: Arc<dyn awaken_session_execution_contract::SessionAgentCoordination> =
             Arc::new(crate::coordination::RecordingSessionAgentCoordination::default());
         managed
-            .host
             .session_application_bindings()
             .bind_agent_coordination(application.clone())
             .expect("C5 install canonical Session application authority");
@@ -583,7 +586,7 @@ mod tests {
                 committed.resource_revision,
                 committed.resources.clone(),
             );
-        admission.installed_sessions.install(thread);
+        admission.run_assembly.installed_sessions.install(thread);
         admission
             .realization_executor
             .staging()
@@ -631,6 +634,7 @@ mod tests {
             .await
             .expect("D1 construct cold durable context");
         let ctx = host
+            .run_assembly
             .installed_sessions
             .read_run(thread, |run| run.context.clone())
             .flatten()
@@ -733,10 +737,15 @@ mod tests {
         );
         let (host, _managed, versions) = cold_claimed_memory_host().await;
         assert!(
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .read(parent_thread, |_| ())
                 .is_none()
-                && host.installed_sessions.read(child_thread, |_| ()).is_none(),
+                && host
+                    .run_assembly
+                    .installed_sessions
+                    .read(child_thread, |_| ())
+                    .is_none(),
             "R1-R5/C6 target starts cold"
         );
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
@@ -906,7 +915,10 @@ mod tests {
         )
         .await;
         assert!(
-            host.installed_sessions.read(child_thread, |_| ()).is_none(),
+            host.run_assembly
+                .installed_sessions
+                .read(child_thread, |_| ())
+                .is_none(),
             "R4-R6 E6 logical child has no resident Session slot"
         );
         assert_no_resident_session_projection(&host, parent_thread, "R4-R6 E6");

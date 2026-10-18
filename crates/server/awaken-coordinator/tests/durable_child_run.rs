@@ -18,7 +18,7 @@ use awaken_runtime_contract::llm::{
 };
 use awaken_runtime_contract::resolved::{ModelBinding, ToolKind};
 use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshot};
-use awaken_session_executor::{HostResume, ManagedHost};
+use awaken_session_executor::HostResume;
 
 struct ParentChildModel {
     parent_calls: AtomicUsize,
@@ -152,13 +152,12 @@ async fn durable_child_run_scenario() {
     )))
     .build()
     .expect("validated Host dependencies");
-    let _managed = ManagedHost::new(host.clone());
     host.ensure_dispatch_pool()
         .expect("valid test dispatch composition");
 
     let awaiting = tokio::time::timeout(
         std::time::Duration::from_secs(20),
-        host.run(
+        host.session_runs().run(
             None,
             "parent-thread",
             vec![Message::text(
@@ -192,7 +191,7 @@ async fn durable_child_run_scenario() {
     let child_run_id = awaiting.delegated_runs[0].run_id.clone();
     let resumed = tokio::time::timeout(
         std::time::Duration::from_secs(20),
-        host.resume(
+        host.session_runs().resume(
             "parent-thread",
             &pending.tool_use_id,
             HostResume::Permission(PermissionDecision::Allow { note: None }),

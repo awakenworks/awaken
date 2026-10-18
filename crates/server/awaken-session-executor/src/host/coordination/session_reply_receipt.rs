@@ -120,7 +120,7 @@ fn resume_receipt_classification_is_exact_and_conflict_absorbing() {
     }
 }
 
-impl SharedHost {
+impl crate::ChildRunCoordination {
     /// Classify the committed receipt only after the current active ticket fails
     /// validation. A successful resume intentionally deletes that ticket, while
     /// the audit fact lives in the same ThreadCommit and therefore survives

@@ -164,7 +164,7 @@ pub(crate) fn empty_frozen_projection_for_snapshot(
 }
 
 pub(crate) async fn install_complete_projection_for_snapshot(
-    managed: &crate::ManagedHost,
+    managed: &Arc<crate::SharedHost>,
     thread: &str,
     workspace_id: &str,
     environment: awaken_session_configuration_contract::EnvironmentSnapshot,
@@ -173,7 +173,7 @@ pub(crate) async fn install_complete_projection_for_snapshot(
     let mut projection = empty_frozen_projection_for_snapshot(workspace_id, environment, snapshot);
     projection.agent_publication = Some(snapshot.clone());
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-        &*managed.host.run_assembly,
+        &*managed.run_assembly,
         thread,
         projection,
         awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
@@ -244,13 +244,15 @@ fn empty_frozen_projection_with_model(
     }
 }
 
-pub(crate) fn managed_test_host(host: Arc<SharedHost>) -> crate::ManagedHost {
-    complete_managed_test_host(crate::ManagedHost::new(host))
+pub(crate) fn managed_test_host(host: Arc<SharedHost>) -> Arc<crate::SharedHost> {
+    complete_managed_test_host(host)
 }
 
 /// Install the one production composition required by every executable fixture:
 /// SessionEffects plus the single Session coordination application.
-pub(super) fn complete_managed_test_host(managed: crate::ManagedHost) -> crate::ManagedHost {
+pub(super) fn complete_managed_test_host(
+    managed: Arc<crate::SharedHost>,
+) -> Arc<crate::SharedHost> {
     static APPLICATION: std::sync::OnceLock<
         Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>,
     > = std::sync::OnceLock::new();
@@ -258,7 +260,6 @@ pub(super) fn complete_managed_test_host(managed: crate::ManagedHost) -> crate::
         Arc::new(crate::coordination::RecordingSessionAgentCoordination::default())
     });
     managed
-        .host
         .session_application_bindings()
         .bind_agent_coordination(application.clone())
         .expect("install one test Session application authority");
@@ -425,10 +426,10 @@ pub(crate) fn with_empty_session_resources(
 pub(super) async fn prepare_deferred_session(
     host: Arc<SharedHost>,
     thread: &str,
-) -> crate::ManagedHost {
+) -> Arc<crate::SharedHost> {
     let managed = managed_test_host(host.clone());
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-        &*managed.host.run_assembly,
+        &*managed.run_assembly,
         thread,
         empty_frozen_projection(host.run_assembly.local_workspace(), deferred_environment()),
         awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,

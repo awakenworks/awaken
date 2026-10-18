@@ -123,7 +123,7 @@ pub(super) async fn acquire(
     // budget admission. A Managed single-Agent Session needs that authority
     // even though it has no coordination tools, while direct AI-SDK/AG-UI
     // Threads must remain independent of the Managed application port.
-    let coordination_endpoint = host.coordination_endpoint();
+    let coordination_endpoint = host.capabilities.coordination_endpoint();
     if session_dispatch && coordination_endpoint.is_none() {
         return Err(HostError::internal(
             "Managed Session has no Session application authority",
@@ -246,7 +246,7 @@ pub(super) async fn acquire(
         .unwrap_or_else(|| {
             awaken_runtime_contract::agent_bindings::ResolvedConfiguration::new(
                 Default::default(),
-                host.tools.plugin_config.clone(),
+                host.capabilities.tools.plugin_config.clone(),
             )
         });
     let published_toolsets = installed
@@ -261,6 +261,7 @@ pub(super) async fn acquire(
     // Management tools (ADR-0052) remain pre-authorized: they are read-only,
     // and only the reserved-scope assistant's config names them.
     let mut admin_ids: Vec<String> = host
+        .capabilities
         .tools
         .admin_tools
         .iter()

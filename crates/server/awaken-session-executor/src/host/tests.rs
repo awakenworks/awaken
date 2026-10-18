@@ -110,7 +110,10 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
     let mut stale = command.clone();
     stale.expected_thread_version = Some(version + 1);
     assert!(
-        host.session_thread_tool_reply_fence(&stale).await.is_err(),
+        host.coordination
+            .session_thread_tool_reply_fence(&stale)
+            .await
+            .is_err(),
         "R3 stale version"
     );
     let mut wrong_kind = command.clone();
@@ -118,12 +121,14 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
         PermissionDecision::Allow { note: None },
     );
     assert!(
-        host.session_thread_tool_reply_fence(&wrong_kind)
+        host.coordination
+            .session_thread_tool_reply_fence(&wrong_kind)
             .await
             .is_err(),
         "R3 manual pause is not permission"
     );
     let fence = host
+        .coordination
         .session_thread_tool_reply_fence(&command)
         .await
         .unwrap();
@@ -132,10 +137,14 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
         fence: fence.clone(),
         session_activity_epoch: Some(11),
     };
-    host.reply_session_thread_tool(delivery.clone())
+    host.coordination
+        .reply_session_thread_tool(delivery.clone())
         .await
         .unwrap();
-    host.reply_session_thread_tool(delivery).await.unwrap();
+    host.coordination
+        .reply_session_thread_tool(delivery)
+        .await
+        .unwrap();
     let pending = dispatch.list(&thread).await.unwrap();
     assert_eq!(pending.len(), 1, "R1/R2");
     assert_eq!(
@@ -176,24 +185,27 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
         .await
         .unwrap();
     let replay = host
+        .coordination
         .session_thread_tool_reply_fence(&command)
         .await
         .unwrap();
     assert!(replay.already_applied, "R4");
-    host.reply_session_thread_tool(
-        awaken_session_execution_contract::SessionThreadToolReplyDelivery {
-            command: command.clone(),
-            fence: replay,
-            session_activity_epoch: None,
-        },
-    )
-    .await
-    .unwrap();
+    host.coordination
+        .reply_session_thread_tool(
+            awaken_session_execution_contract::SessionThreadToolReplyDelivery {
+                command: command.clone(),
+                fence: replay,
+                session_activity_epoch: None,
+            },
+        )
+        .await
+        .unwrap();
     let mut changed = command;
     changed.reply =
         awaken_session_execution_contract::SessionThreadToolReply::Input("changed answer".into());
     assert!(
-        host.session_thread_tool_reply_fence(&changed)
+        host.coordination
+            .session_thread_tool_reply_fence(&changed)
             .await
             .is_err(),
         "R3 changed payload cannot reuse the consumed correlation"
@@ -284,25 +296,24 @@ fn write_confirmation_gate() -> Arc<awaken_runtime::PermissionGate> {
 /// Effects: E1 execute against C1; E2 commit/project one Step. Decision rule
 /// T1=C1+C2=>E1+E2. The production Host-command fence remains active elsewhere.
 async fn run_prepared_session_messages(
-    managed: &crate::ManagedHost,
+    managed: &Arc<crate::SharedHost>,
     agent: &str,
     thread: &str,
     messages: Vec<Message>,
 ) -> Result<awaken_session_application_contract::StepOutcome, awaken_session_types::RunError> {
     managed
-        .host
         .realization_executor
         .validate_thread_resource_bindings(thread)
         .await?;
     let result = managed
-        .host
+        .session_runs
         .run_thread_extension_after_admission(Some(agent), thread, messages)
         .await;
     crate::step_projection::finish_managed_step(result)
 }
 
 async fn run_prepared_session(
-    managed: &crate::ManagedHost,
+    managed: &Arc<crate::SharedHost>,
     agent: &str,
     thread: &str,
     content: Vec<ContentBlock>,
@@ -427,7 +438,7 @@ pub(crate) fn frozen_skill_version(
 /// never authors a process-local slot as a second selection source.
 async fn install_pinned_managed_skill_session(
     host: &Arc<SharedHost>,
-    managed: &crate::ManagedHost,
+    managed: &Arc<crate::SharedHost>,
     thread: &str,
     agent: &str,
     environment: awaken_session_configuration_contract::EnvironmentSnapshot,
@@ -450,7 +461,7 @@ async fn install_pinned_managed_skill_session(
 #[allow(clippy::too_many_arguments)]
 async fn install_pinned_managed_skill_session_with_tools(
     host: &Arc<SharedHost>,
-    managed: &crate::ManagedHost,
+    managed: &Arc<crate::SharedHost>,
     thread: &str,
     agent: &str,
     environment: awaken_session_configuration_contract::EnvironmentSnapshot,
@@ -460,7 +471,8 @@ async fn install_pinned_managed_skill_session_with_tools(
 ) -> Result<(), awaken_session_types::RunError> {
     let workspace = host.run_assembly.local_workspace().to_string();
     if seed_version {
-        host.tools
+        host.capabilities
+            .tools
             .skills
             .create(
                 awaken_skill_store::SkillDefinition {
@@ -484,7 +496,6 @@ async fn install_pinned_managed_skill_session_with_tools(
     init.tools = tools;
     install_complete_test_session_for_realization(managed, thread, init).await?;
     managed
-        .host
         .run_assembly
         .apply_session_inputs(
             thread,
@@ -836,7 +847,7 @@ pub(crate) fn bind_test_memory(host: &SharedHost, thread: &str, store_id: &str, 
         store_id.to_string(),
         writable,
     ));
-    host.installed_sessions.install(thread);
+    host.run_assembly.installed_sessions.install(thread);
     host.realization_executor
         .staging()
         .register_thread_memory(
@@ -853,16 +864,16 @@ pub(crate) fn bind_test_memory(host: &SharedHost, thread: &str, store_id: &str, 
         .expect("installed Sessions");
 }
 
-fn managed_with_resource_source(host: Arc<SharedHost>) -> crate::ManagedHost {
+fn managed_with_resource_source(host: Arc<SharedHost>) -> Arc<crate::SharedHost> {
     managed_with_resource_source_using(host, install_test_session_application)
 }
 
 fn managed_with_resource_source_using(
     host: Arc<SharedHost>,
     install_coordination: fn(&Arc<SharedHost>),
-) -> crate::ManagedHost {
+) -> Arc<crate::SharedHost> {
     install_coordination(&host);
-    crate::ManagedHost::new(host)
+    host
 }
 
 fn http_basic_material(username: &str, password: &str) -> awaken_agent_contract::RedactedString {
@@ -1127,14 +1138,14 @@ impl LlmExecutor for GatedModel {
 /// direct or durable Run can apply its canonical empty Resource transition.
 /// Interrupt fixtures retain the returned adapter so no test-only runtime or
 /// partial Session projection competes with that composition.
-pub(crate) fn install_test_dispatch_runtime(host: &Arc<SharedHost>) -> crate::ManagedHost {
-    crate::ManagedHost::new(host.clone())
+pub(crate) fn install_test_dispatch_runtime(host: &Arc<SharedHost>) -> Arc<crate::SharedHost> {
+    host.clone()
 }
 
 /// Wrap a fully configured ordinary Host and install the same canonical
 /// Dispatch composition used by the application. Callers configure the Host
 /// first, so this fixture cannot publish a partially configured adapter.
-fn dispatch_test_host(host: Arc<SharedHost>) -> (Arc<SharedHost>, crate::ManagedHost) {
+fn dispatch_test_host(host: Arc<SharedHost>) -> (Arc<SharedHost>, Arc<SharedHost>) {
     let managed = install_test_dispatch_runtime(&host);
     (host, managed)
 }
@@ -1144,7 +1155,7 @@ fn dispatch_test_host(host: Arc<SharedHost>) -> (Arc<SharedHost>, crate::Managed
 /// coordinates produce E1 one baseline plus E2 the exact Empty->desired
 /// transition input; neither compilation nor Dispatch installation grants I/O.
 fn compile_complete_test_session_projection(
-    managed: &crate::ManagedHost,
+    managed: &Arc<crate::SharedHost>,
     init: awaken_session_configuration_contract::SessionInit,
 ) -> awaken_session_realization_contract::FrozenSessionProjection {
     let awaken_session_configuration_contract::SessionInit {
@@ -1162,11 +1173,13 @@ fn compile_complete_test_session_projection(
     let runtime = runtime.unwrap_or_else(|| "default".into());
     let tools = tools.unwrap_or_else(|| {
         awaken_session_configuration_contract::SessionToolConfiguration::from_capabilities(
-            &awaken_session_execution_contract::CapabilityRuntime::capabilities(managed),
+            &awaken_session_execution_contract::CapabilityRuntime::capabilities(
+                managed.capabilities.as_ref(),
+            ),
         )
     });
     let publication = managed
-        .host
+        .capabilities
         .agent
         .agent_publications
         .as_ref()
@@ -1246,12 +1259,12 @@ fn compile_complete_test_session_projection(
 /// Install Dispatch facts only. Physical Managed tests must select the real
 /// Root fixture before Host construction rather than acquire an Unowned grant.
 async fn install_complete_test_session(
-    managed: &crate::ManagedHost,
+    managed: &Arc<crate::SharedHost>,
     thread: &str,
     init: awaken_session_configuration_contract::SessionInit,
 ) -> Result<(), awaken_session_types::RunError> {
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-        &*managed.host.run_assembly,
+        &*managed.run_assembly,
         thread,
         compile_complete_test_session_projection(managed, init),
         awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
@@ -1269,7 +1282,7 @@ trait CompleteTestSessionFixture {
 }
 
 #[async_trait::async_trait]
-impl CompleteTestSessionFixture for crate::ManagedHost {
+impl CompleteTestSessionFixture for Arc<crate::SharedHost> {
     async fn install_complete_test_session(
         &self,
         thread: &str,
@@ -1284,15 +1297,14 @@ impl CompleteTestSessionFixture for crate::ManagedHost {
 /// projection plus C2 one live lease and binding sink produce E1 a fenced V2
 /// handle with exact owned-path evidence; tests never synthesize that handle.
 async fn install_complete_test_session_for_realization(
-    managed: &crate::ManagedHost,
+    managed: &Arc<crate::SharedHost>,
     thread: &str,
     init: awaken_session_configuration_contract::SessionInit,
 ) -> Result<(), awaken_session_types::RunError> {
     managed
-        .host
         .run_assembly
         .install_test_environment_binding_sink(Arc::new(BindingOrderSink {
-            host: Arc::downgrade(&managed.host),
+            host: Arc::downgrade(managed),
             authorize_calls: AtomicUsize::new(0),
             calls: AtomicUsize::new(0),
             observed_before_publish: AtomicBool::new(false),
@@ -1303,7 +1315,6 @@ async fn install_complete_test_session_for_realization(
         }));
     install_complete_test_session(managed, thread, init).await?;
     managed
-        .host
         .run_assembly
         .install_session_realization_lease(
             thread,
@@ -2489,14 +2500,14 @@ fn terminal_disposal_effect(
 
 async fn install_terminal_recovery_projection(
     host: &Arc<SharedHost>,
-    managed: &crate::ManagedHost,
+    managed: &Arc<crate::SharedHost>,
     thread: &str,
     lease: crate::session_resource::SessionRealizationLease,
     environment: awaken_session_state_contract::SessionEnvironmentState,
 ) -> awaken_session_realization_contract::FrozenSessionProjection {
     let mut projection = remote_terminal_cleanup_projection();
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-        &*managed.host.run_assembly,
+        &*managed.run_assembly,
         thread,
         projection.clone(),
         awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,

@@ -5,7 +5,6 @@
 
 use super::types::VerifiedStepProjection;
 use super::*;
-use awaken_dispatch_contract::SessionContinuationOutbox as _;
 
 mod projection;
 mod quiescence;
@@ -77,67 +76,7 @@ impl<'a> HostRunDelivery<'a> {
         self
     }
 }
-impl SharedHost {
-    pub(crate) async fn session_budget_resume_tickets(
-        &self,
-        session_id: &str,
-    ) -> Result<Vec<awaken_session_application_contract::SessionBudgetResumeTicket>, HostError>
-    {
-        let parent = ThreadId(session_id.to_string());
-        let mut thread_ids = vec![parent.clone()];
-        let dispatch_rows = if let Some(store) = self.optional_dispatch_store() {
-            store
-                .list_dispatches()
-                .await
-                .map_err(|error| HostError::internal(error.to_string()))?
-        } else {
-            Vec::new()
-        };
-        for thread_id in dispatch_rows
-            .iter()
-            // Queue phase is not pause truth: a Worker commits Awaiting
-            // before it settles a Leased row. Every live parent-affined row
-            // is therefore a candidate and committed recovery truth below
-            // performs the sole BudgetReached classification.
-            .filter(|row| row.session_thread_id.as_ref() == Some(&parent))
-            .map(|row| row.thread_id.clone())
-        {
-            if !thread_ids.contains(&thread_id) {
-                thread_ids.push(thread_id);
-            }
-        }
-        let commit = self.thread_reads.commit_for_read(session_id).await?;
-        let mut tickets = Vec::new();
-        for thread_id in thread_ids {
-            let Some(latest) = commit
-                .authoritative_latest_run(&thread_id)
-                .await
-                .map_err(HostError::internal)?
-            else {
-                continue;
-            };
-            let snapshot = commit
-                .recovery_snapshot(&thread_id, &latest.id)
-                .await
-                .map_err(|error| HostError::internal(error.to_string()))?;
-            if let Some(ticket) = recovery_ticket(&snapshot, &latest.id)?
-                && ticket.reason() == AwaitReason::BudgetReached
-            {
-                tickets.push(
-                    awaken_session_application_contract::SessionBudgetResumeTicket {
-                        ticket,
-                        pause_generation: snapshot.next_commit_ordinal,
-                        prior_session_activity_epoch: dispatch_rows
-                            .iter()
-                            .find(|row| row.run_id == latest.id)
-                            .and_then(|row| row.session_activity_epoch),
-                    },
-                );
-            }
-        }
-        Ok(tickets)
-    }
-
+impl crate::SessionRuns {
     /// Interrupt the run in flight on `thread`, if any: cancel its token so the
     /// runtime observes it at the next step boundary and ends the run `Cancelled`
     /// (an outcome loop then reports `interrupted`). A no-op when nothing is
@@ -187,7 +126,7 @@ impl SharedHost {
                 .and_then(|ctx| ctx.delivery.is_durable().then_some(&ctx.claimed_worker)),
             active_run,
         ) {
-            if self.dispatch.dispatch_pool.get().is_some() {
+            if self.local_pool.get().is_some() {
                 // The process pool is the sole durable claim driver. This edge
                 // accepts the cancellation intent and returns; its drainer owns
                 // the claim-fenced Runtime commit and settlement.
@@ -514,7 +453,7 @@ impl SharedHost {
     /// store. The queue remains delivery truth; this guard only selects whether
     /// the deployment exposes that authority.
     pub(super) fn require_durable_delivery(&self) -> Result<(), HostError> {
-        if self.dispatch.durable_ingress() {
+        if self.execution.ingress.is_durable() {
             Ok(())
         } else {
             Err(HostError::bad_request(
@@ -696,7 +635,7 @@ impl SharedHost {
             // Coordinator-only durable server (no local pool): enqueue straight into
             // the shared store so a remote database-less worker drains it over the
             // dispatch transport. Non-durable keeps the original "enable the pool" error.
-            Err(e) if self.dispatch.durable_ingress() => {
+            Err(e) if self.execution.ingress.is_durable() => {
                 let _ = e;
                 let store = self.coordinator_dispatch()?;
                 store
@@ -712,7 +651,7 @@ impl SharedHost {
     /// Rebuild the sole durable resume target for a foreground root Run whose
     /// committed Awaiting ticket predates dispatch ownership. Budget and tool
     /// replies share this handoff; child Runs must already have a durable row.
-    pub(super) async fn enqueue_foreground_session_resume_dispatch(
+    pub(crate) async fn enqueue_foreground_session_resume_dispatch(
         &self,
         session_id: &str,
         ticket: &ResumeTicket,
@@ -826,135 +765,6 @@ impl SharedHost {
             })
             .map(|dispatch| dispatch.run_id)
             .collect())
-    }
-
-    /// RunResume the run awaiting on `thread`, answering `tool_use_id` with `resume`.
-    /// Fails closed unless `tool_use_id` names the pending tool and its binding
-    /// (built-in vs client-executed) matches the resume variant.
-    pub(crate) async fn resume_budget_reached(
-        &self,
-        delivery: awaken_session_application_contract::SessionBudgetResumeDelivery,
-    ) -> Result<awaken_session_application_contract::SessionBudgetResumeDisposition, HostError>
-    {
-        use awaken_dispatch_contract::Outbox as _;
-
-        if delivery.session_activity_epoch == 0 {
-            return Err(HostError::bad_request(
-                "budget resume requires a newly admitted Session activity",
-            ));
-        }
-        let commit = self
-            .thread_reads
-            .commit_for_read(delivery.session_id.as_str())
-            .await?;
-        let snapshot = commit
-            .recovery_snapshot(&delivery.thread_id, &delivery.run_id)
-            .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
-        let Some(ticket) = recovery_ticket(&snapshot, &delivery.run_id)? else {
-            return Ok(awaken_session_application_contract::SessionBudgetResumeDisposition::Stale);
-        };
-        if ticket.reason() != AwaitReason::BudgetReached
-            || ticket.correlation_id != delivery.correlation_id
-            || ticket.thread_id != delivery.thread_id
-            || snapshot.next_commit_ordinal != delivery.pause_generation
-        {
-            return Ok(awaken_session_application_contract::SessionBudgetResumeDisposition::Stale);
-        }
-
-        let store = self.optional_dispatch_store();
-        let dispatch = match &store {
-            Some(store) => store
-                .list_dispatches()
-                .await
-                .map_err(|error| HostError::internal(error.to_string()))?
-                .into_iter()
-                .find(|row| row.run_id == delivery.run_id),
-            None => None,
-        };
-        let store = if let Some(dispatch) = dispatch {
-            if dispatch.thread_id != delivery.thread_id
-                || dispatch.session_thread_id.as_ref()
-                    != Some(&ThreadId(delivery.session_id.to_string()))
-            {
-                return Err(HostError::bad_request(
-                    "budget resume dispatch affinity is inconsistent",
-                ));
-            }
-            let activity_matches = match dispatch.session_activity_epoch {
-                Some(epoch) => {
-                    Some(epoch) == delivery.prior_session_activity_epoch
-                        || epoch == delivery.session_activity_epoch
-                }
-                None => delivery.prior_session_activity_epoch.is_none(),
-            };
-            if !activity_matches {
-                return Ok(
-                    awaken_session_application_contract::SessionBudgetResumeDisposition::Stale,
-                );
-            }
-            store
-                .as_ref()
-                .expect("dispatch was read from the installed store")
-                .clone()
-        } else {
-            if delivery.thread_id.0 != delivery.session_id
-                || delivery.prior_session_activity_epoch.is_some()
-            {
-                return Err(HostError::internal(
-                    "budget-paused child Run has no durable dispatch row",
-                ));
-            }
-            self.enqueue_foreground_session_resume_dispatch(
-                delivery.session_id.as_str(),
-                &ticket,
-                delivery.session_activity_epoch,
-            )
-            .await?
-        };
-        // Cause/effect decision table for foreground→durable handoff: a crash
-        // before enqueue leaves the committed ticket discoverable; a crash
-        // after enqueue but before staging leaves an idempotently reusable row;
-        // a Worker that claims first observes the committed Awaiting Run and
-        // cannot execute it as fresh work. Once staged, the existing claim and
-        // settlement observer owns Completed, required action, and a later
-        // budget pause, including crash repair of the Session activity epoch.
-        let input = PendingInput {
-            message_id: format!(
-                "budget-resume-{}",
-                awaken_agent_contract::stable_fingerprint(&(
-                    delivery.session_id.as_str(),
-                    delivery.thread_id.0.as_str(),
-                    delivery.run_id.0.as_str(),
-                    delivery.correlation_id.as_str(),
-                    delivery.pause_generation,
-                ))
-            ),
-            run_id: delivery.run_id,
-            thread_id: delivery.thread_id,
-            correlation_id: delivery.correlation_id,
-            available_at_ms: None,
-            context_messages: Vec::new(),
-            result: ResumeResult::Continue,
-        };
-        store
-            .stage_session_resume(
-                input,
-                &ThreadId(delivery.session_id.into_string()),
-                delivery.prior_session_activity_epoch,
-                Some(delivery.session_activity_epoch),
-            )
-            .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
-        if let Some(pool) = self.dispatch.dispatch_pool.get() {
-            pool.notify().await;
-        } else {
-            store
-                .relay()
-                .await
-                .map_err(|error| HostError::internal(error.to_string()))?;
-        }
-        Ok(awaken_session_application_contract::SessionBudgetResumeDisposition::Dispatched)
     }
 
     pub async fn resume(

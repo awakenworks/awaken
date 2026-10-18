@@ -63,7 +63,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
 
     let mut terminal_projection = remote_terminal_cleanup_projection();
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-        &*managed.host.run_assembly,
+        &*managed.run_assembly,
         "t-end",
         terminal_projection.clone(),
         awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
@@ -80,7 +80,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     host.realization_executor
         .staging()
         .register_thread_resources("t-end", crate::staged_resources::StagedResources::default());
-    host.run_assembly
+    host.capabilities
         .register_thread_model("t-end", "private-model");
     let mut lease = crate::session_resource::SessionRealizationLease {
         owner: "terminal-test-worker".into(),
@@ -162,7 +162,8 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         "adoption-conflict" => {
             // Explicit owner input: an existing binding was adopted, but no
             // new Adopt receipt was read. Do not fabricate durable identity.
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .realizations()
                 .update_realization("t-end", |r| {
                     let crate::environment_owner::SessionEnvironmentOwner::Preparing(
@@ -239,6 +240,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
             .await
             .expect("U install Managed provenance");
         let lifecycle = host
+            .run_assembly
             .installed_sessions
             .realizations()
             .read_realization("t-end", |r| r.environment().lifecycle.clone())
@@ -249,7 +251,10 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
             .environments()
             .retire_session_environment_for_revocation(
                 "t-end",
-                (&host.run_assembly.mcp, host.installed_sessions.as_ref()),
+                (
+                    &host.run_assembly.mcp,
+                    host.run_assembly.installed_sessions.as_ref(),
+                ),
                 None,
             )
             .await
@@ -279,11 +284,11 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         terminal_preparation_authorization(&effect, &terminal_projection);
     let before = host.run_assembly.prepared_session_environment("t-end");
     let (archive, recovery) = tokio::join!(
-            managed.host.run_assembly.prepare_terminal_cleanup_for_effect(
+            managed.run_assembly.prepare_terminal_cleanup_for_effect(
                 effect.clone(),
                 preparation_authorization.clone(),
             ),
-            managed.host.run_assembly.prepare_terminal_cleanup_for_effect(
+            managed.run_assembly.prepare_terminal_cleanup_for_effect(
                 effect.clone(),
                 preparation_authorization.clone(),
             )
@@ -333,7 +338,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         "T1/E2 preparation cannot reap the workspace",
     );
     assert!(
-        host.installed_sessions.realizations()
+        host.run_assembly.installed_sessions.realizations()
             .read_realization("t-end", |r| {
                 matches!(&r.environment().owner, crate::environment_owner::SessionEnvironmentOwner::Retiring(retiring)
                     if Arc::ptr_eq(&retiring.owned.environment(), &env)
@@ -352,7 +357,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         "U no terminal publication"
     );
     if initial == "uncommitted" || initial == "lost-response" {
-        assert!(host.installed_sessions.realizations().read_realization("t-end", |r| matches!(
+        assert!(host.run_assembly.installed_sessions.realizations().read_realization("t-end", |r| matches!(
             &r.environment().owner,
             crate::environment_owner::SessionEnvironmentOwner::Retiring(crate::environment_owner::RetiringSessionEnvironment {
                 owned: crate::environment_owner::RetiringEnvironmentOwner::Unbound(candidate), ..
@@ -360,23 +365,20 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         )).expect("installed Sessions").unwrap(), "U retains missing ordinary commit evidence");
     }
     managed
-        .host
         .run_assembly
         .acknowledge_terminal_cleanup_preparation(&effect)
         .await;
     assert!(
-        host.installed_sessions.contains("t-end"),
+        host.run_assembly.installed_sessions.contains("t-end"),
         "T1 root preparation ack is non-retiring"
     );
 
     let disposal_effect = terminal_disposal_effect(archive, lease, &terminal_projection);
     let (archive, recovery) = tokio::join!(
         managed
-            .host
             .run_assembly
             .dispose_terminal_cleanup_for_effect(disposal_effect.clone()),
         managed
-            .host
             .run_assembly
             .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
     );
@@ -387,6 +389,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     // The cached ctx is evicted ...
     assert!(
         !host
+            .run_assembly
             .installed_sessions
             .read_run("t-end", |run| run.context.is_some())
             .unwrap_or(false),
@@ -409,28 +412,33 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         "terminal cleanup disposes the sandbox (workspace reaped), unlike an evict-rebuild"
     );
     assert!(
-        host.installed_sessions.contains("t-end"),
+        host.run_assembly.installed_sessions.contains("t-end"),
         "T2/E4 retains the exact terminal projection until durable acknowledgement"
     );
     managed
-        .host
         .run_assembly
         .acknowledge_terminal_cleanup_disposal(&disposal_effect)
         .await;
     assert!(
-        host.run_assembly
+        host.capabilities
             .registered_thread_workspace("t-end")
             .is_none(),
         "T3/E5"
     );
-    assert!(!host.installed_sessions.contains("t-end"), "T3/E5");
     assert!(
-        host.agent.inference_routing.override_for("t-end").is_none(),
+        !host.run_assembly.installed_sessions.contains("t-end"),
+        "T3/E5"
+    );
+    assert!(
+        host.capabilities
+            .agent
+            .inference_routing
+            .override_for("t-end")
+            .is_none(),
         "T3/E5"
     );
 
     let replay_error = managed
-        .host
         .run_assembly
         .prepare_terminal_cleanup_for_effect(effect, preparation_authorization)
         .await
@@ -472,7 +480,6 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         )
         .expect("T4 close the foreign Host preparation input");
     let missing_error = managed
-        .host
         .run_assembly
         .prepare_terminal_cleanup_for_effect(missing_effect, missing_authorization)
         .await
@@ -602,7 +609,6 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
                 .await;
 
         let preparation = managed
-            .host
             .run_assembly
             .prepare_terminal_cleanup_for_effect(
                 effect.clone(),
@@ -616,7 +622,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
             "TR1/E1"
         );
         assert!(matches!(
-            host.installed_sessions.realizations()
+            host.run_assembly.installed_sessions.realizations()
                 .read_realization(thread, |r| r.environment().owner.clone()).expect("installed Sessions"),
             Some(crate::environment_owner::SessionEnvironmentOwner::Restoring(
                 crate::environment_owner::SessionEnvironmentRestoration::Awaiting { request }
@@ -633,7 +639,6 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         *worker.current.lock().unwrap() = None;
         assert!(
             managed
-                .host
                 .run_assembly
                 .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
                 .await
@@ -645,7 +650,6 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
             Some((worker_fence.clone(), std::time::Duration::from_secs(60)));
         let mut pending = Box::pin(
             managed
-                .host
                 .run_assembly
                 .dispose_terminal_cleanup_for_effect(disposal_effect.clone()),
         );
@@ -665,6 +669,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
                 worker.current.lock().unwrap().as_mut().unwrap().1 = std::time::Duration::ZERO
             }
             "session-revoke" => host
+                .run_assembly
                 .installed_sessions
                 .realizations()
                 .update_realization(thread, |r| {
@@ -675,6 +680,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
                 })
                 .expect("installed Sessions"),
             "replace" | "renew" => host
+                .run_assembly
                 .installed_sessions
                 .realizations()
                 .update_realization(thread, |r| {
@@ -702,7 +708,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
             );
         }
         assert!(
-            matches!(host.installed_sessions.realizations().read_realization(thread, |r| r.environment().owner.clone()).expect("installed Sessions"),
+            matches!(host.run_assembly.installed_sessions.realizations().read_realization(thread, |r| r.environment().owner.clone()).expect("installed Sessions"),
         Some(crate::environment_owner::SessionEnvironmentOwner::Restoring(
             crate::environment_owner::SessionEnvironmentRestoration::Awaiting { request }
         )) if request == restore_target),
@@ -719,7 +725,8 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         events.lock().unwrap().truncate(1);
         *worker.current.lock().unwrap() =
             Some((worker_fence.clone(), std::time::Duration::from_secs(60)));
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .update_realization(thread, |r| {
                 r.execution_mut().authority =
@@ -732,14 +739,12 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
             .expect("installed Sessions");
         probe.restored_release.notify_one();
         let first = managed
-            .host
             .run_assembly
             .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
             .await
             .expect("TR2 dispose exact restore target");
         probe.restored_release.notify_one();
         let replay = managed
-            .host
             .run_assembly
             .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
             .await
@@ -759,7 +764,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         );
         assert!(
             matches!(
-                host.installed_sessions.realizations()
+                host.run_assembly.installed_sessions.realizations()
                     .read_realization(thread, |r| r.environment().owner.clone()).expect("installed Sessions"),
                 Some(crate::environment_owner::SessionEnvironmentOwner::Restoring(
                     crate::environment_owner::SessionEnvironmentRestoration::Awaiting { request }
@@ -769,11 +774,13 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         );
 
         managed
-            .host
             .run_assembly
             .acknowledge_terminal_cleanup_disposal(&disposal_effect)
             .await;
-        assert!(!host.installed_sessions.contains(thread), "TR3/E4");
+        assert!(
+            !host.run_assembly.installed_sessions.contains(thread),
+            "TR3/E4"
+        );
     }
 }
 
@@ -823,9 +830,10 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
         .await
         .expect("P1-P4 install the aggregate-derived root projection");
     for child in ["terminal-retire-done", "terminal-retire-pending"] {
-        host.run_assembly
+        host.capabilities
             .register_thread_workspace(child, "terminal-retire-workspace");
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .update_realization(child, |r| {
                 r.effects_mut().root = Some(session_id.into());
@@ -833,9 +841,10 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
             .expect("installed Sessions");
     }
     let foreign = "terminal-retire-foreign";
-    host.run_assembly
+    host.capabilities
         .register_thread_workspace(foreign, "foreign-workspace");
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .realizations()
         .update_realization(foreign, |r| {
             r.effects_mut().root = Some("replacement-root".into());
@@ -870,7 +879,10 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
         .acknowledge_terminal_cleanup_preparation(&host.run_assembly.mcp, &completed_child)
         .await;
     assert!(
-        !host.installed_sessions.contains("terminal-retire-done"),
+        !host
+            .run_assembly
+            .installed_sessions
+            .contains("terminal-retire-done"),
         "P1/E1"
     );
     host.realization_executor
@@ -878,15 +890,26 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
         .acknowledge_terminal_cleanup_preparation(&host.run_assembly.mcp, &completed_child)
         .await;
     assert!(
-        !host.installed_sessions.contains("terminal-retire-done"),
+        !host
+            .run_assembly
+            .installed_sessions
+            .contains("terminal-retire-done"),
         "P1b"
     );
-    assert!(host.installed_sessions.contains(session_id), "P2/E2");
     assert!(
-        host.installed_sessions.contains("terminal-retire-pending"),
+        host.run_assembly.installed_sessions.contains(session_id),
         "P2/E2"
     );
-    assert!(host.installed_sessions.contains(foreign), "P3/E3");
+    assert!(
+        host.run_assembly
+            .installed_sessions
+            .contains("terminal-retire-pending"),
+        "P2/E2"
+    );
+    assert!(
+        host.run_assembly.installed_sessions.contains(foreign),
+        "P3/E3"
+    );
 
     let stale_foreign = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
         cleanup
@@ -898,7 +921,10 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
         .effects()
         .acknowledge_terminal_cleanup_preparation(&host.run_assembly.mcp, &stale_foreign)
         .await;
-    assert!(host.installed_sessions.contains(foreign), "P3/E3");
+    assert!(
+        host.run_assembly.installed_sessions.contains(foreign),
+        "P3/E3"
+    );
 
     let root = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
         cleanup
@@ -913,7 +939,10 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
         .effects()
         .acknowledge_terminal_cleanup_preparation(&host.run_assembly.mcp, &root)
         .await;
-    assert!(host.installed_sessions.contains(session_id), "P4/E4");
+    assert!(
+        host.run_assembly.installed_sessions.contains(session_id),
+        "P4/E4"
+    );
     host.realization_executor
         .effects()
         .retire_completed_terminal_cleanup_projection(
@@ -923,12 +952,21 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
         )
         .await
         .expect("installed Sessions");
-    assert!(!host.installed_sessions.contains(session_id), "P5/E5");
     assert!(
-        !host.installed_sessions.contains("terminal-retire-pending"),
+        !host.run_assembly.installed_sessions.contains(session_id),
         "P5/E5"
     );
-    assert!(host.installed_sessions.contains(foreign), "P4/E3");
+    assert!(
+        !host
+            .run_assembly
+            .installed_sessions
+            .contains("terminal-retire-pending"),
+        "P5/E5"
+    );
+    assert!(
+        host.run_assembly.installed_sessions.contains(foreign),
+        "P4/E3"
+    );
 }
 
 #[tokio::test]
@@ -938,6 +976,7 @@ async fn terminal_quiescence_never_materializes_a_cold_environment() {
         .expect("validated Host dependencies");
 
     let snapshot = host
+        .session_runs
         .quiesce_terminal_delegations("cold-terminal")
         .await
         .expect("cold terminal fence reads committed truth");
@@ -945,7 +984,8 @@ async fn terminal_quiescence_never_materializes_a_cold_environment() {
     assert!(snapshot.delegated_runs.is_empty());
     assert_eq!(snapshot.watermark, 0);
     assert!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .read("cold-terminal", |slot| {
                 slot.run.context.is_none()
                     && !slot.realization.environment().owner.has_local_environment()
@@ -971,7 +1011,10 @@ async fn terminal_quiescence_rejects_an_unstarted_cancelled_reservation_without_
     let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
-    let dispatch = host.coordinator_dispatch().expect("T1 dispatch authority");
+    let dispatch = host
+        .session_runs
+        .coordinator_dispatch()
+        .expect("T1 dispatch authority");
     let session = ThreadId("terminal-reservation-session".into());
     let run = RunId("terminal-reservation-run".into());
     let activation =
@@ -1007,7 +1050,7 @@ async fn terminal_quiescence_rejects_an_unstarted_cancelled_reservation_without_
 
     tokio::time::timeout(
         std::time::Duration::from_millis(250),
-        host.quiesce_terminal_delegations(&session.0),
+        host.session_runs.quiesce_terminal_delegations(&session.0),
     )
     .await
     .expect("T1/E3 does not wait for reservation TTL")
@@ -1121,7 +1164,7 @@ async fn terminal_quiescence_does_not_rewait_an_expired_physical_claim() {
     for _ in 0..2 {
         let failure = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            host.quiesce_terminal_delegations(&session.0),
+            host.session_runs.quiesce_terminal_delegations(&session.0),
         )
         .await
         .expect("Q1/E2 expired claim must not consume the normal ten-second wait")
@@ -1167,7 +1210,11 @@ async fn terminal_quiescence_still_waits_for_a_pre_cancel_live_physical_claim() 
     let terminal = tokio::spawn({
         let host = host.clone();
         let session = session.clone();
-        async move { host.quiesce_terminal_delegations(&session.0).await }
+        async move {
+            host.session_runs
+                .quiesce_terminal_delegations(&session.0)
+                .await
+        }
     });
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
@@ -1269,6 +1316,7 @@ async fn terminal_quiescence_fences_ephemeral_children_before_cold_link_enrichme
         .expect("validated Host dependencies");
     assert!(!host.dispatch.durable_ingress(), "R1/C3");
     let dispatch = host
+        .session_runs
         .coordinator_dispatch()
         .expect("R1 ephemeral dispatch authority");
     let parent = ThreadId("cold-terminal-parent".into());
@@ -1289,6 +1337,7 @@ async fn terminal_quiescence_fences_ephemeral_children_before_cold_link_enrichme
         "ephemeral-terminal-worker",
     ));
     let snapshot = host
+        .session_runs
         .quiesce_terminal_delegations(&parent.0)
         .await
         .expect("R1 terminal fence waits for exact child settlement");
@@ -1299,7 +1348,8 @@ async fn terminal_quiescence_fences_ephemeral_children_before_cold_link_enrichme
     let rows = dispatch.list_dispatches().await.expect("R1 inspect fence");
     assert!(rows.is_empty(), "R1/E4");
     assert!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .read(&parent.0, |slot| slot.run.context.is_none()
                 && !slot
                     .realization
@@ -1363,6 +1413,7 @@ async fn coordinator_terminal_quiescence_waits_for_remote_parent_and_child_settl
     ));
 
     let snapshot = host
+        .session_runs
         .quiesce_terminal_delegations(&parent.0)
         .await
         .expect("Q2 remote settlement proves quiescence");
@@ -1506,7 +1557,8 @@ async fn checkpoint_source_disposal_separates_preparation_and_current_authority(
                 .expect("the prepared source exists"),
         );
         let install_current = |lease: crate::session_resource::SessionRealizationLease| {
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .realizations()
                 .update_realization(thread, |r| {
                     r.execution_mut().authority = Authority::Live(
@@ -1517,8 +1569,9 @@ async fn checkpoint_source_disposal_separates_preparation_and_current_authority(
                 })
                 .expect("installed Sessions");
         };
-        host.installed_sessions.install(thread);
-        host.installed_sessions
+        host.run_assembly.installed_sessions.install(thread);
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .update_realization(thread, |r| {
                 r.environment_mut().owner =
@@ -1539,7 +1592,8 @@ async fn checkpoint_source_disposal_separates_preparation_and_current_authority(
             })
             .expect("installed Sessions");
         install_current(current_lease.clone());
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .update_realization(thread, |r| {
                 let SessionEnvironmentOwner::Retiring(retained) = &mut r.environment_mut().owner
@@ -1582,6 +1636,7 @@ async fn checkpoint_source_disposal_separates_preparation_and_current_authority(
             })
             .expect("installed Sessions");
         let retained_before = host
+            .run_assembly
             .installed_sessions
             .realizations()
             .read_realization(thread, |r| {
@@ -1594,10 +1649,11 @@ async fn checkpoint_source_disposal_separates_preparation_and_current_authority(
             .unwrap();
         clock.set(prepared_lease.expires_at_unix_ms);
         events.lock().unwrap().clear();
-        let managed = crate::ManagedHost::new(host.clone());
+        let managed = host.clone();
         let held = if rule.starts_with("wait-") {
             Some(
-                host.installed_sessions
+                host.run_assembly
+                    .installed_sessions
                     .realizations()
                     .lock_lifecycle(thread)
                     .await
@@ -1607,7 +1663,6 @@ async fn checkpoint_source_disposal_separates_preparation_and_current_authority(
             None
         };
         let pending = managed
-            .host
             .run_assembly
             .dispose_prepared_checkpoint_source(thread, &disposal);
         let mut pending = std::pin::pin!(pending);
@@ -1663,7 +1718,7 @@ async fn checkpoint_source_disposal_separates_preparation_and_current_authority(
         } else {
             assert!(
                 matches!(
-                    host.installed_sessions.realizations().read_realization(thread, |r| r.environment().owner.clone()).expect("installed Sessions"),
+                    host.run_assembly.installed_sessions.realizations().read_realization(thread, |r| r.environment().owner.clone()).expect("installed Sessions"),
                     Some(SessionEnvironmentOwner::Retiring(retained))
                         if retained.exact_matches(&retained_before)
                 ),

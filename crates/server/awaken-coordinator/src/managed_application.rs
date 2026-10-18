@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use awaken_session_executor::{
-    AgentCoordinationInstallError, ManagedHost, SessionApplicationBindingError, SharedHost,
+    AgentCoordinationInstallError, SessionApplicationBindingError, SharedHost,
 };
 use awaken_session_application::SessionApplication;
 
@@ -13,10 +13,9 @@ use awaken_session_application::SessionApplication;
 /// Session application ports are its edges back into that application.
 pub fn install_managed_agent_coordination(
     host: &SharedHost,
-    runtime: &Arc<ManagedHost>,
     application: &Arc<SessionApplication>,
 ) -> Result<(), AgentCoordinationInstallError> {
-    let dispatch = runtime.dispatch_observation_source()?;
+    let dispatch = host.coordination().dispatch_observation_source()?;
     application
         .execution_admission()
         .verify_dispatch(&dispatch)

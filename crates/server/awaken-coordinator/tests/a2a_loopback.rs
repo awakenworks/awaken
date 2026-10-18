@@ -29,7 +29,6 @@ use awaken_runtime_contract::{
     CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
     CredentialUsage,
 };
-use awaken_session_executor::ManagedHost;
 use awaken_scenario_host::{
     EchoModel, build_router, build_unmounted_dependencies_with_agent_publications,
 };
@@ -261,7 +260,7 @@ async fn delegating_host(transport: Arc<dyn Transport>) -> Arc<SharedHost> {
         .build();
     let publications = StaticPublishedAgentSnapshots::try_new([parent, remote])
         .expect("parent and delegated remote publications are valid");
-    let host = (build_unmounted_dependencies_with_agent_publications(
+    (build_unmounted_dependencies_with_agent_publications(
         Arc::new(NativeDelegatingModel),
         "parent",
         Arc::new(publications),
@@ -274,9 +273,7 @@ async fn delegating_host(transport: Arc<dyn Transport>) -> Arc<SharedHost> {
         credential_realization: Default::default(),
     }))
     .build()
-    .expect("validated Host dependencies");
-    let _runtime = ManagedHost::new(host.clone());
-    host
+    .expect("validated Host dependencies")
 }
 
 async fn published_delegating_host(
@@ -310,7 +307,7 @@ async fn published_delegating_host(
         .build();
     let publications = StaticPublishedAgentSnapshots::try_new([parent, remote])
         .expect("authenticated parent and child publications are valid");
-    let host = (build_unmounted_dependencies_with_agent_publications(
+    (build_unmounted_dependencies_with_agent_publications(
         Arc::new(NativeDelegatingModel),
         "parent",
         Arc::new(publications),
@@ -318,9 +315,7 @@ async fn published_delegating_host(
     .await
     .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(Some(materializer))))
     .build()
-    .expect("validated Host dependencies");
-    let _runtime = ManagedHost::new(host.clone());
-    host
+    .expect("validated Host dependencies")
 }
 
 #[tokio::test]
@@ -352,7 +347,8 @@ async fn delegated_remote_uses_the_published_child_run_and_attempt_executor() {
         });
         let host = delegating_host(transport).await;
 
-        host.run(None, "thread", vec![user("research the answer")])
+        host.session_runs()
+            .run(None, "thread", vec![user("research the answer")])
             .await
             .expect("delegated A2A child settles through the ordinary Run path");
 
@@ -391,13 +387,14 @@ async fn origin_credential_authenticates_the_unified_delegated_a2a_attempt() {
         )
         .await;
 
-        host.run(
-            None,
-            "authenticated-thread",
-            vec![user("research securely")],
-        )
-        .await
-        .expect("origin credential authenticates the delegated A2A child");
+        host.session_runs()
+            .run(
+                None,
+                "authenticated-thread",
+                vec![user("research securely")],
+            )
+            .await
+            .expect("origin credential authenticates the delegated A2A child");
         assert_committed_child_report(&host, "authenticated-thread").await;
         assert!(
             peer.requests

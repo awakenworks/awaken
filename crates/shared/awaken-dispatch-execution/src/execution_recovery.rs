@@ -228,7 +228,7 @@ where
     S: awaken_dispatch_contract::DispatchOperationalFeed
         + awaken_dispatch_contract::DispatchAttemptRecordReads
         + ?Sized,
-    R: awaken_session_execution_contract::SessionProjectionSource + ?Sized,
+    R: awaken_session_execution_contract::ThreadReadRuntime + ?Sized,
 {
     let (threads, runtime_commit_cursor) = match frozen_terminal_scope(session) {
         Ok(scope) => scope,
@@ -277,7 +277,7 @@ where
     let mut response_only = true;
     for thread in &threads {
         let snapshot = match reads
-            .projection_thread_snapshot(&session.session_id, thread, None)
+            .session_thread_recovery_snapshot(&session.session_id, thread)
             .await
         {
             Ok(Some(snapshot)) => snapshot,
@@ -442,23 +442,39 @@ mod tests {
         }
     }
     #[async_trait::async_trait]
-    impl awaken_session_execution_contract::SessionProjectionSource for RecoveryHistory {
-        async fn projection_thread_snapshot(
+    impl awaken_session_execution_contract::ThreadReadRuntime for RecoveryHistory {
+        async fn owns_thread(&self, _thread: &str) -> Result<bool, RunError> {
+            Ok(false)
+        }
+        async fn committed_messages(
+            &self,
+            _thread: &str,
+        ) -> Result<Vec<awaken_agent_contract::agent::message::Message>, RunError> {
+            Ok(Vec::new())
+        }
+        async fn session_thread_recovery_snapshot(
             &self,
             _session: &SessionId,
             thread: &str,
-            _run: Option<&RunId>,
         ) -> Result<Option<RunRecoverySnapshot>, RunError> {
             Ok(self.0.lock().unwrap().get(thread).cloned())
         }
-        async fn projection_coordinated_threads(
+        async fn session_thread_run_recovery_snapshot(
             &self,
             _session: &SessionId,
-            _root: Option<&RunRecoverySnapshot>,
-        ) -> Result<Vec<awaken_session_execution_contract::CoordinatedThreadLink>, RunError> {
-            Ok(Vec::new())
+            thread: &str,
+            _run: &RunId,
+        ) -> Result<Option<RunRecoverySnapshot>, RunError> {
+            Ok(self.0.lock().unwrap().get(thread).cloned())
         }
-        async fn projection_outcome(
+        async fn session_thread_disposition(
+            &self,
+            _session: &SessionId,
+            _thread: &str,
+        ) -> Result<awaken_agent_contract::ThreadDisposition, RunError> {
+            Ok(awaken_agent_contract::ThreadDisposition::Active)
+        }
+        async fn committed_outcome_projection(
             &self,
             _thread: &str,
             _outcome: &str,

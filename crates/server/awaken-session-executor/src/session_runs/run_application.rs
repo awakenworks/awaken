@@ -1,5 +1,6 @@
 // @formal entrypoint runtime.settled_step_projection_is_closed_exact_and_non_widening
-//! Protocol-neutral Run application adapter over the shared runtime host.
+//! The protocol-neutral Run application behind AI SDK, AG-UI and A2A, served
+//! by [`SessionRuns`]: every protocol drives the same Session Runs.
 
 use std::sync::Arc;
 
@@ -9,8 +10,9 @@ use awaken_session_application_contract::{
     Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
 };
 
+use super::SessionRuns;
+use crate::HostResume;
 use crate::host::{HostError, HostErrorKind};
-use crate::{HostResume, SharedHost};
 
 fn to_application_error(error: HostError) -> RunApplicationError {
     match error.kind {
@@ -26,21 +28,8 @@ fn to_application_error(error: HostError) -> RunApplicationError {
     }
 }
 
-/// The one [`RunApplication`] adapter wired behind AI SDK, AG-UI, and A2A.
-/// Every protocol shares the same [`SharedHost`] and therefore the same thread.
-pub struct RunApplicationHost {
-    host: Arc<SharedHost>,
-}
-
-impl RunApplicationHost {
-    #[must_use]
-    pub fn new(host: Arc<SharedHost>) -> Self {
-        Self { host }
-    }
-}
-
 #[async_trait::async_trait]
-impl RunApplication for RunApplicationHost {
+impl RunApplication for SessionRuns {
     async fn run(
         &self,
         _operation_id: &str,
@@ -49,7 +38,6 @@ impl RunApplication for RunApplicationHost {
         messages: Vec<Message>,
     ) -> Result<StepOutcome, RunApplicationError> {
         let result = self
-            .host
             .run(agent.as_deref(), thread, messages)
             .await
             .map_err(to_application_error)?;
@@ -65,7 +53,6 @@ impl RunApplication for RunApplicationHost {
         sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
     ) -> Result<StepOutcome, RunApplicationError> {
         let result = self
-            .host
             .run_streaming(agent.as_deref(), thread, messages, sink)
             .await
             .map_err(to_application_error)?;
@@ -86,7 +73,6 @@ impl RunApplication for RunApplicationHost {
             }
         };
         let result = self
-            .host
             .resume(thread, tool_use_id, resume)
             .await
             .map_err(to_application_error)?;
@@ -94,35 +80,29 @@ impl RunApplication for RunApplicationHost {
     }
 
     async fn interrupt(&self, thread: &str) -> Result<(), RunApplicationError> {
-        self.host
-            .interrupt(thread)
-            .await
-            .map_err(to_application_error)
+        self.interrupt(thread).await.map_err(to_application_error)
     }
 
     async fn pending(&self, thread: &str) -> Result<Option<Pending>, RunApplicationError> {
-        self.host
-            .thread_reads
+        self.thread_reads
             .pending_tool(thread)
             .await
             .map_err(to_application_error)
     }
 
     async fn history(&self, thread: &str) -> Result<Vec<Message>, RunApplicationError> {
-        self.host
-            .thread_reads
+        self.thread_reads
             .committed_messages(thread)
             .await
             .map_err(to_application_error)
     }
 
     fn model(&self) -> String {
-        self.host.run_assembly.model()
+        self.capabilities.model()
     }
 
     async fn usage(&self, thread: &str) -> Result<(u64, u64), RunApplicationError> {
         let usage = self
-            .host
             .thread_reads
             .session_thread_usage(thread, &ThreadId(thread.to_string()))
             .await

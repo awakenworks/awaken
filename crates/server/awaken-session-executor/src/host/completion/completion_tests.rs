@@ -512,7 +512,7 @@ async fn unconfigured_model_is_rejected_before_durable_enqueue() {
     .await)
         .build()
         .expect("validated Host dependencies");
-    let _managed = crate::ManagedHost::new(host.clone());
+    let _managed = host.clone();
     let ctx = host
         .run_assembly
         .ctx_for("unconfigured-model", None)
