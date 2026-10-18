@@ -11,6 +11,8 @@
 # Usage:
 #   scripts/ci/check_public_api.sh          # check; fails on drift
 #   scripts/ci/check_public_api.sh --bless   # accept current surface as the snapshot
+#   scripts/ci/check_public_api.sh --affected-upstream  # pre-push: only surfaces
+#       the commits since the origin/main merge-base (or the working tree) can move
 #
 # Requires cargo-public-api (which uses a nightly rustdoc).
 #
@@ -36,13 +38,15 @@ readonly PUBLIC_API_NIGHTLY="nightly-2026-07-14"
 
 bless=0
 require_tools=1
+affected_upstream=0
 for argument in "$@"; do
   case "$argument" in
     --bless) bless=1 ;;
     --require-tools) require_tools=1 ;;
     --allow-absent-tools) require_tools=0 ;;
+    --affected-upstream) affected_upstream=1 ;;
     *)
-      echo "usage: scripts/ci/check_public_api.sh [--bless] [--require-tools|--allow-absent-tools]" >&2
+      echo "usage: scripts/ci/check_public_api.sh [--bless] [--require-tools|--allow-absent-tools] [--affected-upstream]" >&2
       exit 2
       ;;
   esac
@@ -133,6 +137,45 @@ if [ "${#orphans[@]}" -ne 0 ]; then
   exit 1
 fi
 
+# Affected-scope decision table (rust_test_plan.py gate_scope). A1 --bless or
+# no --affected-upstream -> every selected crate. A2 "none" -> no Rust input
+# changed since the origin/main merge-base: report it and compare nothing. A3
+# "packages" -> a surface is recomputed when its crate is a changed owner or a
+# transitive consumer of one (a dependency can move a re-exported item). A4
+# "whole", no merge-base or a planner refusal -> every selected crate. The
+# orphan check above always covers every snapshot.
+compared_crates="$crates"
+if [ "$affected_upstream" = 1 ] && [ "$bless" = 0 ]; then
+  scope="whole"
+  scope_reason="no origin/main merge-base"
+  if scope_base=$(git merge-base HEAD refs/remotes/origin/main 2>/dev/null); then
+    if scope_plan=$(python3 scripts/ci/rust_test_plan.py --gate-scope --base "$scope_base"); then
+      scope=$(printf '%s\n' "$scope_plan" | sed -n 's/^scope=//p')
+      scope_reason=$(printf '%s\n' "$scope_plan" | sed -n 's/^reason=//p')
+    else
+      scope_reason="gate scope unavailable"
+    fi
+  fi
+  selected_count=$(printf '%s\n' $crates | grep -c . || true)
+  case "$scope" in
+    none)
+      echo "✓ public API: $scope_reason since ${scope_base:0:10}; 0 of $selected_count snapshots needed recomputing"
+      exit 0
+      ;;
+    packages)
+      compared_crates=$(printf '%s\n' $crates | grep -Fxf <(printf '%s\n' "$scope_plan" | sed '1,2d') || true)
+      if [ -z "$compared_crates" ]; then
+        echo "✓ public API: no snapshotted crate is affected since ${scope_base:0:10}; 0 of $selected_count snapshots needed recomputing"
+        exit 0
+      fi
+      echo "public API scope: $(printf '%s\n' $compared_crates | grep -c .) of $selected_count snapshotted crates are affected"
+      ;;
+    *)
+      echo "public API scope: all $selected_count snapshotted crates ($scope_reason)"
+      ;;
+  esac
+fi
+
 fail=0
 drifted=()      # crates whose surface changed
 compute_fail=0  # a crate whose surface could not be computed
@@ -149,7 +192,7 @@ compared=0      # crates whose surface was actually compared against a snapshot
 omit_flags="--omit blanket-impls,auto-trait-impls,auto-derived-impls"
 compute_stderr="$(mktemp)"
 trap 'rm -f "$compute_stderr"' EXIT
-for c in $crates; do
+for c in $compared_crates; do
   snap="public-api/$c.txt"
   if ! cur=$(cargo +"$PUBLIC_API_NIGHTLY" public-api -p "$c" --simplified $omit_flags 2>"$compute_stderr"); then
     echo "✗ failed to compute public API for $c"
