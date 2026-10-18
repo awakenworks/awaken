@@ -21,14 +21,29 @@ use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 use crate::Runtime;
 
 impl Runtime {
-    /// Bind a Snapshot, Thread and store once for an embedded conversation.
+    /// Bind a Snapshot, Thread and store once for a conversation.
+    ///
+    /// Binding validates the context without starting a Run or creating a
+    /// managed Session. Each call to [`crate::Conversation::run`] starts a Run
+    /// on the same Thread.
+    pub fn conversation<'a>(
+        &'a self,
+        snapshot: &'a ExecutableAgentSnapshot,
+        thread: impl Into<String>,
+        context: RuntimeRunContext,
+    ) -> Result<crate::Conversation<'a>, Error> {
+        crate::Conversation::new(self, snapshot, ThreadId(thread.into()), context)
+    }
+
+    /// Compatibility entry for [`Runtime::conversation`].
+    #[deprecated(note = "Use Runtime::conversation for the SDK conversation binding.")]
     pub fn session<'a>(
         &'a self,
         snapshot: &'a ExecutableAgentSnapshot,
         thread: impl Into<String>,
         context: RuntimeRunContext,
-    ) -> Result<crate::EmbeddedSession<'a>, Error> {
-        crate::EmbeddedSession::new(self, snapshot, ThreadId(thread.into()), context)
+    ) -> Result<crate::Conversation<'a>, Error> {
+        self.conversation(snapshot, thread, context)
     }
 
     /// Single-shot entry returning a named projection of the committed record.
@@ -38,7 +53,7 @@ impl Runtime {
         input: impl Into<RunInput>,
         context: RuntimeRunContext,
     ) -> Result<crate::RunOutcome, Error> {
-        self.session(snapshot, fresh_process_id("thread"), context)?
+        self.conversation(snapshot, fresh_process_id("thread"), context)?
             .run(input)
             .await
     }

@@ -53,13 +53,13 @@ async fn multiple_turns_share_one_store_and_thread() {
     let context = RuntimeRunContext::new().with_store(store.clone());
     let runtime = Runtime::new().with_llm(Arc::new(DemoModel));
     let first = runtime
-        .session(&agent(), "conversation", context.clone())
+        .conversation(&agent(), "conversation", context.clone())
         .unwrap()
         .run("first")
         .await
         .unwrap();
     let second = runtime
-        .session(&agent(), "conversation", context)
+        .conversation(&agent(), "conversation", context)
         .unwrap()
         .run("second")
         .await
@@ -236,7 +236,7 @@ async fn asynchronous_approval_resumes_the_committed_ticket() {
         .with_gate(Arc::new(ApprovalGate));
     let store = Arc::new(MemoryCommitCoordinator::new(clock));
     let state = runtime
-        .session(
+        .conversation(
             &agent,
             "approval",
             RuntimeRunContext::new().with_store(store),
@@ -266,7 +266,7 @@ async fn filesystem_restart_reads_receipt_and_replays_terminal_without_a_model()
     );
     let runtime = Runtime::new().with_llm(Arc::new(DemoModel));
     let outcome = runtime
-        .session(
+        .conversation(
             &agent(),
             "durable",
             RuntimeRunContext::new().with_store(store.clone()),
@@ -286,7 +286,7 @@ async fn filesystem_restart_reads_receipt_and_replays_terminal_without_a_model()
         RunOutcome::read(reopened.as_ref(), outcome.run_id(), outcome.thread_id()).unwrap();
     assert_eq!(receipt, outcome);
     let replay = Runtime::new()
-        .session(
+        .conversation(
             &agent(),
             receipt.thread_id().0.clone(),
             RuntimeRunContext::new().with_store(reopened.clone()),

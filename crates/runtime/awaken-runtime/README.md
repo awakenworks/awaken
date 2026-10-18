@@ -35,12 +35,12 @@ let agent = ExecutableAgentSnapshot::builder("assistant")
     .build();
 let store = Arc::new(MemoryCommitCoordinator::new(clock));
 let context = RuntimeRunContext::new().with_store(store.clone());
-let session = runtime.session(&agent, "conversation", context)?;
-let first = session.run("Hello").await?;
-let second = session.run("Continue").await?;
+let conversation = runtime.conversation(&agent, "conversation", context)?;
+let first = conversation.run("Hello").await?;
+let second = conversation.run("Continue").await?;
 assert_eq!(first.thread_id(), second.thread_id());
 println!("{:?}: {:?}", second.run_id(), second.end_cause());
-let conversation = second.transcript(store.as_ref())?;
+let transcript = second.transcript(store.as_ref())?;
 # Ok(())
 # }
 ```
@@ -63,14 +63,14 @@ integrations; the old builtin `erase` import forwards to the same tool-contract 
 
 ## Approval, cancellation and recovery
 
-Use `EmbeddedSession::run_to_completion_async` with an owned ticket and an async callback returning
-`Result<ResumeResult, ApprovalError>`. For example:
+Use `Conversation::run_to_completion_async` with an owned ticket and an async
+callback returning `Result<ResumeResult, ApprovalError>`. For example:
 
 ```rust,no_run
 # use awaken_runtime::{ExecutableAgentSnapshot, Runtime, RuntimeRunContext, ResumeResult};
 # async fn example(runtime: &Runtime, agent: &ExecutableAgentSnapshot, context: RuntimeRunContext) -> Result<(), awaken_runtime::Error> {
-let session = runtime.session(agent, "conversation", context)?;
-let outcome = session.run_to_completion_async("Do the task",
+let conversation = runtime.conversation(agent, "conversation", context)?;
+let outcome = conversation.run_to_completion_async("Do the task",
     |ticket| async move {
         // Await your UI, approval service or policy query here.
         let _ = ticket;
@@ -92,8 +92,8 @@ path; it does not prove an external operation stopped. Dropping the caller's
 future is not a durable cancellation request.
 
 For restart/replay, retain the Snapshot, Run ID and Thread ID and call
-`EmbeddedSession::resume_with_id_async`. The Snapshot must match the committed ticket;
-terminal replay returns committed truth without another model/tool invocation.
+`Conversation::resume_with_id_async`. The Snapshot must match the committed
+ticket; terminal replay returns committed truth without another model/tool invocation.
 `resume_with_id_async_with_options` also accepts the callback wait policy.
 The synchronous callbacks use the same driver. All completion-driving entries
 require a history reader before starting; `with_store` binds it with the writer.
@@ -106,9 +106,11 @@ Use `error.kind()`, `error.code()` and `std::error::Error::source` for diagnosti
 Classification is not permission to retry an effect; retain existing idempotency,
 execution-evidence and commit rules.
 
-Existing entry points, contract import paths and legacy string error variants
-remain. The development API adds `execution::Error::Diagnostic`; downstream
-exhaustive matches must handle it. New diagnostic/options/outcome types have
+`EmbeddedSession` and `Runtime::session` remain as deprecated compatibility
+entries for `Conversation` and `Runtime::conversation`. Existing contract import
+paths and legacy string error variants remain. The development API adds
+`execution::Error::Diagnostic`; downstream exhaustive matches must handle it.
+New diagnostic/options/outcome types have
 private fields or non-exhaustive enums. Before publishing a stable release,
 review the API snapshot and apply the project's versioning policy.
 

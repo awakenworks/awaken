@@ -3,6 +3,7 @@
 mod approval;
 mod circuit_breaker;
 mod configuration;
+mod conversation;
 mod detached_tool;
 mod engine;
 mod ingress;
@@ -13,7 +14,6 @@ mod resolve;
 mod retry;
 mod run;
 mod runtime;
-mod session;
 mod snapshot_file;
 mod tool_discovery;
 pub mod tools;
@@ -32,6 +32,7 @@ pub use awaken_runtime_contract::{
 };
 pub use circuit_breaker::CircuitBreakerConfig;
 pub use configuration::ConfigurationError;
+pub use conversation::Conversation;
 pub use detached_tool::{DetachedToolError, PreparedToolExecutor, ResolvedToolExecution};
 pub use engine::run_commands::resume_activated_tool_batch;
 pub use ingress::DirectAttemptDriver;
@@ -39,4 +40,7 @@ pub use outcome::{RunOutcome, RunOutcomeError};
 pub use permission::PermissionGate;
 pub use run::RunInput;
 pub use runtime::{ActiveAttemptScope, Runtime};
-pub use session::EmbeddedSession;
+
+/// Compatibility name for [`Conversation`].
+#[deprecated(note = "Use Conversation for the SDK's Snapshot, Thread and execution binding.")]
+pub type EmbeddedSession<'a> = Conversation<'a>;

@@ -17,7 +17,7 @@
     },
     "awaken-runtime::Runtime": {
       "files": 4,
-      "methods": 60,
+      "methods": 61,
       "reason": "Inject the existing shared WallClock at Runtime and Host composition; fail before approval or Fresh child effects; retain one approval loop and no ambient clock"
     },
     "awaken-session-application::SessionApplication": {
@@ -395,12 +395,12 @@
       "deps": 40,
       "lines": 24451,
       "reason": "runtime-host split (plan 10.4 slices R, E, H): lines hold host plus the realizer being extracted in place (+142 approved 2026-10-10 for the SessionRealizations view, leaves with the realization crate; +24 approved 2026-10-10 for k8s_unschedulable_wait_secs settings, leaves with the deployment configuration to the composition root; +127 2026-10-18 for typed poison refusals and their decision tables at every read role, plan v4 P6/P7); host_lines may only fall; target < 20000 lines, about 26-28 dependencies",
-      "host_lines": 24451
+      "host_lines": 24449
     }
   },
   "growth_reasons": {
     "impl-spread": {
-      "awaken-runtime::Runtime": "Inject the existing shared WallClock at Runtime and Host composition; fail before approval or Fresh child effects; retain one approval loop and no ambient clock",
+      "awaken-runtime::Runtime": "Inject the existing shared WallClock at Runtime and Host composition; fail before approval or Fresh child effects; retain one approval loop and no ambient clock; then: Expose Runtime::conversation as the SDK binding name while preserving deprecated Runtime::session source compatibility; both use the same constructor and add no state or execution responsibility. Retire the compatibility forwarding entry only with the planned breaking API cleanup.",
       "awaken-session-executor::RunAssembly": "executor split (plan v4 D5): RunAssembly owns Session context assembly and the realization roles' executor part, with its MCP root authority, application-input target and durable Run cancellation as owned parts instead of weak Host back-references; the SharedHost forwarding it replaces is deleted as the remaining components land",
       "awaken-session-executor::SessionRuns": "executor split (plan v4 D5): SessionRuns owns Run delivery, resident Run control and the durable-ingress verbs and serves the Run roles and RunApplication directly, replacing RunApplicationHost and the ManagedHost Run forwarding",
       "awaken-session-state-contract::PersistedSession": "P0 original-effect provenance after duplication review: Root adds one read-only getter for private history; existing App binding sink admits first intent with the same single 3-attempt CAS/readback protocol, no new public domain selector; Host retains full candidate intent and rejects missing Managed authority before I/O; existing keys/Resident matcher/ProviderEffect kernels shared. Preserve host part, dependency budgets, admission/formal/physical requirements and R/W21 extraction targets.; then: Native terminal-cleanup P0: retain original operation/epoch/Thread/Run in the existing activity CAS, expose one read-only history and one replay identity law; migrate exact root/coordinated/reply/budget consumers, consolidate resident recovery, preserve legacy Unknown; remaining application split belongs to W21; then: 2026-10-18 Root-reviewed W20b and W26 same-source reception on c32: the exact existing missing-publication decision table, Kani law, profile and roster compilation move from Managed into the existing application configuration owner; no second policy, fallback, catalog, cache or registry. Recorded-first/exact-publication behavior and original native assertions remain unchanged. W26 adds one immutable realization_progress borrow accessor with unchanged aggregate assignment owners and wire serde; existing retry-hint presentation uses the one contract error. Record the real combined method/line movement and rustfmt cost, tighten former owners, retain all ceilings and service decomposition goals. This is source ownership movement, not completion of the remaining application services."
