@@ -346,7 +346,10 @@ impl RunExecutor for BoundRunExecutor<'_> {
                 "Run activation does not match its bound Thread".to_string(),
             ));
         }
-        let activation = self.host.bind_fresh_root_tool_configuration(activation);
+        let activation = self
+            .host
+            .run_assembly
+            .bind_fresh_root_tool_configuration(activation);
         let run_id = activation.run_id.clone();
         let refused = |error: crate::host::ForegroundRunPoisoned| {
             ExecutionError::Execution(HostError::from(error).to_string())
@@ -424,7 +427,7 @@ impl SharedHost {
             .snapshot
             .resolved_spec
             .attempt_candidates(activation.model_ref_override.as_deref());
-        let holder = self.inference_plaintext_holder(activation)?;
+        let holder = self.run_assembly.inference_plaintext_holder(activation)?;
         let epoch = LOCAL_ATTEMPT_EPOCH
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             .max(1);
@@ -1015,7 +1018,8 @@ pub(crate) mod tests {
         host.installed_sessions.update_run(thread, |run| {
             run.dispatch_claim = Some(expected_claim.clone());
         });
-        host.register_thread_workspace(thread, "workspace-a");
+        host.run_assembly
+            .register_thread_workspace(thread, "workspace-a");
         let spec = crate::sandbox_projection::agent_run_sandbox_spec(thread);
         assert_eq!(
             spec.outputs_path, "/mnt/session/outputs",
@@ -1030,7 +1034,8 @@ pub(crate) mod tests {
             )
             .into_session_environment(),
         );
-        host.install_test_resident_session_environment(thread, environment);
+        host.run_assembly
+            .install_test_resident_session_environment(thread, environment);
         let output_dir = storage
             .path()
             .join(thread)
@@ -1293,7 +1298,9 @@ pub(crate) mod tests {
         raw_host.resources.artifact_publisher =
             Arc::new(awaken_resource_contract::UnavailableArtifactPublisher);
         let failed_host = (raw_host).build().expect("validated Host dependencies");
-        failed_host.register_thread_workspace(thread, "workspace-a");
+        failed_host
+            .run_assembly
+            .register_thread_workspace(thread, "workspace-a");
         let failed_environment = Arc::new(
             awaken_session_environment::SandboxEnvironment::workdir(
                 awaken_sandbox_local::LocalProvider::new(failed_storage.path())
@@ -1303,7 +1310,9 @@ pub(crate) mod tests {
             )
             .into_session_environment(),
         );
-        failed_host.install_test_resident_session_environment(thread, failed_environment);
+        failed_host
+            .run_assembly
+            .install_test_resident_session_environment(thread, failed_environment);
         let failed_output = failed_storage
             .path()
             .join(thread)

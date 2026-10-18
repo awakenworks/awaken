@@ -128,33 +128,36 @@ async fn unpolled_staging_future_drop_releases_drain_without_false_proof() {
         let _guard = guard;
         std::future::pending::<()>().await;
     };
-    host.insert_mcp_projection(McpGenerationProjection {
-        receipt: crate::session_mcp::McpRealizationReceipt {
-            generation: generation.clone(),
-            realization_id: request.realization_id.clone(),
-            selected_plaintext_holder: None,
-            actual_realization_kind: None,
-            receipt_fingerprint: request.fingerprint(),
-        },
-        request,
-        server: None,
-        native_wiring: None,
-        mcp_process: None,
-        staging: Some(staging),
-        drain: std::sync::Arc::new(tokio::sync::Mutex::new(())),
-        state: McpProjectionState::Staging,
-    })
-    .unwrap();
+    host.run_assembly
+        .insert_mcp_projection(McpGenerationProjection {
+            receipt: crate::session_mcp::McpRealizationReceipt {
+                generation: generation.clone(),
+                realization_id: request.realization_id.clone(),
+                selected_plaintext_holder: None,
+                actual_realization_kind: None,
+                receipt_fingerprint: request.fingerprint(),
+            },
+            request,
+            server: None,
+            native_wiring: None,
+            mcp_process: None,
+            staging: Some(staging),
+            drain: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            state: McpProjectionState::Staging,
+        })
+        .unwrap();
 
     let drain_host = host.clone();
     let drain_generation = generation.clone();
     let draining = tokio::spawn(async move {
         drain_host
+            .run_assembly
             .drain_mcp_projections("unpolled-staging", &[drain_generation])
             .await
     });
     loop {
         if host
+            .run_assembly
             .mcp_projection(&generation)
             .is_some_and(|projection| projection.state == McpProjectionState::Draining)
         {
@@ -176,11 +179,13 @@ async fn unpolled_staging_future_drop_releases_drain_without_false_proof() {
         "U1/E3"
     );
     assert!(
-        host.mcp_projection(&generation).is_some_and(|projection| {
-            projection.state == McpProjectionState::Removed
-                && projection.mcp_process.is_none()
-                && projection.staging.is_none()
-        }),
+        host.run_assembly
+            .mcp_projection(&generation)
+            .is_some_and(|projection| {
+                projection.state == McpProjectionState::Removed
+                    && projection.mcp_process.is_none()
+                    && projection.staging.is_none()
+            }),
         "U1/E3 Removed only after the captured owner drops"
     );
 }
@@ -448,6 +453,7 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
     .build()
     .expect("validated Host dependencies");
     let context = host
+        .run_assembly
         .ctx_for("present", None)
         .await
         .expect("actual Run context");
@@ -779,6 +785,7 @@ async fn local_activity_combination_keeps_real_poison_fault_order() {
             .build()
             .expect("Q9/Q10 actual Host");
             let ctx = host
+                .run_assembly
                 .ctx_for(&root_id, None)
                 .await
                 .expect("Q9 actual context");
@@ -902,8 +909,13 @@ async fn local_activity_combination_keeps_real_poison_fault_order() {
             .await
             .build()
             .expect("Q11 actual Host");
-            let root = host.ctx_for(&root_id, None).await.expect("Q11 actual root");
+            let root = host
+                .run_assembly
+                .ctx_for(&root_id, None)
+                .await
+                .expect("Q11 actual root");
             let child = host
+                .run_assembly
                 .ctx_for(&child_id, None)
                 .await
                 .expect("Q11 actual child");

@@ -1,27 +1,13 @@
 // @formal surface requirement=session.lifecycle.session_state
-// @formal reason: The original weak configured Session effects adapter retains the same lifecycle and MCP authorities.
-//! Run-side effects reached by claimed execution.
-use crate::{ManagedHost, SharedHost};
+// @formal reason: The configured Session MCP realizer and the ordinary Run MCP role over the same Session
+// @formal reason: assembly retain the same lifecycle and MCP authorities; neither holds a back-reference.
+//! Run-side effects reached by claimed execution: the Memory terminal
+//! observer of a guarded dispatch, the Session MCP realizer the composition
+//! selected, and the ordinary Run MCP role (SDK Direct admission).
 use awaken_session_types::RunError;
-use std::sync::{Arc, Weak};
-/// Weak, cloneable Worker-side adapter over the same configured Managed
-/// `SessionRuntime`.
-#[derive(Clone)]
-pub(crate) struct SessionEffects {
-    pub(super) host: Weak<SharedHost>,
-}
+use std::sync::Arc;
 
-impl SessionEffects {
-    pub(crate) fn managed(&self) -> Result<ManagedHost, RunError> {
-        let host = self
-            .host
-            .upgrade()
-            .ok_or_else(|| RunError::internal("dispatch Session Runtime host was dropped"))?;
-        Ok(ManagedHost::new(host))
-    }
-}
-
-impl SharedHost {
+impl crate::RunAssembly {
     /// Build the terminal observer from the exact guarded dispatch. The logical
     /// Thread owns transcript/extraction identity; `commit` may still point at
     /// its parent Session's physical partition.
@@ -60,58 +46,14 @@ impl SharedHost {
         .await
     }
 
-    pub(crate) fn session_effects(&self) -> SessionEffects {
-        self.dispatch.session_effects.clone()
-    }
-}
-
-#[async_trait::async_trait]
-impl awaken_session_execution_contract::McpAttachmentRealizer for SessionEffects {
-    async fn stage_mcp_attachment(
+    /// The one Session MCP attachment realizer: the realizer the composition
+    /// selected for durable Worker commands, else this assembly's own.
+    pub(crate) fn session_mcp_realizer(
         &self,
-        request: crate::session_mcp::StageMcpAttachment,
-    ) -> Result<crate::session_mcp::McpRealizationReceipt, RunError> {
-        let managed = self.managed()?;
-        match &managed.host.session_execution.mcp_realizer {
-            Some(realizer) => realizer.stage_mcp_attachment(request).await,
-            None => {
-                awaken_session_execution_contract::McpAttachmentRealizer::stage_mcp_attachment(
-                    &managed, request,
-                )
-                .await
-            }
-        }
-    }
-
-    async fn publish_mcp_generation(
-        &self,
-        generation: crate::session_mcp::McpGenerationRef,
-    ) -> Result<(), RunError> {
-        let managed = self.managed()?;
-        match &managed.host.session_execution.mcp_realizer {
-            Some(realizer) => realizer.publish_mcp_generation(generation).await,
-            None => {
-                awaken_session_execution_contract::McpAttachmentRealizer::publish_mcp_generation(
-                    &managed, generation,
-                )
-                .await
-            }
-        }
-    }
-
-    async fn drain_mcp_generation(
-        &self,
-        generation: crate::session_mcp::McpGenerationRef,
-    ) -> Result<(), RunError> {
-        let managed = self.managed()?;
-        match &managed.host.session_execution.mcp_realizer {
-            Some(realizer) => realizer.drain_mcp_generation(generation).await,
-            None => {
-                awaken_session_execution_contract::McpAttachmentRealizer::drain_mcp_generation(
-                    &managed, generation,
-                )
-                .await
-            }
+    ) -> &dyn awaken_session_execution_contract::McpAttachmentRealizer {
+        match &self.session_execution.mcp_realizer {
+            Some(realizer) => realizer.as_ref(),
+            None => self,
         }
     }
 }
@@ -120,7 +62,13 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for SessionEffects
 /// Only this role selects the SDK's Direct admission; it never installs a root.
 #[derive(Clone)]
 pub(crate) struct RunMcpEffects {
-    pub(super) host: Weak<SharedHost>,
+    assembly: Arc<crate::RunAssembly>,
+}
+
+impl RunMcpEffects {
+    pub(crate) fn new(assembly: Arc<crate::RunAssembly>) -> Self {
+        Self { assembly }
+    }
 }
 
 #[async_trait::async_trait]
@@ -129,20 +77,16 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for RunMcpEffects 
         &self,
         request: crate::session_mcp::StageMcpAttachment,
     ) -> Result<crate::session_mcp::McpRealizationReceipt, RunError> {
-        let managed = SessionEffects {
-            host: self.host.clone(),
-        }
-        .managed()?;
-        match &managed.host.session_execution.mcp_realizer {
+        let assembly = self.assembly.as_ref();
+        match &assembly.session_execution.mcp_realizer {
             Some(realizer) => realizer.stage_mcp_attachment(request).await,
             None => {
-                managed
-                    .host
+                assembly
                     .mcp
                     .stage_attachment(
-                        &managed.host.installed_sessions,
-                        &managed,
-                        managed.mcp_credential_materialization(),
+                        &assembly.installed_sessions,
+                        assembly,
+                        assembly.mcp_credential_materialization(),
                         request,
                     )
                     .await
@@ -153,25 +97,19 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for RunMcpEffects 
         &self,
         generation: crate::session_mcp::McpGenerationRef,
     ) -> Result<(), RunError> {
-        awaken_session_execution_contract::McpAttachmentRealizer::publish_mcp_generation(
-            &SessionEffects {
-                host: self.host.clone(),
-            },
-            generation,
-        )
-        .await
+        self.assembly
+            .session_mcp_realizer()
+            .publish_mcp_generation(generation)
+            .await
     }
     async fn drain_mcp_generation(
         &self,
         generation: crate::session_mcp::McpGenerationRef,
     ) -> Result<(), RunError> {
-        awaken_session_execution_contract::McpAttachmentRealizer::drain_mcp_generation(
-            &SessionEffects {
-                host: self.host.clone(),
-            },
-            generation,
-        )
-        .await
+        self.assembly
+            .session_mcp_realizer()
+            .drain_mcp_generation(generation)
+            .await
     }
 }
 
@@ -180,12 +118,8 @@ impl awaken_dispatch_execution::session_execution::RunMcpAttachments for RunMcpE
         &self,
         session: &str,
     ) -> Result<Vec<crate::session_mcp::StageMcpAttachment>, RunError> {
-        let managed = SessionEffects {
-            host: self.host.clone(),
-        }
-        .managed()?;
-        Ok(managed
-            .host
+        Ok(self
+            .assembly
             .active_mcp_projections(session)
             .into_iter()
             .map(|projection| projection.request)

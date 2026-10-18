@@ -586,6 +586,7 @@ impl SharedHost {
         // This is Coordinator admission, not a physical execution attempt.
         // A completed child may have left its Environment with a remote Worker.
         let ctx = self
+            .run_assembly
             .ctx_for_session_coordination(command.session_id.as_str(), None)
             .await?;
         let run_id = command.run_id();
@@ -605,6 +606,7 @@ impl SharedHost {
         // cold restart; the settlement observer must always route this root
         // continuation back to the same Session application.
         let request = self
+            .run_assembly
             .prepare_dispatch(activation)
             .fresh()?
             .for_session(ThreadId(command.session_id.to_string()))

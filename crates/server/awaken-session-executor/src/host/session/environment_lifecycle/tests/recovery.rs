@@ -31,14 +31,17 @@ async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
     let snapshot = test_activation(thread, "cached-resume-publication").snapshot;
     // C1 is ordinary local ownership: install its exact configuration and
     // publication without a Control-frozen baseline/Session execution marker.
-    host.register_thread_workspace(thread, "workspace");
-    host.register_thread_agent_projection(thread, snapshot.root_agent_id.0.as_str());
+    host.run_assembly
+        .register_thread_workspace(thread, "workspace");
+    host.run_assembly
+        .register_thread_agent_projection(thread, snapshot.root_agent_id.0.as_str());
     host.realization_executor
         .environments()
         .publication()
         .retain_session_publication(thread, Some(&snapshot))
         .unwrap();
-    host.install_environment_projection(thread, &eager_environment())
+    host.run_assembly
+        .install_environment_projection(thread, &eager_environment())
         .unwrap();
     let provider = host
         .realization_executor
@@ -64,10 +67,12 @@ async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
         .join("retired-owner-sentinel");
     std::fs::write(&retired_sentinel, b"owned by the retiring Environment")
         .expect("RR1 retiring root sentinel");
-    host.install_test_resident_session_environment(thread, environment.clone());
+    host.run_assembly
+        .install_test_resident_session_environment(thread, environment.clone());
     let original_hand = environment.agent_tools().tool_executor();
     let agent_id = snapshot.root_agent_id.0.clone();
     let cached = host
+        .run_assembly
         .ctx_for_snapshot(thread, Some(agent_id.as_str()), Some(snapshot))
         .await
         .expect("RR1 cached Runtime");
@@ -99,7 +104,7 @@ async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
                 .environments()
                 .retire_session_environment_for_revocation(
                     thread,
-                    (&host.mcp, host.installed_sessions.as_ref()),
+                    (&host.run_assembly.mcp, host.installed_sessions.as_ref()),
                     None,
                 )
                 .await
@@ -115,6 +120,7 @@ async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
     );
 
     let resumed = host
+        .run_assembly
         .ctx_for_resume(thread)
         .await
         .expect("RR2 resume recovery");
@@ -159,6 +165,7 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
         .expect("validated Host dependencies");
     let _ready_managed = crate::ManagedHost::new(ready_host.clone());
     let ready_runtime = ready_host
+        .run_assembly
         .ctx_for(ready_thread, None)
         .await
         .expect("R21/C1 ordinary direct Runtime");
@@ -244,6 +251,7 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
         .expect("validated Host dependencies");
     let _missing_managed = crate::ManagedHost::new(missing_host.clone());
     let missing_runtime = missing_host
+        .run_assembly
         .ctx_for(missing_thread, None)
         .await
         .expect("R21/C1 missing-provider Runtime");
@@ -657,20 +665,21 @@ async fn legacy_suspending_projection_keeps_exact_binding_provenance_without_fab
     .await)
         .build()
         .expect("validated Host dependencies");
-    host.install_session_environment_owner_projection(
-        thread,
-        "workspace",
-        &awaken_session_state_contract::SessionEnvironmentState::Suspending {
-            operation,
-            source_effect_id: Box::new(String::new()),
-            source_binding: "legacy-binding".into(),
-            generation,
-            suspend_phase: awaken_session_state_contract::SuspendPhase::ReadyToDispose,
-            checkpoint: None,
-            source_release_preparation: None,
-        },
-    )
-    .expect("E1 legacy projection");
+    host.run_assembly
+        .install_session_environment_owner_projection(
+            thread,
+            "workspace",
+            &awaken_session_state_contract::SessionEnvironmentState::Suspending {
+                operation,
+                source_effect_id: Box::new(String::new()),
+                source_binding: "legacy-binding".into(),
+                generation,
+                suspend_phase: awaken_session_state_contract::SuspendPhase::ReadyToDispose,
+                checkpoint: None,
+                source_release_preparation: None,
+            },
+        )
+        .expect("E1 legacy projection");
     assert!(matches!(
         host.installed_sessions.realizations()
             .read_realization(thread, |r| r.environment().owner.clone()).expect("installed Sessions"),

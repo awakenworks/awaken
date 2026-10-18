@@ -52,7 +52,7 @@ impl LaunchObserver for HubLaunchObserver {
     }
 }
 
-impl crate::host::SharedHost {
+impl crate::RunAssembly {
     pub(crate) fn acp_adapter_policy(
         &self,
     ) -> Result<
@@ -167,7 +167,8 @@ mod tests {
             .build()
             .expect("validated Host dependencies");
         assert!(
-            host.acp_adapter_policy()
+            host.run_assembly
+                .acp_adapter_policy()
                 .err()
                 .expect("P1 absent policy")
                 .to_string()
@@ -183,7 +184,7 @@ mod tests {
         assert!(host.exec.acp.is_none(), "P2/E3 no execution factory");
         assert!(
             std::ptr::eq(
-                host.acp_adapter_policy().expect("P2 policy"),
+                host.run_assembly.acp_adapter_policy().expect("P2 policy"),
                 awaken_run_executor_acp::acp_adapter_policy()
             ),
             "P2/E2 one catalog instance"
@@ -199,7 +200,10 @@ mod tests {
             host.exec.acp_projection_policy.is_none(),
             "P3 one effective policy owner"
         );
-        let policy = host.acp_adapter_policy().expect("P3 installed policy");
+        let policy = host
+            .run_assembly
+            .acp_adapter_policy()
+            .expect("P3 installed policy");
         assert!(
             std::ptr::eq(policy, awaken_run_executor_acp::acp_adapter_policy()),
             "P3/E2 one catalog instance"
@@ -222,7 +226,8 @@ mod tests {
             (with_fixture_acp(crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test").await))
                 .build()
                 .expect("validated Host dependencies");
-        host.register_thread_backend_projection("t", "acp:claude");
+        host.run_assembly
+            .register_thread_backend_projection("t", "acp:claude");
         assert!(host.exec.acp.is_some(), "A1 executor");
         assert_eq!(
             host.installed_sessions

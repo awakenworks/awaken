@@ -136,7 +136,7 @@ async fn missing_projection_admits_only_the_direct_empty_revision_zero_noop() {
             Default::default()
         };
         let transition = resource_transition(
-            host.local_workspace(),
+            host.run_assembly.local_workspace(),
             rule.previous_revision,
             previous,
             rule.desired_revision,
@@ -148,7 +148,8 @@ async fn missing_projection_admits_only_the_direct_empty_revision_zero_noop() {
             epoch: 1,
         });
         if rule.runtime_projection {
-            host.install_environment_projection(&thread, &on_tool_use_environment())
+            host.run_assembly
+                .install_environment_projection(&thread, &on_tool_use_environment())
                 .unwrap_or_else(|error| panic!("{} installs C7: {error}", rule.id));
         }
         assert_eq!(
@@ -381,6 +382,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         let _baseline_runtime = crate::ManagedHost::new(baseline_host.clone());
         let first_projection = projection("baseline-a", true);
         baseline_host
+            .run_assembly
             .install_frozen_session_projection(
                 "local-baseline",
                 first_projection.clone(),
@@ -400,7 +402,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             "B1/E1 frozen baseline and Managed execution marker publish atomically on a cold Worker"
         );
         assert_eq!(
-            baseline_host.session_skill_source_roots(
+            baseline_host.run_assembly.session_skill_source_roots(
                 "local-baseline",
                 None,
                 crate::skills::MANAGED_SKILLS_SUBDIR,
@@ -409,6 +411,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             "B1/E1 no direct live-authored Skill source is registered"
         );
         baseline_host
+            .run_assembly
             .install_frozen_session_projection(
                 "local-baseline",
                 first_projection.clone(),
@@ -423,6 +426,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         empty.baseline.fingerprint.0.clear();
         assert!(
             baseline_host
+                .run_assembly
                 .install_frozen_session_projection("empty-baseline", empty, None, true, None)
                 .await
                 .unwrap_err()
@@ -433,6 +437,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         let conflicting = projection("baseline-b", true);
         assert!(
             baseline_host
+                .run_assembly
                 .install_frozen_session_projection("local-baseline", conflicting, None, true, None,)
                 .await
                 .unwrap_err()
@@ -441,11 +446,13 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             "B4"
         );
         baseline_host
+            .run_assembly
             .ctx_for("realized-before-baseline", None)
             .await
             .expect("realize the negative-case Environment");
         assert!(
             baseline_host
+                .run_assembly
                 .install_frozen_session_projection(
                     "realized-before-baseline",
                     first_projection,
@@ -466,6 +473,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                 run.session_dispatch = true;
             });
         let coordinator = baseline_host
+            .run_assembly
             .ctx_for_session_coordination("coordinator-before-baseline", None)
             .await
             .expect("B6 metadata-only reservation context");
@@ -475,6 +483,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         );
         assert!(coordinator.env.is_none(), "B6/E4 no physical Environment");
         baseline_host
+            .run_assembly
             .install_frozen_session_projection(
                 "coordinator-before-baseline",
                 projection("baseline-a", true),
@@ -499,11 +508,13 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                 run.session_dispatch = true;
             });
         let dispatch_coordinator = baseline_host
+            .run_assembly
             .ctx_for_session_coordination("dispatch-before-baseline", None)
             .await
             .expect("B6 Coordinator opened a reservation before Resource amendment");
         assert!(dispatch_coordinator.is_coordination_envelope(), "B6/E4");
         baseline_host
+            .run_assembly
             .install_dispatch_frozen_session_projection(
                 "dispatch-before-baseline",
                 projection("baseline-a", true),
@@ -546,6 +557,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         );
         assert!(
             failed_host
+                .run_assembly
                 .install_frozen_session_projection("failed-projection", rejected, None, true, None)
                 .await
                 .unwrap_err()
@@ -630,7 +642,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         let amendment_managed = crate::ManagedHost::new(amendment_host.clone());
         let initial_dispatch = projection("authority amendment", false);
         awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-            &amendment_managed,
+            &*amendment_managed.host.run_assembly,
             "authority-amendment",
             initial_dispatch.clone(),
             awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
@@ -668,6 +680,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         };
         assert!(
             amendment_host
+                .run_assembly
                 .install_frozen_session_projection(
                     "authority-amendment",
                     amended_dispatch.clone(),
@@ -697,7 +710,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             "A1/E2 rejection is side-effect free"
         );
         awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-            &amendment_managed,
+            &*amendment_managed.host.run_assembly,
             "authority-amendment",
             amended_dispatch.clone(),
             awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
@@ -743,6 +756,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             initial_commit: None,
         }]);
         let error = host
+            .run_assembly
             .install_frozen_session_projection(
                 "prospective-layout-conflict",
                 conflicting,
@@ -778,10 +792,12 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
 
     Box::pin(async {
         let frozen = projection("Use the bound Flow project.", true);
-        host.install_frozen_session_projection("flow-thread", frozen.clone(), None, true, None)
+        host.run_assembly
+            .install_frozen_session_projection("flow-thread", frozen.clone(), None, true, None)
             .await
             .expect("first frozen projection installs");
-        host.install_frozen_session_projection("flow-thread", frozen, None, true, None)
+        host.run_assembly
+            .install_frozen_session_projection("flow-thread", frozen, None, true, None)
             .await
             .expect("same frozen fingerprint is idempotent");
     })
@@ -818,13 +834,18 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         committed_environment: Some(committed_environment.clone()),
     });
     let branch_managed = crate::ManagedHost::new(branch_host.clone());
-    branch_managed.install_test_environment_binding_sink(branch_sink.clone());
+    branch_managed
+        .host
+        .run_assembly
+        .install_test_environment_binding_sink(branch_sink.clone());
     let mut branch = projection("branch prompt", false);
     branch_host
+        .run_assembly
         .install_frozen_session_projection("branch-thread", branch.clone(), None, true, None)
         .await
         .expect("B1 baseline without materialized prefix");
     let stale = branch_host
+        .run_assembly
         .ctx_for("branch-thread", None)
         .await
         .expect("B1 resident context");
@@ -841,10 +862,12 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         "E2E_SOURCE_ONLY_exact",
     )];
     branch_host
+        .run_assembly
         .install_frozen_session_projection("branch-thread", branch.clone(), None, true, None)
         .await
         .expect("B1 late materialized prefix");
     let rebuilt = branch_host
+        .run_assembly
         .ctx_for("branch-thread", None)
         .await
         .expect("B1 rebuilt context");
@@ -857,10 +880,12 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         "B1/E1 exact request-only prefix"
     );
     branch_host
+        .run_assembly
         .install_frozen_session_projection("branch-thread", branch, None, true, None)
         .await
         .expect("B2 identical replay");
     let replayed = branch_host
+        .run_assembly
         .ctx_for("branch-thread", None)
         .await
         .expect("B2 resident context");
@@ -906,7 +931,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             "the Workdir tool wrapper retains the frozen deny intent"
         );
         assert_eq!(
-            host.thread_session_prompts("flow-thread"),
+            host.run_assembly.thread_session_prompts("flow-thread"),
             vec!["Use the bound Flow project."]
         );
     }
@@ -1062,7 +1087,8 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
     Box::pin(async {
         let replacement = projection("different", true);
         assert!(
-            host.install_frozen_session_projection("flow-thread", replacement, None, true, None)
+            host.run_assembly
+                .install_frozen_session_projection("flow-thread", replacement, None, true, None)
                 .await
                 .is_err(),
             "a bound Session cannot switch frozen baselines"
@@ -1089,24 +1115,26 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             owner: "repository-worker".into(),
             epoch,
         };
-        host.install_frozen_session_projection(
-            "repository-claim-thread",
-            repository_projection.clone(),
-            Some(&claim(1)),
-            true,
-            None,
-        )
-        .await
-        .expect("C1 first claim");
-        host.install_frozen_session_projection(
-            "repository-claim-thread",
-            repository_projection,
-            Some(&claim(2)),
-            true,
-            None,
-        )
-        .await
-        .expect("C2 replacement claim");
+        host.run_assembly
+            .install_frozen_session_projection(
+                "repository-claim-thread",
+                repository_projection.clone(),
+                Some(&claim(1)),
+                true,
+                None,
+            )
+            .await
+            .expect("C1 first claim");
+        host.run_assembly
+            .install_frozen_session_projection(
+                "repository-claim-thread",
+                repository_projection,
+                Some(&claim(2)),
+                true,
+                None,
+            )
+            .await
+            .expect("C2 replacement claim");
         assert_eq!(
             repository_claims
                 .0
@@ -1582,6 +1610,7 @@ async fn acp_execution_rebuilds_an_envelope_only_reservation_context() {
         dispatch_test_host((raw_host).build().expect("validated Host dependencies"));
 
     let reserved = host
+        .run_assembly
         .ctx_for_session_coordination("acp-reservation-race", Some("assistant"))
         .await
         .expect("reservation preflight");
@@ -1589,6 +1618,7 @@ async fn acp_execution_rebuilds_an_envelope_only_reservation_context() {
     assert!(exporter.0.lock().unwrap().is_empty(), "E3 no ACP export");
 
     let executable = host
+        .run_assembly
         .ctx_for("acp-reservation-race", Some("assistant"))
         .await
         .expect("C3 execution rebuild");
@@ -1644,7 +1674,7 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
         .install_complete_test_session(
             thread,
             awaken_session_configuration_contract::SessionInit {
-                workspace_id: host.local_workspace().into(),
+                workspace_id: host.run_assembly.local_workspace().into(),
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
                 tools: None,
@@ -1660,19 +1690,21 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
         )
         .await
         .expect("install Worker-owned Session projection");
-    host.install_session_environment_owner_projection(
-        thread,
-        host.local_workspace(),
-        &awaken_session_state_contract::SessionEnvironmentState::Resident {
-            binding: "worker-owned-binding".into(),
-            effect_id: None,
-            generation: None,
-            idle_since_unix_ms: None,
-        },
-    )
-    .expect("project exact durable Worker binding");
+    host.run_assembly
+        .install_session_environment_owner_projection(
+            thread,
+            host.run_assembly.local_workspace(),
+            &awaken_session_state_contract::SessionEnvironmentState::Resident {
+                binding: "worker-owned-binding".into(),
+                effect_id: None,
+                generation: None,
+                idle_since_unix_ms: None,
+            },
+        )
+        .expect("project exact durable Worker binding");
 
     let reserved = host
+        .run_assembly
         .ctx_for_session_coordination(thread, Some("assistant"))
         .await
         .expect("R1 reservation does not require local adoption");
@@ -1756,6 +1788,7 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
         .await
         .expect("installed Sessions");
     let error = match host
+        .run_assembly
         .ctx_for_snapshot(thread, Some("assistant"), Some(reserved.config.clone()))
         .await
     {
@@ -1788,6 +1821,7 @@ async fn rebuilt_coordination_context_never_borrows_a_retained_environment() {
     let _managed = install_test_dispatch_runtime(&host);
 
     let executable = host
+        .run_assembly
         .ctx_for(thread, None)
         .await
         .expect("C1 create executable context");
@@ -1799,6 +1833,7 @@ async fn rebuilt_coordination_context_never_borrows_a_retained_environment() {
         .expect("installed Sessions");
 
     let coordination = host
+        .run_assembly
         .ctx_for_session_coordination(thread, None)
         .await
         .expect("R1 rebuild coordination context");
@@ -1819,6 +1854,7 @@ async fn rebuilt_coordination_context_never_borrows_a_retained_environment() {
     );
 
     let rebuilt = host
+        .run_assembly
         .ctx_for(thread, None)
         .await
         .expect("R2 rebuild executable context");
@@ -1845,7 +1881,8 @@ async fn claimed_inference_only_context_keeps_scope_without_a_resource_transitio
     install_test_session_application(&host);
     let _managed = install_test_dispatch_runtime(&host);
     let thread = "inference-only-claimed";
-    host.register_thread_workspace(thread, "workspace-inference");
+    host.run_assembly
+        .register_thread_workspace(thread, "workspace-inference");
     let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("judge")
         .model(test_model_binding())
         .build();
@@ -1862,6 +1899,7 @@ async fn claimed_inference_only_context_keeps_scope_without_a_resource_transitio
         effective_model_ref: "model".into(),
     };
     let ctx = host
+        .run_assembly
         .ctx_for_claimed_snapshot(thread, Some("judge"), snapshot.clone(), attempt)
         .await
         .expect("R1 no Resource transition is needed for inference");
@@ -1880,6 +1918,7 @@ async fn claimed_inference_only_context_keeps_scope_without_a_resource_transitio
             .is_none()
     );
     let dispatch = host
+        .run_assembly
         .prepare_dispatch(awaken_runtime_contract::RunActivation::new(
             RunId("inference-only-run".into()),
             ThreadId(thread.into()),

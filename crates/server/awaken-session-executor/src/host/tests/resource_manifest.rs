@@ -30,15 +30,17 @@ async fn told_equals_mounted_the_prompt_path_and_access_match_the_realized_mount
         initial_commit: None,
     };
     let managed = managed_with_resource_source(host.clone());
-    let mut init = bare_session("a", host.local_workspace());
+    let mut init = bare_session("a", host.run_assembly.local_workspace());
     init.resources = effective_resources(vec![resource]);
     managed
+        .host
+        .run_assembly
         .install_test_session_init("t-g1", init)
         .await
         .unwrap();
 
     let realized = "/mnt/memory";
-    let prompts = host.thread_session_prompts("t-g1");
+    let prompts = host.run_assembly.thread_session_prompts("t-g1");
     assert!(
         prompts.iter().any(|p| p.contains(realized)),
         "the compiled prompt names the realized path {realized}: {prompts:?}"
@@ -203,7 +205,7 @@ async fn managed_multi_memory_mounts_are_backend_neutral_pairwise() {
             .collect::<Vec<_>>();
         let expected_access = inputs.iter().map(|input| input.access).collect::<Vec<_>>();
         let thread = format!("pairwise-{}", case.rule.to_lowercase());
-        let mut init = bare_session("agent", host.local_workspace());
+        let mut init = bare_session("agent", host.run_assembly.local_workspace());
         init.runtime = Some(case.backend.into());
         let resources = effective_resources(inputs);
         init.resources = resources.clone();
@@ -212,9 +214,17 @@ async fn managed_multi_memory_mounts_are_backend_neutral_pairwise() {
             .await
             .unwrap_or_else(|error| panic!("{}: {error}", case.rule));
         managed
+            .host
+            .run_assembly
             .apply_session_inputs(
                 &thread,
-                &resource_transition(host.local_workspace(), 0, Default::default(), 0, resources),
+                &resource_transition(
+                    host.run_assembly.local_workspace(),
+                    0,
+                    Default::default(),
+                    0,
+                    resources,
+                ),
             )
             .await
             .unwrap_or_else(|error| panic!("{} compiles the exact transition: {error}", case.rule));
@@ -230,7 +240,7 @@ async fn managed_multi_memory_mounts_are_backend_neutral_pairwise() {
             };
             assert_eq!(mount.access, expected, "{} E2/{index}", case.rule);
         }
-        let prompts = host.thread_session_prompts(&thread);
+        let prompts = host.run_assembly.thread_session_prompts(&thread);
         assert_eq!(prompts.len(), count, "{} E1 prompts", case.rule);
         for (index, prompt) in prompts.iter().enumerate() {
             let managed_path = format!("/mnt/memory/{}-{index}", case.rule.to_lowercase());
@@ -365,7 +375,7 @@ async fn automatic_memory_requires_one_explicit_existing_binding() {
                 .await
                 .unwrap();
         }
-        let mut init = bare_session("agent", host.local_workspace());
+        let mut init = bare_session("agent", host.run_assembly.local_workspace());
         init.resources = effective_resources(
             stores
                 .iter()
@@ -388,11 +398,11 @@ async fn automatic_memory_requires_one_explicit_existing_binding() {
             .await
             .unwrap();
         assert!(
-            host.memory_for_thread(&thread).is_none(),
+            host.run_assembly.memory_for_thread(&thread).is_none(),
             "{rule} precondition"
         );
 
-        let result = host.ctx_for(&thread, Some("agent")).await;
+        let result = host.run_assembly.ctx_for(&thread, Some("agent")).await;
         match expected_error {
             Some(fragment) => {
                 let error = match result {
@@ -400,11 +410,14 @@ async fn automatic_memory_requires_one_explicit_existing_binding() {
                     Err(error) => error,
                 };
                 assert!(error.to_string().contains(fragment), "{rule}: {error}");
-                assert!(host.memory_for_thread(&thread).is_none(), "{rule} E1");
+                assert!(
+                    host.run_assembly.memory_for_thread(&thread).is_none(),
+                    "{rule} E1"
+                );
             }
             None => {
                 result.unwrap_or_else(|error| panic!("{rule}: {error}"));
-                let selected = host.memory_for_thread(&thread);
+                let selected = host.run_assembly.memory_for_thread(&thread);
                 match expected_index {
                     Some(index) => assert_eq!(
                         selected
@@ -450,7 +463,7 @@ async fn runtime_stages_exactly_the_effective_resource_list() {
 
     let managed = managed_with_resource_source(host.clone());
 
-    let mut init = bare_session("a", host.local_workspace());
+    let mut init = bare_session("a", host.run_assembly.local_workspace());
     init.resources = effective_resources(vec![TestInput {
         kind: "memory_store".into(),
         id: s2.clone(),
@@ -461,6 +474,8 @@ async fn runtime_stages_exactly_the_effective_resource_list() {
         initial_commit: None,
     }]);
     managed
+        .host
+        .run_assembly
         .install_test_session_init("t-g3", init)
         .await
         .unwrap();
@@ -501,7 +516,7 @@ async fn a_bound_resource_with_a_missing_backing_store_fails_the_session_closed(
     .build()
     .expect("validated Host dependencies");
     let managed = crate::ManagedHost::new(host.clone());
-    let mut init = bare_session("a", host.local_workspace());
+    let mut init = bare_session("a", host.run_assembly.local_workspace());
     init.resources = effective_resources(vec![TestInput {
         kind: "memory_store".into(),
         id: "never-seeded-store".into(),
@@ -512,7 +527,11 @@ async fn a_bound_resource_with_a_missing_backing_store_fails_the_session_closed(
         initial_commit: None,
     }]);
 
-    let result = managed.install_test_session_init("t-g4", init).await;
+    let result = managed
+        .host
+        .run_assembly
+        .install_test_session_init("t-g4", init)
+        .await;
     assert!(
         result.is_err(),
         "a binding to a missing backing store must fail closed, not mount empty"
@@ -534,7 +553,7 @@ async fn activation_validates_the_frozen_config_without_selecting_current_again(
         ))
     .build()
     .expect("validated Host dependencies");
-    let workspace = host.local_workspace().to_string();
+    let workspace = host.run_assembly.local_workspace().to_string();
     let store_id = test_memory_store_id();
 
     catalog
@@ -583,6 +602,8 @@ async fn activation_validates_the_frozen_config_without_selecting_current_again(
     let mut valid = bare_session("a", &workspace);
     valid.resources = manifest.clone();
     managed
+        .host
+        .run_assembly
         .install_test_session_init("frozen-v1", valid)
         .await
         .expect("v1 remains valid after current advances to v2");
@@ -599,6 +620,8 @@ async fn activation_validates_the_frozen_config_without_selecting_current_again(
     let mut invalid = bare_session("a", &workspace);
     invalid.resources = missing;
     let error = managed
+        .host
+        .run_assembly
         .install_test_session_init("missing-v3", invalid)
         .await
         .expect_err("an absent frozen config must fail closed");
@@ -668,7 +691,7 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
     ))
     .build()
     .expect("validated Host dependencies");
-    let workspace = host.local_workspace().to_string();
+    let workspace = host.run_assembly.local_workspace().to_string();
     let files = vec![
         SkillBundleFile {
             path: "SKILL.md".into(),
@@ -724,6 +747,8 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
         .await
         .expect("prepare pinned Skill");
     managed
+        .host
+        .run_assembly
         .apply_session_inputs(
             "skill-revoke",
             &resource_transition(&workspace, 0, Default::default(), 0, resources),
@@ -764,6 +789,8 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
         .expect("installed manifest");
 
     managed
+        .host
+        .run_assembly
         .apply_session_inputs(
             "skill-revoke",
             &resource_transition(
@@ -815,6 +842,8 @@ async fn an_effective_resource_mounts_on_a_worker_without_the_binding_repository
         initial_commit: None,
     }]);
     managed_worker
+        .host
+        .run_assembly
         .install_test_session_init("t-g5-worker", init)
         .await
         .unwrap();

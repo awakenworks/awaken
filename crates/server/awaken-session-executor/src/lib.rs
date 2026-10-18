@@ -74,6 +74,8 @@ mod outcome_controller;
 mod outcome_report;
 mod redact;
 mod run_application_host;
+mod run_assembly;
+pub use run_assembly::RunAssembly;
 mod run_exec;
 mod session_memory_tools;
 mod session_tools;
@@ -86,16 +88,13 @@ pub use thread_reads::ThreadReads;
 
 #[cfg(test)]
 use awaken_session_mcp::test_mcp;
-use awaken_session_execution_contract::EnvironmentRuntime as _;
 mod tool_output_spill;
 mod unavailable_worker;
 mod uninstalled_environment;
 mod web_search;
 mod worker_services;
 
-use crate::skill_delivery::skill_store_run_error;
 pub(crate) use awaken_session_realization_contract::ResourceOperationFence;
-pub(crate) use session_effects::SessionEffects;
 
 use std::sync::Arc;
 
@@ -237,121 +236,7 @@ impl SessionRuntime for ManagedHost {
     }
 
     fn model(&self) -> String {
-        self.host.model()
-    }
-}
-
-#[async_trait::async_trait]
-impl awaken_session_execution_contract::RealizationRuntime for ManagedHost {
-    fn observe_realization_request(
-        &self,
-    ) -> Result<awaken_lease_contract::authority::AuthorityProofStarted, RunError> {
-        awaken_authority_clock::authority_proof_started()
-            .map_err(|error| RunError::unavailable(format!("authority clock: {error}")))
-    }
-
-    async fn renew_session_realization_projections(
-        &self,
-        control: &dyn awaken_session_realization_contract::SessionRealizationControl,
-        owner: &str,
-        runtime_incarnation: &str,
-        timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
-    ) -> Result<usize, RunError> {
-        self.host
-            .renew_session_realization_projections(
-                Some(control),
-                Some((owner, runtime_incarnation)),
-                timing,
-            )
-            .await
-            .map_err(to_run_error)
-    }
-
-    fn validate_session_sandbox_layout(
-        &self,
-        thread: &str,
-        layout: &awaken_session_configuration_contract::SessionSandboxLayout,
-    ) -> Result<(), RunError> {
-        self.host
-            .realization_executor
-            .validate_prospective_session_layout(thread, layout)
-    }
-
-    async fn install_session_projection(
-        &self,
-        thread: &str,
-        projection: awaken_session_realization_contract::FrozenSessionProjection,
-        mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), RunError> {
-        let realizations = self.host.installed_sessions.realizations();
-        // Installing the frozen projection is the install path. Every
-        // Environment-owner projection, including lease-only recovery, crosses
-        // the same lifecycle guard as physical publication/retirement.
-        self.host.installed_sessions.install(thread);
-        let _lifecycle = realizations.lock_lifecycle(thread).await?;
-        if mode.prepares_session() {
-            // Cause/effect rule P2: an unprotected active Runtime rejects before
-            // any frozen coordinate is published. The same lifecycle mutex also
-            // prevents a peer from observing installed facts before the Managed
-            // execution marker and deferred executor are complete.
-            let preparation_needed = self.session_preparation_needed(thread)?;
-            self.install_projection_facts(thread, &projection, &mode)
-                .await?;
-            if preparation_needed {
-                self.complete_session_preparation(thread);
-            }
-        } else {
-            self.install_projection_facts(thread, &projection, &mode)
-                .await?;
-        }
-        drop(_lifecycle);
-        if mode.adopts_resident_environment()
-            && let Some(binding) = projection.environment.binding()
-        {
-            self.adopt_session_environment(&projection.baseline.agent_id, thread, binding)
-                .await?;
-        }
-        Ok(())
-    }
-
-    async fn renew_session_realization_lease(
-        &self,
-        thread: &str,
-        lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
-    ) -> Result<(), RunError> {
-        let realizations = self.host.installed_sessions.realizations();
-        let missing = || {
-            RunError::classified(
-                "session_realization_lease_missing",
-                "cannot renew a Session realization lease that is not installed",
-            )
-        };
-        self.host.realization_executor.authority()
-            .authorize_worker_effect(|| {
-                Ok::<_, crate::realization_error::RealizationError>(realizations
-            .modify_realization(thread, |r| {
-                let current = r.execution().authority.lease().cloned().ok_or_else(missing)?;
-                if !r.renew_lease(&current, lease) {
-                    return Err(RunError::classified(
-                        "session_realization_lease_conflict",
-                        "Session realization renewal is not a monotonic successor of the installed fence",
-                    ));
-                }
-                Ok(())
-            })?
-            .unwrap_or_else(|| Err(missing())))
-            })
-            .map_err(|error: crate::realization_error::RealizationError| RunError::from(error))?
-    }
-
-    async fn invalidate_session_realization_lease(
-        &self,
-        thread: &str,
-        lease: &crate::session_resource::SessionRealizationLease,
-    ) -> Result<(), RunError> {
-        self.host
-            .invalidate_session_realization_lease(thread, lease);
-        Ok(())
+        self.host.run_assembly.model()
     }
 }
 
@@ -388,6 +273,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for ManagedHost {
             .await?;
         let ctx = self
             .host
+            .run_assembly
             .ctx_for_session_coordination(command.session_id.as_str(), Some(&command.agent_id))
             .await
             .map_err(to_run_error)?;
@@ -422,6 +308,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for ManagedHost {
                 .map(awaken_runtime_contract::DataSubjectId);
             let mut request = self
                 .host
+                .run_assembly
                 .prepare_dispatch(activation)
                 .with_traceparent(command.traceparent)
                 .map_err(|error| to_run_error(error.into()))?
@@ -895,7 +782,7 @@ impl awaken_session_execution_contract::StreamingRunRuntime for ManagedHost {
         // R5: re-stage the thread's model and evict its cached context so the next
         // Run rebuilds with the newly resolved executor (native switch is O(1); an
         // ACP thread's cached context relaunches its CLI on rebuild).
-        self.host.register_thread_model(thread, model);
+        self.host.run_assembly.register_thread_model(thread, model);
         self.host
             .realization_executor
             .environments()
@@ -906,7 +793,7 @@ impl awaken_session_execution_contract::StreamingRunRuntime for ManagedHost {
 
     async fn supports_mid_conversation_system(&self, thread: &str) -> bool {
         managed_model_capability::supports_mid_conversation_system(
-            &self.host.model_for_thread(thread),
+            &self.host.run_assembly.model_for_thread(thread),
         )
     }
 
@@ -914,289 +801,6 @@ impl awaken_session_execution_contract::StreamingRunRuntime for ManagedHost {
         self.host
             .thread_reads
             .pending_tool(thread)
-            .await
-            .map_err(to_run_error)
-    }
-}
-
-#[async_trait::async_trait]
-impl awaken_session_execution_contract::EnvironmentRuntime for ManagedHost {
-    async fn replace_session_tools(
-        &self,
-        thread: &str,
-        tools: awaken_session_configuration_contract::SessionToolConfiguration,
-    ) -> Result<(), RunError> {
-        self.host
-            .installed_sessions
-            .replace_frozen_with(thread, |next| next.tools = Some(tools));
-        self.host
-            .realization_executor
-            .environments()
-            .evict_session_for_rebuild(thread)
-            .await?;
-        Ok(())
-    }
-
-    async fn adopt_session_environment(
-        &self,
-        agent: &str,
-        thread: &str,
-        binding: &str,
-    ) -> Result<(), RunError> {
-        // Managed Session restoration is a continuity contract: the durable
-        // binding must decode, belong to this Session/provider, and still name a
-        // ready physical environment. Run-dispatch recovery has its own explicit
-        // RebuildFromCommittedTruth policy; applying that fallback here would
-        // turn corrupt or deleted Session authority into a replacement sandbox.
-        let provider = self
-            .host
-            .realization_executor
-            .environments()
-            .projected_session_environment_provider(thread, Some(agent))
-            .map_err(RunError::from)?;
-        let disposition = self
-            .host
-            .realization_executor
-            .adopt_bound_session_environment(thread, Some(binding), provider, None, false)
-            .await
-            .map_err(RunError::from)?;
-        if disposition != crate::session_environment::SessionEnvironmentAdoptionDisposition::Ready {
-            return Err(RunError::internal(
-                "durable Session Environment adoption did not publish a ready binding",
-            ));
-        }
-        self.host
-            .ctx_for(thread, Some(agent))
-            .await
-            .map_err(to_run_error)?;
-        Ok(())
-    }
-
-    async fn quiesce_session_environment(
-        &self,
-        thread: &str,
-        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
-        source_effect_id: &str,
-        source_binding: &str,
-        generation: &awaken_session_state_contract::SandboxGeneration,
-        expected_mcp_generations: &[crate::session_mcp::McpGenerationRef],
-    ) -> Result<awaken_session_state_contract::QuiescenceReceipt, RunError> {
-        self.quiesce_environment_continuation(
-            thread,
-            operation,
-            source_effect_id,
-            source_binding,
-            generation,
-            expected_mcp_generations,
-        )
-        .await
-    }
-
-    async fn checkpoint_session_environment(
-        &self,
-        thread: &str,
-        request: awaken_session_state_contract::SandboxCheckpointRequest,
-    ) -> Result<awaken_session_state_contract::CheckpointReceipt, RunError> {
-        self.host
-            .realization_executor
-            .checkpoint_environment_continuation(thread, request)
-            .await
-    }
-
-    async fn prepare_checkpoint_source_disposal(
-        &self,
-        thread: &str,
-        preparation: &awaken_session_state_contract::SourceReleasePreparationEffect,
-        generation: &awaken_session_state_contract::SandboxGeneration,
-        source_binding: &str,
-    ) -> Result<awaken_session_state_contract::SourceReleasePreparedReceipt, RunError> {
-        self.host
-            .realization_executor
-            .prepare_environment_continuation_source_release(
-                thread,
-                preparation,
-                generation,
-                source_binding,
-            )
-            .await
-    }
-
-    async fn dispose_prepared_checkpoint_source(
-        &self,
-        thread: &str,
-        disposal: &awaken_session_state_contract::SourceReleaseDisposal,
-    ) -> Result<awaken_session_state_contract::SourceDisposedReceipt, RunError> {
-        self.host
-            .realization_executor
-            .dispose_prepared_environment_continuation_source(thread, disposal)
-            .await
-    }
-
-    async fn restore_checkpointed_session_environment(
-        &self,
-        request: awaken_session_state_contract::SandboxRestoreRequest,
-    ) -> Result<awaken_session_state_contract::RestoreReceipt, RunError> {
-        self.host
-            .realization_executor
-            .restore_environment_continuation(request)
-            .await
-    }
-
-    async fn delete_session_checkpoint(
-        &self,
-        _thread: &str,
-        checkpoint: &awaken_session_state_contract::SandboxCheckpointRef,
-    ) -> Result<(), RunError> {
-        self.host
-            .realization_executor
-            .delete_environment_continuation_checkpoint(checkpoint)
-            .await
-    }
-
-    async fn resolve_session_skills(
-        &self,
-        workspace_id: &str,
-        skills: &[awaken_agent_contract::AgentSkillBinding],
-    ) -> Result<Vec<crate::session_resource::ResolvedSkillBinding>, RunError> {
-        if skills.is_empty() {
-            return Ok(Vec::new());
-        }
-        self.host
-            .tools
-            .skills
-            .resolve(workspace_id, skills)
-            .await
-            .map_err(skill_store_run_error)
-    }
-
-    async fn apply_session_inputs(
-        &self,
-        thread: &str,
-        transition: &crate::session_resource::SessionResourceTransition,
-    ) -> Result<(), RunError> {
-        self.host
-            .realization_executor
-            .apply_session_inputs(thread, transition, None, None)
-            .await
-    }
-}
-
-#[async_trait::async_trait]
-impl awaken_session_execution_contract::TerminalCleanupRuntime for ManagedHost {
-    async fn execute_terminal_repository_publication_for_lease(
-        &self,
-        command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
-        lease: &crate::session_resource::SessionRealizationLease,
-    ) -> Result<awaken_session_state_contract::SessionRepositoryPublicationEffect, RunError> {
-        self.host
-            .realization_executor
-            .effects()
-            .publish_terminal_repository(self.host.realization_executor.peers(), command, lease)
-            .await
-    }
-
-    async fn prepare_terminal_cleanup_for_effect(
-        &self,
-        effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
-        authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
-    ) -> Result<awaken_session_state_contract::SessionCleanupPreparation, RunError> {
-        self.host
-            .realization_executor
-            .effects()
-            .prepare_terminal_cleanup_effect(
-                self.host.realization_executor.peers(),
-                effect,
-                authorization,
-                |thread| {
-                    let host = &self.host;
-                    async move {
-                        host.thread_reads
-                            .delegated_runs_under_lifecycle(&thread)
-                            .await
-                            .map_err(crate::realization_error::RealizationError::from)
-                    }
-                },
-                |thread, generation| {
-                    let background = self.host.resources.memory.background();
-                    async move {
-                        background
-                            .quiesce_shared_environment(
-                                &thread,
-                                &generation,
-                                std::time::Duration::from_secs(30),
-                            )
-                            .await
-                    }
-                },
-                (&self.host.mcp, self.host.installed_sessions.as_ref()),
-            )
-            .await
-            .map_err(RunError::from)
-    }
-
-    async fn acknowledge_terminal_cleanup_preparation(
-        &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
-    ) {
-        self.host
-            .realization_executor
-            .effects()
-            .acknowledge_terminal_cleanup_preparation(&self.host.mcp, effect)
-            .await;
-    }
-
-    async fn dispose_terminal_cleanup_for_effect(
-        &self,
-        effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
-    ) -> Result<awaken_session_state_contract::SessionCleanupDisposalReceipt, RunError> {
-        self.host
-            .realization_executor
-            .effects()
-            .dispose_terminal_cleanup_effect(self.host.realization_executor.peers(), effect)
-            .await
-            .map_err(RunError::from)
-    }
-
-    async fn acknowledge_terminal_cleanup_disposal(
-        &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
-    ) {
-        self.host
-            .realization_executor
-            .effects()
-            .acknowledge_terminal_cleanup_disposal(&self.host.mcp, effect)
-            .await;
-    }
-
-    async fn acknowledge_completed_terminal_cleanup(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        lease: &crate::session_resource::SessionRealizationLease,
-    ) {
-        // Forgetting a settled local projection is best effort: a denied
-        // retirement leaves it for the next completed-cleanup readback.
-        if let Err(error) = self
-            .host
-            .realization_executor
-            .effects()
-            .retire_completed_terminal_cleanup_projection(
-                &self.host.mcp,
-                session_id.as_str(),
-                lease,
-            )
-            .await
-        {
-            tracing::warn!(%error, "completed terminal cleanup projection retained");
-        }
-    }
-
-    async fn install_terminal_cleanup_assignment(
-        &self,
-        assignment: &awaken_session_realization_contract::SessionTerminalCleanupAssignment,
-        proof: awaken_session_realization_contract::ObservedSessionRealizationLease,
-    ) -> Result<(), RunError> {
-        self.host
-            .install_terminal_cleanup_projection(assignment, proof)
             .await
             .map_err(to_run_error)
     }
@@ -1245,22 +849,18 @@ impl awaken_session_execution_contract::CapabilityRuntime for ManagedHost {
     /// skills, and delegate roster. (MCP servers and file resources are not advertised
     /// — the local host wires no MCP capability and has no Files-API resource yet.)
     fn capabilities(&self) -> AgentCapabilities {
-        self.capabilities_for_workspace(self.host.local_workspace())
+        self.capabilities_for_workspace(self.host.run_assembly.local_workspace())
     }
 
     fn capabilities_for(&self, thread: &str) -> AgentCapabilities {
-        let workspace = self.host.thread_workspace(thread);
+        let workspace = self.host.run_assembly.thread_workspace(thread);
         let mut capabilities = self.capabilities_for_workspace(&workspace);
-        if let Some(delegate_ids) = self.host.thread_delegate_ids(thread) {
+        if let Some(delegate_ids) = self.host.run_assembly.thread_delegate_ids(thread) {
             capabilities.delegates = delegate_ids;
         }
         capabilities
     }
 }
-
-// Keep the public trait implementation textually at the crate root so this
-// physical responsibility split cannot change its rustc DefPath.
-include!("managed_host_mcp_attachment.rs");
 
 use awaken_dispatch_contract::SessionRunReservations as _;
 

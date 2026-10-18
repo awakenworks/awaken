@@ -233,15 +233,16 @@ async fn install_terminal_artifact_projection_before_environment(
     session_id: &str,
     workspace_id: &str,
 ) {
-    host.install_frozen_session_projection(
-        session_id,
-        terminal_cleanup_projection(workspace_id, Default::default()),
-        None,
-        true,
-        None,
-    )
-    .await
-    .expect("terminal artifact fixture installs its complete frozen projection first");
+    host.run_assembly
+        .install_frozen_session_projection(
+            session_id,
+            terminal_cleanup_projection(workspace_id, Default::default()),
+            None,
+            true,
+            None,
+        )
+        .await
+        .expect("terminal artifact fixture installs its complete frozen projection first");
 }
 
 /// Publish a legacy durable binding through the same projection/adoption owner
@@ -265,7 +266,8 @@ fn install_terminal_artifact_environment(
         generation: None,
         idle_since_unix_ms: None,
     };
-    host.install_session_environment_owner_projection(session_id, workspace_id, &state)
+    host.run_assembly
+        .install_session_environment_owner_projection(session_id, workspace_id, &state)
         .expect("F1/E1 project the canonical legacy durable binding");
     let candidate = host
         .realization_executor
@@ -350,16 +352,19 @@ async fn root_terminal_cleanup_effect(
             session_id,
         )
         .unwrap();
-    host.install_test_terminal_cleanup_projection(
-        &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
-            environment_creation_not_attempted: false,
-            session_id: session_id.into(),
-            projection,
-            authority: awaken_session_realization::test_support::test_lease_receipt(lease.clone()),
-        },
-    )
-    .await
-    .unwrap();
+    host.run_assembly
+        .install_test_terminal_cleanup_projection(
+            &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                environment_creation_not_attempted: false,
+                session_id: session_id.into(),
+                projection,
+                authority: awaken_session_realization::test_support::test_lease_receipt(
+                    lease.clone(),
+                ),
+            },
+        )
+        .await
+        .unwrap();
     let effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(command, lease);
     (session, effect)
 }
@@ -567,7 +572,8 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
         max_checkpoint_duration_secs: 30,
         checkpoint_format: "awaken-fs-tar-v1".into(),
     };
-    host.install_environment_projection("checkpoint-memory", &environment)
+    host.run_assembly
+        .install_environment_projection("checkpoint-memory", &environment)
         .expect("install exact frozen Environment");
 
     let file_mount = pc::MountRequirement {
@@ -799,7 +805,10 @@ async fn register_replaces_the_threads_staged_set() {
         1,
         "old mounts dropped"
     );
-    assert_eq!(host.thread_session_prompts("t"), vec!["second".to_string()]);
+    assert_eq!(
+        host.run_assembly.thread_session_prompts("t"),
+        vec!["second".to_string()]
+    );
     assert!(
         host.realization_executor
             .staging()
@@ -823,26 +832,27 @@ async fn sandbox_spec_carries_deny_egress_and_the_staged_mounts() {
     assert!(!denies(&bare));
     assert!(bare.mounts.is_empty());
 
-    host.install_environment_projection(
-        "t",
-        &awaken_session_configuration_contract::EnvironmentSnapshot {
-            environment_id: "environment".into(),
-            revision: awaken_environment_contract::EnvironmentRevision(1),
-            self_hosted: false,
-            config_fingerprint: awaken_session_configuration_contract::EnvironmentFingerprint(
-                "environment-1".into(),
-            ),
-            sandbox: Default::default(),
-            sandbox_provisioning: Default::default(),
-            idle_retention: Default::default(),
-            packages: Default::default(),
-            prepared_image: None,
-            network: awaken_session_configuration_contract::SessionNetworkPolicy::None,
-            credential_realization:
-                awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
-        },
-    )
-    .expect("freeze test Environment");
+    host.run_assembly
+        .install_environment_projection(
+            "t",
+            &awaken_session_configuration_contract::EnvironmentSnapshot {
+                environment_id: "environment".into(),
+                revision: awaken_environment_contract::EnvironmentRevision(1),
+                self_hosted: false,
+                config_fingerprint: awaken_session_configuration_contract::EnvironmentFingerprint(
+                    "environment-1".into(),
+                ),
+                sandbox: Default::default(),
+                sandbox_provisioning: Default::default(),
+                idle_retention: Default::default(),
+                packages: Default::default(),
+                prepared_image: None,
+                network: awaken_session_configuration_contract::SessionNetworkPolicy::None,
+                credential_realization:
+                    awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
+            },
+        )
+        .expect("freeze test Environment");
     host.realization_executor
         .staging()
         .register_thread_resources(
@@ -1068,19 +1078,20 @@ async fn model_override_only_acp_candidate_rejects_split_process_paths() {
         )),
         inference: Default::default(),
     };
-    host.install_frozen_session_projection(
-        "model-override-acp",
-        frozen_projection_with_model_override(
-            "test",
-            awaken_session_state_contract::SessionEnvironmentState::default(),
-            Some(model_override),
-        ),
-        None,
-        true,
-        None,
-    )
-    .await
-    .expect("install exact model-override-only frozen projection");
+    host.run_assembly
+        .install_frozen_session_projection(
+            "model-override-acp",
+            frozen_projection_with_model_override(
+                "test",
+                awaken_session_state_contract::SessionEnvironmentState::default(),
+                Some(model_override),
+            ),
+            None,
+            true,
+            None,
+        )
+        .await
+        .expect("install exact model-override-only frozen projection");
     assert!(
         host.installed_sessions
             .read("model-override-acp", |slot| slot
@@ -1186,7 +1197,11 @@ async fn realize_thread_repositories_fails_closed_on_an_unsafe_path() {
     let err = host
         .realization_executor
         .staging()
-        .realize_thread_repositories("t", host.local_workspace(), env.repositories().as_ref())
+        .realize_thread_repositories(
+            "t",
+            host.run_assembly.local_workspace(),
+            env.repositories().as_ref(),
+        )
         .await;
     assert!(
         err.is_err(),
@@ -1207,7 +1222,7 @@ async fn realize_thread_repositories_fails_closed_on_an_unsafe_path() {
         .staging()
         .realize_thread_repositories(
             "clone-failure",
-            host.local_workspace(),
+            host.run_assembly.local_workspace(),
             &FailingRepositoryRealizer,
         )
         .await
@@ -1242,7 +1257,7 @@ async fn explicit_repository_publication_uses_one_frozen_activation_and_verifies
         .staging()
         .publish_repository_activation(
             "thread",
-            host.local_workspace(),
+            host.run_assembly.local_workspace(),
             &repository,
             &[],
             &realizer,
@@ -1266,7 +1281,7 @@ async fn explicit_repository_publication_uses_one_frozen_activation_and_verifies
         .staging()
         .publish_repository_activation(
             "thread",
-            host.local_workspace(),
+            host.run_assembly.local_workspace(),
             &readonly,
             &[],
             &realizer,
@@ -1294,7 +1309,7 @@ async fn explicit_repository_publication_uses_one_frozen_activation_and_verifies
         .staging()
         .publish_repository_activation(
             "thread",
-            host.local_workspace(),
+            host.run_assembly.local_workspace(),
             &repository,
             &[],
             &realizer,
@@ -1314,7 +1329,7 @@ async fn explicit_repository_publication_uses_one_frozen_activation_and_verifies
         .staging()
         .publish_repository_activation(
             "thread",
-            host.local_workspace(),
+            host.run_assembly.local_workspace(),
             &repository,
             &[],
             &mismatched,
@@ -1401,7 +1416,7 @@ async fn agent_authored_skill_remains_run_scoped_until_explicit_publication() {
     assert!(
         host.tools
             .skills
-            .definitions(host.local_workspace())
+            .definitions(host.run_assembly.local_workspace())
             .await
             .unwrap()
             .is_empty()
@@ -1419,7 +1434,7 @@ async fn agent_authored_skill_remains_run_scoped_until_explicit_publication() {
     assert!(
         host.tools
             .skills
-            .definitions(host.local_workspace())
+            .definitions(host.run_assembly.local_workspace())
             .await
             .unwrap()
             .is_empty(),
@@ -1445,7 +1460,7 @@ async fn a_durable_skill_is_advertised_by_a_resolvable_catalog_id() {
     host.tools
         .skills
         .persist_authored(
-            host.local_workspace(),
+            host.run_assembly.local_workspace(),
             "Greeter",
             "---\nname: Greeter\ndescription: hi\n---\nsay hi",
         )
@@ -1453,7 +1468,9 @@ async fn a_durable_skill_is_advertised_by_a_resolvable_catalog_id() {
 
     let cid = "Greeter".to_string();
     assert_eq!(
-        host.tools.skills.managed_ids_in(host.local_workspace()),
+        host.tools
+            .skills
+            .managed_ids_in(host.run_assembly.local_workspace()),
         vec![cid.clone()],
         "Managed advertisement contains only the version-backed catalog id"
     );
@@ -1461,7 +1478,7 @@ async fn a_durable_skill_is_advertised_by_a_resolvable_catalog_id() {
     let version = host
         .tools
         .skills
-        .cache_snapshot_in(host.local_workspace())
+        .cache_snapshot_in(host.run_assembly.local_workspace())
         .into_iter()
         .find(|version| version.skill_id.as_str() == cid)
         .expect("the advertised resource id must resolve to the Skill version");
@@ -1469,7 +1486,7 @@ async fn a_durable_skill_is_advertised_by_a_resolvable_catalog_id() {
     assert!(
         host.tools
             .skills
-            .cache_snapshot_in(host.local_workspace())
+            .cache_snapshot_in(host.run_assembly.local_workspace())
             .into_iter()
             .find(|version| version.skill_id.as_str() == "skill_deadbeefdeadbeef")
             .is_none()

@@ -7,23 +7,21 @@
 use std::sync::Arc;
 
 use crate::AdmissionError;
-use crate::DispatchPool;
+use crate::DispatchHint;
 use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_dispatch_erasure::{AnyCoordinatorDispatch, AnyDispatchStore};
+use awaken_dispatch_erasure::AnyCoordinatorDispatch;
 use awaken_dispatch_contract::{DispatchAdministration, Outbox, PendingInput};
 use awaken_runtime_contract::control::{LiveCommand, LiveRunControl};
 
 /// The existing durable cancellation ordering, shared by all control callers.
 pub struct DurableRunControl {
     owner: Arc<AnyCoordinatorDispatch>,
-    pool: Option<Arc<DispatchPool<AnyDispatchStore>>>,
+    /// The local claimer's hint, when this process runs one.
+    claimer: Option<DispatchHint>,
 }
 impl DurableRunControl {
-    pub fn new(
-        owner: Arc<AnyCoordinatorDispatch>,
-        pool: Option<Arc<DispatchPool<AnyDispatchStore>>>,
-    ) -> Self {
-        Self { owner, pool }
+    pub fn new(owner: Arc<AnyCoordinatorDispatch>, claimer: Option<DispatchHint>) -> Self {
+        Self { owner, claimer }
     }
 
     pub async fn persist_cancellation(
@@ -37,8 +35,8 @@ impl DurableRunControl {
             .await
             .map_err(AdmissionError::from)?
             .is_some();
-        if accepted && let Some(pool) = &self.pool {
-            pool.notify().await;
+        if accepted && let Some(claimer) = &self.claimer {
+            claimer.publish().await;
         }
         if accepted && let Some(runtime) = live {
             let _ = runtime.deliver(LiveCommand::Cancel {
@@ -82,8 +80,8 @@ impl DurableRunControl {
             .stage(input)
             .await
             .map_err(AdmissionError::from)?;
-        if let Some(pool) = &self.pool {
-            pool.notify().await;
+        if let Some(claimer) = &self.claimer {
+            claimer.publish().await;
         }
         Ok(())
     }

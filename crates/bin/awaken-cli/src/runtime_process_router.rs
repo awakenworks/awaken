@@ -695,7 +695,7 @@ fn assemble_session_plane(
             );
     let mut builder = awaken_session_application::SessionApplicationBuilder::new(
         awaken_session_executor::session_execution_roles(&managed_host),
-        managed_host.clone(),
+        host.host.run_assembly().clone(),
         host.session_persistence
             .take()
             .ok_or("Session persistence was already consumed")?,
@@ -705,7 +705,7 @@ fn assemble_session_plane(
                 .dispatch_observation_source()
                 .map_err(|error| error.to_string())?,
             base.worker_directory.clone(),
-            host.host.clone(),
+            host.host.run_assembly().clone(),
         ),
         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )

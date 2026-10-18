@@ -78,7 +78,7 @@ fn bind_memory(host: &SharedHost, thread: &str, store: &str) {
             Ok(())
         }
     }
-    host.bind_resolved_memory(
+    host.run_assembly().bind_resolved_memory(
         thread,
         "default",
         &MemoryStoreConfigVersion {

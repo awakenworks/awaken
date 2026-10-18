@@ -492,7 +492,7 @@ fn classify_extraction_run_error(
     }
 }
 
-impl crate::host::SharedHost {
+impl crate::RunAssembly {
     /// The Workspace-scoped Skill aggregate port shared by HTTP authoring and
     /// runtime activation. `None` means this host has no durable Skill plane.
     #[cfg(any(test, feature = "test-support"))]

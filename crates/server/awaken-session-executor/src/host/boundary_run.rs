@@ -3,7 +3,7 @@
 //! Environment-free Run worker assembly over the original commit boundary.
 use super::*;
 pub(crate) async fn construct_boundary_worker(
-    host: &SharedHost,
+    host: &crate::RunAssembly,
     claimed: &awaken_dispatch_contract::Claimed,
     commit: Arc<crate::store::HostCommit>,
     mut context: Option<awaken_runtime_contract::RuntimeRunContext>,

@@ -217,7 +217,7 @@ async fn managed_claim_projection_loss_never_enters_ordinary_mcp_staging() {
         &managed,
         session,
         crate::host::empty_frozen_projection_for_snapshot(
-            host.local_workspace(),
+            host.run_assembly.local_workspace(),
             deferred_environment(),
             &activation.snapshot,
         ),
@@ -225,7 +225,7 @@ async fn managed_claim_projection_loss_never_enters_ordinary_mcp_staging() {
     .await
     .unwrap();
     let stage = crate::session_mcp::StageMcpAttachment {
-        workspace_id: host.local_workspace().into(),
+        workspace_id: host.run_assembly.local_workspace().into(),
         generation: crate::test_mcp::mcp_fence(session, "docs", 1, "worker-a", 1, u64::MAX),
         realization_id: "realize-docs".into(),
         stage_idempotency_key: "stage-docs".into(),
@@ -249,12 +249,12 @@ async fn managed_claim_projection_loss_never_enters_ordinary_mcp_staging() {
                     envelope.encode().unwrap(),
                 ))
                 .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
-                    awaken_tenancy::ScopeId::from(host.local_workspace()),
+                    awaken_tenancy::ScopeId::from(host.run_assembly.local_workspace()),
                 )),
         )
         .await
         .unwrap();
-    clock.set(host.clock().now().as_epoch_ms());
+    clock.set(host.run_assembly.clock().now().as_epoch_ms());
     let claimed = queue
         .claim("worker-a", 30_000, &Default::default())
         .await

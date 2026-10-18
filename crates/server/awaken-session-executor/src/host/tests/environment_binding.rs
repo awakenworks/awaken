@@ -17,7 +17,9 @@ async fn captured_environment_intent_survives_renewal_without_rebuilding_adopt()
         .build()
         .unwrap();
     let sink = Arc::new(ResponseLossBindingSink::default());
-    crate::ManagedHost::new(host.clone()).install_test_environment_binding_sink(sink.clone());
+    (host.clone())
+        .run_assembly
+        .install_test_environment_binding_sink(sink.clone());
     let original_lease = crate::session_resource::SessionRealizationLease {
         owner: "worker".into(),
         runtime_incarnation: "boot".into(),
@@ -164,7 +166,9 @@ async fn managed_projection_without_a_lease_never_falls_back_to_unowned() {
             owned_session_id: Some("another-root".into()),
             committed_environment: None,
         });
-        crate::ManagedHost::new(host.clone()).install_test_environment_binding_sink(sink.clone());
+        (host.clone())
+            .run_assembly
+            .install_test_environment_binding_sink(sink.clone());
         let error = match host
             .realization_executor
             .environments()
@@ -357,7 +361,10 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
         owned_session_id: None,
         committed_environment: None,
     });
-    install_test_dispatch_runtime(&host).install_test_environment_binding_sink(sink.clone());
+    install_test_dispatch_runtime(&host)
+        .host
+        .run_assembly
+        .install_test_environment_binding_sink(sink.clone());
     let thread = "claimed-ordinary-environment-authority";
     host.installed_sessions.update_run(thread, |run| {
         run.dispatch_claim = Some(awaken_dispatch_contract::RunClaim {
@@ -439,11 +446,14 @@ async fn new_environment_binding_commits_once_before_concurrent_contexts_can_use
         owned_session_id: None,
         committed_environment: None,
     });
-    install_test_dispatch_runtime(&host).install_test_environment_binding_sink(sink.clone());
+    install_test_dispatch_runtime(&host)
+        .host
+        .run_assembly
+        .install_test_environment_binding_sink(sink.clone());
 
     let (left, right) = tokio::join!(
-        host.ctx_for("binding-order", None),
-        host.ctx_for("binding-order", None)
+        host.run_assembly.ctx_for("binding-order", None),
+        host.run_assembly.ctx_for("binding-order", None)
     );
     left.unwrap();
     right.unwrap();
@@ -472,9 +482,16 @@ async fn root_response_loss_is_read_back_without_recreating_the_environment() {
         .build()
         .expect("validated Host dependencies");
     let sink = Arc::new(ResponseLossBindingSink::default());
-    install_test_dispatch_runtime(&host).install_test_environment_binding_sink(sink.clone());
+    install_test_dispatch_runtime(&host)
+        .host
+        .run_assembly
+        .install_test_environment_binding_sink(sink.clone());
 
-    let first_error = match host.ctx_for("binding-response-loss", None).await {
+    let first_error = match host
+        .run_assembly
+        .ctx_for("binding-response-loss", None)
+        .await
+    {
         Err(error) => error,
         Ok(_) => panic!("R1 lost response must remain retryable"),
     };
@@ -489,9 +506,11 @@ async fn root_response_loss_is_read_back_without_recreating_the_environment() {
         "R1 hidden Candidate is not published"
     );
     let candidate = host
+        .run_assembly
         .prepared_session_environment("binding-response-loss")
         .expect("R1 exact hidden Candidate");
     let first = host
+        .run_assembly
         .ctx_for("binding-response-loss", None)
         .await
         .expect("R2 exact retry reads back committed identity");
@@ -507,6 +526,7 @@ async fn root_response_loss_is_read_back_without_recreating_the_environment() {
         "R2 no recreate"
     );
     let second = host
+        .run_assembly
         .ctx_for("binding-response-loss", None)
         .await
         .expect("R1 slot replay");
@@ -555,7 +575,7 @@ async fn already_applied_create_adopts_under_the_existing_lifecycle_lock() {
         crate::host::worker_resolver::test_support::test_activation(thread, "binding-applied");
     let projection =
         crate::host::worker_resolver::test_support::empty_frozen_projection_for_snapshot(
-            host.local_workspace(),
+            host.run_assembly.local_workspace(),
             crate::host::worker_resolver::test_support::eager_environment(),
             &activation.snapshot,
         );
@@ -574,11 +594,14 @@ async fn already_applied_create_adopts_under_the_existing_lifecycle_lock() {
         delegate: Some(roots.binding_sink.clone()),
         ..Default::default()
     });
-    managed.install_test_environment_binding_sink(sink.clone());
+    managed
+        .host
+        .run_assembly
+        .install_test_environment_binding_sink(sink.clone());
 
     let context = tokio::time::timeout(
         std::time::Duration::from_secs(1),
-        host.ctx_for(thread, None),
+        host.run_assembly.ctx_for(thread, None),
     )
     .await
     .expect("R1 lifecycle owner must not re-enter its mutex")
@@ -654,7 +677,7 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
         ),
         "T2 Host reads the sole authority"
     );
-    assert!(local.runs_local_dispatch_pool(), "local");
+    assert!(local.run_assembly.runs_local_dispatch_pool(), "local");
     local
         .ensure_dispatch_pool()
         .expect("valid test dispatch composition");
@@ -677,7 +700,10 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
         ),
         "T3 one selected queue"
     );
-    assert!(!coordinator.runs_local_dispatch_pool(), "coordinator");
+    assert!(
+        !coordinator.run_assembly.runs_local_dispatch_pool(),
+        "coordinator"
+    );
     coordinator
         .ensure_dispatch_pool()
         .expect("valid test dispatch composition");
@@ -814,9 +840,12 @@ async fn recovered_environment_waits_for_replacement_realization_before_publish(
         owned_session_id: None,
         committed_environment: None,
     });
-    install_test_dispatch_runtime(&host).install_test_environment_binding_sink(sink.clone());
+    install_test_dispatch_runtime(&host)
+        .host
+        .run_assembly
+        .install_test_environment_binding_sink(sink.clone());
 
-    let error = match host.ctx_for("binding-restart", None).await {
+    let error = match host.run_assembly.ctx_for("binding-restart", None).await {
         Ok(_) => panic!("R1 missing realization reached provider I/O"),
         Err(error) => error,
     };
@@ -833,17 +862,21 @@ async fn recovered_environment_waits_for_replacement_realization_before_publish(
             .is_none(),
         "R1"
     );
-    host.install_session_realization_lease(
-        "binding-restart",
-        crate::session_resource::SessionRealizationLease {
-            owner: "local-worker".into(),
-            runtime_incarnation: "replacement".into(),
-            epoch: 2,
-            expires_at_unix_ms: u64::MAX,
-        },
-    )
-    .unwrap();
-    host.ctx_for("binding-restart", None).await.expect("R2");
+    host.run_assembly
+        .install_session_realization_lease(
+            "binding-restart",
+            crate::session_resource::SessionRealizationLease {
+                owner: "local-worker".into(),
+                runtime_incarnation: "replacement".into(),
+                epoch: 2,
+                expires_at_unix_ms: u64::MAX,
+            },
+        )
+        .unwrap();
+    host.run_assembly
+        .ctx_for("binding-restart", None)
+        .await
+        .expect("R2");
     assert_eq!(sink.authorize_calls.load(Ordering::SeqCst), 2, "R2");
     assert_eq!(sink.calls.load(Ordering::SeqCst), 1, "R2");
     assert!(
@@ -870,25 +903,36 @@ async fn environment_binding_catches_up_across_multiple_realization_fences() {
         calls: AtomicUsize::new(0),
         accepted_epoch: AtomicU64::new(3),
     });
-    install_test_dispatch_runtime(&host).install_test_environment_binding_sink(sink.clone());
+    install_test_dispatch_runtime(&host)
+        .host
+        .run_assembly
+        .install_test_environment_binding_sink(sink.clone());
 
-    let first = match host.ctx_for("binding-moving-fence", None).await {
+    let first = match host
+        .run_assembly
+        .ctx_for("binding-moving-fence", None)
+        .await
+    {
         Ok(_) => panic!("C1 reached provider I/O"),
         Err(error) => error,
     };
     assert_eq!(first.kind, HostErrorKind::Unavailable, "E1");
     for epoch in [2, 3] {
-        host.install_session_realization_lease(
-            "binding-moving-fence",
-            crate::session_resource::SessionRealizationLease {
-                owner: "worker".into(),
-                runtime_incarnation: "worker/incarnation".into(),
-                epoch,
-                expires_at_unix_ms: u64::MAX,
-            },
-        )
-        .unwrap();
-        let result = host.ctx_for("binding-moving-fence", None).await;
+        host.run_assembly
+            .install_session_realization_lease(
+                "binding-moving-fence",
+                crate::session_resource::SessionRealizationLease {
+                    owner: "worker".into(),
+                    runtime_incarnation: "worker/incarnation".into(),
+                    epoch,
+                    expires_at_unix_ms: u64::MAX,
+                },
+            )
+            .unwrap();
+        let result = host
+            .run_assembly
+            .ctx_for("binding-moving-fence", None)
+            .await;
         if epoch == 2 {
             let error = match result {
                 Ok(_) => panic!("C2 reached provider I/O"),
@@ -927,18 +971,19 @@ async fn missing_durable_environment_adoption_is_deferred_only_for_coordination(
     let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
-    host.install_session_environment_owner_projection(
-        "binding-corrupt",
-        "workspace",
-        &awaken_session_state_contract::SessionEnvironmentState::Resident {
-            binding: "opaque".into(),
-            effect_id: None,
-            generation: None,
-            idle_since_unix_ms: None,
-        },
-    )
-    .expect("project durable expectation");
-    let error = match host.ctx_for("binding-corrupt", None).await {
+    host.run_assembly
+        .install_session_environment_owner_projection(
+            "binding-corrupt",
+            "workspace",
+            &awaken_session_state_contract::SessionEnvironmentState::Resident {
+                binding: "opaque".into(),
+                effect_id: None,
+                generation: None,
+                idle_since_unix_ms: None,
+            },
+        )
+        .expect("project durable expectation");
+    let error = match host.run_assembly.ctx_for("binding-corrupt", None).await {
         Ok(_) => panic!("missing adoption must fail closed"),
         Err(error) => error,
     };
@@ -954,6 +999,7 @@ async fn missing_durable_environment_adoption_is_deferred_only_for_coordination(
     );
 
     let reserved = host
+        .run_assembly
         .ctx_for_session_coordination("binding-corrupt", None)
         .await
         .expect("B2/B3 Coordinator-only projection does not adopt Worker substrate");
@@ -997,23 +1043,28 @@ async fn binding_commit_failure_is_retryable_and_never_publishes_the_environment
         owned_session_id: None,
         committed_environment: None,
     });
-    install_test_dispatch_runtime(&host).install_test_environment_binding_sink(sink.clone());
+    install_test_dispatch_runtime(&host)
+        .host
+        .run_assembly
+        .install_test_environment_binding_sink(sink.clone());
 
-    let error = match host.ctx_for("binding-failure", None).await {
+    let error = match host.run_assembly.ctx_for("binding-failure", None).await {
         Ok(_) => panic!("binding failure must not publish a context"),
         Err(error) => error,
     };
     assert!(error.to_string().contains("binding store unavailable"));
     assert_eq!(error.kind, HostErrorKind::Unavailable);
     let candidate = host
+        .run_assembly
         .prepared_session_environment("binding-failure")
         .expect("R1 exact hidden Candidate");
-    let retry = match host.ctx_for("binding-failure", None).await {
+    let retry = match host.run_assembly.ctx_for("binding-failure", None).await {
         Err(error) => error,
         Ok(_) => panic!("a definite failure must retry the retained Candidate"),
     };
     assert!(retry.to_string().contains("binding store unavailable"));
     let retried = host
+        .run_assembly
         .prepared_session_environment("binding-failure")
         .expect("R2 retained Candidate");
     assert!(candidate.exact_matches(&retried), "R2 no provider recreate");
@@ -1054,12 +1105,15 @@ async fn on_tool_use_concurrent_hand_calls_create_and_persist_one_environment() 
         committed_environment: None,
     });
     let managed = install_test_dispatch_runtime(&host);
-    managed.install_test_environment_binding_sink(sink.clone());
+    managed
+        .host
+        .run_assembly
+        .install_test_environment_binding_sink(sink.clone());
     managed
         .install_complete_test_session(
             "deferred-hand",
             SessionInit {
-                workspace_id: host.local_workspace().into(),
+                workspace_id: host.run_assembly.local_workspace().into(),
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
                 tools: None,
@@ -1072,7 +1126,11 @@ async fn on_tool_use_concurrent_hand_calls_create_and_persist_one_environment() 
         )
         .await
         .unwrap();
-    let ctx = host.ctx_for("deferred-hand", None).await.unwrap();
+    let ctx = host
+        .run_assembly
+        .ctx_for("deferred-hand", None)
+        .await
+        .unwrap();
     assert!(ctx.env.is_none());
     let hand = ctx
         .attempt_context
@@ -1129,12 +1187,15 @@ async fn on_tool_use_binding_failure_never_publishes_the_environment() {
         committed_environment: None,
     });
     let managed = install_test_dispatch_runtime(&host);
-    managed.install_test_environment_binding_sink(sink.clone());
+    managed
+        .host
+        .run_assembly
+        .install_test_environment_binding_sink(sink.clone());
     managed
         .install_complete_test_session(
             "deferred-failure",
             SessionInit {
-                workspace_id: host.local_workspace().into(),
+                workspace_id: host.run_assembly.local_workspace().into(),
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
                 tools: None,
@@ -1147,7 +1208,11 @@ async fn on_tool_use_binding_failure_never_publishes_the_environment() {
         )
         .await
         .unwrap();
-    let ctx = host.ctx_for("deferred-failure", None).await.unwrap();
+    let ctx = host
+        .run_assembly
+        .ctx_for("deferred-failure", None)
+        .await
+        .unwrap();
     let hand = ctx
         .attempt_context
         .tool_executor
@@ -1162,6 +1227,7 @@ async fn on_tool_use_binding_failure_never_publishes_the_environment() {
     let error = hand.invoke(&call).await.expect_err("binding failure");
     assert!(error.to_string().contains("binding store unavailable"));
     let candidate = host
+        .run_assembly
         .prepared_session_environment("deferred-failure")
         .expect("L5 hidden Candidate");
     let retry = hand
@@ -1170,6 +1236,7 @@ async fn on_tool_use_binding_failure_never_publishes_the_environment() {
         .expect_err("the next tool attempt retries the retained Candidate");
     assert!(retry.to_string().contains("binding store unavailable"));
     let retried = host
+        .run_assembly
         .prepared_session_environment("deferred-failure")
         .expect("L6 retained Candidate");
     assert!(candidate.exact_matches(&retried), "L6/E3");

@@ -63,7 +63,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
 
     let mut terminal_projection = remote_terminal_cleanup_projection();
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-        &managed,
+        &*managed.host.run_assembly,
         "t-end",
         terminal_projection.clone(),
         awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
@@ -80,7 +80,8 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     host.realization_executor
         .staging()
         .register_thread_resources("t-end", crate::staged_resources::StagedResources::default());
-    host.register_thread_model("t-end", "private-model");
+    host.run_assembly
+        .register_thread_model("t-end", "private-model");
     let mut lease = crate::session_resource::SessionRealizationLease {
         owner: "terminal-test-worker".into(),
         runtime_incarnation: "terminal-test-worker:incarnation".into(),
@@ -130,12 +131,13 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
             None,
         )
         .expect("retain the exact terminal-test candidate");
-    host.install_session_environment_owner_projection(
-        "t-end",
-        "terminal-workspace",
-        &environment_state,
-    )
-    .expect("project the terminal-test durable Environment identity");
+    host.run_assembly
+        .install_session_environment_owner_projection(
+            "t-end",
+            "terminal-workspace",
+            &environment_state,
+        )
+        .expect("project the terminal-test durable Environment identity");
     let identity = crate::environment_owner::BoundSessionEnvironmentIdentity::Durable {
         effect_id: environment_effect_id.to_owned(),
         generation: environment_generation,
@@ -146,7 +148,8 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
                 .environments()
                 .publish_prepared_session_environment("t-end", &candidate, identity)
                 .expect("publish the exact terminal-test Environment owner");
-            host.ctx_for("t-end", None)
+            host.run_assembly
+                .ctx_for("t-end", None)
                 .await
                 .expect("cache the Runtime");
         }
@@ -222,18 +225,19 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     if revoke {
         // Install the actual aggregate proof before closing its admission:
         // absence of a response is not an Unowned legacy-disposal permission.
-        host.install_test_terminal_cleanup_projection(
-            &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
-                environment_creation_not_attempted: false,
-                session_id: "t-end".into(),
-                projection: terminal_projection.clone(),
-                authority: awaken_session_realization::test_support::test_lease_receipt(
-                    lease.clone(),
-                ),
-            },
-        )
-        .await
-        .expect("U install Managed provenance");
+        host.run_assembly
+            .install_test_terminal_cleanup_projection(
+                &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                    environment_creation_not_attempted: false,
+                    session_id: "t-end".into(),
+                    projection: terminal_projection.clone(),
+                    authority: awaken_session_realization::test_support::test_lease_receipt(
+                        lease.clone(),
+                    ),
+                },
+            )
+            .await
+            .expect("U install Managed provenance");
         let lifecycle = host
             .installed_sessions
             .realizations()
@@ -245,7 +249,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
             .environments()
             .retire_session_environment_for_revocation(
                 "t-end",
-                (&host.mcp, host.installed_sessions.as_ref()),
+                (&host.run_assembly.mcp, host.installed_sessions.as_ref()),
                 None,
             )
             .await
@@ -254,29 +258,32 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         // generation; replaying the revoked lease is not a renewal.
         lease.epoch += 1;
     }
-    host.install_test_terminal_cleanup_projection(
-        &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
-            environment_creation_not_attempted: false,
-            session_id: "t-end".into(),
-            projection: terminal_projection.clone(),
-            authority: awaken_session_realization::test_support::test_lease_receipt(lease.clone()),
-        },
-    )
-    .await
-    .expect("install the exact terminal projection");
+    host.run_assembly
+        .install_test_terminal_cleanup_projection(
+            &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                environment_creation_not_attempted: false,
+                session_id: "t-end".into(),
+                projection: terminal_projection.clone(),
+                authority: awaken_session_realization::test_support::test_lease_receipt(
+                    lease.clone(),
+                ),
+            },
+        )
+        .await
+        .expect("install the exact terminal projection");
     let effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
         command.clone(),
         lease.clone(),
     );
     let preparation_authorization =
         terminal_preparation_authorization(&effect, &terminal_projection);
-    let before = host.prepared_session_environment("t-end");
+    let before = host.run_assembly.prepared_session_environment("t-end");
     let (archive, recovery) = tokio::join!(
-            managed.prepare_terminal_cleanup_for_effect(
+            managed.host.run_assembly.prepare_terminal_cleanup_for_effect(
                 effect.clone(),
                 preparation_authorization.clone(),
             ),
-            managed.prepare_terminal_cleanup_for_effect(
+            managed.host.run_assembly.prepare_terminal_cleanup_for_effect(
                 effect.clone(),
                 preparation_authorization.clone(),
             )
@@ -290,7 +297,8 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
             );
         }
         assert!(
-            host.prepared_session_environment("t-end")
+            host.run_assembly
+                .prepared_session_environment("t-end")
                 .unwrap()
                 .exact_matches(&before.unwrap()),
             "U4 retains exact ownership"
@@ -352,6 +360,8 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         )).expect("installed Sessions").unwrap(), "U retains missing ordinary commit evidence");
     }
     managed
+        .host
+        .run_assembly
         .acknowledge_terminal_cleanup_preparation(&effect)
         .await;
     assert!(
@@ -361,8 +371,14 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
 
     let disposal_effect = terminal_disposal_effect(archive, lease, &terminal_projection);
     let (archive, recovery) = tokio::join!(
-        managed.dispose_terminal_cleanup_for_effect(disposal_effect.clone()),
-        managed.dispose_terminal_cleanup_for_effect(disposal_effect.clone())
+        managed
+            .host
+            .run_assembly
+            .dispose_terminal_cleanup_for_effect(disposal_effect.clone()),
+        managed
+            .host
+            .run_assembly
+            .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
     );
     let archive = archive.expect("archive terminal disposal");
     let recovery = recovery.expect("recovery terminal disposal replay");
@@ -397,9 +413,16 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         "T2/E4 retains the exact terminal projection until durable acknowledgement"
     );
     managed
+        .host
+        .run_assembly
         .acknowledge_terminal_cleanup_disposal(&disposal_effect)
         .await;
-    assert!(host.registered_thread_workspace("t-end").is_none(), "T3/E5");
+    assert!(
+        host.run_assembly
+            .registered_thread_workspace("t-end")
+            .is_none(),
+        "T3/E5"
+    );
     assert!(!host.installed_sessions.contains("t-end"), "T3/E5");
     assert!(
         host.agent.inference_routing.override_for("t-end").is_none(),
@@ -407,6 +430,8 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     );
 
     let replay_error = managed
+        .host
+        .run_assembly
         .prepare_terminal_cleanup_for_effect(effect, preparation_authorization)
         .await
         .expect_err("T4 retired generation fails closed");
@@ -447,6 +472,8 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         )
         .expect("T4 close the foreign Host preparation input");
     let missing_error = managed
+        .host
+        .run_assembly
         .prepare_terminal_cleanup_for_effect(missing_effect, missing_authorization)
         .await
         .expect_err("T4 unknown generation fails closed");
@@ -575,6 +602,8 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
                 .await;
 
         let preparation = managed
+            .host
+            .run_assembly
             .prepare_terminal_cleanup_for_effect(
                 effect.clone(),
                 terminal_preparation_authorization(&effect, &projection),
@@ -604,6 +633,8 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         *worker.current.lock().unwrap() = None;
         assert!(
             managed
+                .host
+                .run_assembly
                 .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
                 .await
                 .is_err(),
@@ -612,8 +643,12 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         assert!(provider.restored_disposals.lock().unwrap().is_empty());
         *worker.current.lock().unwrap() =
             Some((worker_fence.clone(), std::time::Duration::from_secs(60)));
-        let mut pending =
-            Box::pin(managed.dispose_terminal_cleanup_for_effect(disposal_effect.clone()));
+        let mut pending = Box::pin(
+            managed
+                .host
+                .run_assembly
+                .dispose_terminal_cleanup_for_effect(disposal_effect.clone()),
+        );
         tokio::select! {
             biased;
             result = &mut pending => panic!("TR4 must wait: {result:?}"),
@@ -697,11 +732,15 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
             .expect("installed Sessions");
         probe.restored_release.notify_one();
         let first = managed
+            .host
+            .run_assembly
             .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
             .await
             .expect("TR2 dispose exact restore target");
         probe.restored_release.notify_one();
         let replay = managed
+            .host
+            .run_assembly
             .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
             .await
             .expect("TR2 replay after disposal receipt loss");
@@ -730,6 +769,8 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         );
 
         managed
+            .host
+            .run_assembly
             .acknowledge_terminal_cleanup_disposal(&disposal_effect)
             .await;
         assert!(!host.installed_sessions.contains(thread), "TR3/E4");
@@ -768,18 +809,22 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
         epoch: 7,
         expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms() + 60_000,
     };
-    host.install_test_terminal_cleanup_projection(
-        &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
-            environment_creation_not_attempted: false,
-            session_id: session_id.into(),
-            projection: remote_terminal_cleanup_projection(),
-            authority: awaken_session_realization::test_support::test_lease_receipt(lease.clone()),
-        },
-    )
-    .await
-    .expect("P1-P4 install the aggregate-derived root projection");
+    host.run_assembly
+        .install_test_terminal_cleanup_projection(
+            &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                environment_creation_not_attempted: false,
+                session_id: session_id.into(),
+                projection: remote_terminal_cleanup_projection(),
+                authority: awaken_session_realization::test_support::test_lease_receipt(
+                    lease.clone(),
+                ),
+            },
+        )
+        .await
+        .expect("P1-P4 install the aggregate-derived root projection");
     for child in ["terminal-retire-done", "terminal-retire-pending"] {
-        host.register_thread_workspace(child, "terminal-retire-workspace");
+        host.run_assembly
+            .register_thread_workspace(child, "terminal-retire-workspace");
         host.installed_sessions
             .realizations()
             .update_realization(child, |r| {
@@ -788,7 +833,8 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
             .expect("installed Sessions");
     }
     let foreign = "terminal-retire-foreign";
-    host.register_thread_workspace(foreign, "foreign-workspace");
+    host.run_assembly
+        .register_thread_workspace(foreign, "foreign-workspace");
     host.installed_sessions
         .realizations()
         .update_realization(foreign, |r| {
@@ -821,7 +867,7 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
     );
     host.realization_executor
         .effects()
-        .acknowledge_terminal_cleanup_preparation(&host.mcp, &completed_child)
+        .acknowledge_terminal_cleanup_preparation(&host.run_assembly.mcp, &completed_child)
         .await;
     assert!(
         !host.installed_sessions.contains("terminal-retire-done"),
@@ -829,7 +875,7 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
     );
     host.realization_executor
         .effects()
-        .acknowledge_terminal_cleanup_preparation(&host.mcp, &completed_child)
+        .acknowledge_terminal_cleanup_preparation(&host.run_assembly.mcp, &completed_child)
         .await;
     assert!(
         !host.installed_sessions.contains("terminal-retire-done"),
@@ -850,7 +896,7 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
     );
     host.realization_executor
         .effects()
-        .acknowledge_terminal_cleanup_preparation(&host.mcp, &stale_foreign)
+        .acknowledge_terminal_cleanup_preparation(&host.run_assembly.mcp, &stale_foreign)
         .await;
     assert!(host.installed_sessions.contains(foreign), "P3/E3");
 
@@ -865,12 +911,16 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
     );
     host.realization_executor
         .effects()
-        .acknowledge_terminal_cleanup_preparation(&host.mcp, &root)
+        .acknowledge_terminal_cleanup_preparation(&host.run_assembly.mcp, &root)
         .await;
     assert!(host.installed_sessions.contains(session_id), "P4/E4");
     host.realization_executor
         .effects()
-        .retire_completed_terminal_cleanup_projection(&host.mcp, session_id, &root.lease)
+        .retire_completed_terminal_cleanup_projection(
+            &host.run_assembly.mcp,
+            session_id,
+            &root.lease,
+        )
         .await
         .expect("installed Sessions");
     assert!(!host.installed_sessions.contains(session_id), "P5/E5");
@@ -1556,7 +1606,10 @@ async fn checkpoint_source_disposal_separates_preparation_and_current_authority(
         } else {
             None
         };
-        let pending = managed.dispose_prepared_checkpoint_source(thread, &disposal);
+        let pending = managed
+            .host
+            .run_assembly
+            .dispose_prepared_checkpoint_source(thread, &disposal);
         let mut pending = std::pin::pin!(pending);
         if held.is_some() {
             assert!(

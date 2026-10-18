@@ -2,11 +2,11 @@
 //! ACP export leases and the exact executor built from the realized Environment.
 
 use super::{SemanticSkillTools, resources::ContextResources};
+use crate::HostError;
 use crate::host::session::input_projection::{
     merge_acp_mcp_servers, merge_process_local_mcp_servers,
 };
 use crate::host::session_ctx::{RuntimeContextPurpose, acp_tool_export_admitted};
-use crate::{HostError, SharedHost};
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::{ExecutableAgentSnapshot, execution::RunAttemptExecutor};
 use std::sync::Arc;
@@ -33,7 +33,7 @@ pub(super) struct AcpTools<'a> {
 }
 
 pub(super) async fn prepare(
-    host: &SharedHost,
+    host: &crate::RunAssembly,
     resources: &ContextResources,
     requested_purpose: RuntimeContextPurpose,
     config: &ExecutableAgentSnapshot,

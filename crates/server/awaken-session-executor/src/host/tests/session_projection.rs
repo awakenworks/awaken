@@ -42,7 +42,9 @@ async fn host_accepts_only_backend_projections_that_match_the_publication() {
     };
 
     let (matching, _matching_managed) = published_host().await;
-    matching.register_thread_backend_projection("backend-h1", "default");
+    matching
+        .run_assembly
+        .register_thread_backend_projection("backend-h1", "default");
     assert!(
         matching
             .installed_sessions
@@ -51,13 +53,20 @@ async fn host_accepts_only_backend_projections_that_match_the_publication() {
         "H1 default has no redundant projection"
     );
     matching
+        .run_assembly
         .ctx_for("backend-h1", Some("assistant"))
         .await
         .expect("H1 matching projection");
 
     let (mismatch, _mismatch_managed) = published_host().await;
-    mismatch.register_thread_backend_projection("backend-h2", "acp:claude");
-    let error = match mismatch.ctx_for("backend-h2", Some("assistant")).await {
+    mismatch
+        .run_assembly
+        .register_thread_backend_projection("backend-h2", "acp:claude");
+    let error = match mismatch
+        .run_assembly
+        .ctx_for("backend-h2", Some("assistant"))
+        .await
+    {
         Ok(_) => panic!("H2 accepted a mismatched backend projection"),
         Err(error) => error,
     };
@@ -68,6 +77,7 @@ async fn host_accepts_only_backend_projections_that_match_the_publication() {
 
     let (publication_only, _publication_only_managed) = published_host().await;
     publication_only
+        .run_assembly
         .ctx_for("backend-h3", Some("assistant"))
         .await
         .expect("H3 publication without redundant projection");
@@ -77,8 +87,14 @@ async fn host_accepts_only_backend_projections_that_match_the_publication() {
             .build()
             .expect("validated Host dependencies"),
     );
-    orphan.register_thread_backend_projection("backend-h4", "acp:claude");
-    let error = match orphan.ctx_for("backend-h4", Some("assistant")).await {
+    orphan
+        .run_assembly
+        .register_thread_backend_projection("backend-h4", "acp:claude");
+    let error = match orphan
+        .run_assembly
+        .ctx_for("backend-h4", Some("assistant"))
+        .await
+    {
         Ok(_) => panic!("H4 accepted a backend projection without a publication"),
         Err(error) => error,
     };
@@ -253,6 +269,7 @@ async fn session_tool_policy_preserves_the_published_snapshot_identity() {
         });
 
     let context = host
+        .run_assembly
         .ctx_for("policy-session", Some("assistant"))
         .await
         .expect("build Session from immutable publication");
@@ -457,15 +474,18 @@ async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool()
         .build();
 
     assert!(
-        host.session_allows_filesystem_tools("repository-policy", None),
+        host.run_assembly
+            .session_allows_filesystem_tools("repository-policy", None),
         "R3 filesystem delivery"
     );
     assert!(
-        !host.session_allows_repository_skill_discovery("repository-policy", Some(&snapshot)),
+        !host
+            .run_assembly
+            .session_allows_repository_skill_discovery("repository-policy", Some(&snapshot)),
         "R3 exact read denial"
     );
     assert_eq!(
-        host.session_skill_source_roots(
+        host.run_assembly.session_skill_source_roots(
             "repository-policy",
             Some(&snapshot),
             "custom-authored-skills",
@@ -482,11 +502,12 @@ async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool()
         slot.replace_frozen_with(|next| next.tools = Some(tools));
     });
     assert!(
-        host.session_allows_repository_skill_discovery("repository-policy", Some(&snapshot)),
+        host.run_assembly
+            .session_allows_repository_skill_discovery("repository-policy", Some(&snapshot)),
         "R2 exact read admission"
     );
     assert_eq!(
-        host.session_skill_source_roots(
+        host.run_assembly.session_skill_source_roots(
             "repository-policy",
             Some(&snapshot),
             "custom-authored-skills",
@@ -498,7 +519,11 @@ async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool()
         "R2 fixed relative path ignores the direct authored setting"
     );
     assert_eq!(
-        host.session_skill_source_roots("repository-policy", None, "custom-authored-skills",),
+        host.run_assembly.session_skill_source_roots(
+            "repository-policy",
+            None,
+            "custom-authored-skills",
+        ),
         Some(vec![
             "legacy-repo/.claude/skills".to_string(),
             "workspace/repo-a/.claude/skills".to_string(),
@@ -509,7 +534,7 @@ async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool()
     host.installed_sessions
         .update_run("repository-policy", |run| run.session_dispatch = false);
     assert_eq!(
-        host.session_skill_source_roots(
+        host.run_assembly.session_skill_source_roots(
             "repository-policy",
             Some(&snapshot),
             "custom-authored-skills",
@@ -522,7 +547,8 @@ async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool()
         "direct published compatibility keeps authored and repository roots"
     );
     assert_eq!(
-        host.session_skill_source_roots("unpublished-direct", None, "skills"),
+        host.run_assembly
+            .session_skill_source_roots("unpublished-direct", None, "skills"),
         Some(Vec::new()),
         "direct unpublished compatibility keeps the live authored marker"
     );
@@ -586,12 +612,13 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
             next.tools = Some(deny_filesystem())
         });
     assert_eq!(
-        host.select_content_delivery(
-            "direct-semantic",
-            None,
-            SkillDeliveryEvidence::Materialized(None),
-        )
-        .expect("M1 direct compatibility projection"),
+        host.run_assembly
+            .select_content_delivery(
+                "direct-semantic",
+                None,
+                SkillDeliveryEvidence::Materialized(None),
+            )
+            .expect("M1 direct compatibility projection"),
         ManagedContentDelivery::SemanticTools,
         "M1/E2"
     );
@@ -601,12 +628,13 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
             run.session_dispatch = true;
         });
     assert_eq!(
-        host.select_content_delivery(
-            "managed-filesystem",
-            None,
-            SkillDeliveryEvidence::Materialized(Some(&frozen)),
-        )
-        .expect("M2 Managed filesystem projection"),
+        host.run_assembly
+            .select_content_delivery(
+                "managed-filesystem",
+                None,
+                SkillDeliveryEvidence::Materialized(Some(&frozen)),
+            )
+            .expect("M2 Managed filesystem projection"),
         ManagedContentDelivery::ManagedFilesystem,
         "M2/E1"
     );
@@ -616,6 +644,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
         slot.replace_frozen_with(|next| next.tools = Some(deny_filesystem()));
     });
     let denied = host
+        .run_assembly
         .select_content_delivery(
             "managed-denied",
             None,
@@ -640,6 +669,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
         });
     assert_eq!(
         empty_host
+            .run_assembly
             .select_content_delivery(
                 "managed-no-skill",
                 None,
@@ -683,6 +713,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
                 );
         });
     let path_error = empty_host
+        .run_assembly
         .select_content_delivery(
             "managed-memory-path",
             None,
@@ -715,6 +746,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
             })
             .build();
     let missing = empty_host
+        .run_assembly
         .select_content_delivery(
             "managed-missing-freeze",
             Some(&selected_snapshot),
@@ -740,6 +772,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
     .expect("M5a canonical Resource projection");
     assert!(
         empty_host
+            .run_assembly
             .select_content_delivery(
                 "managed-missing-freeze",
                 Some(&cleared),
@@ -760,6 +793,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
         .update_run("managed-deferred-freeze", |run| run.session_dispatch = true);
     assert_eq!(
         empty_host
+            .run_assembly
             .select_content_delivery(
                 "managed-deferred-freeze",
                 Some(&selected_snapshot),
@@ -789,6 +823,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
             run.session_dispatch = true
         });
     let mismatch = empty_host
+        .run_assembly
         .select_content_delivery(
             "managed-deferred-mismatch",
             Some(&other_snapshot),
@@ -826,7 +861,9 @@ async fn session_content_delivery_is_frozen_across_auxiliary_agent_snapshots() {
         .model(test_model_binding())
         .build();
     assert!(
-        !host.session_allows_filesystem_tools("filesystem-session", Some(&restricted)),
+        !host
+            .run_assembly
+            .session_allows_filesystem_tools("filesystem-session", Some(&restricted)),
         "CD2 auxiliary snapshot would independently derive semantic delivery"
     );
     host.installed_sessions
@@ -834,12 +871,13 @@ async fn session_content_delivery_is_frozen_across_auxiliary_agent_snapshots() {
             r.staging_mut().content_delivery = Some(ManagedContentDelivery::ManagedFilesystem)
         });
     assert_eq!(
-        host.select_content_delivery(
-            "filesystem-session",
-            Some(&restricted),
-            crate::host::session::SkillDeliveryEvidence::Materialized(None),
-        )
-        .expect("CD2 reuses physical Session delivery"),
+        host.run_assembly
+            .select_content_delivery(
+                "filesystem-session",
+                Some(&restricted),
+                crate::host::session::SkillDeliveryEvidence::Materialized(None),
+            )
+            .expect("CD2 reuses physical Session delivery"),
         ManagedContentDelivery::ManagedFilesystem,
         "CD2/E2"
     );
@@ -870,16 +908,18 @@ async fn session_content_delivery_is_frozen_across_auxiliary_agent_snapshots() {
         });
     });
     assert!(
-        host.session_allows_filesystem_tools("semantic-session", None),
+        host.run_assembly
+            .session_allows_filesystem_tools("semantic-session", None),
         "CD3 later snapshot would independently derive filesystem delivery"
     );
     assert_eq!(
-        host.select_content_delivery(
-            "semantic-session",
-            None,
-            crate::host::session::SkillDeliveryEvidence::Materialized(None),
-        )
-        .expect("CD3 reuses physical Session delivery"),
+        host.run_assembly
+            .select_content_delivery(
+                "semantic-session",
+                None,
+                crate::host::session::SkillDeliveryEvidence::Materialized(None),
+            )
+            .expect("CD3 reuses physical Session delivery"),
         ManagedContentDelivery::SemanticTools,
         "CD3/E2"
     );
@@ -1213,6 +1253,7 @@ async fn session_client_tools_replace_the_published_surface_with_exact_ownership
                 Some(awaken_session_configuration_contract::SessionToolConfiguration::default());
         });
     let cleared = host
+        .run_assembly
         .ctx_for("cleared-client-tools", Some("assistant"))
         .await
         .expect("R2 build explicit empty Session tool surface");
@@ -1246,6 +1287,7 @@ async fn session_client_tools_replace_the_published_surface_with_exact_ownership
             )
         });
     let context = host
+        .run_assembly
         .ctx_for("session-client-tools", Some("assistant"))
         .await
         .expect("R3 build exact Session tool surface");
@@ -1332,10 +1374,12 @@ async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_read
     .expect("validated Host dependencies");
     install_test_session_application(&host);
     install_test_dispatch_runtime(&host)
+        .host
+        .run_assembly
         .install_test_session_init(
             "cold-agent",
             awaken_session_configuration_contract::SessionInit {
-                workspace_id: host.local_workspace().into(),
+                workspace_id: host.run_assembly.local_workspace().into(),
                 agent_id: "agent-a".into(),
                 delegate_ids: Vec::new(),
                 tools: None,
@@ -1350,18 +1394,26 @@ async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_read
         .expect("project the frozen Session baseline");
 
     let recovered = host
+        .run_assembly
         .ctx_for("cold-agent", None)
         .await
         .expect("R1 internal history read resolves the frozen Agent");
     assert_eq!(recovered.config.root_agent_id.0, "agent-a", "R1");
 
-    host.register_thread_agent_projection("same-agent", "agent-a");
-    host.ctx_for("same-agent", Some("agent-a"))
+    host.run_assembly
+        .register_thread_agent_projection("same-agent", "agent-a");
+    host.run_assembly
+        .ctx_for("same-agent", Some("agent-a"))
         .await
         .expect("R2 repeated exact Agent");
 
-    host.register_thread_agent_projection("mismatch-agent", "agent-a");
-    let error = match host.ctx_for("mismatch-agent", Some("assistant")).await {
+    host.run_assembly
+        .register_thread_agent_projection("mismatch-agent", "agent-a");
+    let error = match host
+        .run_assembly
+        .ctx_for("mismatch-agent", Some("assistant"))
+        .await
+    {
         Ok(_) => panic!("R3 accepted a different requested Agent"),
         Err(error) => error,
     };
@@ -1372,6 +1424,8 @@ async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_read
         .expect("validated Host dependencies");
     install_test_session_application(&fallback_host);
     install_test_dispatch_runtime(&fallback_host)
+        .host
+        .run_assembly
         .install_test_session_init(
             "cold-built-in",
             awaken_session_configuration_contract::SessionInit {
@@ -1389,6 +1443,7 @@ async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_read
         .await
         .expect("R4 project optional unpublished Agent baseline");
     let fallback = fallback_host
+        .run_assembly
         .ctx_for_session_coordination("cold-built-in", None)
         .await
         .expect("R4 build the generated fallback snapshot");
@@ -1475,33 +1530,34 @@ async fn frozen_session_resolves_its_exact_agent_revision_instead_of_current() {
             transcript_prefix: None,
         },
     );
-    host.install_frozen_session_projection(
-        "frozen-revision",
-        awaken_session_realization_contract::FrozenSessionProjection {
-            workspace_id: host.local_workspace().to_string(),
-            revision: awaken_session_types::SessionRevision(1),
-            environment: Default::default(),
-            resource_revision: 0,
-            resources: Default::default(),
-            previous_resource_manifest: Some(
-                crate::session_resource::SessionResourceManifest::new(
-                    host.local_workspace(),
-                    crate::session_resource::ResolvedSessionResources::default(),
+    host.run_assembly
+        .install_frozen_session_projection(
+            "frozen-revision",
+            awaken_session_realization_contract::FrozenSessionProjection {
+                workspace_id: host.run_assembly.local_workspace().to_string(),
+                revision: awaken_session_types::SessionRevision(1),
+                environment: Default::default(),
+                resource_revision: 0,
+                resources: Default::default(),
+                previous_resource_manifest: Some(
+                    crate::session_resource::SessionResourceManifest::new(
+                        host.run_assembly.local_workspace(),
+                        crate::session_resource::ResolvedSessionResources::default(),
+                    ),
                 ),
-            ),
-            tools: Default::default(),
-            mcp: Vec::new(),
-            request_context: Vec::new(),
-            agent_publication: None,
-            environment_materialization: None,
-            baseline,
-        },
-        None,
-        true,
-        None,
-    )
-    .await
-    .expect("frozen baseline");
+                tools: Default::default(),
+                mcp: Vec::new(),
+                request_context: Vec::new(),
+                agent_publication: None,
+                environment_materialization: None,
+                baseline,
+            },
+            None,
+            true,
+            None,
+        )
+        .await
+        .expect("frozen baseline");
 
     let (_, _, selected, _) = host
         .realization_executor
@@ -1568,16 +1624,18 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
     install_test_session_application(&host);
 
     let stale = host
+        .run_assembly
         .ctx_for("late-projection", None)
         .await
         .expect("pre-projection durable operation can open a default context");
     assert_eq!(stale.config.root_agent_id.0, "assistant", "P1 precondition");
 
-    crate::ManagedHost::new(host.clone())
+    (host.clone())
+        .run_assembly
         .install_test_session_init(
             "late-projection",
             awaken_session_configuration_contract::SessionInit {
-                workspace_id: host.local_workspace().into(),
+                workspace_id: host.run_assembly.local_workspace().into(),
                 agent_id: "agent-a".into(),
                 delegate_ids: Vec::new(),
                 tools: None,
@@ -1598,23 +1656,26 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
     );
 
     let rebuilt = host
+        .run_assembly
         .ctx_for("late-projection", None)
         .await
         .expect("P1 rebuilds from the frozen publication");
     assert_eq!(rebuilt.config.root_agent_id.0, "agent-a", "P1/E1");
 
     let active = host
+        .run_assembly
         .ctx_for("active-projection", None)
         .await
         .expect("P2 pre-projection context");
     active
         .foreground
         .install_for_test(Some(RunId("active-run".into())));
-    let error = crate::ManagedHost::new(host.clone())
+    let error = (host.clone())
+        .run_assembly
         .install_test_session_init(
             "active-projection",
             awaken_session_configuration_contract::SessionInit {
-                workspace_id: host.local_workspace().into(),
+                workspace_id: host.run_assembly.local_workspace().into(),
                 agent_id: "agent-a".into(),
                 delegate_ids: Vec::new(),
                 tools: None,
@@ -1632,12 +1693,14 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
         "P2/E2"
     );
     assert!(
-        host.thread_agent_projection("active-projection").is_none(),
+        host.run_assembly
+            .thread_agent_projection("active-projection")
+            .is_none(),
         "P2 rejection precedes every projection mutation"
     );
 
     let frozen_init = awaken_session_configuration_contract::SessionInit {
-        workspace_id: host.local_workspace().into(),
+        workspace_id: host.run_assembly.local_workspace().into(),
         agent_id: "agent-a".into(),
         delegate_ids: Vec::new(),
         tools: None,
@@ -1647,18 +1710,21 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
         runtime: Some("default".into()),
         environment: on_tool_use_environment(),
     };
-    crate::ManagedHost::new(host.clone())
+    (host.clone())
+        .run_assembly
         .install_test_session_init("active-frozen-projection", frozen_init.clone())
         .await
         .expect("P4 initial frozen coordinates");
     let frozen_active = host
+        .run_assembly
         .ctx_for("active-frozen-projection", None)
         .await
         .expect("P4 context built after frozen authority");
     frozen_active
         .foreground
         .install_for_test(Some(RunId("frozen-active-run".into())));
-    crate::ManagedHost::new(host.clone())
+    (host.clone())
+        .run_assembly
         .install_test_session_init("active-frozen-projection", frozen_init)
         .await
         .expect("P4 reuses the immutable active projection");
@@ -1696,6 +1762,7 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
         .expect("validated Host dependencies");
     let _direct_managed = install_test_dispatch_runtime(&direct);
     let direct_ctx = direct
+        .run_assembly
         .ctx_for("direct-live", None)
         .await
         .expect("L1 direct context");
@@ -1779,7 +1846,11 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
         .build()
         .expect("validated Host dependencies");
     let _local_managed = install_test_dispatch_runtime(&local);
-    let local_ctx = local.ctx_for("local-live", None).await.expect("L6 context");
+    let local_ctx = local
+        .run_assembly
+        .ctx_for("local-live", None)
+        .await
+        .expect("L6 context");
     local_ctx
         .foreground
         .install_for_test(Some(RunId("run-local".into())));
@@ -1811,6 +1882,7 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
         .build()
         .expect("validated Host dependencies");
     let remote_ctx = remote
+        .run_assembly
         .ctx_for("remote-live", None)
         .await
         .expect("L7 context");
@@ -1936,7 +2008,7 @@ async fn repository_layout_conflict_fails_before_cache_prewarm() {
     .build()
     .expect("validated Host dependencies");
     let managed = managed_with_resource_source(host.clone());
-    let mut init = bare_session("agent", host.local_workspace());
+    let mut init = bare_session("agent", host.run_assembly.local_workspace());
     init.resources = effective_resources(vec![TestInput {
         kind: "github_repository".into(),
         id: "https://github.com/awaken/prewarm-fence.git".into(),
@@ -1947,6 +2019,8 @@ async fn repository_layout_conflict_fails_before_cache_prewarm() {
         initial_commit: None,
     }]);
     managed
+        .host
+        .run_assembly
         .install_test_session_init("repository-prewarm-fence", init)
         .await
         .expect("P1 stage Repository without opening an Environment");
@@ -2096,14 +2170,19 @@ async fn platform_held_mcp_is_mediated_without_resolving_material_into_the_host(
 
     let bare = crate::ManagedHost::new(host.clone());
     assert_eq!(
-        bare.stage_direct_mcp_attachment(request.clone())
+        bare.host
+            .run_assembly
+            .stage_direct_mcp_attachment(request.clone())
             .await
             .unwrap_err()
             .code,
         "mcp_gateway_provisioner_required",
         "G1"
     );
-    assert!(host.mcp_projection(&generation).is_none(), "G1");
+    assert!(
+        host.run_assembly.mcp_projection(&generation).is_none(),
+        "G1"
+    );
 
     let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
         .await
@@ -2119,6 +2198,8 @@ async fn platform_held_mcp_is_mediated_without_resolving_material_into_the_host(
     .unwrap();
     let managed = crate::ManagedHost::new(host.clone());
     let receipt = managed
+        .host
+        .run_assembly
         .stage_direct_mcp_attachment(request)
         .await
         .expect("G2 mediated staging resolves no material");
@@ -2128,6 +2209,7 @@ async fn platform_held_mcp_is_mediated_without_resolving_material_into_the_host(
         "G2"
     );
     let server = host
+        .run_assembly
         .mcp_projection(&generation)
         .expect("G2 projection")
         .server
@@ -2160,5 +2242,5 @@ async fn executor_components_supply_every_session_role() {
         &roles.live_inbox
     ));
     let bindings = awaken_session_execution_contract::SessionExecutor::from(roles);
-    assert_eq!(bindings.core().model(), host.model());
+    assert_eq!(bindings.core().model(), host.host.run_assembly.model());
 }

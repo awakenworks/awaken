@@ -121,7 +121,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         "C11 installed Workspace"
     );
     assert_eq!(
-        host.thread_workspace(thread),
+        host.run_assembly.thread_workspace(thread),
         "ws-view",
         "C11 public thin delegate"
     );
@@ -134,14 +134,14 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
     );
     assert_eq!(
         sessions
-            .workspace("unknown", host.local_workspace())
+            .workspace("unknown", host.run_assembly.local_workspace())
             .expect("installed Sessions"),
-        host.local_workspace(),
+        host.run_assembly.local_workspace(),
         "C11 absent fallback"
     );
     assert_eq!(
-        host.thread_workspace("unknown"),
-        host.local_workspace(),
+        host.run_assembly.thread_workspace("unknown"),
+        host.run_assembly.local_workspace(),
         "C11 same public fallback"
     );
     assert!(
@@ -186,15 +186,22 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
             .unwrap()
     };
     assert_eq!(query(&sessions), (false, false, None), "V5 empty run layer");
-    let ctx = host.ctx_for(thread, None).await.expect("context");
+    let ctx = host
+        .run_assembly
+        .ctx_for(thread, None)
+        .await
+        .expect("context");
     let claim = awaken_dispatch_contract::RunClaim {
         run_id: RunId("realizations-view-run".into()),
         owner: "worker".into(),
         epoch: 3,
     };
-    let deferred: Arc<dyn awaken_tool_contract::tool::ToolExecutor> = Arc::new(
-        crate::lazy_sandbox::DeferredSandboxExecutor::new(Arc::downgrade(&host), thread),
-    );
+    let deferred: Arc<dyn awaken_tool_contract::tool::ToolExecutor> =
+        Arc::new(crate::lazy_sandbox::DeferredSandboxExecutor::new(
+            Arc::downgrade(&host.installed_sessions),
+            Arc::downgrade(&host.realization_executor),
+            thread,
+        ));
     host.installed_sessions.update_run(thread, |run| {
         run.context = Some(ctx.clone());
         run.dispatch_claim = Some(claim.clone());
@@ -225,7 +232,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         use futures_util::FutureExt;
         let child_id = "realizations-query-child";
         let child = host
-            .ctx_for(child_id, None)
+            .run_assembly.ctx_for(child_id, None)
             .await
             .expect("actual child context");
         host.installed_sessions
@@ -551,7 +558,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         "C11 current whole Frozen Arc, no cached Workspace"
     );
     assert_eq!(
-        host.thread_workspace(thread),
+        host.run_assembly.thread_workspace(thread),
         "ws-published",
         "C11 delegate observes new publication"
     );

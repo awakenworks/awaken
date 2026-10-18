@@ -194,7 +194,8 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             eager_environment(),
             &activation.snapshot,
         );
-        host.install_dispatch_frozen_session_projection(thread, projection.clone())
+        host.run_assembly
+            .install_dispatch_frozen_session_projection(thread, projection.clone())
             .await
             .expect("C1 install complete physical projection before creation");
         let lease = session_resource::SessionRealizationLease {
@@ -326,7 +327,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
                     .environments()
                     .retire_session_environment_for_revocation(
                         thread,
-                        (&host.mcp, host.installed_sessions.as_ref()),
+                        (&host.run_assembly.mcp, host.installed_sessions.as_ref()),
                         None,
                     )
                     .await
@@ -334,7 +335,9 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
                 "C1 public revocation transition"
             );
             assert_eq!(
-                host.registered_thread_workspace(thread).as_deref(),
+                host.run_assembly
+                    .registered_thread_workspace(thread)
+                    .as_deref(),
                 Some("workspace"),
                 "C1 Retiring owner keeps exact terminal harvest scope"
             );
@@ -342,18 +345,19 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
         // Real takeover ordering: revocation first clears the old realization
         // generation while retaining the exact physical owner; only then does
         // Control's terminal assignment install its new cleanup lease.
-        host.install_test_terminal_cleanup_projection(
-            &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
-                environment_creation_not_attempted: false,
-                session_id: thread.into(),
-                projection: projection.clone(),
-                authority: awaken_session_realization::test_support::test_lease_receipt(
-                    lease.clone(),
-                ),
-            },
-        )
-        .await
-        .expect("C1 install exact terminal projection after any revocation");
+        host.run_assembly
+            .install_test_terminal_cleanup_projection(
+                &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                    environment_creation_not_attempted: false,
+                    session_id: thread.into(),
+                    projection: projection.clone(),
+                    authority: awaken_session_realization::test_support::test_lease_receipt(
+                        lease.clone(),
+                    ),
+                },
+            )
+            .await
+            .expect("C1 install exact terminal projection after any revocation");
 
         let mut aggregate = awaken_session_state_contract::PersistedSession::frozen_with_budget(
             thread,
@@ -429,7 +433,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
                 },
             ] {
                 let error = awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
-                    &crate::ManagedHost::new(host.clone()),
+                    &*(host.clone()).run_assembly,
                     guarded_effect.clone(),
                     guarded_authorization.clone().with_source_dispatch(source),
                 ).await.map_err(crate::host_error::from_run_error)
@@ -455,7 +459,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             let authorization = authorization.clone();
             async move {
                 awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
-                    &crate::ManagedHost::new(host.clone()),
+                    &*(host.clone()).run_assembly,
                     effect,
                     authorization,
                 ).await.map_err(crate::host_error::from_run_error)
@@ -520,7 +524,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
 
         release.notify_one();
         let preparation = awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
-                    &crate::ManagedHost::new(host.clone()),
+                    &*(host.clone()).run_assembly,
                     effect.clone(),
                     authorization,
                 ).await.map_err(crate::host_error::from_run_error)
@@ -572,7 +576,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             .expect("C5 durably admit exact Preparation");
         host.realization_executor
             .effects()
-            .acknowledge_terminal_cleanup_preparation(&host.mcp, &effect)
+            .acknowledge_terminal_cleanup_preparation(&host.run_assembly.mcp, &effect)
             .await;
         let disposal_command = match aggregate
             .terminal_cleanup_work_action()
@@ -617,7 +621,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             .expect("C5 durably admit exact Disposal receipt");
         host.realization_executor
             .effects()
-            .acknowledge_terminal_cleanup_disposal(&host.mcp, &disposal_effect)
+            .acknowledge_terminal_cleanup_disposal(&host.run_assembly.mcp, &disposal_effect)
             .await;
         assert!(
             !host.installed_sessions.contains(thread),
@@ -671,16 +675,19 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     // historical omission remains the explicit negative row in the cold table.
     let mut aggregate =
         crate::host::tests::fresh_terminal_fixture_before_create(thread, &mut projection, &lease);
-    host.install_test_terminal_cleanup_projection(
-        &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
-            environment_creation_not_attempted: false,
-            session_id: thread.into(),
-            projection: projection.clone(),
-            authority: awaken_session_realization::test_support::test_lease_receipt(lease.clone()),
-        },
-    )
-    .await
-    .unwrap();
+    host.run_assembly
+        .install_test_terminal_cleanup_projection(
+            &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                environment_creation_not_attempted: false,
+                session_id: thread.into(),
+                projection: projection.clone(),
+                authority: awaken_session_realization::test_support::test_lease_receipt(
+                    lease.clone(),
+                ),
+            },
+        )
+        .await
+        .unwrap();
     let intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
         thread,
         awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
@@ -732,7 +739,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         .unwrap()
         .with_source_dispatch(awaken_session_realization_contract::SessionTerminalSourceDispatch::Settled {});
     let first = awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
-                    &crate::ManagedHost::new(host.clone()),
+                    &*(host.clone()).run_assembly,
                     effect.clone(),
                     authorization.clone(),
                 ).await.map_err(crate::host_error::from_run_error)
@@ -784,7 +791,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
             .update_realization(thread, |r| r.environment_mut().owner = wrong.clone())
             .expect("installed Sessions");
         awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
-                    &crate::ManagedHost::new(host.clone()),
+                    &*(host.clone()).run_assembly,
                     effect.clone(),
                     authorization.clone(),
                 ).await.map_err(crate::host_error::from_run_error)
@@ -808,7 +815,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         )
         .unwrap();
     awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
-        &crate::ManagedHost::new(host.clone()),
+        &*(host.clone()).run_assembly,
         stale,
         stale_authorization,
     )
@@ -817,7 +824,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     .expect_err("U6 foreign realization cannot prepare");
     assert!(output.exists(), "U6 stale Preparation keeps physical bytes");
     let preparation = awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
-                    &crate::ManagedHost::new(host.clone()),
+                    &*(host.clone()).run_assembly,
                     effect.clone(),
                     authorization,
                 ).await.map_err(crate::host_error::from_run_error)
@@ -858,7 +865,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         .unwrap();
     host.realization_executor
         .effects()
-        .acknowledge_terminal_cleanup_preparation(&host.mcp, &effect)
+        .acknowledge_terminal_cleanup_preparation(&host.run_assembly.mcp, &effect)
         .await;
     let awaken_session_state_contract::SessionTerminalCleanupAction::Dispose { command } =
         aggregate.terminal_cleanup_work_action().unwrap().unwrap()
@@ -923,7 +930,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         .unwrap();
     host.realization_executor
         .effects()
-        .acknowledge_terminal_cleanup_disposal(&host.mcp, &disposal)
+        .acknowledge_terminal_cleanup_disposal(&host.run_assembly.mcp, &disposal)
         .await;
     assert!(
         !host.installed_sessions.contains(thread),

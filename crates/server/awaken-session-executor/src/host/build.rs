@@ -7,8 +7,6 @@
 use super::*;
 use awaken_session_realization::peers::EnvironmentPeer as _;
 
-use awaken_runtime_contract::delegation::RunDelegationService;
-
 /// The process a Host is constructed in: the installation's resolved platform
 /// Workspace, the process capabilities the composition projected from its
 /// configuration, and the one process clock. The process composition resolves them once;
@@ -69,13 +67,11 @@ impl HostDependencies {
                 "registered Worker capacity requires upstream authority and a local execution pool",
             ));
         }
-        Ok(Arc::new_cyclic(|host| {
-            assemble_host(dependencies, host.clone())
-        }))
+        Ok(Arc::new(assemble_host(dependencies)))
     }
 }
 
-fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHost>) -> SharedHost {
+fn assemble_host(dependencies: HostDependencies) -> SharedHost {
     let HostDependencies {
         #[cfg(test)]
         realization_source,
@@ -100,37 +96,14 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
         skill_bundle_source,
     } = dependencies;
     let installed_sessions = Arc::new(crate::installed_session::InstalledSessions::default());
-    #[cfg(test)]
-    let realizations = match realization_source {
-        Some(select) => crate::session_realizations::SessionRealizations::new(select(
-            installed_sessions.clone(),
-        )),
-        None => installed_sessions.realizations(),
-    };
-    #[cfg(not(test))]
-    let realizations = installed_sessions.realizations();
-    let memory = Arc::new(crate::memory::MemoryRuntime::new(
-        agent.llm.clone(),
-        env.auxiliary_sandboxes.provider("mem"),
-        Arc::new(BackgroundRuns::new()),
-        resources.extraction_repository.clone(),
-        clock.clone(),
-        agent.inference_materializer.clone(),
-    ));
-    let background_supervisor =
-        Arc::new(awaken_ext_background_task::BackgroundTaskSupervisor::new(
-            awaken_runtime_contract::content_fingerprint(&(
-                "background-worker-v1",
-                std::process::id(),
-                uuid::Uuid::new_v4().simple().to_string(),
-            ))
-            .expect("background worker identity serializes"),
-            clock.clone(),
-        ));
-    let credential_materializer = exec.credential_materializer.clone();
-    let dispatch_execution = authority
-        .dispatch_binding()
-        .map(|binding| binding.queue() as Arc<dyn awaken_dispatch_contract::DispatchExecution>);
+    let realizations = realization_view(
+        &installed_sessions,
+        #[cfg(test)]
+        realization_source,
+    );
+    let memory = memory_runtime(&agent, &env, &resources, &clock);
+    let background_supervisor = background_supervisor(&clock);
+    let dispatch_execution = dispatch_execution(authority.as_ref());
     let publication = crate::session_publication::SessionPublicationSelection::new(
         realizations.clone(),
         local_workspace.clone(),
@@ -156,7 +129,7 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
                 resource_validator: session_execution.resource_validator.clone(),
                 repository_binding_verifier: session_execution.repository_binding_verifier.clone(),
                 fetches_resources_upstream: authority.fetches_resources_upstream(),
-                credential_materializer,
+                credential_materializer: exec.credential_materializer.clone(),
                 memory_reference_encoder: authority.memory_reference_encoder(),
             },
         ),
@@ -179,32 +152,166 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
         realization_executor.clone(),
     ));
     let live_inboxes = Arc::new(crate::LiveInboxes::new(installed_sessions.clone()));
+    let agent = Arc::new(capability::AgentExecution::new(
+        agent,
+        installed_sessions.clone(),
+    ));
+    let exec = Arc::new(exec);
+    let worker = Arc::new(worker);
+    let tools = Arc::new(tools);
+    let resources = Arc::new(capability::ResourcePorts::new(resources, memory));
+    let capture = Arc::new(capture);
+    let session_execution = Arc::new(session_execution);
+    let completion = Arc::new(CompletionRegistry::new(
+        hub.clone(),
+        session_application.lifecycle_wakeup_binding(),
+    ));
+    let dispatch_hint = dispatch_hint(authority.as_ref());
+    let durable_run_cancellation = crate::host::DurableRunCancellation::new(
+        installed_sessions.clone(),
+        execution.local.runs_local_pool(),
+        capability::local_dispatch_owner(authority.as_ref()),
+        dispatch_hint.clone(),
+    );
+    let (mcp_root_authority, mcp_application_inputs) =
+        mcp_application_inputs(&installed_sessions, &mcp, &durable_run_cancellation);
+    let run_assembly = Arc::new(crate::RunAssembly {
+        local_workspace: local_workspace.clone(),
+        installed_sessions: installed_sessions.clone(),
+        hub: hub.clone(),
+        authority: authority.clone(),
+        clock: clock.clone(),
+        background_supervisor: background_supervisor.clone(),
+        completion: completion.clone(),
+        session_execution: session_execution.clone(),
+        execution: execution.clone(),
+        worker: worker.clone(),
+        agent: agent.clone(),
+        exec: exec.clone(),
+        realization_executor: realization_executor.clone(),
+        thread_reads: thread_reads.clone(),
+        tools: tools.clone(),
+        resources: resources.clone(),
+        mcp: mcp.clone(),
+        capture: capture.clone(),
+        session_application: session_application.clone(),
+        mcp_application_inputs,
+        durable_run_cancellation,
+        mcp_root_authority,
+    });
     SharedHost {
-        agent: capability::AgentExecution::new(agent, installed_sessions.clone()),
+        agent,
         exec,
         worker,
         realization_executor,
         thread_reads,
         live_inboxes,
+        run_assembly,
         tools,
-        resources: capability::ResourcePorts::new(resources, memory),
-        mcp,
-        dispatch: capability::DispatchCapability::new(execution, host),
+        resources,
+        dispatch: capability::DispatchCapability::new(execution, dispatch_hint),
         capture,
         local_workspace,
         installed_sessions,
-        hub: hub.clone(),
+        hub,
         store_dir,
         authority,
         clock,
-        background_supervisor,
-        completion: Arc::new(CompletionRegistry::new(
-            hub,
-            session_application.lifecycle_wakeup_binding(),
-        )),
+        completion,
         session_application,
-        session_execution,
     }
+}
+
+/// The realization executor's view of the installed Sessions; a unit test may
+/// select a replacement source over the same allocation.
+fn realization_view(
+    installed_sessions: &Arc<crate::InstalledSessions>,
+    #[cfg(test)] realization_source: Option<super::dependencies::RealizationSourceFactory>,
+) -> crate::session_realizations::SessionRealizations {
+    #[cfg(test)]
+    if let Some(select) = realization_source {
+        return crate::session_realizations::SessionRealizations::new(select(
+            installed_sessions.clone(),
+        ));
+    }
+    installed_sessions.realizations()
+}
+
+/// The Memory auxiliary-agent capability: extraction runs on its own sandbox
+/// provider and the selected extraction repository.
+fn memory_runtime(
+    agent: &capability::AgentSelection,
+    env: &capability::EnvironmentProviders,
+    resources: &capability::ResourceSelection,
+    clock: &Arc<dyn awaken_time::WallClock>,
+) -> Arc<crate::memory::MemoryRuntime> {
+    Arc::new(crate::memory::MemoryRuntime::new(
+        agent.llm.clone(),
+        env.auxiliary_sandboxes.provider("mem"),
+        Arc::new(BackgroundRuns::new()),
+        resources.extraction_repository.clone(),
+        clock.clone(),
+        agent.inference_materializer.clone(),
+    ))
+}
+
+/// The same dispatch instance this process uses, narrowed to execution binding.
+fn dispatch_execution(
+    authority: &dyn crate::SessionAuthority,
+) -> Option<Arc<dyn awaken_dispatch_contract::DispatchExecution>> {
+    authority
+        .dispatch_binding()
+        .map(|binding| binding.queue() as Arc<dyn awaken_dispatch_contract::DispatchExecution>)
+}
+
+/// The process-local BackgroundTask slot registry, under a process-unique
+/// Worker identity.
+fn background_supervisor(
+    clock: &Arc<dyn awaken_time::WallClock>,
+) -> Arc<awaken_ext_background_task::BackgroundTaskSupervisor> {
+    Arc::new(awaken_ext_background_task::BackgroundTaskSupervisor::new(
+        awaken_runtime_contract::content_fingerprint(&(
+            "background-worker-v1",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple().to_string(),
+        ))
+        .expect("background worker identity serializes"),
+        clock.clone(),
+    ))
+}
+
+/// The local claimer waits on this exact wake; publishers hint through it
+/// without holding the claimer.
+fn dispatch_hint(
+    authority: &dyn crate::SessionAuthority,
+) -> awaken_dispatch_execution::DispatchHint {
+    awaken_dispatch_execution::DispatchHint::new(
+        authority
+            .dispatch_wake()
+            .unwrap_or_else(|| Arc::new(awaken_dispatch_execution::LocalWakeSignal::new())),
+    )
+}
+
+/// The MCP root authority and the application-input target its handlers
+/// reach, both over the installed Sessions.
+fn mcp_application_inputs(
+    installed_sessions: &Arc<crate::InstalledSessions>,
+    mcp: &awaken_session_mcp::McpSessions,
+    cancellation: &crate::host::DurableRunCancellation,
+) -> (
+    Arc<crate::mcp_host::McpRootAuthority>,
+    Arc<crate::mcp_host::McpApplicationInputs>,
+) {
+    let authority = Arc::new(crate::mcp_host::McpRootAuthority::new(
+        installed_sessions.clone(),
+    ));
+    let inputs = Arc::new(crate::mcp_host::McpApplicationInputs::new(
+        installed_sessions.clone(),
+        mcp.clone(),
+        authority.clone(),
+        cancellation.clone(),
+    ));
+    (authority, inputs)
 }
 
 impl SharedHost {
@@ -250,46 +357,6 @@ impl SharedHost {
         self.store_dir.as_deref()
     }
 
-    pub(crate) fn register_thread_workspace(&self, thread: &str, workspace: &str) {
-        self.installed_sessions
-            .replace_frozen_with(thread, |next| next.workspace = Some(workspace.to_string()));
-    }
-
-    #[cfg(test)]
-    pub(crate) fn register_thread_agent_projection(&self, thread: &str, agent_id: &str) {
-        self.installed_sessions
-            .replace_frozen_with(thread, |next| next.agent_id = Some(agent_id.to_string()));
-    }
-
-    /// Rebuildable Agent projection used only as input to Session admission.
-    /// Runtime never treats this cache as an executable publication authority.
-    pub fn thread_agent_projection(&self, thread: &str) -> Option<String> {
-        let realizations = self.installed_sessions.realizations();
-        realizations
-            .frozen(thread)
-            .expect("session runtime slots mutex poisoned")
-            .agent_id
-            .clone()
-    }
-
-    /// Workspace context supplied to the Session application admission boundary.
-    /// Unknown flat-protocol threads use the process's persisted local workspace.
-    pub fn thread_workspace(&self, thread: &str) -> String {
-        self.installed_sessions
-            .realizations()
-            .workspace(thread, &self.local_workspace)
-            .expect("session runtime slots mutex poisoned")
-    }
-
-    /// Workspace for a prepared thread; unlike `thread_workspace`, unknown ids
-    /// do not inherit local ownership and therefore cannot enumerate artifacts.
-    pub fn registered_thread_workspace(&self, thread: &str) -> Option<String> {
-        self.installed_sessions
-            .realizations()
-            .registered_workspace(thread)
-            .expect("session runtime slots mutex poisoned")
-    }
-
     /// Clone the completion projection consumed by the authenticated Worker
     /// settle boundary.
     ///
@@ -310,15 +377,10 @@ impl SharedHost {
         &self.session_application
     }
 
-    /// Bind the exact published delegation targets to a prepared Session.
-    pub fn register_thread_delegates(&self, thread: &str, delegates: Vec<String>) {
-        self.installed_sessions
-            .replace_frozen_with(thread, |next| next.delegates = delegates);
-    }
-
-    pub(crate) fn thread_delegate_ids(&self, thread: &str) -> Option<Vec<String>> {
-        self.installed_sessions
-            .read(thread, |slot| slot.inputs.delegates.clone())
+    /// The Session context assembly of this process.
+    #[must_use]
+    pub fn run_assembly(&self) -> &Arc<crate::RunAssembly> {
+        &self.run_assembly
     }
 
     /// Committed Thread readback over this process's selected authority.
@@ -336,67 +398,6 @@ impl SharedHost {
     /// The shared per-thread live observation hub.
     pub fn hub(&self) -> &Arc<ThreadEventHub> {
         &self.hub
-    }
-
-    /// Route every run's tool calls through `hand` — a remote `ToolExecutor`
-    /// Build the per-session delegation executor. `sandbox` is the calling thread's
-    /// live environment: a native delegate shares it, so the parent
-    /// and its native child collaborate in one Session-owned workspace.
-    pub(crate) fn run_delegation(
-        &self,
-        thread: &str,
-        sandbox: Arc<crate::session_environment::SessionEnvironment>,
-        commit: Arc<crate::store::HostCommit>,
-        parent_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
-        publication_source: Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
-        tool_configuration: crate::delegate::CallerToolConfiguration,
-    ) -> Result<Option<Arc<dyn RunDelegationService>>, HostError> {
-        let Some(parent_snapshot) = parent_snapshot else {
-            return Ok(None);
-        };
-        let agent_bindings = &parent_snapshot.resolved_spec.plugin_config.agent;
-        if agent_bindings.delegates.is_empty() && agent_bindings.advisor.is_none() {
-            return Ok(None);
-        }
-        let workspace = self.thread_workspace(thread);
-        // Use the same topology decision as pool startup. Ephemeral and durable
-        // Runtime authorities both own dispatch; gating children on persistence
-        // durability leaves a claim-bound parent executing its child with the
-        // parent's checkpoint/commit projection instead of a child claim.
-        let scheduler = if self.runs_local_dispatch_pool() {
-            Some(crate::agent_runner::RunScheduler {
-                clock: self.clock.clone(),
-                binding: self.authority.dispatch_binding().ok_or_else(|| {
-                    HostError::internal("child scheduling requires a dispatch binding")
-                })?,
-                commit: commit.clone(),
-                reader: commit,
-                owner: self.dispatch_owner().to_owned(),
-                session_resources: self
-                    .realization_executor
-                    .staging()
-                    .thread_resource_manifest(thread)?,
-                publication_source: Some(publication_source.clone()),
-                claimed_model_request_gate: self.coordination_endpoint().map(|endpoint| {
-                    crate::coordination::claimed_model_request_gate_factory(endpoint, thread)
-                }),
-            })
-        } else {
-            None
-        };
-        let adapters = self.child_execution_adapters(thread, sandbox.clone());
-        let service = HostRunDelegationService::new(
-            self.agent.llm.clone(),
-            sandbox,
-            parent_snapshot,
-            adapters,
-            Some(publication_source),
-            workspace,
-        )
-        .map_err(|error| HostError::bad_request(error.to_string()))?
-        .with_scheduler(scheduler)
-        .with_tool_configuration(tool_configuration);
-        Ok(Some(Arc::new(service)))
     }
 }
 

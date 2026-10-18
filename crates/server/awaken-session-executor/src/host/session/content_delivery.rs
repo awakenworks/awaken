@@ -41,7 +41,7 @@ pub(super) fn published_skill_ids(
     })
 }
 
-impl SharedHost {
+impl crate::RunAssembly {
     fn session_allows_agent_tool(
         &self,
         thread: &str,

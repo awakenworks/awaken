@@ -21,7 +21,7 @@ pub(crate) use crate::environment_providers::EnvironmentProviders;
 pub use crate::environment_providers::{TrustedHostPolicy, WarmPool};
 pub(crate) use agent::{AgentExecution, AgentSelection};
 pub(crate) use capture::ContentCaptureCapability;
-pub(crate) use dispatch::DispatchCapability;
+pub(crate) use dispatch::{DispatchCapability, local_dispatch_owner};
 pub(crate) use execution::AttemptBackends;
 pub use execution_topology::{
     DispatchPoolSizing, ExecutionTopology, LeaseOwnerId, LocalExecution, QueueDepthSource,

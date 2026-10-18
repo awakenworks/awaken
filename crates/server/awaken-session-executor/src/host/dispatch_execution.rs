@@ -32,7 +32,7 @@ pub(crate) fn session_worker_resolver(
 ) -> Result<SessionWorkerResolver, HostError> {
     let queue = host.dispatch_store()?;
     let clock = host.realization_executor.clock().clone();
-    let assembly = Arc::new(ClaimedRunAssembly::new(host));
+    let assembly = Arc::new(ClaimedRunAssembly::new(host.run_assembly.clone()));
     let terminal_state = host.dispatch.terminal_reconciliation.clone();
     // Only a Coordinator-owned durable authority holds committed truth; it
     // always carries its local dispatch owner.
@@ -43,9 +43,9 @@ pub(crate) fn session_worker_resolver(
         .flatten()
         .map(|dispatch| CommittedTerminalScan {
             dispatch,
-            lease_owner: host.dispatch_owner().to_owned(),
+            lease_owner: host.run_assembly.dispatch_owner().to_owned(),
         });
-    if !host.runs_local_dispatch_pool() {
+    if !host.run_assembly.runs_local_dispatch_pool() {
         return Ok(SessionWorkerResolver::coordinator(
             queue,
             clock,
@@ -62,7 +62,9 @@ pub(crate) fn session_worker_resolver(
         installation: assembly.clone(),
         preparation: assembly.clone(),
         runs: assembly.clone(),
-        mcp: Arc::new(host.dispatch.run_mcp_effects.clone()),
+        mcp: Arc::new(crate::session_effects::RunMcpEffects::new(
+            host.run_assembly.clone(),
+        )),
         projection,
         publication_closure: crate::agent_catalog::RUN_PUBLICATIONS,
     };
@@ -85,7 +87,7 @@ pub(crate) fn admission_error(error: RealizationError) -> AdmissionError {
 /// Adopt the Sandbox a claim carries through the realization executor. The
 /// claim outcome is the one its realization disposition names.
 pub(crate) async fn adopt_bound_sandbox(
-    host: &SharedHost,
+    host: &crate::RunAssembly,
     encoded: Option<&str>,
     expected_sandbox_id: &str,
     run_id: &RunId,
@@ -115,45 +117,28 @@ pub(crate) fn adoption_claim_outcome(run_id: &RunId, error: &RealizationError) -
     claim_outcome(class, format!("run {}: {error}", run_id.0), hint)
 }
 
-/// The executor's part of claimed-Run resolution over one Host: the installed
-/// Session view, Run preparation, Run and commit-boundary Worker construction.
-///
-/// `host` is `Weak` because the Host owns the dispatch pool that holds the
-/// resolver; a strong edge would keep the Host alive through its own pool.
-/// The executor split into components (plan v4 D5) gives each role its owner.
-const HOST_DROPPED: &str = "host dropped; pool idling";
-
+/// The executor's part of claimed-Run resolution: the installed Session view,
+/// Run preparation, Run and commit-boundary Worker construction, all through
+/// the Session context assembly. The dispatch pool that holds this resolver
+/// is not owned by the assembly, so the strong edge forms no cycle.
 pub(crate) struct ClaimedRunAssembly {
-    host: std::sync::Weak<SharedHost>,
+    assembly: Arc<crate::RunAssembly>,
     sessions: crate::session_realizations::SessionRealizations,
     local_workspace: String,
 }
 
 impl ClaimedRunAssembly {
-    fn new(host: &Arc<SharedHost>) -> Self {
+    fn new(assembly: Arc<crate::RunAssembly>) -> Self {
         Self {
-            host: Arc::downgrade(host),
-            sessions: host.realization_executor.sessions().clone(),
-            local_workspace: host
+            sessions: assembly.realization_executor.sessions().clone(),
+            local_workspace: assembly
                 .realization_executor
                 .environments()
                 .publication()
                 .local_workspace()
                 .to_owned(),
+            assembly,
         }
-    }
-
-    fn host(&self) -> Result<Arc<SharedHost>, Error> {
-        self.host
-            .upgrade()
-            .ok_or_else(|| execution_error(HOST_DROPPED))
-    }
-
-    /// A dropped Host leaves the pool idling: a retryable admission failure.
-    fn admitting_host(&self) -> Result<Arc<SharedHost>, AdmissionError> {
-        self.host.upgrade().ok_or_else(|| {
-            AdmissionError::Run(awaken_session_types::RunError::unavailable(HOST_DROPPED))
-        })
     }
 }
 
@@ -192,11 +177,8 @@ impl ClaimedSessionInstallation for ClaimedRunAssembly {
         manifest: &crate::session_resource::SessionResourceManifest,
         claim: &RunClaim,
     ) -> Result<(), awaken_session_types::RunError> {
-        let host = self
-            .host
-            .upgrade()
-            .ok_or_else(|| awaken_session_types::RunError::unavailable(HOST_DROPPED))?;
-        host.realization_executor
+        self.assembly
+            .realization_executor
             .install_dispatched_resources(session, manifest, Some(claim))
             .await
     }
@@ -238,7 +220,7 @@ impl ClaimedSessionInstallation for ClaimedRunAssembly {
     }
 
     fn durable_environment_binding(&self, session: &str) -> Result<Option<String>, AdmissionError> {
-        self.admitting_host()?
+        self.assembly
             .realization_executor
             .environments()
             .durable_environment_binding(session)
@@ -266,7 +248,7 @@ impl ClaimedSessionInstallation for ClaimedRunAssembly {
         recovery: awaken_dispatch_contract::WorkerRecoveryMode,
     ) -> Result<(), Error> {
         adopt_bound_sandbox(
-            self.host()?.as_ref(),
+            self.assembly.as_ref(),
             encoded,
             session,
             run_id,
@@ -294,7 +276,7 @@ impl ClaimedRunPreparation for ClaimedRunAssembly {
         session: &str,
         projection: awaken_session_configuration_contract::SessionRuntimeProjection,
     ) -> Result<(), AdmissionError> {
-        let host = self.admitting_host()?;
+        let host = &self.assembly;
         host.install_environment_projection(session, &projection.environment)?;
         host.installed_sessions
             .replace_frozen_with(session, |next| next.tools = projection.tools);
@@ -311,7 +293,7 @@ impl ClaimedRunPreparation for ClaimedRunAssembly {
         permit: &awaken_session_realization_contract::SessionRealizationPermit,
     ) -> Result<(), Error> {
         crate::application::worker_projection::drive_session_realization(
-            self.host()?.as_ref(),
+            self.assembly.as_ref(),
             control,
             session,
             directive,
@@ -330,7 +312,7 @@ impl ClaimedRunPreparation for ClaimedRunAssembly {
         session: &str,
         publication: Option<&ExecutableAgentSnapshot>,
     ) -> Result<(), AdmissionError> {
-        self.admitting_host()?
+        self.assembly
             .session_child_execution_substrate(session, publication)
             .await
             .map(|_| ())
@@ -338,9 +320,7 @@ impl ClaimedRunPreparation for ClaimedRunAssembly {
     }
 
     fn bind_deferred_executor(&self, session: &str) {
-        if let Ok(host) = self.host() {
-            crate::lazy_sandbox::bind_deferred_executor(&host, session);
-        }
+        crate::lazy_sandbox::bind_deferred_executor(&self.assembly, session);
     }
 }
 
@@ -349,10 +329,7 @@ impl ClaimedRunWorkers for ClaimedRunAssembly {
     fn credential_capabilities(
         &self,
     ) -> awaken_credential_contract::CredentialRealizationCapabilities {
-        self.host
-            .upgrade()
-            .map(|host| host.local_credential_realization_capabilities())
-            .unwrap_or_default()
+        self.assembly.local_credential_realization_capabilities()
     }
 
     async fn root_worker(
@@ -363,7 +340,7 @@ impl ClaimedRunWorkers for ClaimedRunAssembly {
         dispatch: Option<&RunDispatch>,
         publications: Option<Arc<StaticPublishedAgentSnapshots>>,
     ) -> Result<Arc<DispatchWorker<AnyDispatchStore>>, Error> {
-        let host = self.host()?;
+        let host = &self.assembly;
         let context = if let Some(dispatch) = dispatch {
             let effective_model_ref = dispatch.activation.effective_model_ref().to_owned();
             let input = ClaimedRuntimeInput {
@@ -400,7 +377,7 @@ impl ClaimedRunWorkers for ClaimedRunAssembly {
         publications: Arc<StaticPublishedAgentSnapshots>,
     ) -> Result<Arc<DispatchWorker<AnyDispatchStore>>, Error> {
         super::claimed_run::construct_claimed_child(
-            self.host()?.as_ref(),
+            self.assembly.as_ref(),
             claimed,
             session_thread,
             publications,
@@ -412,7 +389,7 @@ impl ClaimedRunWorkers for ClaimedRunAssembly {
 #[async_trait::async_trait]
 impl CommitBoundaryWorkers for ClaimedRunAssembly {
     async fn open_commit(&self, thread: &ThreadId) -> Result<Box<dyn ThreadCommitBoundary>, Error> {
-        let host = self.host()?;
+        let host = self.assembly.clone();
         let commit = host
             .authority
             .open_commit(&thread.0)
@@ -428,14 +405,16 @@ impl CommitBoundaryWorkers for ClaimedRunAssembly {
         &self,
     ) -> Result<Arc<dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>, Error>
     {
-        Ok(SharedHost::worker_recovery_source(&self.host()?))
+        Ok(crate::worker_services::thread_recovery_source(
+            self.assembly.thread_reads.clone(),
+        ))
     }
 }
 
 /// One opened Thread commit boundary, held only for one resolve or terminal
 /// candidate. It contains no cache, mutation, or new authority.
 struct OpenedThreadCommit {
-    host: Arc<SharedHost>,
+    host: Arc<crate::RunAssembly>,
     commit: Arc<crate::store::HostCommit>,
 }
 
@@ -465,7 +444,7 @@ impl ThreadCommitBoundary for OpenedThreadCommit {
 }
 
 #[async_trait::async_trait]
-impl SessionProjectionExecution for SharedHost {
+impl SessionProjectionExecution for crate::RunAssembly {
     fn sessions(&self) -> crate::session_realizations::SessionRealizations {
         // Projection execution consumes the constructor-bound view of the same
         // original slots as realization, publication, staging, and terminal cleanup.
@@ -511,11 +490,11 @@ impl SessionProjectionExecution for SharedHost {
         self.invalidate_session_realization_lease(session, lease);
     }
     fn mcp_effects(&self) -> &dyn awaken_session_execution_contract::McpAttachmentRealizer {
-        &self.dispatch.session_effects
+        self.session_mcp_realizer()
     }
 }
 
-impl awaken_session_realization_contract::SessionPreparationPlacement for SharedHost {
+impl awaken_session_realization_contract::SessionPreparationPlacement for crate::RunAssembly {
     fn requirements(
         &self,
         session: &awaken_session_state_contract::PersistedSession,

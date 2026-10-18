@@ -63,7 +63,7 @@ mod tests {
             .enqueue(with_empty_session_resources(
                 awaken_dispatch_contract::RunDispatch::new(eager_activation)
                     .with_session_runtime(eager_runtime),
-                host.local_workspace(),
+                host.run_assembly.local_workspace(),
             ))
             .await
             .expect("enqueue legacy projection with exact empty Resources");
@@ -102,7 +102,7 @@ mod tests {
             .enqueue(with_empty_session_resources(
                 awaken_dispatch_contract::RunDispatch::new(deferred_activation)
                     .with_session_runtime(runtime),
-                host.local_workspace(),
+                host.run_assembly.local_workspace(),
             ))
             .await
             .expect("enqueue deferred projection");
@@ -619,8 +619,14 @@ mod tests {
             .acquire_realization_with(session_id.as_str(), |_| ())
             .await
             .0;
-        let synchronizer =
-            WorkerProjectionSynchronizer::for_directive(host, &directive, None, None, false, None);
+        let synchronizer = WorkerProjectionSynchronizer::for_directive(
+            host.run_assembly.as_ref(),
+            &directive,
+            None,
+            None,
+            false,
+            None,
+        );
         crate::application::worker_projection::drive_session_realization_with_synchronizer(
             control,
             directive,
@@ -796,7 +802,8 @@ mod tests {
             .expect("validated Host dependencies");
         let _managed = crate::ManagedHost::new(host.clone());
         let resident = frozen_projection();
-        host.install_frozen_session_projection(thread, resident.clone(), None, true, None)
+        host.run_assembly
+            .install_frozen_session_projection(thread, resident.clone(), None, true, None)
             .await
             .expect("M1 establish resident baseline");
         let mut remote = resident;
@@ -820,7 +827,7 @@ mod tests {
             expires_at_unix_ms: u64::MAX,
         };
         let synchronizer = WorkerProjectionSynchronizer {
-            execution: host.as_ref(),
+            execution: host.run_assembly.as_ref(),
             claim: None,
             published_snapshot: None,
             rebuild_unavailable_environment: false,
@@ -855,7 +862,7 @@ mod tests {
         );
 
         let cold = WorkerProjectionSynchronizer {
-            execution: host.as_ref(),
+            execution: host.run_assembly.as_ref(),
             claim: None,
             published_snapshot: None,
             rebuild_unavailable_environment: false,
@@ -923,7 +930,7 @@ mod tests {
             expires_at_unix_ms: u64::MAX,
         };
         WorkerProjectionSynchronizer {
-            execution: host.as_ref(),
+            execution: host.run_assembly.as_ref(),
             claim: None,
             published_snapshot: None,
             rebuild_unavailable_environment: false,
@@ -942,7 +949,7 @@ mod tests {
         let mut compatibility_renewal = projection.clone();
         compatibility_renewal.agent_publication = None;
         WorkerProjectionSynchronizer {
-            execution: host.as_ref(),
+            execution: host.run_assembly.as_ref(),
             claim: None,
             published_snapshot: None,
             rebuild_unavailable_environment: false,
@@ -978,7 +985,7 @@ mod tests {
             .recompute_fingerprint()
             .expect("Session overlay remains a valid snapshot");
         WorkerProjectionSynchronizer {
-            execution: host.as_ref(),
+            execution: host.run_assembly.as_ref(),
             claim: None,
             published_snapshot: Some(&effective),
             rebuild_unavailable_environment: false,
@@ -1006,7 +1013,7 @@ mod tests {
         let mut foreign = effective;
         foreign.metadata.source.revision += 1;
         let error = WorkerProjectionSynchronizer {
-            execution: host.as_ref(),
+            execution: host.run_assembly.as_ref(),
             claim: None,
             published_snapshot: Some(&foreign),
             rebuild_unavailable_environment: false,
@@ -1026,7 +1033,7 @@ mod tests {
         let mut missing = projection.clone();
         missing.agent_publication = None;
         let error = WorkerProjectionSynchronizer {
-            execution: host.as_ref(),
+            execution: host.run_assembly.as_ref(),
             claim: None,
             published_snapshot: None,
             rebuild_unavailable_environment: false,
@@ -1069,7 +1076,7 @@ mod tests {
                 }
             }
             let error = WorkerProjectionSynchronizer {
-                execution: host.as_ref(),
+                execution: host.run_assembly.as_ref(),
                 claim: None,
                 published_snapshot: None,
                 rebuild_unavailable_environment: false,
@@ -1146,7 +1153,7 @@ mod tests {
         let initial_control = control.clone();
         let initial = tokio::spawn(async move {
             crate::application::worker_projection::realize_session(
-                &initial_host,
+                &initial_host.run_assembly,
                 initial_control.as_ref(),
                 &awaken_session_types::SessionId::from(thread),
                 directive,
@@ -1162,7 +1169,7 @@ mod tests {
         assert_eq!(
             tokio::time::timeout(
                 std::time::Duration::from_secs(1),
-                host.renew_due_session_realizations(
+                host.run_assembly.renew_due_session_realizations(
                     awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000,),
                 ),
             )
@@ -1373,7 +1380,7 @@ mod tests {
             .flatten()
             .expect("C1 actual original assignment");
         awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-            &source,
+            &*source.host.run_assembly,
             thread,
             resident.clone(),
             awaken_session_realization_contract::SessionProjectionInstallMode::Realization {
@@ -1394,7 +1401,10 @@ mod tests {
                 .environments()
                 .retire_session_environment_for_revocation(
                     thread,
-                    (&source_host.mcp, source_host.installed_sessions.as_ref()),
+                    (
+                        &source_host.run_assembly.mcp,
+                        source_host.installed_sessions.as_ref()
+                    ),
                     None,
                 )
                 .await
@@ -1443,9 +1453,12 @@ mod tests {
             .environments()
             .environment_binding_sink()
             .expect("C4 already-configured actual Root authority");
-        managed.install_test_environment_binding_sink(Arc::new(
-            RecoveryEnvironmentBindingSink::rooted(&control, roots.clone(), delegate),
-        ));
+        managed
+            .host
+            .run_assembly
+            .install_test_environment_binding_sink(Arc::new(
+                RecoveryEnvironmentBindingSink::rooted(&control, roots.clone(), delegate),
+            ));
         (host, control, directive, original_handle, roots)
     }
 
@@ -1507,9 +1520,12 @@ mod tests {
         let original_control = RecoveryControl::fixed(original_projection.clone());
         let original_binding_sink =
             Arc::new(RecoveryEnvironmentBindingSink::new(&original_control));
-        original_managed.install_test_environment_binding_sink(original_binding_sink.clone());
+        original_managed
+            .host
+            .run_assembly
+            .install_test_environment_binding_sink(original_binding_sink.clone());
         awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-            &original_managed,
+            &*original_managed.host.run_assembly,
             thread,
             original_projection,
             awaken_session_realization_contract::SessionProjectionInstallMode::Realization {
@@ -1520,6 +1536,7 @@ mod tests {
         .await
         .expect("R1 install exact original frozen projection");
         let original_ctx = original
+            .run_assembly
             .ctx_for_snapshot(thread, Some("agent-a"), Some(activation.snapshot.clone()))
             .await
             .expect("R1 original Environment");
@@ -1589,9 +1606,12 @@ mod tests {
         let managed =
             super::test_support::complete_managed_test_host(crate::ManagedHost::new(host.clone()));
         let binding_sink = Arc::new(RecoveryEnvironmentBindingSink::new(&control));
-        managed.install_test_environment_binding_sink(binding_sink);
+        managed
+            .host
+            .run_assembly
+            .install_test_environment_binding_sink(binding_sink);
         crate::application::worker_projection::realize_session(
-            &host,
+            &host.run_assembly,
             &control,
             &awaken_session_types::SessionId::from(thread),
             directive.clone(),
@@ -1605,7 +1625,7 @@ mod tests {
         )
         .expect("R1 frozen Environment recovery");
         assert_eq!(
-            host.session_environment_handle(thread).await,
+            host.run_assembly.session_environment_handle(thread).await,
             Some(handle.clone()),
             "R1/E1-E3"
         );
@@ -1639,7 +1659,7 @@ mod tests {
         let mut resident_directive = directive.clone();
         resident_directive.projection = control.current_projection();
         crate::application::worker_projection::realize_session(
-            &host,
+            &host.run_assembly,
             &control,
             &awaken_session_types::SessionId::from(thread),
             resident_directive,
@@ -1673,7 +1693,8 @@ mod tests {
         let mut recovery_authority = directive.authority.clone();
         for runtime_cached in [false, true] {
             if runtime_cached {
-                host.ctx_for_snapshot(thread, Some("agent-a"), Some(activation.snapshot.clone()))
+                host.run_assembly
+                    .ctx_for_snapshot(thread, Some("agent-a"), Some(activation.snapshot.clone()))
                     .await
                     .expect("R9 warm Runtime");
             } else {
@@ -1710,7 +1731,7 @@ mod tests {
                     action: awaken_session_realization_contract::SessionRealizationAction::Complete,
                 };
             let error = crate::application::worker_projection::realize_session(
-                &host,
+                &host.run_assembly,
                 &control,
                 &awaken_session_types::SessionId::from(thread),
                 missing_directive.clone(),
@@ -1751,7 +1772,7 @@ mod tests {
                 "R9 closes the failed generation"
             );
             let rejected_replay = crate::application::worker_projection::realize_session(
-                &host,
+                &host.run_assembly,
                 &control,
                 &awaken_session_types::SessionId::from(thread),
                 missing_directive.clone(),
@@ -1790,7 +1811,7 @@ mod tests {
                     ..missing_directive
                 };
             crate::application::worker_projection::realize_session(
-                &host,
+                &host.run_assembly,
                 &control,
                 &awaken_session_types::SessionId::from(thread),
                 missing_directive,
@@ -1818,7 +1839,7 @@ mod tests {
                 action: awaken_session_realization_contract::SessionRealizationAction::Complete,
             };
             crate::application::worker_projection::realize_session(
-                &host,
+                &host.run_assembly,
                 &control,
                 &awaken_session_types::SessionId::from(thread),
                 replay,
@@ -1890,10 +1911,13 @@ mod tests {
         let first_use_control = RecoveryControl::fixed(first_use_projection);
         let first_use_sink = Arc::new(RecoveryEnvironmentBindingSink::new(&first_use_control));
         let first_use_managed = crate::ManagedHost::new(first_use_host.clone());
-        first_use_managed.install_test_environment_binding_sink(first_use_sink.clone());
+        first_use_managed
+            .host
+            .run_assembly
+            .install_test_environment_binding_sink(first_use_sink.clone());
         let _managed = first_use_managed;
         crate::application::worker_projection::realize_session(
-            &first_use_host,
+            &first_use_host.run_assembly,
             &first_use_control,
             &awaken_session_types::SessionId::from(first_use_thread),
             first_use_directive.clone(),
@@ -1935,13 +1959,16 @@ mod tests {
         .expect("validated Host dependencies");
 
         let unpinned_managed = crate::ManagedHost::new(unpinned_host.clone());
-        unpinned_managed.install_test_environment_binding_sink(Arc::new(ToggleBindingSink {
-            fail: std::sync::atomic::AtomicBool::new(false),
-            calls: std::sync::atomic::AtomicUsize::new(0),
-            binding: Mutex::new(None),
-        }));
+        unpinned_managed
+            .host
+            .run_assembly
+            .install_test_environment_binding_sink(Arc::new(ToggleBindingSink {
+                fail: std::sync::atomic::AtomicBool::new(false),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+                binding: Mutex::new(None),
+            }));
         let error = crate::application::worker_projection::realize_session(
-            &unpinned_host,
+            &unpinned_host.run_assembly,
             &RecoveryControl::fixed(frozen_projection()),
             &awaken_session_types::SessionId::from(first_use_thread),
             first_use_directive,
@@ -1980,7 +2007,7 @@ mod tests {
             .build()
             .expect("validated Host dependencies");
         let error = crate::application::worker_projection::realize_session(
-            &cold,
+            &cold.run_assembly,
             &control,
             &awaken_session_types::SessionId::from(thread),
             directive,
@@ -2032,7 +2059,7 @@ mod tests {
             "R5 original source binding remains the typed lost incarnation"
         );
         let error = crate::application::worker_projection::realize_session(
-            &rebuild_host,
+            &rebuild_host.run_assembly,
             &rebuild_control,
             &awaken_session_types::SessionId::from(rebuild_thread),
             rebuild_directive,
@@ -2059,6 +2086,7 @@ mod tests {
         }
         assert!(
             rebuild_host
+                .run_assembly
                 .session_environment_handle(rebuild_thread)
                 .await
                 .is_none(),
@@ -2101,7 +2129,7 @@ mod tests {
             ))
             .await;
         let error = crate::application::worker_projection::realize_session(
-            &continuity_host,
+            &continuity_host.run_assembly,
             &continuity_control,
             &awaken_session_types::SessionId::from(continuity_thread),
             continuity_directive,

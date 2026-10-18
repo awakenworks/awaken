@@ -16,16 +16,24 @@ use awaken_dispatch_contract::{
 
 use crate::{FileContentSource, SharedHost};
 
-struct HostRunRecoverySource(Arc<SharedHost>);
+/// Recovery of a claimed Run from committed Thread truth, read through the
+/// parent Session's partition.
+struct ThreadRecoverySource(Arc<crate::ThreadReads>);
+
+pub(crate) fn thread_recovery_source(
+    thread_reads: Arc<crate::ThreadReads>,
+) -> Arc<dyn RunRecoverySource> {
+    Arc::new(ThreadRecoverySource(thread_reads))
+}
 
 /// Coordinator-side Memory observation at the registered-Worker settlement
 /// boundary. The Worker already owns Session-coordination settlement; keeping
 /// this adapter Memory-only prevents the two processes from delivering the
 /// same coordinated child effect twice.
-struct HostMemoryDispatchSettlementObserver(Arc<SharedHost>);
+struct HostMemoryDispatchSettlementObserver(Arc<crate::RunAssembly>);
 
 #[async_trait::async_trait]
-impl RunRecoverySource for HostRunRecoverySource {
+impl RunRecoverySource for ThreadRecoverySource {
     async fn recovery_snapshot(
         &self,
         thread_id: &awaken_agent_contract::agent::thread::Id,
@@ -42,7 +50,6 @@ impl RunRecoverySource for HostRunRecoverySource {
         claimed_run_id: &RunId,
     ) -> Result<RunRecoverySnapshot, RecoveryError> {
         self.0
-            .thread_reads
             .session_thread_run_recovery_snapshot(&session_thread_id.0, thread_id, claimed_run_id)
             .await
             .map_err(|error| RecoveryError::Rejected(error.to_string()))
@@ -50,14 +57,14 @@ impl RunRecoverySource for HostRunRecoverySource {
 }
 
 impl SharedHost {
-    pub fn worker_recovery_source(self: &Arc<Self>) -> Arc<dyn RunRecoverySource> {
-        Arc::new(HostRunRecoverySource(self.clone()))
+    pub fn worker_recovery_source(&self) -> Arc<dyn RunRecoverySource> {
+        thread_recovery_source(self.thread_reads.clone())
     }
 
-    pub fn worker_memory_settlement_observer(
-        self: &Arc<Self>,
-    ) -> Arc<dyn DispatchSettlementObserver> {
-        Arc::new(HostMemoryDispatchSettlementObserver(self.clone()))
+    pub fn worker_memory_settlement_observer(&self) -> Arc<dyn DispatchSettlementObserver> {
+        Arc::new(HostMemoryDispatchSettlementObserver(
+            self.run_assembly.clone(),
+        ))
     }
 
     pub fn worker_completion_sink(&self) -> Arc<dyn CompletionSink> {

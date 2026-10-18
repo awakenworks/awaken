@@ -26,7 +26,7 @@ async fn install_test_session_init_mounts_an_effective_memory_resource() {
     let managed = managed_with_resource_source(host.clone());
 
     let bare = |agent: &str| SessionInit {
-        workspace_id: host.local_workspace().into(),
+        workspace_id: host.run_assembly.local_workspace().into(),
         agent_id: agent.into(),
         delegate_ids: Vec::new(),
         tools: None,
@@ -55,6 +55,8 @@ async fn install_test_session_init_mounts_an_effective_memory_resource() {
 
     // An effective Session input mounts without an authoring repository on the host.
     managed
+        .host
+        .run_assembly
         .install_test_session_init("t-bound", bare("a"))
         .await
         .unwrap();
@@ -78,6 +80,8 @@ async fn install_test_session_init_mounts_an_effective_memory_resource() {
         })
         .unwrap();
     managed
+        .host
+        .run_assembly
         .install_test_session_init("t-read-only", read_only)
         .await
         .unwrap();
@@ -88,6 +92,8 @@ async fn install_test_session_init_mounts_an_effective_memory_resource() {
 
     // An empty effective input set mounts nothing.
     managed
+        .host
+        .run_assembly
         .install_test_session_init("t-unbound", bare("no-bindings"))
         .await
         .unwrap();
@@ -179,7 +185,7 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         .await
         .unwrap();
 
-    let mut init = bare_session("assistant", host.local_workspace());
+    let mut init = bare_session("assistant", host.run_assembly.local_workspace());
     init.environment = on_tool_use_environment();
     init.tools = Some(
         awaken_session_configuration_contract::SessionToolConfiguration {
@@ -226,10 +232,13 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         },
     ]);
     managed
+        .host
+        .run_assembly
         .install_test_session_init("semantic-memory", init)
         .await
         .unwrap();
     let context = host
+        .run_assembly
         .ctx_for("semantic-memory", Some("assistant"))
         .await
         .unwrap();
@@ -250,7 +259,10 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
             .is_empty(),
         "M1/E1"
     );
-    let prompt = host.thread_session_prompts("semantic-memory").join("\n");
+    let prompt = host
+        .run_assembly
+        .thread_session_prompts("semantic-memory")
+        .join("\n");
     assert!(
         prompt.contains("test-input-0") && prompt.contains("test-input-1"),
         "M1/E2"
@@ -456,6 +468,7 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
             run.context = None;
         });
     let rebuilt = host
+        .run_assembly
         .ctx_for("semantic-memory", Some("assistant"))
         .await
         .expect("M6 rebuilds from the frozen Session projection");
@@ -508,7 +521,7 @@ async fn activation_applies_current_resource_state_as_a_deny_only_overlay() {
         .register_memory_store(RegisterMemoryStore {
             definition: MemoryStoreDefinition {
                 id: store_id.clone().into(),
-                workspace_id: host.local_workspace().into(),
+                workspace_id: host.run_assembly.local_workspace().into(),
                 name: "memory".into(),
                 description: String::new(),
                 metadata: Default::default(),
@@ -535,17 +548,19 @@ async fn activation_applies_current_resource_state_as_a_deny_only_overlay() {
     }]);
     catalog
         .change_memory_store_state(ChangeMemoryStoreState {
-            workspace_id: host.local_workspace().into(),
+            workspace_id: host.run_assembly.local_workspace().into(),
             id: store_id.clone().into(),
             state: ResourceState::Suspended,
         })
         .await
         .expect("suspend test MemoryStore");
     let managed = crate::ManagedHost::new(host.clone());
-    let mut init = bare_session("a", host.local_workspace());
+    let mut init = bare_session("a", host.run_assembly.local_workspace());
     init.resources = manifest;
 
     let error = managed
+        .host
+        .run_assembly
         .install_test_session_init("t-suspended", init)
         .await
         .unwrap_err();
@@ -608,6 +623,8 @@ async fn memory_activation_enforces_catalog_workspace_without_iam_policy_logic()
     }]);
 
     let error = managed
+        .host
+        .run_assembly
         .install_test_session_init("wrong-workspace", init)
         .await
         .unwrap_err();
@@ -618,7 +635,11 @@ async fn memory_activation_enforces_catalog_workspace_without_iam_policy_logic()
             .mounts
             .is_empty()
     );
-    assert!(host.memory_for_thread("wrong-workspace").is_none());
+    assert!(
+        host.run_assembly
+            .memory_for_thread("wrong-workspace")
+            .is_none()
+    );
 }
 
 /// The same effective input contract realizes File and Repository resources without
@@ -639,7 +660,7 @@ async fn install_test_session_init_mounts_effective_file_and_stages_effective_re
         .file_application()
         .expect("test startup installs File application")
         .create_uploaded_file(
-            host.local_workspace(),
+            host.run_assembly.local_workspace(),
             "notes.txt".into(),
             "application/octet-stream".into(),
             &binary,
@@ -650,10 +671,12 @@ async fn install_test_session_init_mounts_effective_file_and_stages_effective_re
     let managed = managed_with_resource_source(host.clone());
 
     managed
+        .host
+        .run_assembly
         .install_test_session_init(
             "t-multi",
             SessionInit {
-                workspace_id: host.local_workspace().into(),
+                workspace_id: host.run_assembly.local_workspace().into(),
                 agent_id: "a".into(),
                 delegate_ids: Vec::new(),
                 tools: None,
@@ -761,7 +784,7 @@ async fn complete_projection_preserves_the_canonical_repository_path_without_rel
         .install_complete_test_session(
             "canonical-repository-path",
             SessionInit {
-                workspace_id: host.local_workspace().into(),
+                workspace_id: host.run_assembly.local_workspace().into(),
                 agent_id: "a".into(),
                 delegate_ids: Vec::new(),
                 tools: None,
@@ -778,9 +801,17 @@ async fn complete_projection_preserves_the_canonical_repository_path_without_rel
         .await
         .expect("canonical Repository path stages through the complete projection");
     managed
+        .host
+        .run_assembly
         .apply_session_inputs(
             "canonical-repository-path",
-            &resource_transition(host.local_workspace(), 0, Default::default(), 0, resources),
+            &resource_transition(
+                host.run_assembly.local_workspace(),
+                0,
+                Default::default(),
+                0,
+                resources,
+            ),
         )
         .await
         .expect("compile the exact cold Repository transition");
@@ -894,7 +925,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     let host = (crate::host::with_test_resource_validation(raw_host))
         .build()
         .expect("validated Host dependencies");
-    let workspace_id = host.local_workspace().to_string();
+    let workspace_id = host.run_assembly.local_workspace().to_string();
     let managed = managed_with_resource_source(host.clone());
     let session_id = "terminal-publication-local";
     let lease = crate::session_resource::SessionRealizationLease {
@@ -918,7 +949,10 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         owned_session_id: None,
         committed_environment: None,
     });
-    managed.install_test_environment_binding_sink(initial_binding_sink.clone());
+    managed
+        .host
+        .run_assembly
+        .install_test_environment_binding_sink(initial_binding_sink.clone());
     let resources = effective_repository(
         "repository-publication",
         remote.to_str().unwrap(),
@@ -972,14 +1006,15 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     // owns both effects; no test-only preparation or direct slot write may
     // create a competing partial projection.
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-        &managed,
+        &*managed.host.run_assembly,
         session_id,
         ordinary_projection.clone(),
         awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
     )
     .await
     .expect("P1/P3 install complete ordinary projection before realization");
-    host.install_session_realization_lease(session_id, lease.clone())
+    host.run_assembly
+        .install_session_realization_lease(session_id, lease.clone())
         .unwrap();
     let realization = run_prepared_session_messages(
         &managed,
@@ -1145,7 +1180,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         ),
     );
     awaken_session_execution_contract::TerminalCleanupRuntime::install_terminal_cleanup_assignment(
-        &managed,
+        &*managed.host.run_assembly,
         &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
             environment_creation_not_attempted: false,
             session_id: session_id.into(),
@@ -1182,6 +1217,8 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         assert_eq!(sources.len(), 1, "S1 one fixture-owned realization");
         std::fs::remove_dir_all(&sources[0]).expect("S1 remove owned fixture source");
         let outcome = managed
+            .host
+            .run_assembly
             .execute_terminal_repository_publication_for_lease(command, &lease)
             .await
             .expect("S1 exact closed source must return a negative outcome");
@@ -1284,6 +1321,8 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             .expect("installed Sessions")
             .unwrap();
         managed
+            .host
+            .run_assembly
             .execute_terminal_repository_publication_for_lease(command.clone(), &lease)
             .await
             .expect("P7 fresh wrapper resumes exact terminal publication");
@@ -1327,10 +1366,14 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         );
     }
     let first = managed
+        .host
+        .run_assembly
         .execute_terminal_repository_publication_for_lease(command.clone(), &lease)
         .await
         .expect("P1 publish");
     let replay = managed
+        .host
+        .run_assembly
         .execute_terminal_repository_publication_for_lease(command.clone(), &lease)
         .await
         .expect("P2 replay");
@@ -1490,7 +1533,10 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         owned_session_id: None,
         committed_environment: None,
     });
-    replacement_managed.install_test_environment_binding_sink(replacement_binding_sink.clone());
+    replacement_managed
+        .host
+        .run_assembly
+        .install_test_environment_binding_sink(replacement_binding_sink.clone());
 
     assert!(
         !replacement_host.installed_sessions.contains(session_id)
@@ -1510,6 +1556,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
 
     assert_eq!(
         replacement_host
+            .run_assembly
             .recover_terminal_cleanup_assignments(target.clone())
             .await
             .expect("P4 cold assignment recovery"),
@@ -1631,7 +1678,7 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
     host.file_catalog()
         .create_file(awaken_resource_contract::FileRecord {
             id: public_id.clone(),
-            workspace_id: host.local_workspace().into(),
+            workspace_id: host.run_assembly.local_workspace().into(),
             blob_id: declared_blob_id,
             filename: "input.bin".into(),
             mime_type: "application/octet-stream".into(),
@@ -1648,7 +1695,7 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
         .await
         .unwrap();
     let managed = crate::ManagedHost::new(host.clone());
-    let mut init = bare_session("a", host.local_workspace());
+    let mut init = bare_session("a", host.run_assembly.local_workspace());
     init.resources = effective_resources(vec![TestInput {
         kind: "file".into(),
         id: public_id,
@@ -1660,6 +1707,8 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
     }]);
 
     let error = managed
+        .host
+        .run_assembly
         .install_test_session_init("t-corrupt-file", init)
         .await;
 
@@ -1702,6 +1751,8 @@ async fn file_activation_enforces_workspace_ownership_without_iam_policy_logic()
     }]);
 
     let error = managed
+        .host
+        .run_assembly
         .install_test_session_init("t-cross-workspace", init)
         .await;
 

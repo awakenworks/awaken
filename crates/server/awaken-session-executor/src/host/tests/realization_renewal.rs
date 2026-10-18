@@ -54,6 +54,7 @@ async fn large_session_reconciliation_is_earliest_deadline_first_and_bounded() {
     let running_host = host.clone();
     let reconciliation = tokio::spawn(async move {
         running_host
+            .run_assembly
             .renew_due_session_realizations(
                 awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(15_000),
             )
@@ -173,7 +174,8 @@ async fn five_hundred_twelve_session_reconciliation_remains_bounded_and_complete
     let timing = awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000);
     for _ in 0..3 {
         assert_eq!(
-            host.renew_due_session_realizations(timing)
+            host.run_assembly
+                .renew_due_session_realizations(timing)
                 .await
                 .expect("S1 repeated non-due scale sweep succeeds"),
             0,
@@ -204,7 +206,7 @@ async fn five_hundred_twelve_session_reconciliation_remains_bounded_and_complete
     assert_eq!(
         tokio::time::timeout(
             std::time::Duration::from_secs(3),
-            host.renew_due_session_realizations(timing),
+            host.run_assembly.renew_due_session_realizations(timing),
         )
         .await
         .expect("S2/E3 scale scan remains bounded")
@@ -225,7 +227,8 @@ async fn five_hundred_twelve_session_reconciliation_remains_bounded_and_complete
     assert_eq!(control.renewals_active.load(Ordering::SeqCst), 0, "S2/E3");
 
     assert_eq!(
-        host.renew_due_session_realizations(timing)
+        host.run_assembly
+            .renew_due_session_realizations(timing)
             .await
             .expect("S3 post-renewal non-due sweep succeeds"),
         0,
@@ -303,10 +306,13 @@ async fn late_renewal_response_cannot_mutate_a_replacement_projection() {
             let sweep = {
                 let host = host.clone();
                 tokio::spawn(async move {
-                    host.renew_due_session_realizations(
-                        awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000),
-                    )
-                    .await
+                    host.run_assembly
+                        .renew_due_session_realizations(
+                            awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(
+                                30_000,
+                            ),
+                        )
+                        .await
                 })
             };
             tokio::time::timeout(std::time::Duration::from_secs(1), async {
@@ -336,7 +342,8 @@ async fn late_renewal_response_cannot_mutate_a_replacement_projection() {
                 if changed == "replaced_slot" {
                     host.installed_sessions.remove("renew-race");
                 }
-                host.install_session_realization_lease("renew-race", replacement.clone())
+                host.run_assembly
+                    .install_session_realization_lease("renew-race", replacement.clone())
                     .unwrap();
                 host.installed_sessions.update("renew-race", |slot| {
                     slot.run.dispatch_claim = Some(claim.clone());
@@ -407,10 +414,11 @@ async fn renewal_revocation_rechecks_authority_after_realization_admission() {
         let sweep = {
             let host = host.clone();
             tokio::spawn(async move {
-                host.renew_due_session_realizations(
-                    awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000),
-                )
-                .await
+                host.run_assembly
+                    .renew_due_session_realizations(
+                        awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000),
+                    )
+                    .await
             })
         };
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
@@ -429,7 +437,8 @@ async fn renewal_revocation_rechecks_authority_after_realization_admission() {
         let mut next = lease;
         next.epoch += 1;
         if replaced {
-            host.install_session_realization_lease("renew-revoke", next.clone())
+            host.run_assembly
+                .install_session_realization_lease("renew-revoke", next.clone())
                 .unwrap();
         }
         drop(guard);
@@ -506,7 +515,7 @@ async fn temporary_control_failure_retains_only_a_still_live_session_lease() {
 
     tokio::time::timeout(
         std::time::Duration::from_secs(120),
-        host.renew_due_session_realizations(
+        host.run_assembly.renew_due_session_realizations(
             awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(300_000),
         ),
     )
@@ -541,21 +550,22 @@ async fn stale_ownership_revokes_even_when_the_old_deadline_is_still_live() {
     .build()
     .expect("validated Host dependencies");
     let now = awaken_session_realization::test_support::wall_clock_now_ms();
-    host.install_session_realization_lease(
-        "renewal-stale",
-        crate::session_resource::SessionRealizationLease {
-            owner: "worker-a".into(),
-            runtime_incarnation: "worker-a:old".into(),
-            epoch: 1,
-            expires_at_unix_ms: now.saturating_add(5_000),
-        },
-    )
-    .unwrap();
+    host.run_assembly
+        .install_session_realization_lease(
+            "renewal-stale",
+            crate::session_resource::SessionRealizationLease {
+                owner: "worker-a".into(),
+                runtime_incarnation: "worker-a:old".into(),
+                epoch: 1,
+                expires_at_unix_ms: now.saturating_add(5_000),
+            },
+        )
+        .unwrap();
 
     assert_eq!(
         tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            host.renew_due_session_realizations(
+            host.run_assembly.renew_due_session_realizations(
                 awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(15_000),
             )
         )
@@ -598,21 +608,22 @@ async fn per_request_deadlines_release_every_renewal_capacity_slot() {
     .expect("validated Host dependencies");
     let now = awaken_session_realization::test_support::wall_clock_now_ms();
     for index in 0..SESSION_COUNT {
-        host.install_session_realization_lease(
-            &format!("deadline-session-{index:02}"),
-            crate::session_resource::SessionRealizationLease {
-                owner: "worker-a".into(),
-                runtime_incarnation: "worker-a:incarnation".into(),
-                epoch: 1,
-                expires_at_unix_ms: now.saturating_add(90_000),
-            },
-        )
-        .unwrap();
+        host.run_assembly
+            .install_session_realization_lease(
+                &format!("deadline-session-{index:02}"),
+                crate::session_resource::SessionRealizationLease {
+                    owner: "worker-a".into(),
+                    runtime_incarnation: "worker-a:incarnation".into(),
+                    epoch: 1,
+                    expires_at_unix_ms: now.saturating_add(90_000),
+                },
+            )
+            .unwrap();
     }
 
     tokio::time::timeout(
         std::time::Duration::from_secs(120),
-        host.renew_due_session_realizations(
+        host.run_assembly.renew_due_session_realizations(
             awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(300_000),
         ),
     )
@@ -738,6 +749,7 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
         let running_host = host.clone();
         let reconciliation = tokio::spawn(async move {
             running_host
+                .run_assembly
                 .renew_due_session_realizations(
                     awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(300_000),
                 )
@@ -819,7 +831,10 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
                     "peak":control.max_renewals_active.load(Ordering::SeqCst), "capacity":8}}));
             drop(held);
             assert_eq!(
-                host.revoke_all_session_realizations().await.unwrap(),
+                host.run_assembly
+                    .revoke_all_session_realizations()
+                    .await
+                    .unwrap(),
                 SESSION_COUNT,
                 "M4 existing revocation selection resumes all closed/live cleanup"
             );
@@ -934,6 +949,7 @@ async fn delayed_realization_renewal_cannot_replace_or_revoke_new_projection() {
         let task_host = host.clone();
         let renewal = tokio::spawn(async move {
             task_host
+                .run_assembly
                 .renew_due_session_realizations(
                     awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(60_000),
                 )
@@ -980,7 +996,8 @@ async fn delayed_realization_renewal_cannot_replace_or_revoke_new_projection() {
         if replacement == "removed" {
             host.installed_sessions.remove(rule);
         } else {
-            host.install_session_realization_lease(rule, newer.clone())
+            host.run_assembly
+                .install_session_realization_lease(rule, newer.clone())
                 .unwrap();
             host.installed_sessions
                 .update_run(rule, |run| run.dispatch_claim = Some(claim.clone()));

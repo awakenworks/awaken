@@ -133,7 +133,10 @@ async fn pinned_reads_during_concurrent_first_hand_calls_do_not_join_sandbox_sta
     )
     .await
     .unwrap();
-    host.ctx_for("skill-race", Some("assistant")).await.unwrap();
+    host.run_assembly
+        .ctx_for("skill-race", Some("assistant"))
+        .await
+        .unwrap();
     let sink = Arc::new(GatedSkillBindingSink {
         inner: BindingOrderSink {
             host: Arc::downgrade(&host),
@@ -149,9 +152,13 @@ async fn pinned_reads_during_concurrent_first_hand_calls_do_not_join_sandbox_sta
         release: Default::default(),
         creates: AtomicUsize::new(0),
     });
-    managed.install_test_environment_binding_sink(sink.clone());
+    managed
+        .host
+        .run_assembly
+        .install_test_environment_binding_sink(sink.clone());
     let executor = Arc::new(crate::lazy_sandbox::DeferredSandboxExecutor::new(
-        Arc::downgrade(&host),
+        Arc::downgrade(&host.installed_sessions),
+        Arc::downgrade(&host.realization_executor),
         "skill-race",
     ));
     let bash = ToolCall {
@@ -251,11 +258,15 @@ async fn cold_resource_replacement_and_revocation_never_return_old_skill_bytes()
     )
     .await
     .unwrap();
-    host.ctx_for("skill-change", Some("assistant"))
+    host.run_assembly
+        .ctx_for("skill-change", Some("assistant"))
         .await
         .unwrap();
-    let executor =
-        crate::lazy_sandbox::DeferredSandboxExecutor::new(Arc::downgrade(&host), "skill-change");
+    let executor = crate::lazy_sandbox::DeferredSandboxExecutor::new(
+        Arc::downgrade(&host.installed_sessions),
+        Arc::downgrade(&host.realization_executor),
+        "skill-change",
+    );
     assert!(
         executor
             .invoke(&read_call(".skills/change/SKILL.md", None))
@@ -269,16 +280,18 @@ async fn cold_resource_replacement_and_revocation_never_return_old_skill_bytes()
     v2.id = "skver-change-2".into();
     host.tools
         .skills
-        .append_version(host.local_workspace(), "change", v2.clone())
+        .append_version(host.run_assembly.local_workspace(), "change", v2.clone())
         .await
         .unwrap()
         .unwrap();
     let resources = pinned_skill_resources(&v2);
     managed
+        .host
+        .run_assembly
         .apply_session_inputs(
             "skill-change",
             &resource_transition(
-                host.local_workspace(),
+                host.run_assembly.local_workspace(),
                 0,
                 Default::default(),
                 1,
@@ -297,9 +310,17 @@ async fn cold_resource_replacement_and_revocation_never_return_old_skill_bytes()
         "B3 exact replacement"
     );
     managed
+        .host
+        .run_assembly
         .apply_session_inputs(
             "skill-change",
-            &resource_transition(host.local_workspace(), 1, resources, 2, Default::default()),
+            &resource_transition(
+                host.run_assembly.local_workspace(),
+                1,
+                resources,
+                2,
+                Default::default(),
+            ),
         )
         .await
         .unwrap();
@@ -503,11 +524,13 @@ async fn failed_skill_file_write_blocks_tools_and_repaired_pin_reuses_environmen
     )
     .await
     .unwrap();
-    host.ctx_for("skill-write-fault", Some("assistant"))
+    host.run_assembly
+        .ctx_for("skill-write-fault", Some("assistant"))
         .await
         .unwrap();
     let executor = crate::lazy_sandbox::DeferredSandboxExecutor::new(
-        Arc::downgrade(&host),
+        Arc::downgrade(&host.installed_sessions),
+        Arc::downgrade(&host.realization_executor),
         "skill-write-fault",
     );
     let call = ToolCall {
@@ -554,15 +577,21 @@ async fn failed_skill_file_write_blocks_tools_and_repaired_pin_reuses_environmen
     v2.id = "skver-write-fault-2".into();
     host.tools
         .skills
-        .append_version(host.local_workspace(), "write-fault", v2.clone())
+        .append_version(
+            host.run_assembly.local_workspace(),
+            "write-fault",
+            v2.clone(),
+        )
         .await
         .unwrap()
         .unwrap();
     managed
+        .host
+        .run_assembly
         .apply_session_inputs(
             "skill-write-fault",
             &resource_transition(
-                host.local_workspace(),
+                host.run_assembly.local_workspace(),
                 0,
                 Default::default(),
                 1,
@@ -753,9 +782,15 @@ async fn pinned_read_path_and_text_decision_table() {
     )
     .await
     .unwrap();
-    host.ctx_for("text-table", Some("assistant")).await.unwrap();
-    let executor =
-        crate::lazy_sandbox::DeferredSandboxExecutor::new(Arc::downgrade(&host), "text-table");
+    host.run_assembly
+        .ctx_for("text-table", Some("assistant"))
+        .await
+        .unwrap();
+    let executor = crate::lazy_sandbox::DeferredSandboxExecutor::new(
+        Arc::downgrade(&host.installed_sessions),
+        Arc::downgrade(&host.realization_executor),
+        "text-table",
+    );
     for (path, range, expected) in [
         (
             ".skills/files/references/guide.md",
@@ -891,8 +926,15 @@ async fn cold_skill_read_keeps_pin_after_catalog_update_and_rejects_stale_projec
     )
     .await
     .unwrap();
-    host.ctx_for("cold", Some("assistant")).await.unwrap();
-    let executor = crate::lazy_sandbox::DeferredSandboxExecutor::new(Arc::downgrade(&host), "cold");
+    host.run_assembly
+        .ctx_for("cold", Some("assistant"))
+        .await
+        .unwrap();
+    let executor = crate::lazy_sandbox::DeferredSandboxExecutor::new(
+        Arc::downgrade(&host.installed_sessions),
+        Arc::downgrade(&host.realization_executor),
+        "cold",
+    );
     assert_eq!(
         executor
             .invoke(&read_call(".skills/pinned/SKILL.md", None))
@@ -906,7 +948,9 @@ async fn cold_skill_read_keeps_pin_after_catalog_update_and_rejects_stale_projec
     for mismatch in ["version", "hash", "workspace"] {
         host.installed_sessions.update("cold", |slot| {
             slot.realization.staging_mut().skills = Some(vec![v1.clone()]);
-            slot.replace_frozen_with(|next| next.workspace = Some(host.local_workspace().into()));
+            slot.replace_frozen_with(|next| {
+                next.workspace = Some(host.run_assembly.local_workspace().into())
+            });
             match mismatch {
                 "version" => slot.realization.staging_mut().skills.as_mut().unwrap()[0].version = 2,
                 "hash" => {
@@ -936,7 +980,9 @@ async fn cold_skill_read_keeps_pin_after_catalog_update_and_rejects_stale_projec
     }
     host.installed_sessions.update("cold", |slot| {
         slot.realization.staging_mut().skills = Some(vec![v1.clone()]);
-        slot.replace_frozen_with(|next| next.workspace = Some(host.local_workspace().into()));
+        slot.replace_frozen_with(|next| {
+            next.workspace = Some(host.run_assembly.local_workspace().into())
+        });
         let binding = crate::session_resource::ResolvedSkillBinding {
             kind: awaken_agent_contract::AgentSkillKind::Custom,
             skill_id: "pinned".into(),
@@ -953,7 +999,7 @@ async fn cold_skill_read_keeps_pin_after_catalog_update_and_rejects_stale_projec
             ])
             .unwrap();
         slot.realization.staging_mut().transition = Some(resource_transition(
-            host.local_workspace(),
+            host.run_assembly.local_workspace(),
             0,
             Default::default(),
             1,
@@ -1014,7 +1060,8 @@ async fn lazy_skill_installation_reloads_exact_bytes_and_reuses_environment() {
     )
     .await
     .unwrap();
-    host.ctx_for("install-retry", Some("assistant"))
+    host.run_assembly
+        .ctx_for("install-retry", Some("assistant"))
         .await
         .unwrap();
     host.installed_sessions
@@ -1025,8 +1072,11 @@ async fn lazy_skill_installation_reloads_exact_bytes_and_reuses_environment() {
                 .push(b'!')
         })
         .expect("installed Sessions");
-    let executor =
-        crate::lazy_sandbox::DeferredSandboxExecutor::new(Arc::downgrade(&host), "install-retry");
+    let executor = crate::lazy_sandbox::DeferredSandboxExecutor::new(
+        Arc::downgrade(&host.installed_sessions),
+        Arc::downgrade(&host.realization_executor),
+        "install-retry",
+    );
     let call = ToolCall {
         call_id: "run-after-install".into(),
         tool_id: "bash".into(),

@@ -48,11 +48,12 @@ async fn cold_unmaterialized_recovery_uses_the_saved_create_not_the_cleanup_leas
             environment_creation_not_attempted: false,
             authority: awaken_session_realization::test_support::test_lease_receipt(lease),
         };
-        host.install_test_terminal_cleanup_projection(&assignment)
+        host.run_assembly
+            .install_test_terminal_cleanup_projection(&assignment)
             .await
             .unwrap();
         let result = awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
-                    &crate::ManagedHost::new(host.clone()),
+                    &*(host.clone()).run_assembly,
                     effect.clone(),
                     terminal_preparation_authorization(&effect, &assignment.projection),
                 ).await.map_err(crate::host_error::from_run_error);
@@ -151,11 +152,12 @@ async fn cold_terminal_cleanup_consumes_only_control_no_create_evidence() {
             assignment.environment_creation_not_attempted, witness,
             "H5 exact wire meaning"
         );
-        host.install_test_terminal_cleanup_projection(&assignment)
+        host.run_assembly
+            .install_test_terminal_cleanup_projection(&assignment)
             .await
             .unwrap();
         let result = awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
-                    &crate::ManagedHost::new(host.clone()),
+                    &*(host.clone()).run_assembly,
                     effect.clone(),
                     terminal_preparation_authorization(&effect, &projection),
                 ).await.map_err(crate::host_error::from_run_error);
@@ -171,7 +173,8 @@ async fn cold_terminal_cleanup_consumes_only_control_no_create_evidence() {
         drop(managed);
         drop(host);
         let (host, _managed) = cold_host(provider, &worker_fence).await;
-        host.install_test_terminal_cleanup_projection(&assignment)
+        host.run_assembly
+            .install_test_terminal_cleanup_projection(&assignment)
             .await
             .unwrap();
         host.realization_executor
@@ -190,11 +193,12 @@ async fn cold_terminal_cleanup_consumes_only_control_no_create_evidence() {
                 idle_since_unix_ms: None,
             };
         // A contradictory projection cannot consume the no-Create branch.
-        host.install_test_terminal_cleanup_projection(&conflicting)
+        host.run_assembly
+            .install_test_terminal_cleanup_projection(&conflicting)
             .await
             .unwrap();
         let error = awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
-                    &crate::ManagedHost::new(host.clone()),
+                    &*(host.clone()).run_assembly,
                     effect.clone(),
                     terminal_preparation_authorization(&effect, &conflicting.projection),
                 ).await.map_err(crate::host_error::from_run_error)

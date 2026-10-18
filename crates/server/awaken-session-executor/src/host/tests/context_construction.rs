@@ -20,6 +20,7 @@ async fn failed_context_assembly_retains_one_environment_for_retry() {
     let (host, _managed) = dispatch_test_host((host).build().expect("validated Host dependencies"));
     let thread = "failed-context-assembly";
     let error = host
+        .run_assembly
         .ctx_for(thread, None)
         .await
         .err()
@@ -39,6 +40,7 @@ async fn failed_context_assembly_retains_one_environment_for_retry() {
         .expect("E2 owner retained");
 
     let repeated = host
+        .run_assembly
         .ctx_for(thread, None)
         .await
         .err()
@@ -256,6 +258,7 @@ async fn acp_context_failure_releases_exports_and_reuses_environment() {
             acp_fixture(root.path(), first, fail_factory).await;
         let thread = "acp-context-failure";
         let error = host
+            .run_assembly
             .ctx_for(thread, Some("assistant"))
             .await
             .err()
@@ -280,6 +283,7 @@ async fn acp_context_failure_releases_exports_and_reuses_environment() {
             "E2"
         );
         let complete = host
+            .run_assembly
             .ctx_for(thread, Some("assistant"))
             .await
             .expect("R3 retry");
@@ -290,7 +294,11 @@ async fn acp_context_failure_releases_exports_and_reuses_environment() {
             failed_drops,
             "E4"
         );
-        let cached = host.ctx_for(thread, Some("assistant")).await.unwrap();
+        let cached = host
+            .run_assembly
+            .ctx_for(thread, Some("assistant"))
+            .await
+            .unwrap();
         assert!(Arc::ptr_eq(&complete, &cached), "R4");
         assert_eq!(exporter.calls.load(Ordering::SeqCst), 2, "R4");
     }
@@ -308,7 +316,7 @@ async fn cancelled_context_construction_releases_lock_and_partial_export() {
     let (host, _managed, exporter, entered) =
         acp_fixture(root.path(), FirstExport::Block, false).await;
     let thread = "cancelled-context-construction";
-    let mut open = Box::pin(host.ctx_for(thread, Some("assistant")));
+    let mut open = Box::pin(host.run_assembly.ctx_for(thread, Some("assistant")));
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         tokio::select! {
             result = &mut open => panic!("must suspend during export: {:?}", result.err()),
@@ -334,7 +342,7 @@ async fn cancelled_context_construction_releases_lock_and_partial_export() {
     assert_eq!(exporter.leases_dropped.load(Ordering::SeqCst), 1, "E2");
     let complete = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        host.ctx_for(thread, Some("assistant")),
+        host.run_assembly.ctx_for(thread, Some("assistant")),
     )
     .await
     .expect("E3 lock released")

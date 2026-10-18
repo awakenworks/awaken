@@ -142,8 +142,12 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                 } else {
                     None
                 };
-                let mut pending =
-                    Box::pin(managed.checkpoint_session_environment(thread, request.clone()));
+                let mut pending = Box::pin(
+                    managed
+                        .host
+                        .run_assembly
+                        .checkpoint_session_environment(thread, request.clone()),
+                );
                 std::future::poll_fn(|cx| {
                     assert!(
                         std::future::Future::poll(pending.as_mut(), cx).is_pending(),
@@ -217,6 +221,8 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                     *worker.current.lock().unwrap() = Some((fence, Duration::from_secs(1)));
                 }
                 managed
+                    .host
+                    .run_assembly
                     .checkpoint_session_environment(thread, request)
                     .await
                     .unwrap();

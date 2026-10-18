@@ -4,8 +4,8 @@
 //! Legacy Skill catalog refresh remains here because its support-file evidence
 //! must precede Environment deferral. This stage never creates an Environment.
 
+use crate::HostError;
 use crate::host::{ClaimedRuntimeInput, RuntimePublicationIdentity};
-use crate::{HostError, SharedHost};
 use awaken_runtime_contract::ExecutableAgentSnapshot;
 use awaken_session_realization::peers::EnvironmentPeer as _;
 use std::sync::Arc;
@@ -31,7 +31,7 @@ pub(super) struct ContextPlan {
 }
 
 pub(super) async fn prepare(
-    host: &SharedHost,
+    host: &crate::RunAssembly,
     thread: &str,
     agent: Option<&str>,
     published_snapshot: Option<ExecutableAgentSnapshot>,

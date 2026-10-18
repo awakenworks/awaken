@@ -173,7 +173,7 @@ pub(crate) async fn install_complete_projection_for_snapshot(
     let mut projection = empty_frozen_projection_for_snapshot(workspace_id, environment, snapshot);
     projection.agent_publication = Some(snapshot.clone());
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-        managed,
+        &*managed.host.run_assembly,
         thread,
         projection,
         awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
@@ -428,9 +428,9 @@ pub(super) async fn prepare_deferred_session(
 ) -> crate::ManagedHost {
     let managed = managed_test_host(host.clone());
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-        &managed,
+        &*managed.host.run_assembly,
         thread,
-        empty_frozen_projection(host.local_workspace(), deferred_environment()),
+        empty_frozen_projection(host.run_assembly.local_workspace(), deferred_environment()),
         awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
     )
     .await

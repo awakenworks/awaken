@@ -72,7 +72,7 @@ PROTOCOL_SESSIONS = "crates/server/awaken-protocol-managed/src/state/sessions.rs
 SESSION_STORE = "crates/stores/awaken-session-store/src/lib.rs"
 SQLITE_SESSION_STORE = "crates/stores/awaken-session-store/src/sqlite.rs"
 POSTGRES_SESSION_STORE = "crates/stores/awaken-session-store/src/postgres.rs"
-RUNTIME_HOST = "crates/server/awaken-session-executor/src/lib.rs"
+RUNTIME_HOST = "crates/server/awaken-session-executor/src/run_assembly/roles.rs"
 RUNTIME_HOST_APPLICATION = "crates/server/awaken-session-executor/src/application.rs"
 SESSION_REALIZATION_CONTROL_DEADLINE = (
     "crates/server/awaken-session-realization-driver/src/"
