@@ -207,7 +207,7 @@ async fn native_and_client_resume_preserve_actual_source_ownership() {
         let saved_ticket = Arc::new(Mutex::new(None));
         let callback_ticket = saved_ticket.clone();
         let completed = runtime
-            .session(
+            .conversation(
                 &snapshot,
                 "sources",
                 context,

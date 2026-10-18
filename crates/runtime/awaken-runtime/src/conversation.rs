@@ -12,15 +12,18 @@ use awaken_runtime_contract::execution::Error;
 use awaken_runtime_contract::{ExecutableAgentSnapshot, ResumeResult, RuntimeRunContext};
 use std::future::Future;
 
-/// Owns the bindings for a conversation, not a second lifecycle/permission store.
-pub struct EmbeddedSession<'a> {
+/// Binds a Snapshot, Thread and execution context for one conversation.
+///
+/// Runs share the supplied Thread and store. This binding uses the Runtime's
+/// existing execution and recovery paths; it does not create a managed Session.
+pub struct Conversation<'a> {
     runtime: &'a Runtime,
     snapshot: &'a ExecutableAgentSnapshot,
     thread_id: ThreadId,
     context: RuntimeRunContext,
 }
 
-impl<'a> EmbeddedSession<'a> {
+impl<'a> Conversation<'a> {
     pub(crate) fn new(
         runtime: &'a Runtime,
         snapshot: &'a ExecutableAgentSnapshot,

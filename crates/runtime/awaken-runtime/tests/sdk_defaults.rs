@@ -197,7 +197,7 @@ async fn missing_provider_sandbox_and_writer_fail_before_admission() {
         .unwrap_err();
     assert_eq!(error.code(), "missing_model_provider");
     let error = runtime
-        .session(
+        .conversation(
             &snapshot(),
             "writer",
             RuntimeRunContext::new().with_reader(store.clone()),
