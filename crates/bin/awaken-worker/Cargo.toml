@@ -52,6 +52,7 @@ awaken-container-contract.workspace = true
 awaken-protocol-mcp.workspace = true
 # The neutral host substrate: SharedHost, the dispatch pool, and the worker dispatch
 # store that routes the drain over HTTP to the cell server.
+awaken-dispatch-execution.workspace = true
 awaken-session-executor = { workspace = true, default-features = false }
 # The authenticated outbound proxy port of the Worker MCP relay.
 awaken-session-mcp.workspace = true

@@ -27,15 +27,6 @@ mod agent_runner;
 mod application;
 pub use application::SessionRealizationRevocation;
 
-/// Opaque host-boundary proof that the canonical dispatch pool installed its
-/// absorbing local drain fence. The private field carries the ingress owner's
-/// token without exposing that infrastructure crate as a Runtime Host facade.
-#[derive(Debug)]
-#[must_use]
-pub struct PoolDrainFence {
-    _ingress: awaken_dispatch_execution::PoolDrainFence,
-}
-
 mod authority;
 mod auxiliary_sandbox;
 mod background;
@@ -139,14 +130,17 @@ pub use crate::host::capability::WorkerContentAdapters;
 #[cfg(any(test, feature = "test-support"))]
 pub use crate::host::capability::{LocalResourcePorts, LocalSkillPorts, test_memory_content};
 pub use crate::host::{
-    AttemptExecutorDecorator, DispatchPoolSizing, ExecutionTopology, HostDependencies, HostProcess,
-    HostResume, LeaseOwnerId, LocalExecution, QueueDepthSource, RemoteAttemptInstallation,
-    RunIngress, SessionApplicationBindingError, SessionApplicationBindings,
-    SessionExecutionDependencies, SharedHost, TrustedHostPolicy, WarmPool,
+    AttemptExecutorDecorator, HostDependencies, HostProcess, HostResume, RemoteAttemptInstallation,
+    SessionApplicationBindingError, SessionApplicationBindings, SessionExecutionDependencies,
+    SharedHost, TrustedHostPolicy, WarmPool,
 };
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::no_model::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};
 use awaken_credential_materializer::{CredentialRefreshFactory, PinnedCredentialMaterializer};
+pub(crate) use awaken_dispatch_execution::{
+    DispatchPoolSizing, ExecutionTopology, LeaseOwnerId, LocalExecution, QueueDepthSource,
+    RunIngress,
+};
 use awaken_resource_contract::FileContentSource;
 #[cfg(test)]
 use awaken_resource_contract::RepositoryBindingVerifier;

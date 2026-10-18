@@ -88,7 +88,7 @@ async fn session_run_reservation_repair_skips_execution_realization() {
         .with_ephemeral_dispatch(store))
     .build()
     .expect("validated Host dependencies");
-    crate::host::session_worker_resolver(&host)
+    crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
         .expect("Host dispatch resolver")
         .worker_for_claimed(&claimed)
         .await
@@ -152,7 +152,11 @@ async fn ephemeral_parent_routes_a_coordinated_child_through_the_boundary_worker
         .await
         .expect("E1 direct parent context");
     assert!(!parent_ctx.delivery.is_durable(), "E1 precondition");
-    let store = host.dispatch_store().expect("ephemeral dispatch authority");
+    let store = host
+        .authority
+        .dispatch_binding()
+        .map(|binding| binding.queue())
+        .expect("ephemeral dispatch authority");
     store
         .enqueue(
             ingress::RunDispatch::new(activation)
@@ -175,7 +179,8 @@ async fn ephemeral_parent_routes_a_coordinated_child_through_the_boundary_worker
         .await
         .expect("E1 claim")
         .expect("E1 child work");
-    let resolver = crate::host::session_worker_resolver(&host).expect("Host dispatch resolver");
+    let resolver = crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
+        .expect("Host dispatch resolver");
 
     resolver
         .worker_for_claimed(&claimed)
@@ -238,7 +243,8 @@ async fn durable_deferred_sandbox_publication_decision_table() {
         .run_assembly
         .install_test_environment_binding_sink(sink.clone());
     let claimed = claim(&store, "durable-lazy", "run-lazy", "worker-a", now, &clock).await;
-    let resolver = crate::host::session_worker_resolver(&host).expect("Host dispatch resolver");
+    let resolver = crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
+        .expect("Host dispatch resolver");
     resolver
         .worker_for_claimed(&claimed)
         .await
@@ -311,7 +317,8 @@ async fn durable_deferred_sandbox_publication_decision_table() {
     )
     .await;
     let loss_resolver =
-        crate::host::session_worker_resolver(&loss_host).expect("Host dispatch resolver");
+        crate::host::session_worker_resolver(&loss_host.run_assembly, &loss_host.dispatch)
+            .expect("Host dispatch resolver");
     loss_resolver
         .worker_for_claimed(&loss_claim)
         .await
@@ -554,7 +561,7 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
         .expect("claim")
         .expect("claimed Run");
 
-    crate::host::session_worker_resolver(&host)
+    crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
         .expect("Host dispatch resolver")
         .worker_for_claimed(&claimed)
         .await
@@ -860,7 +867,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
     let frozen = projection.lock().unwrap().take();
     for _ in 0..2 {
         assert!(
-            crate::host::session_worker_resolver(&host)
+            crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
                 .expect("Host dispatch resolver")
                 .worker_for_claimed(&claimed)
                 .await
@@ -878,7 +885,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
     }
     assert_eq!(*continuations.lock().unwrap(), vec![None, None], "CR1");
     *projection.lock().unwrap() = frozen;
-    crate::host::session_worker_resolver(&host)
+    crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
         .expect("Host dispatch resolver")
         .worker_for_claimed(&claimed)
         .await
@@ -898,7 +905,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
         })
         .flatten()
         .expect("CR2 installed lease");
-    crate::host::session_worker_resolver(&host)
+    crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
         .expect("Host dispatch resolver")
         .worker_for_claimed(&claimed)
         .await
@@ -953,7 +960,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
         .await
         .expect("O5 claim")
         .expect("O5 claimed Run");
-    crate::host::session_worker_resolver(&host)
+    crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
         .expect("Host dispatch resolver")
         .worker_for_claimed(&claimed)
         .await
@@ -1029,7 +1036,7 @@ async fn claimed_resource_conflict_is_terminal_before_realization() {
             .await
             .unwrap()
             .unwrap();
-        let result = crate::host::session_worker_resolver(&host)
+        let result = crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
             .expect("Host dispatch resolver")
             .worker_for_claimed(&claimed)
             .await;
@@ -1087,7 +1094,8 @@ async fn resource_manifest_must_match_the_durable_execution_scope() {
         sandbox: None,
         assignment: None,
     };
-    let resolver = crate::host::session_worker_resolver(&host).expect("Host dispatch resolver");
+    let resolver = crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
+        .expect("Host dispatch resolver");
 
     let error = match resolver.worker_for_claimed(&claimed).await {
         Ok(_) => panic!("scope mismatch must fail closed"),
@@ -1131,7 +1139,8 @@ async fn malformed_resource_manifest_is_rejected_before_sandbox_creation() {
         sandbox: None,
         assignment: None,
     };
-    let resolver = crate::host::session_worker_resolver(&host).expect("Host dispatch resolver");
+    let resolver = crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
+        .expect("Host dispatch resolver");
 
     let error = match resolver.worker_for_claimed(&claimed).await {
         Ok(_) => panic!("malformed manifest must fail closed"),
@@ -2371,7 +2380,8 @@ async fn cancellation_resolution_does_not_touch_an_invalid_sandbox_binding() {
         sandbox: Some("this is deliberately not a sandbox handle".to_string()),
         assignment: None,
     };
-    let resolver = crate::host::session_worker_resolver(&host).expect("Host dispatch resolver");
+    let resolver = crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
+        .expect("Host dispatch resolver");
 
     resolver
         .worker_for_claimed(&claimed)
@@ -2456,7 +2466,7 @@ async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session
             }))
             .unwrap(),
         );
-        let result = crate::host::session_worker_resolver(&host)
+        let result = crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
             .expect("Host dispatch resolver")
             .worker_for_claimed(&claimed)
             .await;

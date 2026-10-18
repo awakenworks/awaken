@@ -712,7 +712,13 @@ fn assemble_session_plane(
     .configuration(
         awaken_session_application::SessionApplicationConfiguration {
             execution_placement: base.placement,
-            local_realization_owner: host.host.dispatch_owner().to_string(),
+            local_realization_owner: host
+                .host
+                .dispatch()
+                .topology()
+                .lease_owner
+                .as_str()
+                .to_owned(),
             ..Default::default()
         },
     )

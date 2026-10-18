@@ -2175,7 +2175,7 @@ async fn coordinator_only_foreground_admission_survives_request_drop_without_a_p
     let _managed = install_test_dispatch_runtime(&host);
     host.ensure_dispatch_pool()
         .expect("valid test dispatch composition");
-    assert!(host.dispatch.dispatch_pool.get().is_none(), "Q2/E2");
+    assert!(host.dispatch.pool().is_none(), "Q2/E2");
 
     let request = host.clone();
     let foreground = tokio::spawn(async move {

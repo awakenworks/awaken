@@ -706,7 +706,11 @@ mod tests {
         // Use its authoritative queue row, not a fabricated tuple that would
         // bypass the deferred binding fence when the slot had no claim.
 
-        let dispatch = host.dispatch_store().unwrap();
+        let dispatch = host
+            .authority
+            .dispatch_binding()
+            .map(|binding| binding.queue())
+            .unwrap();
         dispatch
             .enqueue(awaken_dispatch_contract::RunDispatch::new(
                 test_activation(thread, "run-claimed-ready-durable"),
@@ -1325,7 +1329,11 @@ mod tests {
             .expect("CR1 install exact frozen publication before the legacy owner");
         let (original, raw_binding, retired_sentinel) =
             revoked_legacy_v1_environment(host.as_ref(), thread).await;
-        let dispatch = host.dispatch_store().unwrap();
+        let dispatch = host
+            .authority
+            .dispatch_binding()
+            .map(|binding| binding.queue())
+            .unwrap();
         dispatch
             .enqueue(awaken_dispatch_contract::RunDispatch::new(
                 test_activation(thread, "run-claimed-ready-v1"),

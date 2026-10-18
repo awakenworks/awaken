@@ -51,8 +51,6 @@ impl crate::SessionRuns {
         &self,
         delivery: awaken_session_execution_contract::SessionRunDelivery,
     ) -> Result<awaken_session_execution_contract::SessionRunActivation, HostError> {
-        use awaken_dispatch_contract::Outbox as _;
-
         if delivery.session_activity_epoch == 0 {
             return Err(HostError::bad_request(
                 "Session User Run activity epoch must be nonzero",
@@ -98,14 +96,10 @@ impl crate::SessionRuns {
             awaken_session_execution_contract::SessionRunActivation::Activated
                 | awaken_session_execution_contract::SessionRunActivation::AlreadyActivated { .. }
         ) {
-            if self.local_pool.get().is_some() {
-                self.dispatch_hint.publish().await;
-            } else {
-                store
-                    .relay()
-                    .await
-                    .map_err(|error| HostError::unavailable(error.to_string()))?;
-            }
+            self.dispatch
+                .publish_staged(store.as_ref())
+                .await
+                .map_err(|error| HostError::unavailable(error.to_string()))?;
         }
         Ok(projected)
     }
@@ -210,7 +204,7 @@ impl crate::SessionRuns {
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))?;
         }
-        self.notify_local_pool().await;
+        self.dispatch.hint_local_pool().await;
         self.await_settled_event(ctx, &run_id, None, settled).await
     }
 
@@ -239,7 +233,7 @@ impl crate::SessionRuns {
             .append(input)
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
-        self.notify_local_pool().await;
+        self.dispatch.hint_local_pool().await;
         self.await_settled_event(ctx, &run_id, Some(&correlation_id), settled)
             .await
     }

@@ -1,6 +1,4 @@
-// @formal evidence worker_drain.bounded_cleanup_eventually_exits_without_fabricating_quiescence
-// @formal evidence worker_drain.grace_expiry_retains_cancellation_observer
-//! Run boundary: drain fence, interrupts, construction ports, capture, and the attempt decorator.
+//! Run boundary: interrupts, construction ports, capture, and the attempt decorator.
 
 use super::*;
 
@@ -9,60 +7,6 @@ fn completed_outcome(progress: HostOutcomeDrive) -> HostOutcomeReport {
         HostOutcomeDrive::Completed(report) => report,
         HostOutcomeDrive::Awaiting => panic!("test Outcome unexpectedly awaited input"),
     }
-}
-
-#[tokio::test(start_paused = true)]
-async fn runtime_drain_fence_obeys_the_callers_absolute_deadline() {
-    // Cause/effect graph: C1 pool-fence acquisition completes or remains
-    // pending; C2 the absolute drain deadline is before or after completion.
-    // E1 return the exact fence value on completion; E2 retain and poll the
-    // pending production future until C2; E3 report timeout without a fence.
-    // Constraint: `Some(None)` remains the valid no-local-pool result and must
-    // not be confused with E3's outer `None`.
-    //
-    // | Rule | C1 | C2 | Effect |
-    // |---|---|---|---|
-    // | F1 | complete | after completion | E1 (`Some(None)`) |
-    // | F2 | pending | before deadline | E2 |
-    // | F3 | pending | at deadline | E3 |
-    let budget = std::time::Duration::from_secs(5);
-    assert!(
-        matches!(
-            await_runtime_drain_fence_before(tokio::time::Instant::now() + budget, async {
-                None::<crate::PoolDrainFence>
-            })
-            .await,
-            Some(None)
-        ),
-        "F1/E1"
-    );
-
-    let dropped = Arc::new(AtomicBool::new(false));
-    let started = Arc::new(tokio::sync::Notify::new());
-    let deadline = tokio::time::Instant::now() + budget;
-    let task = tokio::spawn(await_runtime_drain_fence_before(deadline, {
-        let dropped = dropped.clone();
-        let started = started.clone();
-        async move {
-            struct FenceDrop(Arc<AtomicBool>);
-            impl Drop for FenceDrop {
-                fn drop(&mut self) {
-                    self.0.store(true, Ordering::SeqCst);
-                }
-            }
-            let _fence = FenceDrop(dropped);
-            started.notify_one();
-            std::future::pending::<Option<crate::PoolDrainFence>>().await
-        }
-    }));
-    started.notified().await;
-    tokio::time::advance(budget - std::time::Duration::from_millis(1)).await;
-    tokio::task::yield_now().await;
-    assert!(!task.is_finished(), "F2/E2");
-    assert!(!dropped.load(Ordering::SeqCst), "F2/E2");
-    tokio::time::advance(std::time::Duration::from_millis(1)).await;
-    assert!(task.await.unwrap().is_none(), "F3/E3");
-    assert!(dropped.load(Ordering::SeqCst), "F3/E3");
 }
 
 /// Wait for the Provider-side gate or fail immediately if setup terminates the

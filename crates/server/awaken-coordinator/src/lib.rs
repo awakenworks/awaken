@@ -588,12 +588,12 @@ async fn local_managed_state_over(
     // startup. Deriving placement from the canonical Host value eliminates
     // the former second path where ManagedState always selected LocalWorker even
     // when this process deliberately had no local dispatch pool.
-    let execution_placement = if host.runs_local_dispatch_pool() {
+    let execution_placement = if host.dispatch().topology().local.runs_local_pool() {
         awaken_session_application::SessionExecutionPlacement::LocalWorker
     } else {
         awaken_session_application::SessionExecutionPlacement::RegisteredWorker
     };
-    let local_realization_owner = host.dispatch_owner().to_string();
+    let local_realization_owner = host.dispatch().topology().lease_owner.as_str().to_owned();
     let environments =
         environments.unwrap_or_else(|| volatile_environment_execution(clock.clone()));
     let mut builder = awaken_session_application::SessionApplicationBuilder::new(
@@ -852,7 +852,7 @@ pub async fn mount_with_managed_and_application_access_and_models(
     let resource_registry = resource_authorities.resource_registry();
     let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
     let lifecycle_host = host.clone();
-    let remote_worker_required = !host.runs_local_dispatch_pool();
+    let remote_worker_required = !host.dispatch().topology().local.runs_local_pool();
     let dream_process_store = scenario_dream_process_store(host.as_ref()).await;
     // The Worker transport judges assertions on the Scenario Host's clock.
     let worker_clock = host.clock();
@@ -1279,7 +1279,7 @@ async fn mount_with_managed_over(
     let resource_authorities = resources.authorities();
     let resource_registry = resource_authorities.resource_registry();
     let lifecycle_host = host.clone();
-    let remote_worker_required = !host.runs_local_dispatch_pool();
+    let remote_worker_required = !host.dispatch().topology().local.runs_local_pool();
     // A scenario that opts into the same durable storage root as production
     // must not silently retain an in-memory Dream authority. Sessions and
     // Dreams share the concrete sessions.db aggregate in product startup; keep
@@ -1610,10 +1610,9 @@ async fn mount_with_managed_over_and_models(
     // loop before exposing the Worker transport; local-pool embeddings already
     // perform the same maintenance inside that pool.
     if let Some(source) = worker_execution_stops.as_ref() {
-        let maintenance = Arc::new(awaken_dispatch::WorkerEvidenceReleaseAdapter::new(
-            source.clone(),
-        ));
-        host.bind_worker_evidence_reconciliation(worker_directory.clone(), maintenance)
+        let maintenance = awaken_dispatch::WorkerEvidenceReleaseAdapter::new(source.clone());
+        host.dispatch()
+            .bind_worker_evidence(worker_directory.clone(), Arc::new(maintenance))
             .map_err(|error| WorkerTransportBuildError::Dispatch(error.to_string()))?;
     }
     // The durable-ingress operations surface (slice E): ADR-0009 follow-on verbs
@@ -1627,6 +1626,7 @@ async fn mount_with_managed_over_and_models(
     // The Worker-facing cross-node seam: a dispatch-store-isolated Worker claims/settles runs
     // over the dispatch transport and pushes committed facts to the commit ingest.
     let dispatch = host
+        .session_runs()
         .coordinator_dispatch()
         .map_err(|error| WorkerTransportBuildError::Dispatch(error.to_string()))?;
     let checkpoint = worker_checkpoint_authority(dispatch.as_ref(), host.storage_dir())?;

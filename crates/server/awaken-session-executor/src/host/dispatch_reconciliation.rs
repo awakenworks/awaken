@@ -7,6 +7,7 @@ mod tests {
     use crate::host::worker_resolver::test_support::{AdoptionModel, claim, test_activation};
     use async_trait::async_trait;
     use awaken_agent_contract::agent::{run::EndCause, thread::Id as ThreadId};
+    use awaken_dispatch_execution::DEFAULT_LEASE_MS;
     use awaken_dispatch_contract::DispatchAttemptRecordReads as _;
     use awaken_dispatch_contract::{
         DispatchClaims, DispatchCommitAuthority, DispatchControlReads, DispatchExecution,
@@ -154,14 +155,15 @@ mod tests {
             attempts: Default::default(),
             complete: std::sync::atomic::AtomicBool::new(false),
         });
-        host.bind_worker_evidence_reconciliation(
-            directory.clone(),
-            Arc::new(awaken_dispatch::WorkerEvidenceReleaseAdapter::new(
-                source.clone(),
-            )),
-        )
-        .unwrap();
-        crate::host::session_worker_resolver(&host)
+        host.dispatch
+            .bind_worker_evidence(
+                directory.clone(),
+                Arc::new(awaken_dispatch::WorkerEvidenceReleaseAdapter::new(
+                    source.clone(),
+                )),
+            )
+            .unwrap();
+        crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
             .expect("Host dispatch resolver")
             .reconcile_worker_evidence()
             .await
@@ -176,12 +178,12 @@ mod tests {
                 .is_some(),
             "M1 exit was committed before failed release"
         );
-        crate::host::session_worker_resolver(&host)
+        crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
             .expect("Host dispatch resolver")
             .reconcile_worker_evidence()
             .await
             .unwrap();
-        crate::host::session_worker_resolver(&host)
+        crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
             .expect("Host dispatch resolver")
             .reconcile_worker_evidence()
             .await
@@ -416,14 +418,15 @@ mod tests {
                 ))
                 .build()
                 .expect("validated Host dependencies");
-        host.bind_worker_evidence_reconciliation(
-            directory.clone(),
-            Arc::new(awaken_dispatch::WorkerEvidenceReleaseAdapter::new(
-                Arc::new(UnknownIdleEvidence),
-            )),
-        )
-        .unwrap();
-        crate::host::session_worker_resolver(&host)
+        host.dispatch
+            .bind_worker_evidence(
+                directory.clone(),
+                Arc::new(awaken_dispatch::WorkerEvidenceReleaseAdapter::new(
+                    Arc::new(UnknownIdleEvidence),
+                )),
+            )
+            .unwrap();
+        crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
             .expect("Host dispatch resolver")
             .reconcile_worker_evidence()
             .await
@@ -533,15 +536,16 @@ mod tests {
                 .with_ephemeral_dispatch(dispatch.clone()))
             .build()
             .expect("validated Host dependencies");
-        host.bind_worker_evidence_reconciliation(
-            directory.clone(),
-            Arc::new(awaken_dispatch::WorkerEvidenceReleaseAdapter::new(
-                Arc::new(UnownedEvidence),
-            )),
-        )
-        .unwrap();
+        host.dispatch
+            .bind_worker_evidence(
+                directory.clone(),
+                Arc::new(awaken_dispatch::WorkerEvidenceReleaseAdapter::new(
+                    Arc::new(UnownedEvidence),
+                )),
+            )
+            .unwrap();
         for _ in 0..2 {
-            crate::host::session_worker_resolver(&host)
+            crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
                 .expect("Host dispatch resolver")
                 .reconcile_worker_evidence()
                 .await
@@ -815,16 +819,18 @@ mod tests {
                     complete: std::sync::atomic::AtomicBool::new(rule != "unknown"),
                 });
                 if rule != "unbound-source" {
-                    host.bind_worker_evidence_reconciliation(
-                        directory,
-                        Arc::new(awaken_dispatch::WorkerEvidenceReleaseAdapter::new(
-                            source.clone(),
-                        )),
-                    )
-                    .unwrap();
+                    host.dispatch
+                        .bind_worker_evidence(
+                            directory,
+                            Arc::new(awaken_dispatch::WorkerEvidenceReleaseAdapter::new(
+                                source.clone(),
+                            )),
+                        )
+                        .unwrap();
                 }
                 let resolver =
-                    crate::host::session_worker_resolver(&host).expect("Host dispatch resolver");
+                    crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
+                        .expect("Host dispatch resolver");
                 let completed = resolver.reconcile_committed_terminals(8).await.unwrap();
                 if ["nonterminal", "live", "unbound-source"].contains(&rule) {
                     assert!(completed.is_empty(), "{rule}");
@@ -1147,7 +1153,8 @@ mod tests {
         coordinator.execution.local = crate::LocalExecution::RemoteWorkersOnly;
         let coordinator = (coordinator).build().expect("validated Host dependencies");
         let host = coordinator;
-        let resolver = crate::host::session_worker_resolver(&host).expect("Host dispatch resolver");
+        let resolver = crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
+            .expect("Host dispatch resolver");
 
         let parked = claim(
             &store,
@@ -1298,7 +1305,8 @@ mod tests {
             .await
             .expect("special claim")
             .expect("exhausted row claims");
-        let resolver = crate::host::session_worker_resolver(&host).expect("Host dispatch resolver");
+        let resolver = crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
+            .expect("Host dispatch resolver");
         assert_eq!(
             resolver
                 .worker_for_retry_exhausted(&claimed)
@@ -1408,7 +1416,8 @@ mod tests {
         .await
         .expect("commit logical child in parent partition");
 
-        let resolver = crate::host::session_worker_resolver(&host).expect("Host dispatch resolver");
+        let resolver = crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
+            .expect("Host dispatch resolver");
         let reconciled = resolver
             .reconcile_committed_terminals(8)
             .await

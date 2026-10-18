@@ -3681,6 +3681,7 @@ dependencies = [
  "awaken-credential-contract",
  "awaken-credential-materializer",
  "awaken-dispatch-erasure",
+ "awaken-dispatch-execution",
  "awaken-environment-contract",
  "awaken-execution-composition",
  "awaken-ext-builtin-tools",

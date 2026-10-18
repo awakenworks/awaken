@@ -414,7 +414,10 @@ mod tests {
         .await
         .into_parts();
         assert!(
-            Arc::ptr_eq(&host.coordinator_dispatch().unwrap(), &exact_dispatch),
+            Arc::ptr_eq(
+                &host.session_runs().coordinator_dispatch().unwrap(),
+                &exact_dispatch
+            ),
             "R1/E1 selected Dispatch must not be shadowed"
         );
     }

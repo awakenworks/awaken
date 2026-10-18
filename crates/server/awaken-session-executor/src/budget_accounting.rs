@@ -106,8 +106,6 @@ impl BudgetAccounting {
         delivery: awaken_session_application_contract::SessionBudgetResumeDelivery,
     ) -> Result<awaken_session_application_contract::SessionBudgetResumeDisposition, HostError>
     {
-        use awaken_dispatch_contract::Outbox as _;
-
         if delivery.session_activity_epoch == 0 {
             return Err(HostError::bad_request(
                 "budget resume requires a newly admitted Session activity",
@@ -217,14 +215,11 @@ impl BudgetAccounting {
             )
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
-        if self.session_runs.local_pool.get().is_some() {
-            self.session_runs.dispatch_hint.publish().await;
-        } else {
-            store
-                .relay()
-                .await
-                .map_err(|error| HostError::internal(error.to_string()))?;
-        }
+        self.session_runs
+            .dispatch
+            .publish_staged(&store)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
         Ok(awaken_session_application_contract::SessionBudgetResumeDisposition::Dispatched)
     }
 }
