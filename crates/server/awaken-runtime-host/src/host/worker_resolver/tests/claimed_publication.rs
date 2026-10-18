@@ -69,6 +69,7 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
         .await
         .expect("R1 queue root continuation");
     let ephemeral_store = ephemeral
+        .run_assembly
         .authority
         .dispatch_binding()
         .map(|binding| binding.queue())

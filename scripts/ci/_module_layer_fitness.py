@@ -117,6 +117,7 @@ LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "thread_reads",
     )),
     (HOST, "protocol-neutral host adapters and their composition", (
+        "process_roles",
         "session_effects",
         "host_error",
         "hub",

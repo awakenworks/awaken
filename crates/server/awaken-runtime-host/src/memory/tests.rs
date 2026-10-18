@@ -1006,7 +1006,9 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
         "R2/R3/R4 E3,E6,E7 next wake schedules one matching writable binding"
     );
     assert!(
-        recovered_host.drain_runtime(Duration::from_secs(10)).await,
+        crate::CoordinatorRoles::of(&recovered_host)
+            .drain(Duration::from_secs(10))
+            .await,
         "R2/E3 recovery drained"
     );
     assert!(
@@ -1110,7 +1112,10 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
     .build()
     .expect("validated Host dependencies");
     assert!(
-        !host.authority.observes_terminal_memory_locally(),
+        !host
+            .run_assembly
+            .authority
+            .observes_terminal_memory_locally(),
         "the Worker constructor alone gives the Host its upstream authority"
     );
     let config = awaken_resource_contract::MemoryStoreConfigVersion {
@@ -1139,7 +1144,8 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
         "R4/C5 no automatic Memory binding is selected"
     );
     let commit = Arc::new(
-        host.authority
+        host.run_assembly
+            .authority
             .open_commit(session)
             .await
             .expect("R4 Worker commit"),

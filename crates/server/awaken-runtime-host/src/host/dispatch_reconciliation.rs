@@ -800,7 +800,12 @@ mod tests {
                 dependencies.execution.local = crate::LocalExecution::RemoteWorkersOnly;
                 let host = dependencies.build().unwrap();
                 if rule != "nonterminal" {
-                    let commit = host.authority.open_commit("orphan-thread").await.unwrap();
+                    let commit = host
+                        .run_assembly
+                        .authority
+                        .open_commit("orphan-thread")
+                        .await
+                        .unwrap();
                     commit_run(
                         &commit,
                         &ThreadId("orphan-thread".into()),
@@ -990,7 +995,10 @@ mod tests {
         local_pool.execution.ingress = crate::RunIngress::Durable;
         local_pool.execution.local = crate::LocalExecution::in_process_pool();
         let local_pool = (local_pool).build().expect("validated Host dependencies");
-        assert!(!local_pool.ensure_terminal_dispatch_reconciliation(), "R0");
+        assert!(
+            !crate::CoordinatorRoles::of(&local_pool).start_terminal_reconciliation(),
+            "R0"
+        );
 
         let storage = tempfile::tempdir().expect("storage");
         let now = awaken_time::system_clock().now().as_epoch_ms();
@@ -1048,6 +1056,7 @@ mod tests {
             .expect("quiesce terminal candidate");
 
         let commit = host
+            .run_assembly
             .authority
             .open_commit("thread-terminal")
             .await
@@ -1062,9 +1071,9 @@ mod tests {
         .await
         .expect("record exact terminal truth");
 
-        assert!(host.ensure_terminal_dispatch_reconciliation());
+        assert!(crate::CoordinatorRoles::of(&host).start_terminal_reconciliation());
         assert!(
-            !host.ensure_terminal_dispatch_reconciliation(),
+            !crate::CoordinatorRoles::of(&host).start_terminal_reconciliation(),
             "one coordinator daemon"
         );
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
@@ -1402,6 +1411,7 @@ mod tests {
             .await
             .expect("park child");
         let parent_commit = host
+            .run_assembly
             .authority
             .open_commit(&parent.0)
             .await

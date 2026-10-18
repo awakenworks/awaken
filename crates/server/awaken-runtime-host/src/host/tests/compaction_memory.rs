@@ -499,7 +499,11 @@ async fn memory_written_in_one_thread_is_recalled_and_used_in_another() {
     )
     .await
     .expect("Thread 1 Run");
-    assert!(host.drain_runtime(std::time::Duration::from_secs(10)).await);
+    assert!(
+        crate::CoordinatorRoles::of(&host)
+            .drain(std::time::Duration::from_secs(10))
+            .await
+    );
     let admitted = roots
         .repository
         .get(&awaken_session_types::SessionId::from("thread-1"))
@@ -632,6 +636,7 @@ async fn claimed_child_terminal_memory_uses_parent_physical_commit_partition() {
             )],
         );
         let dispatch = host
+            .run_assembly
             .authority
             .dispatch_binding()
             .map(|binding| binding.queue())
@@ -715,6 +720,7 @@ async fn claimed_child_terminal_memory_uses_parent_physical_commit_partition() {
         );
         assert!(
             !host
+                .run_assembly
                 .authority
                 .durable_thread_exists(&child.0)
                 .await
@@ -807,8 +813,8 @@ async fn reopening_a_direct_terminal_thread_recovers_a_missing_extraction_outbox
         "D2/E2: {error:?}"
     );
     assert!(
-        second
-            .drain_runtime(std::time::Duration::from_secs(10))
+        crate::CoordinatorRoles::of(&second)
+            .drain(std::time::Duration::from_secs(10))
             .await
     );
 
@@ -935,7 +941,11 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
     )
     .await
     .unwrap();
-    assert!(host.drain_runtime(std::time::Duration::from_secs(10)).await);
+    assert!(
+        crate::CoordinatorRoles::of(&host)
+            .drain(std::time::Duration::from_secs(10))
+            .await
+    );
     assert!(
         host.resources
             .memory_stores
@@ -1410,7 +1420,11 @@ async fn published_agent_memory_config_can_disable_recall_and_extraction() {
         .map(|message| block_text(&message.content))
         .unwrap_or_default();
     assert_eq!(reply, "ok", "disabled recall does not inject store content");
-    assert!(host.drain_runtime(std::time::Duration::from_secs(1)).await);
+    assert!(
+        crate::CoordinatorRoles::of(&host)
+            .drain(std::time::Duration::from_secs(1))
+            .await
+    );
     assert!(
         host.resources
             .memory_stores
@@ -1539,7 +1553,11 @@ async fn resume_ended_run_triggers_memory_extraction() {
         "resume should end the Run"
     );
 
-    assert!(host.drain_runtime(std::time::Duration::from_secs(10)).await);
+    assert!(
+        crate::CoordinatorRoles::of(&host)
+            .drain(std::time::Duration::from_secs(10))
+            .await
+    );
     let saved = host
         .resources
         .memory_stores
@@ -1624,11 +1642,19 @@ async fn extraction_cursor_only_processes_new_messages() {
     run_prepared_session_messages(&managed, "memory-agent", "t-cur", user("alpha"))
         .await
         .expect("Run 1");
-    assert!(host.drain_runtime(std::time::Duration::from_secs(10)).await);
+    assert!(
+        crate::CoordinatorRoles::of(&host)
+            .drain(std::time::Duration::from_secs(10))
+            .await
+    );
     run_prepared_session_messages(&managed, "memory-agent", "t-cur", user("beta"))
         .await
         .expect("Run 2");
-    assert!(host.drain_runtime(std::time::Duration::from_secs(10)).await);
+    assert!(
+        crate::CoordinatorRoles::of(&host)
+            .drain(std::time::Duration::from_secs(10))
+            .await
+    );
 
     // The second extraction saw only "beta" — Run 1's "alpha" was past the cursor.
     let seen = host
@@ -1673,7 +1699,9 @@ async fn run_end_fires_background_memory_extraction() {
         "Run should end"
     );
 
-    let drained = host.drain_runtime(std::time::Duration::from_secs(10)).await;
+    let drained = crate::CoordinatorRoles::of(&host)
+        .drain(std::time::Duration::from_secs(10))
+        .await;
     assert!(drained, "memory extraction should drain");
 
     let saved = host

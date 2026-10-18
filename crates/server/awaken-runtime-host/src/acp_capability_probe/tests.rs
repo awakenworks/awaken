@@ -133,7 +133,7 @@ async fn a_cancelled_owned_probe_can_be_reconciled_without_creating_a_second_sco
     let scope = SessionAcpCapabilityNegotiator::probe_scope("probe-recovery", &argv, None);
     assert!(
         original
-            .host
+            .assembly
             .resources
             .memory
             .drain(Duration::from_secs(5))
@@ -169,7 +169,11 @@ async fn probe_negotiator(
         awaken_session_environment::SandboxEnvironmentProvider::workdir(base)
             .into_session_provider();
     SessionAcpCapabilityNegotiator::new(
-        (dependencies).build().expect("validated Host dependencies"),
+        (dependencies)
+            .build()
+            .expect("validated Host dependencies")
+            .run_assembly()
+            .clone(),
         owner.to_owned(),
         Duration::from_secs(30),
         handshake,
@@ -262,7 +266,7 @@ async fn a_cancelled_probe_strands_an_environment_that_its_own_scope_still_names
     let scope = SessionAcpCapabilityNegotiator::probe_scope("ws-alpha", &argv, None);
     assert!(
         negotiator
-            .host
+            .assembly
             .resources
             .memory
             .drain(Duration::from_secs(5))

@@ -293,7 +293,9 @@ mod tests {
     ) {
         let (host, versions) = memory;
         assert!(
-            host.drain_runtime(std::time::Duration::from_secs(10)).await,
+            crate::CoordinatorRoles::of(host)
+                .drain(std::time::Duration::from_secs(10))
+                .await,
             "{rule}: Memory extraction did not drain"
         );
         let intent = host
@@ -873,6 +875,7 @@ mod tests {
         );
 
         let child_partition_exists = host
+            .run_assembly
             .authority
             .durable_thread_exists(child_thread)
             .await
@@ -960,6 +963,7 @@ mod tests {
             (dependencies().await)
                 .build()
                 .expect("validated Host dependencies")
+                .run_assembly
                 .authority
                 .claimed_commit()
                 .unwrap()
@@ -983,6 +987,7 @@ mod tests {
         ))
         .build()
         .expect("validated Host dependencies")
+        .run_assembly
         .authority
         .claimed_commit()
         .unwrap()
@@ -993,6 +998,7 @@ mod tests {
             .with_authority(crate::UpstreamAuthority::default()))
         .build()
         .expect("validated Host dependencies")
+        .run_assembly
         .authority
         .claimed_commit()
         {

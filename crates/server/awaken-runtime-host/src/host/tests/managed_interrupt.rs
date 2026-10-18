@@ -164,7 +164,8 @@ async fn interrupt_with_admission_suspended(
     let host = (host).build().expect("validated Host dependencies");
     install_recording_session_application(&host);
     let managed = install_test_dispatch_runtime(&host);
-    host.ensure_dispatch_pool()
+    crate::CoordinatorRoles::of(&host)
+        .start_local_pool()
         .expect("valid test dispatch composition");
 
     let mut activation =

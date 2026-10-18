@@ -74,6 +74,8 @@ mod child_run_coordination;
 pub use child_run_coordination::ChildRunCoordination;
 mod outcomes;
 pub use outcomes::Outcomes;
+mod process_roles;
+pub use process_roles::{CoordinatorRoles, WorkerRoles};
 mod budget_accounting;
 pub use budget_accounting::BudgetAccounting;
 mod session_runs;

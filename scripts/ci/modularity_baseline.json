@@ -27,7 +27,7 @@
     },
     "awaken-runtime-host::SharedHost": {
       "files": 6,
-      "methods": 33,
+      "methods": 30,
       "reason": "slice H: each of the eleven session-runtime roles gets one owning component (plan 10.3 item 11)"
     },
     "awaken-runtime::Runtime": {

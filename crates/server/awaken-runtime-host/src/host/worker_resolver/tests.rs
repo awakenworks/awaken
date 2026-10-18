@@ -153,6 +153,7 @@ async fn ephemeral_parent_routes_a_coordinated_child_through_the_boundary_worker
         .expect("E1 direct parent context");
     assert!(!parent_ctx.delivery.is_durable(), "E1 precondition");
     let store = host
+        .run_assembly
         .authority
         .dispatch_binding()
         .map(|binding| binding.queue())

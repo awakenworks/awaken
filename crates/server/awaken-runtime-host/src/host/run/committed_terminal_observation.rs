@@ -485,6 +485,7 @@ mod tests {
             true,
         );
         let commit = host
+            .run_assembly
             .authority
             .open_commit("direct-terminal-observer-failure")
             .await

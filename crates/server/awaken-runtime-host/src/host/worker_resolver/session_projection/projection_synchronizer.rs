@@ -707,6 +707,7 @@ mod tests {
         // bypass the deferred binding fence when the slot had no claim.
 
         let dispatch = host
+            .run_assembly
             .authority
             .dispatch_binding()
             .map(|binding| binding.queue())
@@ -1330,6 +1331,7 @@ mod tests {
         let (original, raw_binding, retired_sentinel) =
             revoked_legacy_v1_environment(host.as_ref(), thread).await;
         let dispatch = host
+            .run_assembly
             .authority
             .dispatch_binding()
             .map(|binding| binding.queue())

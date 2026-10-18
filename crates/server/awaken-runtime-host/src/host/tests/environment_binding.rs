@@ -655,8 +655,8 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
         !ephemeral.dispatch.topology().ingress.is_durable(),
         "T1 precondition"
     );
-    ephemeral
-        .ensure_dispatch_pool()
+    crate::CoordinatorRoles::of(&ephemeral)
+        .start_local_pool()
         .expect("valid test dispatch composition");
     assert!(ephemeral.dispatch.pool().is_some(), "T1/E1");
 
@@ -685,8 +685,8 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
         "T2 Host reads the sole authority"
     );
     assert!(local.run_assembly.runs_local_dispatch_pool(), "local");
-    local
-        .ensure_dispatch_pool()
+    crate::CoordinatorRoles::of(&local)
+        .start_local_pool()
         .expect("valid test dispatch composition");
     assert!(local.dispatch.pool().is_some(), "T2/E1");
 
@@ -711,8 +711,8 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
         !coordinator.run_assembly.runs_local_dispatch_pool(),
         "coordinator"
     );
-    coordinator
-        .ensure_dispatch_pool()
+    crate::CoordinatorRoles::of(&coordinator)
+        .start_local_pool()
         .expect("valid test dispatch composition");
     assert!(coordinator.dispatch.pool().is_none(), "T3/E2");
 }
@@ -779,8 +779,8 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
         .unwrap())
         .build()
         .unwrap();
-        worker
-            .ensure_dispatch_pool()
+        crate::WorkerRoles::of(&worker)
+            .start_pool()
             .expect("valid test dispatch composition");
         assert_eq!(
             worker.dispatch.pool().unwrap().concurrency(),
@@ -809,8 +809,9 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
                     }
                 },
                 coordinator_only,
-                crate::host::test_upstream_authority()
-                    .with_dispatch_binding(worker.authority.dispatch_binding().unwrap()),
+                crate::host::test_upstream_authority().with_dispatch_binding(
+                    worker.run_assembly.authority.dispatch_binding().unwrap()
+                ),
                 awaken_run_ingress_contract::RegisteredCapacity::of(&manifest).unwrap(),
             )
             .is_err(),
