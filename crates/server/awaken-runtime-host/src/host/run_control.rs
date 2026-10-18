@@ -4,7 +4,7 @@
 //! Run control of a resident Session: wake and pause its current attempt,
 //! select the controls that interrupt it, and author the resume inputs that
 //! durable delivery stages through the canonical dispatch control owner.
-use super::{HostError, SessionCtx, SharedHost};
+use super::{HostError, SessionCtx};
 use awaken_agent_contract::agent::{
     awaiting::{AwaitReason, ResumeTicket},
     run::Id as RunId,
@@ -221,7 +221,7 @@ fn manual_resume_input(
     })
 }
 
-impl SharedHost {
+impl crate::SessionRuns {
     /// Cancel every run currently backed by a process-local Session projection.
     ///
     /// Worker authority loss must stop in-flight tool processes before local
@@ -250,10 +250,7 @@ impl SharedHost {
     pub(crate) fn durable_run_control(&self) -> Result<DurableRunControl, HostError> {
         Ok(DurableRunControl::new(
             self.coordinator_dispatch()?,
-            self.dispatch
-                .dispatch_pool
-                .get()
-                .map(|_| self.dispatch.hint.clone()),
+            self.local_pool.get().map(|_| self.dispatch_hint.clone()),
         ))
     }
 

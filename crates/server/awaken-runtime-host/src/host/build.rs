@@ -199,17 +199,18 @@ fn assemble_host(dependencies: HostDependencies) -> SharedHost {
         durable_run_cancellation,
         mcp_root_authority,
     });
+    let (dispatch, session_runs) = session_run_delivery(&run_assembly, &completion, dispatch_hint);
     SharedHost {
         agent,
-        exec,
         worker,
         realization_executor,
         thread_reads,
         live_inboxes,
         run_assembly,
+        session_runs,
         tools,
         resources,
-        dispatch: capability::DispatchCapability::new(execution, dispatch_hint),
+        dispatch,
         capture,
         local_workspace,
         installed_sessions,
@@ -262,6 +263,24 @@ fn dispatch_execution(
     authority
         .dispatch_binding()
         .map(|binding| binding.queue() as Arc<dyn awaken_run_ingress_contract::DispatchExecution>)
+}
+
+/// The dispatch capability and the Session Run component that shares its local
+/// pool handle and wake hint.
+fn session_run_delivery(
+    run_assembly: &Arc<crate::RunAssembly>,
+    completion: &Arc<CompletionRegistry>,
+    hint: awaken_dispatch_execution::DispatchHint,
+) -> (capability::DispatchCapability, Arc<crate::SessionRuns>) {
+    let dispatch =
+        capability::DispatchCapability::new(run_assembly.execution.clone(), hint.clone());
+    let runs = Arc::new(crate::SessionRuns::new(
+        run_assembly.clone(),
+        completion.clone(),
+        dispatch.dispatch_pool.clone(),
+        hint,
+    ));
+    (dispatch, runs)
 }
 
 /// The process-local BackgroundTask slot registry, under a process-unique
@@ -381,6 +400,12 @@ impl SharedHost {
     #[must_use]
     pub fn run_assembly(&self) -> &Arc<crate::RunAssembly> {
         &self.run_assembly
+    }
+
+    /// Session Run delivery of this process.
+    #[must_use]
+    pub fn session_runs(&self) -> &Arc<crate::SessionRuns> {
+        &self.session_runs
     }
 
     /// Committed Thread readback over this process's selected authority.

@@ -3,7 +3,7 @@
 
 use super::*;
 
-impl SharedHost {
+impl crate::SessionRuns {
     /// Fail closed before resuming: the asserted `tool_use_id` must name the
     /// Run's pending tool and its binding must match the inbound resume kind.
     pub(in crate::host) fn check_pending(

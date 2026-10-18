@@ -77,7 +77,7 @@ async fn rebuilt_successor_is_not_interrupted(original_run_active: bool) {
     let first_run = if original_run_active {
         let mut run = tokio::spawn({
             let host = host.clone();
-            async move { host.run(None, thread, user("original")).await }
+            async move { host.session_runs.run(None, thread, user("original")).await }
         });
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             tokio::select! {
@@ -180,7 +180,7 @@ async fn rebuilt_successor_is_not_interrupted(original_run_active: bool) {
         .unwrap();
     let mut run = tokio::spawn({
         let host = host.clone();
-        async move { host.run(None, thread, user("successor")).await }
+        async move { host.session_runs.run(None, thread, user("successor")).await }
     });
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         tokio::select! {

@@ -165,7 +165,11 @@ async fn compaction_summary_reaches_the_same_long_run() {
     let user = |t: &str| vec![Message::text(MessageId(t.into()), Role::User, "hello")];
 
     // Run 1: only the single user message → below threshold, no summary injected.
-    let r1 = host.run(None, "t-c", user("u1")).await.expect("Run 1");
+    let r1 = host
+        .session_runs
+        .run(None, "t-c", user("u1"))
+        .await
+        .expect("Run 1");
     assert!(matches!(r1.state, RunState::Ended(_)));
     let reply1 = r1
         .new_messages
@@ -178,7 +182,11 @@ async fn compaction_summary_reaches_the_same_long_run() {
 
     // Run 2: the conversation now exceeds the threshold, so the compact plugin's
     // BeforeInference hook summarizes the older slice inline and the model sees it.
-    let r2 = host.run(None, "t-c", user("u2")).await.expect("Run 2");
+    let r2 = host
+        .session_runs
+        .run(None, "t-c", user("u2"))
+        .await
+        .expect("Run 2");
     let reply2 = r2
         .new_messages
         .iter()
@@ -205,10 +213,12 @@ async fn compaction_keeps_full_history_until_a_summary_activates_the_window() {
     );
     let user = |id: &str| vec![Message::text(MessageId(id.into()), Role::User, id)];
 
-    host.run(None, "t-before-fold", user("u1"))
+    host.session_runs
+        .run(None, "t-before-fold", user("u1"))
         .await
         .expect("Run 1");
     let run = host
+        .session_runs
         .run(None, "t-before-fold", user("u2"))
         .await
         .expect("Run 2");
@@ -742,6 +752,7 @@ async fn reopening_a_direct_terminal_thread_recovers_a_missing_extraction_outbox
         .expect("validated Host dependencies"),
     );
     first
+        .session_runs
         .run(None, thread, user("remember rust"))
         .await
         .expect("terminal run");
@@ -1511,6 +1522,7 @@ async fn resume_ended_run_triggers_memory_extraction() {
 
     // RunResume approves the write; the Run now ends and extraction fires.
     let r2 = host
+        .session_runs
         .resume(
             "t-res",
             &pending.tool_use_id,

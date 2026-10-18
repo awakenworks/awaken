@@ -76,7 +76,7 @@ impl Grader for HostAgentGrader<'_> {
         }
         .map_err(|error| GraderError::Execution(error.to_string()))?;
         tracing::debug!(thread = %thread.0, "Outcome grader context ready");
-        let executor = BoundRunExecutor::new(self.host, context.clone())
+        let executor = BoundRunExecutor::new(&self.host.session_runs, context.clone())
             .lending_cancellation_to(self.session_foreground.clone());
         AgentGrader::new(&executor, context.commit.as_ref(), RuntimeRunContext::new())
             .grade(snapshot, input)
@@ -386,7 +386,7 @@ mod tests {
         let input = grading_input("agent-grade-prose-json");
         let thread = grader_thread_id(&input.outcome_id, input.iteration);
         let context = host.run_assembly.ctx_for(&thread.0, None).await.unwrap();
-        let executor = BoundRunExecutor::new(&host, context.clone());
+        let executor = BoundRunExecutor::new(&host.session_runs, context.clone());
         let error = AgentGrader::new(&executor, context.commit.as_ref(), RuntimeRunContext::new())
             .grade(&snapshot, &input)
             .await

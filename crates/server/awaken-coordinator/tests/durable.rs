@@ -96,7 +96,8 @@ async fn awaiting_run_survives_a_restart_and_resumes_from_the_durable_store() {
     //    host — the run's history and awaiting ticket are now only in the store.
     let pending_id = {
         let host = host_over(&dir, "first").await;
-        host.run(None, thread, vec![user("u1", "hi")])
+        host.session_runs()
+            .run(None, thread, vec![user("u1", "hi")])
             .await
             .unwrap();
         assert!(
@@ -140,16 +141,17 @@ async fn awaiting_run_survives_a_restart_and_resumes_from_the_durable_store() {
     );
 
     // 3. RunResume it with the client's result; the model replies with the result.
-    host.resume(
-        thread,
-        &pending_id,
-        HostResume::ClientResult {
-            content: vec![ContentBlock::text("42")],
-            is_error: false,
-        },
-    )
-    .await
-    .unwrap();
+    host.session_runs()
+        .resume(
+            thread,
+            &pending_id,
+            HostResume::ClientResult {
+                content: vec![ContentBlock::text("42")],
+                is_error: false,
+            },
+        )
+        .await
+        .unwrap();
 
     let history = host
         .thread_reads()
@@ -185,7 +187,8 @@ async fn in_memory_host_does_not_recover_an_awaiting_run_across_a_rebuild() {
         let host = host_with_client_tool(
             build_unmounted_dependencies(Arc::new(CustomToolModel), "custom").await,
         );
-        host.run(None, thread, vec![user("u1", "hi")])
+        host.session_runs()
+            .run(None, thread, vec![user("u1", "hi")])
             .await
             .unwrap();
         assert!(host.thread_reads().is_awaiting(thread).await);

@@ -106,7 +106,8 @@ async fn failed_child_boundary_cancels_raced_follow_up_without_fencing_its_own_s
         "R1/E1"
     );
 
-    host.interrupt_session_thread(&parent.0, &child)
+    host.session_runs
+        .interrupt_session_thread(&parent.0, &child)
         .await
         .expect("R2 boundary interruption");
     let rows = dispatch.list_dispatches().await.expect("R2 inspect rows");

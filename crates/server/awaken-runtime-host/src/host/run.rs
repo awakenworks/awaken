@@ -77,7 +77,7 @@ impl<'a> HostRunDelivery<'a> {
         self
     }
 }
-impl SharedHost {
+impl crate::SessionRuns {
     pub(crate) async fn session_budget_resume_tickets(
         &self,
         session_id: &str,
@@ -187,7 +187,7 @@ impl SharedHost {
                 .and_then(|ctx| ctx.delivery.is_durable().then_some(&ctx.claimed_worker)),
             active_run,
         ) {
-            if self.dispatch.dispatch_pool.get().is_some() {
+            if self.local_pool.get().is_some() {
                 // The process pool is the sole durable claim driver. This edge
                 // accepts the cancellation intent and returns; its drainer owns
                 // the claim-fenced Runtime commit and settlement.
@@ -514,7 +514,7 @@ impl SharedHost {
     /// store. The queue remains delivery truth; this guard only selects whether
     /// the deployment exposes that authority.
     pub(super) fn require_durable_delivery(&self) -> Result<(), HostError> {
-        if self.dispatch.durable_ingress() {
+        if self.execution.ingress.is_durable() {
             Ok(())
         } else {
             Err(HostError::bad_request(
@@ -696,7 +696,7 @@ impl SharedHost {
             // Coordinator-only durable server (no local pool): enqueue straight into
             // the shared store so a remote database-less worker drains it over the
             // dispatch transport. Non-durable keeps the original "enable the pool" error.
-            Err(e) if self.dispatch.durable_ingress() => {
+            Err(e) if self.execution.ingress.is_durable() => {
                 let _ = e;
                 let store = self.coordinator_dispatch()?;
                 store
@@ -946,8 +946,8 @@ impl SharedHost {
             )
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
-        if let Some(pool) = self.dispatch.dispatch_pool.get() {
-            pool.notify().await;
+        if self.local_pool.get().is_some() {
+            self.dispatch_hint.publish().await;
         } else {
             store
                 .relay()

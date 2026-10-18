@@ -33,12 +33,12 @@ pub fn session_execution_roles(
 ) -> awaken_session_runtime_contract::SessionExecutionRoles {
     let core = Arc::new(managed.clone());
     awaken_session_runtime_contract::SessionExecutionRoles {
-        core: core.clone(),
+        core: managed.host.session_runs.clone(),
         realization: managed.host.run_assembly.clone(),
         coordination: core.clone(),
         coordination_reads: core.clone(),
         budget: core.clone(),
-        streaming_runs: core.clone(),
+        streaming_runs: managed.host.session_runs.clone(),
         environment: managed.host.run_assembly.clone(),
         thread_reads: managed.host.thread_reads.clone(),
         terminal_cleanup: managed.host.run_assembly.clone(),

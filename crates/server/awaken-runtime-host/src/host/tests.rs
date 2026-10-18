@@ -296,6 +296,7 @@ async fn run_prepared_session_messages(
         .await?;
     let result = managed
         .host
+        .session_runs
         .run_thread_extension_after_admission(Some(agent), thread, messages)
         .await;
     crate::step_projection::finish_managed_step(result)

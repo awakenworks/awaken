@@ -158,7 +158,7 @@ async fn durable_child_run_scenario() {
 
     let awaiting = tokio::time::timeout(
         std::time::Duration::from_secs(20),
-        host.run(
+        host.session_runs().run(
             None,
             "parent-thread",
             vec![Message::text(
@@ -192,7 +192,7 @@ async fn durable_child_run_scenario() {
     let child_run_id = awaiting.delegated_runs[0].run_id.clone();
     let resumed = tokio::time::timeout(
         std::time::Duration::from_secs(20),
-        host.resume(
+        host.session_runs().resume(
             "parent-thread",
             &pending.tool_use_id,
             HostResume::Permission(PermissionDecision::Allow { note: None }),

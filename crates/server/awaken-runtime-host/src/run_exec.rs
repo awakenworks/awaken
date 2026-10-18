@@ -11,7 +11,7 @@
 use awaken_credential_contract as credential;
 use std::sync::Arc;
 
-use crate::host::{HostError, SessionCtx, SharedHost};
+use crate::host::{HostError, SessionCtx};
 use awaken_agent_contract::agent::run::RunState;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_runtime_contract::activation::RunActivation;
@@ -275,7 +275,7 @@ impl RunAttemptExecutor for CaptureContextAttemptExecutor {
 /// Runtime extensions still submit an ordinary `RunActivation` and remain
 /// independent of `SharedHost`.
 pub(crate) struct BoundRunExecutor<'a> {
-    host: &'a SharedHost,
+    host: &'a crate::SessionRuns,
     ctx: Arc<SessionCtx>,
     supersede: bool,
     sink: Option<Arc<dyn StreamSink>>,
@@ -285,7 +285,7 @@ pub(crate) struct BoundRunExecutor<'a> {
 }
 
 impl<'a> BoundRunExecutor<'a> {
-    pub(crate) fn new(host: &'a SharedHost, ctx: Arc<SessionCtx>) -> Self {
+    pub(crate) fn new(host: &'a crate::SessionRuns, ctx: Arc<SessionCtx>) -> Self {
         Self {
             host,
             ctx,
@@ -412,7 +412,7 @@ pub(crate) fn session_attempt_executor(
     registry
 }
 
-impl SharedHost {
+impl crate::SessionRuns {
     /// Build the exact per-attempt runtime context shared by a fresh direct run and
     /// an awaiting direct run resumed later. Brokered grants and expiring provider
     /// credentials are attempt-scoped, so a resume must rematerialize from the

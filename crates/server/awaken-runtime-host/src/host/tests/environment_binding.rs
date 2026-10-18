@@ -667,13 +667,16 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
     .build()
     .expect("validated Host dependencies");
     assert!(
-        Arc::ptr_eq(&local_store, &local.coordinator_dispatch().unwrap()),
+        Arc::ptr_eq(
+            &local_store,
+            &local.session_runs.coordinator_dispatch().unwrap()
+        ),
         "T2 one selected queue"
     );
     assert!(
         Arc::ptr_eq(
-            &local.coordinator_dispatch().unwrap(),
-            &local.optional_dispatch_store().unwrap()
+            &local.session_runs.coordinator_dispatch().unwrap(),
+            &local.session_runs.optional_dispatch_store().unwrap()
         ),
         "T2 Host reads the sole authority"
     );
@@ -696,7 +699,7 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
     assert!(
         Arc::ptr_eq(
             &coordinator_store,
-            &coordinator.coordinator_dispatch().unwrap()
+            &coordinator.session_runs.coordinator_dispatch().unwrap()
         ),
         "T3 one selected queue"
     );

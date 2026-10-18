@@ -181,7 +181,10 @@ mod tests {
         let host = (projection_only)
             .build()
             .expect("validated Host dependencies");
-        assert!(host.exec.acp.is_none(), "P2/E3 no execution factory");
+        assert!(
+            host.run_assembly.exec.acp.is_none(),
+            "P2/E3 no execution factory"
+        );
         assert!(
             std::ptr::eq(
                 host.run_assembly.acp_adapter_policy().expect("P2 policy"),
@@ -197,7 +200,7 @@ mod tests {
         .build()
         .expect("validated Host dependencies");
         assert!(
-            host.exec.acp_projection_policy.is_none(),
+            host.run_assembly.exec.acp_projection_policy.is_none(),
             "P3 one effective policy owner"
         );
         let policy = host
@@ -228,7 +231,7 @@ mod tests {
                 .expect("validated Host dependencies");
         host.run_assembly
             .register_thread_backend_projection("t", "acp:claude");
-        assert!(host.exec.acp.is_some(), "A1 executor");
+        assert!(host.run_assembly.exec.acp.is_some(), "A1 executor");
         assert_eq!(
             host.installed_sessions
                 .realizations()

@@ -23,7 +23,6 @@
     "OAuthHelper": 1,
     "RegisteredDispatchDependencies": 1,
     "ResourcePorts": 1,
-    "RunApplicationHost": 1,
     "SessionApplicationBindings": 1,
     "SessionExecutionDependencies": 1,
     "Shared": 1,

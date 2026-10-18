@@ -352,7 +352,8 @@ async fn delegated_remote_uses_the_published_child_run_and_attempt_executor() {
         });
         let host = delegating_host(transport).await;
 
-        host.run(None, "thread", vec![user("research the answer")])
+        host.session_runs()
+            .run(None, "thread", vec![user("research the answer")])
             .await
             .expect("delegated A2A child settles through the ordinary Run path");
 
@@ -391,13 +392,14 @@ async fn origin_credential_authenticates_the_unified_delegated_a2a_attempt() {
         )
         .await;
 
-        host.run(
-            None,
-            "authenticated-thread",
-            vec![user("research securely")],
-        )
-        .await
-        .expect("origin credential authenticates the delegated A2A child");
+        host.session_runs()
+            .run(
+                None,
+                "authenticated-thread",
+                vec![user("research securely")],
+            )
+            .await
+            .expect("origin credential authenticates the delegated A2A child");
         assert_committed_child_report(&host, "authenticated-thread").await;
         assert!(
             peer.requests

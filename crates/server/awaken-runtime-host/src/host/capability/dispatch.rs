@@ -15,7 +15,7 @@ pub(crate) struct DispatchCapability {
     /// every session's runs by routing each claimed run back to the worker that owns
     /// its thread. Held here so background submit / cross-thread relay nudge it and
     /// so it lives for the process's lifetime.
-    pub(crate) dispatch_pool: std::sync::OnceLock<Arc<DispatchPool<AnyDispatchStore>>>,
+    pub(crate) dispatch_pool: LocalDispatchPool,
     /// This process's part in Run execution, selected by its composition
     /// root: ingress, local pool and its sizing, lease owner and schedule.
     pub(crate) execution: super::ExecutionTopology,
@@ -39,11 +39,28 @@ impl DispatchCapability {
         hint: awaken_dispatch_execution::DispatchHint,
     ) -> Self {
         Self {
-            dispatch_pool: std::sync::OnceLock::new(),
+            dispatch_pool: LocalDispatchPool::default(),
             execution,
             terminal_reconciliation: Default::default(),
             hint,
         }
+    }
+}
+
+/// The process-level dispatch pool once `mount` spawned it. The Session Run
+/// component reads the same handle: a standalone process that never spawns a
+/// pool keeps its direct cancellation behaviour.
+#[derive(Clone, Default)]
+pub(crate) struct LocalDispatchPool(Arc<std::sync::OnceLock<Arc<DispatchPool<AnyDispatchStore>>>>);
+
+impl LocalDispatchPool {
+    pub(crate) fn get(&self) -> Option<&Arc<DispatchPool<AnyDispatchStore>>> {
+        self.0.get()
+    }
+
+    /// Install the spawned pool; a second spawn keeps the first.
+    pub(crate) fn install(&self, pool: Arc<DispatchPool<AnyDispatchStore>>) {
+        let _ = self.0.set(pool);
     }
 }
 
@@ -82,7 +99,8 @@ impl SharedHost {
     pub fn coordinator_dispatch(
         &self,
     ) -> Result<Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>, HostError> {
-        self.optional_dispatch_store()
+        self.session_runs
+            .optional_dispatch_store()
             .ok_or_else(|| HostError::internal("operation requires a Coordinator dispatch owner"))
     }
 
@@ -165,7 +183,7 @@ impl SharedHost {
             shared_wake,
             Some(completion),
         )?;
-        let _ = self.dispatch.dispatch_pool.set(Arc::new(pool));
+        self.dispatch.dispatch_pool.install(Arc::new(pool));
         Ok(())
     }
 
@@ -255,7 +273,7 @@ impl SharedHost {
         {
             return false;
         }
-        let Some(store) = self.optional_dispatch_store() else {
+        let Some(store) = self.session_runs.optional_dispatch_store() else {
             return false;
         };
         let Ok(resolver) = crate::host::session_worker_resolver(self) else {

@@ -103,8 +103,8 @@ pub use awaken_protocol_managed::{ResourcesRouterInput, models_router, resources
 pub use awaken_run_ingress_http::durable_ops_router;
 use awaken_runtime_host::HostDependencies;
 pub use awaken_runtime_host::{
-    HostResume, ManagedHost, NoModelConfiguredExecutor, RunApplicationHost, SharedHost,
-    ThreadEvent, ThreadEventHub, UNCONFIGURED_MODEL_REF, advertised_tools,
+    HostResume, ManagedHost, NoModelConfiguredExecutor, SharedHost, ThreadEvent, ThreadEventHub,
+    UNCONFIGURED_MODEL_REF, advertised_tools,
 };
 pub use awaken_sandbox_local::content_fingerprint;
 pub use awaken_session_mcp::ExtMcpProbe;
@@ -1570,7 +1570,7 @@ async fn mount_with_managed_over_and_models(
         .merge(session_extensions);
     // One protocol-neutral Run application serves all three wire adapters, so
     // they share the Host with no per-protocol execution path.
-    let host_runs: Arc<dyn RunApplication> = Arc::new(RunApplicationHost::new(host.clone()));
+    let host_runs: Arc<dyn RunApplication> = host.session_runs().clone();
     let workspace_host = host.clone();
     let agent_host = host.clone();
     let session_runs = Arc::new(awaken_session_application::SessionRunApplication::new(
@@ -1620,7 +1620,7 @@ async fn mount_with_managed_over_and_models(
     // The durable-ingress operations surface (slice E): ADR-0009 follow-on verbs
     // (supersede / reconcile / manual quarantine + GC) over the same shared host.
     let durable_ops = awaken_run_ingress_http::durable_ops_router_with_session_admission(
-        host.clone(),
+        host.session_runs().clone(),
         session_runs.clone(),
         session_runs,
         host.clock(),

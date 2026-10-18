@@ -938,6 +938,7 @@ async fn terminal_quiescence_never_materializes_a_cold_environment() {
         .expect("validated Host dependencies");
 
     let snapshot = host
+        .session_runs
         .quiesce_terminal_delegations("cold-terminal")
         .await
         .expect("cold terminal fence reads committed truth");
@@ -971,7 +972,10 @@ async fn terminal_quiescence_rejects_an_unstarted_cancelled_reservation_without_
     let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
-    let dispatch = host.coordinator_dispatch().expect("T1 dispatch authority");
+    let dispatch = host
+        .session_runs
+        .coordinator_dispatch()
+        .expect("T1 dispatch authority");
     let session = ThreadId("terminal-reservation-session".into());
     let run = RunId("terminal-reservation-run".into());
     let activation =
@@ -1007,7 +1011,7 @@ async fn terminal_quiescence_rejects_an_unstarted_cancelled_reservation_without_
 
     tokio::time::timeout(
         std::time::Duration::from_millis(250),
-        host.quiesce_terminal_delegations(&session.0),
+        host.session_runs.quiesce_terminal_delegations(&session.0),
     )
     .await
     .expect("T1/E3 does not wait for reservation TTL")
@@ -1121,7 +1125,7 @@ async fn terminal_quiescence_does_not_rewait_an_expired_physical_claim() {
     for _ in 0..2 {
         let failure = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            host.quiesce_terminal_delegations(&session.0),
+            host.session_runs.quiesce_terminal_delegations(&session.0),
         )
         .await
         .expect("Q1/E2 expired claim must not consume the normal ten-second wait")
@@ -1167,7 +1171,11 @@ async fn terminal_quiescence_still_waits_for_a_pre_cancel_live_physical_claim() 
     let terminal = tokio::spawn({
         let host = host.clone();
         let session = session.clone();
-        async move { host.quiesce_terminal_delegations(&session.0).await }
+        async move {
+            host.session_runs
+                .quiesce_terminal_delegations(&session.0)
+                .await
+        }
     });
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
@@ -1269,6 +1277,7 @@ async fn terminal_quiescence_fences_ephemeral_children_before_cold_link_enrichme
         .expect("validated Host dependencies");
     assert!(!host.dispatch.durable_ingress(), "R1/C3");
     let dispatch = host
+        .session_runs
         .coordinator_dispatch()
         .expect("R1 ephemeral dispatch authority");
     let parent = ThreadId("cold-terminal-parent".into());
@@ -1289,6 +1298,7 @@ async fn terminal_quiescence_fences_ephemeral_children_before_cold_link_enrichme
         "ephemeral-terminal-worker",
     ));
     let snapshot = host
+        .session_runs
         .quiesce_terminal_delegations(&parent.0)
         .await
         .expect("R1 terminal fence waits for exact child settlement");
@@ -1363,6 +1373,7 @@ async fn coordinator_terminal_quiescence_waits_for_remote_parent_and_child_settl
     ));
 
     let snapshot = host
+        .session_runs
         .quiesce_terminal_delegations(&parent.0)
         .await
         .expect("Q2 remote settlement proves quiescence");

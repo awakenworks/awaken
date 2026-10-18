@@ -195,9 +195,6 @@ pub struct SharedHost {
     /// Default inference, per-thread model routing, remote attempts, and the
     /// immutable Agent publications/Judge the Host executes.
     pub(crate) agent: Arc<capability::AgentExecution>,
-    /// ACP backend, attempt decoration, and the credential/session-blob
-    /// adapters the attempt executors share.
-    pub(crate) exec: Arc<capability::AttemptBackends>,
     /// The realization executor and the sandbox providers it realizes through.
     pub(crate) realization_executor: Arc<crate::realization_executor::RealizationExecutor>,
     /// Committed Thread readback over the selected authority.
@@ -206,6 +203,8 @@ pub struct SharedHost {
     pub(crate) live_inboxes: Arc<crate::LiveInboxes>,
     /// Session context assembly.
     pub(crate) run_assembly: Arc<crate::RunAssembly>,
+    /// Session Run delivery.
+    pub(crate) session_runs: Arc<crate::SessionRuns>,
     /// Tool, Skill, plugin, and gate offering installed on every thread.
     pub(crate) tools: Arc<capability::ToolOffering>,
     /// Resources-context ports: Memory, Files, Artifacts.

@@ -97,6 +97,7 @@ LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "outcome_report",
         "run_assembly",
         "run_exec",
+        "session_runs",
         "step_projection",
         "tool_output_spill",
     )),
@@ -121,7 +122,6 @@ LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "managed_model_capability",
         "managed_outcome",
         "mcp_host",
-        "run_application_host",
     )),
     (HOST, "capability, tool, model and catalog assembly for a run", (
         "acp_backend",

@@ -947,7 +947,10 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         // | P2   | 1  | 1  | 0  | 1 |
         // | P3   | 1  | 1  | 1  | 0 (deduplicate) |
         // | P4   | 1  | later Run | 0 | E1 again, never from history |
-        host.run(None, "no-baseline", user("P1")).await.expect("P1");
+        host.session_runs
+            .run(None, "no-baseline", user("P1"))
+            .await
+            .expect("P1");
         // P2-P4 are fresh physical subjects, not the metadata-only generation7
         // rows above. Real Root preparation chooses their first Resource
         // generation; the original baseline/prompt and all assertions survive.
@@ -958,10 +961,12 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             .install_projection(&managed, "prompt-thread", first)
             .await
             .expect("P2/P4 projection");
-        host.run_thread_extension_after_admission(None, "prompt-thread", user("P2"))
+        host.session_runs
+            .run_thread_extension_after_admission(None, "prompt-thread", user("P2"))
             .await
             .expect("P2");
-        host.run_thread_extension_after_admission(None, "prompt-thread", user("P4"))
+        host.session_runs
+            .run_thread_extension_after_admission(None, "prompt-thread", user("P4"))
             .await
             .expect("P4");
         let mut first = projection("exact prompt", false);
@@ -971,20 +976,21 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             .install_projection(&managed, "deduplicated", first)
             .await
             .expect("P3 projection");
-        host.run_thread_extension_after_admission(
-            None,
-            "deduplicated",
-            vec![
-                Message::text(
-                    MessageId("system-existing".into()),
-                    Role::System,
-                    "exact prompt",
-                ),
-                Message::text(MessageId("user-existing".into()), Role::User, "P3"),
-            ],
-        )
-        .await
-        .expect("P3");
+        host.session_runs
+            .run_thread_extension_after_admission(
+                None,
+                "deduplicated",
+                vec![
+                    Message::text(
+                        MessageId("system-existing".into()),
+                        Role::System,
+                        "exact prompt",
+                    ),
+                    Message::text(MessageId("user-existing".into()), Role::User, "P3"),
+                ],
+            )
+            .await
+            .expect("P3");
         {
             let requests = observed.lock().unwrap();
             let prompt_count =
@@ -1044,13 +1050,14 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             .install_projection(&managed, "context-thread", contextual)
             .await
             .expect("C4 projection");
-        host.run_thread_extension_after_admission(
-            None,
-            "context-thread",
-            user("current branch input"),
-        )
-        .await
-        .expect("C4 run");
+        host.session_runs
+            .run_thread_extension_after_admission(
+                None,
+                "context-thread",
+                user("current branch input"),
+            )
+            .await
+            .expect("C4 run");
         let request = observed
             .lock()
             .unwrap()

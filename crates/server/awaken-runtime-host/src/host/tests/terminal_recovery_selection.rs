@@ -97,7 +97,7 @@ async fn missing_terminal_work_preserves_successor(delayed: bool) {
         .expect("C2 successor Control-observed generation");
     let mut run = tokio::spawn({
         let host = host.clone();
-        async move { host.run(None, thread, user("successor")).await }
+        async move { host.session_runs.run(None, thread, user("successor")).await }
     });
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         tokio::select! {
@@ -213,7 +213,7 @@ async fn missing_current_terminal_work_retires_original(renew: bool) {
         .unwrap();
     let mut run = tokio::spawn({
         let host = host.clone();
-        async move { host.run(None, thread, user("original")).await }
+        async move { host.session_runs.run(None, thread, user("original")).await }
     });
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         tokio::select! {
@@ -341,7 +341,7 @@ async fn completed_terminal_projection_not_found_cancels_its_original_real_run()
         .unwrap();
     let mut run = tokio::spawn({
         let host = host.clone();
-        async move { host.run(None, thread, user("original")).await }
+        async move { host.session_runs.run(None, thread, user("original")).await }
     });
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         tokio::select! {

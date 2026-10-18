@@ -380,6 +380,7 @@ async fn session_web_policy_overlay_reaches_the_configured_plugin_before_inferen
         });
 
     let receipt = host
+        .session_runs
         .run(
             Some("assistant"),
             "provider-server-policy",
@@ -1319,6 +1320,7 @@ async fn session_client_tools_replace_the_published_surface_with_exact_ownership
     );
 
     let result = host
+        .session_runs
         .run(
             Some("assistant"),
             "session-client-tools",

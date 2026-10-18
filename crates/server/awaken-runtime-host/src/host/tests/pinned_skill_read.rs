@@ -454,6 +454,7 @@ async fn read_disabled_or_awaiting_permission_never_leaks_pinned_content() {
                 }
             };
             let resumed = host
+                .session_runs
                 .resume(
                     "skill-policy",
                     &pending.tool_use_id,

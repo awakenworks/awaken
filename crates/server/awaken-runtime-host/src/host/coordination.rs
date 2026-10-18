@@ -105,6 +105,28 @@ async fn finish_coordinated_child_admission(
 }
 
 impl SharedHost {
+    /// Register before publishing one Session-owned resume, then project only
+    /// the next committed Step. The durable reply ingress and Worker execution
+    /// are shared with background Managed Event reconciliation.
+    pub(crate) async fn reply_and_observe_session_thread_tool(
+        &self,
+        delivery: awaken_session_runtime_contract::SessionThreadToolReplyDelivery,
+        stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
+    ) -> Result<CommittedStepReceipt, HostError> {
+        let session_id = delivery.command.session_id.clone();
+        let run_id = delivery.command.expected_run_id.clone();
+        let correlation_id = delivery.command.expected_correlation_id.clone();
+        self.session_runs
+            .observe_published_resume(
+                session_id.as_str(),
+                run_id,
+                correlation_id,
+                stream_sink,
+                self.reply_session_thread_tool(delivery),
+            )
+            .await
+    }
+
     /// Resolve a public reply to the one currently committed Awaiting ticket.
     /// Thread recovery remains the authority; the Session event identity and
     /// version are only admission fences against delayed or reused call ids.
@@ -204,7 +226,7 @@ impl SharedHost {
                 ));
             }
         }
-        self.check_pending(
+        self.session_runs.check_pending(
             &ticket,
             &command.tool_use_id,
             command.reply.client_executed(),
@@ -237,7 +259,7 @@ impl SharedHost {
         command: &awaken_session_runtime_contract::SessionThreadToolReplyCommand,
     ) -> Result<awaken_session_runtime_contract::SessionThreadToolReplyFence, HostError> {
         // Resolve topology before SessionApplication opens a reply activity.
-        self.coordinator_dispatch()?;
+        self.session_runs.coordinator_dispatch()?;
         let (thread_id, _ticket) = match self.validated_session_thread_tool_reply(command).await {
             Ok(active) => active,
             Err(active_error) => match self.session_thread_tool_reply_receipt(command).await? {
@@ -260,6 +282,7 @@ impl SharedHost {
         };
         let parent = ThreadId(command.session_id.to_string());
         let dispatch = self
+            .session_runs
             .coordinator_dispatch()?
             .list_dispatches()
             .await
@@ -313,7 +336,7 @@ impl SharedHost {
         let result =
             super::run::session_thread_reply_result(&ticket, &command.tool_use_id, &command.reply);
 
-        let store = self.coordinator_dispatch()?;
+        let store = self.session_runs.coordinator_dispatch()?;
         let parent = ThreadId(command.session_id.to_string());
         let dispatch = store
             .list_dispatches()
@@ -332,12 +355,13 @@ impl SharedHost {
         } else {
             let epoch = session_activity_epoch
                 .ok_or_else(|| HostError::internal("foreground Session reply requires activity"))?;
-            self.enqueue_foreground_session_resume_dispatch(
-                command.session_id.as_str(),
-                &ticket,
-                epoch,
-            )
-            .await?
+            self.session_runs
+                .enqueue_foreground_session_resume_dispatch(
+                    command.session_id.as_str(),
+                    &ticket,
+                    epoch,
+                )
+                .await?
         };
         let context_messages = command
             .accompanying_system
@@ -553,7 +577,7 @@ impl SharedHost {
                 max_unarchived_threads,
             )
             .await?;
-        let store = self.coordinator_dispatch()?;
+        let store = self.session_runs.coordinator_dispatch()?;
 
         store
             .enqueue_session_child(request, admission)
@@ -581,7 +605,7 @@ impl SharedHost {
                 "coordinated Agent report has inconsistent provenance",
             ));
         }
-        let store = self.coordinator_dispatch()?;
+        let store = self.session_runs.coordinator_dispatch()?;
 
         // This is Coordinator admission, not a physical execution attempt.
         // A completed child may have left its Environment with a remote Worker.
@@ -646,6 +670,7 @@ impl SharedHost {
     ) -> Result<Vec<awaken_run_ingress_contract::DispatchSummary>, HostError> {
         let parent = ThreadId(session_id.to_string());
         Ok(self
+            .session_runs
             .coordinator_dispatch()?
             .list_dispatches()
             .await
@@ -663,7 +688,9 @@ impl SharedHost {
         session_id: &str,
         thread_id: &ThreadId,
     ) -> Result<(), HostError> {
-        self.interrupt_session_thread(session_id, thread_id).await?;
+        self.session_runs
+            .interrupt_session_thread(session_id, thread_id)
+            .await?;
         if let Some(wake) = self.authority.dispatch_wake() {
             // This is only a latency hint. The durable cancellation intent and
             // dispatch row remain the recovery authority if the hint is lost.

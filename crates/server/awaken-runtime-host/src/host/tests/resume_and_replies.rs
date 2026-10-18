@@ -90,6 +90,7 @@ async fn run_on_an_awaiting_thread_fails_closed() {
     // C1 and require the documented fail-closed effect with no new Run.
     let host = host_requiring_write_confirmation(Arc::new(AwaitOnWriteModel)).await;
     let r1 = host
+        .session_runs
         .run(None, "t-awaiting", user("hi"))
         .await
         .expect("Run 1");
@@ -99,6 +100,7 @@ async fn run_on_an_awaiting_thread_fails_closed() {
     );
 
     let err = host
+        .session_runs
         .run(None, "t-awaiting", user("again"))
         .await
         .err()
@@ -112,6 +114,7 @@ async fn run_on_an_awaiting_thread_fails_closed() {
 
     // The await still resumes cleanly afterwards — the rejected run was a no-op.
     let r2 = host
+        .session_runs
         .resume(
             "t-awaiting",
             "w1",
@@ -128,6 +131,7 @@ async fn run_on_an_awaiting_thread_fails_closed() {
 async fn resume_with_no_awaiting_run_fails_closed() {
     let host = host_requiring_write_confirmation(Arc::new(AwaitOnWriteModel)).await;
     let err = host
+        .session_runs
         .resume(
             "t-idle",
             "w1",
@@ -155,12 +159,14 @@ async fn resume_with_a_wrong_tool_use_id_fails_closed() {
     // Decision rule: exercise B != A and require E1 with no tool result commit.
     let host = host_requiring_write_confirmation(Arc::new(AwaitOnWriteModel)).await;
     let r1 = host
+        .session_runs
         .run(None, "t-wrongid", user("hi"))
         .await
         .expect("Run 1");
     assert!(matches!(r1.state, RunState::Awaiting));
 
     let err = host
+        .session_runs
         .resume(
             "t-wrongid",
             "not-the-pending-id",
@@ -178,6 +184,7 @@ async fn resume_with_a_wrong_tool_use_id_fails_closed() {
 
     // The genuine id still resumes — the mismatch did not consume the await.
     let r2 = host
+        .session_runs
         .resume(
             "t-wrongid",
             &r1.pending.expect("a pending tool").tool_use_id,
@@ -199,11 +206,16 @@ async fn client_result_cannot_answer_a_builtin_tool() {
     // client results answer only client-owned targets. Decision rule: exercise
     // the mismatch, then resume the same ticket correctly to prove E1+E2.
     let host = host_requiring_write_confirmation(Arc::new(AwaitOnWriteModel)).await;
-    let r1 = host.run(None, "t-bind1", user("hi")).await.expect("Run 1");
+    let r1 = host
+        .session_runs
+        .run(None, "t-bind1", user("hi"))
+        .await
+        .expect("Run 1");
     let pending = r1.pending.expect("awaiting on the built-in write");
     assert!(!pending.client_executed, "write is a built-in tool");
 
     let err = host
+        .session_runs
         .resume(
             "t-bind1",
             &pending.tool_use_id,
@@ -222,6 +234,7 @@ async fn client_result_cannot_answer_a_builtin_tool() {
         err.message
     );
     let resumed = host
+        .session_runs
         .resume(
             "t-bind1",
             &pending.tool_use_id,
@@ -248,11 +261,16 @@ async fn confirm_cannot_answer_a_client_tool() {
         .build()
         .expect("validated Host dependencies"),
     );
-    let r1 = host.run(None, "t-bind2", user("hi")).await.expect("Run 1");
+    let r1 = host
+        .session_runs
+        .run(None, "t-bind2", user("hi"))
+        .await
+        .expect("Run 1");
     let pending = r1.pending.expect("awaiting on the client tool");
     assert!(pending.client_executed, "lookup is client-executed");
 
     let err = host
+        .session_runs
         .resume(
             "t-bind2",
             &pending.tool_use_id,
@@ -268,6 +286,7 @@ async fn confirm_cannot_answer_a_client_tool() {
         err.message
     );
     let resumed = host
+        .session_runs
         .resume(
             "t-bind2",
             &pending.tool_use_id,
@@ -304,10 +323,15 @@ async fn client_result_delivers_a_client_tool_result_and_ends_the_run() {
         .build()
         .expect("validated Host dependencies"),
     );
-    let r1 = host.run(None, "t-client", user("hi")).await.expect("Run 1");
+    let r1 = host
+        .session_runs
+        .run(None, "t-client", user("hi"))
+        .await
+        .expect("Run 1");
     let pending = r1.pending.expect("awaiting on the client tool");
 
     let r2 = host
+        .session_runs
         .resume(
             "t-client",
             &pending.tool_use_id,
@@ -364,6 +388,7 @@ async fn durable_foreground_run_relays_live_progress_before_committed_completion
     let sink = Arc::new(awaken_store_inmem::MemoryStreamSink::new());
 
     let outcome = host
+        .session_runs
         .run_streaming(
             None,
             "t-durable-live",
@@ -1657,6 +1682,7 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
         .await
         .expect("B1 root budget pause");
     let root_pause = host
+        .session_runs
         .session_budget_resume_tickets(&root.0)
         .await
         .expect("B1 discover root pause")
@@ -1677,7 +1703,10 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
     let mut root_stale = root_delivery.clone();
     root_stale.pause_generation = root_stale.pause_generation.saturating_add(1);
     assert_eq!(
-        host.resume_budget_reached(root_stale).await.unwrap(),
+        host.session_runs
+            .resume_budget_reached(root_stale)
+            .await
+            .unwrap(),
         SessionBudgetResumeDisposition::Stale,
         "B4/E5"
     );
@@ -1686,14 +1715,18 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
         "B4/E5"
     );
     assert_eq!(
-        host.resume_budget_reached(root_delivery.clone())
+        host.session_runs
+            .resume_budget_reached(root_delivery.clone())
             .await
             .unwrap(),
         SessionBudgetResumeDisposition::Dispatched,
         "B1/E1"
     );
     assert_eq!(
-        host.resume_budget_reached(root_delivery).await.unwrap(),
+        host.session_runs
+            .resume_budget_reached(root_delivery)
+            .await
+            .unwrap(),
         SessionBudgetResumeDisposition::Dispatched,
         "B1 exact replay remains successful"
     );
@@ -1771,6 +1804,7 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
         .await
         .expect("B2 initial Awaiting settlement");
     let first_pause = host
+        .session_runs
         .session_budget_resume_tickets(&parent.0)
         .await
         .expect("B2 discover child pause")
@@ -1788,8 +1822,10 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
         session_activity_epoch: 42,
     };
     let (first, replay) = tokio::join!(
-        host.resume_budget_reached(first_delivery.clone()),
-        host.resume_budget_reached(first_delivery.clone()),
+        host.session_runs
+            .resume_budget_reached(first_delivery.clone()),
+        host.session_runs
+            .resume_budget_reached(first_delivery.clone()),
     );
     assert_eq!(
         first.unwrap(),
@@ -1849,6 +1885,7 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
         .await
         .expect("B3 settle second pause");
     let second_pause = host
+        .session_runs
         .session_budget_resume_tickets(&parent.0)
         .await
         .expect("B3 discover second pause")
@@ -1861,7 +1898,10 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
         "B3/E4 commit-derived generations differ"
     );
     assert_eq!(
-        host.resume_budget_reached(first_delivery).await.unwrap(),
+        host.session_runs
+            .resume_budget_reached(first_delivery)
+            .await
+            .unwrap(),
         SessionBudgetResumeDisposition::Stale,
         "B4/E5 old generation"
     );
@@ -1884,7 +1924,10 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
         session_activity_epoch: 43,
     };
     assert_eq!(
-        host.resume_budget_reached(second_delivery).await.unwrap(),
+        host.session_runs
+            .resume_budget_reached(second_delivery)
+            .await
+            .unwrap(),
         SessionBudgetResumeDisposition::Dispatched,
         "B3/E4"
     );
@@ -1984,7 +2027,8 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
         .await
         .expect("B5 action Awaiting settlement");
     assert!(
-        host.session_budget_resume_tickets(&action_parent.0)
+        host.session_runs
+            .session_budget_resume_tickets(&action_parent.0)
             .await
             .expect("B5 discovery")
             .is_empty(),
@@ -2040,7 +2084,7 @@ async fn durable_client_result_settles_the_authoritative_dispatch() {
 
     let first = bounded_stage(
         "initial host.run settlement",
-        host.run(None, "t-durable-client", user("hi")),
+        host.session_runs.run(None, "t-durable-client", user("hi")),
     )
     .await
     .expect("durable Run awaits");
@@ -2061,7 +2105,7 @@ async fn durable_client_result_settles_the_authoritative_dispatch() {
 
     let resumed = bounded_stage(
         "host.resume client-result settlement",
-        host.resume(
+        host.session_runs.resume(
             "t-durable-client",
             &pending.tool_use_id,
             HostResume::ClientResult {
@@ -2116,8 +2160,12 @@ async fn coordinator_only_foreground_admission_survives_request_drop_without_a_p
     assert!(host.dispatch.dispatch_pool.get().is_none(), "Q2/E2");
 
     let request = host.clone();
-    let foreground =
-        tokio::spawn(async move { request.run(None, "remote-dispatch", user("hi")).await });
+    let foreground = tokio::spawn(async move {
+        request
+            .session_runs
+            .run(None, "remote-dispatch", user("hi"))
+            .await
+    });
     let row = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
             if let Some(row) = dispatch
@@ -2180,6 +2228,7 @@ async fn pending_client_tool_query_uses_committed_ticket_during_projection_gap()
         .expect("validated Host dependencies"),
     );
     let first = host
+        .session_runs
         .run(None, "t-cross-protocol-pending", user("hi"))
         .await
         .expect("client tool awaits");
@@ -2204,6 +2253,7 @@ async fn pending_client_tool_query_uses_committed_ticket_during_projection_gap()
     );
 
     let error = match host
+        .session_runs
         .run(
             None,
             "t-cross-protocol-pending",
@@ -2217,6 +2267,7 @@ async fn pending_client_tool_query_uses_committed_ticket_during_projection_gap()
     assert_eq!(error.kind, HostErrorKind::BadRequest);
 
     let resumed = host
+        .session_runs
         .resume(
             "t-cross-protocol-pending",
             &observed.tool_use_id,
@@ -2248,10 +2299,15 @@ async fn supersede_run_without_durable_ingress_fails_closed() {
     let host = host_requiring_write_confirmation(Arc::new(AwaitOnWriteModel)).await;
     // Await first so the supersede path is not short-circuited by the awaiting guard
     // (supersede is allowed on an awaiting thread; the durable check is what must fire).
-    let r1 = host.run(None, "t-sup", user("hi")).await.expect("Run 1");
+    let r1 = host
+        .session_runs
+        .run(None, "t-sup", user("hi"))
+        .await
+        .expect("Run 1");
     assert!(matches!(r1.state, RunState::Awaiting));
 
     let err = host
+        .session_runs
         .supersede_run(None, "t-sup", user("newest wins"))
         .await
         .err()
@@ -2286,9 +2342,11 @@ async fn managed_session_root_rejects_legacy_host_run_ingress() {
         .update_run("managed-root", |run| run.session_dispatch = true);
 
     for result in [
-        host.run(None, "managed-root", user("ordinary bypass"))
+        host.session_runs
+            .run(None, "managed-root", user("ordinary bypass"))
             .await,
-        host.supersede_run(None, "managed-root", user("supersede bypass"))
+        host.session_runs
+            .supersede_run(None, "managed-root", user("supersede bypass"))
             .await,
     ] {
         let error = match result {

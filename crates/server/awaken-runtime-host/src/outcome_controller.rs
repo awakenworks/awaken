@@ -148,7 +148,8 @@ impl SharedHost {
         // Outcome owns ordinary Worker Runs on the shared Thread. They reuse
         // the Session's frozen execution inputs but are not a second public
         // Session Run admission or Session activity owner.
-        let executor = BoundRunExecutor::new(self, ctx.clone()).for_thread_extension();
+        let executor =
+            BoundRunExecutor::new(&self.session_runs, ctx.clone()).for_thread_extension();
         let controller = Controller::new(
             &ctx.thread_id,
             ctx.commit.as_ref(),

@@ -606,13 +606,14 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
     .build()
     .expect("validated Host dependencies");
     let managed = managed_with_resource_source(host.clone());
-    host.run(
-        None,
-        "t-local-attach",
-        vec![Message::text(MessageId("initial".into()), Role::User, "hi")],
-    )
-    .await
-    .expect("first Run");
+    host.session_runs
+        .run(
+            None,
+            "t-local-attach",
+            vec![Message::text(MessageId("initial".into()), Role::User, "hi")],
+        )
+        .await
+        .expect("first Run");
     let environment = host
         .realization_executor
         .environments()

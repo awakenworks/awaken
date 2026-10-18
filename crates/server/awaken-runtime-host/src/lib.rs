@@ -73,9 +73,10 @@ mod no_model;
 mod outcome_controller;
 mod outcome_report;
 mod redact;
-mod run_application_host;
 mod run_assembly;
 pub use run_assembly::RunAssembly;
+mod session_runs;
+pub use session_runs::SessionRuns;
 mod run_exec;
 mod session_memory_tools;
 mod session_tools;
@@ -98,10 +99,9 @@ pub(crate) use awaken_session_realization_contract::ResourceOperationFence;
 
 use std::sync::Arc;
 
-use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_session_application_contract::{DelegatedRun, Pending, StepOutcome};
+use awaken_session_application_contract::{DelegatedRun, StepOutcome};
 use awaken_session_configuration_contract::{AgentCapabilities, BuiltinTool, CustomTool};
-use awaken_session_runtime_contract::{OutcomeDrive, SessionRuntime, ToolPermissionDecision};
+use awaken_session_runtime_contract::OutcomeDrive;
 use awaken_session_types::RunError;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -143,13 +143,14 @@ pub use crate::host::{
 };
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::no_model::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};
-pub use crate::run_application_host::RunApplicationHost;
 use awaken_credential_materializer::{CredentialRefreshFactory, PinnedCredentialMaterializer};
 use awaken_resource_contract::FileContentSource;
 #[cfg(test)]
 use awaken_resource_contract::RepositoryBindingVerifier;
 use managed_adapter_error::to_run_error;
-pub(crate) use managed_input_projection::{session_system_message, user_message};
+pub(crate) use managed_input_projection::session_system_message;
+#[cfg(test)]
+pub(crate) use managed_input_projection::user_message;
 // The model-route seam (R1/R2/R5): a process startup supplies its own
 // `InferenceExecutorMaterializer` to map a session's model ref to a labeled executor.
 // ── Managed Agents adapter over the shared host ─────────────────────────────
@@ -175,69 +176,6 @@ pub enum AgentCoordinationInstallError {
     DispatchObservationMismatch,
     #[error("Session coordination application is unavailable at composition")]
     ApplicationUnavailable,
-}
-
-#[async_trait::async_trait]
-impl SessionRuntime for ManagedHost {
-    async fn run(
-        &self,
-        agent: &str,
-        thread: &str,
-        content: Vec<ContentBlock>,
-    ) -> Result<StepOutcome, RunError> {
-        self.host
-            .realization_executor
-            .validate_thread_resource_bindings(thread)
-            .await?;
-        let result = self
-            .host
-            .run(Some(agent), thread, vec![user_message(content)])
-            .await;
-        crate::step_projection::finish_managed_step(result)
-    }
-
-    async fn resume(
-        &self,
-        thread: &str,
-        tool_use_id: &str,
-        decision: ToolPermissionDecision,
-    ) -> Result<StepOutcome, RunError> {
-        self.host
-            .realization_executor
-            .validate_thread_resource_bindings(thread)
-            .await?;
-        let result = self
-            .host
-            .resume(thread, tool_use_id, HostResume::Permission(decision))
-            .await;
-        crate::step_projection::finish_managed_step(result)
-    }
-
-    async fn resume_custom(
-        &self,
-        thread: &str,
-        tool_use_id: &str,
-        content: Vec<ContentBlock>,
-        is_error: bool,
-    ) -> Result<StepOutcome, RunError> {
-        self.host
-            .realization_executor
-            .validate_thread_resource_bindings(thread)
-            .await?;
-        let result = self
-            .host
-            .resume(
-                thread,
-                tool_use_id,
-                HostResume::ClientResult { content, is_error },
-            )
-            .await;
-        crate::step_projection::finish_managed_step(result)
-    }
-
-    fn model(&self) -> String {
-        self.host.run_assembly.model()
-    }
 }
 
 #[async_trait::async_trait]
@@ -338,6 +276,7 @@ impl awaken_session_runtime_contract::CoordinationRuntime for ManagedHost {
             }
             match self
                 .host
+                .session_runs
                 .coordinator_dispatch()
                 .map_err(to_run_error)?
                 .reserve_session_run(request, 30_000)
@@ -384,6 +323,7 @@ impl awaken_session_runtime_contract::CoordinationRuntime for ManagedHost {
         delivery: awaken_session_runtime_contract::SessionRunDelivery,
     ) -> Result<awaken_session_runtime_contract::SessionRunActivation, RunError> {
         self.host
+            .session_runs
             .activate_session_run_reservation(delivery)
             .await
             .map_err(to_run_error)
@@ -397,6 +337,7 @@ impl awaken_session_runtime_contract::CoordinationRuntime for ManagedHost {
     ) -> Result<StepOutcome, RunError> {
         let receipt = self
             .host
+            .session_runs
             .activate_and_observe_session_run(admission, input_message_ids, sink)
             .await
             .map_err(to_run_error)?;
@@ -457,6 +398,7 @@ impl awaken_session_runtime_contract::CoordinationRuntime for ManagedHost {
         child_thread_id: &awaken_agent_contract::agent::thread::Id,
     ) -> Result<(), RunError> {
         self.host
+            .session_runs
             .interrupt_session_thread(session_id.as_str(), child_thread_id)
             .await
             .map_err(to_run_error)
@@ -504,6 +446,7 @@ impl awaken_session_runtime_contract::CoordinationRuntime for ManagedHost {
         thread: &str,
     ) -> Result<awaken_session_application_contract::DelegatedRunSnapshot, RunError> {
         self.host
+            .session_runs
             .quiesce_terminal_delegations(thread)
             .await
             .map_err(to_run_error)
@@ -516,7 +459,7 @@ impl awaken_session_runtime_contract::SessionCoordinationReads for ManagedHost {
         &self,
         session: &awaken_session_state_contract::PersistedSession,
     ) -> awaken_session_runtime_contract::SessionSourceDispatchObservation {
-        let Ok(source) = self.host.coordinator_dispatch() else {
+        let Ok(source) = self.host.session_runs.coordinator_dispatch() else {
             return Default::default();
         };
         awaken_dispatch_execution::read_source_dispatch_observation(source.as_ref(), session).await
@@ -526,7 +469,7 @@ impl awaken_session_runtime_contract::SessionCoordinationReads for ManagedHost {
         &self,
         session: &awaken_session_state_contract::PersistedSession,
     ) -> awaken_session_runtime_contract::SessionExecutionRecoveryObservation {
-        let Ok(source) = self.host.coordinator_dispatch() else {
+        let Ok(source) = self.host.session_runs.coordinator_dispatch() else {
             return awaken_session_runtime_contract::SessionExecutionRecoveryObservation::NotProven {
                 reason: awaken_session_runtime_contract::SessionExecutionRecoveryGap::HistoryUnavailable,
             };
@@ -555,6 +498,7 @@ impl awaken_session_runtime_contract::SessionCoordinationReads for ManagedHost {
         let run = command.run_id();
         let source = self
             .host
+            .session_runs
             .coordinator_dispatch()
             .map_err(|error| RunError::unavailable(error.message))?;
         let reads: &dyn awaken_run_ingress_contract::SessionRunAdmissionReads = source.as_ref();
@@ -657,6 +601,7 @@ impl awaken_session_runtime_contract::BudgetRuntime for ManagedHost {
         delivery: awaken_session_application_contract::SessionBudgetResumeDelivery,
     ) -> Result<awaken_session_application_contract::SessionBudgetResumeDisposition, RunError> {
         self.host
+            .session_runs
             .resume_budget_reached(delivery)
             .await
             .map_err(to_run_error)
@@ -667,6 +612,7 @@ impl awaken_session_runtime_contract::BudgetRuntime for ManagedHost {
         session_id: &awaken_session_types::SessionId,
     ) -> Result<Vec<awaken_session_application_contract::SessionBudgetResumeTicket>, RunError> {
         self.host
+            .session_runs
             .session_budget_resume_tickets(session_id.as_str())
             .await
             .map_err(to_run_error)
@@ -697,110 +643,6 @@ impl awaken_session_runtime_contract::BudgetRuntime for ManagedHost {
                 session_id.as_str(),
                 &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
             )
-            .await
-            .map_err(to_run_error)
-    }
-}
-
-#[async_trait::async_trait]
-impl awaken_session_runtime_contract::StreamingRunRuntime for ManagedHost {
-    async fn run_attributed(
-        &self,
-        agent: &str,
-        thread: &str,
-        content: Vec<ContentBlock>,
-        data_subject_id: Option<String>,
-    ) -> Result<StepOutcome, RunError> {
-        self.host
-            .realization_executor
-            .validate_thread_resource_bindings(thread)
-            .await?;
-        let result = self
-            .host
-            .run_attributed(
-                Some(agent),
-                thread,
-                vec![user_message(content)],
-                data_subject_id.map(awaken_runtime_contract::DataSubjectId),
-            )
-            .await;
-        crate::step_projection::finish_managed_step(result)
-    }
-
-    async fn run_streaming(
-        &self,
-        agent: &str,
-        thread: &str,
-        content: Vec<ContentBlock>,
-        sink: std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>,
-    ) -> Result<StepOutcome, RunError> {
-        self.host
-            .realization_executor
-            .validate_thread_resource_bindings(thread)
-            .await?;
-        // Same committed Run as `run`; `sink` mirrors in-flight `stream::Kind` so
-        // the Managed adapter can project live `agent.message` previews.
-        let result = self
-            .host
-            .run_streaming(Some(agent), thread, vec![user_message(content)], sink)
-            .await;
-        crate::step_projection::finish_managed_step(result)
-    }
-
-    async fn run_streaming_attributed(
-        &self,
-        agent: &str,
-        thread: &str,
-        content: Vec<ContentBlock>,
-        data_subject_id: Option<String>,
-        sink: std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>,
-    ) -> Result<StepOutcome, RunError> {
-        self.host
-            .realization_executor
-            .validate_thread_resource_bindings(thread)
-            .await?;
-        let result = self
-            .host
-            .run_streaming_attributed(
-                Some(agent),
-                thread,
-                vec![user_message(content)],
-                sink,
-                data_subject_id.map(awaken_runtime_contract::DataSubjectId),
-            )
-            .await;
-        crate::step_projection::finish_managed_step(result)
-    }
-
-    async fn interrupt(&self, thread: &str) -> Result<(), RunError> {
-        self.host.interrupt(thread).await.map_err(to_run_error)
-    }
-
-    /// Replace only the already-selected model projection for one Session and
-    /// force its next context construction to consume that exact selection.
-    async fn rebind_model(&self, thread: &str, model: &str) -> Result<(), RunError> {
-        // R5: re-stage the thread's model and evict its cached context so the next
-        // Run rebuilds with the newly resolved executor (native switch is O(1); an
-        // ACP thread's cached context relaunches its CLI on rebuild).
-        self.host.run_assembly.register_thread_model(thread, model);
-        self.host
-            .realization_executor
-            .environments()
-            .evict_session_for_rebuild(thread)
-            .await?;
-        Ok(())
-    }
-
-    async fn supports_mid_conversation_system(&self, thread: &str) -> bool {
-        managed_model_capability::supports_mid_conversation_system(
-            &self.host.run_assembly.model_for_thread(thread),
-        )
-    }
-
-    async fn pending_tool(&self, thread: &str) -> Result<Option<Pending>, RunError> {
-        self.host
-            .thread_reads
-            .pending_tool(thread)
             .await
             .map_err(to_run_error)
     }

@@ -107,7 +107,7 @@ async fn interrupt_cancels_the_run_and_reports_interrupted() {
 
     // Once the loop is blocked mid-run, interrupt it, then release the gate.
     await_interrupt_inference_gate(&reached, &mut task).await;
-    host.interrupt("t1").await.expect("interrupt");
+    host.session_runs.interrupt("t1").await.expect("interrupt");
     gate.notify_one();
 
     let report = completed_outcome(task.await.expect("join").expect("define_outcome"));
@@ -157,7 +157,10 @@ async fn interrupting_acknowledgment_replaces_the_budget_terminal() {
     });
 
     await_interrupt_inference_gate(&reached, &mut task).await;
-    host.interrupt("ack-interrupt").await.expect("interrupt");
+    host.session_runs
+        .interrupt("ack-interrupt")
+        .await
+        .expect("interrupt");
     gate.notify_one();
 
     let report = completed_outcome(task.await.expect("join").expect("define_outcome"));
@@ -208,7 +211,7 @@ async fn worker_authority_loss_interrupts_active_session_before_revocation() {
         }),
         "E3 before asynchronous interruption"
     );
-    assert_eq!(host.interrupt_all_session_runs().await, 2);
+    assert_eq!(host.session_runs.interrupt_all_session_runs().await, 2);
     gate.notify_one();
 
     let report = completed_outcome(task.await.expect("join").expect("define_outcome"));
@@ -287,7 +290,7 @@ async fn worker_interrupt_uses_resident_claim_without_coordinator_queue_operatio
         });
         // The local signal must not clear pre-existing nested uncertainty.
         physical.mark_uncertain();
-        worker.interrupt("worker-stop").await.unwrap();
+        worker.session_runs.interrupt("worker-stop").await.unwrap();
         assert!(cancelled.is_cancelled(), "D1/D2 target attempt");
         assert!(!unrelated.is_cancelled(), "D3 foreign Run");
         assert!(
@@ -305,9 +308,13 @@ async fn worker_interrupt_uses_resident_claim_without_coordinator_queue_operatio
             epoch: 1,
         });
     });
-    worker.interrupt("worker-stop").await.unwrap();
+    worker.session_runs.interrupt("worker-stop").await.unwrap();
     assert!(foreground_signal.is_cancelled(), "D5 foreground signal");
-    worker.interrupt("absent-worker-session").await.unwrap();
+    worker
+        .session_runs
+        .interrupt("absent-worker-session")
+        .await
+        .unwrap();
     assert!(
         !worker.installed_sessions.contains("absent-worker-session"),
         "D4 no materialization"
@@ -328,7 +335,8 @@ async fn interrupt_is_a_noop_when_nothing_runs() {
         .build()
         .expect("validated Host dependencies");
     // No run in flight → interrupt succeeds and does nothing.
-    host.interrupt("idle-thread")
+    host.session_runs
+        .interrupt("idle-thread")
         .await
         .expect("interrupt is a no-op");
 }
@@ -465,25 +473,27 @@ async fn attributed_run_meets_deployment_capture_with_control_consent() {
         .expect("validated Host dependencies"),
     );
 
-    host.run_attributed(
-        None,
-        "consent-granted",
-        user("hello granted"),
-        Some(awaken_runtime_contract::DataSubjectId("granted".into())),
-    )
-    .await
-    .expect("R1 attributed run");
+    host.session_runs
+        .run_attributed(
+            None,
+            "consent-granted",
+            user("hello granted"),
+            Some(awaken_runtime_contract::DataSubjectId("granted".into())),
+        )
+        .await
+        .expect("R1 attributed run");
     let after_granted = captured.0.load(Ordering::SeqCst);
     assert!(after_granted >= 2, "R1 prompt and completion captured");
 
-    host.run_attributed(
-        None,
-        "consent-unknown",
-        user("hello unknown"),
-        Some(awaken_runtime_contract::DataSubjectId("unknown".into())),
-    )
-    .await
-    .expect("R2 attributed run");
+    host.session_runs
+        .run_attributed(
+            None,
+            "consent-unknown",
+            user("hello unknown"),
+            Some(awaken_runtime_contract::DataSubjectId("unknown".into())),
+        )
+        .await
+        .expect("R2 attributed run");
     assert_eq!(
         captured.0.load(Ordering::SeqCst),
         after_granted,
@@ -587,13 +597,15 @@ async fn workspace_narrowing_tightens_the_deployment_ceiling_for_each_run() {
             .register_thread_workspace(thread, workspace);
     }
 
-    host.run_attributed(None, "narrow-open", user("hello open"), subject())
+    host.session_runs
+        .run_attributed(None, "narrow-open", user("hello open"), subject())
         .await
         .expect("W1 run");
     let after_open = captured.0.load(Ordering::SeqCst);
     assert!(after_open >= 2, "W1 prompt and completion captured");
 
-    host.run_attributed(None, "narrow-closed", user("hello closed"), subject())
+    host.session_runs
+        .run_attributed(None, "narrow-closed", user("hello closed"), subject())
         .await
         .expect("W2 run");
     assert_eq!(captured.0.load(Ordering::SeqCst), after_open, "W2");
@@ -604,12 +616,14 @@ async fn workspace_narrowing_tightens_the_deployment_ceiling_for_each_run() {
             content_capture: Some(awaken_runtime_contract::ContentCapture::Structured),
         }),
     );
-    host.run_attributed(None, "narrow-open", user("hello again"), subject())
+    host.session_runs
+        .run_attributed(None, "narrow-open", user("hello again"), subject())
         .await
         .expect("W3 run");
     assert_eq!(captured.0.load(Ordering::SeqCst), after_open, "W3");
 
-    host.run_attributed(None, "narrow-broken", user("hello broken"), subject())
+    host.session_runs
+        .run_attributed(None, "narrow-broken", user("hello broken"), subject())
         .await
         .expect("W4 run");
     assert_eq!(captured.0.load(Ordering::SeqCst), after_open, "W4");
@@ -637,7 +651,7 @@ async fn bound_executor_is_the_ordinary_run_execution_boundary() {
         ctx.config.clone(),
         user("hello"),
     );
-    let state = BoundRunExecutor::new(&host, ctx.clone())
+    let state = BoundRunExecutor::new(&host.session_runs, ctx.clone())
         .execute(activation, RuntimeRunContext::new())
         .await
         .expect("snapshot run");
@@ -722,7 +736,7 @@ async fn host_application_decorator_wraps_the_complete_session_boundary() {
         ctx.config.clone(),
         user("go"),
     );
-    let state = BoundRunExecutor::new(&host, ctx)
+    let state = BoundRunExecutor::new(&host.session_runs, ctx)
         .execute(activation, RuntimeRunContext::new())
         .await
         .unwrap();
@@ -769,7 +783,7 @@ async fn tool_bearing_snapshot_can_be_restricted_at_the_run_boundary() {
     // C2 this attempt narrows authority to DenyAll. E1 no tool or discovery
     // prompt is projected, E2 the model can answer normally, and E3 a recovered
     // or injected call remains blocked by the same closed narrowing enum.
-    let state = BoundRunExecutor::new(&host, ctx)
+    let state = BoundRunExecutor::new(&host.session_runs, ctx)
         .execute(activation, RuntimeRunContext::new())
         .await
         .expect("declared tools do not bypass a per-Run deny-all restriction");
@@ -829,11 +843,15 @@ async fn interrupt_ends_an_in_flight_run_as_cancelled() {
     let _managed = install_test_dispatch_runtime(&host);
 
     let driver = host.clone();
-    let mut task = tokio::spawn(async move { driver.run(None, "t-int", user("go")).await });
+    let mut task =
+        tokio::spawn(async move { driver.session_runs.run(None, "t-int", user("go")).await });
 
     // The Run is blocked mid-inference; interrupt it, then release the gate.
     await_interrupt_inference_gate(&reached, &mut task).await;
-    host.interrupt("t-int").await.expect("interrupt");
+    host.session_runs
+        .interrupt("t-int")
+        .await
+        .expect("interrupt");
     gate.notify_one();
 
     let result = task.await.expect("join").expect("run");
@@ -884,8 +902,12 @@ async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finis
         .expect("valid test dispatch composition");
 
     let driver = host.clone();
-    let mut run =
-        tokio::spawn(async move { driver.run(None, "durable-interrupt", user("go")).await });
+    let mut run = tokio::spawn(async move {
+        driver
+            .session_runs
+            .run(None, "durable-interrupt", user("go"))
+            .await
+    });
     await_interrupt_inference_gate(&reached, &mut run).await;
 
     let before = dispatch.list_dispatches().await.unwrap();
@@ -896,7 +918,7 @@ async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finis
 
     tokio::time::timeout(
         std::time::Duration::from_millis(250),
-        host.interrupt("durable-interrupt"),
+        host.session_runs.interrupt("durable-interrupt"),
     )
     .await
     .expect("R1 interrupt admission must not await Provider completion")
@@ -967,6 +989,7 @@ async fn live_only_durable_control_never_materializes_a_cold_session() {
         .build()
         .expect("validated Host dependencies");
     let unsupported = direct
+        .session_runs
         .wake_durable(cold_thread, run_id)
         .await
         .expect_err("W0 direct ingress rejects durable control");
@@ -995,6 +1018,7 @@ async fn live_only_durable_control_never_materializes_a_cold_session() {
     .build()
     .expect("validated Host dependencies");
     let wake = durable
+        .session_runs
         .wake_durable(cold_thread, run_id)
         .await
         .expect_err("W1 cold wake has no subscriber");
@@ -1006,12 +1030,14 @@ async fn live_only_durable_control_never_materializes_a_cold_session() {
     );
 
     let explicit_pause = durable
+        .session_runs
         .pause_durable(cold_thread, Some(run_id))
         .await
         .expect_err("W1 cold explicit pause has no subscriber");
     assert_eq!(explicit_pause.kind, HostErrorKind::BadRequest, "W1/E2");
     assert_eq!(explicit_pause.message, wake.message, "W1/E2");
     let implicit_pause = durable
+        .session_runs
         .pause_durable(cold_thread, None)
         .await
         .expect_err("W1 cold implicit pause has no active attempt");
@@ -1100,7 +1126,10 @@ async fn managed_interrupt_cancels_cold_dispatch_without_realizing_an_environmen
         "C2 precondition"
     );
 
-    host.interrupt(thread).await.expect("C4 interrupt accepted");
+    host.session_runs
+        .interrupt(thread)
+        .await
+        .expect("C4 interrupt accepted");
 
     let rows = dispatch
         .list_dispatches()
@@ -1260,7 +1289,8 @@ async fn managed_primary_interrupt_recovers_the_active_dispatch_without_a_local_
     host.ensure_dispatch_pool()
         .expect("valid test dispatch composition");
 
-    host.interrupt(thread)
+    host.session_runs
+        .interrupt(thread)
         .await
         .expect("M1/E1 interrupt intent");
     tokio::time::timeout(
@@ -1374,10 +1404,14 @@ async fn managed_primary_interrupt_cancels_every_exact_session_dispatch() {
         .with_ephemeral_dispatch(dispatch.clone()))
     .build()
     .expect("validated Host dependencies");
-    host.interrupt(thread)
+    host.session_runs
+        .interrupt(thread)
         .await
         .expect("A1 exact Session interrupt");
-    host.interrupt(thread).await.expect("A2 idempotent retry");
+    host.session_runs
+        .interrupt(thread)
+        .await
+        .expect("A2 idempotent retry");
     let rows = dispatch
         .list_dispatches()
         .await

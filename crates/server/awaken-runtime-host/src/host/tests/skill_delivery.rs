@@ -366,6 +366,7 @@ async fn direct_on_tool_use_brain_skill_adapter_keeps_the_environment_absent() {
     });
 
     let result = host
+        .session_runs
         .run(
             None,
             thread,
