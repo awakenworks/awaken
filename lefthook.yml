@@ -420,6 +420,12 @@ pre-push:
     # Keep push latency bounded. Full workspace tests, formal verification,
     # Postgres suites, and frontend tests/build remain explicit checks:
     #   scripts/ci/check-all.sh
+    # Both Cargo commands below scope their work to the commits since the
+    # origin/main merge-base (rust_test_plan.py gate_scope): unaffected graphs
+    # and snapshots are skipped with a "↷"/"0 of N" line, and any manifest,
+    # lockfile, gate script or unowned change keeps the whole run. They stay
+    # sequential, like pre-commit: two concurrent workspace builds exhaust a
+    # low-memory Windows host before either reports a useful diagnosis.
     documentation:
       run: scripts/ci/check-docs.sh
 
@@ -433,7 +439,7 @@ pre-push:
     # Run the existing fail-closed gate; do not duplicate its crate inventory,
     # tool pinning, or comparison policy in the hook.
     public-api:
-      run: scripts/ci/check_public_api.sh --require-tools
+      run: scripts/ci/check_public_api.sh --require-tools --affected-upstream
 
     frontend-quick:
       run: scripts/ci/check-frontend.sh --quick

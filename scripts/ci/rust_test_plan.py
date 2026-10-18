@@ -20,6 +20,7 @@ import unittest
 from unittest import mock
 import formal_sources
 import crate_test
+import generate_hooks
 
 ROOT = Path(__file__).resolve().parents[2]
 PROFILE = ROOT / ".config/rust-tests.toml"
@@ -62,6 +63,31 @@ def affected_packages(metadata: dict, changed: list[str], root: Path = ROOT) -> 
             selected.add(consumer)
             pending.append(consumer)
     return sorted(packages[identity]["name"] for identity in selected), "changed owners and transitive consumers, including test dependencies"
+
+
+# Scope decision table for the separate-graph gate steps (check-rust.sh and the
+# public API gate). P1 no changed path is a declared Rust gate input (this
+# planner's INPUT_GLOBS and the SDK consumer checker's, matched the way the
+# rendered hook globs match) -> "none". P2 every input lies in a member crate ->
+# "packages": the changed owners and their transitive consumers. P3 a manifest,
+# lockfile, toolchain, Cargo config, gate script or other unowned input ->
+# "whole": every member stays selected, exactly as before scoping existed.
+def gate_inputs() -> tuple[str, ...]:
+    declared = generate_hooks.declared_input_globs(ROOT / "scripts/ci")
+    return tuple(dict.fromkeys((*INPUT_GLOBS, *declared["check_sdk_consumer.py"])))
+
+
+def gate_scope(metadata: dict, changed: list[str], root: Path = ROOT,
+               inputs: tuple[str, ...] | None = None) -> tuple[str, list[str], str]:
+    """Classify a change as "none", "packages" or "whole" for a scoped gate step."""
+    inputs = gate_inputs() if inputs is None else inputs
+    relevant = [path for path in changed if any(generate_hooks.glob_matches(glob, path) for glob in inputs)]
+    if not relevant:
+        return "none", [], "no declared Rust gate input changed"
+    selected, reason = affected_packages(metadata, relevant, root)
+    if reason == "changed owners and transitive consumers, including test dependencies":
+        return "packages", selected, reason
+    return "whole", selected, reason
 
 
 def git_output(*arguments: str) -> bytes:
@@ -194,6 +220,40 @@ class PlanTests(unittest.TestCase):
     def git(self, root: Path, *arguments: str, environment: dict | None = None) -> bytes:
         return subprocess.check_output(["git", "-C", str(root), *arguments],
                                        env=self.detached_environment() if environment is None else environment, stderr=subprocess.PIPE)
+
+    def test_gate_scope_follows_the_decision_table(self) -> None:
+        # P1 no declared Rust gate input -> none; P2 member sources -> owners
+        # plus transitive consumers; P3 a manifest, lockfile, gate script or an
+        # unowned declared input (the SDK consumer workspace) -> whole.
+        root = Path("/repository")
+        names = ("kernel", "application", "cli", "other")
+        edges = {"kernel": (), "application": ("kernel",), "cli": ("application",), "other": ()}
+        metadata = {
+            "workspace_members": list(names),
+            "packages": [{"id": n, "name": n, "manifest_path": str(root / "crates" / n / "Cargo.toml")} for n in names],
+            "resolve": {"nodes": [{"id": n, "deps": [{"pkg": d} for d in edges[n]]} for n in names]},
+        }
+        inputs = ("Cargo.toml", "Cargo.lock", "crates/**", "examples/sdk-consumer/**", "scripts/ci/**", "lefthook.yml")
+        rows = (
+            ([], "none", []),
+            (["docs/runtime.md", "README.md", "web/src/main.ts", "e2e/scenario.mjs"], "none", []),
+            (["crates/kernel/src/lib.rs"], "packages", ["application", "cli", "kernel"]),
+            (["crates/other/src/lib.rs", "docs/other.md"], "packages", ["other"]),
+            (["Cargo.lock"], "whole", None),
+            (["crates/kernel/Cargo.toml"], "whole", None),
+            (["scripts/ci/check-rust.sh"], "whole", None),
+            (["examples/sdk-consumer/tests/tasks.rs", "crates/other/src/lib.rs"], "whole", None),
+        )
+        for changed, kind, packages in rows:
+            with self.subTest(changed=changed):
+                actual_kind, actual_packages, reason = gate_scope(metadata, changed, root, inputs)
+                self.assertEqual(actual_kind, kind, reason)
+                if packages is not None:
+                    self.assertEqual(actual_packages, packages)
+        declared = gate_inputs()
+        for path in ("crates/runtime/awaken-runtime/src/lib.rs", "Cargo.lock", "fuzz/Cargo.toml",
+                     "examples/sdk-consumer/Cargo.toml", "scripts/ci/check-rust.sh", "lefthook.yml"):
+            self.assertTrue(any(generate_hooks.glob_matches(glob, path) for glob in declared), path)
 
     def planner_cli(self, directory: str, root: Path, metadata: dict, *, metadata_status: int = 0,
                     execution_status: int = 0, mutate: str = "", broken_metadata: bool = False,
@@ -744,7 +804,29 @@ def main() -> int:
     parser.add_argument("--base")
     parser.add_argument("--run", action="store_true")
     parser.add_argument("--check-command", nargs=argparse.REMAINDER)
+    parser.add_argument("--gate-scope", action="store_true")
     args = parser.parse_args()
+    if args.gate_scope:
+        if not args.base or args.run or args.check_command is not None or args.features or args.self_test or args.source_digest:
+            parser.error("--gate-scope takes only --base")
+        try:
+            base = git_output("rev-parse", "--verify", "--end-of-options", args.base + "^{commit}").decode().strip()
+            changed = changed_sources(base)
+            environment = crate_test.environment(ROOT)
+            # Every feature and platform: an edge that exists in any graph a
+            # scoped step compiles must reach the consumer set.
+            metadata = json.loads(subprocess.check_output(crate_test.native_command(
+                ["cargo", "metadata", "--locked", "--format-version", "1", "--all-features"], environment),
+                cwd=ROOT, env=environment))
+            kind, packages, reason = gate_scope(metadata, changed)
+        except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
+            print(f"Cannot establish the gate scope: {error}", file=sys.stderr)
+            return 1
+        print(f"scope={kind}")
+        print(f"reason={reason}")
+        for package in packages:
+            print(package)
+        return 0
     if args.features or args.self_test or args.source_digest:
         if args.base or args.run or args.check_command is not None or sum((args.features, args.self_test, args.source_digest)) != 1:
             parser.error("--features, --source-digest and --self-test are standalone modes")
