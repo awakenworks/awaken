@@ -176,7 +176,7 @@ async fn interrupt_with_admission_suspended(
                 "",
                 "a2a:http://blocking.invalid",
             ),
-            awaken_tenancy::ScopeId::from(host.local_workspace()),
+            awaken_tenancy::ScopeId::from(host.run_assembly.local_workspace()),
             None,
             "sha256:blocking-remote",
         )
@@ -188,7 +188,7 @@ async fn interrupt_with_admission_suspended(
     crate::host::worker_resolver::test_support::install_complete_projection_for_snapshot(
         &managed,
         thread,
-        host.local_workspace(),
+        host.run_assembly.local_workspace(),
         crate::host::worker_resolver::test_support::deferred_environment(),
         &activation.snapshot,
     )
@@ -210,7 +210,11 @@ async fn interrupt_with_admission_suspended(
     )
     .await
     .expect("C1+C2 exact attempt entered");
-    let ctx = host.ctx_for(thread, None).await.expect("resident Session");
+    let ctx = host
+        .run_assembly
+        .ctx_for(thread, None)
+        .await
+        .expect("resident Session");
     assert!(
         !ctx.delivery.is_durable()
             && !ctx.foreground.has_run().unwrap()

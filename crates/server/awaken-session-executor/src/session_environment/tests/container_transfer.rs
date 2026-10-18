@@ -214,7 +214,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
                     .environments()
                     .retire_session_environment_for_revocation(
                         thread,
-                        (&host.mcp, host.installed_sessions.as_ref()),
+                        (&host.run_assembly.mcp, host.installed_sessions.as_ref()),
                         None,
                     )
                     .await

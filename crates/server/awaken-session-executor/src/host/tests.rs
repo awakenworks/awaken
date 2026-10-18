@@ -32,7 +32,7 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
     );
     let thread = ThreadId("native-input-session".into());
     let run = RunId("native-input-run".into());
-    let ctx = host.ctx_for(&thread.0, None).await.unwrap();
+    let ctx = host.run_assembly.ctx_for(&thread.0, None).await.unwrap();
     let commit = host.thread_reads.commit_for_read(&thread.0).await.unwrap();
     commit
         .commit(ThreadCommit::assemble(
@@ -249,7 +249,6 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
 use awaken_provisioning_contract as pc;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse};
-use awaken_session_execution_contract::SessionRuntime;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
     Mutex,
@@ -459,7 +458,7 @@ async fn install_pinned_managed_skill_session_with_tools(
     seed_version: bool,
     tools: Option<awaken_session_configuration_contract::SessionToolConfiguration>,
 ) -> Result<(), awaken_session_types::RunError> {
-    let workspace = host.local_workspace().to_string();
+    let workspace = host.run_assembly.local_workspace().to_string();
     if seed_version {
         host.tools
             .skills
@@ -485,6 +484,8 @@ async fn install_pinned_managed_skill_session_with_tools(
     init.tools = tools;
     install_complete_test_session_for_realization(managed, thread, init).await?;
     managed
+        .host
+        .run_assembly
         .apply_session_inputs(
             thread,
             &resource_transition(&workspace, 0, Default::default(), 0, resources),
@@ -1250,7 +1251,7 @@ async fn install_complete_test_session(
     init: awaken_session_configuration_contract::SessionInit,
 ) -> Result<(), awaken_session_types::RunError> {
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-        managed,
+        &*managed.host.run_assembly,
         thread,
         compile_complete_test_session_projection(managed, init),
         awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
@@ -1287,19 +1288,23 @@ async fn install_complete_test_session_for_realization(
     thread: &str,
     init: awaken_session_configuration_contract::SessionInit,
 ) -> Result<(), awaken_session_types::RunError> {
-    managed.install_test_environment_binding_sink(Arc::new(BindingOrderSink {
-        host: Arc::downgrade(&managed.host),
-        authorize_calls: AtomicUsize::new(0),
-        calls: AtomicUsize::new(0),
-        observed_before_publish: AtomicBool::new(false),
-        fail: false,
-        require_realization: false,
-        owned_session_id: None,
-        committed_environment: None,
-    }));
+    managed
+        .host
+        .run_assembly
+        .install_test_environment_binding_sink(Arc::new(BindingOrderSink {
+            host: Arc::downgrade(&managed.host),
+            authorize_calls: AtomicUsize::new(0),
+            calls: AtomicUsize::new(0),
+            observed_before_publish: AtomicBool::new(false),
+            fail: false,
+            require_realization: false,
+            owned_session_id: None,
+            committed_environment: None,
+        }));
     install_complete_test_session(managed, thread, init).await?;
     managed
         .host
+        .run_assembly
         .install_session_realization_lease(
             thread,
             crate::session_resource::SessionRealizationLease {
@@ -2491,7 +2496,7 @@ async fn install_terminal_recovery_projection(
 ) -> awaken_session_realization_contract::FrozenSessionProjection {
     let mut projection = remote_terminal_cleanup_projection();
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-        managed,
+        &*managed.host.run_assembly,
         thread,
         projection.clone(),
         awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
@@ -2501,16 +2506,17 @@ async fn install_terminal_recovery_projection(
     // A changed aggregate Environment is a new root-CAS snapshot.
     projection.revision.0 += 1;
     projection.environment = environment;
-    host.install_test_terminal_cleanup_projection(
-        &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
-            environment_creation_not_attempted: false,
-            session_id: thread.into(),
-            projection: projection.clone(),
-            authority: awaken_session_realization::test_support::test_lease_receipt(lease),
-        },
-    )
-    .await
-    .expect("install exact terminal recovery assignment");
+    host.run_assembly
+        .install_test_terminal_cleanup_projection(
+            &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                environment_creation_not_attempted: false,
+                session_id: thread.into(),
+                projection: projection.clone(),
+                authority: awaken_session_realization::test_support::test_lease_receipt(lease),
+            },
+        )
+        .await
+        .expect("install exact terminal recovery assignment");
     projection
 }
 
@@ -2570,7 +2576,8 @@ fn install_test_renewal_authority(
     session_id: &str,
     lease: crate::session_resource::SessionRealizationLease,
 ) {
-    host.install_session_realization_lease(session_id, lease.clone())
+    host.run_assembly
+        .install_session_realization_lease(session_id, lease.clone())
         .unwrap();
     control
         .renewals

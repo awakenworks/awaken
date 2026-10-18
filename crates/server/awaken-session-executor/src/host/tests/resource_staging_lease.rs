@@ -45,7 +45,7 @@ async fn realization_revocation_selection_fences_removed_and_recreated_slots() {
                 .expect("installed Sessions")
                 .unwrap();
             let held = lock.lock().await;
-            let selection = host.begin_session_realization_revocation();
+            let selection = host.run_assembly.begin_session_realization_revocation();
             host.installed_sessions.remove(SESSION);
             let claim = awaken_dispatch_contract::RunClaim {
                 run_id: RunId("replacement".into()),
@@ -62,7 +62,7 @@ async fn realization_revocation_selection_fences_removed_and_recreated_slots() {
                 }
                 slot.run.dispatch_claim = Some(claim.clone());
             });
-            let replacement = host.begin_session_realization_revocation();
+            let replacement = host.run_assembly.begin_session_realization_revocation();
             let replacement_lock = host
                 .installed_sessions
                 .realizations()
@@ -74,7 +74,8 @@ async fn realization_revocation_selection_fences_removed_and_recreated_slots() {
             assert_eq!(
                 tokio::time::timeout(
                     std::time::Duration::from_secs(2),
-                    host.finish_session_realization_revocation(selection)
+                    host.run_assembly
+                        .finish_session_realization_revocation(selection)
                 )
                 .await
                 .unwrap()
@@ -89,7 +90,8 @@ async fn realization_revocation_selection_fences_removed_and_recreated_slots() {
             );
             drop(replacement_held);
             assert_eq!(
-                host.finish_session_realization_revocation(replacement)
+                host.run_assembly
+                    .finish_session_realization_revocation(replacement)
                     .await
                     .unwrap(),
                 1,
@@ -138,7 +140,7 @@ async fn worker_revocation_closes_all_before_drain_and_joins_independent_cleanup
         .realization_lock(held_session)
         .expect("installed Sessions");
     let held = held_lock.lock().await;
-    let revocation = host.begin_session_realization_revocation();
+    let revocation = host.run_assembly.begin_session_realization_revocation();
     assert!(
         host.installed_sessions.realization_leases().is_empty(),
         "W1 before any await"
@@ -150,6 +152,7 @@ async fn worker_revocation_closes_all_before_drain_and_joins_independent_cleanup
     let task_host = host.clone();
     let cleanup = tokio::spawn(async move {
         task_host
+            .run_assembly
             .finish_session_realization_revocation(revocation)
             .await
     });
@@ -176,12 +179,18 @@ async fn worker_revocation_closes_all_before_drain_and_joins_independent_cleanup
     );
     drop(held);
     assert_eq!(
-        host.revoke_all_session_realizations().await.unwrap(),
+        host.run_assembly
+            .revoke_all_session_realizations()
+            .await
+            .unwrap(),
         1,
         "W3 retry"
     );
     assert_eq!(
-        host.revoke_all_session_realizations().await.unwrap(),
+        host.run_assembly
+            .revoke_all_session_realizations()
+            .await
+            .unwrap(),
         0,
         "W3 empty"
     );
@@ -229,6 +238,7 @@ async fn worker_revocation_error_does_not_short_circuit_other_sessions() {
         .expect("installed Sessions");
     for _ in 0..2 {
         let error = host
+            .run_assembly
             .revoke_all_session_realizations()
             .await
             .expect_err("W4 unknown is not complete");
@@ -306,13 +316,19 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                     lease.expires_at_unix_ms,
                 )
                 .expect("MCP generation fence epoch is nonzero");
-                assert!(host.mcp_generation_is_authorized_at(&generation, now));
+                assert!(
+                    host.run_assembly
+                        .mcp_generation_is_authorized_at(&generation, now)
+                );
                 let h = host.clone();
                 let renewal = tokio::spawn(async move {
-                    h.renew_due_session_realizations(
-                        awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000),
-                    )
-                    .await
+                    h.run_assembly
+                        .renew_due_session_realizations(
+                            awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(
+                                30_000,
+                            ),
+                        )
+                        .await
                 });
                 tokio::time::timeout(std::time::Duration::from_secs(2), async {
                     while control.renewal_sessions.lock().unwrap().is_empty() {
@@ -349,9 +365,13 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                     .expect("installed Sessions");
                 let mut revocation = tokio::spawn(async move {
                     if all {
-                        h.revoke_all_session_realizations().await.map(|n| n != 0)
+                        h.run_assembly
+                            .revoke_all_session_realizations()
+                            .await
+                            .map(|n| n != 0)
                     } else {
-                        h.revoke_session_realization(SESSION, Some((&expected, &realization)))
+                        h.run_assembly
+                            .revoke_session_realization(SESSION, Some((&expected, &realization)))
                             .await
                     }
                 });
@@ -379,12 +399,14 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                     "E1 closed is not an unowned/direct Environment fallback"
                 );
                 assert_eq!(
-                    host.mcp_generation_root_authority(&generation),
+                    host.run_assembly.mcp_generation_root_authority(&generation),
                     Some(false),
                     "E2"
                 );
                 assert!(
-                    !host.mcp_generation_is_authorized_at(&generation, now),
+                    !host
+                        .run_assembly
+                        .mcp_generation_is_authorized_at(&generation, now),
                     "E2"
                 );
                 gate.add_permits(1);
@@ -400,7 +422,8 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                 let mut extended = lease.clone();
                 extended.expires_at_unix_ms += 120_000;
                 assert!(
-                    host.install_session_realization_lease(SESSION, extended.clone())
+                    host.run_assembly
+                        .install_session_realization_lease(SESSION, extended.clone())
                         .is_err()
                 );
                 assert!(
@@ -410,7 +433,7 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                 let managed = crate::ManagedHost::new(host.clone());
                 assert!(
                     awaken_session_execution_contract::RealizationRuntime::renew_session_realization_lease(
-                        &managed,
+                        &*managed.host.run_assembly,
                         SESSION,
                         awaken_session_realization::test_support::test_observed_lease(extended.clone()),
                     )
@@ -427,7 +450,8 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                     );
                 }
                 extended.epoch += 1;
-                host.install_session_realization_lease(SESSION, extended.clone())
+                host.run_assembly
+                    .install_session_realization_lease(SESSION, extended.clone())
                     .unwrap();
                 let claim = awaken_dispatch_contract::RunClaim {
                     run_id: RunId("replacement".into()),
@@ -538,7 +562,7 @@ async fn expired_session_receipt_cannot_publish_any_complete_projection_facts() 
             remaining_ms: std::num::NonZeroU64::new(3).unwrap(),
         }
         .observed(awaken_authority_clock::authority_proof_started().unwrap());
-        let install = f.host.install_frozen_session_projection(
+        let install = f.host.run_assembly.install_frozen_session_projection(
             SESSION,
             projection,
             None,
@@ -660,14 +684,15 @@ impl StagingFixture {
                 .realization_lock(&session)
                 .expect("installed Sessions");
             let _guard = lock.lock().await;
-            host.install_frozen_session_projection(
-                &session,
-                projection,
-                None,
-                true,
-                Some(awaken_session_realization::test_support::test_observed_lease(lease)),
-            )
-            .await
+            host.run_assembly
+                .install_frozen_session_projection(
+                    &session,
+                    projection,
+                    None,
+                    true,
+                    Some(awaken_session_realization::test_support::test_observed_lease(lease)),
+                )
+                .await
         });
         tokio::time::timeout(
             std::time::Duration::from_secs(2),
@@ -741,6 +766,7 @@ async fn claimed_reassignment_stages_resources_after_same_process_retirement() {
     let mut f = StagingFixture::new().await;
     let old = f.lease.clone();
     f.host
+        .run_assembly
         .install_session_realization_lease(SESSION, old.clone())
         .unwrap();
     f.host
@@ -752,6 +778,7 @@ async fn claimed_reassignment_stages_resources_after_same_process_retirement() {
         .expect("installed Sessions");
     assert!(
         f.host
+            .run_assembly
             .install_session_realization_lease(SESSION, old.clone())
             .is_err(),
         "E2"
@@ -778,6 +805,7 @@ async fn claimed_reassignment_stages_resources_after_same_process_retirement() {
         .expect("installed Sessions");
     assert!(
         !f.host
+            .run_assembly
             .revoke_session_realization(SESSION, Some((&old, &lock)))
             .await
             .unwrap(),
@@ -845,7 +873,8 @@ async fn local_runtime_renewal_port_selects_exact_owner_without_requiring_mcp_or
             .lock()
             .unwrap()
             .insert(rule.into(), lease.clone());
-        host.install_session_realization_lease(rule, lease.clone())
+        host.run_assembly
+            .install_session_realization_lease(rule, lease.clone())
             .unwrap();
         host.installed_sessions
             .realizations()
@@ -862,10 +891,15 @@ async fn local_runtime_renewal_port_selects_exact_owner_without_requiring_mcp_or
     let runtime = crate::ManagedHost::new(host.clone());
     let timing = awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000);
     assert_eq!(
-        runtime
-            .renew_session_realization_projections(control.as_ref(), "local", "boot", timing)
-            .await
-            .unwrap(),
+        awaken_session_execution_contract::RealizationRuntime::renew_session_realization_projections(
+            runtime.host.run_assembly.as_ref(),
+            control.as_ref(),
+            "local",
+            "boot",
+            timing,
+        )
+        .await
+        .unwrap(),
         2
     );
     let mut called = control.renewal_sessions.lock().unwrap().clone();
@@ -908,7 +942,10 @@ async fn missing_control_is_required_only_for_due_leases_without_skipping_refres
         .expect("validated Host dependencies");
     let timing = awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000);
     assert_eq!(
-        host.renew_due_session_realizations(timing).await.unwrap(),
+        host.run_assembly
+            .renew_due_session_realizations(timing)
+            .await
+            .unwrap(),
         0,
         "D1"
     );
@@ -918,10 +955,14 @@ async fn missing_control_is_required_only_for_due_leases_without_skipping_refres
         epoch: 1,
         expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms() + 90_000,
     };
-    host.install_session_realization_lease(SESSION, lease.clone())
+    host.run_assembly
+        .install_session_realization_lease(SESSION, lease.clone())
         .unwrap();
     assert_eq!(
-        host.renew_due_session_realizations(timing).await.unwrap(),
+        host.run_assembly
+            .renew_due_session_realizations(timing)
+            .await
+            .unwrap(),
         0,
         "D2"
     );
@@ -937,7 +978,10 @@ async fn missing_control_is_required_only_for_due_leases_without_skipping_refres
         })
         .expect("installed Sessions");
     assert!(
-        host.renew_due_session_realizations(timing).await.is_err(),
+        host.run_assembly
+            .renew_due_session_realizations(timing)
+            .await
+            .is_err(),
         "D3"
     );
     assert_eq!(
@@ -999,7 +1043,8 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
         epoch: 1,
         expires_at_unix_ms: u64::MAX,
     };
-    host.install_session_realization_lease(SESSION, lease.clone())
+    host.run_assembly
+        .install_session_realization_lease(SESSION, lease.clone())
         .unwrap();
     let provider = host
         .realization_executor
@@ -1077,13 +1122,19 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
     .unwrap();
     let timing = awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000);
     assert_eq!(
-        host.renew_due_session_realizations(timing).await.unwrap(),
+        host.run_assembly
+            .renew_due_session_realizations(timing)
+            .await
+            .unwrap(),
         0
     );
     assert!(process.poll().await.unwrap().is_none());
     *gate.0.lock().unwrap() = false;
     assert!(
-        host.renew_due_session_realizations(timing).await.is_err(),
+        host.run_assembly
+            .renew_due_session_realizations(timing)
+            .await
+            .is_err(),
         "no-due early return must not bypass physical refresh"
     );
     assert!(host.worker.session_control.is_none());
@@ -1095,7 +1146,10 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
         .expect("installed Sessions");
     assert!(host.installed_sessions.realization_leases().is_empty());
     assert!(
-        host.renew_due_session_realizations(timing).await.is_err(),
+        host.run_assembly
+            .renew_due_session_realizations(timing)
+            .await
+            .is_err(),
         "no Control and an empty live-lease cohort must still refresh the retained tree"
     );
     assert!(sandbox.spawn(command()).await.is_err());
@@ -1141,6 +1195,7 @@ async fn worker_root_denies_fresh_and_replaced_projection_before_resource_io() {
             let mut f = StagingFixture::with_authority(Some(gate.clone())).await;
             if existing {
                 f.host
+                    .run_assembly
                     .install_session_realization_lease(SESSION, f.lease.clone())
                     .unwrap();
                 f.lease.epoch += 1;
@@ -1151,7 +1206,7 @@ async fn worker_root_denies_fresh_and_replaced_projection_before_resource_io() {
             *gate.0.lock().unwrap() = false;
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(2),
-                f.host.install_frozen_session_projection(
+                f.host.run_assembly.install_frozen_session_projection(
                     SESSION,
                     f.projection.clone(),
                     None,
@@ -1195,7 +1250,7 @@ async fn worker_root_close_during_preparation_prevents_completion_and_reentry() 
     let f = StagingFixture::with_authority(Some(gate.clone())).await;
     let task = f.start().await;
     *gate.0.lock().unwrap() = false;
-    let revocation = f.host.begin_session_realization_revocation();
+    let revocation = f.host.run_assembly.begin_session_realization_revocation();
     f.source.release.notify_one();
     assert!(task.await.unwrap().is_err());
     f.assert_unpublished();
@@ -1204,10 +1259,12 @@ async fn worker_root_close_during_preparation_prevents_completion_and_reentry() 
     replacement.epoch += 1;
     assert!(
         f.host
+            .run_assembly
             .install_session_realization_lease(SESSION, replacement)
             .is_err()
     );
     f.host
+        .run_assembly
         .finish_session_realization_revocation(revocation)
         .await
         .unwrap();
@@ -1222,6 +1279,7 @@ async fn worker_root_denies_renewal_even_before_cohort_close() {
     let gate = Arc::new(WorkerProofGate(std::sync::Mutex::new(true)));
     let f = StagingFixture::with_authority(Some(gate.clone())).await;
     f.host
+        .run_assembly
         .install_session_realization_lease(SESSION, f.lease.clone())
         .unwrap();
     *gate.0.lock().unwrap() = false;
@@ -1232,6 +1290,8 @@ async fn worker_root_denies_renewal_even_before_cohort_close() {
     renewed.expires_at_unix_ms += 10_000;
     assert!(
         managed
+            .host
+            .run_assembly
             .renew_session_realization_lease(
                 SESSION,
                 awaken_session_realization::test_support::test_observed_lease(renewed)
@@ -1246,6 +1306,7 @@ async fn worker_root_denies_renewal_even_before_cohort_close() {
     );
     assert_eq!(
         f.host
+            .run_assembly
             .renew_due_session_realizations(
                 awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000)
             )
@@ -1270,6 +1331,7 @@ async fn cold_resource_staging_is_renewable_before_projection_publication() {
     f.assert_unpublished();
     let renewed = f
         .host
+        .run_assembly
         .renew_due_session_realizations(
             awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000),
         )
@@ -1350,6 +1412,7 @@ async fn renewal_rejection_cancels_resource_io_before_waiting_for_realization_lo
         let f = StagingFixture::new().await;
         if resident_lease {
             f.host
+                .run_assembly
                 .install_session_realization_lease(SESSION, f.lease.clone())
                 .unwrap();
         }
@@ -1359,7 +1422,7 @@ async fn renewal_rejection_cancels_resource_io_before_waiting_for_realization_lo
         );
         let renewal = tokio::time::timeout(
             std::time::Duration::from_secs(1),
-            f.host.renew_due_session_realizations(
+            f.host.run_assembly.renew_due_session_realizations(
                 awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000),
             ),
         )
@@ -1387,12 +1450,22 @@ async fn temporary_renewal_failure_does_not_abort_live_resource_preparation() {
         ),
     );
     let timing = awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000);
-    assert!(f.host.renew_due_session_realizations(timing).await.is_err());
+    assert!(
+        f.host
+            .run_assembly
+            .renew_due_session_realizations(timing)
+            .await
+            .is_err()
+    );
     assert!(!task.is_finished());
     f.assert_unpublished();
     *f.control.renewal_failure.lock().unwrap() = None;
     assert_eq!(
-        f.host.renew_due_session_realizations(timing).await.unwrap(),
+        f.host
+            .run_assembly
+            .renew_due_session_realizations(timing)
+            .await
+            .unwrap(),
         1
     );
     f.source.release.notify_one();
@@ -1442,10 +1515,12 @@ async fn obsolete_resource_preparation_cannot_publish_or_erase_a_successor() {
         match mutation {
             "replace" => f
                 .host
+                .run_assembly
                 .install_session_realization_lease(SESSION, successor.clone())
                 .unwrap(),
             "invalidate" => f
                 .host
+                .run_assembly
                 .invalidate_session_realization_lease(SESSION, &f.lease),
             _ => {
                 f.host.installed_sessions.remove(SESSION);
@@ -1477,6 +1552,7 @@ async fn obsolete_resource_preparation_cannot_publish_or_erase_a_successor() {
         if mutation == "remove" {
             assert!(!f.host.installed_sessions.contains(SESSION));
             f.host
+                .run_assembly
                 .invalidate_session_realization_lease(SESSION, &f.lease);
             assert!(
                 !f.host.installed_sessions.contains(SESSION),
@@ -1495,6 +1571,7 @@ async fn preflight_failure_has_no_lease_and_failed_replay_preserves_existing_ren
     f.projection.baseline.fingerprint.0.clear();
     assert!(
         f.host
+            .run_assembly
             .install_frozen_session_projection(
                 SESSION,
                 f.projection.clone(),
@@ -1512,6 +1589,7 @@ async fn preflight_failure_has_no_lease_and_failed_replay_preserves_existing_ren
     let mut renewed = f.lease.clone();
     renewed.expires_at_unix_ms += 30_000;
     f.host
+        .run_assembly
         .install_session_realization_lease(SESSION, renewed.clone())
         .unwrap();
     let task = f.start().await;
@@ -1547,6 +1625,7 @@ async fn many_cold_resource_reads_share_the_existing_renewal_scheduler() {
     }
     let renewed = f
         .host
+        .run_assembly
         .renew_due_session_realizations(
             awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000),
         )
@@ -1576,7 +1655,7 @@ async fn worker_revocation_cancels_blocked_resource_preparation() {
     let task = f.start().await;
     let revoked = tokio::time::timeout(
         std::time::Duration::from_secs(1),
-        f.host.revoke_all_session_realizations(),
+        f.host.run_assembly.revoke_all_session_realizations(),
     )
     .await;
     if revoked.is_err() {
@@ -1605,6 +1684,7 @@ async fn renewed_preparation_survives_its_original_deadline() {
         .insert(SESSION.into(), f.lease.clone());
     let task = f.start().await;
     f.host
+        .run_assembly
         .renew_due_session_realizations(
             awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000),
         )
@@ -1634,10 +1714,11 @@ async fn cold_staging_discards_a_renewal_response_delivered_after_newer_authorit
         *f.control.renewal_response_gate.lock().unwrap() = Some(gate.clone());
         let host = f.host.clone();
         let renewal = tokio::spawn(async move {
-            host.renew_due_session_realizations(
-                awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000),
-            )
-            .await
+            host.run_assembly
+                .renew_due_session_realizations(
+                    awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000),
+                )
+                .await
         });
         tokio::time::timeout(
             std::time::Duration::from_secs(2),
@@ -1657,6 +1738,7 @@ async fn cold_staging_discards_a_renewal_response_delivered_after_newer_authorit
                 .unwrap()
                 .insert(SESSION.into(), expected.clone());
             f.host
+                .run_assembly
                 .install_session_realization_lease(SESSION, expected.clone())
                 .unwrap();
         } else {
@@ -1668,6 +1750,7 @@ async fn cold_staging_discards_a_renewal_response_delivered_after_newer_authorit
                     .as_millis() as u64;
             assert_eq!(
                 f.host
+                    .run_assembly
                     .renew_due_session_realizations(
                         awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(60_000)
                     )
@@ -1724,7 +1807,10 @@ async fn cold_staging_renews_for_ten_ttls_with_mixed_control_latency() {
     let host = f.host.clone();
     let renewal = tokio::spawn(async move {
         loop {
-            host.renew_due_session_realizations(timing).await.unwrap();
+            host.run_assembly
+                .renew_due_session_realizations(timing)
+                .await
+                .unwrap();
             tokio::select! {
                 _ = driver_stop.notified() => break,
                 _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
@@ -1782,7 +1868,11 @@ async fn cold_staging_renews_for_ten_ttls_with_mixed_control_latency() {
         .insert("soak-00".into(), ttl * 10);
     tokio::time::timeout(std::time::Duration::from_secs(3), async {
         while !tasks[0].is_finished() {
-            let _ = f.host.renew_due_session_realizations(timing).await;
+            let _ = f
+                .host
+                .run_assembly
+                .renew_due_session_realizations(timing)
+                .await;
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
     })

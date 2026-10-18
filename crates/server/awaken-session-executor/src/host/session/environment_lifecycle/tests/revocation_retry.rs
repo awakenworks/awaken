@@ -34,27 +34,28 @@ async fn install_active_worker_relay(
         },
     };
     let relay = awaken_session_mcp::McpRelay::start().await.unwrap();
-    assert!(host.mcp.install_relay(relay.clone()));
+    assert!(host.run_assembly.mcp.install_relay(relay.clone()));
     relay.set_route(&generation, &server);
-    host.insert_mcp_projection(awaken_session_mcp::McpGenerationProjection {
-        receipt: session_mcp::McpRealizationReceipt {
-            generation: generation.clone(),
-            realization_id: request.realization_id.clone(),
-            selected_plaintext_holder: None,
-            actual_realization_kind: Some(
-                awaken_credential_contract::CredentialRealizationKind::WorkerRelay,
-            ),
-            receipt_fingerprint: request.fingerprint(),
-        },
-        request,
-        server: Some(server),
-        native_wiring: None,
-        mcp_process: None,
-        staging: None,
-        drain: Arc::new(tokio::sync::Mutex::new(())),
-        state: awaken_session_mcp::McpProjectionState::Active,
-    })
-    .unwrap();
+    host.run_assembly
+        .insert_mcp_projection(awaken_session_mcp::McpGenerationProjection {
+            receipt: session_mcp::McpRealizationReceipt {
+                generation: generation.clone(),
+                realization_id: request.realization_id.clone(),
+                selected_plaintext_holder: None,
+                actual_realization_kind: Some(
+                    awaken_credential_contract::CredentialRealizationKind::WorkerRelay,
+                ),
+                receipt_fingerprint: request.fingerprint(),
+            },
+            request,
+            server: Some(server),
+            native_wiring: None,
+            mcp_process: None,
+            staging: None,
+            drain: Arc::new(tokio::sync::Mutex::new(())),
+            state: awaken_session_mcp::McpProjectionState::Active,
+        })
+        .unwrap();
     (relay, generation)
 }
 
@@ -96,7 +97,8 @@ async fn conflicting_revocation_preserves_active_worker_relay_until_compatible_d
     .await)
         .build()
         .expect("validated Host dependencies");
-    host.install_test_resident_session_environment(thread, environment);
+    host.run_assembly
+        .install_test_resident_session_environment(thread, environment);
     let (relay, mcp_generation) = install_active_worker_relay(&host, thread).await;
     let route_before = relay.route_url(&mcp_generation).unwrap();
     let terminal = host
@@ -113,6 +115,7 @@ async fn conflicting_revocation_preserves_active_worker_relay_until_compatible_d
         .unwrap();
 
     let error = host
+        .run_assembly
         .revoke_all_session_realizations()
         .await
         .expect_err("R1 conflicting revocation must fail before MCP drain");
@@ -127,7 +130,8 @@ async fn conflicting_revocation_preserves_active_worker_relay_until_compatible_d
         "R1/E1 exact Terminal owner retained"
     );
     assert!(
-        host.mcp_projection(&mcp_generation)
+        host.run_assembly
+            .mcp_projection(&mcp_generation)
             .is_some_and(|projection| projection.state
                 == awaken_session_mcp::McpProjectionState::Active
                 && projection.server.is_some()),
@@ -146,6 +150,7 @@ async fn conflicting_revocation_preserves_active_worker_relay_until_compatible_d
     drop(still_open);
 
     let proof = host
+        .run_assembly
         .drain_mcp_projections(thread, std::slice::from_ref(&mcp_generation))
         .await
         .expect("R2 compatible exact MCP drain");
@@ -156,7 +161,10 @@ async fn conflicting_revocation_preserves_active_worker_relay_until_compatible_d
     );
     assert!(relay.route_url(&mcp_generation).is_none(), "R2/E3");
     assert_eq!(
-        host.mcp_projection(&mcp_generation).unwrap().state,
+        host.run_assembly
+            .mcp_projection(&mcp_generation)
+            .unwrap()
+            .state,
         awaken_session_mcp::McpProjectionState::Removed,
         "R2/E3"
     );
@@ -214,19 +222,21 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
         credential_realization:
             awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
     };
-    host.install_environment_projection(thread, &environment_projection)
+    host.run_assembly
+        .install_environment_projection(thread, &environment_projection)
         .expect("C2 Environment projection");
-    host.install_session_environment_owner_projection(
-        thread,
-        "workspace",
-        &awaken_session_state_contract::SessionEnvironmentState::Resident {
-            binding: "not-a-sandbox-handle".into(),
-            effect_id: Some("durable-effect".into()),
-            generation: Some(generation(thread)),
-            idle_since_unix_ms: None,
-        },
-    )
-    .expect("C1 pending owner");
+    host.run_assembly
+        .install_session_environment_owner_projection(
+            thread,
+            "workspace",
+            &awaken_session_state_contract::SessionEnvironmentState::Resident {
+                binding: "not-a-sandbox-handle".into(),
+                effect_id: Some("durable-effect".into()),
+                generation: Some(generation(thread)),
+                idle_since_unix_ms: None,
+            },
+        )
+        .expect("C1 pending owner");
     let (relay, mcp_generation) = install_active_worker_relay(&host, thread).await;
     let route_before = relay.route_url(&mcp_generation).unwrap();
     let spec_before = host.realization_executor.sandbox_spec(thread);
@@ -242,7 +252,7 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
             .environments()
             .retire_session_environment_for_revocation(
                 thread,
-                (&host.mcp, host.installed_sessions.as_ref()),
+                (&host.run_assembly.mcp, host.installed_sessions.as_ref()),
                 None,
             )
             .await
@@ -273,7 +283,8 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
         "R20/E3 provider publication"
     );
     assert!(
-        host.mcp_projection(&mcp_generation)
+        host.run_assembly
+            .mcp_projection(&mcp_generation)
             .is_some_and(|projection| projection.state
                 == awaken_session_mcp::McpProjectionState::Active
                 && projection.server.is_some()),
@@ -328,7 +339,8 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
         epoch: 1,
         expires_at_unix_ms: u64::MAX,
     };
-    host.install_session_realization_lease(thread, lease.clone())
+    host.run_assembly
+        .install_session_realization_lease(thread, lease.clone())
         .unwrap();
     host.installed_sessions.replace_frozen_with(thread, |next| {
         next.published_snapshot = Some(snapshot.clone())
@@ -342,7 +354,8 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
                 ..Default::default()
             },
         );
-    host.install_test_resident_session_environment(thread, environment.clone());
+    host.run_assembly
+        .install_test_resident_session_environment(thread, environment.clone());
     let generation = awaken_session_state_contract::SandboxGeneration::new(
         &awaken_session_types::SessionId::from(thread),
         1,
@@ -381,7 +394,7 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
         .environments()
         .retire_session_environment_for_revocation(
             thread,
-            (&host.mcp, host.installed_sessions.as_ref()),
+            (&host.run_assembly.mcp, host.installed_sessions.as_ref()),
             None,
         )
         .await
@@ -395,7 +408,8 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
         "E4"
     );
     assert!(
-        host.install_session_realization_lease(thread, lease)
+        host.run_assembly
+            .install_session_realization_lease(thread, lease)
             .is_err()
     );
     assert!(
@@ -477,11 +491,14 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
     let first_managed = managed_test_host(first.clone());
     let first_sink = Arc::new(BlockingBindingSink::blocked());
     first_sink.unblock();
-    first_managed.install_test_environment_binding_sink(first_sink);
+    first_managed
+        .host
+        .run_assembly
+        .install_test_environment_binding_sink(first_sink);
     tokio::time::timeout(
         std::time::Duration::from_secs(2),
         awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-            &first_managed,
+            &*first_managed.host.run_assembly,
             thread,
             projection.clone(),
             awaken_session_realization_contract::SessionProjectionInstallMode::Realization {
@@ -495,7 +512,11 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
     .expect("install first complete Realization projection");
     let first_ctx = tokio::time::timeout(
         std::time::Duration::from_secs(2),
-        first.ctx_for_snapshot(thread, Some("agent-a"), Some(activation.snapshot.clone())),
+        first.run_assembly.ctx_for_snapshot(
+            thread,
+            Some("agent-a"),
+            Some(activation.snapshot.clone()),
+        ),
     )
     .await
     .expect("first Session creation must not block")
@@ -537,11 +558,14 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
         .expect("validated Host dependencies");
     let managed = managed_test_host(host.clone());
     let sink = Arc::new(BlockingBindingSink::blocked());
-    managed.install_test_environment_binding_sink(sink.clone());
+    managed
+        .host
+        .run_assembly
+        .install_test_environment_binding_sink(sink.clone());
     tokio::time::timeout(
         std::time::Duration::from_secs(2),
         awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-            &managed,
+            &*managed.host.run_assembly,
             thread,
             projection,
             awaken_session_realization_contract::SessionProjectionInstallMode::Realization {
@@ -553,17 +577,18 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
     .await
     .expect("retry Realization projection must not block")
     .expect("install retry complete Realization projection");
-    host.install_session_environment_owner_projection(
-        thread,
-        "workspace",
-        &awaken_session_state_contract::SessionEnvironmentState::Resident {
-            binding: binding.clone(),
-            effect_id: Some(effect_id),
-            generation: Some(generation),
-            idle_since_unix_ms: None,
-        },
-    )
-    .expect("durable pending adoption");
+    host.run_assembly
+        .install_session_environment_owner_projection(
+            thread,
+            "workspace",
+            &awaken_session_state_contract::SessionEnvironmentState::Resident {
+                binding: binding.clone(),
+                effect_id: Some(effect_id),
+                generation: Some(generation),
+                idle_since_unix_ms: None,
+            },
+        )
+        .expect("durable pending adoption");
 
     let adoption = {
         let host = host.clone();
@@ -597,6 +622,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
         panic!("R19/C1 adoption did not reach durable persistence");
     }
     let candidate = host
+        .run_assembly
         .prepared_session_environment(thread)
         .expect("R19/E1 hidden Candidate before cancellation");
     assert!(
@@ -615,6 +641,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
     };
     assert!(cancellation.is_cancelled(), "R19/C2");
     let retained = host
+        .run_assembly
         .prepared_session_environment(thread)
         .expect("R19/E2 hidden Candidate retained");
     assert!(candidate.exact_matches(&retained), "R19/E2");

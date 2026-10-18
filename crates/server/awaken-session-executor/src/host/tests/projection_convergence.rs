@@ -31,6 +31,8 @@ async fn deliver(
         crate::realization_state::FrozenProjectionReceipt::from_projection(&projection).unwrap();
     let incoming = serde_json::json!({"revision": receipt.revision.0, "fingerprint": receipt.fingerprint, "binding": projection.environment.binding().unwrap_or("none")});
     let result = managed
+        .host
+        .run_assembly
         .install_session_projection(
             "projection-convergence",
             projection,

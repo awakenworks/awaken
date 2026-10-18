@@ -3,7 +3,7 @@
 
 use super::*;
 
-impl SharedHost {
+impl crate::RunAssembly {
     /// Resolve the one exact inference plaintext holder used by both direct and
     /// dispatched attempts from the immutable candidate publication.
     pub(crate) fn inference_plaintext_holder(
@@ -100,7 +100,7 @@ mod tests {
                     Vec::new(),
                 );
                 let admitted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    host.prepare_dispatch(activation).fresh()
+                    host.run_assembly.prepare_dispatch(activation).fresh()
                 }));
                 if !configured {
                     let error = admitted
@@ -168,8 +168,11 @@ mod tests {
             snapshot,
             Vec::new(),
         );
-        let direct = host.bind_fresh_root_tool_configuration(activation.clone());
+        let direct = host
+            .run_assembly
+            .bind_fresh_root_tool_configuration(activation.clone());
         let queued = host
+            .run_assembly
             .prepare_dispatch(activation.clone())
             .fresh()
             .expect("R1 queue");
@@ -181,6 +184,7 @@ mod tests {
         let frozen = InheritedToolsets::V1(Vec::new());
         assert_eq!(direct.inherited_toolsets(), Some(&frozen), "R1 marker");
         let resumed = host
+            .run_assembly
             .prepare_dispatch(activation.clone().with_inherited_toolsets(Some(frozen)))
             .resume()
             .expect("R2 resume");
@@ -197,6 +201,7 @@ mod tests {
             "R2 Worker must understand the marker"
         );
         let legacy = host
+            .run_assembly
             .prepare_dispatch(activation)
             .resume()
             .expect("R3 legacy resume");

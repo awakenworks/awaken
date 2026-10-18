@@ -163,7 +163,7 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
 
         let thread = format!("worker-dispatch-repository-{rule}");
         let manifest = crate::session_resource::SessionResourceManifest::new(
-            host.local_workspace(),
+            host.run_assembly.local_workspace(),
             effective_repository(
                 "repo-1",
                 "https://github.com/awaken/example.git",
@@ -196,7 +196,7 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
         let effect = host
             .realization_executor
             .staging()
-            .realize_thread_repositories(&thread, host.local_workspace(), &realizer)
+            .realize_thread_repositories(&thread, host.run_assembly.local_workspace(), &realizer)
             .await;
         if install_credentials {
             effect.unwrap_or_else(|error| panic!("{rule}: {error}"));
@@ -236,7 +236,7 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
                 .staging()
                 .realize_repository_activation(
                     &thread,
-                    host.local_workspace(),
+                    host.run_assembly.local_workspace(),
                     &staged.repositories[0],
                     &staged.binding_checks,
                     &realizer,
@@ -285,7 +285,7 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
             .staging()
             .realize_repository_activation(
                 &thread,
-                host.local_workspace(),
+                host.run_assembly.local_workspace(),
                 &anonymous,
                 &[],
                 &realizer,
@@ -376,7 +376,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
 
     let runtime = crate::ManagedHost::new(host.clone());
     let manifest = crate::session_resource::SessionResourceManifest::new(
-        host.local_workspace(),
+        host.run_assembly.local_workspace(),
         platform_resources(),
     );
     host.realization_executor
@@ -427,7 +427,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         .staging()
         .realize_repository_activation(
             "platform-mediated",
-            host.local_workspace(),
+            host.run_assembly.local_workspace(),
             &wrong_target,
             &resources.binding_checks,
             &invalid_realizer,
@@ -452,7 +452,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         .staging()
         .realize_repository_activation(
             "platform-mediated",
-            host.local_workspace(),
+            host.run_assembly.local_workspace(),
             &wrong_source,
             &resources.binding_checks,
             &invalid_realizer,
@@ -472,7 +472,11 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
     let realizer = RecordingRepositoryRealizer::default();
     host.realization_executor
         .staging()
-        .realize_thread_repositories("platform-mediated", host.local_workspace(), &realizer)
+        .realize_thread_repositories(
+            "platform-mediated",
+            host.run_assembly.local_workspace(),
+            &realizer,
+        )
         .await
         .expect("P4 refreshes at the Git operation edge");
     assert_eq!(sequenced.calls.load(Ordering::SeqCst), 2, "P4");
@@ -487,13 +491,13 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         *sequenced.seen.lock().unwrap(),
         vec![
             (
-                host.local_workspace().to_owned(),
+                host.run_assembly.local_workspace().to_owned(),
                 "repo-platform".into(),
                 awaken_resource_contract::ConfigVersion::INITIAL,
                 expected_run.clone()
             ),
             (
-                host.local_workspace().to_owned(),
+                host.run_assembly.local_workspace().to_owned(),
                 "repo-platform".into(),
                 awaken_resource_contract::ConfigVersion::INITIAL,
                 expected_run.clone()
@@ -547,7 +551,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
 
     let _downgrade_runtime = crate::ManagedHost::new(downgrade_host.clone());
     let downgrade_manifest = crate::session_resource::SessionResourceManifest::new(
-        downgrade_host.local_workspace(),
+        downgrade_host.run_assembly.local_workspace(),
         platform_resources(),
     );
     downgrade_host
@@ -561,7 +565,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         .staging()
         .realize_thread_repositories(
             "platform-downgrade",
-            downgrade_host.local_workspace(),
+            downgrade_host.run_assembly.local_workspace(),
             &downgrade_realizer,
         )
         .await
@@ -587,7 +591,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
     .expect("validated Host dependencies");
     let _direct_runtime = crate::ManagedHost::new(direct_host.clone());
     let direct_manifest = crate::session_resource::SessionResourceManifest::new(
-        direct_host.local_workspace(),
+        direct_host.run_assembly.local_workspace(),
         platform_resources(),
     );
     let denied = direct_host
@@ -667,7 +671,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         });
         let published = Arc::new(RecordingRepositoryRealizer::default());
         let receipt = remote.realization_executor.staging().publish_repository_activation(
-            session, remote.local_workspace(), repository, &staged.binding_checks,
+            session, remote.run_assembly.local_workspace(), repository, &staged.binding_checks,
             published.as_ref(), &expectation, Some(&fence),
         ).await.expect("C13 fresh capability at protected Git publication");
         receipt.verify(&repository.plan, &expectation).expect("C13 exact verified receipt");
@@ -688,7 +692,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         let renewed_fence = (command.clone(), renewed.clone());
         *remote_verifier.next_error.lock().unwrap() = Some(awaken_resource_contract::RepositoryBindingVerifierError::Indeterminate { detail: "injected unknown authority".into() });
         let refused = remote.realization_executor.staging().publish_repository_activation(
-            session, remote.local_workspace(), repository, &staged.binding_checks,
+            session, remote.run_assembly.local_workspace(), repository, &staged.binding_checks,
             published.as_ref(), &expectation, Some(&renewed_fence),
         ).await.expect_err("C13 unknown authority must not grant publication");
         match refused {
@@ -705,7 +709,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         let mut malformed = repository.clone();
         malformed.credential_pin.as_mut().unwrap().access.credential.id = "foreign-source".into();
         let refused = remote.realization_executor.staging().publish_repository_activation(
-            session, remote.local_workspace(), &malformed, &staged.binding_checks,
+            session, remote.run_assembly.local_workspace(), &malformed, &staged.binding_checks,
             published.as_ref(), &expectation, Some(&fence),
         ).await.expect_err("C13 pin rejects before verifier");
         assert!(matches!(refused, crate::staged_resources::RepositoryPublicationActivationError::Failed(error)
@@ -714,7 +718,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         assert_eq!(published.1.lock().unwrap().len(), 1, "C13 malformed zero effect");
         *remote_verifier.next_transport.lock().unwrap() = Some(awaken_resource_contract::RepositoryTransport::Direct);
         let refused = remote.realization_executor.staging().publish_repository_activation(
-            session, remote.local_workspace(), repository, &staged.binding_checks,
+            session, remote.run_assembly.local_workspace(), repository, &staged.binding_checks,
             published.as_ref(), &expectation, Some(&fence),
         ).await.expect_err("C13 upstream direct downgrade rejects");
         assert!(matches!(refused, crate::staged_resources::RepositoryPublicationActivationError::Failed(error)
@@ -762,7 +766,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
             let fence = fence.clone();
             async move {
                 std::panic::AssertUnwindSafe(remote.realization_executor.staging().publish_repository_activation(
-                    session, remote.local_workspace(), &repository, &checks,
+                    session, remote.run_assembly.local_workspace(), &repository, &checks,
                     published.as_ref(), &expectation, Some(&fence),
                 )).catch_unwind().await
             }
@@ -1034,10 +1038,12 @@ async fn repository_credential_realization_follows_the_decision_table() {
             .unwrap();
         let thread = format!("repository-decision-{}", rule.id);
         let result = managed
+            .host
+            .run_assembly
             .install_test_session_init(
                 &thread,
                 SessionInit {
-                    workspace_id: host.local_workspace().into(),
+                    workspace_id: host.run_assembly.local_workspace().into(),
                     agent_id: "a".into(),
                     delegate_ids: Vec::new(),
                     tools: None,
@@ -1073,7 +1079,11 @@ async fn repository_credential_realization_follows_the_decision_table() {
             let effect = host
                 .realization_executor
                 .staging()
-                .realize_thread_repositories(&thread, host.local_workspace(), &realizer)
+                .realize_thread_repositories(
+                    &thread,
+                    host.run_assembly.local_workspace(),
+                    &realizer,
+                )
                 .await;
             match rule.expected_error {
                 None => {
@@ -1090,7 +1100,11 @@ async fn repository_credential_realization_follows_the_decision_table() {
                         let retry = host
                             .realization_executor
                             .staging()
-                            .realize_thread_repositories(&thread, host.local_workspace(), &realizer)
+                            .realize_thread_repositories(
+                                &thread,
+                                host.run_assembly.local_workspace(),
+                                &realizer,
+                            )
                             .await
                             .expect_err("H14 second Git effect revalidates liveness");
                         assert!(
@@ -1131,7 +1145,7 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
 
     let credential = awaken_credential_vault::repo::enter_credential(
         awaken_credential_vault::CredentialCreateParams {
-            workspace_id: host.local_workspace().into(),
+            workspace_id: host.run_assembly.local_workspace().into(),
             kind: awaken_credential_vault::CredentialKind::Vault,
             provider_id: Some("git".into()),
             env_key: None,
@@ -1155,7 +1169,7 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
         .install_complete_test_session(
             "t-rot",
             SessionInit {
-                workspace_id: host.local_workspace().into(),
+                workspace_id: host.run_assembly.local_workspace().into(),
                 agent_id: "a".into(),
                 delegate_ids: Vec::new(),
                 tools: None,
@@ -1172,10 +1186,12 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
         .await
         .unwrap();
     managed
+        .host
+        .run_assembly
         .apply_session_inputs(
             "t-rot",
             &resource_transition(
-                host.local_workspace(),
+                host.run_assembly.local_workspace(),
                 0,
                 Default::default(),
                 0,
@@ -1200,7 +1216,7 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
 
     let next_credential = awaken_credential_vault::repo::enter_credential(
         awaken_credential_vault::CredentialCreateParams {
-            workspace_id: host.local_workspace().into(),
+            workspace_id: host.run_assembly.local_workspace().into(),
             kind: awaken_credential_vault::CredentialKind::Vault,
             provider_id: Some("git".into()),
             env_key: None,
@@ -1223,7 +1239,7 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
     // C2 the aggregate rotates only its credential pin. C1+C2 therefore carries
     // the exact initial->next transition without treating staging as completion.
     let before_manifest = crate::session_resource::SessionResourceManifest::at_revision(
-        host.local_workspace(),
+        host.run_assembly.local_workspace(),
         0,
         initial,
     );
@@ -1231,6 +1247,8 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
     // The Managed adapter stores the supplied credential in the Vault and publishes a
     // new Repository config before invoking this complete-manifest runtime port.
     managed
+        .host
+        .run_assembly
         .apply_session_inputs(
             "t-rot",
             &resource_transition(
@@ -1249,5 +1267,5 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
         Some(next_credential.id.0.as_str()),
         "clone credential pin rotated without retaining either secret"
     );
-    assert!(host.active_mcp_projections("t-rot").is_empty());
+    assert!(host.run_assembly.active_mcp_projections("t-rot").is_empty());
 }

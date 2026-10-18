@@ -281,7 +281,7 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
     let managed = crate::ManagedHost::new(host.clone());
     let mut projection = remote_terminal_cleanup_projection();
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-        &managed,
+        &*managed.host.run_assembly,
         "remote-terminal-worker",
         projection.clone(),
         awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
@@ -341,12 +341,13 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
             None,
         )
         .expect("R1 retain the exact Worker-local candidate");
-    host.install_session_environment_owner_projection(
-        "remote-terminal-worker",
-        &projection.workspace_id,
-        &projection.environment,
-    )
-    .expect("R1 project the durable Worker-local Environment identity");
+    host.run_assembly
+        .install_session_environment_owner_projection(
+            "remote-terminal-worker",
+            &projection.workspace_id,
+            &projection.environment,
+        )
+        .expect("R1 project the durable Worker-local Environment identity");
     host.realization_executor
         .environments()
         .publish_prepared_session_environment(
@@ -395,6 +396,7 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
         .store(true, Ordering::SeqCst);
 
     let pending = host
+        .run_assembly
         .recover_terminal_cleanup_assignments(target.clone())
         .await
         .expect_err("R1/C4 reports the ambiguous completion response");
@@ -426,7 +428,8 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
     }
     control.assignments.lock().unwrap().push_back(assignment);
     assert_eq!(
-        host.recover_terminal_cleanup_assignments(target.clone())
+        host.run_assembly
+            .recover_terminal_cleanup_assignments(target.clone())
             .await
             .expect("R2 Completed readback"),
         1,
@@ -482,7 +485,7 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
     let ordinary_id = "renewal-beside-terminal";
     let ordinary_projection = remote_terminal_cleanup_projection();
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-        &managed,
+        &*managed.host.run_assembly,
         ordinary_id,
         ordinary_projection.clone(),
         awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
@@ -495,7 +498,8 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
         epoch: 8,
         expires_at_unix_ms: expiring_unix_ms,
     };
-    host.install_session_realization_lease(ordinary_id, ordinary_lease.clone())
+    host.run_assembly
+        .install_session_realization_lease(ordinary_id, ordinary_lease.clone())
         .unwrap();
     control
         .renewals
@@ -543,7 +547,11 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
     let cleanup = tokio::spawn({
         let host = host.clone();
         let target = target.clone();
-        async move { host.recover_terminal_cleanup_assignments(target).await }
+        async move {
+            host.run_assembly
+                .recover_terminal_cleanup_assignments(target)
+                .await
+        }
     });
     tokio::time::timeout(
         std::time::Duration::from_secs(1),
@@ -555,7 +563,7 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
     assert_eq!(
         tokio::time::timeout(
             std::time::Duration::from_secs(1),
-            host.renew_due_session_realizations(
+            host.run_assembly.renew_due_session_realizations(
                 awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000,),
             ),
         )
@@ -700,7 +708,11 @@ async fn cold_terminal_cleanup_replenishes_a_slot_while_one_sibling_is_blocked()
     let recovery = tokio::spawn({
         let host = host.clone();
         let target = target.clone();
-        async move { host.recover_terminal_cleanup_assignments(target).await }
+        async move {
+            host.run_assembly
+                .recover_terminal_cleanup_assignments(target)
+                .await
+        }
     });
     tokio::time::timeout(
         std::time::Duration::from_secs(2),
@@ -733,7 +745,8 @@ async fn cold_terminal_cleanup_replenishes_a_slot_while_one_sibling_is_blocked()
     assert_eq!(control.claim_targets.lock().unwrap().len(), 6, "R2/E4");
     assert!(control.assignments.lock().unwrap().is_empty(), "R2/E4");
     assert_eq!(
-        host.recover_terminal_cleanup_assignments(target)
+        host.run_assembly
+            .recover_terminal_cleanup_assignments(target)
             .await
             .unwrap(),
         0,
@@ -767,8 +780,11 @@ async fn cold_terminal_cleanup_never_drives_more_than_four_assignments() {
     enqueue_completed_terminal_assignments(&control, &lease, "bounded-active", 5);
     let gate = Arc::new(tokio::sync::Semaphore::new(0));
     *control.terminal_work_gate.lock().unwrap() = Some(gate.clone());
-    let recovery =
-        tokio::spawn(async move { host.recover_terminal_cleanup_assignments(target).await });
+    let recovery = tokio::spawn(async move {
+        host.run_assembly
+            .recover_terminal_cleanup_assignments(target)
+            .await
+    });
 
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
@@ -840,6 +856,7 @@ async fn cold_terminal_claim_failure_drains_claimed_work_and_retries_the_remaind
     *control.claim_failure_on_call.lock().unwrap() = Some(3);
 
     let error = host
+        .run_assembly
         .recover_terminal_cleanup_assignments(target.clone())
         .await
         .expect_err("P1/E2 claim failure is reported");
@@ -853,7 +870,8 @@ async fn cold_terminal_claim_failure_drains_claimed_work_and_retries_the_remaind
 
     *control.claim_failure_on_call.lock().unwrap() = None;
     assert_eq!(
-        host.recover_terminal_cleanup_assignments(target)
+        host.run_assembly
+            .recover_terminal_cleanup_assignments(target)
             .await
             .unwrap(),
         1,
@@ -888,7 +906,8 @@ async fn cold_terminal_recovery_preserves_the_sixty_four_assignment_sweep_cap() 
     let target = terminal_target_for(&lease);
     enqueue_completed_terminal_assignments(&control, &lease, "sweep-cap", 65);
     assert_eq!(
-        host.recover_terminal_cleanup_assignments(target.clone())
+        host.run_assembly
+            .recover_terminal_cleanup_assignments(target.clone())
             .await
             .unwrap(),
         64,
@@ -896,7 +915,8 @@ async fn cold_terminal_recovery_preserves_the_sixty_four_assignment_sweep_cap() 
     );
     assert_eq!(control.assignments.lock().unwrap().len(), 1, "R1/E1");
     assert_eq!(
-        host.recover_terminal_cleanup_assignments(target)
+        host.run_assembly
+            .recover_terminal_cleanup_assignments(target)
             .await
             .unwrap(),
         1,
@@ -944,6 +964,7 @@ async fn cold_terminal_recovery_rejects_a_nonadvancing_legacy_cursor_reply() {
     control.assignments.lock().unwrap().push_back(duplicate);
 
     let error = host
+        .run_assembly
         .recover_terminal_cleanup_assignments(terminal_target_for(&lease))
         .await
         .expect_err("R1 old Control must not cause duplicate cleanup");
@@ -1045,7 +1066,11 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
     let recovery = tokio::spawn({
         let host = host.clone();
         let target = target.clone();
-        async move { host.recover_terminal_cleanup_assignments(target).await }
+        async move {
+            host.run_assembly
+                .recover_terminal_cleanup_assignments(target)
+                .await
+        }
     });
     tokio::time::timeout(
         std::time::Duration::from_secs(1),

@@ -75,16 +75,19 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
         .build()
         .unwrap();
     let managed = managed_with_resource_source(host.clone());
-    managed.install_test_environment_binding_sink(Arc::new(BindingOrderSink {
-        host: Arc::downgrade(&host),
-        authorize_calls: AtomicUsize::new(0),
-        calls: AtomicUsize::new(0),
-        observed_before_publish: AtomicBool::new(false),
-        fail: false,
-        require_realization: false,
-        owned_session_id: None,
-        committed_environment: None,
-    }));
+    managed
+        .host
+        .run_assembly
+        .install_test_environment_binding_sink(Arc::new(BindingOrderSink {
+            host: Arc::downgrade(&host),
+            authorize_calls: AtomicUsize::new(0),
+            calls: AtomicUsize::new(0),
+            observed_before_publish: AtomicBool::new(false),
+            fail: false,
+            require_realization: false,
+            owned_session_id: None,
+            committed_environment: None,
+        }));
     let resources = effective_repository(
         "retained-repository",
         remote.to_str().unwrap(),
@@ -103,7 +106,7 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
         })
         .unwrap();
     let thread = "repository-continuity";
-    let workspace = host.local_workspace().to_string();
+    let workspace = host.run_assembly.local_workspace().to_string();
     let lease = crate::session_resource::SessionRealizationLease {
         owner: "continuity-worker".into(),
         runtime_incarnation: "continuity-worker/1".into(),
@@ -158,14 +161,15 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
         request_context: Vec::new(),
     };
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-        &managed,
+        managed.host.run_assembly.as_ref(),
         thread,
         projection,
         awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
     )
     .await
     .unwrap();
-    host.install_session_realization_lease(thread, lease.clone())
+    host.run_assembly
+        .install_session_realization_lease(thread, lease.clone())
         .unwrap();
     run_prepared_session_messages(
         &managed,

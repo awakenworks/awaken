@@ -375,7 +375,10 @@ mod tests {
         projection.agent_publication = Some(snapshot.clone());
         let control = RecoveryControl::fixed(projection.clone());
         let binding_sink = Arc::new(RecoveryEnvironmentBindingSink::new(&control));
-        managed.install_test_environment_binding_sink(binding_sink.clone());
+        managed
+            .host
+            .run_assembly
+            .install_test_environment_binding_sink(binding_sink.clone());
         let initial_lease =
             awaken_session_configuration_contract::resource::SessionRealizationLease {
                 owner: "worker-a".into(),
@@ -385,7 +388,7 @@ mod tests {
                     + 60_000,
             };
         awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-            &managed,
+            &*managed.host.run_assembly,
             thread,
             projection,
             awaken_session_realization_contract::SessionProjectionInstallMode::Realization {
@@ -411,19 +414,26 @@ mod tests {
                     initial == InitialEnvironment::LostResponse,
                 ),
             );
-            managed.install_test_environment_binding_sink(sink.clone());
+            managed
+                .host
+                .run_assembly
+                .install_test_environment_binding_sink(sink.clone());
             let creating = {
                 let host = host.clone();
                 let snapshot = snapshot.clone();
                 tokio::spawn(async move {
-                    host.ctx_for_snapshot(thread, Some("agent-a"), Some(snapshot))
+                    host.run_assembly
+                        .ctx_for_snapshot(thread, Some("agent-a"), Some(snapshot))
                         .await
                 })
             };
             tokio::time::timeout(std::time::Duration::from_secs(5), sink.entered.notified())
                 .await
                 .expect("UC1/UC2 actual persistence boundary reached");
-            let candidate = host.prepared_session_environment(thread).unwrap();
+            let candidate = host
+                .run_assembly
+                .prepared_session_environment(thread)
+                .unwrap();
             assert!(
                 candidate.durable_identity().is_none(),
                 "UC no returned commit proof"
@@ -439,11 +449,15 @@ mod tests {
                 Ok(_) => panic!("UC pending context unexpectedly finished"),
             }
             assert!(
-                host.prepared_session_environment(thread)
+                host.run_assembly
+                    .prepared_session_environment(thread)
                     .unwrap()
                     .exact_matches(&candidate)
             );
-            managed.install_test_environment_binding_sink(binding_sink.clone());
+            managed
+                .host
+                .run_assembly
+                .install_test_environment_binding_sink(binding_sink.clone());
             None
         } else if committed_candidate {
             // Stop at the production sink-readback/local-publication boundary.
@@ -508,6 +522,7 @@ mod tests {
                 )
                 .unwrap();
             let identity = host
+                .run_assembly
                 .persist_environment_before_publish(thread, &candidate)
                 .await
                 .unwrap();
@@ -527,7 +542,8 @@ mod tests {
             None
         } else {
             Some(
-                host.ctx_for_snapshot(thread, Some("agent-a"), Some(snapshot.clone()))
+                host.run_assembly
+                    .ctx_for_snapshot(thread, Some("agent-a"), Some(snapshot.clone()))
                     .await
                     .expect("DH1/C1 build durable Runtime R1"),
             )
@@ -589,17 +605,20 @@ mod tests {
             // execution capability. Renewal is NOT a replacement or shutdown.
             let mut renewed = initial_lease.clone();
             renewed.expires_at_unix_ms += 30_000;
-            host.install_frozen_session_projection(
-                thread,
-                projection.clone(),
-                None,
-                true,
-                Some(
-                    awaken_session_realization::test_support::test_observed_lease(renewed.clone()),
-                ),
-            )
-            .await
-            .unwrap();
+            host.run_assembly
+                .install_frozen_session_projection(
+                    thread,
+                    projection.clone(),
+                    None,
+                    true,
+                    Some(
+                        awaken_session_realization::test_support::test_observed_lease(
+                            renewed.clone(),
+                        ),
+                    ),
+                )
+                .await
+                .unwrap();
             assert!(Arc::ptr_eq(&original, &owned_environment()));
             assert_eq!(
                 host.realization_executor
@@ -661,7 +680,7 @@ mod tests {
                         .environments()
                         .retire_session_environment_for_revocation(
                             thread,
-                            (&host.mcp, host.installed_sessions.as_ref()),
+                            (&host.run_assembly.mcp, host.installed_sessions.as_ref()),
                             None,
                         )
                         .await
@@ -752,19 +771,20 @@ mod tests {
                     panic!("SR5 Resident projection")
                 }
                 assert!(
-                    host.install_frozen_session_projection(
-                        thread,
-                        foreign,
-                        None,
-                        true,
-                        Some(
-                            awaken_session_realization::test_support::test_observed_lease(
-                                lease.clone()
+                    host.run_assembly
+                        .install_frozen_session_projection(
+                            thread,
+                            foreign,
+                            None,
+                            true,
+                            Some(
+                                awaken_session_realization::test_support::test_observed_lease(
+                                    lease.clone()
+                                )
                             )
                         )
-                    )
-                    .await
-                    .is_err()
+                        .await
+                        .is_err()
                 );
                 assert!(Arc::ptr_eq(&original, &owned_environment()));
                 assert_eq!(
@@ -807,7 +827,7 @@ mod tests {
             }
             std::fs::write(&marker, serde_json::to_vec(&foreign).unwrap()).unwrap();
             let result = WorkerProjectionSynchronizer::for_directive(
-                host.as_ref(),
+                host.run_assembly.as_ref(),
                 &directive,
                 Some(&claim),
                 Some(&snapshot),
@@ -877,12 +897,15 @@ mod tests {
                 )
             });
             if let Some(sink) = &cancelled_sink {
-                managed.install_test_environment_binding_sink(sink.clone());
+                managed
+                    .host
+                    .run_assembly
+                    .install_test_environment_binding_sink(sink.clone());
             }
             {
                 let recovering = async {
                     WorkerProjectionSynchronizer::for_directive(
-                        host.as_ref(),
+                        host.run_assembly.as_ref(),
                         &directive,
                         Some(&claim),
                         Some(&snapshot),
@@ -945,6 +968,7 @@ mod tests {
             }
             if let Some(sink) = cancelled_sink {
                 let candidate = host
+                    .run_assembly
                     .prepared_session_environment(thread)
                     .expect("MC cancelled successor retains Candidate");
                 assert!(
@@ -983,7 +1007,10 @@ mod tests {
                     b"same physical durable root"
                 );
                 retired.push(candidate.environment);
-                managed.install_test_environment_binding_sink(binding_sink.clone());
+                managed
+                    .host
+                    .run_assembly
+                    .install_test_environment_binding_sink(binding_sink.clone());
                 drop(sink);
             }
         }
@@ -1086,6 +1113,7 @@ mod tests {
             effective_model_ref,
         };
         let fresh_runtime = host
+            .run_assembly
             .ctx_for_claimed_snapshot(thread, Some("agent-a"), snapshot, attempt)
             .await
             .expect("DH1/E4 claimed Runtime R2");
@@ -1220,7 +1248,8 @@ mod tests {
             .join(thread)
             .join("retired-owner-sentinel");
         std::fs::write(&sentinel, b"retiring LegacyDirect owner").expect("legacy root sentinel");
-        host.install_test_resident_session_environment(thread, environment.clone());
+        host.run_assembly
+            .install_test_resident_session_environment(thread, environment.clone());
         let lifecycle = host
             .installed_sessions
             .realizations()
@@ -1234,7 +1263,7 @@ mod tests {
                     .environments()
                     .retire_session_environment_for_revocation(
                         thread,
-                        (&host.mcp, host.installed_sessions.as_ref()),
+                        (&host.run_assembly.mcp, host.installed_sessions.as_ref()),
                         None,
                     )
                     .await
@@ -1276,12 +1305,16 @@ mod tests {
             .expect("validated Host dependencies");
         let managed = crate::ManagedHost::new(host.clone());
         let sink = Arc::new(LegacyUnownedEnvironmentBindingSink::default());
-        managed.install_test_environment_binding_sink(sink.clone());
+        managed
+            .host
+            .run_assembly
+            .install_test_environment_binding_sink(sink.clone());
 
         let snapshot = test_activation(thread, "run-claimed-ready-v1").snapshot;
         let mut projection = frozen_projection();
         projection.agent_publication = Some(snapshot.clone());
-        host.install_frozen_session_projection(thread, projection.clone(), None, true, None)
+        host.run_assembly
+            .install_frozen_session_projection(thread, projection.clone(), None, true, None)
             .await
             .expect("CR1 install exact frozen publication before the legacy owner");
         let (original, raw_binding, retired_sentinel) =
@@ -1315,7 +1348,7 @@ mod tests {
             expires_at_unix_ms: u64::MAX,
         };
         let error = WorkerProjectionSynchronizer {
-            execution: host.as_ref(),
+            execution: host.run_assembly.as_ref(),
             claim: Some(&claim),
             published_snapshot: Some(&snapshot),
             rebuild_unavailable_environment: true,
@@ -1410,15 +1443,20 @@ mod tests {
         .unwrap();
         let managed = crate::ManagedHost::new(host.clone());
         let sink = Arc::new(LegacyUnownedEnvironmentBindingSink::default());
-        managed.install_test_environment_binding_sink(sink.clone());
+        managed
+            .host
+            .run_assembly
+            .install_test_environment_binding_sink(sink.clone());
         let snapshot = test_activation(thread, run).snapshot;
-        host.register_thread_agent_projection(thread, snapshot.root_agent_id.0.as_str());
+        host.run_assembly
+            .register_thread_agent_projection(thread, snapshot.root_agent_id.0.as_str());
         host.realization_executor
             .environments()
             .publication()
             .retain_session_publication(thread, Some(&snapshot))
             .unwrap();
-        host.install_environment_projection(thread, &eager_environment())
+        host.run_assembly
+            .install_environment_projection(thread, &eager_environment())
             .unwrap();
         host.installed_sessions
             .read(thread, |slot| {
@@ -1459,6 +1497,7 @@ mod tests {
         host.installed_sessions
             .update_run(thread, |state| state.dispatch_claim = Some(claim));
         let resumed = host
+            .run_assembly
             .ctx_for_resume(thread)
             .await
             .expect("OR1 existing ordinary recovery");
@@ -1546,17 +1585,20 @@ mod tests {
                 epoch: 1,
                 expires_at_unix_ms: u64::MAX,
             };
-        host.install_frozen_session_projection(
-            thread,
-            local_projection,
-            None,
-            true,
-            Some(
-                awaken_session_realization::test_support::test_observed_lease(cached_lease.clone()),
-            ),
-        )
-        .await
-        .expect("RA1 install retained local projection");
+        host.run_assembly
+            .install_frozen_session_projection(
+                thread,
+                local_projection,
+                None,
+                true,
+                Some(
+                    awaken_session_realization::test_support::test_observed_lease(
+                        cached_lease.clone(),
+                    ),
+                ),
+            )
+            .await
+            .expect("RA1 install retained local projection");
         let (retiring, _raw_binding, root_sentinel) =
             revoked_legacy_v1_environment(host.as_ref(), thread).await;
         let cached = host
@@ -1609,7 +1651,7 @@ mod tests {
             action: awaken_session_realization_contract::SessionRealizationAction::Complete,
         };
         let error = WorkerProjectionSynchronizer::for_directive(
-            host.as_ref(),
+            host.run_assembly.as_ref(),
             &directive,
             Some(&claim),
             Some(&remote_snapshot),

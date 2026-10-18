@@ -259,9 +259,14 @@ fn projection() -> awaken_session_realization_contract::FrozenSessionProjection 
 }
 
 async fn original_relay(host: &Arc<crate::SharedHost>) -> awaken_session_mcp::McpRelay {
-    let authority =
-        Arc::downgrade(host) as std::sync::Weak<dyn awaken_session_mcp::McpGenerationAuthority>;
-    host.mcp.relay_or_start(authority).await.unwrap().clone()
+    let authority = Arc::downgrade(&host.run_assembly.mcp_root_authority)
+        as std::sync::Weak<dyn awaken_session_mcp::McpGenerationAuthority>;
+    host.run_assembly
+        .mcp
+        .relay_or_start(authority)
+        .await
+        .unwrap()
+        .clone()
 }
 
 async fn retire_component_current(
@@ -272,7 +277,7 @@ async fn retire_component_current(
         .environments()
         .retire_session_environment_for_revocation(
             session,
-            (&host.mcp, host.installed_sessions.as_ref()),
+            (&host.run_assembly.mcp, host.installed_sessions.as_ref()),
             None,
         )
         .await
@@ -350,17 +355,20 @@ async fn successful_retirement_cannot_remove_a_successor_session_relay_route() {
         tokio::time::timeout(INSTALL_TIMEOUT, async {
             let sessions = canonical.realizations();
             let _permit = sessions.acquire_realization(session).await;
-            host.install_frozen_session_projection(
-                session,
-                frozen.clone(),
-                None,
-                true,
-                Some(
-                    awaken_session_realization::test_support::test_observed_lease(lease_a.clone()),
-                ),
-            )
-            .await
-            .expect("A uses the production frozen projection installer");
+            host.run_assembly
+                .install_frozen_session_projection(
+                    session,
+                    frozen.clone(),
+                    None,
+                    true,
+                    Some(
+                        awaken_session_realization::test_support::test_observed_lease(
+                            lease_a.clone(),
+                        ),
+                    ),
+                )
+                .await
+                .expect("A uses the production frozen projection installer");
         })
         .await
         .expect("bounded complete original A projection install");
@@ -368,10 +376,11 @@ async fn successful_retirement_cannot_remove_a_successor_session_relay_route() {
             .read(session, |slot| slot.realization.execution().phase.clone())
             .expect("A canonical allocation");
         let relay = original_relay(&host).await;
-        let selected = host.begin_session_realization_revocation();
+        let selected = host.run_assembly.begin_session_realization_revocation();
         let retiring = host.clone();
         let finish = tokio::spawn(async move {
             retiring
+                .run_assembly
                 .finish_session_realization_revocation(selected)
                 .await
         });
@@ -399,17 +408,20 @@ async fn successful_retirement_cannot_remove_a_successor_session_relay_route() {
         tokio::time::timeout(INSTALL_TIMEOUT, async {
             let sessions = canonical.realizations();
             let _permit = sessions.acquire_realization(session).await;
-            host.install_frozen_session_projection(
-                session,
-                frozen,
-                None,
-                true,
-                Some(
-                    awaken_session_realization::test_support::test_observed_lease(lease_b.clone()),
-                ),
-            )
-            .await
-            .expect("B uses the same production installer after actual A removal");
+            host.run_assembly
+                .install_frozen_session_projection(
+                    session,
+                    frozen,
+                    None,
+                    true,
+                    Some(
+                        awaken_session_realization::test_support::test_observed_lease(
+                            lease_b.clone(),
+                        ),
+                    ),
+                )
+                .await
+                .expect("B uses the same production installer after actual A removal");
         })
         .await
         .expect("bounded complete successor B projection install");
@@ -443,7 +455,8 @@ async fn successful_retirement_cannot_remove_a_successor_session_relay_route() {
             },
         };
         assert_eq!(
-            host.mcp_generation_root_authority(&generation_b),
+            host.run_assembly
+                .mcp_generation_root_authority(&generation_b),
             Some(true)
         );
         assert!(relay.stage_route(&generation_b, &material));
@@ -479,7 +492,8 @@ async fn successful_retirement_cannot_remove_a_successor_session_relay_route() {
         );
         assert_eq!(gate.actual_true.load(Ordering::SeqCst), 1);
         assert_eq!(
-            host.mcp_generation_root_authority(&generation_b),
+            host.run_assembly
+                .mcp_generation_root_authority(&generation_b),
             Some(true)
         );
         assert!(Arc::ptr_eq(
@@ -543,7 +557,7 @@ async fn absent_component_retirement_cannot_close_or_remove_a_later_session() {
         tokio::time::timeout(INSTALL_TIMEOUT, async {
             let sessions = canonical.realizations();
             let _permit = sessions.acquire_realization(session).await;
-            host.install_frozen_session_projection(
+            host.run_assembly.install_frozen_session_projection(
                 session, projection(), None, true,
                 Some(awaken_session_realization::test_support::test_observed_lease(lease.clone())),
             ).await.expect("B uses the original complete projection installer after real absence");
@@ -552,12 +566,12 @@ async fn absent_component_retirement_cannot_close_or_remove_a_later_session() {
         let generation = crate::test_mcp::mcp_fence(
             session, "docs", 1, &lease.runtime_incarnation, lease.epoch, lease.expires_at_unix_ms,
         );
-        assert_eq!(host.mcp_generation_root_authority(&generation), Some(true));
+        assert_eq!(host.run_assembly.mcp_generation_root_authority(&generation), Some(true));
         drop(release);
         let retired = tokio::time::timeout(std::time::Duration::from_secs(5), finish)
             .await.expect("absence gate released").unwrap().unwrap();
         let remains = canonical.read(session, |slot| Arc::ptr_eq(&successor, &slot.realization.execution().phase)).unwrap_or(false);
-        let authority = host.mcp_generation_root_authority(&generation);
+        let authority = host.run_assembly.mcp_generation_root_authority(&generation);
         assert!(remains && authority == Some(true),
             "retirement that observed actual absence selected the later Session: remains={remains}, authority={authority:?}");
         assert!(!retired, "absence contributes no successful retirement");

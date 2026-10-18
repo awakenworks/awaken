@@ -10,12 +10,6 @@ use crate::host::*;
 /// Dispatch views, sizing and pool owned by one [`SharedHost`]. Consumer: every
 /// admission, pool, drain, and terminal-reconciliation path of the Host.
 pub(crate) struct DispatchCapability {
-    /// Cold-Worker adapter over the configured Session Runtime. It owns only weak
-    /// host wiring plus Resource/credential SPIs, so installing it cannot create
-    /// an `Arc<SharedHost>` cycle or a second Vault/materialization path.
-    pub(crate) session_effects: crate::SessionEffects,
-    /// Ordinary Run MCP uses SDK Direct admission over the same physical owner.
-    pub(crate) run_mcp_effects: crate::session_effects::RunMcpEffects,
     /// The process-level dispatch pool (O2), spawned once by `mount` when durable
     /// ingress is enabled. It is the sole claimer of the one shared queue and drives
     /// every session's runs by routing each claimed run back to the worker that owns
@@ -29,6 +23,8 @@ pub(crate) struct DispatchCapability {
     /// (`host::dispatch_reconciliation`).
     pub(crate) terminal_reconciliation:
         Arc<awaken_dispatch_execution::session_reconciliation::TerminalReconciliationState>,
+    /// The hint the local pool waits on, shared with every command publisher.
+    pub(crate) hint: awaken_dispatch_execution::DispatchHint,
 }
 
 impl DispatchCapability {
@@ -40,15 +36,25 @@ impl DispatchCapability {
     /// The selected execution topology, with no pool yet: `mount` spawns it.
     pub(in crate::host) fn new(
         execution: super::ExecutionTopology,
-        host: std::sync::Weak<SharedHost>,
+        hint: awaken_dispatch_execution::DispatchHint,
     ) -> Self {
         Self {
-            session_effects: crate::SessionEffects { host: host.clone() },
-            run_mcp_effects: crate::session_effects::RunMcpEffects { host },
             dispatch_pool: std::sync::OnceLock::new(),
             execution,
             terminal_reconciliation: Default::default(),
+            hint,
         }
+    }
+}
+
+/// The Coordinator dispatch owner when this process's authority holds it
+/// locally; a database-less Worker reaches dispatch only remotely.
+pub(crate) fn local_dispatch_owner(
+    authority: &dyn crate::SessionAuthority,
+) -> Option<Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>> {
+    match authority.dispatch_binding()?.placement() {
+        awaken_dispatch_erasure::DispatchTopology::Local(owner) => Some(owner.clone()),
+        awaken_dispatch_erasure::DispatchTopology::Remote { .. } => None,
     }
 }
 
@@ -70,10 +76,7 @@ impl SharedHost {
     pub(crate) fn optional_dispatch_store(
         &self,
     ) -> Option<Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>> {
-        match self.authority.dispatch_binding()?.placement() {
-            awaken_dispatch_erasure::DispatchTopology::Local(owner) => Some(owner.clone()),
-            awaken_dispatch_erasure::DispatchTopology::Remote { .. } => None,
-        }
+        local_dispatch_owner(self.authority.as_ref())
     }
 
     pub fn coordinator_dispatch(
@@ -150,14 +153,11 @@ impl SharedHost {
         // spawn the pool with the cross-node wake so a peer's enqueue nudges this pool
         // without busy-poll; otherwise the in-process `LocalWakeSignal` suffices.
         let completion = self.completion.clone() as Arc<dyn CompletionSink>;
-        let shared_wake = self
-            .authority
-            .dispatch_wake()
-            .unwrap_or_else(|| Arc::new(awaken_dispatch_execution::LocalWakeSignal::new()));
+        let shared_wake = self.dispatch.hint.wake();
         let pool = DispatchPool::spawn_bound(
             binding,
             self.clock.clone(),
-            self.dispatch_owner().to_owned(),
+            self.run_assembly.dispatch_owner().to_owned(),
             DEFAULT_LEASE_MS,
             config,
             resolver,
@@ -249,7 +249,7 @@ impl SharedHost {
     /// Returns whether this call started the loop.
     pub fn ensure_terminal_dispatch_reconciliation(self: &Arc<Self>) -> bool {
         if !self.dispatch.durable_ingress()
-            || self.runs_local_dispatch_pool()
+            || self.run_assembly.runs_local_dispatch_pool()
             || !self.authority.scans_committed_terminals()
             || self.dispatch.terminal_reconciliation.reconciler_started()
         {

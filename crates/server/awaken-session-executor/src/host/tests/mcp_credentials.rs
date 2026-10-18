@@ -176,12 +176,21 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     // | H32 | prepared external relay exits before a later stage | exact allowlist | stage | - | reject dead OnceCell owner before materialization |
     let exact_request = request("mcp-exact", "workspace-a", 1);
     let receipt = managed
+        .host
+        .run_assembly
         .stage_direct_mcp_attachment(exact_request.clone())
         .await
         .expect("H1");
-    assert!(host.active_mcp_projections("mcp-exact").is_empty(), "H1");
+    assert!(
+        host.run_assembly
+            .active_mcp_projections("mcp-exact")
+            .is_empty(),
+        "H1"
+    );
     assert_eq!(
         managed
+            .host
+            .run_assembly
             .stage_direct_mcp_attachment(exact_request)
             .await
             .expect("H2"),
@@ -189,7 +198,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "H2"
     );
     assert_eq!(
-        host.mcp_projection(&generation("mcp-exact"))
+        host.run_assembly
+            .mcp_projection(&generation("mcp-exact"))
             .unwrap()
             .server
             .unwrap()
@@ -197,7 +207,10 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             .map(|secret| secret.expose_secret()),
         Some("published-mcp-token")
     );
-    let projection = host.mcp_projection(&generation("mcp-exact")).unwrap();
+    let projection = host
+        .run_assembly
+        .mcp_projection(&generation("mcp-exact"))
+        .unwrap();
     assert!(
         matches!(
             projection.server.unwrap().transport,
@@ -209,18 +222,28 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "H21"
     );
     managed
+        .host
+        .run_assembly
         .publish_mcp_generation(generation("mcp-exact"))
         .await
         .expect("H3");
-    assert_eq!(host.active_mcp_projections("mcp-exact").len(), 1, "H3");
+    assert_eq!(
+        host.run_assembly.active_mcp_projections("mcp-exact").len(),
+        1,
+        "H3"
+    );
 
     let stale_error = managed
+        .host
+        .run_assembly
         .stage_direct_mcp_attachment(request("mcp-stale", "workspace-a", 2))
         .await
         .unwrap_err();
     assert_eq!(stale_error.code, "mcp_credential_revision_mismatch", "H4");
 
     let foreign_error = managed
+        .host
+        .run_assembly
         .stage_direct_mcp_attachment(request("mcp-foreign", "workspace-b", 1))
         .await
         .unwrap_err();
@@ -232,6 +255,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     };
     assert_eq!(
         managed
+            .host
+            .run_assembly
             .stage_direct_mcp_attachment(unsupported_usage)
             .await
             .unwrap_err()
@@ -240,13 +265,17 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "H17"
     );
     assert!(
-        host.mcp_projection(&generation("mcp-usage")).is_none(),
+        host.run_assembly
+            .mcp_projection(&generation("mcp-usage"))
+            .is_none(),
         "H17"
     );
     let mut prompt_skill = request("mcp-native-prompt-skill", "workspace-a", 1);
     prompt_skill.prompts_as_skills = true;
     assert_eq!(
         managed
+            .host
+            .run_assembly
             .stage_direct_mcp_attachment(prompt_skill)
             .await
             .unwrap_err()
@@ -255,7 +284,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "H24"
     );
     assert!(
-        host.mcp_projection(&generation("mcp-native-prompt-skill"))
+        host.run_assembly
+            .mcp_projection(&generation("mcp-native-prompt-skill"))
             .is_none(),
         "H24"
     );
@@ -267,6 +297,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         awaken_agent_contract::McpTarget::parse_http("https://other.example.test/mcp").unwrap();
     assert_eq!(
         managed
+            .host
+            .run_assembly
             .stage_direct_mcp_attachment(conflicting_renewal)
             .await
             .unwrap_err()
@@ -278,6 +310,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     non_increasing.stage_idempotency_key = "renew-without-extension".into();
     assert_eq!(
         managed
+            .host
+            .run_assembly
             .stage_direct_mcp_attachment(non_increasing)
             .await
             .unwrap_err()
@@ -290,15 +324,20 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     renewal.stage_idempotency_key = "renew-exact".into();
     let renewed_generation = renewal.generation.clone();
     let renewed = managed
+        .host
+        .run_assembly
         .stage_direct_mcp_attachment(renewal.clone())
         .await
         .expect("H14 stage");
     assert_eq!(renewed.generation, renewed_generation, "H14");
     managed
+        .host
+        .run_assembly
         .publish_mcp_generation(renewed_generation.clone())
         .await
         .expect("H14 publish");
     let projection = host
+        .run_assembly
         .mcp_projection(&renewed_generation)
         .expect("H14 projection");
     assert_eq!(
@@ -311,32 +350,49 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "H14 retained material"
     );
     managed
+        .host
+        .run_assembly
         .drain_mcp_generation(renewed_generation.clone())
         .await
         .expect("H6");
-    assert!(host.active_mcp_projections("mcp-exact").is_empty(), "H6");
-    let drained = host.mcp_projection(&renewed_generation).unwrap();
+    assert!(
+        host.run_assembly
+            .active_mcp_projections("mcp-exact")
+            .is_empty(),
+        "H6"
+    );
+    let drained = host
+        .run_assembly
+        .mcp_projection(&renewed_generation)
+        .unwrap();
     assert!(
         drained.server.is_none() && drained.native_wiring.is_none(),
         "H6"
     );
     managed
+        .host
+        .run_assembly
         .drain_mcp_generation(renewed_generation.clone())
         .await
         .expect("H7");
     assert!(
         managed
+            .host
+            .run_assembly
             .publish_mcp_generation(renewed_generation.clone())
             .await
             .is_err(),
         "H8"
     );
     let recovered = managed
+        .host
+        .run_assembly
         .stage_direct_mcp_attachment(renewal)
         .await
         .expect("H22 exact removed replay");
     assert_eq!(recovered.generation, renewed_generation, "H22");
     let recovered_projection = host
+        .run_assembly
         .mcp_projection(&renewed_generation)
         .expect("H22 rebuilt projection");
     assert_eq!(
@@ -360,10 +416,14 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     // binding, equal-expiry/new-key and in-flight Stage rejection coverage.
     let old_removed = request("mcp-removed-renewal", "workspace-a", 1);
     managed
+        .host
+        .run_assembly
         .stage_direct_mcp_attachment(old_removed.clone())
         .await
         .unwrap();
     managed
+        .host
+        .run_assembly
         .drain_mcp_generation(old_removed.generation.clone())
         .await
         .unwrap();
@@ -419,15 +479,21 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         }
         rejected.generation = w.try_into().unwrap();
         assert!(
-            !host.forget_replayable_removed_mcp_projection(&rejected),
+            !host
+                .run_assembly
+                .forget_replayable_removed_mcp_projection(&rejected),
             "H29 {changed}"
         );
         assert!(
-            host.mcp_projection(&old_removed.generation).is_some(),
+            host.run_assembly
+                .mcp_projection(&old_removed.generation)
+                .is_some(),
             "H29 retained {changed}"
         );
     }
     let rebuilt = managed
+        .host
+        .run_assembly
         .stage_direct_mcp_attachment(renewed_removed.clone())
         .await
         .expect("H28");
@@ -435,7 +501,9 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         .verify(&renewed_removed)
         .expect("H28 exact fresh receipt");
     assert!(
-        host.mcp_projection(&old_removed.generation).is_none(),
+        host.run_assembly
+            .mcp_projection(&old_removed.generation)
+            .is_none(),
         "H28 old tombstone removed"
     );
     assert_eq!(
@@ -450,7 +518,10 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "H28 one projection"
     );
     assert_eq!(
-        host.mcp_projection(&rebuilt.generation).unwrap().state,
+        host.run_assembly
+            .mcp_projection(&rebuilt.generation)
+            .unwrap()
+            .state,
         awaken_session_mcp::McpProjectionState::Staged,
         "H28 staged, not published"
     );
@@ -465,6 +536,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         .expect("installed Sessions");
     assert_eq!(
         managed
+            .host
+            .run_assembly
             .stage_direct_mcp_attachment(staging_request)
             .await
             .unwrap_err()
@@ -484,6 +557,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     expired.generation = expired.generation.expiring_at(0);
     assert_eq!(
         managed
+            .host
+            .run_assembly
             .stage_direct_mcp_attachment(expired)
             .await
             .unwrap_err()
@@ -491,29 +566,40 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "mcp_stale_ownership",
         "H9"
     );
-    assert!(host.mcp_projection(&generation("mcp-expired")).is_none());
+    assert!(
+        host.run_assembly
+            .mcp_projection(&generation("mcp-expired"))
+            .is_none()
+    );
     let mut admitted_before_renewal = request("mcp-renewed-authority", "workspace-a", 1);
     admitted_before_renewal.generation = admitted_before_renewal.generation.expiring_at(0);
-    host.install_session_realization_lease(
-        "mcp-renewed-authority",
-        crate::session_resource::SessionRealizationLease {
-            owner: "worker-a".into(),
-            runtime_incarnation: "runtime-1".into(),
-            epoch: 1,
-            expires_at_unix_ms: u64::MAX,
-        },
-    )
-    .unwrap();
+    host.run_assembly
+        .install_session_realization_lease(
+            "mcp-renewed-authority",
+            crate::session_resource::SessionRealizationLease {
+                owner: "worker-a".into(),
+                runtime_incarnation: "runtime-1".into(),
+                epoch: 1,
+                expires_at_unix_ms: u64::MAX,
+            },
+        )
+        .unwrap();
     let admitted_receipt = managed
+        .host
+        .run_assembly
         .stage_mcp_attachment(admitted_before_renewal)
         .await
         .expect("H19 stage admitted before renewal");
     managed
+        .host
+        .run_assembly
         .publish_mcp_generation(admitted_receipt.generation)
         .await
         .expect("H19 publish admitted before renewal");
     let first = request("mcp-conflict", "workspace-a", 1);
     managed
+        .host
+        .run_assembly
         .stage_direct_mcp_attachment(first)
         .await
         .expect("H10 setup");
@@ -521,6 +607,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     conflict.stage_idempotency_key = "another-key".into();
     assert_eq!(
         managed
+            .host
+            .run_assembly
             .stage_direct_mcp_attachment(conflict)
             .await
             .unwrap_err()
@@ -537,6 +625,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "H10"
     );
     managed
+        .host
+        .run_assembly
         .drain_mcp_generation(generation("mcp-never-staged"))
         .await
         .expect("H11");
@@ -552,11 +642,21 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     .with_credentials(credentials.clone(), secrets.clone()))
     .build()
     .expect("validated Host dependencies");
-    acp_host.register_thread_backend_projection("mcp-acp-forbidden", "acp:test");
-    acp_host.register_thread_backend_projection("mcp-acp-protected", "acp:test");
-    acp_host.register_thread_backend_projection("mcp-acp-anonymous", "acp:test");
-    acp_host.register_thread_backend_projection("mcp-acp-prompt-skill", "acp:test");
-    acp_host.register_thread_backend_projection("mcp-acp-client-basic", "acp:claude");
+    acp_host
+        .run_assembly
+        .register_thread_backend_projection("mcp-acp-forbidden", "acp:test");
+    acp_host
+        .run_assembly
+        .register_thread_backend_projection("mcp-acp-protected", "acp:test");
+    acp_host
+        .run_assembly
+        .register_thread_backend_projection("mcp-acp-anonymous", "acp:test");
+    acp_host
+        .run_assembly
+        .register_thread_backend_projection("mcp-acp-prompt-skill", "acp:test");
+    acp_host
+        .run_assembly
+        .register_thread_backend_projection("mcp-acp-client-basic", "acp:claude");
     let host_acp_snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("assistant")
         .resolved_model(
             awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
@@ -569,7 +669,9 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     // H12 has one protected-session case: install its exact publication
     // directly so the fixture does not imply an untested multi-case partition.
     let protected_session = "mcp-acp-protected";
-    acp_host.register_thread_agent_projection(protected_session, "assistant");
+    acp_host
+        .run_assembly
+        .register_thread_agent_projection(protected_session, "assistant");
     acp_host
         .realization_executor
         .environments()
@@ -583,6 +685,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     forbidden.credential.as_mut().unwrap().policy.model_exposure = ModelExposurePolicy::Forbidden;
     assert_eq!(
         acp_managed
+            .host
+            .run_assembly
             .stage_direct_mcp_attachment(forbidden)
             .await
             .unwrap_err()
@@ -592,17 +696,21 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     );
     assert!(
         acp_host
+            .run_assembly
             .mcp_projection(&generation("mcp-acp-forbidden"))
             .is_none(),
         "H18"
     );
     let acp_error = acp_managed
+        .host
+        .run_assembly
         .stage_direct_mcp_attachment(request("mcp-acp-protected", "workspace-a", 1))
         .await
         .unwrap_err();
     assert_eq!(acp_error.code, "mcp_holder_unsupported", "H12");
     assert!(
         acp_host
+            .run_assembly
             .mcp_projection(&generation("mcp-acp-protected"))
             .is_none(),
         "H12"
@@ -618,6 +726,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     basic_client_request.credential.as_mut().unwrap().policy =
         CredentialExecutionPolicy::exact(workload_holder.clone(), ModelExposurePolicy::Forbidden);
     let basic_client_receipt = basic_client
+        .host
+        .run_assembly
         .stage_direct_mcp_attachment(basic_client_request)
         .await
         .expect("H23 client injection does not require WorkerRelay provider custody");
@@ -637,6 +747,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     prompt_skill.prompts_as_skills = true;
     assert_eq!(
         acp_managed
+            .host
+            .run_assembly
             .stage_direct_mcp_attachment(prompt_skill)
             .await
             .unwrap_err()
@@ -646,16 +758,20 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     );
     assert!(
         acp_host
+            .run_assembly
             .mcp_projection(&generation("mcp-acp-prompt-skill"))
             .is_none(),
         "H24"
     );
     acp_managed
+        .host
+        .run_assembly
         .stage_direct_mcp_attachment(anonymous)
         .await
         .expect("H13");
     assert!(
         acp_host
+            .run_assembly
             .mcp_projection(&generation("mcp-acp-anonymous"))
             .and_then(|projection| projection.server)
             .is_some_and(|server| server.bearer().is_none()),
@@ -820,6 +936,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         .expect("validated Host dependencies");
     assert!(
         missing_proxy_host
+            .run_assembly
             .prepare_container_mcp_relay()
             .await
             .is_err(),
@@ -840,13 +957,26 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     ))
     .build()
     .expect("validated Host dependencies");
-    secure_acp_host.register_thread_backend_projection("mcp-acp-secure", "acp:test");
-    secure_acp_host.register_thread_backend_projection("mcp-acp-client", "acp:claude");
-    secure_acp_host.register_thread_backend_projection("mcp-acp-refresh", "acp:claude");
-    secure_acp_host.register_thread_backend_projection("mcp-acp-unstarted", "acp:test");
-    secure_acp_host.register_thread_backend_projection("mcp-acp-wrong-network", "acp:test");
-    secure_acp_host.register_thread_backend_projection("mcp-acp-dead-relay", "acp:test");
     secure_acp_host
+        .run_assembly
+        .register_thread_backend_projection("mcp-acp-secure", "acp:test");
+    secure_acp_host
+        .run_assembly
+        .register_thread_backend_projection("mcp-acp-client", "acp:claude");
+    secure_acp_host
+        .run_assembly
+        .register_thread_backend_projection("mcp-acp-refresh", "acp:claude");
+    secure_acp_host
+        .run_assembly
+        .register_thread_backend_projection("mcp-acp-unstarted", "acp:test");
+    secure_acp_host
+        .run_assembly
+        .register_thread_backend_projection("mcp-acp-wrong-network", "acp:test");
+    secure_acp_host
+        .run_assembly
+        .register_thread_backend_projection("mcp-acp-dead-relay", "acp:test");
+    secure_acp_host
+        .run_assembly
         .install_environment_projection(
             "mcp-acp-secure",
             &session_environment(
@@ -862,7 +992,9 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "mcp-acp-wrong-network",
         "mcp-acp-dead-relay",
     ] {
-        secure_acp_host.register_thread_agent_projection(session, "assistant");
+        secure_acp_host
+            .run_assembly
+            .register_thread_agent_projection(session, "assistant");
         secure_acp_host
             .realization_executor
             .environments()
@@ -871,6 +1003,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             .unwrap();
     }
     secure_acp_host
+        .run_assembly
         .install_environment_projection(
             "mcp-acp-unstarted",
             &session_environment(
@@ -882,6 +1015,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         )
         .unwrap();
     secure_acp_host
+        .run_assembly
         .install_environment_projection(
             "mcp-acp-wrong-network",
             &session_environment(
@@ -893,6 +1027,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         )
         .unwrap();
     secure_acp_host
+        .run_assembly
         .install_environment_projection(
             "mcp-acp-dead-relay",
             &session_environment(
@@ -906,6 +1041,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     let external_gate = crate::ManagedHost::new(secure_acp_host.clone());
     assert_eq!(
         external_gate
+            .host
+            .run_assembly
             .stage_direct_mcp_attachment(request("mcp-acp-unstarted", "workspace-a", 1))
             .await
             .unwrap_err()
@@ -914,11 +1051,14 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "H29"
     );
     secure_acp_host
+        .run_assembly
         .prepare_container_mcp_relay()
         .await
         .expect("H20 external relay transport is bound before staging");
     assert_eq!(
         external_gate
+            .host
+            .run_assembly
             .stage_direct_mcp_attachment(request("mcp-acp-wrong-network", "workspace-a", 1))
             .await
             .unwrap_err()
@@ -926,7 +1066,9 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "mcp_relay_network_not_frozen",
         "H30"
     );
-    secure_acp_host.register_thread_agent_projection("mcp-acp-secure", "assistant");
+    secure_acp_host
+        .run_assembly
+        .register_thread_agent_projection("mcp-acp-secure", "assistant");
     secure_acp_host
         .realization_executor
         .environments()
@@ -947,8 +1089,12 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     .with_credentials(credentials.clone(), secrets.clone()))
     .build()
     .expect("validated Host dependencies");
-    default_relay_host.register_thread_backend_projection("mcp-acp-default-relay", "acp:test");
-    default_relay_host.register_thread_agent_projection("mcp-acp-default-relay", "assistant");
+    default_relay_host
+        .run_assembly
+        .register_thread_backend_projection("mcp-acp-default-relay", "acp:test");
+    default_relay_host
+        .run_assembly
+        .register_thread_agent_projection("mcp-acp-default-relay", "assistant");
     default_relay_host
         .realization_executor
         .environments()
@@ -959,6 +1105,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     let seen_before = seen.lock().unwrap().len();
     let default_generation = generation("mcp-acp-default-relay");
     default_relay_host
+        .run_assembly
         .install_session_realization_lease(
             default_generation.session_id().as_str(),
             crate::session_resource::SessionRealizationLease {
@@ -970,20 +1117,25 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         )
         .unwrap();
     let default_receipt = default_relay_managed
+        .host
+        .run_assembly
         .stage_mcp_attachment(request("mcp-acp-default-relay", "workspace-a", 1))
         .await
         .expect("H31 no-config relay keeps original lazy initialization");
     default_relay_managed
+        .host
+        .run_assembly
         .publish_mcp_generation(default_generation)
         .await
         .expect("H31 publish the exact loopback route");
     let default_projection = default_relay_host
+        .run_assembly
         .mcp_projection(&default_receipt.generation)
         .unwrap();
     let default_transport = awaken_session_mcp::project_mcp_session_transport(
         default_projection.server.as_ref().unwrap(),
         &default_projection.request,
-        default_relay_host.mcp.relay(),
+        default_relay_host.run_assembly.mcp.relay(),
         &default_projection.receipt,
         awaken_run_executor_acp::acp_adapter_policy(),
         "codex",
@@ -1071,8 +1223,11 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         .into_session_provider(),
     );
     let backend_secure_host = (backend_secure_host).build().unwrap();
-    backend_secure_host.register_thread_backend_projection("mcp-acp-backend-secure", "acp:test");
     backend_secure_host
+        .run_assembly
+        .register_thread_backend_projection("mcp-acp-backend-secure", "acp:test");
+    backend_secure_host
+        .run_assembly
         .install_environment_projection(
             "mcp-acp-backend-secure",
             &session_environment(
@@ -1084,10 +1239,13 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         )
         .unwrap();
     backend_secure_host
+        .run_assembly
         .prepare_container_mcp_relay()
         .await
         .expect("H26 external relay transport is bound before staging");
-    backend_secure_host.register_thread_agent_projection("mcp-acp-backend-secure", "assistant");
+    backend_secure_host
+        .run_assembly
+        .register_thread_agent_projection("mcp-acp-backend-secure", "assistant");
     backend_secure_host
         .realization_executor
         .environments()
@@ -1096,6 +1254,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         .expect("H26 frozen BackendOwned publication");
     let backend_secure = crate::ManagedHost::new(backend_secure_host.clone());
     backend_secure
+        .host
+        .run_assembly
         .stage_direct_mcp_attachment(request("mcp-acp-backend-secure", "workspace-a", 1))
         .await
         .expect("H26 selected BackendOwned provider admits WorkerRelay");
@@ -1113,21 +1273,27 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             .into_session_provider(),
     );
     let default_secure_host = (default_secure_host).build().unwrap();
-    default_secure_host.register_thread_backend_projection("mcp-acp-backend-weak", "acp:test");
-    default_secure_host.register_thread_agent_projection("mcp-acp-backend-weak", "assistant");
+    default_secure_host
+        .run_assembly
+        .register_thread_backend_projection("mcp-acp-backend-weak", "acp:test");
+    default_secure_host
+        .run_assembly
+        .register_thread_agent_projection("mcp-acp-backend-weak", "assistant");
     default_secure_host
         .realization_executor
         .environments()
         .publication()
         .retain_session_publication("mcp-acp-backend-weak", Some(&backend_owned_snapshot))
         .expect("H27 frozen BackendOwned publication");
-    let error = crate::ManagedHost::new(default_secure_host.clone())
+    let error = (default_secure_host.clone())
+        .run_assembly
         .stage_direct_mcp_attachment(request("mcp-acp-backend-weak", "workspace-a", 1))
         .await
         .expect_err("H27 selected BackendOwned provider must reject WorkerRelay");
     assert_eq!(error.code, "mcp_holder_unsupported", "H27");
     assert!(
         default_secure_host
+            .run_assembly
             .mcp_projection(&generation("mcp-acp-backend-weak"))
             .is_none(),
         "H27 rejects before materialization"
@@ -1138,6 +1304,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     // H20 mirrors the production Control-installed root before projecting the
     // opaque external route. H31 owns the retained real relay/upstream call.
     secure_acp_host
+        .run_assembly
         .install_session_realization_lease(
             secure_generation.session_id().as_str(),
             crate::session_resource::SessionRealizationLease {
@@ -1149,6 +1316,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         )
         .unwrap();
     let secure_receipt = secure_managed
+        .host
+        .run_assembly
         .stage_mcp_attachment(request("mcp-acp-secure", "workspace-a", 1))
         .await
         .expect("H20 complete provider evidence admits exact Worker relay staging");
@@ -1158,16 +1327,19 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "H20"
     );
     secure_managed
+        .host
+        .run_assembly
         .publish_mcp_generation(secure_generation.clone())
         .await
         .expect("H20 publish exact staged route");
     let projection = secure_acp_host
+        .run_assembly
         .mcp_projection(&secure_generation)
         .expect("H20 exact projection");
     let projected = awaken_session_mcp::project_mcp_session_transport(
         projection.server.as_ref().expect("H20 private material"),
         &projection.request,
-        secure_acp_host.mcp.relay(),
+        secure_acp_host.run_assembly.mcp.relay(),
         &projection.receipt,
         awaken_run_executor_acp::acp_adapter_policy(),
         "codex",
@@ -1188,18 +1360,21 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "H20 projects only the prepared external transport origin: {route}"
     );
     secure_acp_host
+        .run_assembly
         .mcp
         .relay()
         .expect("H32 prepared relay")
         .abort_for_test();
     for _ in 0..100 {
-        if !secure_acp_host.mcp.relay().unwrap().is_live() {
+        if !secure_acp_host.run_assembly.mcp.relay().unwrap().is_live() {
             break;
         }
         tokio::task::yield_now().await;
     }
     assert_eq!(
         secure_managed
+            .host
+            .run_assembly
             .stage_direct_mcp_attachment(request("mcp-acp-dead-relay", "workspace-a", 1))
             .await
             .unwrap_err()
@@ -1231,6 +1406,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         CredentialExecutionPolicy::exact(workload_holder.clone(), ModelExposurePolicy::VirtualOnly);
     assert_eq!(
         secure_managed
+            .host
+            .run_assembly
             .stage_direct_mcp_attachment(refreshable)
             .await
             .unwrap_err()
@@ -1240,6 +1417,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     );
     assert!(
         secure_acp_host
+            .run_assembly
             .mcp_projection(&generation("mcp-acp-refresh"))
             .is_none(),
         "H24"
@@ -1249,6 +1427,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     client_request.credential.as_mut().unwrap().policy =
         CredentialExecutionPolicy::exact(workload_holder, ModelExposurePolicy::VirtualOnly);
     let client_receipt = secure_managed
+        .host
+        .run_assembly
         .stage_direct_mcp_attachment(client_request)
         .await
         .expect("H23 exact process-protocol client injection");
@@ -1258,10 +1438,13 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "H23"
     );
     secure_managed
+        .host
+        .run_assembly
         .publish_mcp_generation(client_receipt.generation.clone())
         .await
         .expect("H23 publish");
     let client_projection = secure_acp_host
+        .run_assembly
         .mcp_projection(&client_receipt.generation)
         .expect("H23 projection");
     let client_server = awaken_session_mcp::project_mcp_session_transport(
@@ -1270,7 +1453,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             .as_ref()
             .expect("H23 private material"),
         &client_projection.request,
-        secure_acp_host.mcp.relay(),
+        secure_acp_host.run_assembly.mcp.relay(),
         &client_projection.receipt,
         awaken_run_executor_acp::acp_adapter_policy(),
         "claude",
@@ -1394,6 +1577,8 @@ async fn published_mcp_envelope_uses_the_authoring_target_binding_at_realization
     // The display name is not credential authority and must not enter the
     // recipient-bound payload fingerprint produced during Session authoring.
     managed
+        .host
+        .run_assembly
         .stage_direct_mcp_attachment(crate::session_mcp::StageMcpAttachment {
             workspace_id: workspace.into(),
             generation: crate::test_mcp::mcp_fence(
@@ -1417,22 +1602,31 @@ async fn published_mcp_envelope_uses_the_authoring_target_binding_at_realization
 }
 
 #[tokio::test]
-async fn dispatch_session_runtime_is_constructed_once_with_weak_host_ownership() {
-    // Causes: C1 complete selected dependencies; C2 empty Workspace; C3 all
-    // strong Host views dropped. R1 C1 => dispatch and Managed views share Host;
-    // R2 C2 => typed construction refusal; R3 C3 => Weak adapter refuses access.
-    // No installation, configuration mirror, or retained Host cycle exists.
+async fn session_mcp_realizer_is_constructed_once_without_a_host_cycle() {
+    // Causes: C1 complete selected dependencies; C2 empty Workspace; C3 every
+    // strong Host view dropped. R1 C1 => the dispatch-side Session MCP realizer
+    // and the Session application's realization role are the one Session
+    // assembly the Host constructed; R2 C2 => typed construction refusal;
+    // R3 C3 => that assembly is released with the Host: nothing it holds
+    // refers back to it, so no installation, mirror or retained cycle exists.
     let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .unwrap();
-    let dispatch = host.session_effects();
-    let managed = dispatch.managed().unwrap();
-    assert!(Arc::ptr_eq(&host, &managed.host), "R1");
-    let weak = Arc::downgrade(&host);
-    drop(managed);
-    drop(host);
+    let assembly = host.run_assembly.clone();
+    let realizer = assembly.session_mcp_realizer()
+        as *const dyn awaken_session_execution_contract::McpAttachmentRealizer;
+    assert!(
+        std::ptr::addr_eq(realizer, Arc::as_ptr(&assembly)),
+        "R1 the Session MCP realizer is the constructed assembly"
+    );
+    let roles = crate::session_execution_roles(&crate::ManagedHost::new(host.clone()));
+    assert!(
+        std::ptr::addr_eq(Arc::as_ptr(&roles.realization), Arc::as_ptr(&assembly)),
+        "R1 the realization role is the same assembly"
+    );
+    let weak = Arc::downgrade(&assembly);
+    drop((assembly, roles, host));
     assert!(weak.upgrade().is_none(), "R3 no cycle");
-    assert!(dispatch.managed().is_err(), "R3");
     let invalid = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_local_workspace("");
@@ -1530,15 +1724,18 @@ async fn injected_mcp_realizer_is_exclusive_and_fails_without_local_fallback() {
         selected_plaintext_holder: None,
     };
 
-    host.session_effects()
+    host.run_assembly
+        .session_mcp_realizer()
         .stage_mcp_attachment(request.clone())
         .await
         .expect("R1");
-    host.session_effects()
+    host.run_assembly
+        .session_mcp_realizer()
         .publish_mcp_generation(generation.clone())
         .await
         .expect("R1");
-    host.session_effects()
+    host.run_assembly
+        .session_mcp_realizer()
         .drain_mcp_generation(generation.clone())
         .await
         .expect("R1");
@@ -1547,7 +1744,7 @@ async fn injected_mcp_realizer_is_exclusive_and_fails_without_local_fallback() {
         ["stage", "publish", "drain"]
     );
     assert!(
-        host.mcp_projection(&generation).is_none(),
+        host.run_assembly.mcp_projection(&generation).is_none(),
         "R1 no local path"
     );
 
@@ -1555,10 +1752,14 @@ async fn injected_mcp_realizer_is_exclusive_and_fails_without_local_fallback() {
         .fail_stage
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let error = host
-        .session_effects()
+        .run_assembly
+        .session_mcp_realizer()
         .stage_mcp_attachment(request)
         .await
         .expect_err("R2 external rejection is terminal");
     assert_eq!(error.code, "external_stage_rejected");
-    assert!(host.mcp_projection(&generation).is_none(), "R2 no fallback");
+    assert!(
+        host.run_assembly.mcp_projection(&generation).is_none(),
+        "R2 no fallback"
+    );
 }

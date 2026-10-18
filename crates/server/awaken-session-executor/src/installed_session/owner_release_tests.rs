@@ -34,6 +34,7 @@ async fn idle_resident_context_releases_slots_when_last_host_owner_drops() {
     let session = "idle-context-owner-release";
     let slots_before = Arc::strong_count(&host.installed_sessions);
     let context = host
+        .run_assembly
         .ctx_for_session_coordination(session, None)
         .await
         .expect("normal idle coordination Context");
@@ -69,7 +70,10 @@ async fn idle_resident_context_releases_slots_when_last_host_owner_drops() {
         host.dispatch.dispatch_pool.get().is_none(),
         "no process pool task started"
     );
-    assert!(host.mcp.relay().is_none(), "no MCP relay task started");
+    assert!(
+        host.run_assembly.mcp.relay().is_none(),
+        "no MCP relay task started"
+    );
     let weak_host = Arc::downgrade(&host);
     let weak_slots = Arc::downgrade(&host.installed_sessions);
     let weak_context = Arc::downgrade(&context);

@@ -882,7 +882,7 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
         .clone()
         .expect("HS1 frozen source manifest");
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-        &managed,
+        &*managed.host.run_assembly,
         thread,
         projection,
         awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
@@ -903,17 +903,18 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
         epoch: 1,
         expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms() + 60_000,
     };
-    host.install_session_environment_owner_projection(
-        thread,
-        "terminal-workspace",
-        &awaken_session_state_contract::SessionEnvironmentState::Resident {
-            binding: source_binding.clone(),
-            effect_id: None,
-            generation: None,
-            idle_since_unix_ms: None,
-        },
-    )
-    .expect("HS1 project the exact durable source binding");
+    host.run_assembly
+        .install_session_environment_owner_projection(
+            thread,
+            "terminal-workspace",
+            &awaken_session_state_contract::SessionEnvironmentState::Resident {
+                binding: source_binding.clone(),
+                effect_id: None,
+                generation: None,
+                idle_since_unix_ms: None,
+            },
+        )
+        .expect("HS1 project the exact durable source binding");
     host.installed_sessions
         .realizations()
         .update_realization(thread, |r| {
@@ -948,7 +949,7 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
 
     let error =
         awaken_session_execution_contract::EnvironmentRuntime::prepare_checkpoint_source_disposal(
-            &managed,
+            &*managed.host.run_assembly,
             thread,
             &preparation,
             &generation,
@@ -1415,15 +1416,10 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
         owner: "terminal-refresh-run-worker".into(),
         epoch: 1,
     };
-    host.install_frozen_session_projection(
-        thread,
-        projection.clone(),
-        Some(&run_claim),
-        true,
-        None,
-    )
-    .await
-    .expect("install the exact frozen Memory/checkpoint projection");
+    host.run_assembly
+        .install_frozen_session_projection(thread, projection.clone(), Some(&run_claim), true, None)
+        .await
+        .expect("install the exact frozen Memory/checkpoint projection");
     let handle =
         terminal_fixture_container_handle(thread, &host.realization_executor.sandbox_spec(thread))
             .with_memory_materializations(vec![terminal_memory_evidence()])
@@ -1456,21 +1452,26 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
         checkpoint: None,
         source_release_preparation: None,
     };
-    host.install_test_terminal_cleanup_projection(
-        &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
-            environment_creation_not_attempted: false,
-            session_id: thread.into(),
-            projection: projection.clone(),
-            authority: awaken_session_realization::test_support::test_lease_receipt(lease.clone()),
-        },
-    )
-    .await
-    .expect("install the exact terminal generation");
+    host.run_assembly
+        .install_test_terminal_cleanup_projection(
+            &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                environment_creation_not_attempted: false,
+                session_id: thread.into(),
+                projection: projection.clone(),
+                authority: awaken_session_realization::test_support::test_lease_receipt(
+                    lease.clone(),
+                ),
+            },
+        )
+        .await
+        .expect("install the exact terminal generation");
 
     let authorization = terminal_preparation_authorization(&effect, &projection);
     let asserted_effect = effect.clone();
     let mut preparation = tokio::spawn(async move {
         managed
+            .host
+            .run_assembly
             .prepare_terminal_cleanup_for_effect(effect, authorization)
             .await
     });
@@ -1480,7 +1481,8 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
         "Artifact capture",
     )
     .await;
-    host.install_session_realization_lease(thread, renewal_1.clone())
+    host.run_assembly
+        .install_session_realization_lease(thread, renewal_1.clone())
         .unwrap();
     probe.artifact_release.notify_one();
 
@@ -1490,7 +1492,8 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
         "Memory acknowledgement",
     )
     .await;
-    host.install_session_realization_lease(thread, renewal_2.clone())
+    host.run_assembly
+        .install_session_realization_lease(thread, renewal_2.clone())
         .unwrap();
     probe.memory_release.notify_one();
 
@@ -1500,7 +1503,8 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
         "checkpoint cleanup",
     )
     .await;
-    host.install_session_realization_lease(thread, renewal_3.clone())
+    host.run_assembly
+        .install_session_realization_lease(thread, renewal_3.clone())
         .unwrap();
     probe.checkpoint_release.notify_one();
     let receipt = tokio::time::timeout(std::time::Duration::from_secs(2), preparation)
@@ -1629,6 +1633,8 @@ async fn total_absence_recovers_artifacts_before_separate_terminal_disposal() {
     let preparation_authorization =
         terminal_preparation_authorization(&effect, &terminal_projection);
     let preparation = managed
+        .host
+        .run_assembly
         .prepare_terminal_cleanup_for_effect(effect.clone(), preparation_authorization)
         .await
         .expect("HS2 total-absence terminal preparation");
@@ -1655,6 +1661,8 @@ async fn total_absence_recovers_artifacts_before_separate_terminal_disposal() {
     events.lock().unwrap().clear();
     let disposal_effect = terminal_disposal_effect(preparation, lease, &terminal_projection);
     let disposal = managed
+        .host
+        .run_assembly
         .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
         .await
         .expect("HS2 total-absence physical-disposal proof");
@@ -1739,6 +1747,8 @@ async fn disposing_cleanup_prepares_durability_before_resuming_physical_disposal
     let preparation_authorization =
         terminal_preparation_authorization(&effect, &terminal_projection);
     let preparation = managed
+        .host
+        .run_assembly
         .prepare_terminal_cleanup_for_effect(effect.clone(), preparation_authorization)
         .await
         .expect("HS3 prepare exact disposing cleanup");
@@ -1784,6 +1794,8 @@ async fn disposing_cleanup_prepares_durability_before_resuming_physical_disposal
         "HS3/E1 physical disposal inherits continuation fpA exactly",
     );
     let disposal = managed
+        .host
+        .run_assembly
         .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
         .await
         .expect("HS3 resume exact physical disposal");
@@ -1860,7 +1872,7 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
 
     let mut projection = terminal_memory_projection();
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-        &managed,
+        &*managed.host.run_assembly,
         thread,
         projection.clone(),
         awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
@@ -1876,16 +1888,19 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
     // A changed aggregate Environment is a new root-CAS snapshot.
     projection.revision.0 += 1;
     projection.environment = disposing_environment;
-    host.install_test_terminal_cleanup_projection(
-        &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
-            environment_creation_not_attempted: false,
-            session_id: thread.into(),
-            projection: projection.clone(),
-            authority: awaken_session_realization::test_support::test_lease_receipt(lease.clone()),
-        },
-    )
-    .await
-    .expect("A1 install exact Disposing assignment");
+    host.run_assembly
+        .install_test_terminal_cleanup_projection(
+            &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                environment_creation_not_attempted: false,
+                session_id: thread.into(),
+                projection: projection.clone(),
+                authority: awaken_session_realization::test_support::test_lease_receipt(
+                    lease.clone(),
+                ),
+            },
+        )
+        .await
+        .expect("A1 install exact Disposing assignment");
 
     let authorization = terminal_preparation_authorization(&effect, &projection);
     let expected_provider_preparation =
@@ -1900,6 +1915,8 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
         "A1/E1 closed authorization carries exact continuation A/fpA",
     );
     let preparation = managed
+        .host
+        .run_assembly
         .prepare_terminal_cleanup_for_effect(effect, authorization)
         .await
         .expect("A1 exact inherited preparation closes physical response loss");
@@ -1927,6 +1944,8 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
         "A1/E3 aggregate disposal keeps exact A/fpA",
     );
     managed
+        .host
+        .run_assembly
         .dispose_terminal_cleanup_for_effect(disposal_effect)
         .await
         .expect("A1/E3 total absence is exact physical response-loss success");
@@ -1983,7 +2002,7 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
 
         let mut projection = terminal_memory_projection();
         awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-            &managed,
+            &*managed.host.run_assembly,
             thread,
             projection.clone(),
             awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
@@ -2044,16 +2063,17 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
                     awaken_session_state_contract::SessionEnvironmentState::Unmaterialized;
             }
         }
-        host.install_test_terminal_cleanup_projection(
-            &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
-                environment_creation_not_attempted: false,
-                session_id: thread.into(),
-                projection: projection.clone(),
-                authority: awaken_session_realization::test_support::test_lease_receipt(lease),
-            },
-        )
-        .await
-        .expect("M0 install exact terminal assignment");
+        host.run_assembly
+            .install_test_terminal_cleanup_projection(
+                &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                    environment_creation_not_attempted: false,
+                    session_id: thread.into(),
+                    projection: projection.clone(),
+                    authority: awaken_session_realization::test_support::test_lease_receipt(lease),
+                },
+            )
+            .await
+            .expect("M0 install exact terminal assignment");
 
         // M0 retry must retain the first exact auxiliary owner, including its
         // non-durable participants; primary absence is not permission to replace it.
@@ -2062,6 +2082,8 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
             let preparation_authorization =
                 terminal_preparation_authorization(&effect, &projection);
             let error = managed
+                .host
+                .run_assembly
                 .prepare_terminal_cleanup_for_effect(effect.clone(), preparation_authorization)
                 .await
                 .expect_err("M0 unavailable writable Memory must fail before source effects");
@@ -2146,7 +2168,7 @@ async fn provider_proved_unmaterialized_absence_closes_missing_memory_evidence()
     // effect. The separate missing-history row remains pending/zero-I/O.
     fresh_terminal_fixture_before_create(thread, &mut projection, &lease);
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-        &managed,
+        &*managed.host.run_assembly,
         thread,
         projection.clone(),
         awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
@@ -2154,19 +2176,22 @@ async fn provider_proved_unmaterialized_absence_closes_missing_memory_evidence()
     .await
     .expect("HM0b install frozen writable Memory input");
 
-    host.install_test_terminal_cleanup_projection(
-        &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
-            environment_creation_not_attempted: false,
-            session_id: thread.into(),
-            projection: projection.clone(),
-            authority: awaken_session_realization::test_support::test_lease_receipt(lease),
-        },
-    )
-    .await
-    .expect("HM0b install exact terminal assignment");
+    host.run_assembly
+        .install_test_terminal_cleanup_projection(
+            &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                environment_creation_not_attempted: false,
+                session_id: thread.into(),
+                projection: projection.clone(),
+                authority: awaken_session_realization::test_support::test_lease_receipt(lease),
+            },
+        )
+        .await
+        .expect("HM0b install exact terminal assignment");
 
     let preparation_authorization = terminal_preparation_authorization(&effect, &projection);
     let preparation = managed
+        .host
+        .run_assembly
         .prepare_terminal_cleanup_for_effect(effect, preparation_authorization)
         .await
         .expect("HM0b exact provider absence closes missing handle evidence");
@@ -2317,15 +2342,16 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
             owner: "terminal-memory-run-worker".into(),
             epoch: 1,
         };
-        host.install_frozen_session_projection(
-            &thread,
-            projection.clone(),
-            Some(&run_claim),
-            true,
-            None,
-        )
-        .await
-        .unwrap_or_else(|error| panic!("{} installs frozen Memory input: {error}", rule.name));
+        host.run_assembly
+            .install_frozen_session_projection(
+                &thread,
+                projection.clone(),
+                Some(&run_claim),
+                true,
+                None,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{} installs frozen Memory input: {error}", rule.name));
 
         let evidence = terminal_memory_evidence();
         let handle = terminal_fixture_container_handle(
@@ -2378,18 +2404,19 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                     awaken_session_state_contract::SessionEnvironmentState::Unmaterialized;
             }
         }
-        host.install_test_terminal_cleanup_projection(
-            &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
-                environment_creation_not_attempted: false,
-                session_id: SessionId::from(&thread),
-                projection: projection.clone(),
-                authority: awaken_session_realization::test_support::test_lease_receipt(
-                    lease.clone(),
-                ),
-            },
-        )
-        .await
-        .unwrap_or_else(|error| panic!("{} installs terminal assignment: {error}", rule.name));
+        host.run_assembly
+            .install_test_terminal_cleanup_projection(
+                &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                    environment_creation_not_attempted: false,
+                    session_id: SessionId::from(&thread),
+                    projection: projection.clone(),
+                    authority: awaken_session_realization::test_support::test_lease_receipt(
+                        lease.clone(),
+                    ),
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{} installs terminal assignment: {error}", rule.name));
 
         if rule.resident {
             let warm_fence = lease
@@ -2440,6 +2467,8 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
             for _ in 0..2 {
                 let authorization = terminal_preparation_authorization(&effect, &projection);
                 let error = managed
+                    .host
+                    .run_assembly
                     .prepare_terminal_cleanup_for_effect(effect.clone(), authorization)
                     .await
                     .expect_err("H5/H6 rejected Memory cannot prepare disposal");
@@ -2473,6 +2502,8 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
 
         let preparation_authorization = terminal_preparation_authorization(&effect, &projection);
         let preparation = managed
+            .host
+            .run_assembly
             .prepare_terminal_cleanup_for_effect(effect.clone(), preparation_authorization)
             .await
             .unwrap_or_else(|error| panic!("{} terminal Memory cleanup: {error}", rule.name));
@@ -2590,6 +2621,8 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
 
         let disposal_effect = terminal_disposal_effect(preparation, lease, &projection);
         let disposal = managed
+            .host
+            .run_assembly
             .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
             .await
             .unwrap_or_else(|error| panic!("{} terminal physical disposal: {error}", rule.name));

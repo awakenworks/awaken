@@ -52,7 +52,11 @@ mod tests {
         let thread = ThreadId("unknown-shared-commit-session".into());
         let binding = SessionCommitOwner::new(host.clone());
         assert!(Arc::ptr_eq(&binding.0, &host));
-        assert!(host.registered_thread_workspace(&thread.0).is_none());
+        assert!(
+            host.run_assembly()
+                .registered_thread_workspace(&thread.0)
+                .is_none()
+        );
         awaken_session_executor::session_commit_owner(&host, &thread)
             .await
             .expect("configured Host commit boundary");
@@ -60,6 +64,10 @@ mod tests {
             .resolve(&thread)
             .await
             .expect("shared binding reuses the Host boundary");
-        assert!(host.registered_thread_workspace(&thread.0).is_none());
+        assert!(
+            host.run_assembly()
+                .registered_thread_workspace(&thread.0)
+                .is_none()
+        );
     }
 }

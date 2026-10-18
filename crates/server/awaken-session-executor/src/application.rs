@@ -178,7 +178,7 @@ mod realization_renewal_tests {
     }
 }
 
-impl crate::SharedHost {
+impl crate::RunAssembly {
     #[cfg(test)]
     pub(crate) fn install_session_realization_lease(
         &self,
@@ -253,16 +253,13 @@ impl crate::SharedHost {
     }
 
     /// One root-authority decision shared by effect admission and the relay.
-    /// Absence is explicit: it is never a live lease or proof of renewal.
     pub(crate) fn mcp_generation_root_authority(
         &self,
         generation: &crate::session_mcp::McpGenerationRef,
     ) -> Option<bool> {
-        self.installed_sessions
-            .read(generation.session_id().as_str(), |slot| {
-                slot.realization.mcp_generation_root_authority(generation)
-            })
-            .flatten()
+        use awaken_session_mcp::McpGenerationAuthority as _;
+        self.mcp_root_authority
+            .mcp_generation_root_authority(generation)
     }
 
     /// Drive the one aggregate-owned terminal cleanup projection for a claimed
@@ -295,12 +292,8 @@ impl crate::SharedHost {
                 // driver re-reads the closed action and remains the sole owner
                 // of installation, effect ordering, receipt admission, retry,
                 // and process-local acknowledgement for warm and cold slots.
-                let runtime = self
-                    .session_effects()
-                    .managed()
-                    .map_err(crate::managed_adapter_error::from_run_error)?;
                 awaken_session_realization_driver::drive_session_terminal_cleanup(
-                    session_id, lease, control, &runtime, &runtime,
+                    session_id, lease, control, self, self,
                 )
                 .await
                 .map_err(|error| terminal_cleanup_drive_error(session_id.as_str(), error))?;
@@ -628,24 +621,6 @@ impl crate::SharedHost {
             }
         }
         error.map_or(Ok(revoked), Err)
-    }
-
-    /// Cancel every run currently backed by a process-local Session projection.
-    ///
-    /// Worker authority loss must stop in-flight tool processes before local
-    /// realization revocation detaches their process bindings. Otherwise a native
-    /// process can continue writing after this Worker has dropped authority.
-    pub async fn interrupt_all_session_runs(&self) -> usize {
-        let session_ids = self.installed_sessions.session_ids();
-        let mut interrupted = 0;
-        for session_id in session_ids {
-            match self.interrupt(&session_id).await {
-                Ok(()) => interrupted += 1,
-                Err(error) => tracing::warn!(session_id, %error,
-                    "Worker could not request Session interruption before local revocation"),
-            }
-        }
-        interrupted
     }
 
     /// Install the protocol-neutral Runtime coordinates derived from one frozen

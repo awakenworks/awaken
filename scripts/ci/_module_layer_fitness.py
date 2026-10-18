@@ -95,6 +95,7 @@ LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "judge",
         "outcome_controller",
         "outcome_report",
+        "run_assembly",
         "run_exec",
         "step_projection",
         "tool_output_spill",

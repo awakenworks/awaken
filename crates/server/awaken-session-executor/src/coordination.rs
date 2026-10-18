@@ -36,7 +36,7 @@ pub(crate) enum CoordinationEndpoint {
     },
 }
 
-impl crate::SharedHost {
+impl crate::RunAssembly {
     /// Select the one Session coordination authority for every consumer. A live
     /// co-located application wins; an expired Weak falls through to the claimed
     /// remote control instead of becoming a dead local endpoint.
@@ -766,7 +766,10 @@ mod tests {
         // O1a live Local -> the sole factory selects Local once, then both
         // existing roles project the same allocation. Retained observer Weak
         // cannot prevent the following B3 drop/fallback transition.
-        let observer = host.dispatch_settlement_observer().expect("B2/O1a");
+        let observer = host
+            .run_assembly
+            .dispatch_settlement_observer()
+            .expect("B2/O1a");
         assert!(
             matches!(&observer.endpoint, CoordinationEndpoint::Local(_)),
             "O1a"
@@ -779,7 +782,7 @@ mod tests {
 
         assert!(
             matches!(
-                host.coordination_endpoint(),
+                host.run_assembly.coordination_endpoint(),
                 Some(CoordinationEndpoint::Remote { .. })
             ),
             "R2/E1-E2"
@@ -789,7 +792,10 @@ mod tests {
         // C1 local Weak dead + remote live => Remote for both; C2 both role
         // projections come from one factory Arc => identical allocation, no
         // second endpoint selection can change between the two installations.
-        let observer = host.dispatch_settlement_observer().expect("R2/E1");
+        let observer = host
+            .run_assembly
+            .dispatch_settlement_observer()
+            .expect("R2/E1");
         assert!(
             matches!(&observer.endpoint, CoordinationEndpoint::Remote { .. }),
             "R2/E1"

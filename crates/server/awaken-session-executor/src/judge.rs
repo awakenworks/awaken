@@ -39,9 +39,11 @@ impl Grader for HostAgentGrader<'_> {
         let thread = grader_thread_id(&input.outcome_id, input.iteration);
         let workspace = self
             .host
+            .run_assembly
             .thread_workspace(&input.transcript_snapshot.thread_id.0);
         if self
             .host
+            .run_assembly
             .registered_thread_workspace(&thread.0)
             .is_some_and(|existing| existing != workspace)
         {
@@ -49,10 +51,13 @@ impl Grader for HostAgentGrader<'_> {
                 "Outcome grader Workspace conflicts with its source Thread".into(),
             ));
         }
-        self.host.register_thread_workspace(&thread.0, &workspace);
+        self.host
+            .run_assembly
+            .register_thread_workspace(&thread.0, &workspace);
         tracing::debug!(thread = %thread.0, "Outcome grader context opening");
         let context = if crate::sandbox_projection::environment_free_inference(snapshot) {
             self.host
+                .run_assembly
                 .ctx_for_environment_free_snapshot(
                     &thread.0,
                     &snapshot.root_agent_id.0,
@@ -61,6 +66,7 @@ impl Grader for HostAgentGrader<'_> {
                 .await
         } else {
             self.host
+                .run_assembly
                 .ctx_for_snapshot(
                     &thread.0,
                     Some(&snapshot.root_agent_id.0),
@@ -267,7 +273,8 @@ mod tests {
             requests: Mutex::new(Vec::new()),
         });
         let host = judge_test_host(model.clone()).await;
-        host.register_thread_workspace("worker", "workspace-judge-source");
+        host.run_assembly
+            .register_thread_workspace("worker", "workspace-judge-source");
         let snapshot = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS)
             .expect("literal model reference");
         let input = grading_input("agent-grade-exact-json");
@@ -295,10 +302,13 @@ mod tests {
         // environment-free grader inherits it and carries it in ordinary Dispatch.
         // Resource absence must not erase the credential/execution ownership boundary.
         assert_eq!(
-            host.registered_thread_workspace(&thread.0).as_deref(),
+            host.run_assembly
+                .registered_thread_workspace(&thread.0)
+                .as_deref(),
             Some("workspace-judge-source")
         );
         let dispatch = host
+            .run_assembly
             .prepare_dispatch(awaken_runtime_contract::activation::RunActivation::new(
                 RunId("judge-dispatch-scope".into()),
                 thread.clone(),
@@ -337,10 +347,12 @@ mod tests {
             requests: Mutex::new(Vec::new()),
         });
         let host = judge_test_host(model.clone()).await;
-        host.register_thread_workspace("worker", "workspace-a");
+        host.run_assembly
+            .register_thread_workspace("worker", "workspace-a");
         let input = grading_input("grader-workspace-conflict");
         let thread = grader_thread_id(&input.outcome_id, input.iteration);
-        host.register_thread_workspace(&thread.0, "workspace-b");
+        host.run_assembly
+            .register_thread_workspace(&thread.0, "workspace-b");
         let snapshot = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS)
             .expect("literal model reference");
         let result = HostAgentGrader {
@@ -352,7 +364,9 @@ mod tests {
         assert!(matches!(result, Err(GraderError::Execution(_))));
         assert!(model.requests.lock().unwrap().is_empty());
         assert_eq!(
-            host.registered_thread_workspace(&thread.0).as_deref(),
+            host.run_assembly
+                .registered_thread_workspace(&thread.0)
+                .as_deref(),
             Some("workspace-b")
         );
     }
@@ -371,7 +385,7 @@ mod tests {
             .expect("literal model reference");
         let input = grading_input("agent-grade-prose-json");
         let thread = grader_thread_id(&input.outcome_id, input.iteration);
-        let context = host.ctx_for(&thread.0, None).await.unwrap();
+        let context = host.run_assembly.ctx_for(&thread.0, None).await.unwrap();
         let executor = BoundRunExecutor::new(&host, context.clone());
         let error = AgentGrader::new(&executor, context.commit.as_ref(), RuntimeRunContext::new())
             .grade(&snapshot, &input)

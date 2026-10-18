@@ -111,13 +111,14 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         "F1 desired-only staging is not completion evidence"
     );
     let activation = test_activation("thread-cold-resource", "run-cold-resource");
-    host.ctx_for_snapshot(
-        "thread-cold-resource",
-        Some("agent-a"),
-        Some(activation.snapshot),
-    )
-    .await
-    .expect("open environment after resource install");
+    host.run_assembly
+        .ctx_for_snapshot(
+            "thread-cold-resource",
+            Some("agent-a"),
+            Some(activation.snapshot),
+        )
+        .await
+        .expect("open environment after resource install");
 
     let mount = host
         .realization_executor
@@ -347,13 +348,14 @@ async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
         .install_dispatched_resources("thread-generation-fence", &initial_manifest, None)
         .await
         .expect("revalidate the exact desired manifest without republishing");
-    host.ctx_for_snapshot(
-        "thread-generation-fence",
-        Some("agent-a"),
-        Some(test_activation("thread-generation-fence", "open-generation-fence").snapshot),
-    )
-    .await
-    .expect("physically publish initial generation");
+    host.run_assembly
+        .ctx_for_snapshot(
+            "thread-generation-fence",
+            Some("agent-a"),
+            Some(test_activation("thread-generation-fence", "open-generation-fence").snapshot),
+        )
+        .await
+        .expect("physically publish initial generation");
     assert_eq!(
         initial_manifest.resources.inputs().len(),
         1,

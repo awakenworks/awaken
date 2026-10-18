@@ -599,7 +599,7 @@ async fn local_managed_state_over(
     let runtime = Arc::new(ManagedHost::new(host.clone()));
     let mut builder = awaken_session_application::SessionApplicationBuilder::new(
         awaken_session_executor::session_execution_roles(&runtime),
-        runtime.clone(),
+        host.run_assembly().clone(),
         persistence,
         environments.clone(),
         awaken_session_application::SessionExecutionAdmission::fixture_with_dispatch(
@@ -1422,7 +1422,7 @@ async fn mount_with_managed_over_and_models(
     let worker_observations: Arc<dyn awaken_worker_contract::WorkerIncarnationSource> =
         worker_directory.clone();
     let preparation: Arc<dyn awaken_session_realization_contract::SessionPreparationPlacement> =
-        host.clone();
+        host.run_assembly().clone();
     #[cfg(feature = "test-support")]
     session_application
         .execution_admission()
@@ -1576,8 +1576,8 @@ async fn mount_with_managed_over_and_models(
     let session_runs = Arc::new(awaken_session_application::SessionRunApplication::new(
         host_runs,
         session_application.clone(),
-        move |thread| workspace_host.thread_workspace(thread),
-        move |thread| agent_host.thread_agent_projection(thread),
+        move |thread| workspace_host.run_assembly().thread_workspace(thread),
+        move |thread| agent_host.run_assembly().thread_agent_projection(thread),
     ));
     let background_runs: Arc<
         dyn awaken_session_application_contract::SessionRunBackgroundApplication,

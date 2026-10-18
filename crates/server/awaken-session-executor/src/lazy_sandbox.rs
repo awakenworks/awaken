@@ -7,15 +7,18 @@ use awaken_tool_contract::tool::{
     ToolCall, ToolError, ToolExecutor, ToolOutput, ToolRecoveryCapability,
 };
 
+/// Held in the Session's installed slot, so it reaches the slot registry and
+/// the realization executor weakly: the slot must not keep its own owners alive.
 pub(crate) struct DeferredSandboxExecutor {
-    host: Weak<crate::SharedHost>,
+    installed_sessions: Weak<crate::InstalledSessions>,
+    realization_executor: Weak<crate::realization_executor::RealizationExecutor>,
     thread: String,
 }
 
 /// Bind the deferred Sandbox executor an on-tool-use Environment needs: the
 /// one installation, for a co-located Session preparation and a Worker's
 /// claimed resolve alike. An installed executor is kept.
-pub(crate) fn bind_deferred_executor(host: &Arc<crate::SharedHost>, thread: &str) {
+pub(crate) fn bind_deferred_executor(host: &crate::RunAssembly, thread: &str) {
     let needed = host
         .installed_sessions
         .read(thread, |slot| {
@@ -32,22 +35,39 @@ pub(crate) fn bind_deferred_executor(host: &Arc<crate::SharedHost>, thread: &str
         .unwrap_or(false);
     if needed {
         let executor: Arc<dyn awaken_tool_contract::tool::ToolExecutor> =
-            Arc::new(DeferredSandboxExecutor::new(Arc::downgrade(host), thread));
+            Arc::new(DeferredSandboxExecutor::new(
+                Arc::downgrade(&host.installed_sessions),
+                Arc::downgrade(&host.realization_executor),
+                thread,
+            ));
         host.installed_sessions
             .update_run(thread, |run| run.deferred_executor = Some(executor));
     }
 }
 
 impl DeferredSandboxExecutor {
-    pub(crate) fn new(host: Weak<crate::SharedHost>, thread: impl Into<String>) -> Self {
+    pub(crate) fn new(
+        installed_sessions: Weak<crate::InstalledSessions>,
+        realization_executor: Weak<crate::realization_executor::RealizationExecutor>,
+        thread: impl Into<String>,
+    ) -> Self {
         Self {
-            host,
+            installed_sessions,
+            realization_executor,
             thread: thread.into(),
         }
     }
 
-    fn host(&self) -> Result<Arc<crate::SharedHost>, ToolError> {
-        self.host
+    fn installed_sessions(&self) -> Result<Arc<crate::InstalledSessions>, ToolError> {
+        self.installed_sessions
+            .upgrade()
+            .ok_or_else(|| ToolError::DefinitiveFailure("Session host is unavailable".into()))
+    }
+
+    fn realization_executor(
+        &self,
+    ) -> Result<Arc<crate::realization_executor::RealizationExecutor>, ToolError> {
+        self.realization_executor
             .upgrade()
             .ok_or_else(|| ToolError::DefinitiveFailure("Session host is unavailable".into()))
     }
@@ -59,11 +79,10 @@ impl ToolExecutor for DeferredSandboxExecutor {
         &self,
         call: &ToolCall,
     ) -> Result<awaken_tool_contract::tool_batch::ToolExecutionDomain, ToolError> {
-        let host = self.host()?;
         if call.tool_id == "read" {
             let args = awaken_tool_contract::tool::parse_tool_args(call.arguments.clone())?;
-            if host
-                .installed_sessions
+            if self
+                .installed_sessions()?
                 .read(&self.thread, |slot| {
                     crate::skills::read_pinned_skill(slot, &args)
                 })
@@ -73,13 +92,12 @@ impl ToolExecutor for DeferredSandboxExecutor {
                 return Ok(awaken_tool_contract::tool_batch::ToolExecutionDomain::worker());
             }
         }
-        let environment = host
-            .realization_executor
+        let realization_executor = self.realization_executor()?;
+        let environment = realization_executor
             .ensure_session_environment_for_tool(&self.thread)
             .await
             .map_err(|error| ToolError::UnavailableBeforeDispatch(error.to_string()))?;
-        let (_, origin) = host
-            .realization_executor
+        let (_, origin) = realization_executor
             .environments()
             .resident_environment_activity_identity(&self.thread, &environment)
             .map_err(|error| ToolError::UnavailableBeforeDispatch(error.to_string()))?;
@@ -92,13 +110,16 @@ impl ToolExecutor for DeferredSandboxExecutor {
             .map_err(|error| ToolError::UnavailableBeforeDispatch(error.to_string()))
     }
     fn recovery_capability(&self, tool_id: &str) -> ToolRecoveryCapability {
-        self.host
+        // An absent or poisoned registry reports no resident Environment, so
+        // the call is classified non-recoverable instead of panicking.
+        self.realization_executor
             .upgrade()
-            .and_then(|host| {
-                host.installed_sessions
-                    .realizations()
+            .and_then(|realization| {
+                realization
+                    .sessions()
                     .read_realization(&self.thread, |r| r.environment().owner.resident())
-                    .expect("session runtime slots mutex poisoned")
+                    .ok()
+                    .flatten()
                     .flatten()
             })
             .map_or(ToolRecoveryCapability::NonRecoverable, |environment| {
@@ -110,12 +131,11 @@ impl ToolExecutor for DeferredSandboxExecutor {
     }
 
     async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError> {
-        let host = self.host()?;
         if call.tool_id == "read" {
             let args: awaken_ext_builtin_tools::ReadArgs =
                 awaken_tool_contract::tool::parse_tool_args(call.arguments.clone())?;
-            if let Some(result) = host
-                .installed_sessions
+            if let Some(result) = self
+                .installed_sessions()?
                 .read(&self.thread, |slot| {
                     crate::skills::read_pinned_skill(slot, &args)
                 })
@@ -124,8 +144,8 @@ impl ToolExecutor for DeferredSandboxExecutor {
                 return result.map(|content| ToolOutput::ok(&call.call_id, content));
             }
         }
-        let environment = host
-            .realization_executor
+        let environment = self
+            .realization_executor()?
             .ensure_session_environment_for_tool(&self.thread)
             .await
             .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?;

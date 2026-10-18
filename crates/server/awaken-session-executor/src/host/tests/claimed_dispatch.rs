@@ -17,6 +17,7 @@ async fn ctx_for_carries_one_self_consistent_snapshot_on_any_claiming_node() {
             .expect("validated Host dependencies"),
     );
     let ctx = host
+        .run_assembly
         .ctx_for("t-catalog", None)
         .await
         .expect("session builds");
@@ -43,13 +44,15 @@ async fn claimed_inference_only_grader_keeps_execution_authority_without_a_sandb
             .expect("validated Host dependencies"),
     );
     let thread = "claim-inference-only-judge";
-    host.register_thread_workspace(thread, "workspace-judge");
+    host.run_assembly
+        .register_thread_workspace(thread, "workspace-judge");
     let identity = RuntimePublicationIdentity::from_publications(&published, &[], "stub");
     let publications = Arc::new(
         awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([published.clone()])
             .unwrap(),
     );
     let context = host
+        .run_assembly
         .ctx_for_claimed_snapshot(
             thread,
             Some("claim-judge"),
@@ -117,7 +120,7 @@ async fn claimed_snapshot_is_the_worker_session_authority() {
     // the explicit publication remains byte-exact, not resolved from a catalog.
     let projection =
         crate::host::worker_resolver::test_support::empty_frozen_projection_for_snapshot(
-            host.local_workspace(),
+            host.run_assembly.local_workspace(),
             session_environment(
                 awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
                 serde_json::json!({}),
@@ -132,6 +135,7 @@ async fn claimed_snapshot_is_the_worker_session_authority() {
         .unwrap();
 
     let ctx = host
+        .run_assembly
         .ctx_for_snapshot(
             "t-published-claim",
             Some("published-agent"),
@@ -166,8 +170,11 @@ async fn background_task_fails_closed_on_a_database_less_worker() {
             .build()
             .expect("validated Host dependencies"),
     );
-    local.register_thread_agent_projection("background-local", "background-agent");
     local
+        .run_assembly
+        .register_thread_agent_projection("background-local", "background-agent");
+    local
+        .run_assembly
         .ctx_for_snapshot(
             "background-local",
             Some("background-agent"),
@@ -182,6 +189,7 @@ async fn background_task_fails_closed_on_a_database_less_worker() {
     .build()
     .expect("validated Host dependencies");
     let error = match worker
+        .run_assembly
         .ctx_for_snapshot(
             "background-worker",
             Some("background-agent"),
@@ -237,7 +245,7 @@ async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
     install_test_session_application(&host);
     let mut projection =
         crate::host::worker_resolver::test_support::empty_frozen_projection_for_snapshot(
-            host.local_workspace(),
+            host.run_assembly.local_workspace(),
             session_environment(
                 awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
                 serde_json::json!({}),
@@ -250,6 +258,7 @@ async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
         .await
         .unwrap();
     let ctx = host
+        .run_assembly
         .ctx_for_snapshot("a2a-io-only", Some("remote-agent"), Some(snapshot.clone()))
         .await
         .expect("R1 A2A context");
@@ -267,7 +276,7 @@ async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
 
     let mut projection =
         crate::host::worker_resolver::test_support::empty_frozen_projection_for_snapshot(
-            host.local_workspace(),
+            host.run_assembly.local_workspace(),
             session_environment(
                 awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
                 serde_json::json!({}),
@@ -299,6 +308,7 @@ async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
             },
         );
     let error = match host
+        .run_assembly
         .ctx_for_snapshot("a2a-with-mount", Some("remote-agent"), Some(snapshot))
         .await
     {
@@ -330,7 +340,7 @@ async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
         .build();
     let mut projection =
         crate::host::worker_resolver::test_support::empty_frozen_projection_for_snapshot(
-            host.local_workspace(),
+            host.run_assembly.local_workspace(),
             session_environment(
                 awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
                 serde_json::json!({}),
@@ -343,6 +353,7 @@ async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
         .await
         .unwrap();
     let ctx = host
+        .run_assembly
         .ctx_for_snapshot("a2a-native-fallback", Some("mixed-agent"), Some(mixed))
         .await
         .expect("R3 mixed candidate context");
@@ -386,14 +397,17 @@ async fn session_event_dispatch_uses_the_explicit_persisted_trace_source() {
     };
 
     let ordinary = host
+        .run_assembly
         .prepare_dispatch(activation())
         .with_traceparent(Some(AMBIENT.into()))
         .expect("T1 ordinary ambient source");
     let recovered_present = host
+        .run_assembly
         .prepare_dispatch(activation())
         .with_traceparent(Some(PERSISTED.into()))
         .expect("T2 persisted source");
     let recovered_absent = host
+        .run_assembly
         .prepare_dispatch(activation())
         .with_traceparent(None)
         .expect("T3 persisted absence");
@@ -523,9 +537,9 @@ async fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope
         );
 
         let dispatch = if root_decorator {
-            host.prepare_dispatch(activation).fresh()
+            host.run_assembly.prepare_dispatch(activation).fresh()
         } else {
-            host.prepare_dispatch(activation).extension()
+            host.run_assembly.prepare_dispatch(activation).extension()
         }
         .unwrap_or_else(|error| panic!("{rule} decorate durable dispatch: {error}"));
         let carried = dispatch
@@ -620,6 +634,7 @@ async fn durable_dispatch_freezes_the_delegation_publication_closure() {
     );
 
     let dispatch = host
+        .run_assembly
         .prepare_dispatch(activation)
         .fresh()
         .expect("A1 admission");
@@ -659,6 +674,7 @@ async fn durable_dispatch_marks_only_a_prepared_root_session_for_worker_realizat
     );
 
     let dispatch = host
+        .run_assembly
         .prepare_dispatch(activation)
         .fresh()
         .expect("decorate prepared Session dispatch");
@@ -695,6 +711,7 @@ async fn thread_extension_dispatch_reuses_frozen_inputs_without_session_admissio
     );
 
     let dispatch = host
+        .run_assembly
         .prepare_dispatch(activation)
         .extension()
         .expect("decorate Outcome-owned ordinary Run");
@@ -807,7 +824,8 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
         awaken_runtime_contract::resolved::ModelBinding::new("host", "anonymous", "native"),
     );
     assert_eq!(
-        host.inference_plaintext_holder(&activation(anonymous, Vec::new()))
+        host.run_assembly
+            .inference_plaintext_holder(&activation(anonymous, Vec::new()))
             .unwrap(),
         None,
         "R1"
@@ -822,13 +840,16 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
         "R2"
     );
     assert_eq!(
-        host.inference_plaintext_holder(&native_activation).unwrap(),
+        host.run_assembly
+            .inference_plaintext_holder(&native_activation)
+            .unwrap(),
         awaken_dispatch_execution::placement::self_hosted_inference_holder(&native_activation)
             .unwrap(),
         "the public cold-start decision and Host fallback must remain identical"
     );
     assert_eq!(
-        host.inference_plaintext_holder(&activation(candidate("acp", "acp:codex"), Vec::new()))
+        host.run_assembly
+            .inference_plaintext_holder(&activation(candidate("acp", "acp:codex"), Vec::new()))
             .unwrap()
             .unwrap()
             .boundary,
@@ -869,11 +890,12 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
         "R8"
     );
     assert!(
-        host.inference_plaintext_holder(&activation(
-            candidate("native", "native"),
-            vec![candidate("acp", "acp:codex")],
-        ))
-        .is_err(),
+        host.run_assembly
+            .inference_plaintext_holder(&activation(
+                candidate("native", "native"),
+                vec![candidate("acp", "acp:codex")],
+            ))
+            .is_err(),
         "R4"
     );
     let platform_holder = awaken_runtime_contract::PlaintextHolder::new(
@@ -895,16 +917,18 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
         Some(platform_holder.clone()),
         "R5"
     );
-    host.install_environment_projection(
-        &platform_activation.thread_id.0,
-        &session_environment(
-            awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
-            serde_json::json!({}),
-        ),
-    )
-    .expect("install a prepared self-hosted Environment profile");
+    host.run_assembly
+        .install_environment_projection(
+            &platform_activation.thread_id.0,
+            &session_environment(
+                awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
+                serde_json::json!({}),
+            ),
+        )
+        .expect("install a prepared self-hosted Environment profile");
     assert_eq!(
-        host.inference_plaintext_holder(&platform_activation)
+        host.run_assembly
+            .inference_plaintext_holder(&platform_activation)
             .unwrap(),
         Some(platform_holder),
         "R6"
@@ -920,10 +944,12 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
         .build()
         .expect("validated Host dependencies");
     conflicting_host
+        .run_assembly
         .install_environment_projection("cold-thread", &conflicting_environment)
         .expect("replace the prepared Environment profile");
     assert!(
         conflicting_host
+            .run_assembly
             .inference_plaintext_holder(&native_activation)
             .is_err(),
         "R7"
@@ -984,11 +1010,15 @@ async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
         .install_complete_test_session(
             &first_managed,
             thread,
-            bare_session("assistant", first.local_workspace()),
+            bare_session("assistant", first.run_assembly.local_workspace()),
         )
         .await
         .expect("install first complete Session projection");
-    let first_ctx = first.ctx_for(thread, None).await.expect("first session");
+    let first_ctx = first
+        .run_assembly
+        .ctx_for(thread, None)
+        .await
+        .expect("first session");
     let handle = first_ctx
         .env
         .as_ref()
@@ -1045,6 +1075,7 @@ async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
         awaken_session_realization::session_environment::SessionEnvironmentAdoptionDisposition::Ready,
     );
     let replacement_ctx = replacement
+        .run_assembly
         .ctx_for(thread, None)
         .await
         .expect("replacement session");
@@ -1076,11 +1107,12 @@ async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
     install_complete_test_session_for_realization(
         &managed,
         "t-resident-adoption",
-        bare_session("assistant", host.local_workspace()),
+        bare_session("assistant", host.run_assembly.local_workspace()),
     )
     .await
     .expect("install resident complete Session projection");
     let resident = host
+        .run_assembly
         .ctx_for("t-resident-adoption", None)
         .await
         .expect("resident session");
@@ -1106,6 +1138,7 @@ async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         awaken_session_realization::session_environment::SessionEnvironmentAdoptionDisposition::Ready,
     );
     let reused = host
+        .run_assembly
         .ctx_for("t-resident-adoption", None)
         .await
         .expect("the exact resident sandbox is idempotently accepted");
@@ -1181,11 +1214,12 @@ async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
     install_complete_test_session_for_realization(
         &managed,
         "t-retained-adoption",
-        bare_session("assistant", host.local_workspace()),
+        bare_session("assistant", host.run_assembly.local_workspace()),
     )
     .await
     .expect("install retained complete Session projection");
     let original = host
+        .run_assembly
         .ctx_for("t-retained-adoption", None)
         .await
         .expect("initial session");
@@ -1253,6 +1287,7 @@ async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         awaken_session_realization::session_environment::SessionEnvironmentAdoptionDisposition::Ready,
     );
     let rebuilt = host
+        .run_assembly
         .ctx_for("t-retained-adoption", None)
         .await
         .expect("the exact retained sandbox rebuilds the runtime context");
@@ -1266,7 +1301,9 @@ async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         retained_handle
     );
     assert_eq!(
-        host.session_environment_handle("t-retained-adoption").await,
+        host.run_assembly
+            .session_environment_handle("t-retained-adoption")
+            .await,
         Some(retained_handle)
     );
 }

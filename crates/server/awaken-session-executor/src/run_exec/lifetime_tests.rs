@@ -419,7 +419,8 @@ async fn artifact_decorator_holds_same_owner_until_real_publication_finishes() {
                 )
                 .into_session_environment(),
             );
-            host.install_test_resident_session_environment("lifetime-thread", environment);
+            host.run_assembly
+                .install_test_resident_session_environment("lifetime-thread", environment);
             let path = storage
                 .path()
                 .join("lifetime-thread")
@@ -431,7 +432,7 @@ async fn artifact_decorator_holds_same_owner_until_real_publication_finishes() {
             let owner = host.realization_executor.effects().artifacts().clone();
             let weak_owner = Arc::downgrade(&owner);
             let weak_slots = Arc::downgrade(&host.installed_sessions);
-            let workspace = host.thread_workspace("lifetime-thread");
+            let workspace = host.run_assembly.thread_workspace("lifetime-thread");
             let probe = Arc::new(AttemptProbe::new(false, fails));
             let executor =
                 ArtifactHarvestAttemptExecutor::new(probe.clone(), Arc::downgrade(&owner));
@@ -524,7 +525,7 @@ async fn abandoning_the_original_attempt_drops_both_decorator_owners_and_inner_f
             inner,
             Arc::downgrade(&host.installed_sessions),
             "lifetime-thread",
-            host.clock(),
+            host.run_assembly.clock(),
         );
         let mut running = start(&executor, is_resume);
         entered(&probe, &mut running).await;

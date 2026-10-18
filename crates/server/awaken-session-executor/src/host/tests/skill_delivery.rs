@@ -331,11 +331,15 @@ async fn direct_on_tool_use_brain_skill_adapter_keeps_the_environment_absent() {
     .build()
     .expect("validated Host dependencies");
     let thread = "direct-deferred-brain";
-    host.install_environment_projection(thread, &on_tool_use_environment())
+    host.run_assembly
+        .install_environment_projection(thread, &on_tool_use_environment())
         .unwrap();
-    let deferred: Arc<dyn awaken_tool_contract::tool::ToolExecutor> = Arc::new(
-        crate::lazy_sandbox::DeferredSandboxExecutor::new(Arc::downgrade(&host), thread),
-    );
+    let deferred: Arc<dyn awaken_tool_contract::tool::ToolExecutor> =
+        Arc::new(crate::lazy_sandbox::DeferredSandboxExecutor::new(
+            Arc::downgrade(&host.installed_sessions),
+            Arc::downgrade(&host.realization_executor),
+            thread,
+        ));
     host.installed_sessions.update(thread, |slot| {
         slot.replace_frozen_with(|next| {
             next.tools = Some(
@@ -431,7 +435,7 @@ async fn managed_session_ignores_unbound_host_skill_sources() {
         .create(
             awaken_skill_store::SkillDefinition {
                 id: durable.skill_id.clone(),
-                workspace_id: host.local_workspace().into(),
+                workspace_id: host.run_assembly.local_workspace().into(),
                 display_title: None,
                 latest_version: durable.version,
                 last_version: durable.version,
@@ -443,16 +447,20 @@ async fn managed_session_ignores_unbound_host_skill_sources() {
         .expect("durable Skill store configured")
         .expect("cache unbound Skill version");
     assert_eq!(
-        host.tools.skills.managed_ids_in(host.local_workspace()),
+        host.tools
+            .skills
+            .managed_ids_in(host.run_assembly.local_workspace()),
         vec!["cached".to_string()],
         "A1/C4 proves the live catalog contains an otherwise advertisable Skill"
     );
     install_test_session_application(&host);
     install_test_dispatch_runtime(&host)
+        .host
+        .run_assembly
         .install_test_session_init(
             "managed-no-frozen-skill",
             SessionInit {
-                workspace_id: host.local_workspace().into(),
+                workspace_id: host.run_assembly.local_workspace().into(),
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
                 tools: Some(
@@ -479,6 +487,7 @@ async fn managed_session_ignores_unbound_host_skill_sources() {
         .unwrap();
 
     let context = host
+        .run_assembly
         .ctx_for("managed-no-frozen-skill", Some("assistant"))
         .await
         .expect("A1 builds from the empty frozen Skill projection");
@@ -541,7 +550,7 @@ async fn on_tool_use_runtime_hand_call_materializes_before_tool_execution() {
             &managed,
             "deferred-runtime-hand",
             SessionInit {
-                workspace_id: host.local_workspace().into(),
+                workspace_id: host.run_assembly.local_workspace().into(),
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
                 tools: None,
@@ -628,6 +637,7 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
     .expect("prepare exact bound Skill on lazy Session");
 
     let provisional = host
+        .run_assembly
         .ctx_for_session_coordination("deferred-managed-filesystem-skill", Some("assistant"))
         .await
         .expect("L9 provisional reservation context");
@@ -666,6 +676,7 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
     );
 
     let executable = host
+        .run_assembly
         .ctx_for_snapshot(
             "deferred-managed-filesystem-skill",
             Some("assistant"),
@@ -783,6 +794,8 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         .expect("installed Sessions")
         .unwrap();
     managed
+        .host
+        .run_assembly
         .apply_session_inputs(
             "deferred-managed-filesystem-skill",
             &resource_transition(
@@ -896,6 +909,7 @@ async fn on_tool_use_legacy_delivered_filesystem_skill_forces_an_eager_environme
         .expect("L8 cold legacy projection");
 
     let context = host
+        .run_assembly
         .ctx_for("deferred-legacy-delivered-skill", Some("assistant"))
         .await
         .expect("L8 context");

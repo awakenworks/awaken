@@ -521,7 +521,10 @@ mod tests {
             &authorities.memory_queries()
         ));
         assert!(Arc::ptr_eq(
-            &host.skill_store().expect("Host Skill authority"),
+            &host
+                .run_assembly()
+                .skill_store()
+                .expect("Host Skill authority"),
             &authorities.skill_store()
         ));
         assert!(Arc::ptr_eq(

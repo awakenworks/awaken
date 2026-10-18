@@ -312,7 +312,7 @@ impl ManagedSessionRootFixture {
                 Arc::new(
                     awaken_session_application::SessionApplicationBuilder::fixture(
                         runtime,
-                        Arc::new(managed.clone()),
+                        managed.host.run_assembly.clone(),
                         self.persistence
                             .lock()
                             .unwrap()
@@ -586,14 +586,14 @@ impl ManagedSessionRootFixture {
         // adopt. Both modes carry the same Store-read snapshot, and the tested
         // Run remains the only owner of new physical Environment I/O.
         awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-            managed,
+            &*managed.host.run_assembly,
             thread,
             projection.clone(),
             awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
         )
         .await?;
         awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-            managed,
+            &*managed.host.run_assembly,
             thread,
             projection.clone(),
             awaken_session_realization_contract::SessionProjectionInstallMode::Realization {

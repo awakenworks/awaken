@@ -71,22 +71,22 @@ async fn install_complete_memory_test_session(
         initial_branch: None,
         initial_commit: None,
     }]);
-    let mut init = bare_session(agent, managed.host.local_workspace());
+    let mut init = bare_session(agent, managed.host.run_assembly.local_workspace());
     init.resources = resources.clone();
     let projection = roots
         .install_complete_test_session(managed, thread, init)
         .await
         .expect("real Root before Memory fixture projection");
     let manifest = crate::session_resource::SessionResourceManifest::at_revision(
-        managed.host.local_workspace(),
+        managed.host.run_assembly.local_workspace(),
         projection.resource_revision,
         resources.clone(),
     );
     awaken_session_execution_contract::EnvironmentRuntime::apply_session_inputs(
-        managed,
+        &*managed.host.run_assembly,
         thread,
         &resource_transition(
-            managed.host.local_workspace(),
+            managed.host.run_assembly.local_workspace(),
             0,
             Default::default(),
             projection.resource_revision,
@@ -249,6 +249,7 @@ async fn generated_compaction_config_survives_claimed_rebuild() {
     let _managed = install_test_dispatch_runtime(&host);
 
     let provisional = host
+        .run_assembly
         .ctx_for_session_coordination("durable-compact-config", Some("assistant"))
         .await
         .expect("C7 reservation context");
@@ -279,6 +280,7 @@ async fn generated_compaction_config_survives_claimed_rebuild() {
         .await
         .expect("installed Sessions");
     let executable = host
+        .run_assembly
         .ctx_for_snapshot(
             "durable-compact-config",
             Some("assistant"),
@@ -331,7 +333,7 @@ async fn published_compact_plugin_is_installed_from_the_immutable_agent() {
     // plugin override. The same existing snapshot compiler supplies the pin.
     let mut projection =
         crate::host::worker_resolver::test_support::empty_frozen_projection_for_snapshot(
-            host.local_workspace(),
+            host.run_assembly.local_workspace(),
             session_environment(
                 awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
                 serde_json::json!({}),
@@ -467,7 +469,7 @@ async fn memory_written_in_one_thread_is_recalled_and_used_in_another() {
         );
         assert_eq!(
             roots.repository.owner(&root.session_id).await.unwrap(),
-            host.local_workspace(),
+            host.run_assembly.local_workspace(),
             "F1 actual Scope"
         );
         assert_eq!(
@@ -508,7 +510,7 @@ async fn memory_written_in_one_thread_is_recalled_and_used_in_another() {
         admitted,
         "F2 exact whole-Root replay"
     );
-    let mut changed = bare_session("memory-agent", host.local_workspace());
+    let mut changed = bare_session("memory-agent", host.run_assembly.local_workspace());
     changed.resources = Default::default();
     assert!(
         roots
@@ -591,7 +593,8 @@ async fn claimed_child_terminal_memory_uses_parent_physical_commit_partition() {
         )
         .await;
         if warm {
-            host.ctx_for(&parent, Some("memory-agent"))
+            host.run_assembly
+                .ctx_for(&parent, Some("memory-agent"))
                 .await
                 .expect("R2 warm parent context");
         } else {
@@ -632,7 +635,7 @@ async fn claimed_child_terminal_memory_uses_parent_physical_commit_partition() {
             .expect("enqueue exact child");
         let claimed = dispatch
             .claim(
-                host.dispatch_owner(),
+                host.run_assembly.dispatch_owner(),
                 awaken_dispatch_execution::DEFAULT_LEASE_MS,
                 &Default::default(),
             )
@@ -640,7 +643,8 @@ async fn claimed_child_terminal_memory_uses_parent_physical_commit_partition() {
             .expect("claim child")
             .expect("child is runnable");
         assert!(
-            host.dispatched_memory_terminal_observer(&claimed.request, parent_commit.clone())
+            host.run_assembly
+                .dispatched_memory_terminal_observer(&claimed.request, parent_commit.clone())
                 .await
                 .expect("resolve exact child terminal observer")
                 .is_some(),
@@ -652,7 +656,7 @@ async fn claimed_child_terminal_memory_uses_parent_physical_commit_partition() {
             .await
             .expect("resolve child through one factory");
         let (_, state) = worker
-            .drive_claimed(claimed, host.clock())
+            .drive_claimed(claimed, host.run_assembly.clock())
             .await
             .expect("drive child")
             .expect("child settles");
@@ -776,7 +780,7 @@ async fn reopening_a_direct_terminal_thread_recovers_a_missing_extraction_outbox
         .expect("committed Thread reader");
     let thread_id = ThreadId(thread.into());
     let run = commit.latest_run(&thread_id).expect("terminal run record");
-    let error = match second.ctx_for(thread, None).await {
+    let error = match second.run_assembly.ctx_for(thread, None).await {
         Ok(_) => panic!("D2/E2 legacy root must remain fail-closed"),
         Err(error) => error,
     };
@@ -870,7 +874,7 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
     let managed = managed_with_resource_source(host.clone());
     let init = |agent: &str, store: Option<&str>| {
         SessionInit {
-            workspace_id: host.local_workspace().into(),
+            workspace_id: host.run_assembly.local_workspace().into(),
             agent_id: agent.into(),
             delegate_ids: Vec::new(),
             tools: None,
@@ -1057,7 +1061,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     }]);
     let managed = managed_with_resource_source(host.clone());
     let init = SessionInit {
-        workspace_id: host.local_workspace().into(),
+        workspace_id: host.run_assembly.local_workspace().into(),
         agent_id: "agent".into(),
         delegate_ids: Vec::new(),
         tools: None,
@@ -1128,15 +1132,21 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     // mount, byte rewind, head refresh, or physical Environment replacement.
     // This differs from a Memory→same-Memory no-op: its previous input is absent.
     let unacknowledged = resource_transition(
-        host.local_workspace(),
+        host.run_assembly.local_workspace(),
         0,
         crate::session_resource::ResolvedSessionResources::default(),
         1,
         resources.clone(),
     );
     let (left, right) = tokio::join!(
-        managed.apply_session_inputs("memory-replay", &unacknowledged),
-        managed.apply_session_inputs("memory-replay", &unacknowledged),
+        managed
+            .host
+            .run_assembly
+            .apply_session_inputs("memory-replay", &unacknowledged),
+        managed
+            .host
+            .run_assembly
+            .apply_session_inputs("memory-replay", &unacknowledged),
     );
     left.expect("original command replay after local completion");
     right.expect("concurrent original command replay after local completion");
@@ -1159,20 +1169,28 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         })
         .expect("installed Sessions");
     let replay = resource_transition(
-        host.local_workspace(),
+        host.run_assembly.local_workspace(),
         0,
         resources.clone(),
         1,
         resources.clone(),
     );
     managed
+        .host
+        .run_assembly
         .apply_session_inputs("memory-replay", &replay)
         .await
         .expect("cold durable generation installs beside the adopted Environment");
 
     let (left, right) = tokio::join!(
-        managed.apply_session_inputs("memory-replay", &replay),
-        managed.apply_session_inputs("memory-replay", &replay),
+        managed
+            .host
+            .run_assembly
+            .apply_session_inputs("memory-replay", &replay),
+        managed
+            .host
+            .run_assembly
+            .apply_session_inputs("memory-replay", &replay),
     );
     left.expect("first exact durable replay");
     right.expect("concurrent exact durable replay");
@@ -1247,9 +1265,17 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         // Memory pin; compare the completed projection, not command equality.
         for previous in [resources.clone(), changed.clone()] {
             let error = managed
+                .host
+                .run_assembly
                 .apply_session_inputs(
                     "memory-replay",
-                    &resource_transition(host.local_workspace(), 1, previous, 2, changed.clone()),
+                    &resource_transition(
+                        host.run_assembly.local_workspace(),
+                        1,
+                        previous,
+                        2,
+                        changed.clone(),
+                    ),
                 )
                 .await
                 .expect_err(field);
@@ -1274,10 +1300,12 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         );
     }
     let error = managed
+        .host
+        .run_assembly
         .apply_session_inputs(
             "memory-replay",
             &resource_transition(
-                host.local_workspace(),
+                host.run_assembly.local_workspace(),
                 1,
                 resources.clone(),
                 2,
@@ -1337,7 +1365,7 @@ async fn published_agent_memory_config_can_disable_recall_and_extraction() {
         .await
         .unwrap();
     let managed = managed_with_resource_source(host.clone());
-    let mut init = bare_session("agent", host.local_workspace());
+    let mut init = bare_session("agent", host.run_assembly.local_workspace());
     init.resources = effective_resources(vec![TestInput {
         kind: "memory_store".into(),
         id: store.clone(),

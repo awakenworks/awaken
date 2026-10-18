@@ -5,13 +5,12 @@
 //! publication selection belong to their existing owners. Checkpoint and source
 //! release effects execute on RealizationExecutor after these participants drain.
 
-use crate::ManagedHost;
 use crate::host_error::to_run_error;
 use awaken_session_configuration_contract::mcp as session_mcp;
 use awaken_session_types::RunError;
 use std::time::Duration;
 
-impl ManagedHost {
+impl crate::RunAssembly {
     pub(crate) async fn quiesce_environment_continuation(
         &self,
         thread: &str,
@@ -21,15 +20,13 @@ impl ManagedHost {
         generation: &awaken_session_state_contract::SandboxGeneration,
         expected_mcp_generations: &[session_mcp::McpGenerationRef],
     ) -> Result<awaken_session_state_contract::QuiescenceReceipt, RunError> {
-        let sessions = &self.host.installed_sessions;
+        let sessions = &self.installed_sessions;
         let realization_view = sessions.realizations();
-        self.host
-            .realization_executor
+        self.realization_executor
             .continuation_effect_fence(thread, operation)?;
         let _realization = sessions.acquire_realization_with(thread, |_| ()).await.0;
         let _lifecycle = realization_view.lock_lifecycle(thread).await?;
         let environment = self
-            .host
             .realization_executor
             .environments()
             .resident_checkpoint_source_environment(
@@ -62,9 +59,7 @@ impl ManagedHost {
                     })
                     .unwrap_or(false))
             },
-            self.host
-                .thread_reads
-                .delegated_runs_under_lifecycle(thread),
+            self.thread_reads.delegated_runs_under_lifecycle(thread),
         )
         .await
         .map_err(to_run_error)?
@@ -74,11 +69,9 @@ impl ManagedHost {
                 "Primary or delegated work still owns the Session environment",
             ));
         }
-        self.host
-            .realization_executor
+        self.realization_executor
             .continuation_effect_fence(thread, operation)?;
         if !self
-            .host
             .resources
             .memory
             .background()
@@ -90,16 +83,13 @@ impl ManagedHost {
                 "Shared-Environment background work did not reach a durable boundary",
             ));
         }
-        self.host
-            .realization_executor
+        self.realization_executor
             .continuation_effect_fence(thread, operation)?;
         let mcp = self
-            .host
             .drain_mcp_projections(thread, expected_mcp_generations)
             .await
             .map_err(to_run_error)?;
-        self.host
-            .realization_executor
+        self.realization_executor
             .continuation_effect_fence(thread, operation)?;
         environment.lifecycle().quiesce().await.map_err(|error| {
             RunError::unavailable_classified(
@@ -107,8 +97,7 @@ impl ManagedHost {
                 error.to_string(),
             )
         })?;
-        self.host
-            .realization_executor
+        self.realization_executor
             .continuation_effect_fence(thread, operation)?;
         sessions.modify_run(thread, |run| run.context = None);
         Ok(awaken_session_state_contract::QuiescenceReceipt {

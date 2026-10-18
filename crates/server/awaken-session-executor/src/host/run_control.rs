@@ -18,6 +18,75 @@ use awaken_runtime_contract::control::LiveCommand;
 use awaken_runtime_contract::resume::ResumeResult;
 use std::sync::Arc;
 
+/// Cancels one durable Run of this process's dispatch owner and signals the
+/// resident attempt serving it. Selected once from the topology: only a
+/// process running the local claimer over a Coordinator dispatch owner can
+/// cancel; any other process refuses with the same classification as before.
+#[derive(Clone)]
+pub(crate) struct DurableRunCancellation {
+    installed_sessions: Arc<crate::InstalledSessions>,
+    control: DurableCancellationControl,
+}
+
+#[derive(Clone)]
+enum DurableCancellationControl {
+    /// No local claimer runs here: durable dispatch is not enabled.
+    NoLocalClaimer,
+    /// A local claimer runs, but no Coordinator dispatch owner is local.
+    NoDispatchOwner,
+    Owner {
+        owner: Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>,
+        claimer: awaken_dispatch_execution::DispatchHint,
+    },
+}
+
+impl DurableRunCancellation {
+    pub(crate) fn new(
+        installed_sessions: Arc<crate::InstalledSessions>,
+        runs_local_claimer: bool,
+        owner: Option<Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>>,
+        claimer: awaken_dispatch_execution::DispatchHint,
+    ) -> Self {
+        let control = match (runs_local_claimer, owner) {
+            (false, _) => DurableCancellationControl::NoLocalClaimer,
+            (true, None) => DurableCancellationControl::NoDispatchOwner,
+            (true, Some(owner)) => DurableCancellationControl::Owner { owner, claimer },
+        };
+        Self {
+            installed_sessions,
+            control,
+        }
+    }
+
+    /// Persist cancellation of `run` and signal the resident attempt of `thread`.
+    pub(crate) async fn cancel(&self, thread: &str, run: &str) -> Result<(), HostError> {
+        let resident = self
+            .installed_sessions
+            .read_run(thread, |run| run.context.clone())
+            .flatten();
+        let (owner, claimer) = match &self.control {
+            DurableCancellationControl::NoLocalClaimer => {
+                return Err(HostError::bad_request(
+                    "durable dispatch not enabled (set typed durable ingress to run the pool)",
+                ));
+            }
+            DurableCancellationControl::NoDispatchOwner => {
+                return Err(HostError::internal(
+                    "operation requires a Coordinator dispatch owner",
+                ));
+            }
+            DurableCancellationControl::Owner { owner, claimer } => (owner, claimer),
+        };
+        DurableRunControl::new(owner.clone(), Some(claimer.clone()))
+            .cancel(
+                &RunId(run.to_owned()),
+                resident.as_ref().map(|ctx| ctx.live_control()),
+            )
+            .await
+            .map_err(HostError::from)
+    }
+}
+
 /// Control only the current local attempt; no durable queue mutation authority is required.
 pub(crate) struct LiveAttemptControl {
     runtime: Arc<Runtime>,
@@ -153,6 +222,24 @@ fn manual_resume_input(
 }
 
 impl SharedHost {
+    /// Cancel every run currently backed by a process-local Session projection.
+    ///
+    /// Worker authority loss must stop in-flight tool processes before local
+    /// realization revocation detaches their process bindings. Otherwise a native
+    /// process can continue writing after this Worker has dropped authority.
+    pub async fn interrupt_all_session_runs(&self) -> usize {
+        let session_ids = self.installed_sessions.session_ids();
+        let mut interrupted = 0;
+        for session_id in session_ids {
+            match self.interrupt(&session_id).await {
+                Ok(()) => interrupted += 1,
+                Err(error) => tracing::warn!(session_id, %error,
+                    "Worker could not request Session interruption before local revocation"),
+            }
+        }
+        interrupted
+    }
+
     fn resident_context(&self, thread: &str) -> Option<Arc<SessionCtx>> {
         self.installed_sessions
             .read_run(thread, |run| run.context.clone())
@@ -163,20 +250,18 @@ impl SharedHost {
     pub(crate) fn durable_run_control(&self) -> Result<DurableRunControl, HostError> {
         Ok(DurableRunControl::new(
             self.coordinator_dispatch()?,
-            self.dispatch.dispatch_pool.get().cloned(),
+            self.dispatch
+                .dispatch_pool
+                .get()
+                .map(|_| self.dispatch.hint.clone()),
         ))
     }
 
     pub async fn cancel_durable(&self, thread: &str, run: &str) -> Result<(), HostError> {
-        let resident = self.resident_context(thread);
-        self.dispatch_pool_or_err()?;
-        self.durable_run_control()?
-            .cancel(
-                &RunId(run.to_owned()),
-                resident.as_ref().map(|ctx| ctx.live_control()),
-            )
+        self.run_assembly
+            .durable_run_cancellation
+            .cancel(thread, run)
             .await
-            .map_err(HostError::from)
     }
 
     /// Wake the resident Run's current attempt. A cold Session has no
@@ -233,7 +318,7 @@ impl SharedHost {
     }
 
     pub async fn stage_decision(&self, thread: &str, allow: bool) -> Result<String, HostError> {
-        let ctx = self.ctx_for(thread, None).await?;
+        let ctx = self.run_assembly.ctx_for(thread, None).await?;
         self.dispatch_pool_or_err()?;
         let thread = ThreadId(thread.to_owned());
         let awaiting = ctx
@@ -253,7 +338,7 @@ impl SharedHost {
         thread: &str,
         text: String,
     ) -> Result<String, HostError> {
-        let ctx = self.ctx_for(thread, None).await?;
+        let ctx = self.run_assembly.ctx_for(thread, None).await?;
         self.dispatch_pool_or_err()?;
         let thread = ThreadId(thread.to_owned());
         let awaiting = ctx
@@ -335,5 +420,96 @@ mod tests {
             "selected local interruption reselected the successor registration for the same Run ID"
         );
         assert_eq!(original.is_cancelled(), originally_registered);
+    }
+}
+
+#[cfg(test)]
+mod durable_cancellation_tests {
+    use super::*;
+    use awaken_dispatch_contract::DispatchEnqueue as _;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct CountingWake(AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl awaken_dispatch_execution::WakeSignal for CountingWake {
+        async fn publish(&self) -> Result<(), awaken_dispatch_contract::DispatchError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn wait(&self) {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn durable_cancellation_follows_the_selected_topology() {
+        // Decision table: causes = the topology selected at construction and
+        // whether the Run is queued; effects = the cancellation outcome and
+        // the hint published to the local claimer.
+        // | Rule | local claimer | dispatch owner | Run queued | outcome                 | hints |
+        // | D1   | no            | any            | any        | BadRequest (no claimer) | 0     |
+        // | D2   | yes           | no             | any        | Internal (no owner)     | 0     |
+        // | D3   | yes           | yes            | no         | BadRequest (not found)  | 0     |
+        // | D4   | yes           | yes            | yes        | persisted               | 1     |
+        let installed = Arc::new(crate::InstalledSessions::default());
+        let owner: Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch> = Arc::new(
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
+                .await
+                .unwrap(),
+        );
+        let cases: [(&str, bool, bool, bool); 5] = [
+            ("D1", false, true, true),
+            ("D1", false, false, false),
+            ("D2", true, false, true),
+            ("D3", true, true, false),
+            ("D4", true, true, true),
+        ];
+        for (rule, claimer, has_owner, queued) in cases {
+            let wake = Arc::new(CountingWake::default());
+            let run = format!("cancel-{rule}-{claimer}-{has_owner}-{queued}");
+            if queued && has_owner {
+                owner
+                    .enqueue(awaken_dispatch_contract::RunDispatch::new(
+                        crate::host::test_activation("cancel-session", &run),
+                    ))
+                    .await
+                    .unwrap();
+            }
+            let cancellation = DurableRunCancellation::new(
+                installed.clone(),
+                claimer,
+                has_owner.then(|| owner.clone()),
+                awaken_dispatch_execution::DispatchHint::new(wake.clone()),
+            );
+            let outcome = cancellation.cancel("cancel-session", &run).await;
+            let hints = wake.0.load(Ordering::SeqCst);
+            match rule {
+                "D1" => {
+                    let error = outcome.unwrap_err();
+                    assert_eq!(error.kind, crate::HostErrorKind::BadRequest, "{rule}");
+                    assert!(error.message.contains("not enabled"), "{rule}");
+                    assert_eq!(hints, 0, "{rule}");
+                }
+                "D2" => {
+                    let error = outcome.unwrap_err();
+                    assert_eq!(error.kind, crate::HostErrorKind::Internal, "{rule}");
+                    assert!(error.message.contains("dispatch owner"), "{rule}");
+                    assert_eq!(hints, 0, "{rule}");
+                }
+                "D3" => {
+                    let error = outcome.unwrap_err();
+                    assert_eq!(error.kind, crate::HostErrorKind::BadRequest, "{rule}");
+                    assert!(error.message.contains("not found"), "{rule}");
+                    assert_eq!(hints, 0, "{rule}");
+                }
+                _ => {
+                    outcome.unwrap();
+                    assert_eq!(hints, 1, "{rule}");
+                }
+            }
+        }
     }
 }

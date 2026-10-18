@@ -555,6 +555,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         .expect("validated Host dependencies"),
     );
     let ctx = host
+        .run_assembly
         .ctx_for(&parent.0, None)
         .await
         .expect("parent Session context");
@@ -1340,6 +1341,7 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
             .expect("validated Host dependencies"),
         );
         let ctx = host
+            .run_assembly
             .ctx_for(&parent.0, None)
             .await
             .expect("primary Session context");
@@ -1610,7 +1612,11 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
 
     let root = ThreadId("budget-resume-root".into());
     let root_run = RunId("budget-resume-root-run".into());
-    let root_ctx = host.ctx_for(&root.0, None).await.expect("B1 root context");
+    let root_ctx = host
+        .run_assembly
+        .ctx_for(&root.0, None)
+        .await
+        .expect("B1 root context");
     let snapshot_id = root_ctx.config.id.0.clone();
     let catalog_fingerprint = root_ctx.config.resolved_spec.catalog_fingerprint.0.clone();
     let budget_ticket = |thread: &ThreadId, run: &RunId| {
@@ -1702,7 +1708,8 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
     let parent = ThreadId("budget-resume-child-parent".into());
     let child = ThreadId("budget-resume-child".into());
     let child_run = RunId("budget-resume-child-run".into());
-    host.ctx_for(&parent.0, None)
+    host.run_assembly
+        .ctx_for(&parent.0, None)
         .await
         .expect("B2 parent context");
     let child_commit = host
