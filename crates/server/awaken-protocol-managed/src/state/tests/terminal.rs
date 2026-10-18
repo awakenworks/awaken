@@ -766,7 +766,7 @@ async fn interrupt_selector_targets_one_thread_or_all_non_terminal_threads() {
         "I6 no duplicate effect"
     );
 
-    <awaken_protocol_managed_testkit::CoordinatedRuntimeFake as awaken_session_execution_contract::ThreadReadRuntime>::archive_session_thread(
+    <awaken_protocol_managed_testkit::CoordinatedRuntimeFake as awaken_session_execution_contract::CoordinationRuntime>::archive_session_thread(
         &runtime,
         &SessionId::from(&session.id),
         child_id,
@@ -1971,6 +1971,18 @@ impl awaken_session_execution_contract::CoordinationRuntime for EndSessionFailer
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
+    /// Commit the absorbing archive disposition on one logical child Thread
+    /// through its parent Session partition. Implementations must not mutate a
+    /// protocol cache or open child-named storage.
+    async fn archive_session_thread(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        thread_id: &str,
+    ) -> Result<(), awaken_session_types::RunError> {
+        awaken_session_execution_contract::NeutralRuntime
+            .archive_session_thread(session_id, thread_id)
+            .await
+    }
 }
 
 #[async_trait::async_trait]
@@ -2166,18 +2178,6 @@ impl awaken_session_execution_contract::ThreadReadRuntime for EndSessionFailer {
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
-    /// Commit the absorbing archive disposition on one logical child Thread
-    /// through its parent Session partition. Implementations must not mutate a
-    /// protocol cache or open child-named storage.
-    async fn archive_session_thread(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        thread_id: &str,
-    ) -> Result<(), awaken_session_types::RunError> {
-        awaken_session_execution_contract::NeutralRuntime
-            .archive_session_thread(session_id, thread_id)
-            .await
-    }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.

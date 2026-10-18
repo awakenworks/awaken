@@ -694,7 +694,7 @@ fn assemble_session_plane(
                 resources.resource_application.purge_scheduler(),
             );
     let mut builder = awaken_session_application::SessionApplicationBuilder::new(
-        managed_host.clone(),
+        awaken_session_executor::session_execution_roles(&managed_host),
         managed_host.clone(),
         host.session_persistence
             .take()

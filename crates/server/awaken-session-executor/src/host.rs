@@ -12,7 +12,7 @@
 //! It names no protocol vocabulary: outcomes are the neutral [`RunState`] plus an
 //! optional [`Pending`]; each adapter maps those onto its own wire shape.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 #[cfg(test)]
@@ -23,7 +23,7 @@ use awaken_agent_contract::agent::awaiting::{
 };
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
-use awaken_agent_contract::agent::state::{Scope, StateKey, Store};
+use awaken_agent_contract::agent::state::{StateKey, Store};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
@@ -39,13 +39,12 @@ use awaken_dispatch_contract::RunDispatch;
 use awaken_dispatch_contract::{Inbox, PendingInput, SubmitOptions};
 use awaken_runtime::{DirectAttemptDriver, Runtime};
 use awaken_runtime_contract::CancellationToken;
-use awaken_runtime_contract::RunDelegations;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
-use awaken_session_application_contract::{DelegatedRun, Pending};
+use awaken_session_application_contract::Pending;
 use awaken_tool_contract::tool::ToolOutput;
 
 use awaken_ext_compact::CompactConfig;
@@ -125,8 +124,9 @@ mod session_ctx;
 pub(crate) mod tests;
 #[cfg(test)]
 pub(crate) use tests::fixtures::{
-    MemoryHostModel, SelectedOnly, test_resource_execution, test_resource_validator,
-    test_upstream_authority, with_test_memory_mounter, with_test_resource_validation,
+    MemoryHostModel, SelectedOnly, session_executor, test_resource_execution,
+    test_resource_validator, test_upstream_authority, with_test_memory_mounter,
+    with_test_resource_validation,
 };
 mod types;
 #[cfg(test)]
@@ -202,7 +202,11 @@ pub struct SharedHost {
     /// adapters the attempt executors share.
     pub(crate) exec: capability::AttemptBackends,
     /// The realization executor and the sandbox providers it realizes through.
-    pub(crate) realization_executor: crate::realization_executor::RealizationExecutor,
+    pub(crate) realization_executor: Arc<crate::realization_executor::RealizationExecutor>,
+    /// Committed Thread readback over the selected authority.
+    pub(crate) thread_reads: Arc<crate::ThreadReads>,
+    /// The live inboxes of the attempts this process owns.
+    pub(crate) live_inboxes: Arc<crate::LiveInboxes>,
     /// Tool, Skill, plugin, and gate offering installed on every thread.
     pub(crate) tools: capability::ToolOffering,
     /// Resources-context ports: Memory, Files, Artifacts.

@@ -418,7 +418,8 @@ async fn automatic_memory_requires_one_explicit_existing_binding() {
             }
         }
         assert!(
-            host.commit_for_read(&thread)
+            host.thread_reads
+                .commit_for_read(&thread)
                 .await
                 .unwrap()
                 .authoritative_latest_run(&ThreadId(thread.clone()))

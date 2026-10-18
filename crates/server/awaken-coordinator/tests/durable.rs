@@ -100,10 +100,11 @@ async fn awaiting_run_survives_a_restart_and_resumes_from_the_durable_store() {
             .await
             .unwrap();
         assert!(
-            host.is_awaiting(thread).await,
+            host.thread_reads().is_awaiting(thread).await,
             "the run should await on the client-executed tool"
         );
         let pending = host
+            .thread_reads()
             .pending_tool(thread)
             .await
             .expect("the durable pending-tool read succeeds")
@@ -112,6 +113,7 @@ async fn awaiting_run_survives_a_restart_and_resumes_from_the_durable_store() {
         assert!(pending.client_executed);
         assert!(
             !host
+                .thread_reads()
                 .committed_messages(thread)
                 .await
                 .expect("committed history remains readable")
@@ -124,11 +126,12 @@ async fn awaiting_run_survives_a_restart_and_resumes_from_the_durable_store() {
     // 2. A brand-new host over the SAME store directory recovers the awaiting run.
     let host = host_over(&dir, "replacement").await;
     assert!(
-        host.is_awaiting(thread).await,
+        host.thread_reads().is_awaiting(thread).await,
         "the rebuilt host recovers the awaiting run from the durable store"
     );
     assert!(
         !host
+            .thread_reads()
             .committed_messages(thread)
             .await
             .expect("committed history remains readable")
@@ -149,6 +152,7 @@ async fn awaiting_run_survives_a_restart_and_resumes_from_the_durable_store() {
     .unwrap();
 
     let history = host
+        .thread_reads()
         .committed_messages(thread)
         .await
         .expect("committed history remains readable");
@@ -184,14 +188,14 @@ async fn in_memory_host_does_not_recover_an_awaiting_run_across_a_rebuild() {
         host.run(None, thread, vec![user("u1", "hi")])
             .await
             .unwrap();
-        assert!(host.is_awaiting(thread).await);
+        assert!(host.thread_reads().is_awaiting(thread).await);
     }
 
     let host = host_with_client_tool(
         build_unmounted_dependencies(Arc::new(CustomToolModel), "custom").await,
     );
     assert!(
-        !host.is_awaiting(thread).await,
+        !host.thread_reads().is_awaiting(thread).await,
         "an in-memory host starts clean; the awaiting run does not survive"
     );
 }

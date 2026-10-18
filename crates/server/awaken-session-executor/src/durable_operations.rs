@@ -81,7 +81,8 @@ impl DurableRunOperations for SharedHost {
     }
 
     async fn messages(&self, thread: &str) -> Result<Vec<Message>, ApplicationError> {
-        self.committed_messages(thread)
+        self.thread_reads
+            .committed_messages(thread)
             .await
             .map_err(application_error)
     }

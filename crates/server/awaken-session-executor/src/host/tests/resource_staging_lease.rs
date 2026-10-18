@@ -1,5 +1,6 @@
 // @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 use super::*;
+#[cfg(target_os = "linux")]
 use awaken_session_realization::peers::EnvironmentPeer as _;
 use awaken_session_execution_contract::RealizationRuntime as _;
 

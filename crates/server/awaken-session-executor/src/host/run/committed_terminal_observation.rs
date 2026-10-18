@@ -77,7 +77,7 @@ impl SharedHost {
             return Ok(false);
         }
         let thread_id = ThreadId(thread.to_string());
-        let commit = self.commit_for_read(thread).await?;
+        let commit = self.thread_reads.commit_for_read(thread).await?;
         let Some(latest) = commit.latest_run(&thread_id) else {
             return Ok(false);
         };

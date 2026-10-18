@@ -3,7 +3,14 @@
 //! derive coordination links from one Thread-owned source.
 
 use super::*;
+use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_agent_contract::agent::delegation::DelegationId;
+use awaken_agent_contract::agent::message::{Id as MessageId, Role};
+use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_agent_contract::agent::state::{StateKey as _, Store};
+use awaken_ext_builtin_tools::{AgentMessageReceipt, SendMessageArgs};
+use awaken_session_execution_contract::{CoordinatedThreadLink, CoordinatedThreadTarget};
+use awaken_tool_contract::tool_batch::ToolBatch;
 
 #[derive(Clone)]
 struct PendingCoordinationCall {
@@ -13,13 +20,13 @@ struct PendingCoordinationCall {
     args: SendMessageArgs,
 }
 
-pub(in crate::host) struct CommittedCoordinationProjection {
-    pub(in crate::host) links: Vec<CoordinatedThreadLink>,
-    pub(in crate::host) cleanup_thread_ids: Vec<ThreadId>,
+pub(crate) struct CommittedCoordinationProjection {
+    pub(crate) links: Vec<CoordinatedThreadLink>,
+    pub(crate) cleanup_thread_ids: Vec<ThreadId>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(in crate::host) enum CoordinationReadPurpose {
+pub(crate) enum CoordinationReadPurpose {
     Relationships,
     TerminalScope,
 }
@@ -65,7 +72,7 @@ fn include_spawn_cleanup_target(
     }
 }
 
-pub(in crate::host) fn project_committed_coordination(
+pub(crate) fn project_committed_coordination(
     session_id: &awaken_session_types::SessionId,
     advisor_model: Option<&str>,
     committed: &RunRecoverySnapshot,
@@ -207,7 +214,7 @@ pub(in crate::host) fn project_committed_coordination(
     })
 }
 
-pub(super) fn apply_lifecycle_latest_runs(
+pub(crate) fn apply_lifecycle_latest_runs(
     links: &mut [CoordinatedThreadLink],
     events: &[awaken_agent_contract::RunLifecycleEvent],
     store_cursor: u64,
@@ -375,6 +382,10 @@ fn apply_active_batch_coordination_results(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_agent_contract::agent::content::ContentBlock;
+    use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+    use awaken_agent_contract::agent::run::RunState;
+    use awaken_agent_contract::thread::read::lifecycle::RunLifecycleCursor;
     use awaken_runtime_contract::llm::ToolCall;
     use awaken_tool_contract::tool::{ToolOutput, ToolRecoveryPolicy};
 

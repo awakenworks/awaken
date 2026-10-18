@@ -11,11 +11,12 @@ mod projection;
 mod quiescence;
 mod step_verification;
 
-pub(super) use projection::session_thread_reply_result;
-use projection::{
-    StepCommitExpectation, client_result_for_ticket, delegation_registries_from_commands,
+use crate::thread_reads::{
     delegation_registry_from_snapshot, project_delegated_runs, recovery_ticket,
+    visible_pending_tool,
 };
+pub(super) use projection::session_thread_reply_result;
+use projection::{StepCommitExpectation, client_result_for_ticket};
 use step_verification::{message_prefix_before_exact_inputs, verify_committed_step};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,7 +106,7 @@ impl SharedHost {
                 thread_ids.push(thread_id);
             }
         }
-        let commit = self.commit_for_read(session_id).await?;
+        let commit = self.thread_reads.commit_for_read(session_id).await?;
         let mut tickets = Vec::new();
         for thread_id in thread_ids {
             let Some(latest) = commit
@@ -137,194 +138,13 @@ impl SharedHost {
         Ok(tickets)
     }
 
-    /// All messages committed on `thread` so far (the source of history). Empty
-    /// when the thread has not run yet. Opens only the configured commit adapter,
-    /// so a fresh process can read durable history without provisioning the
-    /// Session execution environment (ADR-0039).
-    /// True when the durable store already holds `thread` — WITHOUT building a
-    /// session context (the layout probe lives with the commit boundary in
-    /// [`crate::store`]).
-    pub async fn has_durable_thread(&self, thread: &str) -> Result<bool, HostError> {
-        self.authority.durable_thread_exists(thread).await
-    }
-
-    pub async fn committed_messages(&self, thread: &str) -> Result<Vec<Message>, HostError> {
-        let commit = self.commit_for_read(thread).await?;
-        commit
-            .authoritative_committed_messages(&ThreadId(thread.to_string()))
-            .await
-            .map_err(HostError::internal)
-    }
-
-    /// Rebuild the neutral child-Run projection from the one durable owner:
-    /// `RunDelegations` entries committed in each parent Run's ordinary state log.
-    pub async fn delegated_runs(&self, thread: &str) -> Result<Vec<DelegatedRun>, HostError> {
-        self.delegated_run_snapshot(thread)
-            .await
-            .map(|snapshot| snapshot.delegated_runs)
-    }
-
-    /// Continuation-only read that reuses the lifecycle guard already held by
-    /// the caller instead of recursively acquiring it through `commit_for_read`.
-    pub(crate) async fn delegated_runs_under_lifecycle(
-        &self,
-        thread: &str,
-    ) -> Result<Vec<DelegatedRun>, HostError> {
-        let commit = self.commit_for_read_under_lifecycle(thread).await?;
-        self.delegated_run_snapshot_from_commit(thread, commit)
-            .await
-            .map(|(snapshot, _)| snapshot.delegated_runs)
-    }
-
-    async fn delegated_run_snapshot(
-        &self,
-        thread: &str,
-    ) -> Result<awaken_session_application_contract::DelegatedRunSnapshot, HostError> {
-        let commit = self.commit_for_read(thread).await?;
-        self.delegated_run_snapshot_from_commit(thread, commit)
-            .await
-            .map(|(snapshot, _)| snapshot)
-    }
-
-    async fn delegated_run_snapshot_from_commit(
-        &self,
-        thread: &str,
-        commit: Arc<crate::store::HostCommit>,
-    ) -> Result<
-        (
-            awaken_session_application_contract::DelegatedRunSnapshot,
-            Option<RunRecoverySnapshot>,
-        ),
-        HostError,
-    > {
-        let root_thread = ThreadId(thread.to_string());
-        let recovery = match commit
-            .authoritative_latest_run(&root_thread)
-            .await
-            .map_err(HostError::internal)?
-        {
-            Some(run) => Some(
-                commit
-                    .recovery_snapshot(&root_thread, &run.id)
-                    .await
-                    .map_err(|error| HostError::internal(error.to_string()))?,
-            ),
-            None => None,
-        };
-        let commands = recovery
-            .as_ref()
-            .map(|snapshot| snapshot.state.as_slice())
-            .unwrap_or_default();
-        let watermark = u64::try_from(commands.len())
-            .map_err(|_| HostError::internal("delegation watermark exceeds u64"))?;
-        let runtime_commit_cursor = recovery
-            .as_ref()
-            .map_or(0, |snapshot| snapshot.store_cursor);
-        let mut projected = Vec::new();
-        for registry in delegation_registries_from_commands(commands, None)? {
-            projected.extend(project_delegated_runs(Some(&registry)));
-        }
-        projected.sort_by(|left, right| left.run_id.0.cmp(&right.run_id.0));
-        projected.dedup_by(|left, right| left.run_id == right.run_id);
-        Ok((
-            awaken_session_application_contract::DelegatedRunSnapshot {
-                delegated_runs: projected,
-                coordinated_thread_ids: Vec::new(),
-                watermark,
-                runtime_commit_cursor,
-            },
-            recovery,
-        ))
-    }
-
-    /// True when `thread` has a run awaiting a decision.
-    pub async fn is_awaiting(&self, thread: &str) -> bool {
-        let commit = match self.commit_for_read(thread).await {
-            Ok(commit) => commit,
-            Err(_) => return false,
-        };
-        match commit
-            .open_wait_for_thread(&ThreadId(thread.to_string()))
-            .await
-        {
-            Ok(waiting) => waiting.is_some(),
-            Err(error) => {
-                tracing::warn!(thread, %error, "failed to read authoritative awaiting position");
-                true
-            }
-        }
-    }
-
-    /// The tool an awaiting run on `thread` is awaiting on, if any.
-    pub async fn pending_tool(&self, thread: &str) -> Result<Option<Pending>, HostError> {
-        self.pending_tool_in_partition(thread, &ThreadId(thread.to_string()))
-            .await
-    }
-
-    /// Canonical pending-tool projection for one logical Thread in a Session
-    /// partition. Both root and child reads use this implementation so local
-    /// durable stores never infer a physical database from a child id.
-    pub(crate) async fn pending_tool_in_partition(
-        &self,
-        partition: &str,
-        logical_thread: &ThreadId,
-    ) -> Result<Option<Pending>, HostError> {
-        // The committed ticket is the lifecycle authority. In particular, an
-        // observer on another protocol can see the committed tool-call message
-        // before the foreground caller reaches `finish_step` and publishes its
-        // process-local step projection; consulting that projection here would briefly
-        // misclassify a client-executed call as an ordinary executed tool. Open
-        // committed truth before rebuilding derived context: a malformed A2A
-        // continuation must not hide its still-authoritative input/auth wait and
-        // change a legitimate resume into a client-id error.
-        let commit = self.commit_for_read(partition).await?;
-        let (run_id, ticket) = match commit.open_wait_for_thread(logical_thread).await {
-            Ok(Some(waiting)) => waiting,
-            Ok(None) => return Ok(None),
-            Err(error) => {
-                return Err(HostError::internal(format!(
-                    "failed to read authoritative pending tool for {}: {error}",
-                    logical_thread.0
-                )));
-            }
-        };
-        if matches!(ticket.target(), AwaitTarget::RemoteInput { .. }) {
-            return Ok(Pending::from_resume_ticket(&ticket));
-        }
-        if ticket.reason() == AwaitReason::Delegation {
-            let snapshot = match commit.recovery_snapshot(logical_thread, &run_id).await {
-                Ok(snapshot) => snapshot,
-                Err(error) => {
-                    tracing::warn!(thread = %logical_thread.0, %error, "failed to read pending delegation snapshot");
-                    return Err(HostError::internal(format!(
-                        "failed to read pending delegation snapshot: {error}"
-                    )));
-                }
-            };
-            let registry = match delegation_registry_from_snapshot(&snapshot, &run_id) {
-                Ok(registry) => registry,
-                Err(error) => {
-                    tracing::warn!(thread = %logical_thread.0, %error, "failed to rebuild pending delegation registry");
-                    return Err(HostError::internal(format!(
-                        "failed to rebuild pending delegation registry: {error}"
-                    )));
-                }
-            };
-            return self
-                .visible_pending_tool(commit.as_ref(), &ticket, registry.as_ref())
-                .await;
-        }
-        self.visible_pending_tool(commit.as_ref(), &ticket, None)
-            .await
-    }
-
     /// Interrupt the run in flight on `thread`, if any: cancel its token so the
     /// runtime observes it at the next step boundary and ends the run `Cancelled`
     /// (an outcome loop then reports `interrupted`). A no-op when nothing is
     /// running. Never blocks on the run's own execution lock — it only touches the
     /// separate cancel slot — so it works from a concurrent request.
     pub async fn interrupt(&self, thread: &str) -> Result<(), HostError> {
-        self.interrupt_with_commit_read(thread, self.commit_for_read(thread))
+        self.interrupt_with_commit_read(thread, self.thread_reads.commit_for_read(thread))
             .await
     }
 
@@ -950,7 +770,7 @@ impl SharedHost {
                 "a coordinated child Thread must differ from its parent Session",
             ));
         }
-        let commit = self.commit_for_read(session_id).await?;
+        let commit = self.thread_reads.commit_for_read(session_id).await?;
         let child_runs = self
             .executable_session_dispatch_runs(session_id, child_thread_id, &commit)
             .await?;
@@ -1019,7 +839,10 @@ impl SharedHost {
                 "budget resume requires a newly admitted Session activity",
             ));
         }
-        let commit = self.commit_for_read(delivery.session_id.as_str()).await?;
+        let commit = self
+            .thread_reads
+            .commit_for_read(delivery.session_id.as_str())
+            .await?;
         let snapshot = commit
             .recovery_snapshot(&delivery.thread_id, &delivery.run_id)
             .await
@@ -1190,13 +1013,12 @@ impl SharedHost {
         // child's own Run service. The user never resumes the child directly.
         if ticket.reason() == AwaitReason::Delegation {
             let registry = delegation_registry_from_snapshot(&awaiting_snapshot, &run_id)?;
-            let child = self
-                .authoritative_child_ticket(
-                    ctx.commit.as_ref(),
-                    registry.as_ref(),
-                    ticket.call_id(),
-                )
-                .await?;
+            let child = crate::thread_reads::authoritative_child_ticket(
+                ctx.commit.as_ref(),
+                registry.as_ref(),
+                ticket.call_id(),
+            )
+            .await?;
             let result = if let Some(child_ticket) = child {
                 self.check_pending(&child_ticket, tool_use_id, resume.wants_client())?;
                 match resume {
@@ -1372,56 +1194,6 @@ impl SharedHost {
         .await
     }
 
-    /// Join the parent-thread delegation relationship with the child thread's
-    /// authoritative recovery snapshot. Child Runs intentionally own a separate
-    /// thread, so the parent's consistent snapshot cannot contain their ticket.
-    async fn authoritative_child_ticket(
-        &self,
-        commit: &HostCommit,
-        registry: Option<&awaken_agent_contract::agent::delegation::DelegationRegistry>,
-        parent_call_id: Option<&str>,
-    ) -> Result<Option<ResumeTicket>, HostError> {
-        let Some(child_run_id) = parent_call_id.and_then(|parent_call_id| {
-            registry?
-                .delegations()
-                .find(|relationship| relationship.parent_call_id == parent_call_id)
-                .map(|relationship| relationship.child_run_id.clone())
-        }) else {
-            return Ok(None);
-        };
-        let child_thread_id = ThreadId(child_run_id.0.clone());
-        let committed = commit
-            .recovery_snapshot(&child_thread_id, &child_run_id)
-            .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
-        recovery_ticket(&committed, &child_run_id)
-    }
-
-    /// Project the one externally answerable tool from a committed ticket. A
-    /// delegation owns a child ticket when the child is local; remote A2A may
-    /// instead expose opaque input through the parent ticket. Both foreground
-    /// completion and later protocol reads must use this same classification.
-    async fn visible_pending_tool(
-        &self,
-        commit: &HostCommit,
-        ticket: &ResumeTicket,
-        registry: Option<&awaken_agent_contract::agent::delegation::DelegationRegistry>,
-    ) -> Result<Option<Pending>, HostError> {
-        if ticket.reason() != AwaitReason::Delegation {
-            return Ok(Pending::from_resume_ticket(ticket));
-        }
-        let visible_child = self
-            .authoritative_child_ticket(commit, registry, ticket.call_id())
-            .await?;
-        match visible_child {
-            Some(child) => Ok(Pending::from_resume_ticket(&child)),
-            None => Ok(Pending::from_resume_ticket(ticket).map(|mut pending| {
-                pending.client_executed = true;
-                pending
-            })),
-        }
-    }
-
     /// Project the step's delta and publish it to the thread hub. Awaiting
     /// position remains exclusively owned by committed Thread truth.
     async fn finish_step(
@@ -1455,12 +1227,8 @@ impl SharedHost {
                     // interaction request. The protocol still addresses the
                     // parent session; it never obtains a bypass around the
                     // parent-child relationship.
-                    self.visible_pending_tool(
-                        ctx.commit.as_ref(),
-                        &ticket,
-                        delegation_registry.as_ref(),
-                    )
-                    .await?
+                    visible_pending_tool(ctx.commit.as_ref(), &ticket, delegation_registry.as_ref())
+                        .await?
                 } else {
                     None
                 };

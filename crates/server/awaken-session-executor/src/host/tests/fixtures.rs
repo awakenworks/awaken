@@ -996,3 +996,11 @@ pub(crate) async fn with_test_memory_history(
         awaken_resource_contract::MemoryExecutionContent::new(backend.clone());
     (dependencies, backend)
 }
+
+/// The Session application's executor over one test Host, with every role
+/// served by the component that owns it.
+pub(crate) fn session_executor(
+    host: &Arc<SharedHost>,
+) -> awaken_session_execution_contract::SessionExecutor {
+    crate::session_execution_roles(&crate::ManagedHost::new(host.clone())).into()
+}

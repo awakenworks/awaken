@@ -11,30 +11,17 @@
 use super::*;
 
 mod agent_message_source;
-mod committed_links;
-mod reads;
 mod session_reply_receipt;
-
-use committed_links::apply_lifecycle_latest_runs;
-pub(in crate::host) use committed_links::{
-    CoordinationReadPurpose, project_committed_coordination,
-};
 
 pub(super) use session_reply_receipt::{SessionReplyReceipt, validate_awaiting_tool_authority};
 
-use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
-use awaken_agent_contract::thread::read::lifecycle::{RunLifecycleCursor, RunLifecycleFeed as _};
 use awaken_dispatch_execution::coordinated_run_activation;
-use awaken_ext_builtin_tools::{AgentMessageReceipt, SendMessageArgs};
 use awaken_dispatch_contract::Outbox as _;
 use awaken_session_execution_contract::{
-    CoordinatedRunCommand, CoordinatedRunIntent, CoordinatedThreadKind, CoordinatedThreadLink,
-    CoordinatedThreadTarget, SessionAgentMessageCommand, SessionAgentMessageReceipt,
-    SessionAgentReportContinuation, coordinated_thread_closed,
+    CoordinatedRunCommand, CoordinatedRunIntent, CoordinatedThreadKind, CoordinatedThreadTarget,
+    SessionAgentMessageCommand, SessionAgentMessageReceipt, SessionAgentReportContinuation,
+    coordinated_thread_closed,
 };
-use awaken_tool_contract::tool_batch::ToolBatch;
-
-const MAX_LIFECYCLE_PAGE: usize = 1_024;
 
 fn reply_dispatch_activity(
     dispatch: Option<&awaken_dispatch_contract::DispatchSummary>,
@@ -90,6 +77,7 @@ async fn finish_coordinated_child_admission(
     // dispatch and waits for settlement. No relation flag, terminal cache,
     // or process-local lock is introduced.
     let archived = host
+        .thread_reads
         .session_thread_disposition(session_id, &thread_id)
         .await?
         == awaken_agent_contract::ThreadDisposition::Archived;
@@ -139,7 +127,10 @@ impl SharedHost {
                 "a coordinated child Thread must differ from its parent Session",
             ));
         }
-        let commit = self.commit_for_read(command.session_id.as_str()).await?;
+        let commit = self
+            .thread_reads
+            .commit_for_read(command.session_id.as_str())
+            .await?;
         let snapshot = commit
             .recovery_snapshot(&thread_id, &command.expected_run_id)
             .await
@@ -230,7 +221,7 @@ impl SharedHost {
         thread_id: &ThreadId,
         kind: CoordinatedThreadKind,
     ) -> Result<bool, HostError> {
-        let commit = self.commit_for_read(session_id).await?;
+        let commit = self.thread_reads.commit_for_read(session_id).await?;
         Ok(commit
             .authoritative_latest_run(thread_id)
             .await
@@ -398,7 +389,10 @@ impl SharedHost {
                 "Session child capacity must be greater than zero",
             ));
         }
-        let links = self.coordinated_threads(session_id, None).await?;
+        let links = self
+            .thread_reads
+            .coordinated_threads(session_id, None)
+            .await?;
         if intent == CoordinatedRunIntent::FollowUp {
             let Some(link) = links.iter().find(|link| {
                 link.thread_id == *thread_id
@@ -427,6 +421,7 @@ impl SharedHost {
                 }
                 CoordinatedThreadTarget::Agent { .. }
                     if self
+                        .thread_reads
                         .session_thread_disposition(session_id, &link.thread_id)
                         .await?
                         == awaken_agent_contract::ThreadDisposition::Archived =>
@@ -632,6 +627,7 @@ impl SharedHost {
         command: &SessionAgentMessageCommand,
     ) -> Result<SessionAgentMessageCommand, HostError> {
         let snapshot = self
+            .thread_reads
             .session_thread_run_recovery_snapshot(
                 command.session_id.as_str(),
                 &command.source_thread_id,
@@ -716,6 +712,7 @@ impl SharedHost {
             ));
         }
         let already_archived = self
+            .thread_reads
             .session_thread_disposition(session_id, thread_id)
             .await?
             == awaken_agent_contract::ThreadDisposition::Archived;
@@ -753,7 +750,7 @@ impl SharedHost {
             }
         }
 
-        let commit = self.commit_for_read(session_id).await?;
+        let commit = self.thread_reads.commit_for_read(session_id).await?;
         if commit
             .authoritative_latest_run(thread_id)
             .await
@@ -797,6 +794,7 @@ impl SharedHost {
                 // Concurrent/retried archive may have committed after our read.
                 // Re-read the one durable cell before surfacing the commit race.
                 if self
+                    .thread_reads
                     .session_thread_disposition(session_id, thread_id)
                     .await?
                     == awaken_agent_contract::ThreadDisposition::Archived

@@ -142,6 +142,9 @@ pub trait ManagedStateFixture: Sized {
     async fn new_with_mcp<R>(runtime: R) -> Self
     where
         R: CompleteSessionRuntime + McpAttachmentRealizer + 'static;
+
+    /// A Managed state over executor roles selected from separate owners.
+    async fn with_roles(roles: awaken_session_execution_contract::SessionExecutionRoles) -> Self;
 }
 
 impl ManagedStateFixture for ManagedState {
@@ -173,11 +176,23 @@ impl ManagedStateFixture for ManagedState {
             std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         )
     }
+
+    async fn with_roles(roles: awaken_session_execution_contract::SessionExecutionRoles) -> Self {
+        let clock = awaken_time::system_clock();
+        managed_state_from_parts(
+            roles,
+            None,
+            ephemeral_session_repository().await,
+            environment_fixture(clock.clone()).execution,
+            clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    }
 }
 
 /// Explicit bootstrap of a test Session application over supplied ports.
 pub fn managed_state_from_parts(
-    runtime: Arc<dyn awaken_session_execution_contract::CompleteSessionRuntime>,
+    runtime: impl Into<awaken_session_execution_contract::SessionExecutor>,
     mcp: Option<Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
     sessions: Arc<dyn awaken_session_repository_contract::SessionStore>,
     environments: Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
@@ -201,7 +216,7 @@ pub fn managed_state_from_parts(
 /// Build only the application so a protocol unit-test crate retains its own
 /// ManagedState type rather than importing the non-test copy through testkit.
 pub fn session_application_from_parts(
-    runtime: Arc<dyn awaken_session_execution_contract::CompleteSessionRuntime>,
+    runtime: impl Into<awaken_session_execution_contract::SessionExecutor>,
     mcp: Option<Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
     sessions: Arc<dyn awaken_session_repository_contract::SessionStore>,
     environments: Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,

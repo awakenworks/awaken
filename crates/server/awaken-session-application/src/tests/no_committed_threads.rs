@@ -53,16 +53,6 @@ macro_rules! no_committed_threads {
                 Ok(awaken_agent_contract::ThreadDisposition::Active)
             }
 
-            async fn archive_session_thread(
-                &self,
-                _session_id: &awaken_session_types::SessionId,
-                _thread_id: &str,
-            ) -> Result<(), RunError> {
-                Err(RunError::unavailable(
-                    "durable coordinated Thread archive is unsupported",
-                ))
-            }
-
             async fn committed_outcome_projection(
                 &self,
                 _thread: &str,

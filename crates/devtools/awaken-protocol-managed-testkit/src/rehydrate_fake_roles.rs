@@ -719,23 +719,6 @@ impl awaken_session_execution_contract::ThreadReadRuntime for RehydrateFake {
             .unwrap_or_default())
     }
 
-    async fn archive_session_thread(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        thread_id: &str,
-    ) -> Result<(), RunError> {
-        let key = (session_id.to_string(), thread_id.to_string());
-        let mut dispositions = self.disposition_by_thread.lock().unwrap();
-        if dispositions.get(&key) != Some(&awaken_agent_contract::ThreadDisposition::Archived) {
-            dispositions.insert(
-                key.clone(),
-                awaken_agent_contract::ThreadDisposition::Archived,
-            );
-            self.archive_commits.lock().unwrap().push(key);
-        }
-        Ok(())
-    }
-
     async fn committed_outcome_projection(
         &self,
         thread: &str,

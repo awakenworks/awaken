@@ -107,6 +107,7 @@ async fn a_message_queued_mid_run_reaches_the_same_run() {
     h.wait_step_started().await;
     let inbox = h
         .host
+        .live_inboxes()
         .live_inbox(thread)
         .await
         .expect("an in-flight native Run opens a live inbox");
@@ -135,11 +136,12 @@ async fn a_message_queued_mid_run_reaches_the_same_run() {
     );
 
     // The attempt closed its inbox on the way out.
-    assert!(h.host.live_inbox(thread).await.is_none());
+    assert!(h.host.live_inboxes().live_inbox(thread).await.is_none());
 
     // The injected message is committed under the engine's Run-scoped inbox id.
     let committed = h
         .host
+        .thread_reads()
         .committed_messages(thread)
         .await
         .expect("committed history remains readable");
@@ -180,7 +182,12 @@ async fn a_message_the_cancelled_run_never_consumed_is_discarded() {
     // Queue while Step 1 is gated, then cancel the Run instead of permitting
     // it: the run ends cancelled without ever reaching a drain boundary.
     h.wait_step_started().await;
-    let inbox = h.host.live_inbox(thread).await.expect("inbox open");
+    let inbox = h
+        .host
+        .live_inboxes()
+        .live_inbox(thread)
+        .await
+        .expect("inbox open");
     let _ = inbox.offer(user("q1", "Survivor."));
     h.host
         .interrupt(thread)
@@ -203,7 +210,7 @@ async fn a_message_the_cancelled_run_never_consumed_is_discarded() {
     );
 
     assert!(
-        h.host.live_inbox(thread).await.is_none(),
+        h.host.live_inboxes().live_inbox(thread).await.is_none(),
         "the cancelled attempt closed its inbox"
     );
     assert!(
@@ -240,6 +247,7 @@ async fn a_message_the_cancelled_run_never_consumed_is_discarded() {
     );
     let committed = h
         .host
+        .thread_reads()
         .committed_messages(thread)
         .await
         .expect("committed history remains readable");
