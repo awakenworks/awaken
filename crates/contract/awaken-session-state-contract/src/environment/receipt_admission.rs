@@ -97,6 +97,22 @@ impl SessionEnvironmentRejection {
     }
 }
 
+impl SessionEnvironmentTransitionError {
+    /// Whether the refused law may succeed once the Session moves on: a step
+    /// refusal keeps its own classification; evidence only the data law
+    /// judges (a mismatched receipt, an expired checkpoint, an invalid policy)
+    /// is final for the same evidence.
+    #[must_use]
+    pub const fn recovery_action(&self) -> SessionEnvironmentReceiptRecoveryAction {
+        match self {
+            Self::Rejected(rejection) => rejection.recovery_action(),
+            Self::ReceiptMismatch | Self::CheckpointExpired | Self::InvalidCheckpointPolicy(_) => {
+                SessionEnvironmentReceiptRecoveryAction::Reject
+            }
+        }
+    }
+}
+
 impl SessionEnvironmentReceiptError {
     #[must_use]
     pub const fn recovery_action(&self) -> SessionEnvironmentReceiptRecoveryAction {
