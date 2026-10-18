@@ -6,6 +6,7 @@
 //! best-effort live routes for each foreground Run.
 
 use super::*;
+use crate::host_error::ExecutorLock;
 #[cfg(test)]
 use awaken_dispatch_execution::placement::remote_worker_placement;
 #[cfg(test)]
@@ -35,7 +36,7 @@ impl crate::SessionRuns {
             .await?
             .messages
             .len();
-        let (settled, _waiter_guard) = self.completion.register(&run_id, stream_sink);
+        let (settled, _waiter_guard) = self.completion.register(&run_id, stream_sink)?;
         publish.await?;
         let state = self
             .await_settled_event(&ctx, &run_id, Some(&correlation_id), settled)
@@ -167,7 +168,7 @@ impl crate::SessionRuns {
         // settle the run before this caller is listening (no lost wakeup). The guard
         // removes the waiter if this future is dropped (client disconnect) before it
         // settles — held to the end of this method.
-        let (settled, _waiter_guard) = self.completion.register(&run_id, stream_sink);
+        let (settled, _waiter_guard) = self.completion.register(&run_id, stream_sink)?;
         let request = if associate_prepared_session {
             self.run_assembly.prepare_dispatch(activation).fresh()?
         } else {
@@ -221,7 +222,7 @@ impl crate::SessionRuns {
         let correlation_id = command.correlation_id.clone();
         // Register before append so a local pool cannot settle between input
         // publication and waiter installation.
-        let (settled, _waiter_guard) = self.completion.register(&run_id, None);
+        let (settled, _waiter_guard) = self.completion.register(&run_id, None)?;
         let input = durable_resume_input(command);
         if !ctx.delivery.is_durable() {
             return Err(HostError::internal(
@@ -402,7 +403,7 @@ where
     // The guard spans activation and the complete committed-truth wait. Dropping
     // the caller at either phase removes only this observation; Dispatch/Thread
     // authorities continue independently.
-    let (settled, _waiter_guard) = registry.register(run_id, stream_sink);
+    let (settled, _waiter_guard) = registry.register(run_id, stream_sink)?;
     let activation = activate().await?;
     if matches!(
         activation,
@@ -420,6 +421,17 @@ where
 /// neither is durable truth. Every exactly Thread-scoped observation is also
 /// published through the existing Thread hub, so a background child needs no
 /// completion registration.
+///
+/// The registry only notifies; committed Run truth decides. A poisoned
+/// registry therefore refuses new observations and stops notifying, and each
+/// already-registered waiter recovers through its bounded committed read:
+///
+/// | Rule | registry lock | operation            | effect |
+/// |---|---|---|---|
+/// | W1 | healthy  | register             | waiter installed before enqueue |
+/// | W2 | poisoned | register             | refused (`session_executor_lock_poisoned`), nothing enqueued |
+/// | W3 | healthy  | settle / live relay  | waiters woken / sinks fed |
+/// | W4 | poisoned | settle / live relay  | reported; waiters settle by committed read |
 pub(crate) struct CompletionRegistry {
     waiters: std::sync::Mutex<HashMap<String, Vec<ForegroundRegistration>>>,
     next_registration_id: std::sync::atomic::AtomicU64,
@@ -458,11 +470,14 @@ impl CompletionRegistry {
     /// receiver plus a [`WaiterGuard`] that removes the waiter if the caller's
     /// future is dropped before the run settles (e.g. a client disconnect), so an
     /// unwaited entry never lingers in the map.
+    ///
+    /// A poisoned registry refuses the observation before anything is
+    /// enqueued, so no foreground caller waits on a waiter nobody can settle.
     fn register(
         self: &Arc<Self>,
         run_id: &RunId,
         stream_sink: Option<Arc<dyn StreamSink>>,
-    ) -> (tokio::sync::oneshot::Receiver<RunState>, WaiterGuard) {
+    ) -> Result<(tokio::sync::oneshot::Receiver<RunState>, WaiterGuard), ExecutorLock> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let has_stream_sink = stream_sink.is_some();
         let registration_id = self
@@ -470,7 +485,7 @@ impl CompletionRegistry {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.waiters
             .lock()
-            .expect("completion registry poisoned")
+            .map_err(|_| ExecutorLock::CompletionRegistry)?
             .entry(run_id.0.clone())
             .or_default()
             .push(ForegroundRegistration {
@@ -489,7 +504,7 @@ impl CompletionRegistry {
             run_id: run_id.0.clone(),
             registration_id,
         };
-        (rx, guard)
+        Ok((rx, guard))
     }
 
     async fn route_observation(
@@ -502,15 +517,18 @@ impl CompletionRegistry {
                 crate::ThreadEvent::Live(observation.clone()),
             );
         }
-        let sinks = self
-            .waiters
-            .lock()
-            .expect("completion registry poisoned")
-            .get(&observation.event.run_id.0)
-            .into_iter()
-            .flat_map(|registrations| registrations.iter())
-            .filter_map(|registration| registration.stream_sink.clone())
-            .collect::<Vec<_>>();
+        let sinks = match self.waiters.lock() {
+            Ok(waiters) => waiters
+                .get(&observation.event.run_id.0)
+                .into_iter()
+                .flat_map(|registrations| registrations.iter())
+                .filter_map(|registration| registration.stream_sink.clone())
+                .collect::<Vec<_>>(),
+            Err(_) => {
+                completion_registry_poisoned("live observation not relayed");
+                return Ok(());
+            }
+        };
         tracing::trace!(
             run_id = %observation.event.run_id.0,
             matched = sinks.len(),
@@ -521,6 +539,14 @@ impl CompletionRegistry {
         }
         Ok(())
     }
+}
+
+fn completion_registry_poisoned(consequence: &'static str) {
+    tracing::error!(
+        code = crate::host_error::EXECUTOR_LOCK_POISONED_CODE,
+        consequence,
+        "foreground completion registry lock poisoned"
+    );
 }
 
 /// Removes a completion waiter on drop, so a foreground submit whose future is
@@ -561,12 +587,11 @@ impl Drop for WaiterGuard {
 
 impl CompletionSink for CompletionRegistry {
     fn settled(&self, run_id: &RunId, state: &RunState) {
-        if let Some(registrations) = self
-            .waiters
-            .lock()
-            .expect("completion registry poisoned")
-            .remove(&run_id.0)
-        {
+        let Ok(mut waiters) = self.waiters.lock() else {
+            completion_registry_poisoned("settlement not notified");
+            return;
+        };
+        if let Some(registrations) = waiters.remove(&run_id.0) {
             tracing::trace!(
                 run_id = %run_id.0,
                 observers = registrations.len(),

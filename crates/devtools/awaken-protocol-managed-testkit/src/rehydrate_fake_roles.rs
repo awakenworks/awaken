@@ -163,7 +163,10 @@ impl awaken_session_execution_contract::StreamingRunRuntime for RehydrateFake {
     /// Whether the thread's selected model accepts a system message after the
     /// conversation has started. Runtimes whose models do not support this can
     /// fail admission before the Managed adapter persists the inbound event.
-    async fn supports_mid_conversation_system(&self, thread: &str) -> bool {
+    async fn supports_mid_conversation_system(
+        &self,
+        thread: &str,
+    ) -> Result<bool, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .supports_mid_conversation_system(thread)
             .await
@@ -905,15 +908,17 @@ impl awaken_session_execution_contract::CapabilityRuntime for RehydrateFake {
     /// The advertised capability surface echoed in the session's agent object. The
     /// default reports nothing; a real host overrides it with its built-in tools,
     /// custom tools, skills, and delegate roster so the session enumerates what it does.
-    fn capabilities(&self) -> awaken_session_configuration_contract::AgentCapabilities {
+    fn capabilities(
+        &self,
+    ) -> Result<awaken_session_configuration_contract::AgentCapabilities, RunError> {
         awaken_session_execution_contract::NeutralRuntime.capabilities()
     }
 
     fn capabilities_for(
         &self,
         _thread: &str,
-    ) -> awaken_session_configuration_contract::AgentCapabilities {
-        awaken_session_configuration_contract::AgentCapabilities {
+    ) -> Result<awaken_session_configuration_contract::AgentCapabilities, RunError> {
+        Ok(awaken_session_configuration_contract::AgentCapabilities {
             delegates: self.delegate_ids.lock().unwrap().clone(),
             custom_tools: self
                 .custom_tools
@@ -927,7 +932,7 @@ impl awaken_session_execution_contract::CapabilityRuntime for RehydrateFake {
                 })
                 .collect(),
             ..Default::default()
-        }
+        })
     }
 }
 

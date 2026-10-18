@@ -73,9 +73,13 @@ async fn missing_terminal_work_preserves_successor(delayed: bool) {
             let session = session.clone();
             let original = original.clone();
             async move {
-                host.run_assembly
-                    .reconcile_terminal_cleanup_for_lease(control.as_ref(), &session, &original)
-                    .await
+                crate::application::reconcile_terminal_cleanup_for_test(
+                    &host.run_assembly,
+                    control.as_ref(),
+                    &session,
+                    &original,
+                )
+                .await
             }
         });
         tokio::time::timeout(
@@ -126,10 +130,14 @@ async fn missing_terminal_work_preserves_successor(delayed: bool) {
             .expect("join recovery")
             .expect("old terminal lookup was handled");
     } else {
-        host.run_assembly
-            .reconcile_terminal_cleanup_for_lease(control.as_ref(), &session, &original)
-            .await
-            .expect("C4 stale terminal lookup was handled");
+        crate::application::reconcile_terminal_cleanup_for_test(
+            &host.run_assembly,
+            control.as_ref(),
+            &session,
+            &original,
+        )
+        .await
+        .expect("C4 stale terminal lookup was handled");
     }
     let cancelled = token.is_cancelled();
     let retained = host
@@ -245,13 +253,13 @@ async fn missing_current_terminal_work_retires_original(renew: bool) {
         let control = control.clone();
         let original = original.clone();
         async move {
-            host.run_assembly
-                .reconcile_terminal_cleanup_for_lease(
-                    control.as_ref(),
-                    &SessionId::new(thread),
-                    &original,
-                )
-                .await
+            crate::application::reconcile_terminal_cleanup_for_test(
+                &host.run_assembly,
+                control.as_ref(),
+                &SessionId::new(thread),
+                &original,
+            )
+            .await
         }
     });
     tokio::time::timeout(
@@ -385,11 +393,14 @@ async fn completed_terminal_projection_not_found_cancels_its_original_real_run()
     control
         .terminal_work_not_found
         .store(true, Ordering::SeqCst);
-    let handled = host
-        .run_assembly
-        .reconcile_terminal_cleanup_for_lease(&control, &SessionId::new(thread), &original)
-        .await
-        .expect("C3 terminal absence was handled");
+    let handled = crate::application::reconcile_terminal_cleanup_for_test(
+        &host.run_assembly,
+        &control,
+        &SessionId::new(thread),
+        &original,
+    )
+    .await
+    .expect("C3 terminal absence was handled");
     let cancelled = token.is_cancelled();
     let retired = !host.run_assembly.installed_sessions.contains(thread);
     provider_gate.notify_one();
@@ -398,7 +409,11 @@ async fn completed_terminal_projection_not_found_cancels_its_original_real_run()
         .expect("original driver returned")
         .expect("join original driver")
         .expect("original driver committed its cancellation");
-    assert!(handled, "terminal absence is owned by the terminal fence");
+    assert_eq!(
+        handled,
+        awaken_session_realization_driver::TerminalReconciliation::Fenced,
+        "terminal absence is owned by the terminal fence"
+    );
     assert!(retired, "E1 the completed terminal projection is retired");
     assert!(
         cancelled,

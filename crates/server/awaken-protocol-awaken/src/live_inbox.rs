@@ -55,7 +55,8 @@ fn extension_error(error: LiveInboxApplicationError) -> ExtensionRejection {
         LiveInboxApplicationError::Edit(LiveInboxError::Inactive) => {
             (StatusCode::GONE, "invalid_request_error")
         }
-        LiveInboxApplicationError::AuthorityUnavailable { .. } => {
+        LiveInboxApplicationError::AuthorityUnavailable { .. }
+        | LiveInboxApplicationError::Edit(LiveInboxError::Unavailable) => {
             (StatusCode::INTERNAL_SERVER_ERROR, "api_error")
         }
     };
@@ -235,8 +236,9 @@ mod tests {
     fn live_inbox_error_decision_table_is_explicit() {
         // Cause/effect decision table: C1 missing/foreign Session or message ->
         // E1 404; C2 stale order -> E2 409; C3 inactive attempt -> E3 410; C4
-        // infrastructure unavailable -> E4 500. These terminal outcomes must not
-        // inherit Anthropic routing.
+        // infrastructure unavailable, including an unreadable live-inbox owner
+        // registry -> E4 500. These terminal outcomes must not inherit Anthropic
+        // routing.
         assert_eq!(
             extension_error(LiveInboxApplicationError::NotFound).0,
             StatusCode::NOT_FOUND
@@ -255,6 +257,11 @@ mod tests {
             })
             .0,
             StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(
+            extension_error(LiveInboxError::Unavailable.into()).0,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "C4 unreadable owner registry"
         );
     }
 

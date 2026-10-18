@@ -14,7 +14,7 @@ pub(super) fn session_recovery_delay(failure_streak: u32) -> std::time::Duration
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum SessionRecoveryTrigger {
+pub(crate) enum SessionRecoveryTrigger {
     Scheduled,
     ExternalWake,
 }
@@ -26,7 +26,7 @@ pub(super) const EXTERNAL_WAKE_COOLDOWN: std::time::Duration = std::time::Durati
 /// one Tokio Notify permit; this bounded delay lets the rest of that commit
 /// burst join the same next scan instead of turning every arrival into another
 /// scan of all Sessions.
-pub(super) fn external_wake_coalescing_delay(
+pub(crate) fn external_wake_coalescing_delay(
     scheduled_remaining: std::time::Duration,
     cooldown_remaining: std::time::Duration,
 ) -> std::time::Duration {
@@ -47,7 +47,7 @@ pub(super) fn external_wake_coalescing_delay(
 /// hint-driven scanning to at most half this supervisor's time however fast
 /// hints arrive, while the latency a later hint can inherit stays proportional
 /// to what a scan actually costs instead of a fixed second of wall clock.
-pub(super) fn next_external_wake_cooldown(
+pub(crate) fn next_external_wake_cooldown(
     trigger: SessionRecoveryTrigger,
     settled: usize,
     scan_elapsed: std::time::Duration,
@@ -63,7 +63,7 @@ pub(super) fn next_external_wake_cooldown(
 /// Select the next delay without allowing an early dependency hint to postpone
 /// an already-scheduled retry. The caller supplies the remaining duration from
 /// the existing single deadline; this function creates no second timer.
-pub(super) fn next_session_recovery_delay(
+pub(crate) fn next_session_recovery_delay(
     trigger: SessionRecoveryTrigger,
     existing_remaining: std::time::Duration,
     failure_streak: u32,

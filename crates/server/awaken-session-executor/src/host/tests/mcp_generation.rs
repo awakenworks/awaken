@@ -1214,7 +1214,8 @@ async fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epo
     let live = host_with_process_reaper().await;
     assert!(
         live.run_assembly
-            .mcp_generation_is_authorized_at(&generation, base + 100),
+            .mcp_generation_is_authorized_at(&generation, base + 100)
+            .expect("healthy registry"),
         "A1/E1"
     );
 
@@ -1283,14 +1284,16 @@ async fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epo
         }
         assert_eq!(
             host.run_assembly
-                .mcp_generation_is_authorized_at(&expired, base + 100),
+                .mcp_generation_is_authorized_at(&expired, base + 100)
+                .expect("healthy registry"),
             expected,
             "{rule}"
         );
         if has_root {
             assert_eq!(
                 host.run_assembly
-                    .mcp_generation_is_authorized_at(&generation, base + 100),
+                    .mcp_generation_is_authorized_at(&generation, base + 100)
+                    .expect("healthy registry"),
                 expected,
                 "A7/A8 {rule}: a future assertion cannot override the root"
             );

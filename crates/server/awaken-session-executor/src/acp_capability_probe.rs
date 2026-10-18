@@ -67,7 +67,9 @@ impl StrandedProbeEnvironments {
     }
 
     fn record(&self, scope: String) {
-        let mut scopes = self.lock();
+        let Some(mut scopes) = self.lock() else {
+            return;
+        };
         if !scopes.contains(&scope) {
             scopes.push(scope);
         }
@@ -75,17 +77,32 @@ impl StrandedProbeEnvironments {
 
     /// The environment at `scope` is provably gone, so the strand is over.
     fn settle(&self, scope: &str) {
-        self.lock().retain(|recorded| recorded != scope);
+        if let Some(mut scopes) = self.lock() {
+            scopes.retain(|recorded| recorded != scope);
+        }
     }
 
     /// Whether this process believes `scope` still has an environment standing.
     #[must_use]
     fn contains(&self, scope: &str) -> bool {
-        self.lock().iter().any(|recorded| recorded == scope)
+        self.lock()
+            .is_some_and(|scopes| scopes.iter().any(|recorded| recorded == scope))
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<String>> {
-        self.scopes.lock().expect("stranded probe ledger poisoned")
+    /// The ledger, unless its lock is poisoned. The ledger is an index whose
+    /// loss costs only a diagnostic shortcut (the record is the scope stamped
+    /// on the resource), so a poisoned ledger reads exactly like the empty
+    /// ledger a restart leaves:
+    ///
+    /// | Rule | ledger lock | `record` / `settle` | `contains` |
+    /// |---|---|---|---|
+    /// | S1 | healthy  | updates the index | the index's answer |
+    /// | S2 | poisoned | no effect          | `false` (no strand hint in the create error) |
+    ///
+    /// S2 decides no lifecycle: reconciliation reads the stamped scope, never
+    /// this index, so no environment is disposed or kept because of it.
+    fn lock(&self) -> Option<std::sync::MutexGuard<'_, Vec<String>>> {
+        self.scopes.lock().ok()
     }
 }
 

@@ -1228,7 +1228,10 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
         std::collections::HashMap::from([("memory".into(), binding.clone())]),
     );
     assert!(
-        host.run_assembly.memory_for_thread(session).is_none(),
+        host.run_assembly
+            .memory_for_thread(session)
+            .expect("healthy registry")
+            .is_none(),
         "R4/C5 no automatic Memory binding is selected"
     );
     let commit = Arc::new(

@@ -50,12 +50,11 @@ impl awaken_tool_contract::ToolExecutionPermit for SharedToolExecutionPermit {}
 
 impl Drop for SharedToolExecutionPermit {
     fn drop(&mut self) {
-        self.admission
-            .state
-            .lock()
-            .expect("shared tool admission mutex poisoned")
-            .1
-            .remove(&self.id);
+        // A poisoned admission refuses every later acquire, so a permit it
+        // cannot release blocks nothing that is not already refused.
+        if let Ok(mut state) = self.admission.state.lock() {
+            state.1.remove(&self.id);
+        }
         self.admission.changed.notify_waiters();
     }
 }
@@ -72,10 +71,13 @@ impl awaken_tool_contract::ToolExecutionAdmission for SharedToolExecutionAdmissi
         loop {
             let notified = self.changed.notified();
             {
-                let mut state = self
-                    .state
-                    .lock()
-                    .expect("shared tool admission mutex poisoned");
+                // A poisoned admission cannot prove the call compatible with
+                // the ones already running, so it refuses the call.
+                let Ok(mut state) = self.state.lock() else {
+                    return Err(awaken_tool_contract::tool::ToolError::DefinitiveFailure(
+                        crate::host_error::ExecutorLock::ToolAdmission.to_string(),
+                    ));
+                };
                 if state
                     .1
                     .values()
@@ -116,23 +118,22 @@ impl SharedEnvironmentActivityGuard {
             return None;
         };
         let key = (session_id.clone(), generation_id.clone());
-        *activity
-            .shared
-            .lock()
-            .expect("background activity mutex poisoned")
-            .entry(key.clone())
-            .or_default() += 1;
+        // A poisoned activity map cannot count this work; it then reports
+        // every generation busy (see `has_shared_environment_work`), which
+        // already covers it.
+        if let Ok(mut shared) = activity.shared.lock() {
+            *shared.entry(key.clone()).or_default() += 1;
+        }
         Some(Self { activity, key })
     }
 }
 
 impl Drop for SharedEnvironmentActivityGuard {
     fn drop(&mut self) {
-        let mut shared = self
-            .activity
-            .shared
-            .lock()
-            .expect("background activity mutex poisoned");
+        let Ok(mut shared) = self.activity.shared.lock() else {
+            self.activity.changed.notify_waiters();
+            return;
+        };
         let remove = shared.get_mut(&self.key).is_some_and(|count| {
             *count -= 1;
             *count == 0
@@ -173,22 +174,28 @@ impl BackgroundRuns {
     /// Return the one process admission shared by every foreground and detached
     /// call bound to this exact Session Environment generation. Weak indexing
     /// prevents completed Session generations from becoming a second registry.
+    ///
+    /// A poisoned registry is refused: a fresh, unregistered admission would
+    /// let two calls on the same generation run without seeing each other.
     pub(crate) fn tool_execution_admission(
         &self,
         session_id: &str,
         generation_id: &str,
-    ) -> Arc<dyn awaken_tool_contract::ToolExecutionAdmission> {
+    ) -> Result<
+        Arc<dyn awaken_tool_contract::ToolExecutionAdmission>,
+        crate::host_error::ExecutorLock,
+    > {
         let key = (session_id.to_string(), generation_id.to_string());
         let mut admissions = self
             .admissions
             .lock()
-            .expect("shared tool admission registry mutex poisoned");
+            .map_err(|_| crate::host_error::ExecutorLock::ToolAdmission)?;
         if let Some(existing) = admissions.get(&key).and_then(std::sync::Weak::upgrade) {
-            return existing;
+            return Ok(existing);
         }
         let admission = Arc::new(SharedToolExecutionAdmission::default());
         admissions.insert(key, Arc::downgrade(&admission));
-        admission
+        Ok(admission)
     }
 
     /// Detach `fut` to run in the background. It is tracked so [`drain`] can await
@@ -221,13 +228,17 @@ impl BackgroundRuns {
         );
     }
 
+    ///
+    /// | Rule | activity map | generation registered | answer |
+    /// |---|---|---|---|
+    /// | B1 | healthy  | yes | busy |
+    /// | B2 | healthy  | no  | idle |
+    /// | B3 | poisoned | -   | busy: idleness is unprovable, so quiescence times out and the Environment is kept |
     #[must_use]
     pub fn has_shared_environment_work(&self, session_id: &str, generation_id: &str) -> bool {
-        self.activity
-            .shared
-            .lock()
-            .expect("background activity mutex poisoned")
-            .contains_key(&(session_id.to_string(), generation_id.to_string()))
+        self.activity.shared.lock().map_or(true, |shared| {
+            shared.contains_key(&(session_id.to_string(), generation_id.to_string()))
+        })
     }
 
     fn shared_environment_waiter_with_probe<'a>(
@@ -282,6 +293,69 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn a_poisoned_activity_map_keeps_every_generation_busy() {
+        // Rows B1-B3 of `has_shared_environment_work`.
+        let bg = BackgroundRuns::new();
+        bg.spawn(
+            BackgroundWorkClass::SharedEnvironment {
+                session_id: "s".into(),
+                generation_id: "g1".into(),
+            },
+            std::future::pending(),
+        )
+        .await;
+        assert!(bg.has_shared_environment_work("s", "g1"), "B1");
+        assert!(!bg.has_shared_environment_work("s", "g2"), "B2");
+        crate::host_error::poison_for_test(&bg.activity.shared);
+        assert!(
+            bg.has_shared_environment_work("s", "g2"),
+            "B3 idleness unprovable"
+        );
+        assert!(
+            !bg.quiesce_shared_environment("s", "g2", Duration::from_millis(20))
+                .await,
+            "B3 quiescence times out; the Environment is kept"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_poisoned_tool_admission_refuses_instead_of_admitting_unseen_calls() {
+        // | Rule | registry | selected admission | effect |
+        // | T1 | poisoned | any | refuse selection, never create an independent admission |
+        // | T2 | healthy | poisoned | refuse acquire; compatibility is unprovable |
+        // | T3 | poisoned after selection | healthy | original selected admission still serializes calls |
+        let bg = BackgroundRuns::new();
+        let admission = bg
+            .tool_execution_admission("s", "g")
+            .expect("healthy registry");
+        crate::host_error::poison_for_test(&bg.admissions);
+        assert!(
+            matches!(
+                bg.tool_execution_admission("s", "g"),
+                Err(crate::host_error::ExecutorLock::ToolAdmission)
+            ),
+            "registry refused"
+        );
+        use awaken_tool_contract::ToolExecutionAdmission as _;
+        let shared = Arc::new(SharedToolExecutionAdmission::default());
+        crate::host_error::poison_for_test(&shared.state);
+        assert!(
+            shared
+                .acquire(awaken_tool_contract::ToolConcurrency::Serial)
+                .await
+                .is_err(),
+            "admission refused"
+        );
+        // The admission handed out before the poison still serves its callers.
+        drop(
+            admission
+                .acquire(awaken_tool_contract::ToolConcurrency::Serial)
+                .await
+                .expect("healthy admission"),
+        );
+    }
 
     #[tokio::test]
     async fn drain_awaits_all_spawned_tasks() {
@@ -380,9 +454,15 @@ mod tests {
         // generation -> independent admission. This is the foreground/background
         // confluence: callers receive one port, not observer-local locks.
         let background = BackgroundRuns::new();
-        let first = background.tool_execution_admission("session", "generation");
-        let same = background.tool_execution_admission("session", "generation");
-        let other = background.tool_execution_admission("session", "other-generation");
+        let first = background
+            .tool_execution_admission("session", "generation")
+            .expect("healthy registry");
+        let same = background
+            .tool_execution_admission("session", "generation")
+            .expect("healthy registry");
+        let other = background
+            .tool_execution_admission("session", "other-generation")
+            .expect("healthy registry");
         let claim = awaken_tool_contract::ToolConcurrency::Serial;
         let guard = first.clone().acquire(claim.clone()).await.unwrap();
         let mut blocked = tokio::spawn(async move { same.acquire(claim).await.unwrap() });

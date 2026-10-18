@@ -1331,7 +1331,10 @@ impl awaken_session_execution_contract::StreamingRunRuntime for CoordinatedRunti
     /// Whether the thread's selected model accepts a system message after the
     /// conversation has started. Runtimes whose models do not support this can
     /// fail admission before the Managed adapter persists the inbound event.
-    async fn supports_mid_conversation_system(&self, thread: &str) -> bool {
+    async fn supports_mid_conversation_system(
+        &self,
+        thread: &str,
+    ) -> Result<bool, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .supports_mid_conversation_system(thread)
             .await
@@ -1602,11 +1605,16 @@ impl awaken_session_execution_contract::OutcomeRuntime for CoordinatedRuntimeFak
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::CapabilityRuntime for CoordinatedRuntimeFake {
-    fn capabilities(&self) -> awaken_session_configuration_contract::AgentCapabilities {
-        awaken_session_configuration_contract::AgentCapabilities {
+    fn capabilities(
+        &self,
+    ) -> Result<
+        awaken_session_configuration_contract::AgentCapabilities,
+        awaken_session_types::RunError,
+    > {
+        Ok(awaken_session_configuration_contract::AgentCapabilities {
             delegates: vec!["researcher".into()],
             ..Default::default()
-        }
+        })
     }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
@@ -1617,7 +1625,10 @@ impl awaken_session_execution_contract::CapabilityRuntime for CoordinatedRuntime
     fn capabilities_for(
         &self,
         _thread: &str,
-    ) -> awaken_session_configuration_contract::AgentCapabilities {
+    ) -> Result<
+        awaken_session_configuration_contract::AgentCapabilities,
+        awaken_session_types::RunError,
+    > {
         self.capabilities()
     }
 }

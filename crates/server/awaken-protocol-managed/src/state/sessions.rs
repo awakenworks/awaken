@@ -1049,7 +1049,11 @@ fn rehydrated_agent_configuration(
     {
         return Ok(configuration);
     }
-    let caps = state.roles.projection.capabilities_for(id);
+    let caps = state
+        .roles
+        .projection
+        .capabilities_for(id)
+        .map_err(StateError::Run)?;
     let profile = match baseline.agent_revision {
         Some(revision) => state.roles.projection.session_profile_at_revision(
             owner_scope,

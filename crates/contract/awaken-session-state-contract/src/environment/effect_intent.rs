@@ -67,6 +67,26 @@ pub enum SessionEnvironmentEffectAuthorization {
 }
 
 impl SessionEnvironmentEffectAuthorization {
+    /// Admit a process-local ordinary thread whose owner has established
+    /// absence of a Managed Session root. The same aggregate decision owns
+    /// this row and all durable materialization rows; a claimed realization
+    /// can never fall back to Unowned merely because its root disappeared.
+    pub fn admit_unowned(
+        intent: &SessionEnvironmentEffectIntent,
+    ) -> Result<Self, SessionEnvironmentReceiptError> {
+        intent.verify()?;
+        super::transition_environment(
+            super::SessionEnvironmentFacts::project_unowned(intent),
+            super::SessionEnvironmentEvent::AdmitMaterialization {
+                kind: intent.kind().materialization_kind(),
+                already_applied: false,
+            },
+        )?;
+        Ok(Self::Unowned {
+            intent: Box::new(intent.clone()),
+        })
+    }
+
     /// A renewed request can receive the earlier admitted value, but never
     /// another Session or operation. The saved expiry is retained verbatim.
     pub fn verify_for(
@@ -241,3 +261,6 @@ impl SessionEnvironmentEffectIntent {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

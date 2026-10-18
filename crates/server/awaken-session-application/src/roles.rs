@@ -174,8 +174,9 @@ pub trait SessionProjectionReads: Send + Sync {
     async fn refresh_executable_projections(&self)
     -> Result<ExecutableProjectionAdmission, String>;
 
-    /// The capabilities the Runtime serves on one Thread.
-    fn capabilities_for(&self, thread: &str) -> AgentCapabilities;
+    /// The capabilities the Runtime serves on one Thread; an unreadable
+    /// Session is refused, never advertised a guessed surface.
+    fn capabilities_for(&self, thread: &str) -> Result<AgentCapabilities, RunError>;
 
     /// The current Session profile of one published Agent.
     fn session_profile(
@@ -239,7 +240,7 @@ pub trait SessionEventBatches: Send + Sync {
     fn agent_unavailable(&self, workspace_id: &str, agent_id: &str) -> bool;
 
     /// Whether the Runtime on one Thread accepts a system message mid-conversation.
-    async fn supports_mid_conversation_system(&self, thread: &str) -> bool;
+    async fn supports_mid_conversation_system(&self, thread: &str) -> Result<bool, RunError>;
 }
 
 /// Create and run product-profiled Sessions.
@@ -600,7 +601,7 @@ impl SessionProjectionReads for SessionApplication {
         SessionApplication::refresh_executable_projections(self).await
     }
 
-    fn capabilities_for(&self, thread: &str) -> AgentCapabilities {
+    fn capabilities_for(&self, thread: &str) -> Result<AgentCapabilities, RunError> {
         SessionApplication::capabilities_for(self, thread)
     }
 
@@ -703,7 +704,7 @@ impl SessionEventBatches for SessionApplication {
         SessionApplication::agent_unavailable(self, workspace_id, agent_id)
     }
 
-    async fn supports_mid_conversation_system(&self, thread: &str) -> bool {
+    async fn supports_mid_conversation_system(&self, thread: &str) -> Result<bool, RunError> {
         SessionApplication::supports_mid_conversation_system(self, thread).await
     }
 }

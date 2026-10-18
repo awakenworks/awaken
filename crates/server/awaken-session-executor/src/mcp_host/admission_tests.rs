@@ -29,7 +29,9 @@ async fn assigned_staging_requires_a_root_and_direct_assertions_never_override_a
         selected_plaintext_holder: None,
     };
     assert_eq!(
-        host.run_assembly.mcp_generation_root_authority(&generation),
+        host.run_assembly
+            .mcp_generation_root_authority(&generation)
+            .expect("healthy registry"),
         None
     );
     let error = managed
@@ -83,7 +85,9 @@ async fn assigned_staging_requires_a_root_and_direct_assertions_never_override_a
         )
         .unwrap();
     assert_eq!(
-        host.run_assembly.mcp_generation_root_authority(&generation),
+        host.run_assembly
+            .mcp_generation_root_authority(&generation)
+            .expect("healthy registry"),
         Some(true)
     );
     assert_eq!(
@@ -105,7 +109,9 @@ async fn assigned_staging_requires_a_root_and_direct_assertions_never_override_a
         .begin_session_realization_revocation()
         .expect("installed Sessions");
     assert_eq!(
-        host.run_assembly.mcp_generation_root_authority(&generation),
+        host.run_assembly
+            .mcp_generation_root_authority(&generation)
+            .expect("healthy registry"),
         Some(false)
     );
     assert_eq!(

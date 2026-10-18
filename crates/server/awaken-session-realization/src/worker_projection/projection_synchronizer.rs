@@ -335,8 +335,8 @@ where
         lease: &session_resource::SessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         self.execution
-            .invalidate_realization_lease(session_id.as_str(), lease);
-        Ok(())
+            .invalidate_realization_lease(session_id.as_str(), lease)
+            .map_err(awaken_session_types::RunError::from)
     }
 }
 

@@ -53,31 +53,38 @@ impl RunCapabilities {
 
     /// Rebuildable Agent projection used only as input to Session admission.
     /// Runtime never treats this cache as an executable publication authority.
-    pub fn thread_agent_projection(&self, thread: &str) -> Option<String> {
+    /// A poisoned installed-Session registry is refused, never read as absent.
+    pub fn thread_agent_projection(
+        &self,
+        thread: &str,
+    ) -> Result<Option<String>, crate::realization_error::RealizationError> {
         let realizations = self.installed_sessions.realizations();
-        realizations
-            .frozen(thread)
-            .expect("session runtime slots mutex poisoned")
-            .agent_id
-            .clone()
+        Ok(realizations.frozen(thread)?.agent_id.clone())
     }
 
     /// Workspace context supplied to the Session application admission boundary.
     /// Unknown flat-protocol threads use the process's persisted local workspace.
-    pub fn thread_workspace(&self, thread: &str) -> String {
+    /// A poisoned installed-Session registry is refused: no caller can fall
+    /// back to the local workspace for a Session it cannot read.
+    pub fn thread_workspace(
+        &self,
+        thread: &str,
+    ) -> Result<String, crate::realization_error::RealizationError> {
         self.installed_sessions
             .realizations()
             .workspace(thread, &self.local_workspace)
-            .expect("session runtime slots mutex poisoned")
     }
 
     /// Workspace for a prepared thread; unlike `thread_workspace`, unknown ids
     /// do not inherit local ownership and therefore cannot enumerate artifacts.
-    pub fn registered_thread_workspace(&self, thread: &str) -> Option<String> {
+    /// A poisoned registry is refused, never read as an unregistered thread.
+    pub fn registered_thread_workspace(
+        &self,
+        thread: &str,
+    ) -> Result<Option<String>, crate::realization_error::RealizationError> {
         self.installed_sessions
             .realizations()
             .registered_workspace(thread)
-            .expect("session runtime slots mutex poisoned")
     }
 
     /// Bind the exact published delegation targets to a prepared Session.
@@ -140,7 +147,10 @@ impl RunCapabilities {
     /// The primary model currently selected for `thread`, including a Managed
     /// per-Session/per-Run override. This is a read-only projection of the same
     /// inference-routing source that execution consumes.
-    pub fn model_for_thread(&self, thread: &str) -> String {
+    pub fn model_for_thread(
+        &self,
+        thread: &str,
+    ) -> Result<String, crate::realization_error::RealizationError> {
         self.agent
             .inference_routing
             .model_ref(thread, &self.agent.model_ref)

@@ -163,10 +163,9 @@ impl awaken_session_execution_contract::StreamingRunRuntime for SessionRuns {
         Ok(())
     }
 
-    async fn supports_mid_conversation_system(&self, thread: &str) -> bool {
-        crate::managed_model_capability::supports_mid_conversation_system(
-            &self.capabilities.model_for_thread(thread),
-        )
+    async fn supports_mid_conversation_system(&self, thread: &str) -> Result<bool, RunError> {
+        let model = self.capabilities.model_for_thread(thread)?;
+        Ok(crate::managed_model_capability::supports_mid_conversation_system(&model))
     }
 
     async fn pending_tool(&self, thread: &str) -> Result<Option<Pending>, RunError> {

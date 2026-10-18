@@ -18,6 +18,7 @@ use awaken_session_realization_contract::{
     SessionRealizationControlDisposition, effect_failure_disposition, environment_effect_error,
     provisioning_disposition,
 };
+use awaken_session_state_contract::SessionEnvironmentReceiptRecoveryAction;
 use awaken_session_types::{RunError, RunErrorKind};
 
 /// What a caller does next with a failed realization operation.
@@ -110,8 +111,6 @@ closed_codes! {
     AuthorityLoss {
         /// The Session's realization proof is closed or no longer live.
         Closed => "session_realization_authority_closed",
-        /// An Environment receipt was fenced by another realization owner.
-        ReceiptFenced => "session_environment_receipt_fenced",
         /// The authority clock could not start a realization proof.
         ProofClockUnavailable => "session_realization_authority_clock_unavailable",
         /// An Environment effect lost its exact owner fence.
@@ -236,10 +235,6 @@ pub const POISONED_CODE: &str = "session_realization_lock_poisoned";
 #[derive(Debug, thiserror::Error)]
 pub enum EvidenceFault {
     #[error(transparent)]
-    Receipt(#[from] awaken_session_state_contract::SessionEnvironmentReceiptError),
-    #[error(transparent)]
-    Transition(#[from] awaken_session_state_contract::SessionEnvironmentTransitionError),
-    #[error(transparent)]
     Encoding(#[from] serde_json::Error),
     #[error("invalid Session sandbox binding: {0}")]
     InvalidBinding(serde_json::Error),
@@ -269,7 +264,6 @@ macro_rules! evidence_sources {
 }
 
 evidence_sources!(
-    awaken_session_state_contract::SessionEnvironmentTransitionError,
     serde_json::Error,
     awaken_agent_contract::CanonicalJsonHashError,
     awaken_session_configuration_contract::resource::SessionInputError,
@@ -283,18 +277,45 @@ impl From<EvidenceFault> for RealizationError {
     }
 }
 
-/// A receipt fenced by another realization owner proves this owner lost its
-/// authority; every other receipt rejection is malformed evidence.
-impl From<awaken_session_state_contract::SessionEnvironmentReceiptError> for RealizationError {
-    fn from(error: awaken_session_state_contract::SessionEnvironmentReceiptError) -> Self {
-        match error {
-            awaken_session_state_contract::SessionEnvironmentReceiptError::RealizationStale => {
-                Self::authority_lost(AuthorityLoss::ReceiptFenced, error.to_string())
-            }
-            error => Self::Evidence(error.into()),
+/// The Session aggregate refused an Environment intent, receipt or law. The
+/// refusal carries its own retry classification
+/// ([`SessionEnvironmentReceiptRecoveryAction`]); realization reads it and
+/// never a variant name.
+#[derive(Debug, thiserror::Error)]
+pub enum EnvironmentRefusal {
+    #[error(transparent)]
+    Receipt(#[from] awaken_session_state_contract::SessionEnvironmentReceiptError),
+    #[error(transparent)]
+    Transition(#[from] awaken_session_state_contract::SessionEnvironmentTransitionError),
+}
+
+impl EnvironmentRefusal {
+    /// The refusal's own classification: retry once the Session moves on,
+    /// or final for the same evidence.
+    #[must_use]
+    pub const fn recovery_action(&self) -> SessionEnvironmentReceiptRecoveryAction {
+        match self {
+            Self::Receipt(error) => error.recovery_action(),
+            Self::Transition(error) => error.recovery_action(),
         }
     }
 }
+
+/// Each refusal source converts through [`EnvironmentRefusal`].
+macro_rules! refusal_sources {
+    ($($source:ty),+ $(,)?) => {
+        $(impl From<$source> for RealizationError {
+            fn from(error: $source) -> Self {
+                Self::EnvironmentRefused(error.into())
+            }
+        })+
+    };
+}
+
+refusal_sources!(
+    awaken_session_state_contract::SessionEnvironmentReceiptError,
+    awaken_session_state_contract::SessionEnvironmentTransitionError,
+);
 
 /// Why a request cannot be realized as stated. Retrying it unchanged fails
 /// the same way.
@@ -363,6 +384,10 @@ pub enum RealizationError {
     /// Evidence the effect consumes is malformed or contradicts it.
     #[error(transparent)]
     Evidence(EvidenceFault),
+    /// The Session aggregate refused the Environment event; the refusal's
+    /// own classification decides the disposition.
+    #[error(transparent)]
+    EnvironmentRefused(EnvironmentRefusal),
     /// The request cannot be realized as stated.
     #[error(transparent)]
     InvalidRequest(#[from] InvalidRequest),
@@ -445,6 +470,10 @@ impl RealizationError {
             Self::ProjectionConflict { .. } | Self::Evidence(_) | Self::Invariant(_) => {
                 Disposition::Terminal
             }
+            Self::EnvironmentRefused(refusal) => match refusal.recovery_action() {
+                SessionEnvironmentReceiptRecoveryAction::Retry => Disposition::Retry,
+                SessionEnvironmentReceiptRecoveryAction::Reject => Disposition::Terminal,
+            },
             Self::RepositoryBinding(error) => repository_binding_disposition(error),
             Self::Credential(awaken_credential_contract::CredentialMaterialError::Unavailable) => {
                 Disposition::Retry
@@ -495,7 +524,9 @@ impl RealizationError {
             Self::Credential(_) => self.class_code(UnrecoverableFault::Credential),
             Self::FileContent(_) => self.class_code(UnrecoverableFault::FileContent),
             Self::CacheVolume(_) => self.class_code(UnrecoverableFault::CacheVolume),
-            Self::Evidence(_) => self.class_code(UnrecoverableFault::Evidence),
+            Self::Evidence(_) | Self::EnvironmentRefused(_) => {
+                self.class_code(UnrecoverableFault::Evidence)
+            }
             Self::Invariant(_) => self.class_code(UnrecoverableFault::Invariant),
         }
     }

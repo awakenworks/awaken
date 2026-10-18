@@ -1167,9 +1167,8 @@ impl RepositoryEnvironmentBindingSink {
                         ));
                     }
                     return Ok(EnvironmentBindingResult::Admitted(
-                        SessionEnvironmentEffectAuthorization::Unowned {
-                            intent: Box::new((*intent).clone()),
-                        },
+                        SessionEnvironmentEffectAuthorization::admit_unowned(intent)
+                            .map_err(Self::receipt_error)?,
                     ));
                 }
                 Err(error) => return Err(session_repository_error(error)),

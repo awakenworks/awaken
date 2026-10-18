@@ -55,6 +55,7 @@ mod tests {
         assert!(
             host.capabilities()
                 .registered_thread_workspace(&thread.0)
+                .expect("healthy registry")
                 .is_none()
         );
         awaken_session_executor::session_commit_owner(&host, &thread)
@@ -67,6 +68,7 @@ mod tests {
         assert!(
             host.capabilities()
                 .registered_thread_workspace(&thread.0)
+                .expect("healthy registry")
                 .is_none()
         );
     }

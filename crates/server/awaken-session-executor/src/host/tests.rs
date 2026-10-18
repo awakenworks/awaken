@@ -1189,7 +1189,8 @@ fn compile_complete_test_session_projection(
         awaken_session_configuration_contract::SessionToolConfiguration::from_capabilities(
             &awaken_session_execution_contract::CapabilityRuntime::capabilities(
                 managed.capabilities.as_ref(),
-            ),
+            )
+            .expect("healthy registry"),
         )
     });
     let publication = managed

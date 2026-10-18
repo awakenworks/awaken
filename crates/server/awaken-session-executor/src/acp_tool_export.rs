@@ -104,8 +104,15 @@ impl AcpToolExecutionGrants {
         }
     }
 
+    /// | Rule | grant lock | matching pending grant | effect |
+    /// |---|---|---|---|
+    /// | G1 | healthy  | yes | consumed, the call executes |
+    /// | G2 | healthy  | no  | refused |
+    /// | G3 | poisoned | -   | refused (no grant is provable) |
     fn consume(&self, tool_id: &str, arguments: &serde_json::Value) -> bool {
-        let mut pending = self.pending.lock().expect("ACP grant lock poisoned");
+        let Ok(mut pending) = self.pending.lock() else {
+            return false;
+        };
         let Some(index) = pending
             .iter()
             .position(|(tool, args)| tool == tool_id && args == arguments)
@@ -122,10 +129,11 @@ impl awaken_runtime_contract::permission::PermissionGrantObserver for AcpToolExe
         if !self.exported.contains(&call.tool_id) {
             return;
         }
-        self.pending
-            .lock()
-            .expect("ACP grant lock poisoned")
-            .push((call.tool_id.clone(), call.arguments.clone()));
+        // A poisoned grant ledger records nothing; `consume` then refuses the
+        // call (G3), so an allow decision is never executed without its grant.
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.push((call.tool_id.clone(), call.arguments.clone()));
+        }
     }
 }
 
@@ -417,6 +425,29 @@ mod tests {
     use super::*;
     use awaken_runtime_contract::permission::ToolPermissionVerdict;
     use awaken_tool_contract::tool::{ToolConcurrency, ToolRecoveryCapability};
+
+    #[test]
+    fn a_poisoned_grant_ledger_refuses_every_exported_call() {
+        // Rows G1-G3 of `AcpToolExecutionGrants::consume`.
+        use awaken_runtime_contract::permission::PermissionGrantObserver as _;
+        let call = ToolCall {
+            call_id: "call-1".into(),
+            tool_id: "export".into(),
+            arguments: serde_json::json!({"x": 1}),
+        };
+        let grants = AcpToolExecutionGrants::new(["export".to_string()]);
+        assert!(!grants.consume("export", &call.arguments), "G2 no grant");
+        grants.on_allow(&call);
+        assert!(grants.consume("export", &call.arguments), "G1");
+        grants.on_allow(&call);
+        crate::host_error::poison_for_test(&grants.pending);
+        assert!(!grants.consume("export", &call.arguments), "G3 poisoned");
+        grants.on_allow(&call);
+        assert!(
+            !grants.consume("export", &call.arguments),
+            "G3 nothing recorded"
+        );
+    }
 
     struct Echo(&'static str);
 

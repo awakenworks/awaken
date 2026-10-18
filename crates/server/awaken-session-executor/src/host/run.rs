@@ -352,7 +352,7 @@ impl crate::SessionRuns {
         let baseline = self.authoritative_step_snapshot(&ctx, &run_id).await?;
         let before = baseline.messages.len();
         activation.run_id = run_id.clone();
-        activation.model_ref_override = self.agent.inference_routing.override_for(thread);
+        activation.model_ref_override = self.agent.inference_routing.override_for(thread)?;
         activation.data_subject_id = data_subject_id;
         let expected_input_ids = activation
             .input
@@ -623,7 +623,7 @@ impl crate::SessionRuns {
             .prepare(&ctx.config, thread.to_string(), messages);
         // Stamp the Thread's per-Run model override (R2/R5) off the fingerprinted
         // snapshot, so the claiming worker resolves the effective model itself.
-        activation.model_ref_override = self.agent.inference_routing.override_for(thread);
+        activation.model_ref_override = self.agent.inference_routing.override_for(thread)?;
         activation.run_id = uid.clone();
         let request = self.run_assembly.prepare_dispatch(activation).fresh()?;
         match self.dispatch_pool_or_err() {
@@ -679,7 +679,7 @@ impl crate::SessionRuns {
         }
         let activation = ctx
             .resume_activation(ticket)
-            .with_model_ref_override(self.agent.inference_routing.override_for(session_id));
+            .with_model_ref_override(self.agent.inference_routing.override_for(session_id)?);
         let request = self
             .run_assembly
             .prepare_dispatch(activation)

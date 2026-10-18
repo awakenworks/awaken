@@ -423,7 +423,22 @@ impl BoundMemory {
                 error,
             );
         }
-        let mut writes = capture.take();
+        // The committed auxiliary transcript is the authority the capture
+        // shortcuts; it is decoded whenever the capture holds nothing usable:
+        //
+        // | Rule | capture lock | captured writes | proposal source |
+        // |---|---|---|---|
+        // | X1 | healthy  | some  | the capture |
+        // | X2 | healthy  | none  | the committed transcript |
+        // | X3 | poisoned | -     | the committed transcript (reported) |
+        let mut writes = capture.take().unwrap_or_else(|error| {
+            tracing::error!(
+                code = crate::host_error::EXECUTOR_LOCK_POISONED_CODE,
+                %error,
+                "Memory extraction reads its committed transcript instead of the capture"
+            );
+            BTreeMap::new()
+        });
         if writes.is_empty() {
             writes = writes_from_committed_agent(
                 &commit.committed_messages(&ThreadId(auxiliary_thread_id)),
@@ -520,13 +535,16 @@ impl crate::RunAssembly {
             .expect("installed Sessions");
     }
 
-    pub(crate) fn memory_for_thread(&self, thread: &str) -> Option<BoundMemory> {
+    /// A poisoned registry is refused, never read as "no Memory bound".
+    pub(crate) fn memory_for_thread(
+        &self,
+        thread: &str,
+    ) -> Result<Option<BoundMemory>, crate::realization_error::RealizationError> {
         let realizations = self.installed_sessions.realizations();
-        realizations
-            .read_realization(thread, |r| r.staging().memory.clone())
-            .expect("session runtime slots mutex poisoned")
+        Ok(realizations
+            .read_realization(thread, |r| r.staging().memory.clone())?
             .flatten()
-            .map(|binding| self.resources.memory.bound(binding))
+            .map(|binding| self.resources.memory.bound(binding)))
     }
 
     /// Attach the one physical Session commit authority to every writable
@@ -593,7 +611,7 @@ impl crate::RunAssembly {
         config: &awaken_resource_contract::MemoryStoreConfigVersion,
         access: awaken_resource_contract::ResourceAccess,
         resource_validator: Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>,
-    ) {
+    ) -> Result<(), crate::realization_error::RealizationError> {
         let writable = access == awaken_resource_contract::ResourceAccess::ReadWrite;
         let handle = Arc::new(PlatformMemoryHandle::from_roles(
             self.resources.memory_stores.clone(),
@@ -610,13 +628,10 @@ impl crate::RunAssembly {
         );
         // The embedder seam installs the Session it binds (the host's install
         // path); the realization view then only changes the installed slot.
-        self.installed_sessions
-            .install(thread)
-            .expect("session runtime slots mutex poisoned");
+        self.installed_sessions.install(thread)?;
         self.realization_executor
             .staging()
             .register_thread_memory(thread, Some(Arc::new(binding)))
-            .expect("session runtime slots mutex poisoned");
     }
 }
 

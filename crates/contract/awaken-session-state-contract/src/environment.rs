@@ -1577,6 +1577,48 @@ mod tests {
         }
     }
 
+    #[test]
+    fn transition_error_recovery_classification_reads_the_step_refusal() {
+        // Cause/effect table: TR1 a step refusal keeps the decision's own
+        // classification (every rejection, both classes); TR2 evidence only
+        // the data law judges (receipt mismatch, expired checkpoint, invalid
+        // policy) is final for the same evidence.
+        use SessionEnvironmentReceiptRecoveryAction as Action;
+        use SessionEnvironmentRejection as Rejection;
+        use SessionEnvironmentTransitionError as Error;
+
+        for rejection in [
+            Rejection::Terminal,
+            Rejection::NotTerminal,
+            Rejection::ContinuationInProgress,
+            Rejection::ActivitiesOpen,
+            Rejection::NotGenerated,
+            Rejection::WrongStep,
+            Rejection::RequiresResident,
+            Rejection::InvalidTransition,
+            Rejection::LeaseNotCurrent,
+            Rejection::GenerationExpired,
+            Rejection::CheckpointLive,
+            Rejection::InconsistentEvidence,
+            Rejection::MaterializationPending,
+            Rejection::UnsupportedContinuationTopology,
+            Rejection::MemoryEvidenceUnproven,
+        ] {
+            assert_eq!(
+                Error::Rejected(rejection).recovery_action(),
+                rejection.recovery_action(),
+                "TR1 {rejection}"
+            );
+        }
+        for error in [
+            Error::ReceiptMismatch,
+            Error::CheckpointExpired,
+            Error::InvalidCheckpointPolicy("policy"),
+        ] {
+            assert_eq!(error.recovery_action(), Action::Reject, "TR2 {error}");
+        }
+    }
+
     // Cause/effect decision table: C1=Resident, C2=no live effect, C3=current
     // epoch, C4=checkpoint succeeds, C5=source-durability preparation succeeds,
     // C6=physical termination succeeds; every receipt is exact-operation,

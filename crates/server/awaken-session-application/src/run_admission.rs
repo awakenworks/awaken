@@ -744,7 +744,7 @@ impl SessionApplication {
                     .filter(|backend| !backend.is_empty())
                     .map(str::to_owned)
             });
-        let capabilities = self.capabilities_for(&session_id);
+        let capabilities = self.capabilities_for(&session_id)?;
         let capability_tools = SessionToolConfiguration::from_capabilities(&capabilities);
         let inherited_tools = profile.as_ref().map_or_else(
             || capability_tools.clone(),
@@ -1063,8 +1063,10 @@ impl SessionApplication {
 }
 
 /// The sole durable Session Run application for all public Run protocols.
-type WorkspaceResolver = dyn Fn(&str) -> String + Send + Sync;
-type ProjectedAgentResolver = dyn Fn(&str) -> Option<String> + Send + Sync;
+/// The resolvers read the Runtime's installed Session; an unreadable one is
+/// refused, never answered with the local Workspace or the default Agent.
+type WorkspaceResolver = dyn Fn(&str) -> Result<String, RunError> + Send + Sync;
+type ProjectedAgentResolver = dyn Fn(&str) -> Result<Option<String>, RunError> + Send + Sync;
 
 pub struct SessionRunApplication {
     runtime: Arc<dyn RunApplication>,
@@ -1078,8 +1080,8 @@ impl SessionRunApplication {
     pub fn new(
         runtime: Arc<dyn RunApplication>,
         sessions: Arc<SessionApplication>,
-        workspace: impl Fn(&str) -> String + Send + Sync + 'static,
-        projected_agent: impl Fn(&str) -> Option<String> + Send + Sync + 'static,
+        workspace: impl Fn(&str) -> Result<String, RunError> + Send + Sync + 'static,
+        projected_agent: impl Fn(&str) -> Result<Option<String>, RunError> + Send + Sync + 'static,
     ) -> Self {
         Self {
             runtime,
@@ -1089,12 +1091,11 @@ impl SessionRunApplication {
         }
     }
 
-    fn agent_for(&self, thread: &str, requested_agent: Option<&str>) -> String {
-        let projected = (self.projected_agent)(thread);
-        requested_agent
-            .or(projected.as_deref())
-            .unwrap_or("assistant")
-            .to_string()
+    fn agent_for(&self, thread: &str, requested_agent: Option<&str>) -> Result<String, RunError> {
+        if let Some(requested) = requested_agent {
+            return Ok(requested.to_string());
+        }
+        Ok((self.projected_agent)(thread)?.unwrap_or_else(|| "assistant".to_string()))
     }
 
     fn admission_command(
@@ -1118,7 +1119,7 @@ impl SessionRunApplication {
         }
         Ok(AdmitSessionRun {
             session_id: awaken_session_types::SessionId::from(thread),
-            agent_id: self.agent_for(thread, requested_agent),
+            agent_id: self.agent_for(thread, requested_agent)?,
             operation_id: operation_id.to_string(),
             run_id: awaken_session_execution_contract::session_run_id(
                 &awaken_session_types::SessionId::from(thread),
@@ -1163,7 +1164,7 @@ impl RunApplication for SessionRunApplication {
             None,
             awaken_session_types::SessionRunReplacement::PreservePrior,
         )?;
-        self.run_admitted(&(self.workspace)(thread), command, None)
+        self.run_admitted(&(self.workspace)(thread)?, command, None)
             .await
     }
 
@@ -1176,7 +1177,7 @@ impl RunApplication for SessionRunApplication {
         sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
     ) -> Result<StepOutcome, RunApplicationError> {
         self.run_streaming_for_owner(
-            &(self.workspace)(thread),
+            &(self.workspace)(thread)?,
             operation_id,
             thread,
             agent,
@@ -1194,7 +1195,7 @@ impl RunApplication for SessionRunApplication {
         resume: RunResume,
     ) -> Result<StepOutcome, RunApplicationError> {
         self.resume_for_owner(
-            &(self.workspace)(thread),
+            &(self.workspace)(thread)?,
             operation_id,
             thread,
             tool_use_id,
@@ -1212,7 +1213,7 @@ impl RunApplication for SessionRunApplication {
         sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
     ) -> Result<StepOutcome, RunApplicationError> {
         self.resume_streaming_for_owner(
-            &(self.workspace)(thread),
+            &(self.workspace)(thread)?,
             operation_id,
             thread,
             tool_use_id,
@@ -1324,7 +1325,7 @@ impl awaken_session_application_contract::SessionRunReplacementApplication
             None,
             awaken_session_types::SessionRunReplacement::SupersedePrior,
         )?;
-        self.run_admitted(&(self.workspace)(thread), command, None)
+        self.run_admitted(&(self.workspace)(thread)?, command, None)
             .await
     }
 }
@@ -1350,7 +1351,7 @@ impl awaken_session_application_contract::SessionRunBackgroundApplication
             awaken_session_types::SessionRunReplacement::PreservePrior,
         )?;
         let run_id = command.run_id.clone();
-        let owner_scope = (self.workspace)(thread);
+        let owner_scope = (self.workspace)(thread)?;
         let admitted = Box::pin(
             self.sessions
                 .admit_session_run_for_owner(&owner_scope, command),

@@ -348,6 +348,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             assert_eq!(
                 host.capabilities
                     .registered_thread_workspace(thread)
+                    .expect("healthy registry")
                     .as_deref(),
                 Some("workspace"),
                 "C1 Retiring owner keeps exact terminal harvest scope"

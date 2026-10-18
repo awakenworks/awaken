@@ -209,19 +209,128 @@ fn decision_table() -> Vec<(&'static str, RealizationError, Disposition)> {
         RealizationError::from(awaken_session_state_contract::SessionCleanupError::ReceiptMismatch),
         Disposition::Terminal,
     ));
-    rows.push((
-        "D4 receipt fenced by another owner",
-        RealizationError::from(
-            awaken_session_state_contract::SessionEnvironmentReceiptError::RealizationStale,
-        ),
-        Disposition::Retry,
-    ));
+    // D15: an aggregate refusal is classified by its own recovery action, not
+    // by its name. The oracle is the contract's documented class per row.
+    {
+        use awaken_session_state_contract::SessionEnvironmentReceiptError as Receipt;
+        use awaken_session_state_contract::SessionEnvironmentRejection as Rejection;
+        use awaken_session_state_contract::SessionEnvironmentTransitionError as Transition;
+        for (rule, error, disposition) in [
+            (
+                "D15 receipt fenced by another owner retries",
+                RealizationError::from(Receipt::RealizationStale),
+                Disposition::Retry,
+            ),
+            (
+                "D15 pending Resource transition retries",
+                RealizationError::from(Receipt::ResourceTransitionMismatch),
+                Disposition::Retry,
+            ),
+            (
+                "D15 unknown original materialization retries",
+                RealizationError::from(Receipt::MaterializationUnknown),
+                Disposition::Retry,
+            ),
+            (
+                "D15 receipt step refusal that may clear retries",
+                RealizationError::from(Receipt::Rejected(Rejection::ContinuationInProgress)),
+                Disposition::Retry,
+            ),
+            (
+                "D15 law step refusal that may clear retries",
+                RealizationError::from(Transition::Rejected(Rejection::LeaseNotCurrent)),
+                Disposition::Retry,
+            ),
+            (
+                "D15 mismatched receipt is final",
+                RealizationError::from(Receipt::Mismatch),
+                Disposition::Terminal,
+            ),
+            (
+                "D15 cross-Environment receipt is final",
+                RealizationError::from(Receipt::EnvironmentMismatch),
+                Disposition::Terminal,
+            ),
+            (
+                "D15 receipt causal refusal is final",
+                RealizationError::from(Receipt::Rejected(Rejection::InvalidTransition)),
+                Disposition::Terminal,
+            ),
+            (
+                "D15 law evidence refusal is final",
+                RealizationError::from(Transition::CheckpointExpired),
+                Disposition::Terminal,
+            ),
+            (
+                "D15 law causal refusal is final",
+                RealizationError::from(Transition::Rejected(Rejection::InconsistentEvidence)),
+                Disposition::Terminal,
+            ),
+        ] {
+            rows.push((rule, error, disposition));
+        }
+    }
     rows
 }
 
 #[test]
+fn an_environment_refusal_reads_its_own_recovery_classification() {
+    // Cause/effect table: for every receipt and law refusal the contract
+    // classifies, the realization disposition is Retry exactly when the
+    // refusal's own recovery action is Retry, and Terminal when it is Reject.
+    // No refusal is told apart by its variant name.
+    use awaken_session_state_contract::SessionEnvironmentReceiptError as Receipt;
+    use awaken_session_state_contract::SessionEnvironmentRejection as Rejection;
+    use awaken_session_state_contract::SessionEnvironmentTransitionError as Transition;
+    let rejections = [
+        Rejection::Terminal,
+        Rejection::NotTerminal,
+        Rejection::ContinuationInProgress,
+        Rejection::ActivitiesOpen,
+        Rejection::NotGenerated,
+        Rejection::WrongStep,
+        Rejection::RequiresResident,
+        Rejection::InvalidTransition,
+        Rejection::LeaseNotCurrent,
+        Rejection::GenerationExpired,
+        Rejection::CheckpointLive,
+        Rejection::InconsistentEvidence,
+        Rejection::MaterializationPending,
+        Rejection::UnsupportedContinuationTopology,
+        Rejection::MemoryEvidenceUnproven,
+    ];
+    let mut refusals: Vec<EnvironmentRefusal> = vec![
+        Receipt::Mismatch.into(),
+        Receipt::EnvironmentMismatch.into(),
+        Receipt::RealizationStale.into(),
+        Receipt::InvalidReservation.into(),
+        Receipt::ResourceTransitionMismatch.into(),
+        Receipt::MaterializationUnknown.into(),
+        Transition::ReceiptMismatch.into(),
+        Transition::CheckpointExpired.into(),
+        Transition::InvalidCheckpointPolicy("policy").into(),
+    ];
+    for rejection in rejections {
+        refusals.push(Receipt::Rejected(rejection).into());
+        refusals.push(Transition::Rejected(rejection).into());
+    }
+    for refusal in refusals {
+        let expected = match refusal.recovery_action() {
+            SessionEnvironmentReceiptRecoveryAction::Retry => Disposition::Retry,
+            SessionEnvironmentReceiptRecoveryAction::Reject => Disposition::Terminal,
+        };
+        let label = refusal.to_string();
+        assert_eq!(
+            RealizationError::EnvironmentRefused(refusal).disposition(),
+            expected,
+            "{label}"
+        );
+    }
+}
+
+#[test]
 fn each_failure_class_has_one_disposition_on_the_synchronizer_and_driver_paths() {
-    // Decision table: cause = the realization failure class (D1-D14 above);
+    // Decision table: cause = the realization failure class (D1-D15 above);
     // paths = P1 the realization's own decision, P2 the projection
     // synchronizer (RealizationError -> RunError, classified by the
     // contract), P3 the realization driver (FailSessionRealization report and
@@ -233,6 +342,7 @@ fn each_failure_class_has_one_disposition_on_the_synchronizer_and_driver_paths()
     // | D14 provisioning before the provider's deadline | Defer (report keeps the budget) |
     // | D14 provisioning with no deadline, at or past it | Retry |
     // | D3 permanent provider / D6 projection conflict / D9 invariant / D13 evidence | Terminal |
+    // | D15 aggregate refusal | its own recovery action: Retry retries, Reject is Terminal |
     // | D7 Run port failure | the Run error's own class: unavailable, state conflict and unclassified internal retry; classified internal is terminal |
     // | D8 invalid request | Rejected (absorbs like Terminal) |
     // | D10 Repository binding | by verifier class; a concurrent authority change retries |

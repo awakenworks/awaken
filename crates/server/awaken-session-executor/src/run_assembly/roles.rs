@@ -113,8 +113,8 @@ impl awaken_session_execution_contract::RealizationRuntime for RunAssembly {
         thread: &str,
         lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<(), RunError> {
-        self.invalidate_session_realization_lease(thread, lease);
-        Ok(())
+        self.invalidate_session_realization_lease(thread, lease)
+            .map_err(RunError::from)
     }
 }
 

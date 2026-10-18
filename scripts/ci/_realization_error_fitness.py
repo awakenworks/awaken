@@ -1,15 +1,14 @@
-"""The realization classifies each failure once and denies on a poisoned lock.
+"""The realization classifies each failure once.
 
 Plan v4 D3 and principles P6/P7. `awaken-session-realization` reports every
 failure as a `RealizationError`, whose `disposition()` is the one decision of
-what a caller does next. Three regressions would silently undo that, and the
-compiler cannot see any of them:
+what a caller does next. Two regressions would silently undo that, and the
+compiler cannot see either (a poisoned lock read through `.expect` is refused
+by `_poisoned_lock_fitness.py`, which covers the realization and the executor):
 
 * `HostError` reappearing in the realization. The executor's error is not the
   realization's vocabulary; mapping it back in would flatten every class into
   the executor's kinds again.
-* A lock read through `.expect(..)`/`.unwrap()`. A poisoned lock must deny with
-  `RealizationError::Poisoned`, never unwind through the effect.
 * A typed failure flattened into the text of a stated variant
   (`invariant(error.to_string())`, `invalid_request(error.to_string())`, a
   `format!` interpolating the error, or `HostError::internal(..)`). The typed
@@ -33,7 +32,6 @@ INPUT_GLOBS: tuple[str, ...] = ("crates/server/awaken-session-realization/src/**
 TEST_FILES = re.compile(r"(^|/)(tests?|test_support)(\.rs|/)")
 
 HOST_ERROR = re.compile(r"\bHostError\b")
-LOCK_PANIC = re.compile(r"\.\s*(?:lock|read|write)\s*\(\s*\)\s*\.\s*(?:expect|unwrap)\s*\(")
 STATED = r"(?:\bRealizationError\s*::\s*)?\b(?:invariant|invalid_request|internal)\s*\("
 FLATTENED_TEXT = re.compile(STATED + r"\s*[\w.]*\.to_string\s*\(\s*\)")
 FLATTENED_FORMAT = re.compile(STATED + r"\s*format!\s*\(\s*\"[^\"]*\{(?:error|err|e|source)\}")
@@ -43,9 +41,9 @@ def realization_error_violations(sources: dict[str, str]) -> list[str]:
     """Rule violations in the realization's production sources.
 
     Cause/effect graph: C1 the source is production realization code; C2 it
-    names `HostError`; C3 it panics on a lock; C4 it flattens a typed failure
-    into a stated message. E1 accept when C1 is false or none of C2..C4 holds;
-    E2 reject and name the file and rule.
+    names `HostError`; C3 it flattens a typed failure into a stated message.
+    E1 accept when C1 is false or neither C2 nor C3 holds; E2 reject and name
+    the file and rule.
     """
     errors: list[str] = []
     for relative, source in sorted(sources.items()):
@@ -59,10 +57,6 @@ def realization_error_violations(sources: dict[str, str]) -> list[str]:
         if HOST_ERROR.search(syntax):
             errors.append(
                 f"{relative}: the realization returns RealizationError; HostError belongs to the executor"
-            )
-        if LOCK_PANIC.search(syntax):
-            errors.append(
-                f"{relative}: a poisoned lock denies with RealizationError::Poisoned instead of panicking"
             )
         if FLATTENED_TEXT.search(syntax) or FLATTENED_FORMAT.search(text):
             errors.append(
@@ -81,10 +75,9 @@ def selftest() -> None:
     | E2 | the same text in a cfg(test) module or a test file      | accept |
     | E3 | the same text outside the realization crate             | accept |
     | E4 | `HostError` named in production realization code        | reject |
-    | E5 | `.lock().expect(..)` / `.read().unwrap()`               | reject |
-    | E6 | `invariant(error.to_string())`                          | reject |
-    | E7 | `invalid_request(format!("bad: {error}"))`              | reject |
-    | E8 | the forbidden text only inside a comment or a string    | accept |
+    | E5 | `invariant(error.to_string())`                          | reject |
+    | E6 | `invalid_request(format!("bad: {error}"))`              | reject |
+    | E7 | the forbidden text only inside a comment or a string    | accept |
     """
     path = f"{REALIZATION_SRC}/environment_lifecycle.rs"
     clean = "fn f() -> Result<(), RealizationError> { g().map_err(RealizationError::from)?; Ok(()) }\n"
@@ -100,10 +93,8 @@ def selftest() -> None:
     ) == [], "E3"
     rejected = {
         "E4": "fn f() -> Result<(), HostError> { Ok(()) }\n",
-        "E5a": "fn f() { let _ = self.slots.lock().expect(\"poisoned\"); }\n",
-        "E5b": "fn f() { let _ = self.sink.read().unwrap(); }\n",
-        "E6": "fn f() { g().map_err(|error| RealizationError::invariant(error.to_string())); }\n",
-        "E7": "fn f() { g().map_err(|error| RealizationError::invalid_request(format!(\"bad: {error}\"))); }\n",
+        "E5": "fn f() { g().map_err(|error| RealizationError::invariant(error.to_string())); }\n",
+        "E6": "fn f() { g().map_err(|error| RealizationError::invalid_request(format!(\"bad: {error}\"))); }\n",
     }
     for rule, source in rejected.items():
         assert len(realization_error_violations({path: source})) == 1, rule
@@ -111,7 +102,7 @@ def selftest() -> None:
         "// HostError::internal(error.to_string()) and m.lock().expect(\"x\")\n"
         "fn f() { let _ = \"HostError .lock().expect(\"; }\n"
     )
-    assert realization_error_violations({path: commented}) == [], "E8"
+    assert realization_error_violations({path: commented}) == [], "E7"
 
 
 def check_all(repo_root: Path) -> list[str]:

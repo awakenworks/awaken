@@ -22,8 +22,6 @@ use awaken_session_configuration_contract::environment_projection;
 use awaken_session_realization::peers::EnvironmentPeer as _;
 use std::sync::Arc;
 
-use futures_util::StreamExt as _;
-
 use crate::resource_staging::ResourcePreparation;
 use awaken_dispatch_contract::RunClaim;
 use awaken_session_realization_contract::CanonicalSessionProjection;
@@ -44,20 +42,6 @@ use resource_transition::{
 #[must_use = "closed projections still require cleanup or an explicit retry"]
 pub struct SessionRealizationRevocation {
     selected: Vec<(String, crate::installed_session::ClosedSessionRealization)>,
-}
-
-fn terminal_cleanup_drive_error(
-    session_id: &str,
-    error: awaken_session_realization_contract::SessionRealizationDriveError,
-) -> crate::HostError {
-    match error {
-        awaken_session_realization_contract::SessionRealizationDriveError::Effect(error) => {
-            crate::managed_adapter_error::from_run_error(error)
-        }
-        error => crate::HostError::internal(format!(
-            "Session `{session_id}` terminal cleanup remained pending: {error}"
-        )),
-    }
 }
 
 #[cfg(kani)]
@@ -218,7 +202,7 @@ impl crate::RunAssembly {
         &self,
         session_id: &str,
         failed: &crate::session_resource::SessionRealizationLease,
-    ) {
+    ) -> Result<(), crate::realization_error::RealizationError> {
         let realizations = self.installed_sessions.realizations();
         realizations
             .modify_realization(session_id, |r| {
@@ -230,7 +214,7 @@ impl crate::RunAssembly {
                     r.close_authority(None);
                 }
             })
-            .expect("session runtime slots mutex poisoned");
+            .map(|_| ())
     }
 
     /// Authorize an MCP effect admitted before a same-epoch lease extension.
@@ -241,8 +225,9 @@ impl crate::RunAssembly {
         &self,
         generation: &crate::session_mcp::McpGenerationRef,
         now_unix_ms: u64,
-    ) -> bool {
-        self.mcp_generation_root_authority(generation)
+    ) -> Result<bool, awaken_session_types::RunError> {
+        Ok(self
+            .mcp_generation_root_authority(generation)?
             // Direct realization executor callers can present a live Control assertion
             // before installing a complete local Session projection. A relay
             // capability, by contrast, always requires the current root.
@@ -251,119 +236,17 @@ impl crate::RunAssembly {
                     generation.lease_expires_at_unix_ms(),
                     now_unix_ms,
                 )
-            })
+            }))
     }
 
     /// One root-authority decision shared by effect admission and the relay.
     pub(crate) fn mcp_generation_root_authority(
         &self,
         generation: &crate::session_mcp::McpGenerationRef,
-    ) -> Option<bool> {
+    ) -> Result<Option<bool>, awaken_session_types::RunError> {
         use awaken_session_mcp::McpGenerationAuthority as _;
         self.mcp_root_authority
             .mcp_generation_root_authority(generation)
-    }
-
-    /// Drive the one aggregate-owned terminal cleanup projection for a claimed
-    /// realization. `true` means the terminal fence owns this slot (including a
-    /// completed/not-found retirement); `false` means another actor settled the
-    /// assignment before this recovery drive observed it.
-    pub(crate) async fn reconcile_terminal_cleanup_for_lease(
-        &self,
-        control: &dyn awaken_session_realization_contract::SessionTerminalCleanupControl,
-        session_id: &awaken_session_types::SessionId,
-        lease: &crate::session_resource::SessionRealizationLease,
-    ) -> Result<bool, crate::HostError> {
-        // A delayed NotFound belongs to this original lookup and physical
-        // projection. Capture its existing phase and local Run controls in one
-        // read, without creating a slot; the original lease and phase must both
-        // still authorize fallback retirement. An unreadable foreground record
-        // refuses the whole reconciliation before any Control I/O or effect.
-        let original = self
-            .installed_sessions
-            .read(session_id.as_str(), |slot| {
-                slot.run
-                    .select_interruption()
-                    .map(|selected| (slot.realization.execution().phase.clone(), selected.local))
-            })?
-            .transpose()?;
-        match control.terminal_cleanup_work(session_id, lease).await {
-            Ok(Some(_)) => {
-                // This first read distinguishes an ordinary Session (`None`)
-                // from an aggregate-owned terminal fence. The topology-neutral
-                // driver re-reads the closed action and remains the sole owner
-                // of installation, effect ordering, receipt admission, retry,
-                // and process-local acknowledgement for warm and cold slots.
-                awaken_session_realization_driver::drive_session_terminal_cleanup(
-                    session_id,
-                    lease,
-                    control,
-                    self,
-                    self.realization_executor.as_ref(),
-                    self,
-                )
-                .await
-                .map_err(|error| terminal_cleanup_drive_error(session_id.as_str(), error))?;
-                Ok(true)
-            }
-            Ok(None) => {
-                if self
-                    .realization_executor
-                    .effects()
-                    .retire_completed_terminal_cleanup_projection(
-                        &self.mcp,
-                        session_id.as_str(),
-                        lease,
-                    )
-                    .await?
-                {
-                    Ok(true)
-                } else {
-                    Ok(false)
-                }
-            }
-            Err(
-                awaken_session_realization_contract::SessionRealizationControlFailure::NotFound,
-            ) => {
-                // Terminal absence decision table (tests in
-                // host/tests/terminal_recovery_selection.rs). Never interrupt by
-                // Session ID: a successor may now serve that same Session.
-                // T1 a completed terminal projection of this generation is
-                //    retired => signal the Run controls captured before lookup.
-                // T2 otherwise, the original phase still holds this generation
-                //    (exact or monotonically renewed) => close it and retire it,
-                //    signalling the Run controls captured at that close.
-                // T3 otherwise (successor generation, replaced phase, absent)
-                //    => leave the current root and its Run untouched.
-                if self
-                    .realization_executor
-                    .effects()
-                    .retire_completed_terminal_cleanup_projection(
-                        &self.mcp,
-                        session_id.as_str(),
-                        lease,
-                    )
-                    .await?
-                {
-                    if let Some((_, Some(local))) = &original {
-                        local.interrupt();
-                    }
-                } else if let Some((phase, _)) = &original
-                    && let Some(selected) = self.installed_sessions.close_realization_generation(
-                        session_id.as_str(),
-                        lease,
-                        phase,
-                    )?
-                {
-                    self.retire_selected_session_realization(session_id.as_str(), selected, true)
-                        .await?;
-                }
-                Ok(true)
-            }
-            Err(error) => Err(crate::HostError::internal(format!(
-                "Session `{session_id}` terminal cleanup control remained pending: {error}"
-            ))),
-        }
     }
 
     /// Drive an initial Worker-assigned Session through the same phase driver
@@ -398,124 +281,25 @@ impl crate::RunAssembly {
         })
     }
 
-    /// Claim every currently discoverable terminal assignment and drive
-    /// at most four independent Sessions at a time. A completed slot admits
-    /// the next claim without waiting for a slow sibling. The driver alone
-    /// installs the current aggregate readback; the claim is routing and
-    /// ownership input, not a second projection-installation path. This is the
-    /// sole Worker recovery selector for exact-current continuation and
-    /// expired-lease takeover; ordinary terminal settlement stays on the
-    /// initiating command path. The bound prevents one recovery sweep from
-    /// monopolizing the Worker, and the lifecycle awaits the whole sweep without
-    /// imposing a timeout on its durable effects.
+    /// Schedule one terminal cleanup recovery sweep for this Worker's
+    /// `target`. The sweep (claims, bounds, absence handling, retirement and
+    /// revocation) is the realization driver's one orchestration; this
+    /// executor serves only the process-local projections it installs.
     pub async fn recover_terminal_cleanup_assignments(
         &self,
         target: awaken_session_realization_contract::SessionRealizationTarget,
     ) -> Result<usize, crate::HostError> {
-        const MAX_ASSIGNMENTS_PER_RECOVERY_SWEEP: usize = 64;
-        const MAX_CONCURRENT_TERMINAL_CLEANUPS: usize = 4;
-
-        let control = &self.authority.terminal_cleanup_control().ok_or_else(|| {
+        let control = self.authority.terminal_cleanup_control().ok_or_else(|| {
             crate::HostError::internal(
                 "active Worker Session projection has no terminal cleanup Control client",
             )
         })?;
-        let mut recovered = 0;
-        let mut terminal_error = None;
-        let mut claims_exhausted = false;
-        let mut after_session_id: Option<awaken_session_types::SessionId> = None;
-        let mut in_flight = futures_util::stream::FuturesUnordered::new();
-        loop {
-            while in_flight.len() < MAX_CONCURRENT_TERMINAL_CLEANUPS
-                && recovered < MAX_ASSIGNMENTS_PER_RECOVERY_SWEEP
-                && !claims_exhausted
-            {
-                match control
-                    .claim_next_terminal_cleanup(target.clone(), after_session_id.as_ref())
-                    .await
-                {
-                    Ok(Some(assignment)) => {
-                        if after_session_id
-                            .as_ref()
-                            .is_some_and(|previous| assignment.session_id <= *previous)
-                        {
-                            // An older Coordinator may ignore the new cursor.
-                            // Never drive the same physical cleanup twice in
-                            // this sweep; retain the already-claimed work and
-                            // retry after Control and Worker versions converge.
-                            terminal_error.get_or_insert_with(|| {
-                                crate::HostError::internal(
-                                    "terminal cleanup claim cursor did not advance",
-                                )
-                            });
-                            claims_exhausted = true;
-                            continue;
-                        }
-                        after_session_id = Some(assignment.session_id.clone());
-                        recovered += 1;
-                        in_flight.push(async move {
-                            let result = self
-                                .reconcile_terminal_cleanup_for_lease(
-                                    control.as_ref(),
-                                    &assignment.session_id,
-                                    &assignment.authority.lease,
-                                )
-                                .await;
-                            (assignment.session_id, result)
-                        });
-                    }
-                    Ok(None) => {
-                        claims_exhausted = true;
-                    }
-                    Err(error) => {
-                        terminal_error.get_or_insert_with(|| {
-                            crate::HostError::internal(format!(
-                                "cold Session terminal cleanup claim remained pending: {error}"
-                            ))
-                        });
-                        claims_exhausted = true;
-                    }
-                }
-            }
-            let Some((session_id, result)) = in_flight.next().await else {
-                break;
-            };
-            match result {
-                Ok(true) => {}
-                Ok(false) => {
-                    // Another actor completed the operation between claim and
-                    // poll. This projection has no ordinary Run authority.
-                    if let Err(error) = self
-                        .revoke_session_realization(session_id.as_str(), None)
-                        .await
-                    {
-                        terminal_error.get_or_insert(error);
-                    }
-                }
-                Err(error) => {
-                    // The sweep retains its first classified failure, but
-                    // another pending Session must not hide this assignment's
-                    // own cause from Worker diagnostics.
-                    tracing::warn!(
-                        session_id = %session_id,
-                        code = %error.code,
-                        %error,
-                        "cold Session terminal cleanup assignment remained pending"
-                    );
-                    terminal_error.get_or_insert_with(|| crate::HostError {
-                        message: format!(
-                            "Session `{session_id}` terminal cleanup remained pending: {}",
-                            error.message
-                        ),
-                        ..error
-                    });
-                }
-            }
-        }
-        match terminal_error {
-            Some(error) => Err(error),
-            None => Ok(recovered),
-        }
+        awaken_session_realization_driver::recover_terminal_cleanup_assignments(
+            target,
+            self.terminal_recovery_participants(control.as_ref()),
+        )
+        .await
+        .map_err(terminal_recovery_sweep_error)
     }
 
     /// Remove one process-local realization after its continuing authority is
@@ -1061,11 +845,13 @@ impl crate::RunAssembly {
     pub(crate) fn thread_credential_realization(
         &self,
         thread: &str,
-    ) -> Option<awaken_credential_contract::CredentialRealizationProfile> {
+    ) -> Result<
+        Option<awaken_credential_contract::CredentialRealizationProfile>,
+        crate::realization_error::RealizationError,
+    > {
         self.installed_sessions
             .realizations()
             .credential_realization(thread)
-            .expect("session runtime slots mutex poisoned")
     }
 
     #[cfg(test)]
@@ -1079,8 +865,9 @@ impl crate::RunAssembly {
 
 #[cfg(test)]
 mod terminal_cleanup_drive_error_tests {
-    use super::terminal_cleanup_drive_error;
+    use super::terminal_recovery_sweep_error as sweep_error;
     use crate::HostErrorKind;
+    use awaken_session_realization_driver::{TerminalRecoveryError, TerminalRecoverySweepError};
 
     #[test]
     fn terminal_driver_error_mapping_preserves_effect_faults_and_control_boundary() {
@@ -1090,24 +877,28 @@ mod terminal_cleanup_drive_error_tests {
         // the existing inverse adapter; E2 keep Control/protocol failure at the
         // Host's terminal reconciliation boundary with the Session identity.
         // Decision rules: M1=C1=>E1; M2=C2=>E2.
-        let effect = terminal_cleanup_drive_error(
-            "session-a",
-            awaken_session_realization_contract::SessionRealizationDriveError::Effect(
-                awaken_session_types::RunError::unavailable_classified(
-                    "terminal_provider_retry",
-                    "provider is temporarily unavailable",
+        let effect = sweep_error(TerminalRecoverySweepError {
+            session_id: Some("session-a".into()),
+            error: TerminalRecoveryError::Drive(
+                awaken_session_realization_contract::SessionRealizationDriveError::Effect(
+                    awaken_session_types::RunError::unavailable_classified(
+                        "terminal_provider_retry",
+                        "provider is temporarily unavailable",
+                    ),
                 ),
             ),
-        );
+        });
         assert_eq!(effect.kind, HostErrorKind::Unavailable, "M1/E1");
         assert_eq!(effect.code, "terminal_provider_retry", "M1/E1");
 
-        let control = terminal_cleanup_drive_error(
-            "session-a",
-            awaken_session_realization_contract::SessionRealizationDriveError::Control(
-                awaken_session_realization_contract::SessionRealizationControlFailure::Conflict,
+        let control = sweep_error(TerminalRecoverySweepError {
+            session_id: Some("session-a".into()),
+            error: TerminalRecoveryError::Drive(
+                awaken_session_realization_contract::SessionRealizationDriveError::Control(
+                    awaken_session_realization_contract::SessionRealizationControlFailure::Conflict,
+                ),
             ),
-        );
+        });
         assert_eq!(control.kind, HostErrorKind::Internal, "M2/E2");
         assert!(control.message.contains("session-a"), "M2/E2");
         assert!(control.message.contains("changed concurrently"), "M2/E2");
@@ -1184,3 +975,160 @@ mod network_policy_tests {
 }
 
 pub(crate) mod worker_projection;
+
+/// The installed projection a terminal lookup belongs to: its realization
+/// phase and the local Run controls selected in the same slot read.
+pub struct TerminalRecoveryOrigin {
+    phase: Arc<tokio::sync::Mutex<()>>,
+    local: Option<crate::host::SelectedAttemptInterruption>,
+}
+
+fn terminal_recovery_run_error(
+    error: impl Into<crate::HostError>,
+) -> awaken_session_types::RunError {
+    crate::host_error::to_run_error(error.into())
+}
+
+impl crate::RunAssembly {
+    /// The participants a terminal recovery runs over: the given Control, this
+    /// executor's realization, terminal cleanup and local projections, and the
+    /// realization executor's effects.
+    pub(crate) fn terminal_recovery_participants<'a>(
+        &'a self,
+        control: &'a dyn awaken_session_realization_contract::SessionTerminalCleanupControl,
+    ) -> awaken_session_realization_driver::TerminalRecoveryParticipants<'a, Self> {
+        awaken_session_realization_driver::TerminalRecoveryParticipants {
+            control,
+            realization: self,
+            effects: self.realization_executor.as_ref(),
+            cleanup: self,
+            projections: self,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_realization_driver::TerminalRecoveryProjections for crate::RunAssembly {
+    type Origin = TerminalRecoveryOrigin;
+
+    fn capture_terminal_origin(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<Option<TerminalRecoveryOrigin>, awaken_session_types::RunError> {
+        // One read, never creating a slot; an unreadable foreground record
+        // refuses the whole recovery.
+        self.installed_sessions
+            .read(session_id.as_str(), |slot| {
+                slot.run
+                    .select_interruption()
+                    .map(|selected| TerminalRecoveryOrigin {
+                        phase: slot.realization.execution().phase.clone(),
+                        local: selected.local,
+                    })
+            })
+            .map_err(terminal_recovery_run_error)?
+            .transpose()
+            .map_err(terminal_recovery_run_error)
+    }
+
+    async fn retire_completed_terminal_projection(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        lease: &crate::session_resource::SessionRealizationLease,
+    ) -> Result<bool, awaken_session_types::RunError> {
+        self.realization_executor
+            .effects()
+            .retire_completed_terminal_cleanup_projection(&self.mcp, session_id.as_str(), lease)
+            .await
+            .map_err(awaken_session_types::RunError::from)
+    }
+
+    fn interrupt_origin_runs(&self, origin: &TerminalRecoveryOrigin) {
+        if let Some(local) = &origin.local {
+            local.interrupt();
+        }
+    }
+
+    async fn retire_origin_generation(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        lease: &crate::session_resource::SessionRealizationLease,
+        origin: &TerminalRecoveryOrigin,
+    ) -> Result<(), awaken_session_types::RunError> {
+        let Some(selected) = self
+            .installed_sessions
+            .close_realization_generation(session_id.as_str(), lease, &origin.phase)
+            .map_err(terminal_recovery_run_error)?
+        else {
+            return Ok(());
+        };
+        self.retire_selected_session_realization(session_id.as_str(), selected, true)
+            .await
+            .map(drop)
+            .map_err(crate::host_error::to_run_error)
+    }
+
+    async fn revoke_settled_projection(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<(), awaken_session_types::RunError> {
+        self.revoke_session_realization(session_id.as_str(), None)
+            .await
+            .map(drop)
+            .map_err(crate::host_error::to_run_error)
+    }
+}
+
+/// The executor boundary's projection of one recovery failure: an effect or
+/// local projection failure keeps its own class; a Control or protocol
+/// failure stays pending (internal).
+fn terminal_recovery_error(
+    error: awaken_session_realization_driver::TerminalRecoveryError,
+) -> crate::HostError {
+    match error {
+        awaken_session_realization_driver::TerminalRecoveryError::Drive(
+            awaken_session_realization_contract::SessionRealizationDriveError::Effect(error),
+        )
+        | awaken_session_realization_driver::TerminalRecoveryError::Projection(error) => {
+            crate::managed_adapter_error::from_run_error(error)
+        }
+        error => crate::HostError::internal(error.to_string()),
+    }
+}
+
+/// A sweep failure keeps its first cause's class and names its Session.
+fn terminal_recovery_sweep_error(
+    error: awaken_session_realization_driver::TerminalRecoverySweepError,
+) -> crate::HostError {
+    let awaken_session_realization_driver::TerminalRecoverySweepError { session_id, error } = error;
+    let projected = terminal_recovery_error(error);
+    match session_id {
+        Some(session_id) => crate::HostError {
+            message: format!(
+                "Session `{session_id}` terminal cleanup remained pending: {}",
+                projected.message
+            ),
+            ..projected
+        },
+        None => projected,
+    }
+}
+
+/// Reconcile one claimed terminal assignment through the driver, projected
+/// onto this executor's error; composition tests drive it with the real
+/// installed Sessions.
+#[cfg(test)]
+pub(crate) async fn reconcile_terminal_cleanup_for_test(
+    assembly: &crate::RunAssembly,
+    control: &dyn awaken_session_realization_contract::SessionTerminalCleanupControl,
+    session_id: &awaken_session_types::SessionId,
+    lease: &crate::session_resource::SessionRealizationLease,
+) -> Result<awaken_session_realization_driver::TerminalReconciliation, crate::HostError> {
+    awaken_session_realization_driver::reconcile_terminal_cleanup(
+        session_id,
+        lease,
+        assembly.terminal_recovery_participants(control),
+    )
+    .await
+    .map_err(terminal_recovery_error)
+}

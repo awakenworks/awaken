@@ -568,7 +568,9 @@ fn committed_completion_wakes_the_single_installed_convergence_owner() {
 #[tokio::test]
 async fn dropping_the_guard_removes_the_registration() {
     let registry = Arc::new(CompletionRegistry::default());
-    let (rx, guard) = registry.register(&RunId("r".into()), None);
+    let (rx, guard) = registry
+        .register(&RunId("r".into()), None)
+        .expect("healthy registry");
     assert_eq!(registry.waiters.lock().unwrap().len(), 1);
     drop(guard);
     drop(rx);
@@ -583,7 +585,9 @@ async fn dropping_the_guard_removes_the_registration() {
 #[tokio::test]
 async fn settled_delivers_the_state_and_clears_the_slot() {
     let registry = Arc::new(CompletionRegistry::default());
-    let (rx, _guard) = registry.register(&RunId("r".into()), None);
+    let (rx, _guard) = registry
+        .register(&RunId("r".into()), None)
+        .expect("healthy registry");
     registry.settled(&RunId("r".into()), &RunState::Awaiting);
     assert!(matches!(rx.await, Ok(RunState::Awaiting)));
     assert!(registry.waiters.lock().unwrap().is_empty());
@@ -736,8 +740,8 @@ async fn exact_run_replay_observers_do_not_replace_each_other() {
     // M3=C1+settle=>E3.
     let registry = Arc::new(CompletionRegistry::default());
     let run_id = RunId("session-user-replay".into());
-    let (first, first_guard) = registry.register(&run_id, None);
-    let (second, _second_guard) = registry.register(&run_id, None);
+    let (first, first_guard) = registry.register(&run_id, None).expect("healthy registry");
+    let (second, _second_guard) = registry.register(&run_id, None).expect("healthy registry");
     assert_eq!(
         registry
             .waiters
@@ -784,8 +788,9 @@ async fn durable_foreground_registry_routes_only_the_current_runs_live_stream() 
     let registry = Arc::new(CompletionRegistry::default());
     let downstream = Arc::new(MemoryStreamSink::new());
     let run = RunId("run-live".into());
-    let (settled, _guard) =
-        registry.register(&run, Some(downstream.clone() as Arc<dyn StreamSink>));
+    let (settled, _guard) = registry
+        .register(&run, Some(downstream.clone() as Arc<dyn StreamSink>))
+        .expect("healthy registry");
     let event = |run_id: &str, delta: &str| StreamEvent {
         run_id: RunId(run_id.into()),
         kind: AgentEvent::Delta(Delta::TextDelta {
@@ -825,8 +830,8 @@ async fn durable_foreground_registry_routes_only_the_current_runs_live_stream() 
 async fn background_live_progress_uses_the_exact_thread_hub_channel() {
     let hub = Arc::new(crate::ThreadEventHub::new());
     let registry = CompletionRegistry::new(hub.clone(), Default::default());
-    let mut child = hub.subscribe("child-thread");
-    let mut primary = hub.subscribe("session-root");
+    let mut child = hub.subscribe("child-thread").expect("healthy registry");
+    let mut primary = hub.subscribe("session-root").expect("healthy registry");
     let event = StreamObservation::assistant_delta(
         RunId("background-run".into()),
         ThreadId("child-thread".into()),
@@ -1131,4 +1136,32 @@ fn explicit_empty_manifest_still_requires_the_revocation_capability() {
             .required_capabilities
             .contains(awaken_dispatch_contract::REPOSITORY_CREDENTIALS_CAPABILITY)
     );
+}
+
+/// Rows W2 and W4 of [`CompletionRegistry`]: a poisoned registry refuses a
+/// new observation before anything is enqueued, and neither settlement nor
+/// live relay panics; committed truth settles the waiters already registered.
+#[tokio::test]
+async fn a_poisoned_completion_registry_refuses_new_observations_and_stops_notifying() {
+    let hub = Arc::new(crate::ThreadEventHub::new());
+    let registry = Arc::new(CompletionRegistry::new(hub, Default::default()));
+    crate::host_error::poison_for_test(&registry.waiters);
+    assert!(
+        matches!(
+            registry.register(&RunId("poisoned-run".into()), None),
+            Err(crate::host_error::ExecutorLock::CompletionRegistry)
+        ),
+        "W2"
+    );
+    registry.settled(&RunId("poisoned-run".into()), &RunState::Running);
+    registry
+        .send_observation(StreamObservation::assistant_delta(
+            RunId("poisoned-run".into()),
+            ThreadId("poisoned-thread".into()),
+            0,
+            0,
+            AgentEvent::Delta(Delta::TextDelta { delta: "x".into() }),
+        ))
+        .await
+        .expect("W4 the live relay is best-effort");
 }

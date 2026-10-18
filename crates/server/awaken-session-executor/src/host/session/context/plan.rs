@@ -58,8 +58,8 @@ pub(super) async fn prepare(
                 .inference_routing
                 .model_ref(thread, frozen_model_ref)
         },
-        |attempt| attempt.effective_model_ref.clone(),
-    );
+        |attempt| Ok(attempt.effective_model_ref.clone()),
+    )?;
     let (publication_source, unclaimed_runtime_publications): (
         Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
         Option<Vec<awaken_runtime_contract::ExecutableAgentSnapshot>>,

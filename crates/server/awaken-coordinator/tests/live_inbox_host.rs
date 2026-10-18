@@ -113,6 +113,7 @@ async fn a_message_queued_mid_run_reaches_the_same_run() {
         .live_inboxes()
         .live_inbox(thread)
         .await
+        .expect("healthy registry")
         .expect("an in-flight native Run opens a live inbox");
     let _ = inbox.offer(user("q1", "Queued follow-up."));
 
@@ -139,7 +140,14 @@ async fn a_message_queued_mid_run_reaches_the_same_run() {
     );
 
     // The attempt closed its inbox on the way out.
-    assert!(h.host.live_inboxes().live_inbox(thread).await.is_none());
+    assert!(
+        h.host
+            .live_inboxes()
+            .live_inbox(thread)
+            .await
+            .expect("healthy registry")
+            .is_none()
+    );
 
     // The injected message is committed under the engine's Run-scoped inbox id.
     let committed = h
@@ -194,6 +202,7 @@ async fn a_message_the_cancelled_run_never_consumed_is_discarded() {
         .live_inboxes()
         .live_inbox(thread)
         .await
+        .expect("healthy registry")
         .expect("inbox open");
     let _ = inbox.offer(user("q1", "Survivor."));
     h.host
@@ -218,7 +227,12 @@ async fn a_message_the_cancelled_run_never_consumed_is_discarded() {
     );
 
     assert!(
-        h.host.live_inboxes().live_inbox(thread).await.is_none(),
+        h.host
+            .live_inboxes()
+            .live_inbox(thread)
+            .await
+            .expect("healthy registry")
+            .is_none(),
         "the cancelled attempt closed its inbox"
     );
     assert!(

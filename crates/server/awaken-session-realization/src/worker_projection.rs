@@ -30,7 +30,11 @@ pub trait SessionProjectionExecution: Send + Sync {
         synchronize_resources: bool,
         lease: Option<ObservedSessionRealizationLease>,
     ) -> Result<(), RealizationError>;
-    fn invalidate_realization_lease(&self, session: &str, lease: &SessionRealizationLease);
+    fn invalidate_realization_lease(
+        &self,
+        session: &str,
+        lease: &SessionRealizationLease,
+    ) -> Result<(), RealizationError>;
     fn mcp_effects(&self) -> &dyn McpAttachmentRealizer;
 }
 

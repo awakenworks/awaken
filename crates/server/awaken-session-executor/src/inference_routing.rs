@@ -63,21 +63,25 @@ impl InferenceRouting {
     }
 
     /// The model ref bound to `thread`, or `default_ref`.
-    pub(crate) fn model_ref(&self, thread: &str, default_ref: &str) -> String {
-        self.override_for(thread)
-            .unwrap_or_else(|| default_ref.to_string())
+    pub(crate) fn model_ref(
+        &self,
+        thread: &str,
+        default_ref: &str,
+    ) -> Result<String, crate::realization_error::RealizationError> {
+        Ok(self
+            .override_for(thread)?
+            .unwrap_or_else(|| default_ref.to_string()))
     }
 
     /// The per-thread model override (R2/R5), if one was staged — `None` when the run
     /// uses its agent's published binding. Stamped onto the run's activation at
-    /// delivery so the resolve seam sees it without consulting this map.
-    pub(crate) fn override_for(&self, thread: &str) -> Option<String> {
-        self.slots
-            .realizations()
-            .frozen(thread)
-            .expect("session runtime slots mutex poisoned")
-            .model_ref
-            .clone()
+    /// delivery so the resolve seam sees it without consulting this map. A
+    /// poisoned registry is refused, never read as "no override".
+    pub(crate) fn override_for(
+        &self,
+        thread: &str,
+    ) -> Result<Option<String>, crate::realization_error::RealizationError> {
+        Ok(self.slots.realizations().frozen(thread)?.model_ref.clone())
     }
 
     pub(crate) fn executor_for_activation(
@@ -287,13 +291,29 @@ mod tests {
         binding
             .register("t", "model-a")
             .expect("installed Sessions");
-        assert_eq!(binding.model_ref("t", "default-model"), "model-a");
+        assert_eq!(
+            binding
+                .model_ref("t", "default-model")
+                .expect("healthy registry"),
+            "model-a"
+        );
         // Re-register (per-Run override) → the new ref replaces the old one.
         binding
             .register("t", "model-b")
             .expect("installed Sessions");
-        assert_eq!(binding.model_ref("t", "default-model"), "model-b");
-        assert_eq!(binding.override_for("t").as_deref(), Some("model-b"));
+        assert_eq!(
+            binding
+                .model_ref("t", "default-model")
+                .expect("healthy registry"),
+            "model-b"
+        );
+        assert_eq!(
+            binding
+                .override_for("t")
+                .expect("healthy registry")
+                .as_deref(),
+            Some("model-b")
+        );
     }
 
     #[test]
@@ -369,10 +389,21 @@ mod tests {
     #[test]
     fn override_for_returns_the_staged_override_else_none() {
         let binding = routing();
-        assert!(binding.override_for("t").is_none());
+        assert!(
+            binding
+                .override_for("t")
+                .expect("healthy registry")
+                .is_none()
+        );
         binding
             .register("t", "fast-model")
             .expect("installed Sessions");
-        assert_eq!(binding.override_for("t").as_deref(), Some("fast-model"));
+        assert_eq!(
+            binding
+                .override_for("t")
+                .expect("healthy registry")
+                .as_deref(),
+            Some("fast-model")
+        );
     }
 }

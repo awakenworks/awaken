@@ -35,7 +35,8 @@ async fn ordinary_run_and_managed_session_use_distinct_mcp_admission() {
     let session = SessionProjectionExecution::mcp_effects(host.run_assembly.as_ref());
     assert_eq!(
         host.run_assembly
-            .mcp_generation_root_authority(&stage.generation),
+            .mcp_generation_root_authority(&stage.generation)
+            .expect("healthy registry"),
         None
     );
     assert_eq!(
@@ -63,7 +64,8 @@ async fn ordinary_run_and_managed_session_use_distinct_mcp_admission() {
     );
     assert_eq!(
         host.run_assembly
-            .mcp_generation_root_authority(&stage.generation),
+            .mcp_generation_root_authority(&stage.generation)
+            .expect("healthy registry"),
         None,
         "ordinary dispatch must not manufacture a Session root"
     );

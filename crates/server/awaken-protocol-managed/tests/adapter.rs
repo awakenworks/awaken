@@ -2336,8 +2336,8 @@ impl awaken_session_execution_contract::OutcomeRuntime for CapableFake {
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::CapabilityRuntime for CapableFake {
-    fn capabilities(&self) -> AgentCapabilities {
-        AgentCapabilities {
+    fn capabilities(&self) -> Result<AgentCapabilities, awaken_session_types::RunError> {
+        Ok(AgentCapabilities {
             builtin_tools: vec![
                 BuiltinTool {
                     name: "read".into(),
@@ -2355,7 +2355,7 @@ impl awaken_session_execution_contract::CapabilityRuntime for CapableFake {
             }],
             skills: vec!["deploy".into()],
             delegates: vec!["researcher".into()],
-        }
+        })
     }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
@@ -2366,7 +2366,10 @@ impl awaken_session_execution_contract::CapabilityRuntime for CapableFake {
     fn capabilities_for(
         &self,
         _thread: &str,
-    ) -> awaken_session_configuration_contract::AgentCapabilities {
+    ) -> Result<
+        awaken_session_configuration_contract::AgentCapabilities,
+        awaken_session_types::RunError,
+    > {
         self.capabilities()
     }
 }
@@ -3338,7 +3341,10 @@ impl awaken_session_execution_contract::StreamingRunRuntime for ToolAwaitingFake
     /// Whether the thread's selected model accepts a system message after the
     /// conversation has started. Runtimes whose models do not support this can
     /// fail admission before the Managed adapter persists the inbound event.
-    async fn supports_mid_conversation_system(&self, thread: &str) -> bool {
+    async fn supports_mid_conversation_system(
+        &self,
+        thread: &str,
+    ) -> Result<bool, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .supports_mid_conversation_system(thread)
             .await
@@ -3457,8 +3463,8 @@ impl awaken_session_execution_contract::ThreadReadRuntime for ToolAwaitingFake {
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::CapabilityRuntime for ToolAwaitingFake {
-    fn capabilities(&self) -> AgentCapabilities {
-        match self.scenario {
+    fn capabilities(&self) -> Result<AgentCapabilities, awaken_session_types::RunError> {
+        Ok(match self.scenario {
             AdapterToolScenario::Permission => AgentCapabilities {
                 builtin_tools: vec![BuiltinTool {
                     name: "write".into(),
@@ -3474,7 +3480,7 @@ impl awaken_session_execution_contract::CapabilityRuntime for ToolAwaitingFake {
                 }],
                 ..Default::default()
             },
-        }
+        })
     }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
@@ -3485,7 +3491,10 @@ impl awaken_session_execution_contract::CapabilityRuntime for ToolAwaitingFake {
     fn capabilities_for(
         &self,
         _thread: &str,
-    ) -> awaken_session_configuration_contract::AgentCapabilities {
+    ) -> Result<
+        awaken_session_configuration_contract::AgentCapabilities,
+        awaken_session_types::RunError,
+    > {
         self.capabilities()
     }
 }
@@ -5085,8 +5094,11 @@ impl awaken_session_execution_contract::StreamingRunRuntime for RecordingFake {
             .await
     }
 
-    async fn supports_mid_conversation_system(&self, _thread: &str) -> bool {
-        self.supports_mid_conversation_system
+    async fn supports_mid_conversation_system(
+        &self,
+        _thread: &str,
+    ) -> Result<bool, awaken_session_types::RunError> {
+        Ok(self.supports_mid_conversation_system)
     }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
@@ -6020,7 +6032,10 @@ impl awaken_session_execution_contract::StreamingRunRuntime for InterruptRedirec
     /// Whether the thread's selected model accepts a system message after the
     /// conversation has started. Runtimes whose models do not support this can
     /// fail admission before the Managed adapter persists the inbound event.
-    async fn supports_mid_conversation_system(&self, thread: &str) -> bool {
+    async fn supports_mid_conversation_system(
+        &self,
+        thread: &str,
+    ) -> Result<bool, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .supports_mid_conversation_system(thread)
             .await

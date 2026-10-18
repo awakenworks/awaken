@@ -2728,15 +2728,20 @@ impl awaken_session_execution_contract::CapabilityRuntime for AcceptingFake {
     /// The advertised capability surface echoed in the session's agent object. The
     /// default reports nothing; a real host overrides it with its built-in tools,
     /// custom tools, skills, and delegate roster so the session enumerates what it does.
-    fn capabilities(&self) -> awaken_session_configuration_contract::AgentCapabilities {
+    fn capabilities(
+        &self,
+    ) -> Result<
+        awaken_session_configuration_contract::AgentCapabilities,
+        awaken_session_types::RunError,
+    > {
         awaken_session_execution_contract::NeutralRuntime.capabilities()
     }
 
     fn capabilities_for(
         &self,
         _thread: &str,
-    ) -> awaken_session_configuration_contract::AgentCapabilities {
-        awaken_session_configuration_contract::AgentCapabilities {
+    ) -> Result<awaken_session_configuration_contract::AgentCapabilities, RunError> {
+        Ok(awaken_session_configuration_contract::AgentCapabilities {
             delegates: self
                 .prepared
                 .lock()
@@ -2745,7 +2750,7 @@ impl awaken_session_execution_contract::CapabilityRuntime for AcceptingFake {
                 .map(|init| init.delegate_ids.clone())
                 .unwrap_or_default(),
             ..Default::default()
-        }
+        })
     }
 }
 

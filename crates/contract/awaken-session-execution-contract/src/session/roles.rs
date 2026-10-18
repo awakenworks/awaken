@@ -438,7 +438,8 @@ pub trait StreamingRunRuntime: Send + Sync {
     /// Whether the thread's selected model accepts a system message after the
     /// conversation has started. Runtimes whose models do not support this can
     /// fail admission before the Managed adapter persists the inbound event.
-    async fn supports_mid_conversation_system(&self, thread: &str) -> bool;
+    /// An unreadable thread binding is an error, never a guessed capability.
+    async fn supports_mid_conversation_system(&self, thread: &str) -> Result<bool, RunError>;
 
     /// The tool currently blocking `thread`, if any. Admission uses this
     /// read-only projection to reject events that cannot legally precede the
@@ -649,9 +650,10 @@ pub trait OutcomeRuntime: Send + Sync {
 /// Every method is required. Composition supplies this role before its caller runs.
 #[async_trait]
 pub trait LiveInboxRuntime: Send + Sync {
-    /// The live-inbox queue on `thread`'s in-flight Run. The default reports
-    /// an inactive queue, so a host without live-inbox wiring is unaffected.
-    async fn live_inbox_snapshot(&self, thread: &str) -> LiveInboxSnapshot;
+    /// The live-inbox queue on `thread`'s in-flight Run, or an inactive queue
+    /// when none runs here. A process that cannot read which attempts it owns
+    /// fails `Unavailable` instead of reporting an inactive queue.
+    async fn live_inbox_snapshot(&self, thread: &str) -> Result<LiveInboxSnapshot, LiveInboxError>;
 
     /// Queue a message onto `thread`'s in-flight Run; it is folded into the
     /// running transcript at the next safe boundary. Fails `Inactive` when no
@@ -686,10 +688,12 @@ pub trait CapabilityRuntime: Send + Sync {
     /// The advertised capability surface echoed in the session's agent object. The
     /// default reports nothing; a real host overrides it with its built-in tools,
     /// custom tools, skills, and delegate roster so the session enumerates what it does.
-    fn capabilities(&self) -> AgentCapabilities;
+    /// A catalog that cannot be read is refused, never advertised as empty.
+    fn capabilities(&self) -> Result<AgentCapabilities, RunError>;
 
     /// The capability surface visible to one prepared session. Runtimes whose
     /// catalogs are workspace-scoped override this; simple runtimes inherit the
-    /// process-wide view for backwards compatibility.
-    fn capabilities_for(&self, thread: &str) -> AgentCapabilities;
+    /// process-wide view for backwards compatibility. A Session whose frozen
+    /// inputs cannot be read is refused, never advertised a guessed surface.
+    fn capabilities_for(&self, thread: &str) -> Result<AgentCapabilities, RunError>;
 }

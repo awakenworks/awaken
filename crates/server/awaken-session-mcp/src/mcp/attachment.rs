@@ -40,28 +40,34 @@ fn validate_stdio_credential_binding(
 /// staging only consumes them.
 #[async_trait::async_trait]
 pub trait McpStagingSession: Send + Sync {
-    /// Whether the exact generation is authorized at `now_unix_ms`.
+    /// Whether the exact generation is authorized at `now_unix_ms`; an
+    /// unreadable root authority is refused as an error.
     fn mcp_generation_is_authorized_at(
         &self,
         generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
         now_unix_ms: u64,
-    ) -> bool;
+    ) -> Result<bool, RunError>;
 
     /// The authority a newly started Worker relay admits routes by.
     fn relay_authority(&self) -> Weak<dyn McpGenerationAuthority>;
 
-    /// The execution backend frozen for the Session, when projected.
+    /// The execution backend frozen for the Session, when projected; an
+    /// unreadable installed-Session registry is refused, never absent.
     fn execution_backend(
         &self,
         session: &str,
-    ) -> Option<awaken_runtime_contract::resolved::Backend>;
+    ) -> Result<Option<awaken_runtime_contract::resolved::Backend>, RunError>;
 
     /// Whether the Session's Environment provider enforces secret substitution
     /// with no-bypass networking.
     fn supports_secret_egress_without_bypass(&self, session: &str) -> Result<bool, RunError>;
 
-    /// The Session's frozen Environment network policy, when projected.
-    fn frozen_network(&self, session: &str) -> Option<awaken_provisioning_contract::NetworkPolicy>;
+    /// The Session's frozen Environment network policy, when projected; an
+    /// unreadable installed-Session registry is refused, never absent.
+    fn frozen_network(
+        &self,
+        session: &str,
+    ) -> Result<Option<awaken_provisioning_contract::NetworkPolicy>, RunError>;
 
     /// The installed process-private client-injection capabilities of one
     /// ACP adapter, or `None` when the adapter cannot consume them.
@@ -371,7 +377,7 @@ impl McpSessions {
             .modify_mcp_with_root(&request.generation, |_mcp, root| root)
             .map_err(run_error)?
             .flatten();
-        if !host.mcp_generation_is_authorized_at(&request.generation, now_unix_ms)
+        if !host.mcp_generation_is_authorized_at(&request.generation, now_unix_ms)?
             || !admission.admits(root, &request.generation, now_unix_ms)
         {
             return Err(RunError::classified(
@@ -442,7 +448,7 @@ impl McpSessions {
             }
         }
 
-        let execution_backend = host.execution_backend(request.generation.session_id().as_str());
+        let execution_backend = host.execution_backend(request.generation.session_id().as_str())?;
         let is_acp = execution_backend
             .as_ref()
             .is_some_and(|backend| backend.is_acp());
@@ -542,7 +548,8 @@ impl McpSessions {
                                     "Worker relay requires one canonical HTTP MCP target",
                                 )
                             })?;
-                        let network = host.frozen_network(request.generation.session_id().as_str());
+                        let network =
+                            host.frozen_network(request.generation.session_id().as_str())?;
                         if !network
                             .as_ref()
                             .is_some_and(|network| exposure.admitted_by(network, &upstream_host))
@@ -1063,7 +1070,7 @@ impl McpSessions {
         generation: awaken_session_configuration_contract::mcp::McpGenerationRef,
     ) -> Result<(), RunError> {
         let now_unix_ms = awaken_time::WallClockExt::now_ms(self.clock.as_ref());
-        if !host.mcp_generation_is_authorized_at(&generation, now_unix_ms) {
+        if !host.mcp_generation_is_authorized_at(&generation, now_unix_ms)? {
             return Err(RunError::classified(
                 "mcp_stale_ownership",
                 "MCP publication lease has expired",
