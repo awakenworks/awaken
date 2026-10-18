@@ -141,12 +141,15 @@ async fn revoked_resource_successor_reaches_only_the_canonical_adoption_edge() {
     .await)
         .build()
         .expect("validated Host dependencies");
-    host.installed_sessions.install_realization(thread, |r| {
-        r.environment_mut().owner = SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
-            cause: SessionEnvironmentRetirementCause::RealizationRevocation,
-            owned: RetiringEnvironmentOwner::Bound(initial.clone()),
+    host.run_assembly
+        .installed_sessions
+        .install_realization(thread, |r| {
+            r.environment_mut().owner =
+                SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
+                    cause: SessionEnvironmentRetirementCause::RealizationRevocation,
+                    owned: RetiringEnvironmentOwner::Bound(initial.clone()),
+                });
         });
-    });
     let (_, _, resident, candidate) = host
         .realization_executor
         .environments()
@@ -178,7 +181,7 @@ async fn revoked_resource_successor_reaches_only_the_canonical_adoption_edge() {
         "R2 foreign generation"
     );
     assert!(
-        matches!(host.installed_sessions.realizations().read_realization(thread, |r| r.environment().owner.clone()).expect("installed Sessions"),
+        matches!(host.run_assembly.installed_sessions.realizations().read_realization(thread, |r| r.environment().owner.clone()).expect("installed Sessions"),
         Some(SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
             cause: SessionEnvironmentRetirementCause::RealizationRevocation,
             owned: RetiringEnvironmentOwner::Bound(owned),
@@ -639,7 +642,8 @@ async fn source_free_projection_does_not_reopen_mcp_before_retiring_owner_is_dis
         None,
         None,
     );
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .realizations()
         .close_mcp_realization_admission(
             thread,
@@ -668,6 +672,7 @@ async fn source_free_projection_does_not_reopen_mcp_before_retiring_owner_is_dis
         .unwrap();
     assert!(
         !host
+            .run_assembly
             .installed_sessions
             .realizations()
             .mcp_realization_admitted(thread)
@@ -690,7 +695,8 @@ async fn source_free_projection_does_not_reopen_mcp_before_retiring_owner_is_dis
         )
         .unwrap();
     assert!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .mcp_realization_admitted(thread)
             .expect("installed Sessions"),
@@ -738,7 +744,8 @@ async fn discard_keeps_live_owner_and_exact_retry_clears_after_termination() {
     );
     assert!(
         matches!(
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .realizations()
                 .read_realization(thread, |r| r.environment().owner.clone())
                 .expect("installed Sessions"),
@@ -934,7 +941,7 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
     // runtime only to select the same frozen provider. This test then calls the
     // typed lifecycle owner directly; claimed end-to-end ordering remains in the
     // synchronizer test named above.
-    let managed = crate::ManagedHost::new(host.clone());
+    let managed = host.clone();
     let snapshot = test_activation(thread, "claimed-legacy-publication").snapshot;
     install_complete_projection_for_snapshot(
         &managed,
@@ -979,6 +986,7 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
         .install_test_resident_session_environment(thread, environment.clone());
 
     let lifecycle = host
+        .run_assembly
         .installed_sessions
         .realizations()
         .read_realization(thread, |r| r.environment().lifecycle.clone())
@@ -991,7 +999,10 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
                 .environments()
                 .retire_session_environment_for_revocation(
                     thread,
-                    (&host.run_assembly.mcp, host.installed_sessions.as_ref()),
+                    (
+                        &host.run_assembly.mcp,
+                        host.run_assembly.installed_sessions.as_ref()
+                    ),
                     None,
                 )
                 .await
@@ -1000,6 +1011,7 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
         );
     }
     let retired = host
+        .run_assembly
         .installed_sessions
         .realizations()
         .read_realization(thread, |r| r.environment().owner.clone())
@@ -1041,7 +1053,7 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
     );
     assert!(
         matches!(
-            host.installed_sessions.realizations()
+            host.run_assembly.installed_sessions.realizations()
                 .read_realization(thread, |r| r.environment().owner.clone()).expect("installed Sessions"),
             Some(SessionEnvironmentOwner::Retiring(current)) if current.exact_matches(
                 match &retired {
@@ -1083,7 +1095,8 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
     );
     assert!(
         matches!(
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .realizations()
                 .read_realization(thread, |r| r.environment().owner.clone())
                 .expect("installed Sessions"),

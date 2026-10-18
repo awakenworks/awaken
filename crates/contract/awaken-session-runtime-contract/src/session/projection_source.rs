@@ -136,8 +136,9 @@ impl SessionProjectionSource for CommittedSessionProjection {
     }
 }
 
-/// The one validated Thread prefix read both projection forms share: an
-/// exact selected Run, or the latest one, from the Thread read role.
+/// The one validated Thread prefix read every projection shares: an exact
+/// selected Run, or the latest one, from the Thread read role. A snapshot of
+/// another Thread or another selected Run is refused, never returned.
 async fn projected_thread_snapshot<R: ThreadReadRuntime + ?Sized>(
     reads: &R,
     session_id: &crate::SessionId,

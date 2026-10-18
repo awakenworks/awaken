@@ -27,7 +27,8 @@ async fn failed_context_assembly_retains_one_environment_for_retry() {
         .expect("R1 must fail");
     assert!(error.message.contains("invalid host compact plugin config"));
     assert!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .read_run(thread, |run| run.context.is_none())
             .unwrap()
     );
@@ -51,7 +52,8 @@ async fn failed_context_assembly_retains_one_environment_for_retry() {
             .contains("invalid host compact plugin config")
     );
     assert!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .read_run(thread, |run| run.context.is_none())
             .unwrap()
     );
@@ -181,7 +183,7 @@ async fn acp_fixture(
     fail_factory: bool,
 ) -> (
     Arc<SharedHost>,
-    crate::ManagedHost,
+    Arc<SharedHost>,
     Arc<FaultExporter>,
     tokio::sync::oneshot::Receiver<()>,
 ) {
@@ -265,7 +267,8 @@ async fn acp_context_failure_releases_exports_and_reuses_environment() {
             .expect("injected failure");
         assert!(error.message.contains(message), "{error}");
         assert!(
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .read_run(thread, |run| run.context.is_none())
                 .unwrap(),
             "E1"
@@ -334,7 +337,8 @@ async fn cancelled_context_construction_releases_lock_and_partial_export() {
         .expect("C1 resident owner");
     drop(open);
     assert!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .read_run(thread, |run| run.context.is_none())
             .unwrap(),
         "E1"

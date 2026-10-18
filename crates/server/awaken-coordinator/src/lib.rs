@@ -103,7 +103,7 @@ pub use awaken_protocol_managed::{ResourcesRouterInput, models_router, resources
 pub use awaken_run_ingress_http::durable_ops_router;
 use awaken_runtime_host::HostDependencies;
 pub use awaken_runtime_host::{
-    HostResume, ManagedHost, NoModelConfiguredExecutor, SharedHost, ThreadEvent, ThreadEventHub,
+    HostResume, NoModelConfiguredExecutor, SharedHost, ThreadEvent, ThreadEventHub,
     UNCONFIGURED_MODEL_REF, advertised_tools,
 };
 pub use awaken_sandbox_local::content_fingerprint;
@@ -596,14 +596,13 @@ async fn local_managed_state_over(
     let local_realization_owner = host.dispatch_owner().to_string();
     let environments =
         environments.unwrap_or_else(|| volatile_environment_execution(clock.clone()));
-    let runtime = Arc::new(ManagedHost::new(host.clone()));
     let mut builder = awaken_session_application::SessionApplicationBuilder::new(
-        awaken_runtime_host::session_execution_roles(&runtime),
+        host.session_execution_roles(),
         host.run_assembly().clone(),
         persistence,
         environments.clone(),
         awaken_session_application::SessionExecutionAdmission::fixture_with_dispatch(
-            runtime
+            host.coordination()
                 .dispatch_observation_source()
                 .expect("fixture canonical dispatch feed"),
         ),
@@ -635,7 +634,7 @@ async fn local_managed_state_over(
         .build()
         .expect("scenario Session capabilities are complete");
     let application = Arc::new(application);
-    install_managed_agent_coordination(&host, &runtime, &application)
+    install_managed_agent_coordination(&host, &application)
         .expect("scenario Session coordination application binds once");
     let managed = ManagedState::from_application(
         application.clone(),
@@ -659,7 +658,7 @@ async fn local_managed_state_over(
 // `awaken-scenario-host::run_echo_worker`.
 
 /// [`mount`], with a caller-assembled Managed state: the management server passes
-/// a vault-aware `ManagedState` over an MCP-wired `ManagedHost` (ADR-0043 Phase
+/// a vault-aware `ManagedState` over the MCP-wired Session executor (ADR-0043 Phase
 /// 3); every other mode goes through [`mount`], whose state is the plain host.
 #[cfg(feature = "test-support")]
 pub async fn mount_with_managed(

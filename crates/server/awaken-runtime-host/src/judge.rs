@@ -15,7 +15,6 @@ use awaken_runtime_contract::{ExecutableAgentSnapshot, RuntimeRunContext};
 use awaken_tool_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 
 use crate::agent_catalog::AgentCatalog;
-use crate::host::SharedHost;
 use crate::run_exec::BoundRunExecutor;
 use crate::store::HostCommit;
 
@@ -23,7 +22,7 @@ use crate::store::HostCommit;
 /// Grader Thread and supplies Host backend/durable context; prompt, identity,
 /// recovery, restrictions, and parsing remain in `awaken-ext-goal`.
 pub(crate) struct HostAgentGrader<'a> {
-    pub(crate) host: &'a SharedHost,
+    pub(crate) host: &'a crate::SessionRuns,
     /// The foreground record of the Outcome's Session, which interrupting
     /// that Session signals; the grader lends its attempt signal to it.
     pub(crate) session_foreground: Arc<crate::host::ForegroundRunRecord>,
@@ -76,7 +75,7 @@ impl Grader for HostAgentGrader<'_> {
         }
         .map_err(|error| GraderError::Execution(error.to_string()))?;
         tracing::debug!(thread = %thread.0, "Outcome grader context ready");
-        let executor = BoundRunExecutor::new(&self.host.session_runs, context.clone())
+        let executor = BoundRunExecutor::new(self.host, context.clone())
             .lending_cancellation_to(self.session_foreground.clone());
         AgentGrader::new(&executor, context.commit.as_ref(), RuntimeRunContext::new())
             .grade(snapshot, input)
@@ -136,7 +135,6 @@ impl RawTool for AuxAgentTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::SharedHost;
     use crate::run_exec::BoundRunExecutor;
     use awaken_ext_goal::grader::{AgentGrader, DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent};
     use awaken_ext_goal::outcome::{GradeDecision, Grader, GraderError, GradingInput, Id, Rubric};
@@ -170,11 +168,11 @@ mod tests {
 
     /// Complete ordinary Host composition for real Judge Run tests. The Judge
     /// remains toolless and owns no alternate Session or dispatch path.
-    async fn judge_test_host(model: Arc<dyn LlmExecutor>) -> Arc<SharedHost> {
+    async fn judge_test_host(model: Arc<dyn LlmExecutor>) -> Arc<crate::SharedHost> {
         let host = (crate::HostDependencies::ephemeral(model, "stub").await)
             .build()
             .expect("validated Host dependencies");
-        let _managed = crate::ManagedHost::new(host.clone());
+        let _managed = host.clone();
         host
     }
 
@@ -280,7 +278,7 @@ mod tests {
         let input = grading_input("agent-grade-exact-json");
         let thread = grader_thread_id(&input.outcome_id, input.iteration);
         let grade = HostAgentGrader {
-            host: host.as_ref(),
+            host: host.session_runs.as_ref(),
             session_foreground: Arc::default(),
         }
         .grade(&snapshot, &input)
@@ -356,7 +354,7 @@ mod tests {
         let snapshot = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS)
             .expect("literal model reference");
         let result = HostAgentGrader {
-            host: host.as_ref(),
+            host: host.session_runs.as_ref(),
             session_foreground: Arc::default(),
         }
         .grade(&snapshot, &input)

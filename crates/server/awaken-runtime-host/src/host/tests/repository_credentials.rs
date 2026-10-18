@@ -226,7 +226,8 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
         let prior_calls = realizer.0.lock().unwrap().len();
         assert!(
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                host.installed_sessions
+                host.run_assembly
+                    .installed_sessions
                     .modify(&thread, |_| panic!("P2/C12 actual Slot poison"));
             }))
             .is_err()
@@ -374,7 +375,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
     .build()
     .expect("validated Host dependencies");
 
-    let runtime = crate::ManagedHost::new(host.clone());
+    let runtime = host.clone();
     let manifest = crate::session_resource::SessionResourceManifest::new(
         host.run_assembly.local_workspace(),
         platform_resources(),
@@ -519,7 +520,6 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         "P2 same injected verifier Arc"
     );
     runtime
-        .host
         .realization_executor
         .validate_thread_resource_bindings("platform-mediated")
         .await
@@ -549,7 +549,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
     .build()
     .expect("validated Host dependencies");
 
-    let _downgrade_runtime = crate::ManagedHost::new(downgrade_host.clone());
+    let _downgrade_runtime = downgrade_host.clone();
     let downgrade_manifest = crate::session_resource::SessionResourceManifest::new(
         downgrade_host.run_assembly.local_workspace(),
         platform_resources(),
@@ -589,7 +589,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         ))
     .build()
     .expect("validated Host dependencies");
-    let _direct_runtime = crate::ManagedHost::new(direct_host.clone());
+    let _direct_runtime = direct_host.clone();
     let direct_manifest = crate::session_resource::SessionResourceManifest::new(
         direct_host.run_assembly.local_workspace(),
         platform_resources(),
@@ -648,7 +648,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
                 .with_repository_binding_verifier(remote_verifier.clone())))
             .build().expect("C13 actual upstream mode");
         let session = "terminal-protected-platform";
-        remote.installed_sessions.replace_frozen_with(session, |next| {
+        remote.run_assembly.installed_sessions.replace_frozen_with(session, |next| {
             next.workspace = Some("terminal-original-workspace".into());
         });
         let expectation = awaken_provisioning_contract::RepositoryPublicationExpectation {
@@ -731,9 +731,9 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         let missing = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await
             .with_authority(crate::UpstreamAuthority::default()))
             .build().expect("C12 upstream has no verifier");
-        missing.installed_sessions.replace_frozen_with(session, |next| next.workspace = Some("terminal-original-workspace".into()));
+        missing.run_assembly.installed_sessions.replace_frozen_with(session, |next| next.workspace = Some("terminal-original-workspace".into()));
         assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            missing.installed_sessions.modify(session, |_| panic!("C12 actual Slot poison"));
+            missing.run_assembly.installed_sessions.modify(session, |_| panic!("C12 actual Slot poison"));
         })).is_err());
         let refused = std::panic::AssertUnwindSafe(missing.realization_executor.staging().publish_repository_activation(
             session, missing.local_workspace(), repository, &staged.binding_checks,
@@ -774,7 +774,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified()).await.expect("C13 actual verifier entry");
         assert_eq!(remote_verifier.calls.load(Ordering::SeqCst), 5, "C13 first read reached verifier");
         assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            remote.installed_sessions.modify(session, |_| panic!("C13 poison during original verifier"));
+            remote.run_assembly.installed_sessions.modify(session, |_| panic!("C13 poison during original verifier"));
         })).is_err());
         release.notify_one();
         let refused = operation.await.expect("C13 callback and operation joined");
@@ -1038,7 +1038,6 @@ async fn repository_credential_realization_follows_the_decision_table() {
             .unwrap();
         let thread = format!("repository-decision-{}", rule.id);
         let result = managed
-            .host
             .run_assembly
             .install_test_session_init(
                 &thread,
@@ -1186,7 +1185,6 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
         .await
         .unwrap();
     managed
-        .host
         .run_assembly
         .apply_session_inputs(
             "t-rot",
@@ -1247,7 +1245,6 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
     // The Managed adapter stores the supplied credential in the Vault and publishes a
     // new Repository config before invoking this complete-manifest runtime port.
     managed
-        .host
         .run_assembly
         .apply_session_inputs(
             "t-rot",

@@ -221,7 +221,8 @@ mod tests {
             "A1 executor"
         );
         assert_eq!(
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .realizations()
                 .frozen("t")
                 .expect("installed Sessions")
@@ -232,7 +233,8 @@ mod tests {
             "A1"
         );
         assert_eq!(
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .realizations()
                 .frozen("unstaged-thread")
                 .expect("installed Sessions")

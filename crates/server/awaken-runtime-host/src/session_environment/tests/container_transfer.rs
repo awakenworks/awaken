@@ -204,6 +204,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
                 .unwrap();
             {
                 let lifecycle = host
+                    .run_assembly
                     .installed_sessions
                     .realizations()
                     .read_realization(thread, |r| r.environment().lifecycle.clone())
@@ -214,7 +215,10 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
                     .environments()
                     .retire_session_environment_for_revocation(
                         thread,
-                        (&host.run_assembly.mcp, host.installed_sessions.as_ref()),
+                        (
+                            &host.run_assembly.mcp,
+                            host.run_assembly.installed_sessions.as_ref(),
+                        ),
                         None,
                     )
                     .await
@@ -251,6 +255,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
                 "W1"
             );
             let retained = host
+                .run_assembly
                 .installed_sessions
                 .realizations()
                 .read_realization(thread, |r| {
@@ -272,6 +277,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
                 .await
                 .unwrap();
             let rebound = host
+                .run_assembly
                 .installed_sessions
                 .realizations()
                 .read_realization(thread, |r| {

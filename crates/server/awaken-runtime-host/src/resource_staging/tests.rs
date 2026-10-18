@@ -49,7 +49,13 @@ async fn mount_projection_reads_current_resource_and_frozen_inputs_without_retai
             .is_empty(),
         "M1"
     );
-    assert!(host.installed_sessions.read(thread, |_| ()).is_none(), "M1");
+    assert!(
+        host.run_assembly
+            .installed_sessions
+            .read(thread, |_| ())
+            .is_none(),
+        "M1"
+    );
     let resource = mount("resource", false);
     let resource_memory = mount("resource-memory", true);
     let baseline_mount = mount("baseline", false);
@@ -85,7 +91,8 @@ async fn mount_projection_reads_current_resource_and_frozen_inputs_without_retai
         prompts: Vec::new(),
         transcript_prefix: None,
     });
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .replace_frozen_with(thread, |next| next.baseline = Some(baseline));
     staging
         .sessions()
@@ -119,7 +126,7 @@ async fn mount_projection_reads_current_resource_and_frozen_inputs_without_retai
         vec![resource, baseline_mount],
         "M3"
     );
-    host.installed_sessions.remove(thread);
+    host.run_assembly.installed_sessions.remove(thread);
     assert!(
         staging
             .thread_session_mounts(thread)
@@ -128,11 +135,14 @@ async fn mount_projection_reads_current_resource_and_frozen_inputs_without_retai
         "M4 removed"
     );
     assert!(
-        host.installed_sessions.read(thread, |_| ()).is_none(),
+        host.run_assembly
+            .installed_sessions
+            .read(thread, |_| ())
+            .is_none(),
         "M4 no resurrection"
     );
     let replacement = mount("replacement", false);
-    host.installed_sessions.install(thread);
+    host.run_assembly.installed_sessions.install(thread);
     staging
         .sessions()
         .update_realization(thread, |r| {

@@ -219,6 +219,7 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         "F4 publishes generation 2 only after realization"
     );
     let empty_projection = host
+        .run_assembly
         .installed_sessions
         .read("thread-cold-resource", |slot| {
             (

@@ -44,7 +44,6 @@ async fn outcome_queries_need_no_frozen_runtime_or_environment_and_preserve_comm
             committed_environment: None,
         });
         managed
-            .host
             .run_assembly
             .install_test_environment_binding_sink(sink.clone());
         let commit = host.thread_reads.commit_for_read(&thread.0).await.unwrap();
@@ -157,7 +156,8 @@ async fn outcome_queries_need_no_frozen_runtime_or_environment_and_preserve_comm
                 "Q{rule} no Environment"
             );
             assert_eq!(
-                host.installed_sessions
+                host.run_assembly
+                    .installed_sessions
                     .read_run(&thread.0, |run| run.context.is_some()),
                 cached.then_some(true),
                 "Q{rule} no execution context construction; a read never installs the Session"

@@ -28,7 +28,6 @@ use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, Resolv
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_runtime_host::ManagedHost;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -118,7 +117,6 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
         .with_ephemeral_dispatch(any))
     .build()
     .expect("validated Host dependencies");
-    let _managed = ManagedHost::new(host.clone());
     let router = durable_ops_router(host.session_runs().clone(), awaken_time::system_clock());
     let thread = "t-dur";
     let base = format!("/v1/durable/threads/{thread}");

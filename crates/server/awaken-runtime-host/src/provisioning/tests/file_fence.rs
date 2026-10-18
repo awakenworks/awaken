@@ -247,15 +247,12 @@ async fn terminal_repository_guard_rejects_file_before_any_source_read() {
         },
     };
     let source = Arc::new(FileFenceProbe::new(None));
-    let runtime = crate::ManagedHost::new(
-        (dependencies()
-            .await
-            .with_file_content_source(source.clone()))
-        .build()
-        .expect("validated Host dependencies"),
-    );
+    let runtime = (dependencies()
+        .await
+        .with_file_content_source(source.clone()))
+    .build()
+    .expect("validated Host dependencies");
     let error = match runtime
-        .host
         .realization_executor
         .staging()
         .stage_terminal_repository_publication_input(

@@ -302,6 +302,7 @@ async fn live_judge_grades_a_deliverable_as_a_configurable_agent() {
     .expect("validated Host dependencies");
 
     let progress = host
+        .outcomes()
         .define_outcome(
             "goal-e2e",
             "Reply with exactly the single word BANANA and nothing else.",

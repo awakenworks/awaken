@@ -29,7 +29,6 @@ use awaken_runtime_contract::{
     CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
     CredentialUsage,
 };
-use awaken_runtime_host::ManagedHost;
 use awaken_scenario_host::{
     EchoModel, build_router, build_unmounted_dependencies_with_agent_publications,
 };
@@ -261,7 +260,7 @@ async fn delegating_host(transport: Arc<dyn Transport>) -> Arc<SharedHost> {
         .build();
     let publications = StaticPublishedAgentSnapshots::try_new([parent, remote])
         .expect("parent and delegated remote publications are valid");
-    let host = (build_unmounted_dependencies_with_agent_publications(
+    (build_unmounted_dependencies_with_agent_publications(
         Arc::new(NativeDelegatingModel),
         "parent",
         Arc::new(publications),
@@ -274,9 +273,7 @@ async fn delegating_host(transport: Arc<dyn Transport>) -> Arc<SharedHost> {
         credential_realization: Default::default(),
     }))
     .build()
-    .expect("validated Host dependencies");
-    let _runtime = ManagedHost::new(host.clone());
-    host
+    .expect("validated Host dependencies")
 }
 
 async fn published_delegating_host(
@@ -310,7 +307,7 @@ async fn published_delegating_host(
         .build();
     let publications = StaticPublishedAgentSnapshots::try_new([parent, remote])
         .expect("authenticated parent and child publications are valid");
-    let host = (build_unmounted_dependencies_with_agent_publications(
+    (build_unmounted_dependencies_with_agent_publications(
         Arc::new(NativeDelegatingModel),
         "parent",
         Arc::new(publications),
@@ -318,9 +315,7 @@ async fn published_delegating_host(
     .await
     .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(Some(materializer))))
     .build()
-    .expect("validated Host dependencies");
-    let _runtime = ManagedHost::new(host.clone());
-    host
+    .expect("validated Host dependencies")
 }
 
 #[tokio::test]

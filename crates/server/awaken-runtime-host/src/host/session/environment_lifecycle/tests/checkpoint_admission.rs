@@ -105,7 +105,7 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                 }
                 let host = (raw).build().expect("validated Host dependencies");
                 let install = || {
-                    host.installed_sessions.install_realization(thread, |r| {
+                    host.run_assembly.installed_sessions.install_realization(thread, |r| {
                         r.environment_mut().owner = resident(thread, environment.clone());
                         r.execution_mut().authority = Authority::Live(
                             awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
@@ -130,8 +130,9 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                     expires_at_unix_ms: 20_000,
                     max_bytes: 1024 * 1024,
                 };
-                let managed = crate::ManagedHost::new(host.clone());
+                let managed = host.clone();
                 let lifecycle = host
+                    .run_assembly
                     .installed_sessions
                     .realizations()
                     .read_realization(thread, |r| r.environment().lifecycle.clone())
@@ -144,7 +145,6 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                 };
                 let mut pending = Box::pin(
                     managed
-                        .host
                         .run_assembly
                         .checkpoint_session_environment(thread, request.clone()),
                 );
@@ -162,6 +162,7 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                 );
                 match change {
                     "session-close" => host
+                        .run_assembly
                         .installed_sessions
                         .realizations()
                         .update_realization(thread, |r| {
@@ -169,7 +170,7 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                         })
                         .expect("installed Sessions"),
                     "slot-replace" => {
-                        host.installed_sessions.remove(thread);
+                        host.run_assembly.installed_sessions.remove(thread);
                         install();
                     }
                     "worker-close" => *worker.current.lock().unwrap() = None,
@@ -179,7 +180,7 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                     "renew" => {
                         let mut renewed = lease.clone();
                         renewed.expires_at_unix_ms += 1;
-                        host.installed_sessions.realizations().update_realization(thread, |r| {
+                        host.run_assembly.installed_sessions.realizations().update_realization(thread, |r| {
                             r.execution_mut().authority = Authority::Live(
                                 awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
                                     renewed, 0,
@@ -221,7 +222,6 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                     *worker.current.lock().unwrap() = Some((fence, Duration::from_secs(1)));
                 }
                 managed
-                    .host
                     .run_assembly
                     .checkpoint_session_environment(thread, request)
                     .await
@@ -284,12 +284,16 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
         .with_execution_authority(worker.clone()))
         .build()
         .expect("validated Host dependencies");
-        host.installed_sessions.install_realization(thread, |r| {
-            r.execution_mut().authority =
-                crate::realization_state::SessionRealizationAuthority::Live(
-                    awaken_session_realization::test_support::test_observed_lease(lease.clone()),
-                );
-        });
+        host.run_assembly
+            .installed_sessions
+            .install_realization(thread, |r| {
+                r.execution_mut().authority =
+                    crate::realization_state::SessionRealizationAuthority::Live(
+                        awaken_session_realization::test_support::test_observed_lease(
+                            lease.clone(),
+                        ),
+                    );
+            });
         let handle = terminal_fixture_container_handle(
             thread,
             &host.realization_executor.sandbox_spec(thread),
@@ -334,6 +338,7 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
             "worker-revoke" => *worker.current.lock().unwrap() = None,
             "worker-expire" => worker.current.lock().unwrap().as_mut().unwrap().1 = Duration::ZERO,
             "session-revoke" => host
+                .run_assembly
                 .installed_sessions
                 .realizations()
                 .update_realization(thread, |r| {
@@ -344,6 +349,7 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
                 })
                 .expect("installed Sessions"),
             "replace" | "renew" => host
+                .run_assembly
                 .installed_sessions
                 .realizations()
                 .update_realization(thread, |r| {
@@ -376,7 +382,8 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
         // Reset only the fixture for exact-object retry; production renewal
         // cannot revive a closed/replaced Worker or Session incarnation.
         *worker.current.lock().unwrap() = Some((fence.clone(), Duration::from_secs(1)));
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .update_realization(thread, |r| {
                 r.execution_mut().authority =
@@ -467,7 +474,8 @@ async fn suspension_and_terminal_admission_use_live_observation_and_never_reopen
             _ => unreachable!(),
         };
         if state != "absent" {
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .install_realization(rule, |r| r.execution_mut().authority = root.clone());
         }
         let mut asserted = current.clone();
@@ -507,7 +515,8 @@ async fn suspension_and_terminal_admission_use_live_observation_and_never_reopen
             "{rule}/terminal"
         );
         assert_eq!(
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .realizations()
                 .read_realization(rule, |r| r.execution().authority.clone())
                 .expect("installed Sessions"),

@@ -71,6 +71,7 @@ async fn rebuilt_successor_is_not_interrupted(original_run_active: bool) {
         .install_session_realization_lease(thread, original.clone())
         .unwrap();
     let phase = host
+        .run_assembly
         .installed_sessions
         .read(thread, |slot| slot.realization.execution().phase.clone())
         .unwrap();
@@ -103,6 +104,7 @@ async fn rebuilt_successor_is_not_interrupted(original_run_active: bool) {
         None
     };
     let selected = host
+        .run_assembly
         .installed_sessions
         .close_realization(thread, Some((&original, &phase)))
         .expect("close and select actual original root");
@@ -209,6 +211,7 @@ async fn rebuilt_successor_is_not_interrupted(original_run_active: bool) {
         .unwrap();
     let cancelled = token.is_cancelled();
     let retained = host
+        .run_assembly
         .installed_sessions
         .read(thread, |slot| {
             slot.realization.execution().authority.lease() == Some(&successor)

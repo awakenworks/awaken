@@ -43,9 +43,11 @@ fn install(host: &SharedHost, lease: SessionRealizationLease) {
     let proof = SessionRealizationLeaseReceipt::issued_at(lease, 0)
         .unwrap()
         .observed(awaken_authority_clock::authority_proof_started().unwrap());
-    host.installed_sessions.install_realization("session", |r| {
-        r.execution_mut().authority = SessionRealizationAuthority::Live(proof);
-    });
+    host.run_assembly
+        .installed_sessions
+        .install_realization("session", |r| {
+            r.execution_mut().authority = SessionRealizationAuthority::Live(proof);
+        });
 }
 
 #[tokio::test]
@@ -117,18 +119,28 @@ async fn provider_fence_source_decision_table_preserves_exact_live_authority() {
                 "worker_closed" => *worker.0.lock().unwrap() = None,
                 "worker_zero" => *worker.0.lock().unwrap() = Some(Duration::ZERO),
                 "removed" => {
-                    host.installed_sessions.remove("session");
+                    host.run_assembly.installed_sessions.remove("session");
                 }
                 "slot_aba" => {
-                    let old = host.installed_sessions.remove("session").unwrap();
-                    host.installed_sessions.install_realization("session", |r| {
-                        r.execution_mut().authority = old.realization.execution().authority.clone();
-                    });
+                    let old = host
+                        .run_assembly
+                        .installed_sessions
+                        .remove("session")
+                        .unwrap();
+                    host.run_assembly
+                        .installed_sessions
+                        .install_realization("session", |r| {
+                            r.execution_mut().authority =
+                                old.realization.execution().authority.clone();
+                        });
                 }
                 "closed" => {
-                    host.installed_sessions.close_realization("session", None);
+                    host.run_assembly
+                        .installed_sessions
+                        .close_realization("session", None);
                 }
                 "uninstalled" => host
+                    .run_assembly
                     .installed_sessions
                     .realizations()
                     .update_realization("session", |r| {
@@ -136,6 +148,7 @@ async fn provider_fence_source_decision_table_preserves_exact_live_authority() {
                     })
                     .expect("installed Sessions"),
                 "expired" => host
+                    .run_assembly
                     .installed_sessions
                     .realizations()
                     .update_realization("session", |r| {
@@ -147,6 +160,7 @@ async fn provider_fence_source_decision_table_preserves_exact_live_authority() {
                     })
                     .expect("installed Sessions"),
                 "realization" | "lifecycle" => host
+                    .run_assembly
                     .installed_sessions
                     .realizations()
                     .update_realization("session", |r| {
@@ -265,7 +279,12 @@ async fn provider_fence_source_capture_rejects_absent_slot_and_invalid_identity(
             .provider_effect_authority("session", &valid)
             .is_err()
     );
-    assert!(host.installed_sessions.read("session", |_| ()).is_none());
+    assert!(
+        host.run_assembly
+            .installed_sessions
+            .read("session", |_| ())
+            .is_none()
+    );
     // An effect fence with an incomplete identity never reaches capture: the
     // one admission refuses it before a value exists, installed slot or not.
     assert!(
@@ -291,6 +310,7 @@ async fn provider_fence_source_capture_rejects_absent_slot_and_invalid_identity(
         let mut initial = lease().sandbox_effect_fence("create").unwrap();
         match rule {
             "uninstalled" => host
+                .run_assembly
                 .installed_sessions
                 .realizations()
                 .update_realization("session", |r| {
@@ -298,7 +318,9 @@ async fn provider_fence_source_capture_rejects_absent_slot_and_invalid_identity(
                 })
                 .expect("installed Sessions"),
             "closed" => {
-                host.installed_sessions.close_realization("session", None);
+                host.run_assembly
+                    .installed_sessions
+                    .close_realization("session", None);
             }
             "owner" => initial.tamper(|w| w.owner.push_str("-other")),
             "incarnation" => initial.tamper(|w| w.runtime_incarnation.push_str("-other")),
@@ -384,13 +406,22 @@ async fn provider_fence_source_waiting_for_worker_rechecks_slot_after_revocation
             receiver.recv_timeout(Duration::from_secs(5)).unwrap();
             match rule {
                 "closed" => {
-                    host.installed_sessions.close_realization("session", None);
+                    host.run_assembly
+                        .installed_sessions
+                        .close_realization("session", None);
                 }
                 "slot_aba" => {
-                    let old = host.installed_sessions.remove("session").unwrap();
-                    host.installed_sessions.install_realization("session", |r| {
-                        r.execution_mut().authority = old.realization.execution().authority.clone();
-                    });
+                    let old = host
+                        .run_assembly
+                        .installed_sessions
+                        .remove("session")
+                        .unwrap();
+                    host.run_assembly
+                        .installed_sessions
+                        .install_realization("session", |r| {
+                            r.execution_mut().authority =
+                                old.realization.execution().authority.clone();
+                        });
                 }
                 "renewed" => {
                     let mut current = lease();
@@ -656,14 +687,23 @@ async fn adoption_forwards_original_authority_across_observation_and_provider_wa
                     }
                     match change {
                         "closed" => {
-                            host.installed_sessions.close_realization("session", None);
+                            host.run_assembly
+                                .installed_sessions
+                                .close_realization("session", None);
                         }
                         "aba" => {
-                            let old = host.installed_sessions.remove("session").unwrap();
-                            host.installed_sessions.install_realization("session", |r| {
-                                r.execution_mut().authority =
-                                    old.realization.execution().authority.clone();
-                            });
+                            let old = host
+                                .run_assembly
+                                .installed_sessions
+                                .remove("session")
+                                .unwrap();
+                            host.run_assembly.installed_sessions.install_realization(
+                                "session",
+                                |r| {
+                                    r.execution_mut().authority =
+                                        old.realization.execution().authority.clone();
+                                },
+                            );
                         }
                         "renewed" => {
                             let mut renewed = lease();
@@ -725,7 +765,7 @@ async fn provider_fence_source_is_wired_across_preparation_and_provider_awaits()
         .expect("validated Host dependencies");
         install(&host, lease());
         if rule == "provider_unfenced" {
-            host.installed_sessions.remove("session");
+            host.run_assembly.installed_sessions.remove("session");
         }
         let probe = Arc::new(ProjectionProbe::default());
         let provider = awaken_session_environment::SandboxEnvironmentProvider::container(
@@ -760,7 +800,9 @@ async fn provider_fence_source_is_wired_across_preparation_and_provider_awaits()
                 .unwrap()
         });
         if rule == "initial_closed" {
-            host.installed_sessions.close_realization("session", None);
+            host.run_assembly
+                .installed_sessions
+                .close_realization("session", None);
         }
         let create = awaken_session_realization::test_support::create_session_environment(
             &host.realization_executor,
@@ -783,12 +825,20 @@ async fn provider_fence_source_is_wired_across_preparation_and_provider_awaits()
                 probe.boundary.entered.notified().await;
             }
             if rule.ends_with("_closed") {
-                host.installed_sessions.close_realization("session", None);
+                host.run_assembly
+                    .installed_sessions
+                    .close_realization("session", None);
             } else if rule.ends_with("_aba") {
-                let old = host.installed_sessions.remove("session").unwrap();
-                host.installed_sessions.install_realization("session", |r| {
-                    r.execution_mut().authority = old.realization.execution().authority.clone();
-                });
+                let old = host
+                    .run_assembly
+                    .installed_sessions
+                    .remove("session")
+                    .unwrap();
+                host.run_assembly
+                    .installed_sessions
+                    .install_realization("session", |r| {
+                        r.execution_mut().authority = old.realization.execution().authority.clone();
+                    });
             } else if rule != "provider_unfenced" {
                 let mut current = lease();
                 current.expires_at_unix_ms += 30_000;
@@ -918,16 +968,25 @@ async fn environment_receipt_refreshes_only_the_captured_live_generation() {
                     install(&host, current);
                 }
                 "closed" => {
-                    host.installed_sessions.close_realization("session", None);
+                    host.run_assembly
+                        .installed_sessions
+                        .close_realization("session", None);
                 }
                 "removed" => {
-                    host.installed_sessions.remove("session");
+                    host.run_assembly.installed_sessions.remove("session");
                 }
                 "aba" => {
-                    let old = host.installed_sessions.remove("session").unwrap();
-                    host.installed_sessions.install_realization("session", |r| {
-                        r.execution_mut().authority = old.realization.execution().authority.clone();
-                    });
+                    let old = host
+                        .run_assembly
+                        .installed_sessions
+                        .remove("session")
+                        .unwrap();
+                    host.run_assembly
+                        .installed_sessions
+                        .install_realization("session", |r| {
+                            r.execution_mut().authority =
+                                old.realization.execution().authority.clone();
+                        });
                 }
                 "worker_zero" => {
                     *worker.0.lock().unwrap() = Some(Duration::ZERO);

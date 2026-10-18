@@ -508,8 +508,9 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
 
     let (mut session, effect) =
         root_terminal_cleanup_effect(host.as_ref(), "session-artifacts", lease).await;
-    let managed = crate::ManagedHost::new(host.clone());
+    let managed = host.clone();
     let workspace_id = host
+        .run_assembly
         .installed_sessions
         .realizations()
         .frozen("session-artifacts")
@@ -519,13 +520,13 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         .expect("R4 frozen aggregate Repository inputs");
     let authorization = root_terminal_preparation_authorization(&session, &effect, &workspace_id);
     let preparation = managed
-        .host
         .run_assembly
         .prepare_terminal_cleanup_for_effect(effect.clone(), authorization)
         .await
         .unwrap();
     assert!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .read_realization("session-artifacts", |r| {
                 r.environment().owner.terminal_bound_environment().is_some()
@@ -562,7 +563,6 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         effect.lease,
     );
     managed
-        .host
         .run_assembly
         .dispose_terminal_cleanup_for_effect(disposal)
         .await
@@ -680,7 +680,8 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
         "H1"
     );
 
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .realizations()
         .update_realization("artifact-response-loss", |r| {
             r.environment_mut().owner = crate::environment_owner::SessionEnvironmentOwner::Vacant;
@@ -1324,7 +1325,8 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
         .unwrap_err();
     assert!(error.message.contains("injected catalog failure"));
     assert!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .realizations()
             .read_realization("session-harvest-failure", |r| {
                 r.environment().owner.terminal_bound_environment().is_some()

@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_coordinator::{HostResume, ManagedHost, SharedHost};
+use awaken_coordinator::{HostResume, SharedHost};
 use awaken_scenario_host::{
     CustomToolModel, HostDependencies, build_unmounted_dependencies,
     build_unmounted_dependencies_with_deployment,
@@ -34,11 +34,9 @@ fn text_of(message: &Message) -> String {
 
 fn host_with_client_tool(dependencies: HostDependencies) -> Arc<SharedHost> {
     let client_tools = HashSet::from(["submit_answer".to_string()]);
-    let host = (dependencies.with_client_tools(client_tools))
+    (dependencies.with_client_tools(client_tools))
         .build()
-        .expect("validated Host dependencies");
-    let _runtime = ManagedHost::new(host.clone());
-    host
+        .expect("validated Host dependencies")
 }
 
 async fn host_over(dir: &std::path::Path, process: &str) -> Arc<SharedHost> {

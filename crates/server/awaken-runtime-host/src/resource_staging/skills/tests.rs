@@ -138,7 +138,12 @@ async fn skill_catalog_and_bundle_read_roles_are_selected_independently_before_c
         if let Ok(loaded) = loaded {
             assert_eq!(loaded, vec![selected.clone()]);
         }
-        assert!(host.installed_sessions.session_ids().is_empty());
+        assert!(
+            host.run_assembly
+                .installed_sessions
+                .session_ids()
+                .is_empty()
+        );
     }
 }
 

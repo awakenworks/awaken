@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_coordinator::{ManagedHost, SharedHost};
+use awaken_coordinator::SharedHost;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use tokio::sync::{Mutex, mpsc};
 use tokio::time::timeout;
@@ -60,7 +60,6 @@ async fn harness() -> Harness {
     let host = (awaken_scenario_host::build_unmounted_dependencies(Arc::new(llm), "gated").await)
         .build()
         .expect("validated Host dependencies");
-    let _runtime = ManagedHost::new(host.clone());
     Harness {
         host,
         started: Mutex::new(started_rx),

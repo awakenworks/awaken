@@ -277,7 +277,10 @@ async fn retire_component_current(
         .environments()
         .retire_session_environment_for_revocation(
             session,
-            (&host.run_assembly.mcp, host.installed_sessions.as_ref()),
+            (
+                &host.run_assembly.mcp,
+                host.run_assembly.installed_sessions.as_ref(),
+            ),
             None,
         )
         .await
@@ -324,7 +327,10 @@ async fn successful_retirement_cannot_remove_a_successor_session_relay_route() {
             .get()
             .expect("original constructor allocation observed")
             .clone();
-        assert!(Arc::ptr_eq(&host.installed_sessions, &canonical));
+        assert!(Arc::ptr_eq(
+            &host.run_assembly.installed_sessions,
+            &canonical
+        ));
         canonical.install(session);
         assert!(Arc::ptr_eq(
             &host
@@ -540,7 +546,7 @@ async fn absent_component_retirement_cannot_close_or_remove_a_later_session() {
         }));
         let host = dependencies.build().unwrap();
         let canonical = observed.get().unwrap().clone();
-        assert!(Arc::ptr_eq(&canonical, &host.installed_sessions));
+        assert!(Arc::ptr_eq(&canonical, &host.run_assembly.installed_sessions));
         assert!(canonical.read(session, |_| ()).is_none());
         let retiring = host.clone();
         let finish = tokio::spawn(async move { retire_component_current(&retiring, session).await });

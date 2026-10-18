@@ -32,13 +32,13 @@ async fn idle_resident_context_releases_slots_when_last_host_owner_drops() {
             .build()
             .expect("normal Host composition");
     let session = "idle-context-owner-release";
-    let slots_before = Arc::strong_count(&host.installed_sessions);
+    let slots_before = Arc::strong_count(&host.run_assembly.installed_sessions);
     let context = host
         .run_assembly
         .ctx_for_session_coordination(session, None)
         .await
         .expect("normal idle coordination Context");
-    let slots_after = Arc::strong_count(&host.installed_sessions);
+    let slots_after = Arc::strong_count(&host.run_assembly.installed_sessions);
     assert!(context.is_coordination_envelope());
     assert!(context.env.is_none(), "no physical Environment owner");
     assert!(!context.has_active_run(), "no active Run or attempt");
@@ -48,7 +48,8 @@ async fn idle_resident_context_releases_slots_when_last_host_owner_drops() {
         "final chain installed in direct driver"
     );
     assert!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .read_run(session, |run| run
                 .context
                 .as_ref()
@@ -75,7 +76,7 @@ async fn idle_resident_context_releases_slots_when_last_host_owner_drops() {
         "no MCP relay task started"
     );
     let weak_host = Arc::downgrade(&host);
-    let weak_slots = Arc::downgrade(&host.installed_sessions);
+    let weak_slots = Arc::downgrade(&host.run_assembly.installed_sessions);
     let weak_context = Arc::downgrade(&context);
     drop(context);
     drop(host);

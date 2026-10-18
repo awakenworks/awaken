@@ -140,7 +140,7 @@ async fn detached_executor() -> (
     .await
     .build()
     .unwrap();
-    let sessions = host.installed_sessions.clone();
+    let sessions = host.run_assembly.installed_sessions.clone();
     let weak = Arc::downgrade(&host);
     let owner = Arc::try_unwrap(host)
         .ok()

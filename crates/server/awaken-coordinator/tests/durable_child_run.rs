@@ -18,7 +18,7 @@ use awaken_runtime_contract::llm::{
 };
 use awaken_runtime_contract::resolved::{ModelBinding, ToolKind};
 use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshot};
-use awaken_runtime_host::{HostResume, ManagedHost};
+use awaken_runtime_host::HostResume;
 
 struct ParentChildModel {
     parent_calls: AtomicUsize,
@@ -152,7 +152,6 @@ async fn durable_child_run_scenario() {
     )))
     .build()
     .expect("validated Host dependencies");
-    let _managed = ManagedHost::new(host.clone());
     host.ensure_dispatch_pool()
         .expect("valid test dispatch composition");
 

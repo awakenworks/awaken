@@ -1144,7 +1144,7 @@ mod tests {
         .await)
             .build()
             .expect("validated Host dependencies");
-        let managed = crate::ManagedHost::new(host.clone());
+        let managed = host.clone();
         let shared = host.session_application_bindings().clone();
         assert_eq!(
             shared.require_background_run_submission(),
@@ -1158,7 +1158,6 @@ mod tests {
         let application = Arc::new(RecordingAttentionApplication::accepting(0));
         let port: Arc<dyn SessionRunBackgroundApplication> = application.clone();
         managed
-            .host
             .session_application_bindings()
             .bind_background_run_submission(port.clone())
             .expect("R8 first install");
@@ -1168,7 +1167,6 @@ mod tests {
         );
         assert_eq!(
             managed
-                .host
                 .session_application_bindings()
                 .bind_background_run_submission(port.clone()),
             Err(crate::SessionApplicationBindingError::AlreadyBound),

@@ -142,7 +142,8 @@ async fn delayed_interruption_preserves_the_successor(start_with_active_run: boo
     .await
     .expect("C3 later Run physically entered inference");
     assert!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .read_run(thread, |run| run
                 .context
                 .as_ref()

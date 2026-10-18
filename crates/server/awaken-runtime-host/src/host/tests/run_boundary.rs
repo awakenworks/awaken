@@ -102,8 +102,12 @@ async fn interrupt_cancels_the_run_and_reports_interrupted() {
     // masquerade as a gate hang; E1 the prior Grade remains needs_revision; E2
     // the active cycle ends interrupted. R1=C0+C1+C2+C3=>E0+E1+E2.
     let driver = host.clone();
-    let mut task =
-        tokio::spawn(async move { driver.define_outcome("t1", "finish", "FINAL", 5).await });
+    let mut task = tokio::spawn(async move {
+        driver
+            .outcomes
+            .define_outcome("t1", "finish", "FINAL", 5)
+            .await
+    });
 
     // Once the loop is blocked mid-run, interrupt it, then release the gate.
     await_interrupt_inference_gate(&reached, &mut task).await;
@@ -152,6 +156,7 @@ async fn interrupting_acknowledgment_replaces_the_budget_terminal() {
     let driver = host.clone();
     let mut task = tokio::spawn(async move {
         driver
+            .outcomes
             .define_outcome("ack-interrupt", "finish", "FINAL", 1)
             .await
     });
@@ -193,6 +198,7 @@ async fn worker_authority_loss_interrupts_active_session_before_revocation() {
     let driver = host.clone();
     let mut task = tokio::spawn(async move {
         driver
+            .outcomes
             .define_outcome("authority-loss-active", "finish", "FINAL", 5)
             .await
     });
@@ -202,13 +208,18 @@ async fn worker_authority_loss_interrupts_active_session_before_revocation() {
     // loss must fence every process-local projection, not only the caller thread.
     let revocation = host.run_assembly.begin_session_realization_revocation();
     assert!(
-        host.installed_sessions.session_ids().iter().all(|id| {
-            host.installed_sessions
-                .realizations()
-                .read_realization(id, |r| r.execution().authority.is_closed())
-                .expect("installed Sessions")
-                .unwrap()
-        }),
+        host.run_assembly
+            .installed_sessions
+            .session_ids()
+            .iter()
+            .all(|id| {
+                host.run_assembly
+                    .installed_sessions
+                    .realizations()
+                    .read_realization(id, |r| r.execution().authority.is_closed())
+                    .expect("installed Sessions")
+                    .unwrap()
+            }),
         "E3 before asynchronous interruption"
     );
     assert_eq!(host.session_runs.interrupt_all_session_runs().await, 2);
@@ -280,14 +291,17 @@ async fn worker_interrupt_uses_resident_claim_without_coordinator_queue_operatio
         );
         ctx.foreground
             .install_for_test(direct.then(|| run_id.clone()));
-        worker.installed_sessions.update_run("worker-stop", |run| {
-            run.context = Some(ctx.clone());
-            run.dispatch_claim = Some(awaken_run_ingress_contract::RunClaim {
-                run_id,
-                owner: "worker-old".into(),
-                epoch: 1,
+        worker
+            .run_assembly
+            .installed_sessions
+            .update_run("worker-stop", |run| {
+                run.context = Some(ctx.clone());
+                run.dispatch_claim = Some(awaken_run_ingress_contract::RunClaim {
+                    run_id,
+                    owner: "worker-old".into(),
+                    epoch: 1,
+                });
             });
-        });
         // The local signal must not clear pre-existing nested uncertainty.
         physical.mark_uncertain();
         worker.session_runs.interrupt("worker-stop").await.unwrap();
@@ -301,13 +315,16 @@ async fn worker_interrupt_uses_resident_claim_without_coordinator_queue_operatio
     }
     let unregistered = RunId("worker-stop-unregistered".into());
     let foreground_signal = ctx.foreground.arm(&unregistered).unwrap();
-    worker.installed_sessions.update_run("worker-stop", |run| {
-        run.dispatch_claim = Some(awaken_run_ingress_contract::RunClaim {
-            run_id: unregistered.clone(),
-            owner: "worker-old".into(),
-            epoch: 1,
+    worker
+        .run_assembly
+        .installed_sessions
+        .update_run("worker-stop", |run| {
+            run.dispatch_claim = Some(awaken_run_ingress_contract::RunClaim {
+                run_id: unregistered.clone(),
+                owner: "worker-old".into(),
+                epoch: 1,
+            });
         });
-    });
     worker.session_runs.interrupt("worker-stop").await.unwrap();
     assert!(foreground_signal.is_cancelled(), "D5 foreground signal");
     worker
@@ -316,7 +333,10 @@ async fn worker_interrupt_uses_resident_claim_without_coordinator_queue_operatio
         .await
         .unwrap();
     assert!(
-        !worker.installed_sessions.contains("absent-worker-session"),
+        !worker
+            .run_assembly
+            .installed_sessions
+            .contains("absent-worker-session"),
         "D4 no materialization"
     );
 }
@@ -1001,6 +1021,7 @@ async fn live_only_durable_control_never_materializes_a_cold_session() {
     );
     assert!(
         direct
+            .run_assembly
             .installed_sessions
             .read(cold_thread, |_| ())
             .is_none(),
@@ -1048,6 +1069,7 @@ async fn live_only_durable_control_never_materializes_a_cold_session() {
     );
     assert!(
         durable
+            .run_assembly
             .installed_sessions
             .read(cold_thread, |_| ())
             .is_none(),
@@ -1119,7 +1141,8 @@ async fn managed_interrupt_cancels_cold_dispatch_without_realizing_an_environmen
     .build()
     .expect("validated Host dependencies");
     assert!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .read_run(thread, |run| run.context.clone())
             .flatten()
             .is_none(),
@@ -1143,7 +1166,8 @@ async fn managed_interrupt_cancels_cold_dispatch_without_realizing_an_environmen
     );
     assert!(rows[0].cancellation_requested, "E2 durable cancellation");
     assert!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .read_run(thread, |run| run.context.clone())
             .flatten()
             .is_none(),

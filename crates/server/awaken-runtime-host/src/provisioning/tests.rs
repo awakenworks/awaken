@@ -299,6 +299,7 @@ async fn root_terminal_cleanup_effect(
     awaken_session_state_contract::SessionTerminalCleanupEffect,
 ) {
     let environment = host
+        .run_assembly
         .installed_sessions
         .realizations()
         .read_realization(session_id, |r| r.environment().owner.resident())
@@ -307,6 +308,7 @@ async fn root_terminal_cleanup_effect(
         .expect("terminal test requires a resident Environment");
     let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
     let workspace_id = host
+        .run_assembly
         .installed_sessions
         .realizations()
         .frozen(session_id)
@@ -1093,7 +1095,8 @@ async fn model_override_only_acp_candidate_rejects_split_process_paths() {
         .await
         .expect("install exact model-override-only frozen projection");
     assert!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .read("model-override-acp", |slot| slot
                 .inputs
                 .published_snapshot

@@ -192,7 +192,7 @@ mod tests {
             )
             .build()
             .expect("validated Host dependencies");
-        let managed = crate::ManagedHost::new(host.clone());
+        let managed = host.clone();
         let mut initial = empty_frozen_projection_for_snapshot(
             host.local_workspace(),
             eager_environment(),
@@ -234,6 +234,7 @@ mod tests {
             .await
             .expect("S1/E1 child resolve");
         let physical = host
+            .run_assembly
             .installed_sessions
             .read(parent_thread, |slot| {
                 (
@@ -244,7 +245,10 @@ mod tests {
             .expect("S1 parent physical slot");
         assert_eq!(physical, (true, false), "S1/E2,E3");
         assert!(
-            host.installed_sessions.read(child_thread, |_| ()).is_none(),
+            host.run_assembly
+                .installed_sessions
+                .read(child_thread, |_| ())
+                .is_none(),
             "S1/E3"
         );
     }

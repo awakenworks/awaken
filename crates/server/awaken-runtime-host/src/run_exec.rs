@@ -1015,9 +1015,11 @@ pub(crate) mod tests {
             dispatch: dispatch.clone(),
         });
         let host = (raw_host).build().expect("validated Host dependencies");
-        host.installed_sessions.update_run(thread, |run| {
-            run.dispatch_claim = Some(expected_claim.clone());
-        });
+        host.run_assembly
+            .installed_sessions
+            .update_run(thread, |run| {
+                run.dispatch_claim = Some(expected_claim.clone());
+            });
         host.capabilities
             .register_thread_workspace(thread, "workspace-a");
         let spec = crate::sandbox_projection::agent_run_sandbox_spec(thread);
@@ -1123,7 +1125,7 @@ pub(crate) mod tests {
         let recorded_before = claims.lock().expect("recorded claims mutex poisoned").len();
         ArtifactHarvestAttemptExecutor::new(
             Arc::new(ReplacingClaimExecutor::succeeding(
-                host.installed_sessions.clone(),
+                host.run_assembly.installed_sessions.clone(),
                 thread,
                 replacement,
             )),
@@ -1144,9 +1146,11 @@ pub(crate) mod tests {
             "R6"
         );
 
-        host.installed_sessions.update_run(thread, |run| {
-            run.dispatch_claim = Some(expected_claim.clone());
-        });
+        host.run_assembly
+            .installed_sessions
+            .update_run(thread, |run| {
+                run.dispatch_claim = Some(expected_claim.clone());
+            });
 
         let replacement = awaken_run_ingress_contract::RunClaim {
             run_id: expected_claim.run_id.clone(),
@@ -1162,7 +1166,7 @@ pub(crate) mod tests {
         let resumed = activation("awaken");
         ArtifactHarvestAttemptExecutor::new(
             Arc::new(ReplacingClaimExecutor::succeeding(
-                host.installed_sessions.clone(),
+                host.run_assembly.installed_sessions.clone(),
                 thread,
                 replacement,
             )),
@@ -1183,9 +1187,11 @@ pub(crate) mod tests {
             "R8"
         );
 
-        host.installed_sessions.update_run(thread, |run| {
-            run.dispatch_claim = Some(expected_claim.clone());
-        });
+        host.run_assembly
+            .installed_sessions
+            .update_run(thread, |run| {
+                run.dispatch_claim = Some(expected_claim.clone());
+            });
         let replacement = awaken_run_ingress_contract::RunClaim {
             run_id: expected_claim.run_id.clone(),
             owner: "worker-failing-new".into(),
@@ -1199,7 +1205,7 @@ pub(crate) mod tests {
         let recorded_before = claims.lock().expect("recorded claims mutex poisoned").len();
         let error = ArtifactHarvestAttemptExecutor::new(
             Arc::new(ReplacingClaimExecutor::failing(
-                host.installed_sessions.clone(),
+                host.run_assembly.installed_sessions.clone(),
                 thread,
                 replacement,
                 "in-flight replacement failed",
@@ -1225,7 +1231,8 @@ pub(crate) mod tests {
             "R9"
         );
 
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .update_run(thread, |run| run.dispatch_claim = None);
         let replacement = awaken_run_ingress_contract::RunClaim {
             run_id: expected_claim.run_id.clone(),
@@ -1236,7 +1243,7 @@ pub(crate) mod tests {
         let recorded_before = claims.lock().expect("recorded claims mutex poisoned").len();
         ArtifactHarvestAttemptExecutor::new(
             Arc::new(ReplacingClaimExecutor::succeeding(
-                host.installed_sessions.clone(),
+                host.run_assembly.installed_sessions.clone(),
                 thread,
                 replacement,
             )),
@@ -1257,9 +1264,11 @@ pub(crate) mod tests {
             "R10"
         );
 
-        host.installed_sessions.update_run(thread, |run| {
-            run.dispatch_claim = Some(expected_claim.clone());
-        });
+        host.run_assembly
+            .installed_sessions
+            .update_run(thread, |run| {
+                run.dispatch_claim = Some(expected_claim.clone());
+            });
 
         dispatch
             .settle(

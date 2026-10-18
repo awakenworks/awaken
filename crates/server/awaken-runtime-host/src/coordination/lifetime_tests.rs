@@ -69,7 +69,8 @@ async fn remote_cached_consumers_release_original_slots() {
     // Rule R1=C1+C2+C3 -> both original slots and Context are released. Capture
     // that effect before fixture cleanup; no eviction may create the evidence.
     let host = remote_host(Arc::new(RemoteControl::default())).await;
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .update_run("session", |run| run.session_dispatch = true);
     let context = host
         .run_assembly
@@ -79,7 +80,8 @@ async fn remote_cached_consumers_release_original_slots() {
     assert!(context.is_coordination_envelope() && !context.has_active_run());
     assert!(context.env.is_none() && context.attempt_context.model_request_gate.is_some());
     assert!(
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .read_run("session", |run| run
                 .context
                 .as_ref()
@@ -102,7 +104,7 @@ async fn remote_cached_consumers_release_original_slots() {
         .dispatch_settlement_observer()
         .unwrap();
     let weak_host = Arc::downgrade(&host);
-    let weak_slots = Arc::downgrade(&host.installed_sessions);
+    let weak_slots = Arc::downgrade(&host.run_assembly.installed_sessions);
     let weak_context = Arc::downgrade(&context);
     drop(endpoint);
     drop(context);
@@ -136,14 +138,15 @@ async fn current_claim_queries_fail_closed_after_original_owner_drops() {
     for query in [Query::List, Query::Send] {
         let control = Arc::new(RemoteControl::default());
         let host = remote_host(control.clone()).await;
-        host.installed_sessions
+        host.run_assembly
+            .installed_sessions
             .update_run("session", |run| run.dispatch_claim = Some(claim()));
         let endpoint = host
             .run_assembly
             .capabilities
             .coordination_endpoint()
             .unwrap();
-        let weak = Arc::downgrade(&host.installed_sessions);
+        let weak = Arc::downgrade(&host.run_assembly.installed_sessions);
         drop(host);
         assert!(weak.upgrade().is_none());
         let error = query.run(&endpoint).await.unwrap_err();
@@ -169,7 +172,8 @@ async fn current_claim_queries_reject_missing_or_foreign_claim_before_control_io
             if foreign {
                 let mut other = claim();
                 other.run_id = RunId("other-run".into());
-                host.installed_sessions
+                host.run_assembly
+                    .installed_sessions
                     .update_run("session", |run| run.dispatch_claim = Some(other));
             }
             let error = query
@@ -213,14 +217,15 @@ async fn active_remote_queries_retain_original_slots_until_completion_or_cancell
                 ..Default::default()
             });
             let host = remote_host(control.clone()).await;
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .update_run("session", |run| run.dispatch_claim = Some(claim()));
             let endpoint = host
                 .run_assembly
                 .capabilities
                 .coordination_endpoint()
                 .unwrap();
-            let weak = Arc::downgrade(&host.installed_sessions);
+            let weak = Arc::downgrade(&host.run_assembly.installed_sessions);
             let mut call = Box::pin(query.run(&endpoint));
             tokio::select! {
                 biased;
@@ -285,7 +290,8 @@ async fn explicit_claim_controls_continue_after_original_slots_drop() {
     let host = remote_host(control.clone()).await;
     let mut other = claim();
     other.run_id = RunId("other-run".into());
-    host.installed_sessions
+    host.run_assembly
+        .installed_sessions
         .update_run("session", |run| run.dispatch_claim = Some(other));
     let endpoint = host
         .run_assembly
@@ -293,7 +299,7 @@ async fn explicit_claim_controls_continue_after_original_slots_drop() {
         .coordination_endpoint()
         .unwrap();
     let factory = claimed_model_request_gate_factory(endpoint.clone(), "session");
-    let weak = Arc::downgrade(&host.installed_sessions);
+    let weak = Arc::downgrade(&host.run_assembly.installed_sessions);
     drop(host);
     assert!(weak.upgrade().is_none());
     let exact = claim();

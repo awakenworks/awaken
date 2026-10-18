@@ -13,7 +13,7 @@ async fn assigned_staging_requires_a_root_and_direct_assertions_never_override_a
             .await
             .build()
             .unwrap();
-    let managed = crate::ManagedHost::new(host.clone());
+    let managed = host.clone();
     let session = "explicit-staging-admission";
     let generation = crate::test_mcp::mcp_fence(session, "docs", 1, "runtime-1", 1, u64::MAX);
     let (url, seen) = crate::test_mcp::start(None).await;
@@ -33,7 +33,6 @@ async fn assigned_staging_requires_a_root_and_direct_assertions_never_override_a
         None
     );
     let error = managed
-        .host
         .run_assembly
         .stage_mcp_attachment(request.clone())
         .await
@@ -46,7 +45,6 @@ async fn assigned_staging_requires_a_root_and_direct_assertions_never_override_a
     );
 
     let direct = managed
-        .host
         .run_assembly
         .stage_direct_mcp_attachment(request.clone())
         .await
@@ -60,7 +58,6 @@ async fn assigned_staging_requires_a_root_and_direct_assertions_never_override_a
     let requests_before = seen.lock().unwrap().len();
     assert_eq!(
         managed
-            .host
             .run_assembly
             .stage_mcp_attachment(request.clone())
             .await
@@ -91,7 +88,6 @@ async fn assigned_staging_requires_a_root_and_direct_assertions_never_override_a
     );
     assert_eq!(
         managed
-            .host
             .run_assembly
             .stage_mcp_attachment(request.clone())
             .await
@@ -111,7 +107,6 @@ async fn assigned_staging_requires_a_root_and_direct_assertions_never_override_a
     );
     assert_eq!(
         managed
-            .host
             .run_assembly
             .stage_mcp_attachment(request.clone())
             .await
@@ -121,7 +116,6 @@ async fn assigned_staging_requires_a_root_and_direct_assertions_never_override_a
     );
     assert_eq!(
         managed
-            .host
             .run_assembly
             .stage_direct_mcp_attachment(request)
             .await

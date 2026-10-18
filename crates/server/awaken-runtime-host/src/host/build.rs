@@ -199,18 +199,19 @@ fn assemble_host(dependencies: HostDependencies) -> SharedHost {
     });
     let (dispatch, session_runs) = session_run_delivery(&run_assembly, &completion, dispatch_hint);
     SharedHost {
-        agent,
         realization_executor,
         thread_reads,
         live_inboxes,
         capabilities,
         run_assembly,
+        coordination: Arc::new(crate::ChildRunCoordination::new(session_runs.clone())),
+        outcomes: Arc::new(crate::Outcomes::new(session_runs.clone())),
+        budget: Arc::new(crate::BudgetAccounting::new(session_runs.clone())),
         session_runs,
         resources,
         dispatch,
         capture,
         local_workspace,
-        installed_sessions,
         hub,
         store_dir,
         authority,
@@ -476,6 +477,46 @@ impl SharedHost {
     #[must_use]
     pub fn session_runs(&self) -> &Arc<crate::SessionRuns> {
         &self.session_runs
+    }
+
+    /// Session root and child Run coordination of this process.
+    #[must_use]
+    pub fn coordination(&self) -> &Arc<crate::ChildRunCoordination> {
+        &self.coordination
+    }
+
+    /// Session Outcome orchestration of this process.
+    #[must_use]
+    pub fn outcomes(&self) -> &Arc<crate::Outcomes> {
+        &self.outcomes
+    }
+
+    /// The Session application's executor roles: each role is served by the
+    /// component that owns it.
+    #[must_use]
+    pub fn session_execution_roles(
+        &self,
+    ) -> awaken_session_runtime_contract::SessionExecutionRoles {
+        awaken_session_runtime_contract::SessionExecutionRoles {
+            core: self.session_runs.clone(),
+            realization: self.run_assembly.clone(),
+            coordination: self.coordination.clone(),
+            coordination_reads: self.coordination.clone(),
+            budget: self.budget.clone(),
+            streaming_runs: self.session_runs.clone(),
+            environment: self.run_assembly.clone(),
+            thread_reads: self.thread_reads.clone(),
+            terminal_cleanup: self.run_assembly.clone(),
+            outcomes: self.outcomes.clone(),
+            live_inbox: self.live_inboxes.clone(),
+            capability: self.capabilities.clone(),
+        }
+    }
+
+    /// Session usage and budget accounting of this process.
+    #[must_use]
+    pub fn budget(&self) -> &Arc<crate::BudgetAccounting> {
+        &self.budget
     }
 
     /// Committed Thread readback over this process's selected authority.

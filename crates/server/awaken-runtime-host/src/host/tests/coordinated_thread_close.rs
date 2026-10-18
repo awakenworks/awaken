@@ -96,13 +96,14 @@ async fn failed_child_boundary_cancels_raced_follow_up_without_fencing_its_own_s
         .await
         .expect("R1 Failed truth");
     assert!(
-        host.coordinated_thread_is_closed(
-            &parent.0,
-            &child,
-            awaken_session_runtime_contract::CoordinatedThreadKind::Agent
-        )
-        .await
-        .expect("R1 admission fence"),
+        host.coordination
+            .coordinated_thread_is_closed(
+                &parent.0,
+                &child,
+                awaken_session_runtime_contract::CoordinatedThreadKind::Agent
+            )
+            .await
+            .expect("R1 admission fence"),
         "R1/E1"
     );
 
@@ -226,7 +227,8 @@ async fn follow_up_close_fence_applies_the_contract_rule_for_each_thread_kind() 
                 .expect("committed child Run truth");
         }
         assert_eq!(
-            host.coordinated_thread_is_closed(&parent.0, &child, kind)
+            host.coordination
+                .coordinated_thread_is_closed(&parent.0, &child, kind)
                 .await
                 .expect("close fence"),
             closed,

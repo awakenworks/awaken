@@ -47,9 +47,9 @@ use std::sync::Arc;
 use awaken_config_service::ManagementAuditPlane;
 use awaken_protocol_managed::ManagedState;
 use awaken_runtime_contract::llm::LlmExecutor;
+use awaken_runtime_host::HostDependencies;
 #[cfg(any(test, feature = "test-support"))]
 use awaken_runtime_host::SharedHost;
-use awaken_runtime_host::{HostDependencies, ManagedHost};
 use awaken_session_mcp::ExtMcpProbe;
 use axum::Router;
 #[cfg(any(test, feature = "test-support"))]

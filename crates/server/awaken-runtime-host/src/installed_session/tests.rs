@@ -458,7 +458,7 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
         .await
         .expect("actual Run context");
     crate::host::tests::bind_test_memory(&host, "present", "poison-memory", true);
-    let slots = &host.installed_sessions;
+    let slots = &host.run_assembly.installed_sessions;
     let memory = slots
         .read("present", |slot| slot.realization.staging().memory.clone())
         .flatten()
@@ -789,17 +789,18 @@ async fn local_activity_combination_keeps_real_poison_fault_order() {
                 .ctx_for(&root_id, None)
                 .await
                 .expect("Q9 actual context");
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .update_run(&root_id, |run| run.context = Some(ctx.clone()));
             ctx.foreground.install_for_test(
                 primary_active
                     .then(|| awaken_agent_contract::agent::run::Id("active-primary".into())),
             );
-            let view = host.installed_sessions.realizations();
+            let view = host.run_assembly.installed_sessions.realizations();
             let polls = std::sync::atomic::AtomicUsize::new(0);
             let (enter, entry) = tokio::sync::oneshot::channel::<()>();
             let writer = tokio::spawn({
-                let slots = host.installed_sessions.clone();
+                let slots = host.run_assembly.installed_sessions.clone();
                 let root_id = root_id.clone();
                 async move {
                     if entry.await.is_err() {
@@ -822,6 +823,7 @@ async fn local_activity_combination_keeps_real_poison_fault_order() {
                 |id| {
                     if legacy {
                         Ok(host
+                            .run_assembly
                             .installed_sessions
                             .read_run(id, |run| {
                                 run.context
@@ -858,7 +860,7 @@ async fn local_activity_combination_keeps_real_poison_fault_order() {
                 "Q9/Q10 true Primary still polls reader"
             );
             assert!(
-                host.installed_sessions.slots.is_poisoned(),
+                host.run_assembly.installed_sessions.slots.is_poisoned(),
                 "Q9/Q10 actual Slot poison"
             );
             if primary_active {
@@ -919,9 +921,11 @@ async fn local_activity_combination_keeps_real_poison_fault_order() {
                 .ctx_for(&child_id, None)
                 .await
                 .expect("Q11 actual child");
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .update_run(&root_id, |run| run.context = Some(root.clone()));
-            host.installed_sessions
+            host.run_assembly
+                .installed_sessions
                 .update_run(&child_id, |run| run.context = Some(child.clone()));
             root.foreground.install_for_test(
                 (!primary_fault && status == Status::Open)
@@ -934,16 +938,17 @@ async fn local_activity_combination_keeps_real_poison_fault_order() {
             });
             assert!(marker_writer.join().is_err(), "Q11 marker writer joined");
             assert!(
-                !host.installed_sessions.slots.is_poisoned(),
+                !host.run_assembly.installed_sessions.slots.is_poisoned(),
                 "Q11 distinct healthy Slot before query"
             );
-            let view = host.installed_sessions.realizations();
+            let view = host.run_assembly.installed_sessions.realizations();
             let polls = std::sync::atomic::AtomicUsize::new(0);
             let observed = AssertUnwindSafe(primary_or_delegated_run_active(
                 &root_id,
                 |id| {
                     if legacy {
                         Ok(host
+                            .run_assembly
                             .installed_sessions
                             .read_run(id, |run| {
                                 run.context

@@ -40,7 +40,7 @@ async fn dispatched_mcp_effect_projection_decision_table() {
     let host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
-    let _managed = crate::ManagedHost::new(host.clone());
+    let _managed = host.clone();
     host.capabilities
         .register_thread_agent_projection("mcp-dispatch", "agent-a");
     host.capabilities
