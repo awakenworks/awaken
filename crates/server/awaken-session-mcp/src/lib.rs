@@ -22,3 +22,6 @@ pub use mcp_material::{
 };
 pub use mcp_relay::{McpRelay, McpRelayOutboundProxy};
 pub use mcp_relay_exposure::ContainerMcpRelayExposure;
+
+mod direct_attachments;
+pub use direct_attachments::DirectMcpAttachments;

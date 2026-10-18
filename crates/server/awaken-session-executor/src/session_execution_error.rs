@@ -30,11 +30,7 @@ pub enum SessionExecutionErrorKind {
 
 impl SessionExecutionError {
     pub fn internal(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            kind: SessionExecutionErrorKind::Internal,
-            code: "internal".into(),
-        }
+        Self::classified("internal", message)
     }
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self {
@@ -51,11 +47,7 @@ impl SessionExecutionError {
         }
     }
     pub fn unavailable(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            kind: SessionExecutionErrorKind::Unavailable,
-            code: "unavailable".into(),
-        }
+        Self::unavailable_classified("unavailable", message)
     }
     pub fn unavailable_classified(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self {

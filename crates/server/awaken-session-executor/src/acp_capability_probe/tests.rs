@@ -132,12 +132,7 @@ async fn a_cancelled_owned_probe_can_be_reconciled_without_creating_a_second_sco
     );
     let scope = SessionAcpCapabilityNegotiator::probe_scope("probe-recovery", &argv, None);
     assert!(
-        original
-            .assembly
-            .resources
-            .memory
-            .drain(Duration::from_secs(5))
-            .await,
+        original.background.drain(Duration::from_secs(5)).await,
         "the original exact-handle cleanup must finish before a later Host can create"
     );
     assert!(
@@ -215,7 +210,7 @@ async fn probe_handshake_timeout_and_spawn_failure_dispose_without_capability_ev
         };
         let mut negotiator =
             probe_negotiator(base.path(), "probe-failure", Arc::new(StalledHandshake)).await;
-        negotiator.timeout = Duration::from_millis(20);
+        negotiator.probe.timeout = Duration::from_millis(20);
         let scope = SessionAcpCapabilityNegotiator::probe_scope("probe-failure", &argv, None);
         let error = AcpCapabilityNegotiator::negotiate(&negotiator, &argv, probe_cwd(), None)
             .await
@@ -233,7 +228,7 @@ async fn probe_handshake_timeout_and_spawn_failure_dispose_without_capability_ev
             "R1/R2 provider disposal"
         );
         assert!(
-            !negotiator.stranded.contains(&scope),
+            !negotiator.probe.stranded.contains(&scope),
             "R1/R2 no false strand"
         );
     }
@@ -264,24 +259,18 @@ async fn a_cancelled_probe_strands_an_environment_that_its_own_scope_still_names
     );
 
     let scope = SessionAcpCapabilityNegotiator::probe_scope("ws-alpha", &argv, None);
-    assert!(
-        negotiator
-            .assembly
-            .resources
-            .memory
-            .drain(Duration::from_secs(5))
-            .await
-    );
+    assert!(negotiator.background.drain(Duration::from_secs(5)).await);
     assert!(
         !stranded_base.path().join(&scope).exists(),
         "receiver cancellation must finish exact-handle disposal"
     );
     assert!(
-        !negotiator.stranded.contains(&scope),
+        !negotiator.probe.stranded.contains(&scope),
         "verified disposal settles the strand"
     );
     assert!(
         !negotiator
+            .probe
             .stranded
             .contains(&SessionAcpCapabilityNegotiator::probe_scope(
                 "ws-beta", &argv, None
@@ -333,7 +322,7 @@ async fn a_cancelled_probe_strands_an_environment_that_its_own_scope_still_names
         "E3 a completed probe disposes its environment"
     );
     assert!(
-        !clean.stranded.contains(&scope),
+        !clean.probe.stranded.contains(&scope),
         "E3 a settled claim records no strand"
     );
 }
@@ -374,4 +363,113 @@ fn a_poisoned_stranded_probe_ledger_reads_as_empty() {
     ledger.record("scope-b".into());
     ledger.settle("scope-a");
     assert!(!ledger.contains("scope-b"), "S2 no effect");
+}
+
+async fn probe_composition(base: &Path) -> Arc<crate::ExecutorComponents> {
+    let mut dependencies = crate::SessionExecutorBuilder::ephemeral(Arc::new(NoLlm), "stub").await;
+    dependencies.env.session_provider =
+        awaken_session_environment::SandboxEnvironmentProvider::workdir(base)
+            .into_session_provider();
+    dependencies.build().expect("original process composition")
+}
+
+#[tokio::test]
+async fn retained_acp_probe_releases_unrelated_session_owners() {
+    // A1 idle Context installed + retained negotiator + composition dropped =>
+    // original Assembly, slots and Context are released. A2 retained negotiator
+    // still probes through the selected provider and the original task registry,
+    // then physically disposes its own Workdir scope.
+    let base = tempfile::tempdir().unwrap();
+    let host = probe_composition(base.path()).await;
+    let context = host
+        .run_assembly
+        .ctx_for_session_coordination("acp-owner-idle", None)
+        .await
+        .unwrap();
+    assert!(context.env.is_none() && !context.has_active_run());
+    let background = host.resources.memory.background();
+    let probe = SessionAcpCapabilityNegotiator::new(
+        host.run_assembly.clone(),
+        "released-acp-owner".into(),
+        Duration::from_secs(5),
+        Arc::new(ReadyHandshake),
+    );
+    assert!(
+        Arc::ptr_eq(&probe.background, &background),
+        "same original task registry"
+    );
+    let assembly = Arc::downgrade(&host.run_assembly);
+    let slots = Arc::downgrade(&host.run_assembly.installed_sessions);
+    let cached = Arc::downgrade(&context);
+    drop(context);
+    drop(host);
+    assert!(
+        assembly.upgrade().is_none() && slots.upgrade().is_none() && cached.upgrade().is_none()
+    );
+    let argv = probe_argv();
+    probe
+        .negotiate(&argv, probe_cwd(), None)
+        .await
+        .expect("selected provider remains usable");
+    assert!(background.drain(Duration::from_secs(5)).await);
+    let scope = SessionAcpCapabilityNegotiator::probe_scope("released-acp-owner", &argv, None);
+    assert!(
+        !base.path().join(scope).exists(),
+        "original exact-handle cleanup disposed the scope"
+    );
+    assert!(
+        slots.upgrade().is_none(),
+        "probe does not recreate Session slots"
+    );
+}
+
+struct EnteredHandshake(Arc<tokio::sync::Notify>);
+
+#[async_trait]
+impl AcpCapabilityHandshake for EnteredHandshake {
+    async fn negotiate(
+        &self,
+        _: &mut dyn awaken_agent_channel::AgentChannel,
+        _: &AcpCapabilityProbeConfig,
+    ) -> Result<NegotiatedAcpCapabilities, String> {
+        self.0.notify_one();
+        std::future::pending().await
+    }
+}
+
+#[tokio::test]
+async fn cancelled_acp_probe_joins_cleanup_after_composition_release() {
+    // B1 real Environment + stdin-bound process exist at handshake entry.
+    // B2 release the process composition => unrelated slots are released while
+    // the original owned probe continues. B3 abort its caller => the original
+    // BackgroundRuns joins the exact process/environment cleanup tail.
+    let base = tempfile::tempdir().unwrap();
+    let host = probe_composition(base.path()).await;
+    let background = host.resources.memory.background();
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let probe = SessionAcpCapabilityNegotiator::new(
+        host.run_assembly.clone(),
+        "cancelled-released-acp".into(),
+        Duration::from_secs(30),
+        Arc::new(EnteredHandshake(entered.clone())),
+    );
+    let argv = probe_argv();
+    let scope = SessionAcpCapabilityNegotiator::probe_scope("cancelled-released-acp", &argv, None);
+    let caller = tokio::spawn(async move { probe.negotiate(&argv, probe_cwd(), None).await });
+    tokio::time::timeout(Duration::from_secs(5), entered.notified())
+        .await
+        .expect("real process reached handshake");
+    assert!(base.path().join(&scope).exists());
+    let assembly = Arc::downgrade(&host.run_assembly);
+    let slots = Arc::downgrade(&host.run_assembly.installed_sessions);
+    drop(host);
+    assert!(assembly.upgrade().is_none() && slots.upgrade().is_none());
+    caller.abort();
+    assert!(caller.await.unwrap_err().is_cancelled());
+    assert!(
+        background.drain(Duration::from_secs(5)).await,
+        "original cleanup task is joined"
+    );
+    assert!(!base.path().join(scope).exists());
+    assert!(slots.upgrade().is_none());
 }
