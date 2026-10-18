@@ -612,8 +612,12 @@ exit "$RESULT_STATUS"
         # P1 the exact current owner lists and executes => continue to E2E.
         # P2 empty selection or P3 former owner => reject before E2E, even when
         # Cargo itself returns success. Exercise the actual entrypoint/helper.
+        # P4 an unrelated prerequisite adds a required case => consume that
+        # actual runner declaration, without copying its case list here. The
+        # launch selection remains independently fixed by SELECTED below, so
+        # this scaffolding cannot admit an empty or former-owner launch.
         selected = "sandbox_source::tests::configured_working_directory_drives_process_and_acp_from_one_view"
-        for case in ("passing", "empty", "former-owner"):
+        for case in ("passing", "extra-floor", "empty", "former-owner"):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
                 fixture = Path(temporary)
                 scripts = self.runner_fixture(fixture, "scripts/ci/check-trusted-host-portability.sh",
@@ -624,11 +628,30 @@ exit "$RESULT_STATUS"
                     entrypoint.write_text(source.replace(
                         "run_required_rust_tests -p awaken-execution-composition --lib ",
                         "run_required_rust_tests -p awaken-session-executor --lib ", 1), encoding="utf-8")
+                elif case == "extra-floor":
+                    source = entrypoint.read_text(encoding="utf-8")
+                    position = source.index("--require-case=")
+                    entrypoint.write_text(source[:position] +
+                                          "--require-case=future_portability_floor " +
+                                          source[position:], encoding="utf-8")
                 binary = fixture / "bin"
                 binary.mkdir()
                 environment = self.cargo_fixture(fixture, '''
 printf '%s\\n' "$*" >> "$CALL_LOG"
-selection=portable_fixture
+selection=$(python3 - "$@" <<'PY'
+import json, os, sys
+from pathlib import Path
+command = ["cargo", *sys.argv[1:]]
+receipts = Path(os.environ["CARGO_TARGET_DIR"]).glob("test-timings/rust-execution.*/results.json")
+selection = ["portable_fixture"]
+for receipt in sorted(receipts, key=lambda path: path.stat().st_mtime, reverse=True):
+    document = json.loads(receipt.read_text())
+    if document.get("status") == "running" and command in document.get("commands", []):
+        selection = document["required_cases"] or selection
+        break
+print("\\n".join(selection))
+PY
+)
 case "$*" in
   *configured_working_directory_drives_process_and_acp_from_one_view*)
     selection="$SELECTED"
@@ -636,11 +659,15 @@ case "$*" in
     ;;
 esac
 case "$*" in
-  *--list*) [ -z "$selection" ] || echo "$selection: test" ;;
+  *--list*)
+    if [ -n "$selection" ]; then
+      while IFS= read -r name; do echo "$name: test"; done <<< "$selection"
+    fi ;;
   *--show-output*)
     if [ -n "$selection" ]; then
-      echo "test $selection ... ok"
-      echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
+      count=0
+      while IFS= read -r name; do echo "test $name ... ok"; count=$((count + 1)); done <<< "$selection"
+      echo "test result: ok. $count passed; 0 failed; 0 ignored;"
     else
       echo 'test result: ok. 0 passed; 0 failed; 0 ignored;'
     fi ;;
@@ -661,9 +688,10 @@ if [ "$1" = --input-type=module ]; then echo /owned/hand; else echo E2E >> "$CAL
                 environment.update(CASE=case, SELECTED=selected, CALL_LOG=str(fixture / "target/calls"))
                 result = subprocess.run(["bash", str(entrypoint)], cwd=fixture, env=environment,
                                         capture_output=True, text=True, timeout=90)
-                self.assertEqual(result.returncode == 0, case == "passing", result.stdout + result.stderr)
+                passing = case in ("passing", "extra-floor")
+                self.assertEqual(result.returncode == 0, passing, result.stdout + result.stderr)
                 calls = (fixture / "target/calls").read_text().splitlines()
-                if case == "passing":
+                if passing:
                     self.assertIn(f"test --locked -p awaken-execution-composition --lib {selected} -- --exact --list", calls)
                     self.assertIn(f"test --locked -p awaken-execution-composition --lib {selected} -- --exact --show-output", calls)
                     self.assertEqual(calls.count("E2E"), 5)
