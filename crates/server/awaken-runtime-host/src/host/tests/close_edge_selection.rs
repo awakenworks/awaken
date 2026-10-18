@@ -74,6 +74,7 @@ async fn rebuilt_successor_is_not_interrupted(original_run_active: bool) {
         .run_assembly
         .installed_sessions
         .read(thread, |slot| slot.realization.execution().phase.clone())
+        .expect("installed Sessions")
         .unwrap();
     let first_run = if original_run_active {
         let mut run = tokio::spawn({
@@ -107,6 +108,7 @@ async fn rebuilt_successor_is_not_interrupted(original_run_active: bool) {
         .run_assembly
         .installed_sessions
         .close_realization(thread, Some((&original, &phase)))
+        .expect("installed Sessions")
         .expect("close and select actual original root");
     let checked = Arc::new(tokio::sync::Notify::new());
     let release = ReleaseRetirementCheck(Arc::new((
@@ -221,6 +223,7 @@ async fn rebuilt_successor_is_not_interrupted(original_run_active: bool) {
                     .as_ref()
                     .is_some_and(|ctx| Arc::ptr_eq(ctx, &successor_ctx))
         })
+        .expect("installed Sessions")
         .unwrap_or(false);
     release_model.notify_one();
     tokio::time::timeout(std::time::Duration::from_secs(5), run)

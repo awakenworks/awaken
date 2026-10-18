@@ -50,6 +50,7 @@ async fn host_accepts_only_backend_projections_that_match_the_publication() {
             .run_assembly
             .installed_sessions
             .read("backend-h1", |slot| slot.inputs.backend_ref.is_none())
+            .expect("installed Sessions")
             .unwrap_or(false),
         "H1 default has no redundant projection"
     );
@@ -270,7 +271,8 @@ async fn session_tool_policy_preserves_the_published_snapshot_identity() {
                     client_tools: Vec::new(),
                 },
             )
-        });
+        })
+        .expect("installed Sessions");
 
     let context = host
         .run_assembly
@@ -382,7 +384,8 @@ async fn session_web_policy_overlay_reaches_the_configured_plugin_before_inferen
                     client_tools: Vec::new(),
                 },
             );
-        });
+        })
+        .expect("installed Sessions");
 
     let receipt = host
         .session_runs
@@ -451,7 +454,7 @@ async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool()
         };
     host.run_assembly
         .installed_sessions
-        .update("repository-policy", |slot| {
+        .install_with("repository-policy", |slot| {
             slot.run.session_dispatch = true;
             slot.replace_frozen_with(|next| {
                 next.tools = Some(
@@ -476,7 +479,8 @@ async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool()
                     repository("repo-a", "/workspace/repo-a"),
                     repository("legacy-repo", "legacy-repo"),
                 ]);
-        });
+        })
+        .expect("installed Sessions");
     let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("repository-agent")
         .model(test_model_binding())
         .build();
@@ -493,35 +497,40 @@ async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool()
         "R3 exact read denial"
     );
     assert_eq!(
-        host.run_assembly.session_skill_source_roots(
-            "repository-policy",
-            Some(&snapshot),
-            "custom-authored-skills",
-        ),
+        host.run_assembly
+            .session_skill_source_roots(
+                "repository-policy",
+                Some(&snapshot),
+                "custom-authored-skills",
+            )
+            .expect("installed Sessions"),
         None,
         "R3 no Managed repository source"
     );
 
     host.run_assembly
         .installed_sessions
-        .update("repository-policy", |slot| {
+        .install_with("repository-policy", |slot| {
             let mut tools = slot.inputs.tools.clone().expect("Session tools");
             tools.toolsets[0]
                 .overrides
                 .push(ToolPolicyOverride::new("read", enabled));
             slot.replace_frozen_with(|next| next.tools = Some(tools));
-        });
+        })
+        .expect("installed Sessions");
     assert!(
         host.run_assembly
             .session_allows_repository_skill_discovery("repository-policy", Some(&snapshot)),
         "R2 exact read admission"
     );
     assert_eq!(
-        host.run_assembly.session_skill_source_roots(
-            "repository-policy",
-            Some(&snapshot),
-            "custom-authored-skills",
-        ),
+        host.run_assembly
+            .session_skill_source_roots(
+                "repository-policy",
+                Some(&snapshot),
+                "custom-authored-skills",
+            )
+            .expect("installed Sessions"),
         Some(vec![
             "legacy-repo/.claude/skills".to_string(),
             "workspace/repo-a/.claude/skills".to_string(),
@@ -529,11 +538,9 @@ async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool()
         "R2 fixed relative path ignores the direct authored setting"
     );
     assert_eq!(
-        host.run_assembly.session_skill_source_roots(
-            "repository-policy",
-            None,
-            "custom-authored-skills",
-        ),
+        host.run_assembly
+            .session_skill_source_roots("repository-policy", None, "custom-authored-skills",)
+            .expect("installed Sessions"),
         Some(vec![
             "legacy-repo/.claude/skills".to_string(),
             "workspace/repo-a/.claude/skills".to_string(),
@@ -543,13 +550,15 @@ async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool()
 
     host.run_assembly
         .installed_sessions
-        .update_run("repository-policy", |run| run.session_dispatch = false);
+        .install_run("repository-policy", |run| run.session_dispatch = false);
     assert_eq!(
-        host.run_assembly.session_skill_source_roots(
-            "repository-policy",
-            Some(&snapshot),
-            "custom-authored-skills",
-        ),
+        host.run_assembly
+            .session_skill_source_roots(
+                "repository-policy",
+                Some(&snapshot),
+                "custom-authored-skills",
+            )
+            .expect("installed Sessions"),
         Some(vec![
             "custom-authored-skills".to_string(),
             "legacy-repo/.claude/skills".to_string(),
@@ -559,7 +568,8 @@ async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool()
     );
     assert_eq!(
         host.run_assembly
-            .session_skill_source_roots("unpublished-direct", None, "skills"),
+            .session_skill_source_roots("unpublished-direct", None, "skills")
+            .expect("installed Sessions"),
         Some(Vec::new()),
         "direct unpublished compatibility keeps the live authored marker"
     );
@@ -622,7 +632,8 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
         .installed_sessions
         .replace_frozen_with("direct-semantic", |next| {
             next.tools = Some(deny_filesystem())
-        });
+        })
+        .expect("installed Sessions");
     assert_eq!(
         host.run_assembly
             .select_content_delivery(
@@ -637,7 +648,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
 
     host.run_assembly
         .installed_sessions
-        .update_run("managed-filesystem", |run| {
+        .install_run("managed-filesystem", |run| {
             run.session_dispatch = true;
         });
     assert_eq!(
@@ -654,10 +665,11 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
 
     host.run_assembly
         .installed_sessions
-        .update("managed-denied", |slot| {
+        .install_with("managed-denied", |slot| {
             slot.run.session_dispatch = true;
             slot.replace_frozen_with(|next| next.tools = Some(deny_filesystem()));
-        });
+        })
+        .expect("installed Sessions");
     let denied = host
         .run_assembly
         .select_content_delivery(
@@ -679,10 +691,11 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
     empty_host
         .run_assembly
         .installed_sessions
-        .update("managed-no-skill", |slot| {
+        .install_with("managed-no-skill", |slot| {
             slot.run.session_dispatch = true;
             slot.replace_frozen_with(|next| next.tools = Some(deny_filesystem()));
-        });
+        })
+        .expect("installed Sessions");
     assert_eq!(
         empty_host
             .run_assembly
@@ -715,7 +728,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
     empty_host
         .run_assembly
         .installed_sessions
-        .update("managed-memory-path", |slot| {
+        .install_with("managed-memory-path", |slot| {
             slot.run.session_dispatch = true;
             slot.replace_frozen_with(|next| next.tools = Some(deny_filesystem()));
             slot.realization
@@ -728,7 +741,8 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
                     )
                     .unwrap(),
                 );
-        });
+        })
+        .expect("installed Sessions");
     let path_error = empty_host
         .run_assembly
         .select_content_delivery(
@@ -747,7 +761,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
     empty_host
         .run_assembly
         .installed_sessions
-        .update_run("managed-missing-freeze", |run| {
+        .install_run("managed-missing-freeze", |run| {
             run.session_dispatch = true;
         });
     let selected_snapshot =
@@ -809,7 +823,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
     empty_host
         .run_assembly
         .installed_sessions
-        .update_run("managed-deferred-freeze", |run| run.session_dispatch = true);
+        .install_run("managed-deferred-freeze", |run| run.session_dispatch = true);
     assert_eq!(
         empty_host
             .run_assembly
@@ -839,7 +853,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
     empty_host
         .run_assembly
         .installed_sessions
-        .update_run("managed-deferred-mismatch", |run| {
+        .install_run("managed-deferred-mismatch", |run| {
             run.session_dispatch = true
         });
     let mismatch = empty_host
@@ -905,7 +919,7 @@ async fn session_content_delivery_is_frozen_across_auxiliary_agent_snapshots() {
 
     host.run_assembly
         .installed_sessions
-        .update("semantic-session", |slot| {
+        .install_with("semantic-session", |slot| {
             slot.realization.staging_mut().content_delivery =
                 Some(ManagedContentDelivery::SemanticTools);
             slot.replace_frozen_with(|next| {
@@ -929,7 +943,8 @@ async fn session_content_delivery_is_frozen_across_auxiliary_agent_snapshots() {
                     },
                 )
             });
-        });
+        })
+        .expect("installed Sessions");
     assert!(
         host.run_assembly
             .session_allows_filesystem_tools("semantic-session", None),
@@ -1275,7 +1290,8 @@ async fn session_client_tools_replace_the_published_surface_with_exact_ownership
         .replace_frozen_with("cleared-client-tools", |next| {
             next.tools =
                 Some(awaken_session_configuration_contract::SessionToolConfiguration::default());
-        });
+        })
+        .expect("installed Sessions");
     let cleared = host
         .run_assembly
         .ctx_for("cleared-client-tools", Some("assistant"))
@@ -1310,7 +1326,8 @@ async fn session_client_tools_replace_the_published_surface_with_exact_ownership
                     client_tools: vec![lookup.clone()],
                 },
             )
-        });
+        })
+        .expect("installed Sessions");
     let context = host
         .run_assembly
         .ctx_for("session-client-tools", Some("assistant"))
@@ -1426,14 +1443,16 @@ async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_read
     assert_eq!(recovered.config.root_agent_id.0, "agent-a", "R1");
 
     host.capabilities
-        .register_thread_agent_projection("same-agent", "agent-a");
+        .register_thread_agent_projection("same-agent", "agent-a")
+        .expect("installed Sessions");
     host.run_assembly
         .ctx_for("same-agent", Some("agent-a"))
         .await
         .expect("R2 repeated exact Agent");
 
     host.capabilities
-        .register_thread_agent_projection("mismatch-agent", "agent-a");
+        .register_thread_agent_projection("mismatch-agent", "agent-a")
+        .expect("installed Sessions");
     let error = match host
         .run_assembly
         .ctx_for("mismatch-agent", Some("assistant"))
@@ -1676,6 +1695,7 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
         host.run_assembly
             .installed_sessions
             .read_run("late-projection", |run| run.context.is_none())
+            .expect("installed Sessions")
             .unwrap_or(false),
         "P1 stale context must not survive the authority transition"
     );
@@ -1759,6 +1779,7 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
         .read_run("active-frozen-projection", |run| {
             Arc::ptr_eq(run.context.as_ref().expect("P4 runtime"), &frozen_active)
         })
+        .expect("installed Sessions")
         .unwrap_or(false);
     assert!(retained, "P4 keeps the one resident Runtime");
 }

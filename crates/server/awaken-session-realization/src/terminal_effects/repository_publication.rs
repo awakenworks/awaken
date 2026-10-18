@@ -46,7 +46,7 @@ impl TerminalEffects {
         let _realization = self
             .sessions
             .acquire_realization(command.session_id.as_str())
-            .await;
+            .await?;
         let lifecycle = self
             .sessions
             .lock_lifecycle(command.session_id.as_str())

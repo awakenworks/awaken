@@ -103,7 +103,7 @@ impl crate::SessionRuns {
             .read_run(
                 thread,
                 crate::installed_session::SessionRunBinding::select_interruption,
-            )
+            )?
             .transpose()?
             .unwrap_or_default();
         if !self.authority.cancels_through_durable_intent() {
@@ -302,7 +302,7 @@ impl crate::SessionRuns {
         if ingress_scope == RunIngressScope::HostCommand
             && self
                 .installed_sessions
-                .read_run(thread, |run| run.session_dispatch)
+                .read_run(thread, |run| run.session_dispatch)?
                 .unwrap_or(false)
         {
             return Err(HostError::bad_request(

@@ -117,18 +117,21 @@ async fn managed_projection_without_a_lease_never_falls_back_to_unowned() {
             .await
             .build()
             .unwrap();
-        host.run_assembly.installed_sessions.update(thread, |slot| {
-            slot.run.session_dispatch = marker;
-            if baseline {
-                slot.replace_frozen_with(|next| {
-                    next.baseline = Some(remote_terminal_cleanup_projection().baseline)
-                });
-            }
-            if closed {
-                slot.realization.execution_mut().authority =
-                    crate::realization_state::SessionRealizationAuthority::Closed(None);
-            }
-        });
+        host.run_assembly
+            .installed_sessions
+            .install_with(thread, |slot| {
+                slot.run.session_dispatch = marker;
+                if baseline {
+                    slot.replace_frozen_with(|next| {
+                        next.baseline = Some(remote_terminal_cleanup_projection().baseline)
+                    });
+                }
+                if closed {
+                    slot.realization.execution_mut().authority =
+                        crate::realization_state::SessionRealizationAuthority::Closed(None);
+                }
+            })
+            .expect("installed Sessions");
         let intent = host
             .realization_executor
             .authority()
@@ -369,7 +372,7 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
     let thread = "claimed-ordinary-environment-authority";
     host.run_assembly
         .installed_sessions
-        .update_run(thread, |run| {
+        .install_run(thread, |run| {
             run.dispatch_claim = Some(awaken_run_ingress_contract::RunClaim {
                 run_id: RunId("claimed-ordinary-run".into()),
                 owner: "worker-a".into(),
@@ -406,7 +409,7 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
 
     host.run_assembly
         .installed_sessions
-        .update_run(thread, |run| run.session_dispatch = true);
+        .install_run(thread, |run| run.session_dispatch = true);
     let managed = host
         .realization_executor
         .environments()

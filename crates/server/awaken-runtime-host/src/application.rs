@@ -186,7 +186,9 @@ impl crate::RunAssembly {
         lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<(), crate::HostError> {
         // The test fixture installs the Session whose lease it installs.
-        self.installed_sessions.install(session_id);
+        self.installed_sessions
+            .install(session_id)
+            .expect("installed Sessions");
         let realizations = self.installed_sessions.realizations();
         let changed = self
             .realization_executor
@@ -283,7 +285,7 @@ impl crate::RunAssembly {
                 slot.run
                     .select_interruption()
                     .map(|selected| (slot.realization.execution().phase.clone(), selected.local))
-            })
+            })?
             .transpose()?;
         match control.terminal_cleanup_work(session_id, lease).await {
             Ok(Some(_)) => {
@@ -351,7 +353,7 @@ impl crate::RunAssembly {
                         session_id.as_str(),
                         lease,
                         phase,
-                    )
+                    )?
                 {
                     self.retire_selected_session_realization(session_id.as_str(), selected, true)
                         .await?;
@@ -533,7 +535,7 @@ impl crate::RunAssembly {
         // post-lock CAS; neither a renewal reply nor cancellation reopens it.
         let Some(selected) = self
             .installed_sessions
-            .close_realization(session_id, expected_projection)
+            .close_realization(session_id, expected_projection)?
         else {
             return Ok(false);
         };
@@ -593,16 +595,18 @@ impl crate::RunAssembly {
     /// no longer provable. Durable Session environments remain available for
     /// adoption; only terminal Session lifecycle commands may dispose them.
     pub async fn revoke_all_session_realizations(&self) -> Result<usize, crate::HostError> {
-        self.finish_session_realization_revocation(self.begin_session_realization_revocation())
+        self.finish_session_realization_revocation(self.begin_session_realization_revocation()?)
             .await
     }
 
     /// Close all current Session authority BEFORE a Worker starts asynchronous
     /// drain/interruption. This selection is not a new Worker registry lease.
-    pub fn begin_session_realization_revocation(&self) -> SessionRealizationRevocation {
-        SessionRealizationRevocation {
-            selected: self.installed_sessions.close_all_realizations(),
-        }
+    pub fn begin_session_realization_revocation(
+        &self,
+    ) -> Result<SessionRealizationRevocation, crate::HostError> {
+        Ok(SessionRealizationRevocation {
+            selected: self.installed_sessions.close_all_realizations()?,
+        })
     }
 
     /// Join every selected cleanup without letting one error or held owner lock
@@ -644,11 +648,13 @@ impl crate::RunAssembly {
         init: &awaken_session_configuration_contract::SessionInit,
     ) -> Result<(), crate::HostError> {
         let environment = environment_projection::project_environment(&init.environment);
-        self.installed_sessions.update(thread, |slot| {
-            slot.inputs.validate_environment(thread, &environment)?;
-            slot.replace_frozen_with(|next| next.lower_session_init(init, environment));
-            Ok(())
-        })
+        self.installed_sessions
+            .install_with(thread, |slot| {
+                slot.inputs.validate_environment(thread, &environment)?;
+                slot.replace_frozen_with(|next| next.lower_session_init(init, environment));
+                Ok(())
+            })
+            .expect("installed Sessions")
     }
 
     pub(crate) async fn install_frozen_session_projection(
@@ -728,7 +734,7 @@ impl crate::RunAssembly {
         // Desired-only staging and physical reconciliation therefore cannot
         // interleave a different resources/skills/manifest generation between
         // preflight and the baseline/transition/lease update below.
-        self.installed_sessions.install(thread);
+        self.installed_sessions.install(thread)?;
         let resource_projection = sessions.lock_resource_projection(thread).await?;
         let receipt =
             crate::realization_state::FrozenProjectionReceipt::from_projection(&projection)?;
@@ -800,7 +806,7 @@ impl crate::RunAssembly {
                         .as_ref()
                         .is_some_and(|context| !context.is_coordination_envelope())
                         || slot.realization.environment().owner.has_local_environment()
-                })
+                })?
                 .unwrap_or(false);
             if is_realized {
                 return Err(crate::HostError::internal(format!(
@@ -863,7 +869,7 @@ impl crate::RunAssembly {
         if let Some(proof) = realization_lease.as_ref() {
             // Reject a foreign durable owner BEFORE retiring a valid execution
             // object. Publication still revalidates this same canonical kernel.
-            self.installed_sessions.update(thread, |slot| {
+            self.installed_sessions.install_with(thread, |slot| {
                 let newer = slot.realization.validate_projection_receipt(&receipt)?;
                 slot.realization.environment().owner.after_projection(
                     thread,
@@ -873,7 +879,7 @@ impl crate::RunAssembly {
                     pending_resource_reservation,
                 )?;
                 Ok::<_, crate::HostError>(())
-            })?;
+            })??;
             let mcp = (&self.mcp, self.installed_sessions.as_ref());
             exec.retire_replaced_scoped_execution(realization.peers(), thread, proof, mcp)
                 .await?;
@@ -915,7 +921,7 @@ impl crate::RunAssembly {
             preparation.validate()?;
         }
         realization.authority().authorize_worker_effect(|| {
-            self.installed_sessions.update(thread, |slot| {
+            self.installed_sessions.install_with(thread, |slot| {
                 // Revalidate fallible coordinates and stage the existing owner
                 // transition under the final slot lock. No correlated field is
                 // published before the time proof/preparation is admitted.
@@ -981,7 +987,7 @@ impl crate::RunAssembly {
                 // state.
                 slot.run.session_dispatch = true;
                 Ok::<_, crate::HostError>(())
-            })?;
+            })??;
             Ok(())
         })
     }
@@ -1019,7 +1025,7 @@ impl crate::RunAssembly {
         let _realization = self
             .installed_sessions
             .acquire_realization_with(assignment.session_id.as_str(), |_| ())
-            .await
+            .await?
             .0;
         self.install_frozen_session_projection_with_resource_authority(
             assignment.session_id.as_str(),
@@ -1041,11 +1047,11 @@ impl crate::RunAssembly {
         environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
     ) -> Result<(), crate::HostError> {
         let projection = environment_projection::project_environment(environment);
-        self.installed_sessions.update(thread, |slot| {
+        self.installed_sessions.install_with(thread, |slot| {
             slot.inputs.validate_environment(thread, &projection)?;
             slot.replace_frozen_with(|next| next.lower_environment(environment, projection));
             Ok(())
-        })
+        })?
     }
 
     /// Return the exact credential-custody profile frozen in this Session's

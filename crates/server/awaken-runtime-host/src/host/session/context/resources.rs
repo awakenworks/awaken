@@ -143,7 +143,7 @@ pub(super) async fn acquire(
         installed.as_ref(),
         has_published_multiagent,
         plan.claimed_runtime_identity.is_some(),
-    );
+    )?;
     // Reservation cannot create a physical Environment before its immutable
     // dispatch is durable. It must still reject a deterministic substrate
     // mismatch before the Session activity opens; otherwise an impossible
@@ -214,7 +214,7 @@ pub(super) async fn acquire(
     // Managed adapter's `prepare_session` before the first Run; the wire
     // startup (connect + discover, fail closed) lives in `crate::mcp`.
     // Read, not removed, so a retry re-attempts (and re-fails) the connect.
-    let active_mcp = host.active_mcp_projections(thread);
+    let active_mcp = host.active_mcp_projections(thread)?;
     let mcp = if is_acp {
         awaken_session_mcp::McpWiring::empty()
     } else {
@@ -300,7 +300,7 @@ pub(super) async fn acquire(
             })
     };
     let skill_source_roots =
-        host.session_skill_source_roots(thread, installed.as_ref(), &authored_skills_subdir);
+        host.session_skill_source_roots(thread, installed.as_ref(), &authored_skills_subdir)?;
     let authorization =
         effective_tool_authorization(&published_configuration, &pre_authorized, &toolsets);
     Ok(ContextResources {

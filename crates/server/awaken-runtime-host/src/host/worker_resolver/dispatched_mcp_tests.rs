@@ -42,7 +42,8 @@ async fn dispatched_mcp_effect_projection_decision_table() {
         .expect("validated Host dependencies");
     let _managed = host.clone();
     host.capabilities
-        .register_thread_agent_projection("mcp-dispatch", "agent-a");
+        .register_thread_agent_projection("mcp-dispatch", "agent-a")
+        .expect("installed Sessions");
     host.capabilities
         .register_thread_backend_projection("mcp-dispatch", "acp:gemini");
     host.run_assembly
@@ -83,6 +84,7 @@ async fn dispatched_mcp_effect_projection_decision_table() {
     assert_eq!(
         host.run_assembly
             .active_mcp_projections("mcp-dispatch")
+            .expect("registry and projection are healthy")
             .len(),
         1,
         "R2"
@@ -97,6 +99,7 @@ async fn dispatched_mcp_effect_projection_decision_table() {
     assert_eq!(
         host.run_assembly
             .active_mcp_projections("mcp-dispatch")
+            .expect("registry and projection are healthy")
             .len(),
         1,
         "R3"
@@ -112,6 +115,7 @@ async fn dispatched_mcp_effect_projection_decision_table() {
     assert!(
         host.run_assembly
             .active_mcp_projections("mcp-dispatch")
+            .expect("registry and projection are healthy")
             .is_empty(),
         "R4"
     );
@@ -137,6 +141,7 @@ async fn dispatched_mcp_effect_projection_decision_table() {
     assert_eq!(
         host.run_assembly
             .active_mcp_projections("mcp-dispatch")
+            .expect("registry and projection are healthy")
             .len(),
         1,
         "R5"
@@ -154,6 +159,7 @@ async fn dispatched_mcp_effect_projection_decision_table() {
     assert_eq!(
         host.run_assembly
             .active_mcp_projections("mcp-dispatch")
+            .expect("registry and projection are healthy")
             .len(),
         1,
         "R5"

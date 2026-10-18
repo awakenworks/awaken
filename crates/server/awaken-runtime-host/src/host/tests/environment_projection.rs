@@ -97,6 +97,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         host.run_assembly
             .installed_sessions
             .read_run("t-attach", |run| run.context.is_some())
+            .expect("installed Sessions")
             .unwrap_or(false),
         "the first Run caches the Thread's sandbox ctx"
     );
@@ -116,7 +117,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     };
     host.run_assembly
         .installed_sessions
-        .update_run("t-attach", |run| {
+        .install_run("t-attach", |run| {
             run.dispatch_claim = Some(stale_claim.clone());
         });
 
@@ -152,6 +153,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
             .run_assembly
             .installed_sessions
             .read_run("t-attach", |run| run.context.is_some())
+            .expect("installed Sessions")
             .unwrap_or(false),
         "attach evicts the cached ctx so the next Run rebuilds with the mount"
     );
@@ -196,13 +198,14 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         host.run_assembly
             .installed_sessions
             .read_run("t-attach", |run| run.dispatch_claim.clone())
+            .expect("installed Sessions")
             .flatten(),
         Some(stale_claim),
         "R2 Resource reservation leaves the attempt delivery cache untouched"
     );
     host.run_assembly
         .installed_sessions
-        .update_run("t-attach", |run| run.dispatch_claim = None);
+        .install_run("t-attach", |run| run.dispatch_claim = None);
 
     run_prepared_session_messages(&managed, "agent", "t-attach", user("after attach"))
         .await
@@ -412,6 +415,7 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
         host.run_assembly
             .installed_sessions
             .read_run("invalid-live-repository", |run| run.context.is_some())
+            .expect("installed Sessions")
             .unwrap_or(false),
         "L1/L2 cached Runtime"
     );
@@ -689,6 +693,7 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
         host.run_assembly
             .installed_sessions
             .read_run("t-local-attach", |run| run.context.is_some())
+            .expect("installed Sessions")
             .unwrap_or(false),
         "rejected replacement leaves the cached runtime intact"
     );
@@ -1232,6 +1237,7 @@ async fn coordinator_dispatch_context_never_materializes_an_eager_environment() 
                 .inputs
                 .environment_snapshot
                 .is_some())
+            .expect("installed Sessions")
             .unwrap_or(false),
         "D1/E2"
     );
@@ -1481,6 +1487,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
                 .inputs
                 .baseline
                 .is_none())
+            .expect("installed Sessions")
             .unwrap_or(true),
         "P5/E2"
     );

@@ -24,7 +24,15 @@ impl crate::RunAssembly {
         let realization_view = sessions.realizations();
         self.realization_executor
             .continuation_effect_fence(thread, operation)?;
-        let _realization = sessions.acquire_realization_with(thread, |_| ()).await.0;
+        let _realization = sessions
+            .acquire_realization_with(thread, |_| ())
+            .await
+            .map_err(|error| {
+                awaken_session_types::RunError::from(
+                    crate::realization_error::RealizationError::from(error),
+                )
+            })?
+            .0;
         let lifecycle = realization_view.lock_lifecycle(thread).await?;
         let environment = self
             .realization_executor
@@ -56,7 +64,7 @@ impl crate::RunAssembly {
                         run.context
                             .as_ref()
                             .is_some_and(|runtime| runtime.has_active_run())
-                    })
+                    })?
                     .unwrap_or(false))
             },
             self.thread_reads
@@ -100,7 +108,9 @@ impl crate::RunAssembly {
         })?;
         self.realization_executor
             .continuation_effect_fence(thread, operation)?;
-        sessions.modify_run(thread, |run| run.context = None);
+        sessions
+            .modify_run(thread, |run| run.context = None)
+            .map_err(crate::installed_session::registry_run_error)?;
         Ok(awaken_session_state_contract::QuiescenceReceipt {
             effect_id: operation.effect_id.clone(),
             generation_id: generation.id().to_owned(),

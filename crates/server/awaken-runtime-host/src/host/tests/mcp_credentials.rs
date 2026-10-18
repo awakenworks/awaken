@@ -183,6 +183,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     assert!(
         host.run_assembly
             .active_mcp_projections("mcp-exact")
+            .expect("registry and projection are healthy")
             .is_empty(),
         "H1"
     );
@@ -225,7 +226,10 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         .await
         .expect("H3");
     assert_eq!(
-        host.run_assembly.active_mcp_projections("mcp-exact").len(),
+        host.run_assembly
+            .active_mcp_projections("mcp-exact")
+            .expect("registry and projection are healthy")
+            .len(),
         1,
         "H3"
     );
@@ -346,6 +350,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     assert!(
         host.run_assembly
             .active_mcp_projections("mcp-exact")
+            .expect("registry and projection are healthy")
             .is_empty(),
         "H6"
     );
@@ -657,7 +662,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     acp_host
         .run_assembly
         .capabilities
-        .register_thread_agent_projection(protected_session, "assistant");
+        .register_thread_agent_projection(protected_session, "assistant")
+        .expect("installed Sessions");
     acp_host
         .realization_executor
         .environments()
@@ -982,7 +988,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         secure_acp_host
             .run_assembly
             .capabilities
-            .register_thread_agent_projection(session, "assistant");
+            .register_thread_agent_projection(session, "assistant")
+            .expect("installed Sessions");
         secure_acp_host
             .realization_executor
             .environments()
@@ -1055,7 +1062,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     secure_acp_host
         .run_assembly
         .capabilities
-        .register_thread_agent_projection("mcp-acp-secure", "assistant");
+        .register_thread_agent_projection("mcp-acp-secure", "assistant")
+        .expect("installed Sessions");
     secure_acp_host
         .realization_executor
         .environments()
@@ -1083,7 +1091,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     default_relay_host
         .run_assembly
         .capabilities
-        .register_thread_agent_projection("mcp-acp-default-relay", "assistant");
+        .register_thread_agent_projection("mcp-acp-default-relay", "assistant")
+        .expect("installed Sessions");
     default_relay_host
         .realization_executor
         .environments()
@@ -1234,7 +1243,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     backend_secure_host
         .run_assembly
         .capabilities
-        .register_thread_agent_projection("mcp-acp-backend-secure", "assistant");
+        .register_thread_agent_projection("mcp-acp-backend-secure", "assistant")
+        .expect("installed Sessions");
     backend_secure_host
         .realization_executor
         .environments()
@@ -1268,7 +1278,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     default_secure_host
         .run_assembly
         .capabilities
-        .register_thread_agent_projection("mcp-acp-backend-weak", "assistant");
+        .register_thread_agent_projection("mcp-acp-backend-weak", "assistant")
+        .expect("installed Sessions");
     default_secure_host
         .realization_executor
         .environments()

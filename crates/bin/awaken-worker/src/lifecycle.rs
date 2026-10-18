@@ -1017,18 +1017,21 @@ pub(crate) async fn revoke_worker_session_authority_before(
                 .ok_or_else(|| {
                     "Worker revocation could not install the local claim fence".to_string()
                 })?;
-            Ok(lifecycle
+            lifecycle
                 .roles
                 .session_runs()
                 .interrupt_all_session_runs()
-                .await)
+                .await
+                .map_err(|error| error.to_string())
         },
         |remaining| lifecycle.roles.drain(remaining),
         async {
             lifecycle
                 .roles
                 .run_assembly()
-                .finish_session_realization_revocation(revocation)
+                .finish_session_realization_revocation(
+                    revocation.map_err(|error| error.to_string())?,
+                )
                 .await
                 .map(|_| ())
                 .map_err(|error| error.to_string())

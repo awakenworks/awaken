@@ -143,6 +143,7 @@ async fn missing_terminal_work_preserves_successor(delayed: bool) {
                     .as_ref()
                     .is_some_and(|current| Arc::ptr_eq(current, &ctx))
         })
+        .expect("installed Sessions")
         .unwrap_or(false);
     // Always release and join the actual driver before asserting the old fault.
     provider_gate.notify_one();
@@ -283,6 +284,7 @@ async fn missing_current_terminal_work_retires_original(renew: bool) {
         .read(thread, |slot| {
             slot.realization.execution().authority.is_closed() && slot.run.context.is_none()
         })
+        .expect("installed Sessions")
         .unwrap_or(true);
     provider_gate.notify_one();
     tokio::time::timeout(std::time::Duration::from_secs(5), run)
@@ -432,15 +434,19 @@ fn terminal_absence_selection_requires_the_complete_generation_and_original_phas
         let actual_phase = if rule == "absent" {
             Arc::new(tokio::sync::Mutex::new(()))
         } else {
-            slots.update(rule, |slot| {
-                assert!(slot.realization.install_lease(
-                    awaken_session_realization::test_support::test_observed_lease(current.clone()),
-                ));
-                if rule == "closed-retry" {
-                    assert!(slot.realization.close_authority(Some(&current)));
-                }
-                slot.realization.execution().phase.clone()
-            })
+            slots
+                .install_with(rule, |slot| {
+                    assert!(slot.realization.install_lease(
+                        awaken_session_realization::test_support::test_observed_lease(
+                            current.clone()
+                        ),
+                    ));
+                    if rule == "closed-retry" {
+                        assert!(slot.realization.close_authority(Some(&current)));
+                    }
+                    slot.realization.execution().phase.clone()
+                })
+                .expect("installed Sessions")
         };
         let phase = if rule == "phase" {
             Arc::new(tokio::sync::Mutex::new(()))
@@ -466,9 +472,10 @@ fn terminal_absence_selection_requires_the_complete_generation_and_original_phas
             crate::session_realizations::SessionRealizationRevocationSelection::from_realization(
                 &slot.realization,
             )
-        });
+        }).expect("installed Sessions");
         let selected = slots
             .close_realization_generation(rule, &expected, &phase)
+            .expect("installed Sessions")
             .map(|closed| closed.root);
         let should_close = matches!(rule, "exact" | "renewed" | "closed-retry");
         assert_eq!(selected.is_some(), should_close, "decision row {rule}");
@@ -479,6 +486,7 @@ fn terminal_absence_selection_requires_the_complete_generation_and_original_phas
                         selected.matches(&slot.realization)
                             && slot.realization.execution().authority.is_closed()
                     })
+                    .expect("installed Sessions")
                     .unwrap(),
                 "{rule}: close and selection are one canonical mutation"
             );
@@ -486,12 +494,13 @@ fn terminal_absence_selection_requires_the_complete_generation_and_original_phas
             assert!(
                 slots
                     .read(rule, |slot| before.matches(&slot.realization))
+                    .expect("installed Sessions")
                     .unwrap(),
                 "{rule}: rejected input preserves the exact root"
             );
         } else {
             assert!(
-                slots.session_ids().is_empty(),
+                slots.session_ids().expect("installed Sessions").is_empty(),
                 "absence never creates a replacement root"
             );
         }

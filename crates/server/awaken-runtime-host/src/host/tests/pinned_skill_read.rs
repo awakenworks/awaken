@@ -950,22 +950,27 @@ async fn cold_skill_read_keeps_pin_after_catalog_update_and_rejects_stale_projec
         "P7"
     );
     for mismatch in ["version", "hash", "workspace"] {
-        host.run_assembly.installed_sessions.update("cold", |slot| {
-            slot.realization.staging_mut().skills = Some(vec![v1.clone()]);
-            slot.replace_frozen_with(|next| {
-                next.workspace = Some(host.run_assembly.local_workspace().into())
-            });
-            match mismatch {
-                "version" => slot.realization.staging_mut().skills.as_mut().unwrap()[0].version = 2,
-                "hash" => {
-                    slot.realization.staging_mut().skills.as_mut().unwrap()[0].bundle_sha256 =
-                        "wrong".into()
+        host.run_assembly
+            .installed_sessions
+            .install_with("cold", |slot| {
+                slot.realization.staging_mut().skills = Some(vec![v1.clone()]);
+                slot.replace_frozen_with(|next| {
+                    next.workspace = Some(host.run_assembly.local_workspace().into())
+                });
+                match mismatch {
+                    "version" => {
+                        slot.realization.staging_mut().skills.as_mut().unwrap()[0].version = 2
+                    }
+                    "hash" => {
+                        slot.realization.staging_mut().skills.as_mut().unwrap()[0].bundle_sha256 =
+                            "wrong".into()
+                    }
+                    _ => slot.replace_frozen_with(|next| {
+                        next.workspace = Some("other-workspace".into())
+                    }),
                 }
-                _ => {
-                    slot.replace_frozen_with(|next| next.workspace = Some("other-workspace".into()))
-                }
-            }
-        });
+            })
+            .expect("installed Sessions");
         assert!(
             executor
                 .invoke(&read_call(".skills/pinned/SKILL.md", None))
@@ -982,34 +987,37 @@ async fn cold_skill_read_keeps_pin_after_catalog_update_and_rejects_stale_projec
                 .is_none()
         );
     }
-    host.run_assembly.installed_sessions.update("cold", |slot| {
-        slot.realization.staging_mut().skills = Some(vec![v1.clone()]);
-        slot.replace_frozen_with(|next| {
-            next.workspace = Some(host.run_assembly.local_workspace().into())
-        });
-        let binding = crate::session_resource::ResolvedSkillBinding {
-            kind: awaken_agent_contract::AgentSkillKind::Custom,
-            skill_id: "pinned".into(),
-            version: 1,
-            bundle_sha256: v1.bundle_sha256.clone(),
-        };
-        let resources = crate::session_resource::ResolvedSessionResources::default()
-            .with_skills(vec![
-                binding.clone(),
-                crate::session_resource::ResolvedSkillBinding {
-                    skill_id: "pinned!".into(),
-                    ..binding
-                },
-            ])
-            .unwrap();
-        slot.realization.staging_mut().transition = Some(resource_transition(
-            host.run_assembly.local_workspace(),
-            0,
-            Default::default(),
-            1,
-            resources,
-        ));
-    });
+    host.run_assembly
+        .installed_sessions
+        .install_with("cold", |slot| {
+            slot.realization.staging_mut().skills = Some(vec![v1.clone()]);
+            slot.replace_frozen_with(|next| {
+                next.workspace = Some(host.run_assembly.local_workspace().into())
+            });
+            let binding = crate::session_resource::ResolvedSkillBinding {
+                kind: awaken_agent_contract::AgentSkillKind::Custom,
+                skill_id: "pinned".into(),
+                version: 1,
+                bundle_sha256: v1.bundle_sha256.clone(),
+            };
+            let resources = crate::session_resource::ResolvedSessionResources::default()
+                .with_skills(vec![
+                    binding.clone(),
+                    crate::session_resource::ResolvedSkillBinding {
+                        skill_id: "pinned!".into(),
+                        ..binding
+                    },
+                ])
+                .unwrap();
+            slot.realization.staging_mut().transition = Some(resource_transition(
+                host.run_assembly.local_workspace(),
+                0,
+                Default::default(),
+                1,
+                resources,
+            ));
+        })
+        .expect("installed Sessions");
     assert!(
         executor
             .invoke(&read_call(".skills/pinned/SKILL.md", None))

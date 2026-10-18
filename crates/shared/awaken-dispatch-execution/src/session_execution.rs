@@ -71,12 +71,13 @@ pub trait ClaimedSessionInstallation: Send + Sync {
         session: &str,
         workspace: &str,
     ) -> Result<bool, AdmissionError>;
-    /// Acquire the realization permit and the lease a retry of the same claim continues.
+    /// Acquire the realization permit and the lease a retry of the same claim
+    /// continues; an unavailable installed-Session registry is refused.
     async fn acquire_claimed_realization(
         &self,
         session: &str,
         claim: &RunClaim,
-    ) -> (SessionRealizationPermit, Option<SessionRealizationLease>);
+    ) -> Result<(SessionRealizationPermit, Option<SessionRealizationLease>), AdmissionError>;
     /// Stage the Resource manifest a claim carries.
     async fn install_dispatched_resources(
         &self,
@@ -151,7 +152,7 @@ pub trait ClaimedRunPreparation: Send + Sync {
         publication: Option<&ExecutableAgentSnapshot>,
     ) -> Result<(), AdmissionError>;
     /// Bind the deferred Sandbox executor an on-tool-use Environment needs.
-    fn bind_deferred_executor(&self, session: &str);
+    fn bind_deferred_executor(&self, session: &str) -> Result<(), AdmissionError>;
 }
 
 /// Constructs executable Runs on the Worker that claimed them.

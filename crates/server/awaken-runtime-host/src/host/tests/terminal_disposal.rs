@@ -81,7 +81,8 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         .staging()
         .register_thread_resources("t-end", crate::staged_resources::StagedResources::default());
     host.capabilities
-        .register_thread_model("t-end", "private-model");
+        .register_thread_model("t-end", "private-model")
+        .expect("installed Sessions");
     let mut lease = crate::session_resource::SessionRealizationLease {
         owner: "terminal-test-worker".into(),
         runtime_incarnation: "terminal-test-worker:incarnation".into(),
@@ -392,6 +393,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
             .run_assembly
             .installed_sessions
             .read_run("t-end", |run| run.context.is_some())
+            .expect("installed Sessions")
             .unwrap_or(false),
         "terminal cleanup evicts the cached ctx"
     );
@@ -831,7 +833,8 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
         .expect("P1-P4 install the aggregate-derived root projection");
     for child in ["terminal-retire-done", "terminal-retire-pending"] {
         host.capabilities
-            .register_thread_workspace(child, "terminal-retire-workspace");
+            .register_thread_workspace(child, "terminal-retire-workspace")
+            .expect("installed Sessions");
         host.run_assembly
             .installed_sessions
             .realizations()
@@ -842,7 +845,8 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
     }
     let foreign = "terminal-retire-foreign";
     host.capabilities
-        .register_thread_workspace(foreign, "foreign-workspace");
+        .register_thread_workspace(foreign, "foreign-workspace")
+        .expect("installed Sessions");
     host.run_assembly
         .installed_sessions
         .realizations()
@@ -990,6 +994,7 @@ async fn terminal_quiescence_never_materializes_a_cold_environment() {
                 slot.run.context.is_none()
                     && !slot.realization.environment().owner.has_local_environment()
             })
+            .expect("installed Sessions")
             .unwrap_or(true),
         "terminal control may allocate a lock slot but not a Runtime or Environment projection"
     );
@@ -1356,6 +1361,7 @@ async fn terminal_quiescence_fences_ephemeral_children_before_cold_link_enrichme
                     .environment()
                     .owner
                     .has_local_environment())
+            .expect("installed Sessions")
             .unwrap_or(true),
         "R1/E3"
     );
@@ -1568,7 +1574,10 @@ async fn checkpoint_source_disposal_separates_preparation_and_current_authority(
                 })
                 .expect("installed Sessions");
         };
-        host.run_assembly.installed_sessions.install(thread);
+        host.run_assembly
+            .installed_sessions
+            .install(thread)
+            .expect("installed Sessions");
         host.run_assembly
             .installed_sessions
             .realizations()

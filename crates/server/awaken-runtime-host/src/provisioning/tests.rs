@@ -1101,6 +1101,7 @@ async fn model_override_only_acp_candidate_rejects_split_process_paths() {
                 .inputs
                 .published_snapshot
                 .is_none())
+            .expect("installed Sessions")
             .unwrap_or(false),
         "M1/C2"
     );

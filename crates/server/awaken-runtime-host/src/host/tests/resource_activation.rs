@@ -462,7 +462,7 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
     );
     host.run_assembly
         .installed_sessions
-        .update_run("semantic-memory", |run| {
+        .install_run("semantic-memory", |run| {
             run.context = None;
         });
     let rebuilt = host
@@ -1238,7 +1238,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         // reopening ordinary execution. A cold Host does not reproduce this shape.
         host.run_assembly
             .installed_sessions
-            .update(session_id, |slot| {
+            .install_with(session_id, |slot| {
                 let owned = slot
                     .realization
                     .environment()
@@ -1256,7 +1256,8 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
                     },
                 );
                 slot.run.context = None;
-            });
+            })
+            .expect("installed Sessions");
         assert!(
             host.realization_executor
                 .environments()

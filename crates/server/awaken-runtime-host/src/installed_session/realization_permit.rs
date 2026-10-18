@@ -14,36 +14,51 @@ use std::sync::Arc;
 
 use awaken_session_realization_contract::SessionRealizationPermit;
 
+use crate::realization_error::RealizationLock;
+
 use super::{InstalledSession, InstalledSessions};
 
 impl InstalledSessions {
     /// Acquire the current slot's realization owner and atomically apply the
     /// caller's admission projection. If removal/recreation happened while
     /// awaiting Tokio, the contract kernel retries against the replacement
-    /// instead of admitting the stale allocation.
+    /// instead of admitting the stale allocation. The permit opens the claimed
+    /// install path, so it installs the Session; a poisoned registry is
+    /// refused at entry or admission, never read through.
     pub(crate) async fn acquire_realization_with<R>(
         &self,
         session: &str,
         mut on_admit: impl FnMut(&mut InstalledSession) -> R,
-    ) -> (SessionRealizationPermit, R) {
+    ) -> Result<(SessionRealizationPermit, R), RealizationLock> {
         let installed = self;
-        SessionRealizationPermit::acquire(
+        let (permit, admitted) = SessionRealizationPermit::acquire(
             &awaken_session_types::SessionId::from(session),
             move || {
-                let phase = installed.update(session, |s| s.realization.execution().phase.clone());
+                let phase = installed
+                    .install_with(session, |s| s.realization.execution().phase.clone())
+                    .ok();
                 async move {
-                    let owner = phase.clone().lock_owned().await;
+                    let owner = match &phase {
+                        Some(phase) => Some(phase.clone().lock_owned().await),
+                        None => None,
+                    };
                     (phase, owner)
                 }
             },
-            |identity| {
-                self.modify(session, |s| {
+            |identity| match identity {
+                // The registry refused entry: admit the refusal itself, so the
+                // caller receives it instead of a retry against a poisoned lock.
+                None => Some(Err(RealizationLock::InstalledSessions)),
+                Some(identity) => match self.modify(session, |s| {
                     Arc::ptr_eq(&s.realization.execution().phase, identity).then(|| on_admit(s))
-                })
-                .flatten()
+                }) {
+                    Ok(admitted) => admitted.flatten().map(Ok),
+                    Err(poisoned) => Some(Err(poisoned)),
+                },
             },
         )
-        .await
+        .await;
+        admitted.map(|admitted| (permit, admitted))
     }
 }
 
@@ -63,7 +78,11 @@ mod tests {
         // E1 C2 waits; E2 after C3+C4 it is admitted only against the *current*
         // allocation. Rules: R1=C1+C2=>E1; R2=C1+C2+C3+C4=>E2.
         let slots = Arc::new(InstalledSessions::default());
-        let held = slots.acquire_realization_with("session-a", |_| ()).await.0;
+        let held = slots
+            .acquire_realization_with("session-a", |_| ())
+            .await
+            .expect("installed Sessions")
+            .0;
         let waiting = slots.acquire_realization_with("session-a", |slot| {
             slot.realization.execution().phase.clone()
         });
@@ -74,7 +93,8 @@ mod tests {
         drop(held);
         let (_permit, admitted) = tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
             .await
-            .expect("R2/E2 the waiter was never admitted");
+            .expect("R2/E2 the waiter was never admitted")
+            .expect("installed Sessions");
         assert!(Arc::ptr_eq(&admitted, &recreated), "R2/E2");
     }
 
@@ -86,17 +106,26 @@ mod tests {
         // V4 the admitted realizer excludes a Host driver on B until dropped.
         let slots = Arc::new(InstalledSessions::default());
         let realizations = slots.realizations();
-        let held_a = slots.acquire_realization_with("session-a", |_| ()).await.0;
+        let held_a = slots
+            .acquire_realization_with("session-a", |_| ())
+            .await
+            .expect("installed Sessions")
+            .0;
         let mut waiting = std::pin::pin!(realizations.acquire_realization("session-a"));
         assert!(futures_util::poll!(waiting.as_mut()).is_pending(), "V1");
         slots.remove("session-a");
-        let held_b = slots.acquire_realization_with("session-a", |_| ()).await.0;
+        let held_b = slots
+            .acquire_realization_with("session-a", |_| ())
+            .await
+            .expect("installed Sessions")
+            .0;
         drop(held_a);
         assert!(futures_util::poll!(waiting.as_mut()).is_pending(), "V3");
         drop(held_b);
         let realizer = tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
             .await
-            .expect("V3 retry must acquire the replacement allocation");
+            .expect("V3 retry must acquire the replacement allocation")
+            .expect("installed Sessions");
         assert_eq!(realizer.session_id().as_str(), "session-a");
         let host = slots.acquire_realization_with("session-a", |_| ());
         let mut host = std::pin::pin!(host);
@@ -104,6 +133,7 @@ mod tests {
         drop(realizer);
         tokio::time::timeout(std::time::Duration::from_secs(5), host)
             .await
-            .expect("V4 the realization permit must release the Host driver");
+            .expect("V4 the realization permit must release the Host driver")
+            .expect("installed Sessions");
     }
 }

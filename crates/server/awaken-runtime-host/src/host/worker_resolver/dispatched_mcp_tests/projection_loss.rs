@@ -35,7 +35,10 @@ impl SessionRealizationSource for RemoveAfterReadyRead {
         admit: &'a mut (dyn FnMut(SessionRealizationAccess<'_>) + Send),
     ) -> futures_util::future::BoxFuture<
         'a,
-        awaken_session_realization_contract::SessionRealizationPermit,
+        Result<
+            awaken_session_realization_contract::SessionRealizationPermit,
+            crate::realization_error::RealizationLock,
+        >,
     > {
         Box::pin(async move {
             let permit = SessionRealizationSource::acquire_realization(
@@ -43,11 +46,11 @@ impl SessionRealizationSource for RemoveAfterReadyRead {
                 session,
                 admit,
             )
-            .await;
+            .await?;
             if self.armed.load(Ordering::SeqCst) {
                 self.admitted.store(true, Ordering::SeqCst);
             }
-            permit
+            Ok(permit)
         })
     }
     fn install(&self, session: &str) -> Result<(), crate::realization_error::RealizationLock> {
@@ -289,6 +292,7 @@ async fn managed_claim_projection_loss_never_enters_ordinary_mcp_staging() {
         host.run_assembly
             .installed_sessions
             .read(session, |_| ())
+            .expect("installed Sessions")
             .is_none(),
         "E2 no replacement root or Direct slot was manufactured"
     );

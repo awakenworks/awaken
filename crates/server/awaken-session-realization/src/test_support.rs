@@ -209,36 +209,42 @@ impl crate::session_realizations::SessionRealizationSource for InMemorySessionRe
                 ),
     ) -> futures_util::future::BoxFuture<
         'a,
-        awaken_session_realization_contract::SessionRealizationPermit,
+        Result<
+            awaken_session_realization_contract::SessionRealizationPermit,
+            crate::realization_error::RealizationLock,
+        >,
     > {
         Box::pin(async move {
-            awaken_session_realization_contract::SessionRealizationPermit::acquire(
-                &awaken_session_types::SessionId::from(session),
-                || {
-                    let mut registry = self.registry().expect("permit fixture registry is healthy");
-                    let installed = registry.entry(session.to_owned()).or_default();
-                    let phase = installed.realization.execution().phase.clone();
-                    async move {
-                        let owner = phase.clone().lock_owned().await;
-                        (phase, owner)
-                    }
-                },
-                |identity| {
-                    let mut registry = self.registry().expect("permit fixture registry is healthy");
-                    let installed = registry.get_mut(session)?;
-                    std::sync::Arc::ptr_eq(&installed.realization.execution().phase, identity).then(
-                        || {
-                            admit(crate::session_realizations::SessionRealizationAccess {
-                                inputs: &installed.inputs,
-                                realization: &mut installed.realization,
-                                run: &mut installed.run,
+            Ok(
+                awaken_session_realization_contract::SessionRealizationPermit::acquire(
+                    &awaken_session_types::SessionId::from(session),
+                    || {
+                        let mut registry =
+                            self.registry().expect("permit fixture registry is healthy");
+                        let installed = registry.entry(session.to_owned()).or_default();
+                        let phase = installed.realization.execution().phase.clone();
+                        async move {
+                            let owner = phase.clone().lock_owned().await;
+                            (phase, owner)
+                        }
+                    },
+                    |identity| {
+                        let mut registry =
+                            self.registry().expect("permit fixture registry is healthy");
+                        let installed = registry.get_mut(session)?;
+                        std::sync::Arc::ptr_eq(&installed.realization.execution().phase, identity)
+                            .then(|| {
+                                admit(crate::session_realizations::SessionRealizationAccess {
+                                    inputs: &installed.inputs,
+                                    realization: &mut installed.realization,
+                                    run: &mut installed.run,
+                                })
                             })
-                        },
-                    )
-                },
+                    },
+                )
+                .await
+                .0,
             )
-            .await
-            .0
         })
     }
 

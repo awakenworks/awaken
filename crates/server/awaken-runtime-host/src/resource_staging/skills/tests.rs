@@ -142,6 +142,7 @@ async fn skill_catalog_and_bundle_read_roles_are_selected_independently_before_c
             host.run_assembly
                 .installed_sessions
                 .session_ids()
+                .expect("installed Sessions")
                 .is_empty()
         );
     }

@@ -54,6 +54,9 @@ impl SessionContextAttemptExecutor {
                     crate::config::project_session_tools(&mut activation.snapshot, tools)
                 })
             })
+            .map_err(|error| {
+                awaken_runtime_contract::execution::Error::Resolution(error.to_string())
+            })?
             .flatten()
         {
             result.map_err(|error| {
@@ -71,6 +74,9 @@ impl SessionContextAttemptExecutor {
                     )
                 })
             })
+            .map_err(|error| {
+                awaken_runtime_contract::execution::Error::Resolution(error.to_string())
+            })?
             .flatten()
             .unwrap_or_else(|| {
                 awaken_session_configuration_contract::SessionContextSeed::from_prompts(&[])
@@ -422,7 +428,9 @@ mod acp_context_tests {
             .project(&slots, activation("genai"), &mut late)
             .unwrap();
         assert_eq!(late.request_timezone.as_deref(), Some("UTC"));
-        slots.replace_frozen_with("session-1", |next| next.baseline = Some(baseline.clone()));
+        slots
+            .replace_frozen_with("session-1", |next| next.baseline = Some(baseline.clone()))
+            .expect("installed Sessions");
         executor
             .project(&slots, activation("genai"), &mut late)
             .unwrap();
@@ -491,15 +499,18 @@ mod acp_context_tests {
         assert_eq!(
             slots
                 .read("session-1", |slot| slot.inputs.baseline.clone())
+                .expect("installed Sessions")
                 .unwrap(),
             Some(baseline),
             "frozen truth unchanged"
         );
-        slots.update("session-1", |slot| {
-            let mut baseline = slot.inputs.baseline.clone().unwrap();
-            baseline.prompts.push(seed.encode());
-            slot.replace_frozen_with(|next| next.baseline = Some(baseline))
-        });
+        slots
+            .install_with("session-1", |slot| {
+                let mut baseline = slot.inputs.baseline.clone().unwrap();
+                baseline.prompts.push(seed.encode());
+                slot.replace_frozen_with(|next| next.baseline = Some(baseline))
+            })
+            .expect("installed Sessions");
         assert!(
             executor
                 .project(&slots, activation("genai"), &mut fresh)
@@ -654,12 +665,14 @@ mod acp_context_tests {
         let writer_slots = slots.clone();
         let writer_release = release.clone();
         let writer = std::thread::spawn(move || {
-            writer_slots.update("session-1", |slot| {
-                writer_locked_tx.send(()).unwrap();
-                writer_release.wait();
-                slot.realization.staging_mut().resources.prompts =
-                    vec!["r2-a".into(), "r2-b".into()];
-            });
+            writer_slots
+                .install_with("session-1", |slot| {
+                    writer_locked_tx.send(()).unwrap();
+                    writer_release.wait();
+                    slot.realization.staging_mut().resources.prompts =
+                        vec!["r2-a".into(), "r2-b".into()];
+                })
+                .expect("installed Sessions");
         });
         writer_locked_rx.recv().unwrap();
 
@@ -733,7 +746,9 @@ mod acp_context_tests {
                     input_schema: serde_json::json!({"type": "object"}),
                 }],
             };
-        slots.replace_frozen_with("session-1", |next| next.tools = Some(flow_policy(true)));
+        slots
+            .replace_frozen_with("session-1", |next| next.tools = Some(flow_policy(true)))
+            .expect("installed Sessions");
 
         let mut context = awaken_runtime_contract::RuntimeRunContext::default();
         let projected = executor
@@ -776,7 +791,9 @@ mod acp_context_tests {
             .expect("R3 replay");
         assert_eq!(replayed.snapshot, projected.snapshot, "R3/E4");
 
-        slots.replace_frozen_with("session-1", |next| next.tools = Some(flow_policy(false)));
+        slots
+            .replace_frozen_with("session-1", |next| next.tools = Some(flow_policy(false)))
+            .expect("installed Sessions");
         let disabled = executor
             .project(&slots, activation("genai"), &mut context)
             .expect("R2 projection");

@@ -198,7 +198,8 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
         .installed_sessions
         .replace_frozen_with(thread, |next| {
             next.published_snapshot = Some(snapshot.clone())
-        });
+        })
+        .expect("installed Sessions");
     host.realization_executor
         .staging()
         .register_thread_resources(
@@ -353,7 +354,8 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
         .installed_sessions
         .replace_frozen_with(thread, |next| {
             next.published_snapshot = Some(snapshot.clone())
-        });
+        })
+        .expect("installed Sessions");
     host.realization_executor
         .staging()
         .register_thread_resources(
@@ -431,6 +433,7 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
         host.run_assembly
             .installed_sessions
             .realization_leases()
+            .expect("installed Sessions")
             .is_empty(),
         "E4 replay stays closed"
     );

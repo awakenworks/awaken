@@ -186,7 +186,7 @@ async fn detached_realizer_binds_only_the_original_claim_and_preserves_failure_c
             (row != "missing_role").then(|| selected.clone() as Arc<dyn DispatchExecution>),
         );
         if row != "direct" {
-            sessions.update_run("session", |run| run.dispatch_claim = Some(claim()));
+            sessions.install_run("session", |run| run.dispatch_claim = Some(claim()));
         }
         let result = executor
             .environments()
@@ -242,7 +242,7 @@ async fn detached_realizer_keeps_committed_identity_and_never_rebinds_resource_r
         executor
             .environments()
             .install_environment_binding_sink(sink.clone());
-        sessions.update_run("session", |run| {
+        sessions.install_run("session", |run| {
             run.dispatch_claim = Some(claim());
             run.session_dispatch = true;
         });

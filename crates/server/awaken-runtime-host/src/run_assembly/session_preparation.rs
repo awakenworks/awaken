@@ -48,6 +48,9 @@ impl RunAssembly {
                         .is_some_and(|context| context.is_coordination_envelope()),
                 )
             })
+            .map_err(|error| {
+                RunError::from(crate::realization_error::RealizationError::from(error))
+            })?
             .unwrap_or((Ok(None), false, false));
         let (active_run, installed, coordination) = active_projection;
         let active_run = active_run
@@ -68,12 +71,16 @@ impl RunAssembly {
 
     /// Publish only execution-preparation effects that are not already part of
     /// the complete frozen projection.
-    pub(crate) fn complete_session_preparation(&self, thread: &str) {
-        self.installed_sessions.update_run(thread, |run| {
-            run.context = None;
-            run.session_dispatch = true;
-        });
-        crate::lazy_sandbox::bind_deferred_executor(self, thread);
+    pub(crate) fn complete_session_preparation(&self, thread: &str) -> Result<(), RunError> {
+        let refused =
+            |error| RunError::from(crate::realization_error::RealizationError::from(error));
+        self.installed_sessions
+            .install_with(thread, |slot| {
+                slot.run.context = None;
+                slot.run.session_dispatch = true;
+            })
+            .map_err(refused)?;
+        crate::lazy_sandbox::bind_deferred_executor(self, thread).map_err(refused)
     }
 
     /// Install all immutable facts selected by one typed mode through the sole
@@ -114,7 +121,9 @@ impl RunAssembly {
         init: awaken_session_configuration_contract::SessionInit,
     ) -> Result<(), RunError> {
         let realizations = self.installed_sessions.realizations();
-        self.installed_sessions.install(thread);
+        self.installed_sessions
+            .install(thread)
+            .expect("installed Sessions");
         let _lifecycle = realizations.lock_lifecycle(thread).await?;
         if !self.session_preparation_needed(thread)? {
             return Ok(());
@@ -133,7 +142,7 @@ impl RunAssembly {
                 None,
             )
             .await?;
-        self.complete_session_preparation(thread);
+        self.complete_session_preparation(thread)?;
         Ok(())
     }
 }

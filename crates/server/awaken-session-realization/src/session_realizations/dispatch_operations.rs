@@ -95,10 +95,13 @@ impl SessionRealizations {
         &self,
         session: &str,
         claim: &RunClaim,
-    ) -> (
-        awaken_session_realization_contract::SessionRealizationPermit,
-        Option<SessionRealizationLease>,
-    ) {
+    ) -> Result<
+        (
+            awaken_session_realization_contract::SessionRealizationPermit,
+            Option<SessionRealizationLease>,
+        ),
+        RealizationError,
+    > {
         self.acquire_realization_with(session, |installed| {
             claimed_realization_continuation(&installed, claim)
         })

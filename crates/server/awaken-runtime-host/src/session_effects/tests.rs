@@ -82,7 +82,10 @@ async fn ordinary_run_and_managed_session_use_distinct_mcp_admission() {
         session.stage_mcp_attachment(stage.clone()).await.unwrap(),
         receipt
     );
-    let _closed = host.run_assembly.begin_session_realization_revocation();
+    let _closed = host
+        .run_assembly
+        .begin_session_realization_revocation()
+        .expect("installed Sessions");
     let requests_before = seen.lock().unwrap().len();
     for effects in [session, run as &dyn McpAttachmentRealizer] {
         assert_eq!(

@@ -249,7 +249,8 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     managed
         .run_assembly
         .installed_sessions
-        .install("realization-memory-session");
+        .install("realization-memory-session")
+        .expect("installed Sessions");
     managed
         .realization_executor
         .staging()
@@ -486,7 +487,8 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     managed
         .run_assembly
         .installed_sessions
-        .install("unfenced-realization-memory-session");
+        .install("unfenced-realization-memory-session")
+        .expect("installed Sessions");
     let error = match managed
         .realization_executor
         .staging()
@@ -686,7 +688,8 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     managed
         .run_assembly
         .installed_sessions
-        .install("awaiting-memory-adoption");
+        .install("awaiting-memory-adoption")
+        .expect("installed Sessions");
     managed
         .realization_executor
         .staging()
@@ -750,6 +753,7 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
                 "R9 no physical completion"
             );
         })
+        .expect("installed Sessions")
         .unwrap();
     // R8 missing selected encoder: the same upstream mode has no local
     // fallback. The original owner returns Internal before any content call.

@@ -88,7 +88,7 @@ impl ThreadReads {
             .installed_sessions
             .read_run(thread, |run| {
                 run.context.as_ref().map(|context| context.commit.clone())
-            })
+            })?
             .flatten()
         {
             return Ok(commit);

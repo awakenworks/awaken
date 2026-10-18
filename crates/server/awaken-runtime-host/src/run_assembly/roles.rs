@@ -49,7 +49,9 @@ impl awaken_session_runtime_contract::RealizationRuntime for RunAssembly {
         // Installing the frozen projection is the install path. Every
         // Environment-owner projection, including lease-only recovery, crosses
         // the same lifecycle guard as physical publication/retirement.
-        self.installed_sessions.install(thread);
+        self.installed_sessions
+            .install(thread)
+            .map_err(crate::installed_session::registry_run_error)?;
         let _lifecycle = realizations.lock_lifecycle(thread).await?;
         if mode.prepares_session() {
             // Cause/effect rule P2: an unprotected active Runtime rejects before
@@ -60,7 +62,7 @@ impl awaken_session_runtime_contract::RealizationRuntime for RunAssembly {
             self.install_projection_facts(thread, &projection, &mode)
                 .await?;
             if preparation_needed {
-                self.complete_session_preparation(thread);
+                self.complete_session_preparation(thread)?;
             }
         } else {
             self.install_projection_facts(thread, &projection, &mode)
@@ -124,7 +126,8 @@ impl awaken_session_runtime_contract::EnvironmentRuntime for RunAssembly {
         tools: awaken_session_configuration_contract::SessionToolConfiguration,
     ) -> Result<(), RunError> {
         self.installed_sessions
-            .replace_frozen_with(thread, |next| next.tools = Some(tools));
+            .replace_frozen_with(thread, |next| next.tools = Some(tools))
+            .map_err(crate::installed_session::registry_run_error)?;
         self.realization_executor
             .environments()
             .evict_session_for_rebuild(thread)

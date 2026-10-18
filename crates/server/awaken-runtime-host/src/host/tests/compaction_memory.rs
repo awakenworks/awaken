@@ -616,6 +616,7 @@ async fn claimed_child_terminal_memory_uses_parent_physical_commit_partition() {
                 host.run_assembly
                     .installed_sessions
                     .read_run(&parent, |run| run.context.is_none())
+                    .expect("installed Sessions")
                     .unwrap_or(true),
                 "R1 parent Runtime starts cold"
             );
@@ -777,6 +778,7 @@ async fn reopening_a_direct_terminal_thread_recovers_a_missing_extraction_outbox
                     .as_ref()
                     .is_some_and(|context| context.delivery.direct().is_some())
             })
+            .expect("installed Sessions")
             .unwrap_or(false),
         "D1/E4 foreground delivery must retain DirectAttemptDriver"
     );
@@ -1104,7 +1106,8 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     };
     host.run_assembly
         .installed_sessions
-        .install("memory-replay");
+        .install("memory-replay")
+        .expect("installed Sessions");
     let lifecycle_guard = host
         .run_assembly
         .installed_sessions

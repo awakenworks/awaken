@@ -22,7 +22,8 @@ pub async fn realize_session(
     let realization = host
         .sessions()
         .acquire_realization(session_id.as_str())
-        .await;
+        .await
+        .map_err(awaken_session_types::RunError::from)?;
     let synchronizer = WorkerProjectionSynchronizer::for_directive(
         host,
         &directive,

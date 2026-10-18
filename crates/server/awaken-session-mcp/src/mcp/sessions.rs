@@ -44,18 +44,28 @@ pub trait SessionMcpStates: Send + Sync + 'static {
     /// cancels and awaits its active Run.
     type Runtime: Clone + Send + Sync;
 
-    /// Read an existing Session's MCP state.
-    fn read_mcp<R>(&self, session: &str, read: impl FnOnce(&SessionMcpState) -> R) -> Option<R>;
+    /// Read an existing Session's MCP state. Every operation refuses an
+    /// unreadable installed-Session registry with an error; `None` means only
+    /// that the Session is not installed.
+    fn read_mcp<R>(
+        &self,
+        session: &str,
+        read: impl FnOnce(&SessionMcpState) -> R,
+    ) -> Result<Option<R>, McpError>;
 
     /// Change a Session's MCP state, creating its slot when absent.
-    fn update_mcp<R>(&self, session: &str, update: impl FnOnce(&mut SessionMcpState) -> R) -> R;
+    fn update_mcp<R>(
+        &self,
+        session: &str,
+        update: impl FnOnce(&mut SessionMcpState) -> R,
+    ) -> Result<R, McpError>;
 
     /// Change an existing Session's MCP state.
     fn modify_mcp<R>(
         &self,
         session: &str,
         modify: impl FnOnce(&mut SessionMcpState) -> R,
-    ) -> Option<R>;
+    ) -> Result<Option<R>, McpError>;
 
     /// Read the original exact-generation root and change its existing MCP
     /// state under the same canonical slot lock. None means no existing slot;
@@ -65,7 +75,7 @@ pub trait SessionMcpStates: Send + Sync + 'static {
         &self,
         generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
         modify: impl FnOnce(&mut SessionMcpState, Option<bool>) -> R,
-    ) -> Option<R>;
+    ) -> Result<Option<R>, McpError>;
 
     /// Change an existing Session's MCP state together with its cached Runtime
     /// in one slot transaction.
@@ -73,7 +83,7 @@ pub trait SessionMcpStates: Send + Sync + 'static {
         &self,
         session: &str,
         modify: impl FnOnce(&mut SessionMcpState, &mut Option<Self::Runtime>) -> R,
-    ) -> Option<R>;
+    ) -> Result<Option<R>, McpError>;
 
     /// Cancel the Runtime's current Run, if any.
     fn cancel_runtime(runtime: &Self::Runtime);
@@ -268,8 +278,8 @@ impl McpSessions {
         &self,
         slots: &S,
         thread: &str,
-    ) -> Vec<McpGenerationProjection> {
-        slots
+    ) -> Result<Vec<McpGenerationProjection>, McpError> {
+        Ok(slots
             .read_mcp(thread, |mcp| {
                 if mcp.quiescence_fence.is_some() {
                     return Vec::new();
@@ -282,23 +292,23 @@ impl McpSessions {
                     })
                     .cloned()
                     .collect()
-            })
-            .unwrap_or_default()
+            })?
+            .unwrap_or_default())
     }
 
     pub fn projection<S: SessionMcpStates>(
         &self,
         slots: &S,
         generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
-    ) -> Option<McpGenerationProjection> {
-        slots
+    ) -> Result<Option<McpGenerationProjection>, McpError> {
+        Ok(slots
             .read_mcp(generation.session_id().as_str(), |mcp| {
                 mcp.projections
                     .iter()
                     .find(|projection| projection.request.generation == *generation)
                     .cloned()
-            })
-            .flatten()
+            })?
+            .flatten())
     }
 
     pub fn insert_projection<S: SessionMcpStates>(
@@ -325,7 +335,7 @@ impl McpSessions {
             }
             mcp.projections.push(projection);
             Ok(())
-        })
+        })?
     }
 
     /// Transfer a freshly spawned stdio process into the already-installed
@@ -357,7 +367,7 @@ impl McpSessions {
                 let connect_admitted = admitted && projection.state == McpProjectionState::Staging;
                 projection.mcp_process = Some(process);
                 Ok(connect_admitted)
-            })
+            })?
             .unwrap_or_else(|| Err(McpError::internal("unknown MCP Session projection")))
     }
 
@@ -393,7 +403,7 @@ impl McpSessions {
                 projection.staging = None;
                 projection.state = McpProjectionState::Staged;
                 Ok(())
-            })
+            })?
             .unwrap_or_else(|| Err(McpError::internal("unknown MCP Session projection")))
     }
 
@@ -450,7 +460,7 @@ impl McpSessions {
             projection.request = request.clone();
             projection.receipt = receipt.clone();
             Ok(Some(receipt))
-        })
+        })?
     }
 
     /// Forget an already-cleaned process-local tombstone when Control replays
@@ -464,7 +474,7 @@ impl McpSessions {
         &self,
         slots: &S,
         request: &awaken_session_configuration_contract::mcp::StageMcpAttachment,
-    ) -> bool {
+    ) -> Result<bool, McpError> {
         let request_fingerprint = request.fingerprint();
         let renewal_binding = request.renewal_binding_fingerprint();
         slots
@@ -486,7 +496,7 @@ impl McpSessions {
                 mcp.projections.remove(index);
                 true
             })
-            .unwrap_or(false)
+            .map(|removed| removed.unwrap_or(false))
     }
 
     pub async fn publish_projection<S: SessionMcpStates>(
@@ -497,7 +507,7 @@ impl McpSessions {
         if !slots
             .read_mcp(generation.session_id().as_str(), |mcp| {
                 mcp.admits_realization()
-            })
+            })?
             .unwrap_or(true)
         {
             return Err(McpError::unavailable_classified(
@@ -505,7 +515,7 @@ impl McpSessions {
                 "MCP publication is closed while the Session Environment quiesces",
             ));
         }
-        if let Some(projection) = self.projection(slots, generation) {
+        if let Some(projection) = self.projection(slots, generation)? {
             if matches!(
                 projection.state,
                 McpProjectionState::Staging
@@ -583,7 +593,7 @@ impl McpSessions {
                         McpError::internal("non-visible MCP generation cannot be published"),
                     ),
                 }
-            });
+            })?;
         match changed {
             Some(result) => {
                 result?;
@@ -598,7 +608,7 @@ impl McpSessions {
         slots: &S,
         generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
     ) -> Result<(), McpError> {
-        let Some(selected) = self.projection(slots, generation) else {
+        let Some(selected) = self.projection(slots, generation)? else {
             return Ok(());
         };
         self.drain_projection_selection(slots, &selected, ProjectionDrainIntent::Current)
@@ -682,7 +692,7 @@ impl McpSessions {
                     runtime,
                     route,
                 }))
-            });
+            })?;
         if projected.is_none() && matches!(intent, ProjectionDrainIntent::Captured) {
             return Err(McpError::unavailable_classified(
                 "mcp_generation_owner_changed",
@@ -757,7 +767,7 @@ impl McpSessions {
                             .get()
                             .and_then(|relay| relay.capture_route(generation))
                     })
-            })
+            })?
             .flatten();
         if let Some(route) = &late_route {
             tokio::time::timeout(
@@ -786,7 +796,7 @@ impl McpSessions {
                                 && Arc::ptr_eq(&projection.drain, &drain)
                         })
                         .and_then(|projection| projection.mcp_process.clone())
-                })
+                })?
                 .flatten()
         } else {
             process
@@ -866,7 +876,7 @@ impl McpSessions {
             projection.staging = None;
             projection.state = McpProjectionState::Removed;
             Ok(())
-        }) {
+        })? {
             Some(result) => result,
             None => Ok(()),
         }
@@ -921,7 +931,7 @@ impl McpSessions {
                     .filter(|projection| projection.state != McpProjectionState::Removed)
                     .map(|projection| projection.request.generation.clone())
                     .collect::<Vec<_>>()
-            })
+            })?
             .unwrap_or_default()
         {
             if !targets.iter().any(|seen| seen == &generation) {
@@ -942,7 +952,7 @@ impl McpSessions {
                 mcp.projections
                     .iter()
                     .any(|projection| projection.state != McpProjectionState::Removed)
-            })
+            })?
             .unwrap_or(false);
         if let Some(error) = first_error {
             return Err(error);

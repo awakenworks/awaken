@@ -400,7 +400,7 @@ pub(super) async fn assemble(
         Some(environment.agent_tools().tool_executor())
     } else {
         host.installed_sessions
-            .read_run(thread, |run| run.deferred_executor.clone())
+            .read_run(thread, |run| run.deferred_executor.clone())?
             .flatten()
     };
     // Cause/effect rules: terminal observers and Session plugins
@@ -416,7 +416,7 @@ pub(super) async fn assemble(
     };
     let dispatch_claim = host
         .installed_sessions
-        .read_run(thread, |run| run.dispatch_claim.clone())
+        .read_run(thread, |run| run.dispatch_claim.clone())?
         .flatten();
     let mut run_context = awaken_runtime_contract::RuntimeRunContext::new()
         .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
@@ -439,7 +439,7 @@ pub(super) async fn assemble(
     run_context.resource_origin = resource_origin;
     run_context.request_context = host
         .installed_sessions
-        .read(thread, |slot| slot.inputs.request_context.clone())
+        .read(thread, |slot| slot.inputs.request_context.clone())?
         .unwrap_or_default();
     let run_context = mcp
         .plugins

@@ -99,7 +99,10 @@ impl SessionRealizationSource for GateAfterCanonicalFinish {
         admit: &'a mut (dyn FnMut(SessionRealizationAccess<'_>) + Send),
     ) -> futures_util::future::BoxFuture<
         'a,
-        awaken_session_realization_contract::SessionRealizationPermit,
+        Result<
+            awaken_session_realization_contract::SessionRealizationPermit,
+            crate::realization_error::RealizationLock,
+        >,
     > {
         SessionRealizationSource::acquire_realization(self.inner.as_ref(), session, admit)
     }
@@ -331,7 +334,7 @@ async fn successful_retirement_cannot_remove_a_successor_session_relay_route() {
             &host.run_assembly.installed_sessions,
             &canonical
         ));
-        canonical.install(session);
+        canonical.install(session).expect("installed Sessions");
         assert!(Arc::ptr_eq(
             &host
                 .realization_executor
@@ -380,9 +383,13 @@ async fn successful_retirement_cannot_remove_a_successor_session_relay_route() {
         .expect("bounded complete original A projection install");
         let original = canonical
             .read(session, |slot| slot.realization.execution().phase.clone())
+            .expect("installed Sessions")
             .expect("A canonical allocation");
         let relay = original_relay(&host).await;
-        let selected = host.run_assembly.begin_session_realization_revocation();
+        let selected = host
+            .run_assembly
+            .begin_session_realization_revocation()
+            .expect("installed Sessions");
         let retiring = host.clone();
         let finish = tokio::spawn(async move {
             retiring
@@ -396,7 +403,10 @@ async fn successful_retirement_cannot_remove_a_successor_session_relay_route() {
             .expect("post-removal witness");
         assert_eq!(gate.actual_true.load(Ordering::SeqCst), 1);
         assert!(
-            canonical.read(session, |_| ()).is_none(),
+            canonical
+                .read(session, |_| ())
+                .expect("registry and projection are healthy")
+                .is_none(),
             "A was actually removed"
         );
         assert!(
@@ -433,6 +443,7 @@ async fn successful_retirement_cannot_remove_a_successor_session_relay_route() {
         .expect("bounded complete successor B projection install");
         let successor = canonical
             .read(session, |slot| slot.realization.execution().phase.clone())
+            .expect("installed Sessions")
             .expect("B canonical allocation");
         assert!(
             !Arc::ptr_eq(&original, &successor),
@@ -506,6 +517,7 @@ async fn successful_retirement_cannot_remove_a_successor_session_relay_route() {
             &successor,
             &canonical
                 .read(session, |slot| slot.realization.execution().phase.clone())
+                .expect("installed Sessions")
                 .unwrap(),
         ));
         assert_eq!(
@@ -547,14 +559,14 @@ async fn absent_component_retirement_cannot_close_or_remove_a_later_session() {
         let host = dependencies.build().unwrap();
         let canonical = observed.get().unwrap().clone();
         assert!(Arc::ptr_eq(&canonical, &host.run_assembly.installed_sessions));
-        assert!(canonical.read(session, |_| ()).is_none());
+        assert!(canonical.read(session, |_| ()).expect("registry and projection are healthy").is_none());
         let retiring = host.clone();
         let finish = tokio::spawn(async move { retire_component_current(&retiring, session).await });
         tokio::time::timeout(std::time::Duration::from_secs(5), reached_rx)
             .await.expect("actual absent source lookup reaches its post-return gate")
             .expect("original lookup witness");
         assert_eq!(gate.actual_absent.load(Ordering::SeqCst), 1);
-        assert!(canonical.read(session, |_| ()).is_none());
+        assert!(canonical.read(session, |_| ()).expect("registry and projection are healthy").is_none());
         assert!(!finish.is_finished());
         let lease = crate::session_resource::SessionRealizationLease {
             owner: "worker".into(), runtime_incarnation: "worker/boot".into(),
@@ -568,7 +580,7 @@ async fn absent_component_retirement_cannot_close_or_remove_a_later_session() {
                 Some(awaken_session_realization::test_support::test_observed_lease(lease.clone())),
             ).await.expect("B uses the original complete projection installer after real absence");
         }).await.expect("bounded complete successor installation");
-        let successor = canonical.read(session, |slot| slot.realization.execution().phase.clone()).unwrap();
+        let successor = canonical.read(session, |slot| slot.realization.execution().phase.clone()).expect("installed Sessions").unwrap();
         let generation = crate::test_mcp::mcp_fence(
             session, "docs", 1, &lease.runtime_incarnation, lease.epoch, lease.expires_at_unix_ms,
         );
@@ -576,7 +588,7 @@ async fn absent_component_retirement_cannot_close_or_remove_a_later_session() {
         drop(release);
         let retired = tokio::time::timeout(std::time::Duration::from_secs(5), finish)
             .await.expect("absence gate released").unwrap().unwrap();
-        let remains = canonical.read(session, |slot| Arc::ptr_eq(&successor, &slot.realization.execution().phase)).unwrap_or(false);
+        let remains = canonical.read(session, |slot| Arc::ptr_eq(&successor, &slot.realization.execution().phase)).expect("installed Sessions").unwrap_or(false);
         let authority = host.run_assembly.mcp_generation_root_authority(&generation);
         assert!(remains && authority == Some(true),
             "retirement that observed actual absence selected the later Session: remains={remains}, authority={authority:?}");

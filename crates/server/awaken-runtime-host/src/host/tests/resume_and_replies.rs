@@ -2361,7 +2361,7 @@ async fn managed_session_root_rejects_legacy_host_run_ingress() {
     .expect("validated Host dependencies");
     host.run_assembly
         .installed_sessions
-        .update_run("managed-root", |run| run.session_dispatch = true);
+        .install_run("managed-root", |run| run.session_dispatch = true);
 
     for result in [
         host.session_runs

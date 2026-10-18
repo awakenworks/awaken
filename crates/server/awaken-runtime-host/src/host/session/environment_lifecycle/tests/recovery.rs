@@ -32,9 +32,11 @@ async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
     // C1 is ordinary local ownership: install its exact configuration and
     // publication without a Control-frozen baseline/Session execution marker.
     host.capabilities
-        .register_thread_workspace(thread, "workspace");
+        .register_thread_workspace(thread, "workspace")
+        .expect("installed Sessions");
     host.capabilities
-        .register_thread_agent_projection(thread, snapshot.root_agent_id.0.as_str());
+        .register_thread_agent_projection(thread, snapshot.root_agent_id.0.as_str())
+        .expect("installed Sessions");
     host.realization_executor
         .environments()
         .publication()
@@ -90,6 +92,7 @@ async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
                 "RR1 no fake lease"
             );
         })
+        .expect("installed Sessions")
         .unwrap();
 
     let lifecycle = host
@@ -121,6 +124,7 @@ async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
         host.run_assembly
             .installed_sessions
             .read_run(thread, |run| run.context.is_none())
+            .expect("installed Sessions")
             .unwrap_or(false),
         "RR1/E1 revocation clears the cached Runtime"
     );
@@ -192,6 +196,7 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
                 .inputs
                 .published_snapshot
                 .is_none())
+            .expect("installed Sessions")
             .unwrap_or(false),
         "R21/C5 ordinary direct Runtime has no frozen provider projection"
     );
@@ -243,6 +248,7 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
         .run_assembly
         .installed_sessions
         .read_run(ready_thread, |run| run.context.clone())
+        .expect("installed Sessions")
         .flatten()
         .expect("R21/E1 Runtime restored");
     assert!(
@@ -307,6 +313,7 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
             .run_assembly
             .installed_sessions
             .read_run(missing_thread, |run| run.context.is_none())
+            .expect("installed Sessions")
             .unwrap_or(false),
         "R21/E2 Terminal owner never restores its Runtime"
     );

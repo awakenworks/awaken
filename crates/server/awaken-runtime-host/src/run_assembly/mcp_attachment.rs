@@ -115,16 +115,17 @@ impl awaken_session_mcp::McpStagingSession for RunAssembly {
     async fn resident_environment(
         &self,
         session: &str,
-    ) -> Option<Arc<crate::session_environment::SessionEnvironment>> {
+    ) -> Result<Option<Arc<crate::session_environment::SessionEnvironment>>, RunError> {
         self.realization_executor
             .environments()
             .session_environment(session)
             .await
-            .expect("session runtime slots mutex poisoned")
+            .map_err(RunError::from)
     }
 
-    fn frozen_agent(&self, session: &str) -> Option<String> {
-        self.installed_sessions
+    fn frozen_agent(&self, session: &str) -> Result<Option<String>, RunError> {
+        Ok(self
+            .installed_sessions
             .read(session, |slot| {
                 slot.inputs.agent_id.clone().or_else(|| {
                     slot.inputs
@@ -133,7 +134,10 @@ impl awaken_session_mcp::McpStagingSession for RunAssembly {
                         .map(|baseline| baseline.agent_id.clone())
                 })
             })
-            .flatten()
+            .map_err(|error| {
+                RunError::from(crate::realization_error::RealizationError::from(error))
+            })?
+            .flatten())
     }
 
     async fn realize_environment(&self, session: &str, agent: &str) -> Result<(), String> {

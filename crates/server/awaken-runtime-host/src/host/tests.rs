@@ -849,7 +849,10 @@ pub(crate) fn bind_test_memory(host: &SharedHost, thread: &str, store_id: &str, 
         store_id.to_string(),
         writable,
     ));
-    host.run_assembly.installed_sessions.install(thread);
+    host.run_assembly
+        .installed_sessions
+        .install(thread)
+        .expect("installed Sessions");
     host.realization_executor
         .staging()
         .register_thread_memory(

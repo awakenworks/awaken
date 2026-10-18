@@ -53,6 +53,7 @@ async fn mount_projection_reads_current_resource_and_frozen_inputs_without_retai
         host.run_assembly
             .installed_sessions
             .read(thread, |_| ())
+            .expect("installed Sessions")
             .is_none(),
         "M1"
     );
@@ -93,7 +94,8 @@ async fn mount_projection_reads_current_resource_and_frozen_inputs_without_retai
     });
     host.run_assembly
         .installed_sessions
-        .replace_frozen_with(thread, |next| next.baseline = Some(baseline));
+        .replace_frozen_with(thread, |next| next.baseline = Some(baseline))
+        .expect("installed Sessions");
     staging
         .sessions()
         .update_realization(thread, |r| {
@@ -138,11 +140,15 @@ async fn mount_projection_reads_current_resource_and_frozen_inputs_without_retai
         host.run_assembly
             .installed_sessions
             .read(thread, |_| ())
+            .expect("installed Sessions")
             .is_none(),
         "M4 no resurrection"
     );
     let replacement = mount("replacement", false);
-    host.run_assembly.installed_sessions.install(thread);
+    host.run_assembly
+        .installed_sessions
+        .install(thread)
+        .expect("installed Sessions");
     staging
         .sessions()
         .update_realization(thread, |r| {

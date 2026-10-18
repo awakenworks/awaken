@@ -58,7 +58,7 @@ mod tests {
                 expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms()
                     + 60_000,
             };
-            slots.install("session");
+            slots.install("session").expect("installed Sessions");
             let authority = slots
                 .realizations()
                 .update_realization("session", |r| {
@@ -294,7 +294,9 @@ mod tests {
             })
             .unwrap();
         assert_eq!(calls, 1, "L1");
-        f.slots.close_realization("session", None);
+        f.slots
+            .close_realization("session", None)
+            .expect("installed Sessions");
         assert!(
             f.authority
                 .with_current(&mut |_| {
@@ -327,7 +329,9 @@ mod tests {
         });
         assert_eq!(result.unwrap_err().to_string(), "effect failed");
         assert_eq!(calls, 1);
-        f.slots.close_realization("session", None);
+        f.slots
+            .close_realization("session", None)
+            .expect("installed Sessions");
         assert!(f.current().is_err());
     }
 
@@ -386,7 +390,9 @@ mod tests {
             })
             .unwrap();
         assert_eq!(calls, 2);
-        f.slots.close_realization("session", None);
+        f.slots
+            .close_realization("session", None)
+            .expect("installed Sessions");
         assert!(
             provider
                 .with_current(&mut |_| panic!("closed provider"))

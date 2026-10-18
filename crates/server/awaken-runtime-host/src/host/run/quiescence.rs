@@ -41,7 +41,7 @@ impl crate::SessionRuns {
         // configuration merely to tear the Session down.
         let resident = self
             .installed_sessions
-            .read_run(thread, |run| run.context.clone())
+            .read_run(thread, |run| run.context.clone())?
             .flatten();
         let mut coordinated_thread_ids = std::collections::HashSet::new();
         let store = self.coordinator_dispatch().ok();
