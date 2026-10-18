@@ -549,16 +549,7 @@ const fn durable_dispatch_is_admitted(
     matches!(dispatch_backend, DispatchBackend::Postgres) || has_storage_dir || injected
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SandboxBackend {
-    Local,
-    Namespace,
-    Docker,
-    Podman,
-    K8s,
-}
-
-impl SandboxBackend {
+impl SandboxTier {
     const fn name(self) -> &'static str {
         match self {
             Self::Local => "local",
@@ -576,7 +567,7 @@ impl SandboxBackend {
 /// and builder named by that evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SandboxSupportProjection {
-    backend: SandboxBackend,
+    backend: SandboxTier,
     network_isolation: bool,
     package_provisioning: bool,
 }
@@ -589,27 +580,27 @@ const fn sandbox_support_projection(
 ) -> SandboxSupportProjection {
     match tier {
         SandboxTier::Local => SandboxSupportProjection {
-            backend: SandboxBackend::Local,
+            backend: SandboxTier::Local,
             network_isolation: false,
             package_provisioning: false,
         },
         SandboxTier::Namespace => SandboxSupportProjection {
-            backend: SandboxBackend::Namespace,
+            backend: SandboxTier::Namespace,
             network_isolation: true,
             package_provisioning: false,
         },
         SandboxTier::Docker => SandboxSupportProjection {
-            backend: SandboxBackend::Docker,
+            backend: SandboxTier::Docker,
             network_isolation: true,
             package_provisioning: true,
         },
         SandboxTier::Podman => SandboxSupportProjection {
-            backend: SandboxBackend::Podman,
+            backend: SandboxTier::Podman,
             network_isolation: true,
             package_provisioning: true,
         },
         SandboxTier::K8s => SandboxSupportProjection {
-            backend: SandboxBackend::K8s,
+            backend: SandboxTier::K8s,
             // Configuration cannot prove live cluster policy. The constructed
             // provider replaces this conservative projection with attested
             // runtime evidence before Worker registration.
@@ -843,8 +834,8 @@ pub fn default_postgres_max_connections() -> NonZeroU32 {
 #[cfg(kani)]
 mod verification {
     use super::{
-        ContainerHandResidency, DispatchBackend, SandboxBackend, SandboxTier,
-        durable_dispatch_is_admitted, sandbox_support_projection,
+        ContainerHandResidency, DispatchBackend, SandboxTier, durable_dispatch_is_admitted,
+        sandbox_support_projection,
     };
     use awaken_tool_contract::tool::ToolRecoveryCapability;
 
@@ -958,29 +949,37 @@ mod verification {
         let package_builder: bool = kani::any();
         let projection = sandbox_support_projection(tier, package_registry, package_builder);
 
+        // Causes: the five existing deployment tiers and both independent
+        // registry/builder facts. Effect rows: preserve that same tier, Local
+        // isolates neither, Namespace isolates network only, Docker/Podman
+        // support both, and K8s requires both facts for packages while never
+        // inferring network isolation. The capability/name table checks
+        // the public support projection independently of this pure proof.
+        assert_eq!(projection.backend, tier);
+
         match tier {
             SandboxTier::Local => {
-                assert_eq!(projection.backend, SandboxBackend::Local);
+                assert_eq!(projection.backend, SandboxTier::Local);
                 assert!(!projection.network_isolation);
                 assert!(!projection.package_provisioning);
             }
             SandboxTier::Namespace => {
-                assert_eq!(projection.backend, SandboxBackend::Namespace);
+                assert_eq!(projection.backend, SandboxTier::Namespace);
                 assert!(projection.network_isolation);
                 assert!(!projection.package_provisioning);
             }
             SandboxTier::Docker => {
-                assert_eq!(projection.backend, SandboxBackend::Docker);
+                assert_eq!(projection.backend, SandboxTier::Docker);
                 assert!(projection.network_isolation);
                 assert!(projection.package_provisioning);
             }
             SandboxTier::Podman => {
-                assert_eq!(projection.backend, SandboxBackend::Podman);
+                assert_eq!(projection.backend, SandboxTier::Podman);
                 assert!(projection.network_isolation);
                 assert!(projection.package_provisioning);
             }
             SandboxTier::K8s => {
-                assert_eq!(projection.backend, SandboxBackend::K8s);
+                assert_eq!(projection.backend, SandboxTier::K8s);
                 assert!(!projection.network_isolation);
                 assert_eq!(
                     projection.package_provisioning,
