@@ -227,12 +227,78 @@ step "fmt-batch-self-test" "fix the native workspace formatting planner" \
 step "fmt" "cargo fmt -p <reported-package>" \
   python3 scripts/ci/check_rustfmt.py
 
+# Scope of the separate-graph steps below (decision table in rust_test_plan.py
+# gate_scope). S1 --full -> every step runs. S2 --quick compares HEAD with the
+# index and working tree; --push compares the merge-base with origin/main, i.e.
+# every commit about to leave the machine. S3 "none" -> the step is skipped and
+# says so; "packages" -> it runs when its root, or a package it consumes, is a
+# changed owner or a transitive consumer of one. S4 "whole", an unknown base or
+# a planner refusal -> every step runs, exactly as before scoping existed.
+scope="whole"
+scope_reason="full gate"
+scoped_packages=""
+scope_base=""
+if [ "$mode" = "--full" ]; then
+  echo "Rust gate scope: whole (full gate)"
+else
+  if [ "$mode" = "--push" ]; then
+    # Without an origin/main merge-base, the root commit is the base: every
+    # path counts as changed, so the plan stays whole.
+    scope_base=$(git merge-base HEAD refs/remotes/origin/main 2>/dev/null) \
+      || scope_base=$(git rev-list --max-parents=0 HEAD | tail -n 1)
+  else
+    scope_base=HEAD
+  fi
+  if scope_plan=$(python3 scripts/ci/rust_test_plan.py --gate-scope --base "$scope_base"); then
+    scope=$(printf '%s\n' "$scope_plan" | sed -n 's/^scope=//p')
+    scope_reason=$(printf '%s\n' "$scope_plan" | sed -n 's/^reason=//p')
+    scoped_packages=$(printf '%s\n' "$scope_plan" | sed '1,2d')
+  else
+    scope_reason="gate scope unavailable; every step runs"
+  fi
+  echo "Rust gate scope: $scope ($scope_reason)"
+fi
+
+# affects <package>... : whether a step rooted at these packages can observe the change.
+affects() {
+  if [ "$scope" = none ]; then
+    return 1
+  fi
+  if [ "$scope" != packages ]; then
+    return 0
+  fi
+  local package
+  for package in "$@"; do
+    if printf '%s\n' "$scoped_packages" | grep -Fxq "$package"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# scoped_step "<label>" "<fix hint>" "<root packages>" <command...>
+scoped_step() {
+  local label="$1" fix="$2" packages="$3"
+  shift 3
+  # shellcheck disable=SC2086 # the root package list is space separated
+  if affects $packages; then
+    step "$label" "$fix" "$@"
+  else
+    echo "↷ $label (unaffected: $scope_reason)"
+  fi
+}
+
+# Path dependencies of an out-of-workspace consumer manifest: its scoped roots.
+consumed_packages() {
+  sed -n 's/^\(awaken-[a-z0-9-]*\) *=.*path *=.*/\1/p' "$1"
+}
+
 # Cause/effect rule CR1: when Runtime Host is resolved without default
 # features (cause), its neutral credential-refresh port must still compile
 # without acquiring Vault authority (effect). Checking it separately keeps
 # workspace feature unification from masking this product-consumer graph.
-step "runtime-host-neutral" "keep neutral Runtime Host ports available without enabling authority dependencies" \
-  cargo check -p awaken-session-executor --no-default-features "${locked[@]}"
+scoped_step "runtime-host-neutral" "keep neutral Runtime Host ports available without enabling authority dependencies" \
+  "awaken-session-executor" cargo check -p awaken-session-executor --no-default-features "${locked[@]}"
 
 # Compile-surface decision table: CR10 the Managed HTTP library is a production
 # root without test-support; CR11 it calls a fixture-only Session accessor;
@@ -241,8 +307,8 @@ step "runtime-host-neutral" "keep neutral Runtime Host ports available without e
 # Session roles -> compile; R3 CR12 may compile either implementation and cannot
 # substitute for R1/R2. Keep this in the one Rust gate, before workspace checks,
 # so quick, push and full exercise the same real production dependency graph.
-step "managed-protocol-production" "use production Session roles rather than fixture-only accessors" \
-  cargo check -p awaken-protocol-managed --lib --no-default-features "${locked[@]}"
+scoped_step "managed-protocol-production" "use production Session roles rather than fixture-only accessors" \
+  "awaken-protocol-managed" cargo check -p awaken-protocol-managed --lib --no-default-features "${locked[@]}"
 
 # Process assembly compile-surface decision table: C1 the default product graph
 # has neither cfg(test) nor test-support; C2 fixture builds enable one of them.
@@ -251,19 +317,19 @@ step "managed-protocol-production" "use production Session roles rather than fix
 # P1=C1 -> warning-free production libraries below; P2=C2 -> the existing
 # workspace test/all-feature gates exercise the unchanged fixture callers.
 # A workspace-only check can unify C2 into C1 and falsely pass P1.
-step "process-assembly-production" "keep fixture-only Coordinator and CLI helpers out of the production graph" \
-  cargo clippy -p awaken-coordinator -p awaken-cli --lib "${locked[@]}" -- -D warnings
+scoped_step "process-assembly-production" "keep fixture-only Coordinator and CLI helpers out of the production graph" \
+  "awaken-coordinator awaken-cli" cargo clippy -p awaken-coordinator -p awaken-cli --lib "${locked[@]}" -- -D warnings
 
 # The fuzz crate is a separate workspace, so `cargo check --workspace` never compiles it.
 # It is why three crates keep reviewed public API snapshots (ADR-0081, 2026-09-28);
 # compiling it is the check that its surface still builds.
-step "fuzz-consumer" "update the fuzz targets to the changed contract surface" \
-  cargo check --manifest-path fuzz/Cargo.toml --bins "${locked[@]}"
+scoped_step "fuzz-consumer" "update the fuzz targets to the changed contract surface" \
+  "$(consumed_packages fuzz/Cargo.toml)" cargo check --manifest-path fuzz/Cargo.toml --bins "${locked[@]}"
 
 # SDK tasks are an independent, minimal-feature application graph. A green
 # workspace build or API snapshot cannot substitute for this consumer behavior.
-step "sdk-consumer" "keep the public SDK usable from an ordinary external application" \
-  python3 scripts/ci/check_sdk_consumer.py
+scoped_step "sdk-consumer" "keep the public SDK usable from an ordinary external application" \
+  "$(consumed_packages examples/sdk-consumer/Cargo.toml)" python3 scripts/ci/check_sdk_consumer.py
 
 # Compile-surface decision table: CR2 a database-less Worker consumes Ingress
 # without durable/test support -> compile its production library warning-free;
@@ -273,10 +339,10 @@ step "sdk-consumer" "keep the public SDK usable from an ordinary external applic
 # consumer only warns about. Default/all-target and formal gates retain CR4.
 # CR5 cfg(test) activates memory fixtures, not SQL adapters: execute the same
 # pure kernels there; SQL migration fixtures stay in the default/durable suite.
-step "run-ingress-neutral" "keep store-only arithmetic out of the database-less Worker graph" \
-  cargo clippy -p awaken-dispatch --no-default-features --lib "${locked[@]}" -- -D warnings
-step "run-ingress-neutral-unit" "keep memory and domain tests independent from optional SQL drivers" \
-  cargo test -p awaken-dispatch --no-default-features --lib "${locked[@]}"
+scoped_step "run-ingress-neutral" "keep store-only arithmetic out of the database-less Worker graph" \
+  "awaken-dispatch" cargo clippy -p awaken-dispatch --no-default-features --lib "${locked[@]}" -- -D warnings
+scoped_step "run-ingress-neutral-unit" "keep memory and domain tests independent from optional SQL drivers" \
+  "awaken-dispatch" cargo test -p awaken-dispatch --no-default-features --lib "${locked[@]}"
 
 # CR7 a brokered client needs catalog/HTTP contracts but no Admin database:
 # its actual transitive graph must compile warning-free without workspace SQL
@@ -292,10 +358,10 @@ for materializer_profile in bare brokered; do
   if [ "$materializer_profile" = brokered ]; then
     materializer_features=(--features brokered)
   fi
-  step "credential-materializer-$materializer_profile-neutral" "keep database-only helpers out of neutral materializer consumers" \
-    cargo clippy -p awaken-credential-materializer --no-default-features "${materializer_features[@]}" --all-targets "${locked[@]}" -- -D warnings
-  step "credential-materializer-$materializer_profile-neutral-unit" "keep neutral materializer tests independent of local Vault authority" \
-    cargo test -p awaken-credential-materializer --no-default-features "${materializer_features[@]}" --lib "${locked[@]}"
+  scoped_step "credential-materializer-$materializer_profile-neutral" "keep database-only helpers out of neutral materializer consumers" \
+    "awaken-credential-materializer" cargo clippy -p awaken-credential-materializer --no-default-features "${materializer_features[@]}" --all-targets "${locked[@]}" -- -D warnings
+  scoped_step "credential-materializer-$materializer_profile-neutral-unit" "keep neutral materializer tests independent of local Vault authority" \
+    "awaken-credential-materializer" cargo test -p awaken-credential-materializer --no-default-features "${materializer_features[@]}" --lib "${locked[@]}"
 done
 
 # CR6 optional Pod transport and its production startup are not enabled by
@@ -320,12 +386,16 @@ case "$mode" in
     # factory or leaf-only success is not that effect. L3 admission75/source or
     # profile uncertainty -> retain the exact refusal, no retry/flag change.
     # UNKNOWN_CONFIG still keeps whole; a focused PASS cannot qualify a subset.
+    # Both lanes plan the same check against their own base (S2 above); the
+    # planner keeps the whole argv whenever it cannot prove a narrower one,
+    # including when nothing changed (an incremental no-op after pre-commit).
     if [ "$mode" = "--quick" ]; then
       step "check" "fix the compile errors shown above" \
         python3 scripts/ci/rust_test_plan.py --base HEAD --run --check-command \
         cargo check --workspace --all-targets --features "$workspace_features" "${locked[@]}"
     else
       step "check" "fix the compile errors shown above" \
+        python3 scripts/ci/rust_test_plan.py --base "$scope_base" --run --check-command \
         cargo check --workspace --all-targets --features "$workspace_features" "${locked[@]}"
     fi
     if [ "$mode" = "--push" ]; then
@@ -352,8 +422,17 @@ case "$mode" in
       # One step, one graph, both questions: clippy compiles everything
       # `cargo check` compiled and lints all of it. Compile only: these tiers
       # need a live daemon to run, which their own integration gates provide.
-      step "lint-all-features" "review the errors above; every declared feature must compile and lint clean (auto-fixable: cargo clippy --fix --all-features --all-targets --allow-dirty)" \
-        cargo clippy --workspace --all-features --all-targets "${locked[@]}" -- -D warnings
+      #
+      # P4 this lint stays whole whenever any Rust input changed: --all-features
+      # enables every member's features, so a package subset resolves a
+      # different unified graph and cannot stand in for it. Only S3 "none"
+      # (nothing it compiles changed since the push base) skips it.
+      if [ "$scope" = none ]; then
+        echo "↷ lint-all-features (unaffected: $scope_reason)"
+      else
+        step "lint-all-features" "review the errors above; every declared feature must compile and lint clean (auto-fixable: cargo clippy --fix --all-features --all-targets --allow-dirty)" \
+          cargo clippy --workspace --all-features --all-targets "${locked[@]}" -- -D warnings
+      fi
       step "formal-coverage" "fix the harness anchors/@kani tags or formal/obligations/ as shown above" \
         python3 scripts/ci/check_formal_coverage.py
       # The formal-evidence pre-commit hook now triggers on every production
