@@ -14,9 +14,10 @@ pub(crate) fn capture_decision(
     settings: crate::deployment_config::ContentCaptureSettings,
     trace_file_present: bool,
 ) -> CaptureDecision {
-    let redactor: Arc<dyn ContentRedactor> = match select_capture_redactor(settings.redaction) {
-        CaptureRedactorSelection::Regex => Arc::new(PiiRedactor::new()),
-        CaptureRedactorSelection::None => Arc::new(NoopRedactor),
+    let redactor: Arc<dyn ContentRedactor> = if uses_pii_redaction(settings.redaction) {
+        Arc::new(PiiRedactor::new())
+    } else {
+        Arc::new(NoopRedactor)
     };
     let level = clamp_for_trace_file(settings.level, trace_file_present);
     CaptureDecision::with_redactor(level, redactor)
@@ -32,24 +33,19 @@ const fn clamp_for_trace_file(level: ContentCapture, trace_file_present: bool) -
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CaptureRedactorSelection {
-    None,
-    Regex,
-}
-
-const fn select_capture_redactor(
-    configured: crate::deployment_config::ContentRedaction,
-) -> CaptureRedactorSelection {
+/// The supported persistence choice used by the actual redactor constructor.
+/// An exhaustive match keeps any future unsupported mode from falling back to
+/// no redaction. The upper-layer DLP requirement is not an execution choice.
+const fn uses_pii_redaction(configured: crate::deployment_config::ContentRedaction) -> bool {
     match configured {
-        crate::deployment_config::ContentRedaction::None => CaptureRedactorSelection::None,
-        crate::deployment_config::ContentRedaction::Regex => CaptureRedactorSelection::Regex,
+        crate::deployment_config::ContentRedaction::None => false,
+        crate::deployment_config::ContentRedaction::Regex => true,
     }
 }
 
 #[cfg(kani)]
 mod kani_proofs {
-    use super::{CaptureRedactorSelection, clamp_for_trace_file, select_capture_redactor};
+    use super::{clamp_for_trace_file, uses_pii_redaction};
     use crate::deployment_config::ContentRedaction;
     use awaken_runtime_contract::ContentCapture;
 
@@ -83,16 +79,19 @@ mod kani_proofs {
     /// @obligation capture.persistence_redaction_selection_is_total_exact_and_non_widening
     #[kani::proof]
     fn configured_capture_redactor_selection_is_total_and_exact() {
+        // Decision rows: None => false (Noop), Regex => true (Pii). These are
+        // all supported inputs to the predicate used by the real constructor;
+        // the bytes table below independently checks its selected effect.
         let configured = if kani::any() {
             ContentRedaction::None
         } else {
             ContentRedaction::Regex
         };
         let expected = match configured {
-            ContentRedaction::None => CaptureRedactorSelection::None,
-            ContentRedaction::Regex => CaptureRedactorSelection::Regex,
+            ContentRedaction::None => false,
+            ContentRedaction::Regex => true,
         };
-        assert_eq!(select_capture_redactor(configured), expected);
+        assert_eq!(uses_pii_redaction(configured), expected);
     }
 }
 
@@ -157,5 +156,114 @@ mod tests {
             ContentCapture::Structured,
             "C4"
         );
+
+        // Exhaustive C5 extension of the same cause/effect table: 3 configured
+        // levels x 2 supported redactors x 2 sinks = 12 rows. Off/Structured
+        // emit no bytes; a Full trace is Structured; only non-trace Full emits
+        // bytes, unchanged for None and actually scrubbed by PiiRedactor for
+        // Regex. These literal outcomes also catch a swapped constructor even
+        // if the pure predicate's Kani proof still passes. DLP is not an input.
+        let rows = [
+            (
+                ContentCapture::Off,
+                ContentRedaction::None,
+                false,
+                ContentCapture::Off,
+                None,
+            ),
+            (
+                ContentCapture::Off,
+                ContentRedaction::None,
+                true,
+                ContentCapture::Off,
+                None,
+            ),
+            (
+                ContentCapture::Off,
+                ContentRedaction::Regex,
+                false,
+                ContentCapture::Off,
+                None,
+            ),
+            (
+                ContentCapture::Off,
+                ContentRedaction::Regex,
+                true,
+                ContentCapture::Off,
+                None,
+            ),
+            (
+                ContentCapture::Structured,
+                ContentRedaction::None,
+                false,
+                ContentCapture::Structured,
+                None,
+            ),
+            (
+                ContentCapture::Structured,
+                ContentRedaction::None,
+                true,
+                ContentCapture::Structured,
+                None,
+            ),
+            (
+                ContentCapture::Structured,
+                ContentRedaction::Regex,
+                false,
+                ContentCapture::Structured,
+                None,
+            ),
+            (
+                ContentCapture::Structured,
+                ContentRedaction::Regex,
+                true,
+                ContentCapture::Structured,
+                None,
+            ),
+            (
+                ContentCapture::Full,
+                ContentRedaction::None,
+                false,
+                ContentCapture::Full,
+                Some("mail a@b.com"),
+            ),
+            (
+                ContentCapture::Full,
+                ContentRedaction::Regex,
+                false,
+                ContentCapture::Full,
+                Some("mail [redacted-email]"),
+            ),
+            (
+                ContentCapture::Full,
+                ContentRedaction::None,
+                true,
+                ContentCapture::Structured,
+                None,
+            ),
+            (
+                ContentCapture::Full,
+                ContentRedaction::Regex,
+                true,
+                ContentCapture::Structured,
+                None,
+            ),
+        ];
+        assert_eq!(rows.len(), 12, "C5 complete cause matrix");
+        for (level, redaction, trace, expected_level, expected_bytes) in rows {
+            let decision =
+                super::capture_decision(ContentCaptureSettings { level, redaction }, trace);
+            assert_eq!(
+                decision.level, expected_level,
+                "C5 {level:?}/{redaction:?}/{trace}"
+            );
+            assert_eq!(
+                decision
+                    .content(ContentKind::InputMessages, "mail a@b.com")
+                    .as_deref(),
+                expected_bytes,
+                "C5 {level:?}/{redaction:?}/{trace}",
+            );
+        }
     }
 }
