@@ -26,32 +26,36 @@ impl ThreadReads {
         session_id: &str,
         observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Result<Vec<CoordinatedThreadLink>, SessionExecutionError> {
-        let realizations = self.installed_sessions.realizations();
+        let sessions = self.installed_sessions.upgrade();
         if observed_root.is_some_and(|snapshot| snapshot.thread_id.0 != session_id) {
             return Err(SessionExecutionError::internal(
                 "coordination query received a snapshot for a different Session root",
             ));
         }
-        let delivered = realizations.published_snapshot(session_id)?;
+        let delivered = sessions
+            .map(|s| s.realizations().published_snapshot(session_id))
+            .transpose()?
+            .flatten();
         // Relationship recovery and terminal teardown must remain available
         // after a publication is revoked. The committed advisor call supplies
         // identity; current publication only enriches its model label. Managed
         // can recover an empty label from the Session's already-frozen profile.
-        let advisor_model = self
-            .realization_executor
-            .environments()
-            .publication()
-            .resolve_session_publication(session_id, None, delivered)
-            .ok()
-            .and_then(|(_, _, publication, _)| publication)
-            .and_then(|snapshot| {
-                snapshot
-                    .resolved_spec
-                    .plugin_config
-                    .agent
-                    .advisor
-                    .map(|advisor| advisor.model)
-            });
+        let advisor_model = self.realization_executor.upgrade().and_then(|executor| {
+            executor
+                .environments()
+                .publication()
+                .resolve_session_publication(session_id, None, delivered)
+                .ok()
+                .and_then(|(_, _, publication, _)| publication)
+                .and_then(|snapshot| {
+                    snapshot
+                        .resolved_spec
+                        .plugin_config
+                        .agent
+                        .advisor
+                        .map(|advisor| advisor.model)
+                })
+        });
         // One recovery reader and one relationship projector serve both an
         // ordinary latest read and a larger query that already holds this
         // atomic root prefix. Never reopen or clone that supplied prefix.
@@ -72,8 +76,8 @@ impl ThreadReads {
             advisor_model.as_deref(),
             &committed,
             CoordinationReadPurpose::Relationships,
-        )
-        .map(|projection| projection.links)?;
+        )?
+        .links;
         if links.is_empty() {
             return Ok(links);
         }

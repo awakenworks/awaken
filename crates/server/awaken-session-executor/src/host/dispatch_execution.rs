@@ -428,9 +428,7 @@ impl CommitBoundaryWorkers for ClaimedRunAssembly {
         &self,
     ) -> Result<Arc<dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>, Error>
     {
-        Ok(crate::worker_services::thread_recovery_source(
-            self.assembly.thread_reads.clone(),
-        ))
+        Ok(self.assembly.thread_reads.clone())
     }
 }
 

@@ -23,7 +23,7 @@ pub(crate) use committed_runs::{
     delegation_registry_from_snapshot, project_delegated_runs, recovery_ticket,
 };
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use awaken_agent_contract::agent::awaiting::{AwaitReason, AwaitTarget, ResumeTicket};
 use awaken_agent_contract::agent::message::Message;
@@ -41,8 +41,8 @@ use crate::store::HostCommit;
 /// component that must observe committed Thread truth.
 pub struct ThreadReads {
     authority: Arc<dyn crate::SessionAuthority>,
-    installed_sessions: Arc<crate::InstalledSessions>,
-    realization_executor: Arc<crate::realization_executor::RealizationExecutor>,
+    installed_sessions: Weak<crate::InstalledSessions>,
+    realization_executor: Weak<crate::realization_executor::RealizationExecutor>,
 }
 
 impl ThreadReads {
@@ -53,8 +53,8 @@ impl ThreadReads {
     ) -> Self {
         Self {
             authority,
-            installed_sessions,
-            realization_executor,
+            installed_sessions: Arc::downgrade(&installed_sessions),
+            realization_executor: Arc::downgrade(&realization_executor),
         }
     }
 
@@ -66,8 +66,16 @@ impl ThreadReads {
         &self,
         thread: &str,
     ) -> Result<Arc<HostCommit>, SessionExecutionError> {
-        let realizations = self.installed_sessions.realizations();
-        let _lifecycle = realizations.lock_lifecycle_if_installed(thread).await?;
+        let sessions = self.installed_sessions.upgrade();
+        let _lifecycle = match sessions.as_ref() {
+            Some(sessions) => {
+                sessions
+                    .realizations()
+                    .lock_lifecycle_if_installed(thread)
+                    .await?
+            }
+            None => None,
+        };
         self.open_commit_for_read(thread).await
     }
 
@@ -90,12 +98,12 @@ impl ThreadReads {
         &self,
         thread: &str,
     ) -> Result<Arc<HostCommit>, SessionExecutionError> {
-        if let Some(commit) = self
-            .installed_sessions
-            .read_run(thread, |run| {
-                run.context.as_ref().map(|context| context.commit.clone())
-            })?
-            .flatten()
+        if let Some(sessions) = self.installed_sessions.upgrade()
+            && let Some(commit) = sessions
+                .read_run(thread, |run| {
+                    run.context.as_ref().map(|context| context.commit.clone())
+                })?
+                .flatten()
         {
             return Ok(commit);
         }
@@ -130,9 +138,7 @@ impl ThreadReads {
         &self,
         thread: &str,
     ) -> Result<Vec<DelegatedRun>, SessionExecutionError> {
-        self.delegated_run_snapshot(thread)
-            .await
-            .map(|snapshot| snapshot.delegated_runs)
+        Ok(self.delegated_run_snapshot(thread).await?.delegated_runs)
     }
 
     /// Continuation-only read that reuses the lifecycle guard the caller holds,
@@ -183,9 +189,7 @@ impl ThreadReads {
         thread: &str,
     ) -> Result<awaken_session_application_contract::DelegatedRunSnapshot, SessionExecutionError>
     {
-        self.delegated_runs_and_root(thread)
-            .await
-            .map(|(snapshot, _)| snapshot)
+        Ok(self.delegated_runs_and_root(thread).await?.0)
     }
 
     /// The delegated-Run projection together with the root recovery prefix it
@@ -403,3 +407,6 @@ pub(crate) async fn visible_pending_tool(
         })),
     }
 }
+
+#[cfg(test)]
+mod recovery_lifetime_tests;
