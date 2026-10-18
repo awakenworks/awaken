@@ -31,7 +31,7 @@ The strategic layer is not. Contexts were drawn by where code runs, not by which
 domain problem it solves:
 
 - `session` holds 26 crates that mix four concerns: the Session lifecycle, the Run
-  execution host (`awaken-session-executor`, `awaken-session-mcp`), the runtime's thread
+  execution host (`awaken-runtime-host`, `awaken-session-mcp`), the runtime's thread
   commit storage (`awaken-store-*`), and the executable Agent catalog that Control
   publishes.
 - `worker` is a deployment shape, not a domain. Run execution happens both in a
@@ -59,7 +59,7 @@ domain problem it solves:
    Runtime SDK is a separate product with one context, `agent-runtime`.
 
 2. **Contexts follow domain problems.** Membership changes through metadata only:
-   - **Execution** (new): `awaken-session-executor`, `awaken-session-mcp`, the future
+   - **Execution** (new): `awaken-runtime-host`, `awaken-session-mcp`, the future
      `awaken-session-realization`, `awaken-run-executor-acp`, `awaken-run-executor-a2a`,
      `awaken-execution-composition`, `awaken-agent-channel`, `awaken-acp-contract`,
      `awaken-dispatch-execution`, `awaken-dispatch-erasure`. The latter owns
@@ -477,8 +477,8 @@ Moved public Rust helpers have one owner and no Host re-export:
 
 | Previous path | Authoritative path |
 |---|---|
-| `awaken_session_executor::remote_worker_placement` | `awaken_dispatch_execution::placement::remote_worker_placement` |
-| `awaken_session_executor::self_hosted_inference_holder` | `awaken_dispatch_execution::placement::self_hosted_inference_holder` |
+| `awaken_runtime_host::remote_worker_placement` | `awaken_dispatch_execution::placement::remote_worker_placement` |
+| `awaken_runtime_host::self_hosted_inference_holder` | `awaken_dispatch_execution::placement::self_hosted_inference_holder` |
 
 At the checked Cloud source, only `awaken-hosting-durable` tests
 `deployed_cluster_causal.rs` and `phase1_cross_process.rs` use the first helper.

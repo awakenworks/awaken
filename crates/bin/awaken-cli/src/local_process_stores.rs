@@ -26,7 +26,7 @@ pub(super) async fn in_memory_process_stores() -> ProcessStores {
         Arc::new(awaken_captured_content_store::InMemoryCapturedContentStore::new(clock.clone()));
     ProcessStores {
         workspace_root: None,
-        platform_workspace: SharedHost::mint_local_workspace(),
+        platform_workspace: ExecutorComponents::mint_local_workspace(),
         clock: clock.clone(),
         control: Some(ControlStores {
             catalog: Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new()),
@@ -151,7 +151,7 @@ pub(super) async fn process_stores_for_runtime_storage(
     );
     stores.workspace_root = Some(dir.to_path_buf());
     stores.platform_workspace =
-        awaken_installation_workspace::provision_at(dir, SharedHost::mint_local_workspace);
+        awaken_installation_workspace::provision_at(dir, ExecutorComponents::mint_local_workspace);
     let coordinator = stores
         .coordinator
         .as_mut()

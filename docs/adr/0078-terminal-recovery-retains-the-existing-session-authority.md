@@ -41,7 +41,7 @@ retirement plans retain their separate canonical inputs; active and pending
 bindings are not flattened into an invalid single Resource manifest.
 
 This first slice changes no aggregate, schema, public wire type, or API. Its
-owners are `awaken-session-application` and `awaken-session-executor`; the Resource
+owners are `awaken-session-application` and `awaken-runtime-host`; the Resource
 state and cleanup contracts retain their current ownership. G55 and the
 production adapter/Host tests enforce it.
 

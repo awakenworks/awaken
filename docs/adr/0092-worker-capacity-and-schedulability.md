@@ -19,7 +19,7 @@
   2026-08-10 amendment (Kubernetes, the resource-feasibility authority, now answers
   "no capacity" with a typed refusal that returns the claim).
 - Affects: `awaken-sandbox-container` (Kubernetes realization wait and error
-  classification), `awaken-provisioning-contract` (`SandboxError`), `awaken-session-executor`
+  classification), `awaken-provisioning-contract` (`SandboxError`), `awaken-runtime-host`
   (Worker claim projection of realization failures), `awaken-worker` (start-up
   validation and probe order), `awaken-sandbox-local`, `awaken-execution-composition`.
 

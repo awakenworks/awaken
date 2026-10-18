@@ -30,8 +30,8 @@
 
 use std::sync::Arc;
 
-use awaken_session_executor::DeploymentConfig;
 use awaken_scenario_host::{EchoModel, build_router_with_deployment};
+use awaken_session_executor::DeploymentConfig;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

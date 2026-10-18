@@ -287,7 +287,7 @@ mod tests {
     /// Complete ordinary Host composition shared by Outcome controller tests.
     /// The controller remains the sole Outcome owner; this fixture supplies only
     /// the production Dispatch runtime required by context construction.
-    async fn outcome_test_host(model: Arc<dyn LlmExecutor>) -> Arc<crate::SharedHost> {
+    async fn outcome_test_host(model: Arc<dyn LlmExecutor>) -> Arc<crate::ExecutorComponents> {
         let host = (crate::HostDependencies::ephemeral(model, "stub").await)
             .build()
             .expect("validated Host dependencies");

@@ -2,17 +2,17 @@
 
 use std::sync::Arc;
 
-use awaken_session_executor::{
-    AgentCoordinationInstallError, SessionApplicationBindingError, SharedHost,
-};
 use awaken_session_application::SessionApplication;
+use awaken_session_executor::{
+    AgentCoordinationInstallError, ExecutorComponents, SessionApplicationBindingError,
+};
 
 /// Connect the Runtime's fixed coordination tools to the one canonical Session
 /// application. Product and scenario startup both use this helper so neither
 /// can omit or independently encode the trait-object downgrade. `host`'s
 /// Session application ports are its edges back into that application.
 pub fn install_managed_agent_coordination(
-    host: &SharedHost,
+    host: &ExecutorComponents,
     application: &Arc<SessionApplication>,
 ) -> Result<(), AgentCoordinationInstallError> {
     let dispatch = host.coordination().dispatch_observation_source()?;
@@ -35,7 +35,7 @@ pub fn install_managed_agent_coordination(
 /// lifecycle reconciliation. The wakeup holds the application weakly and only
 /// asks it to reread durable truth.
 pub(crate) fn bind_committed_progress_wakeup(
-    host: &SharedHost,
+    host: &ExecutorComponents,
     application: &Arc<SessionApplication>,
 ) -> Result<(), SessionApplicationBindingError> {
     let application = Arc::downgrade(application);

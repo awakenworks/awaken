@@ -1,7 +1,7 @@
 // @formal surface requirement=assembly.binary_roles.role_assembly
 // @formal reason: Host construction selects every injected startup authority exactly once and composes the
 // @formal reason: capability groups; it opens no Store. This link is not a formal-proof claim.
-//! Construction of [`SharedHost`] from its [`HostDependencies`] (the one
+//! Construction of [`ExecutorComponents`] from its [`HostDependencies`] (the one
 //! constructor), per-thread registration, and the process dispatch pool.
 
 use super::*;
@@ -43,7 +43,7 @@ impl HostDependencies {
     /// The one Host constructor: validate the selected dependencies once and
     /// assemble the Host's runtime state around them. It performs no I/O; every
     /// dependency was acquired while the composition filled `dependencies`.
-    pub fn build(self) -> Result<Arc<SharedHost>, HostError> {
+    pub fn build(self) -> Result<Arc<ExecutorComponents>, HostError> {
         let dependencies = self;
         if dependencies.local_workspace.trim().is_empty() {
             return Err(HostError::bad_request("local workspace must not be empty"));
@@ -71,7 +71,7 @@ impl HostDependencies {
     }
 }
 
-fn assemble_host(dependencies: HostDependencies) -> SharedHost {
+fn assemble_host(dependencies: HostDependencies) -> ExecutorComponents {
     let HostDependencies {
         #[cfg(test)]
         realization_source,
@@ -198,7 +198,7 @@ fn assemble_host(dependencies: HostDependencies) -> SharedHost {
         mcp_root_authority,
     });
     let (dispatch, session_runs) = session_run_delivery(&run_assembly, &completion, dispatch_hint);
-    SharedHost {
+    ExecutorComponents {
         realization_executor,
         thread_reads,
         live_inboxes,
@@ -403,7 +403,7 @@ fn mcp_application_inputs(
     (authority, inputs)
 }
 
-impl SharedHost {
+impl ExecutorComponents {
     /// Warm Environment capacity supplied by this Host's existing providers.
     #[must_use]
     pub fn environment_capacity(&self) -> &crate::environment_providers::EnvironmentProviders {
@@ -583,7 +583,7 @@ mod startup_tests {
             expected.clone(),
             crate::DeploymentConfig::ephemeral()
                 .host_process(
-                    SharedHost::mint_local_workspace(),
+                    ExecutorComponents::mint_local_workspace(),
                     awaken_time::system_clock(),
                 )
                 .expect("ephemeral process"),
@@ -624,7 +624,7 @@ mod startup_tests {
         let process = || {
             crate::DeploymentConfig::ephemeral()
                 .host_process(
-                    SharedHost::mint_local_workspace(),
+                    ExecutorComponents::mint_local_workspace(),
                     awaken_time::system_clock(),
                 )
                 .expect("ephemeral process")

@@ -1,14 +1,9 @@
-//! `SharedHost` — the protocol-neutral, thread-keyed session substrate.
+//! [`ExecutorComponents`] — the Session executor's components, assembled once.
 //!
-//! This is the "waist" both protocol adapters (Managed Agents, AI SDK) drive. It
-//! owns one sandboxed runtime + commit coordinator per **thread id**, and exposes
-//! neutral operations — `run`, `resume`, `committed_messages` — over that
-//! shared state. Because both adapters key by the same thread id and mutate the
-//! same coordinator and awaiting-Run position, a Run started through one protocol
-//! can be observed or resumed through the other on the *same thread*.
-//!
-//! It names no protocol vocabulary: outcomes are the neutral [`RunState`] plus an
-//! optional [`Pending`]; each adapter maps those onto its own wire shape.
+//! The composition root builds it from [`HostDependencies`] and selects
+//! [`crate::CoordinatorRoles`] or [`crate::WorkerRoles`] from it. It holds each
+//! component and the process-level facts they share; behaviour lives in the
+//! components, which every protocol adapter drives on the same thread ids.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -133,18 +128,14 @@ pub(crate) use worker_resolver::test_support::{
     eager_environment, empty_frozen_projection_for_snapshot, managed_test_host, test_activation,
 };
 
-/// The protocol-neutral, thread-keyed session substrate shared by every adapter.
-///
-/// The fields directly on this struct are the CORE every capability reads:
-/// Workspace/Session identity, the event hub, deployment, durable authority,
-/// the process clock and completion relay. Everything else is grouped by the
-/// capability that owns it (module `host::capability`); each group is a plain owned
-/// struct, so a module that uses one capability names exactly that group.
+/// The assembled Session executor components of one process. Consumers: the
+/// composition roots, which select a typed role set from it, and the
+/// protocol adapters and tests that drive individual components.
 ///
 /// The one constructor is `From<`[`HostDependencies`]`>`: every dependency is
-/// selected on that value before the Host exists, and nothing installs one
-/// into a constructed Host.
-pub struct SharedHost {
+/// selected on that value before the components exist, and nothing installs
+/// one into an assembled value.
+pub struct ExecutorComponents {
     /// Platform-managed workspace for flat, no-login local requests. It is
     /// generated (and persisted with durable storage), never compiled in.
     pub(crate) local_workspace: String,
@@ -191,7 +182,7 @@ pub struct SharedHost {
     pub(crate) session_application: SessionApplicationBindings,
 }
 
-impl SharedHost {
+impl ExecutorComponents {
     /// Persist every Agent-authored output before the environment can be disposed.
     /// The `(Session, logical path, content)` harvest key makes retries idempotent;
     /// Files API reads only this durable catalog and never scan the Sandbox.

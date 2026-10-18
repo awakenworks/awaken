@@ -298,7 +298,7 @@ fn write_confirmation_gate() -> Arc<awaken_runtime::PermissionGate> {
 /// Effects: E1 execute against C1; E2 commit/project one Step. Decision rule
 /// T1=C1+C2=>E1+E2. The production Host-command fence remains active elsewhere.
 async fn run_prepared_session_messages(
-    managed: &Arc<crate::SharedHost>,
+    managed: &Arc<crate::ExecutorComponents>,
     agent: &str,
     thread: &str,
     messages: Vec<Message>,
@@ -315,7 +315,7 @@ async fn run_prepared_session_messages(
 }
 
 async fn run_prepared_session(
-    managed: &Arc<crate::SharedHost>,
+    managed: &Arc<crate::ExecutorComponents>,
     agent: &str,
     thread: &str,
     content: Vec<ContentBlock>,
@@ -439,8 +439,8 @@ pub(crate) fn frozen_skill_version(
 /// owner. A test may omit the bytes to exercise the same fail-closed path; it
 /// never authors a process-local slot as a second selection source.
 async fn install_pinned_managed_skill_session(
-    host: &Arc<SharedHost>,
-    managed: &Arc<crate::SharedHost>,
+    host: &Arc<ExecutorComponents>,
+    managed: &Arc<crate::ExecutorComponents>,
     thread: &str,
     agent: &str,
     environment: awaken_session_configuration_contract::EnvironmentSnapshot,
@@ -462,8 +462,8 @@ async fn install_pinned_managed_skill_session(
 
 #[allow(clippy::too_many_arguments)]
 async fn install_pinned_managed_skill_session_with_tools(
-    host: &Arc<SharedHost>,
-    managed: &Arc<crate::SharedHost>,
+    host: &Arc<ExecutorComponents>,
+    managed: &Arc<crate::ExecutorComponents>,
     thread: &str,
     agent: &str,
     environment: awaken_session_configuration_contract::EnvironmentSnapshot,
@@ -612,7 +612,7 @@ impl awaken_session_execution_contract::SessionAgentCoordination
 /// unrelated to coordination or budget admission. A process-static strong
 /// owner keeps the production-shaped weak edge alive without adding a second
 /// behavioral fake to each fixture.
-fn install_test_session_application(host: &Arc<SharedHost>) {
+fn install_test_session_application(host: &Arc<ExecutorComponents>) {
     static APPLICATION: std::sync::OnceLock<
         Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>,
     > = std::sync::OnceLock::new();
@@ -626,7 +626,7 @@ fn install_test_session_application(host: &Arc<SharedHost>) {
 /// a real Session activity settlement boundary. Environment-only fixtures use
 /// the stricter rejecting authority above so an accidental coordination effect
 /// still fails closed.
-fn install_recording_session_application(host: &Arc<SharedHost>) {
+fn install_recording_session_application(host: &Arc<ExecutorComponents>) {
     static APPLICATION: std::sync::OnceLock<
         Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>,
     > = std::sync::OnceLock::new();
@@ -838,7 +838,12 @@ struct TestInput {
 
 use awaken_resource_contract::ResourceAccess;
 
-pub(crate) fn bind_test_memory(host: &SharedHost, thread: &str, store_id: &str, writable: bool) {
+pub(crate) fn bind_test_memory(
+    host: &ExecutorComponents,
+    thread: &str,
+    store_id: &str,
+    writable: bool,
+) {
     let config = awaken_resource_contract::MemoryStoreConfigVersion {
         memory_store_id: store_id.to_string().into(),
         version: awaken_resource_contract::ConfigVersion::INITIAL,
@@ -869,14 +874,14 @@ pub(crate) fn bind_test_memory(host: &SharedHost, thread: &str, store_id: &str, 
         .expect("installed Sessions");
 }
 
-fn managed_with_resource_source(host: Arc<SharedHost>) -> Arc<crate::SharedHost> {
+fn managed_with_resource_source(host: Arc<ExecutorComponents>) -> Arc<crate::ExecutorComponents> {
     managed_with_resource_source_using(host, install_test_session_application)
 }
 
 fn managed_with_resource_source_using(
-    host: Arc<SharedHost>,
-    install_coordination: fn(&Arc<SharedHost>),
-) -> Arc<crate::SharedHost> {
+    host: Arc<ExecutorComponents>,
+    install_coordination: fn(&Arc<ExecutorComponents>),
+) -> Arc<crate::ExecutorComponents> {
     install_coordination(&host);
     host
 }
@@ -1143,14 +1148,18 @@ impl LlmExecutor for GatedModel {
 /// direct or durable Run can apply its canonical empty Resource transition.
 /// Interrupt fixtures retain the returned adapter so no test-only runtime or
 /// partial Session projection competes with that composition.
-pub(crate) fn install_test_dispatch_runtime(host: &Arc<SharedHost>) -> Arc<crate::SharedHost> {
+pub(crate) fn install_test_dispatch_runtime(
+    host: &Arc<ExecutorComponents>,
+) -> Arc<crate::ExecutorComponents> {
     host.clone()
 }
 
 /// Wrap a fully configured ordinary Host and install the same canonical
 /// Dispatch composition used by the application. Callers configure the Host
 /// first, so this fixture cannot publish a partially configured adapter.
-fn dispatch_test_host(host: Arc<SharedHost>) -> (Arc<SharedHost>, Arc<SharedHost>) {
+fn dispatch_test_host(
+    host: Arc<ExecutorComponents>,
+) -> (Arc<ExecutorComponents>, Arc<ExecutorComponents>) {
     let managed = install_test_dispatch_runtime(&host);
     (host, managed)
 }
@@ -1160,7 +1169,7 @@ fn dispatch_test_host(host: Arc<SharedHost>) -> (Arc<SharedHost>, Arc<SharedHost
 /// coordinates produce E1 one baseline plus E2 the exact Empty->desired
 /// transition input; neither compilation nor Dispatch installation grants I/O.
 fn compile_complete_test_session_projection(
-    managed: &Arc<crate::SharedHost>,
+    managed: &Arc<crate::ExecutorComponents>,
     init: awaken_session_configuration_contract::SessionInit,
 ) -> awaken_session_realization_contract::FrozenSessionProjection {
     let awaken_session_configuration_contract::SessionInit {
@@ -1264,7 +1273,7 @@ fn compile_complete_test_session_projection(
 /// Install Dispatch facts only. Physical Managed tests must select the real
 /// Root fixture before Host construction rather than acquire an Unowned grant.
 async fn install_complete_test_session(
-    managed: &Arc<crate::SharedHost>,
+    managed: &Arc<crate::ExecutorComponents>,
     thread: &str,
     init: awaken_session_configuration_contract::SessionInit,
 ) -> Result<(), awaken_session_types::RunError> {
@@ -1287,7 +1296,7 @@ trait CompleteTestSessionFixture {
 }
 
 #[async_trait::async_trait]
-impl CompleteTestSessionFixture for Arc<crate::SharedHost> {
+impl CompleteTestSessionFixture for Arc<crate::ExecutorComponents> {
     async fn install_complete_test_session(
         &self,
         thread: &str,
@@ -1302,7 +1311,7 @@ impl CompleteTestSessionFixture for Arc<crate::SharedHost> {
 /// projection plus C2 one live lease and binding sink produce E1 a fenced V2
 /// handle with exact owned-path evidence; tests never synthesize that handle.
 async fn install_complete_test_session_for_realization(
-    managed: &Arc<crate::SharedHost>,
+    managed: &Arc<crate::ExecutorComponents>,
     thread: &str,
     init: awaken_session_configuration_contract::SessionInit,
 ) -> Result<(), awaken_session_types::RunError> {
@@ -1352,7 +1361,7 @@ impl LlmExecutor for OkModel {
 }
 
 struct BindingOrderSink {
-    host: std::sync::Weak<SharedHost>,
+    host: std::sync::Weak<ExecutorComponents>,
     authorize_calls: AtomicUsize,
     calls: AtomicUsize,
     observed_before_publish: std::sync::atomic::AtomicBool,
@@ -2504,8 +2513,8 @@ fn terminal_disposal_effect(
 }
 
 async fn install_terminal_recovery_projection(
-    host: &Arc<SharedHost>,
-    managed: &Arc<crate::SharedHost>,
+    host: &Arc<ExecutorComponents>,
+    managed: &Arc<crate::ExecutorComponents>,
     thread: &str,
     lease: crate::session_resource::SessionRealizationLease,
     environment: awaken_session_state_contract::SessionEnvironmentState,
@@ -2587,7 +2596,7 @@ fn remote_terminal_cleanup_projection_with_idle_retention(
 }
 
 fn install_test_renewal_authority(
-    host: &SharedHost,
+    host: &ExecutorComponents,
     control: &RemoteTerminalCleanupControl,
     session_id: &str,
     lease: crate::session_resource::SessionRealizationLease,

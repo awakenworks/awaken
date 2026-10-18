@@ -758,7 +758,7 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
         ));
         let process = || {
             crate::DeploymentConfig::ephemeral()
-                .host_process(SharedHost::mint_local_workspace(), system_clock())
+                .host_process(ExecutorComponents::mint_local_workspace(), system_clock())
                 .expect("ephemeral process")
         };
         let worker = (crate::HostDependencies::for_worker(

@@ -1,7 +1,7 @@
 // @formal surface requirement=assembly.binary_roles.role_assembly
 // @formal reason: The one Host dependency set selects every injected startup authority exactly once before
 // @formal reason: construction; it opens no Store. This link is not a formal-proof claim.
-//! [`HostDependencies`]: everything a [`SharedHost`] is built from, selected
+//! [`HostDependencies`]: everything a [`ExecutorComponents`] is built from, selected
 //! once by the process composition before the Host exists.
 //!
 //! Acquiring a dependency may be asynchronous (opening a Store, probing a
@@ -51,7 +51,7 @@ pub(crate) type RealizationSourceFactory = Box<
         + Send,
 >;
 
-/// Every dependency of one [`SharedHost`]. Consumer: the process
+/// Every dependency of one [`ExecutorComponents`]. Consumer: the process
 /// compositions (`awaken-cli`, `awaken-worker`, `awaken-coordinator`, the
 /// Scenario host and test fixtures) and `HostDependencies::build`.
 pub struct HostDependencies {
@@ -255,7 +255,7 @@ impl HostDependencies {
     /// Volatile dependencies over `llm` for this crate's own unit tests: an
     /// ephemeral Deployment, a fresh platform Workspace, the system clock and
     /// the volatile Runtime authority. Other compositions use
-    /// `awaken-runtime-host-testkit`, which owns the concrete volatile
+    /// `awaken-session-executor-testkit`, which owns the concrete volatile
     /// Resource adapters this crate does not link.
     #[cfg(test)]
     pub async fn ephemeral(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> Self {
@@ -291,7 +291,7 @@ impl HostDependencies {
                 extraction_repository: Some(extraction_repository),
             },
             deployment
-                .host_process(SharedHost::mint_local_workspace(), clock.clone())
+                .host_process(ExecutorComponents::mint_local_workspace(), clock.clone())
                 .expect("a unit-test fixture selects a valid process"),
             Arc::new(crate::LocalAuthority::new(Arc::new(
                 crate::EphemeralRuntimeAuthority::new(clock),
@@ -381,7 +381,7 @@ impl HostDependencies {
     /// Test-support upgrade of volatile dependencies to local durable storage
     /// under `dir`, with the durable Memory extraction repository the caller
     /// opened there and the relocation of the Session environment providers
-    /// selected so far under that root (`awaken-runtime-host-testkit` supplies
+    /// selected so far under that root (`awaken-session-executor-testkit` supplies
     /// both for the sandbox-backed providers it links; this crate never does).
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]

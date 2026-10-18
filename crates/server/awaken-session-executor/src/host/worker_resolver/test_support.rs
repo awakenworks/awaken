@@ -45,7 +45,7 @@ pub(crate) async fn adoption_dependencies_at(
 }
 
 /// A Host over [`adoption_dependencies`].
-pub(crate) async fn adoption_host() -> Arc<SharedHost> {
+pub(crate) async fn adoption_host() -> Arc<ExecutorComponents> {
     (adoption_dependencies().await)
         .build()
         .expect("validated Host dependencies")
@@ -54,14 +54,16 @@ pub(crate) async fn adoption_host() -> Arc<SharedHost> {
 /// A Host over [`adoption_dependencies`] whose dispatch transport is `store`.
 pub(crate) async fn adoption_host_over(
     store: Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>,
-) -> Arc<SharedHost> {
+) -> Arc<ExecutorComponents> {
     (adoption_dependencies().await.with_ephemeral_dispatch(store))
         .build()
         .expect("validated Host dependencies")
 }
 
 /// A Host over [`adoption_dependencies_at`].
-pub(crate) async fn adoption_host_at(dir: impl Into<std::path::PathBuf>) -> Arc<SharedHost> {
+pub(crate) async fn adoption_host_at(
+    dir: impl Into<std::path::PathBuf>,
+) -> Arc<ExecutorComponents> {
     (adoption_dependencies_at(dir).await)
         .build()
         .expect("validated Host dependencies")
@@ -164,7 +166,7 @@ pub(crate) fn empty_frozen_projection_for_snapshot(
 }
 
 pub(crate) async fn install_complete_projection_for_snapshot(
-    managed: &Arc<crate::SharedHost>,
+    managed: &Arc<crate::ExecutorComponents>,
     thread: &str,
     workspace_id: &str,
     environment: awaken_session_configuration_contract::EnvironmentSnapshot,
@@ -244,15 +246,15 @@ fn empty_frozen_projection_with_model(
     }
 }
 
-pub(crate) fn managed_test_host(host: Arc<SharedHost>) -> Arc<crate::SharedHost> {
+pub(crate) fn managed_test_host(host: Arc<ExecutorComponents>) -> Arc<crate::ExecutorComponents> {
     complete_managed_test_host(host)
 }
 
 /// Install the one production composition required by every executable fixture:
 /// SessionEffects plus the single Session coordination application.
 pub(super) fn complete_managed_test_host(
-    managed: Arc<crate::SharedHost>,
-) -> Arc<crate::SharedHost> {
+    managed: Arc<crate::ExecutorComponents>,
+) -> Arc<crate::ExecutorComponents> {
     static APPLICATION: std::sync::OnceLock<
         Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>,
     > = std::sync::OnceLock::new();
@@ -275,7 +277,7 @@ pub(super) fn complete_managed_test_host(
 /// Create reuses its binding without a second create. Missing/unowned Root
 /// evidence is a fixture error, never a hand-made fence or historical seed.
 pub(crate) async fn available_local_environment_binding(
-    host: &crate::host::SharedHost,
+    host: &crate::host::ExecutorComponents,
     thread: &str,
     projection: &awaken_session_realization_contract::FrozenSessionProjection,
 ) -> String {
@@ -382,7 +384,7 @@ pub(crate) async fn available_local_environment_binding(
 /// root is removed. E1 provider observation reports definitive unavailability
 /// for that same incarnation rather than fixture/spec drift.
 pub(super) async fn unavailable_local_environment_binding(
-    host: &crate::host::SharedHost,
+    host: &crate::host::ExecutorComponents,
     thread: &str,
     projection: &awaken_session_realization_contract::FrozenSessionProjection,
 ) -> String {
@@ -393,7 +395,7 @@ pub(super) async fn unavailable_local_environment_binding(
 
 /// Fault the physical owner independently of the Worker and its retained Arcs.
 /// Both cold and surviving-Worker recovery rows use this one exact-inode cut.
-pub(super) fn remove_local_environment_root(host: &crate::host::SharedHost, thread: &str) {
+pub(super) fn remove_local_environment_root(host: &crate::host::ExecutorComponents, thread: &str) {
     let root = host
         .storage_dir()
         .expect("unavailable Local Environment fixture requires durable storage")
@@ -424,9 +426,9 @@ pub(crate) fn with_empty_session_resources(
 }
 
 pub(super) async fn prepare_deferred_session(
-    host: Arc<SharedHost>,
+    host: Arc<ExecutorComponents>,
     thread: &str,
-) -> Arc<crate::SharedHost> {
+) -> Arc<crate::ExecutorComponents> {
     let managed = managed_test_host(host.clone());
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &*managed.run_assembly,

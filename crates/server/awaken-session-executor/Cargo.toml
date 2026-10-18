@@ -24,7 +24,7 @@ awaken-container-contract.workspace = true
 # The auxiliary-run sandbox ports the process composition injects.
 awaken-session-environment-contract.workspace = true
 # The neutral Agent channel the Session environment launches Agents over.
-# The neutral session substrate (SharedHost) and the two port adapters
+# The neutral session substrate (ExecutorComponents) and the two port adapters
 # (ManagedHost / RunApplicationHost) live here; the assembly bin mounts them.
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
@@ -90,7 +90,7 @@ url.workspace = true
 # assembly that can acquire a Store implicitly.
 default = []
 # Post-construction persistence overrides are restricted to tests. Product
-# startup selects every authority before constructing SharedHost.
+# startup selects every authority before constructing ExecutorComponents.
 test-support = [
     "dep:awaken-store-inmem",
     "awaken-session-mcp/test-support",

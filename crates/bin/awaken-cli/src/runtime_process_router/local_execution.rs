@@ -1,8 +1,8 @@
 // @formal evidence assembly_role.local_managed_mount_requires_exact_local_worker_component
 //! Install physical execution only for the selected local Session placement.
 
-use awaken_session_executor::{DeploymentConfig, HostDependencies};
 use awaken_session_application::SessionExecutionPlacement;
+use awaken_session_executor::{DeploymentConfig, HostDependencies};
 use std::path::PathBuf;
 
 pub(super) async fn prepare(

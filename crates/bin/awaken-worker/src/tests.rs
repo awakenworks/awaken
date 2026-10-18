@@ -623,7 +623,11 @@ fn worker_manifest_reports_trusted_host_only_from_operator_configuration() {
     // Rules: local/F=>E1+E2, namespace/F=>E1 only, namespace/T=>E1+E2.
     for (tier, enabled, expected_trusted) in [
         (awaken_session_executor::SandboxTier::Local, false, true),
-        (awaken_session_executor::SandboxTier::Namespace, false, false),
+        (
+            awaken_session_executor::SandboxTier::Namespace,
+            false,
+            false,
+        ),
         (awaken_session_executor::SandboxTier::Namespace, true, true),
     ] {
         let mut deployment = deployment();

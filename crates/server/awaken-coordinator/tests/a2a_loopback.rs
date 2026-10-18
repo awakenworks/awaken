@@ -12,7 +12,7 @@ use awaken_agent_contract::RedactedString;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::delegation::DelegationStatus;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_coordinator::SharedHost;
+use awaken_coordinator::ExecutorComponents;
 use awaken_credential_contract::{CredentialPurpose, CredentialTarget};
 use awaken_credential_vault::repo::{InMemoryCredentialRepo, enter_credential};
 use awaken_credential_vault::{CredentialCreateParams, CredentialKind, InMemorySecretStore};
@@ -110,7 +110,7 @@ fn text_of(message: &Message) -> String {
         .collect()
 }
 
-async fn assert_committed_child_report(host: &SharedHost, thread: &str) {
+async fn assert_committed_child_report(host: &ExecutorComponents, thread: &str) {
     let relationships = host
         .thread_reads()
         .delegated_runs(thread)
@@ -234,7 +234,7 @@ impl LlmExecutor for NativeDelegatingModel {
     }
 }
 
-async fn delegating_host(transport: Arc<dyn Transport>) -> Arc<SharedHost> {
+async fn delegating_host(transport: Arc<dyn Transport>) -> Arc<ExecutorComponents> {
     let parent = ExecutableAgentSnapshot::builder("assistant")
         .model(ModelBinding::new("default", "parent", "default"))
         .tools(awaken_session_executor::authorable_tools())
@@ -281,7 +281,7 @@ async fn published_delegating_host(
     credential: CredentialAccess,
     security_fingerprint: String,
     materializer: awaken_credential_materializer::PinnedCredentialMaterializer,
-) -> Arc<SharedHost> {
+) -> Arc<ExecutorComponents> {
     let parent = ExecutableAgentSnapshot::builder("assistant")
         .model(ModelBinding::new("default", "parent", "default"))
         .tools(awaken_session_executor::authorable_tools())

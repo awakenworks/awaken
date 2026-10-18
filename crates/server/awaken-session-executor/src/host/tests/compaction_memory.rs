@@ -23,7 +23,7 @@ async fn memory_test_host(
     model: Arc<dyn LlmExecutor>,
     agent: &str,
 ) -> (
-    Arc<SharedHost>,
+    Arc<ExecutorComponents>,
     ManagedSessionRootFixture,
     Arc<dyn awaken_resource_contract::MemoryVersionQueries>,
 ) {
@@ -56,7 +56,7 @@ async fn memory_test_host(
 /// Return that same creation-time manifest so a cold child test can freeze its
 /// dispatch before any process-local Runtime slot derives a cached copy.
 async fn install_complete_memory_test_session(
-    managed: &Arc<crate::SharedHost>,
+    managed: &Arc<crate::ExecutorComponents>,
     roots: &ManagedSessionRootFixture,
     thread: &str,
     agent: &str,

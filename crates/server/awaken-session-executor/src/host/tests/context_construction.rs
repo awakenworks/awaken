@@ -184,8 +184,8 @@ async fn acp_fixture(
     first: FirstExport,
     fail_factory: bool,
 ) -> (
-    Arc<SharedHost>,
-    Arc<SharedHost>,
+    Arc<ExecutorComponents>,
+    Arc<ExecutorComponents>,
     Arc<FaultExporter>,
     tokio::sync::oneshot::Receiver<()>,
 ) {

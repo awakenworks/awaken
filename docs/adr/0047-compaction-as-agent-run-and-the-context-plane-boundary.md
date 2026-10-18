@@ -45,18 +45,18 @@ as a top-level Run:
 
 - Every locally-runnable agent — the main assistant, native delegates, and the
   auxiliary agents (memory extractor, judge, compactor) — is one entry in the
-  same catalog (`awaken-session-executor/src/agent_catalog.rs:4`).
+  same catalog (`awaken-runtime-host/src/agent_catalog.rs:4`).
 - The compactor is a plain `RunnableConfig`
   (`awaken-ext-compact/src/agent.rs:23`, `default_compact_agent`).
 - Its host adapter `AgentSummarizer::summarize`
-  (`awaken-session-executor/src/compact.rs:64`) runs it through the shared sub-run
-  substrate `run_configured_agent(...)` (`awaken-session-executor/src/subagent.rs`),
+  (`awaken-runtime-host/src/compact.rs:64`) runs it through the shared sub-run
+  substrate `run_configured_agent(...)` (`awaken-runtime-host/src/subagent.rs`),
   which builds a `Runtime` and calls `run_to_completion`
   (`subagent.rs:72`) → `self.execute(...)` (`awaken-runtime/src/run.rs:63`) →
   the `RunExecutor::execute` trait (`awaken-runtime-contract/src/execution.rs:18`).
-- Native delegates (`awaken-session-executor/src/delegate.rs`, `native_run` →
+- Native delegates (`awaken-runtime-host/src/delegate.rs`, `native_run` →
   `run_agent`) and the goal judge
-  (`awaken-session-executor/src/judge.rs`, `KernelJudgeRunner` → `run_configured_agent`)
+  (`awaken-runtime-host/src/judge.rs`, `KernelJudgeRunner` → `run_configured_agent`)
 ride the **same** substrate. A top-level Session Run reaches the **same**
 `RunExecutor::execute` (Host Run execution → ingress →
 `runtime.execute`).
@@ -198,7 +198,7 @@ Change list, each additive:
 1. `awaken-ext-compact/src/plugin.rs` (`on_phase`): on a non-empty fold, return
    `PhaseReaction { state: vec![compaction Command::set], context: summary }`;
    replay (cache hit) returns context only. Only the folding step stages the fact.
-2. `awaken-session-executor/src/compact.rs` / `subagent.rs`: no behavior change; the
+2. `awaken-runtime-host/src/compact.rs` / `subagent.rs`: no behavior change; the
    staged command commits through the existing path.
 3. Runtime Host Run completion: read back `compaction/*` Thread keys committed
    by this Run into the neutral Run result.
@@ -239,7 +239,7 @@ Change list, each additive:
 
 - Managed Agents events contract, `agent.thread_context_compacted`
   (`anthropics/skills` → `managed-agents-events.md`).
-- Sub-run substrate: `awaken-session-executor/src/subagent.rs`, `compact.rs`,
+- Sub-run substrate: `awaken-runtime-host/src/subagent.rs`, `compact.rs`,
   `judge.rs`, `delegate.rs`; `awaken-runtime/src/run.rs`;
   `awaken-runtime-contract/src/execution.rs`.
 - Projection precedent: `awaken-protocol-managed/src/{project.rs,state.rs,dto.rs}`.

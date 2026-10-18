@@ -7,7 +7,7 @@
 //! replay succeeds, and a different or malformed marker fails closed without
 //! being replaced. The policy-free no-replace syscall stays owned by
 //! `awaken-sandbox-fs`; minting a fresh coordinate stays with the Runtime Host
-//! (`SharedHost::mint_local_workspace`), which owns its format.
+//! (`ExecutorComponents::mint_local_workspace`), which owns its format.
 //!
 //! Consumers: the CLI's process stores and installation binding, the Worker's
 //! host and container realization namespace, and the scenario host. All pass

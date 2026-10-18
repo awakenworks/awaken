@@ -24,7 +24,7 @@ use awaken_worker_transport_security::WorkerRequestAuthenticator;
 use axum::Router;
 
 use crate::application_access_store::ApplicationAccessStore;
-use crate::{SharedHost, WorkerTransportBuildError};
+use crate::{ExecutorComponents, WorkerTransportBuildError};
 
 const APPLICATION_ACCESS_RETENTION_MS: u64 = 24 * 60 * 60 * 1_000;
 const APPLICATION_ACCESS_RETENTION_INTERVAL: std::time::Duration =
@@ -40,12 +40,12 @@ pub(crate) const APPLICATION_ACCESS_RETENTION_CAPACITY_PER_TICK: u32 =
 ///
 /// There is no Control ConfigService, authoring repository, Resource content
 /// database, or `WorkerNode` here. Local and distributed deployments adapt those
-/// boundaries before invoking this builder; the injected `SharedHost` is the
+/// boundaries before invoking this builder; the injected `ExecutorComponents` is the
 /// Coordinator's neutral Runtime port adapter.
 pub struct CoordinatorDependencies {
     pub lifecycle_delivery: crate::PreparedManagedLifecycleDelivery,
     pub service_lifecycle: awaken_service_lifecycle::ServiceLifecycle,
-    pub host: Arc<SharedHost>,
+    pub host: Arc<ExecutorComponents>,
     /// Canonical Session application shared by internal services and protocol
     /// projections. ManagedState may observe it but never owns its construction.
     pub session_application: Arc<SessionApplication>,
@@ -472,7 +472,7 @@ fn management_router(
 async fn start_coordinator_services(
     service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
     lifecycle_delivery: crate::PreparedManagedLifecycleDelivery,
-    host: Arc<SharedHost>,
+    host: Arc<ExecutorComponents>,
     session_application: Arc<SessionApplication>,
     deployment_application: Arc<DeploymentApplication>,
     dream_application: Arc<awaken_dream_application::DreamApplication>,

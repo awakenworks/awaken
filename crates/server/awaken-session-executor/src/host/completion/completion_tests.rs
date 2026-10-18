@@ -475,7 +475,7 @@ fn hand_recovery_policy_compiles_into_the_existing_worker_requirement() {
 
 #[tokio::test]
 async fn exported_dispatch_completion_sink_is_the_host_owned_projection() {
-    // Cause graph: one SharedHost owns one CompletionRegistry; an embedding
+    // Cause graph: one ExecutorComponents owns one CompletionRegistry; an embedding
     // requests the Worker-settle projection; cloning must preserve that exact
     // registry rather than constructing a peer notification path.
     // Decision table:

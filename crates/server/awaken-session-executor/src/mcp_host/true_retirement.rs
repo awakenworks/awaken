@@ -261,7 +261,7 @@ fn projection() -> awaken_session_realization_contract::FrozenSessionProjection 
     }
 }
 
-async fn original_relay(host: &Arc<crate::SharedHost>) -> awaken_session_mcp::McpRelay {
+async fn original_relay(host: &Arc<crate::ExecutorComponents>) -> awaken_session_mcp::McpRelay {
     let authority = Arc::downgrade(&host.run_assembly.mcp_root_authority)
         as std::sync::Weak<dyn awaken_session_mcp::McpGenerationAuthority>;
     host.run_assembly
@@ -273,7 +273,7 @@ async fn original_relay(host: &Arc<crate::SharedHost>) -> awaken_session_mcp::Mc
 }
 
 async fn retire_component_current(
-    host: &crate::SharedHost,
+    host: &crate::ExecutorComponents,
     session: &str,
 ) -> Result<bool, crate::realization_error::RealizationError> {
     host.realization_executor

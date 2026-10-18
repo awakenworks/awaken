@@ -79,10 +79,10 @@ pub use awaken_protocol_managed::{
     default_models, files_router, memory_stores_router, models_router, skills_router,
 };
 pub use awaken_dispatch_http::durable_ops_router;
-pub use awaken_session_executor::{
-    HostDependencies, HostResume, SharedHost, ThreadEvent, ThreadEventHub, advertised_tools,
-};
 pub use awaken_sandbox_local::content_fingerprint;
+pub use awaken_session_executor::{
+    ExecutorComponents, HostDependencies, HostResume, ThreadEvent, ThreadEventHub, advertised_tools,
+};
 pub use awaken_session_mcp::ExtMcpProbe;
 
 /// One tool-free ACP stand-in that can act as either Outcome Worker or Judge.
@@ -186,7 +186,9 @@ pub async fn build_memory_resource_router() -> Router {
 /// path-faithful environment across Hand, Bash, Git, and Agent, so this factory
 /// consumes the same typed Deployment environment selector as other
 /// provider-backed scenarios. `AWAKEN_MODEL_MODE=git-repo`.
-pub async fn build_git_repo_router(deployment: awaken_session_executor::DeploymentConfig) -> Router {
+pub async fn build_git_repo_router(
+    deployment: awaken_session_executor::DeploymentConfig,
+) -> Router {
     let (model, model_ref) = scenario_model(Arc::new(crate::models::GitRepoModel), "git-repo");
     mount_platform(runtime_resource_host_with_deployment(model, model_ref, deployment).await).await
 }
@@ -410,7 +412,7 @@ pub async fn build_router(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String
 pub async fn build_router_and_host(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
-) -> (Router, Arc<SharedHost>) {
+) -> (Router, Arc<ExecutorComponents>) {
     build_router_and_host_from(resource_host(llm, model_ref).await).await
 }
 
@@ -448,7 +450,7 @@ pub async fn build_router_and_host_with_agent_publications(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
     publications: impl IntoIterator<Item = awaken_runtime_contract::ExecutableAgentSnapshot>,
-) -> (Router, Arc<SharedHost>) {
+) -> (Router, Arc<ExecutorComponents>) {
     let publication = scenario_platform::fixed_agent_publication(publications);
     let (host, resources) = resource_host(llm, model_ref)
         .await
@@ -495,7 +497,7 @@ pub async fn build_unmounted_platform_with_agent_publications(
 
 async fn build_router_and_host_from(
     platform: deployment::ScenarioPlatform,
-) -> (Router, Arc<SharedHost>) {
+) -> (Router, Arc<ExecutorComponents>) {
     let (host, resources) = platform.into_dependencies();
     scenario_platform::mount_parts(host, resources).await
 }
@@ -504,7 +506,7 @@ pub(crate) async fn build_router_and_host_with_model_publication_resolver(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
     resolver: Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>,
-) -> (Router, Arc<SharedHost>) {
+) -> (Router, Arc<ExecutorComponents>) {
     let platform = resource_host(llm, model_ref).await;
     let (host, resources) = platform.into_dependencies();
     scenario_platform::mount_parts_with_model_publication_resolver(host, resources, resolver, None)
@@ -982,7 +984,7 @@ pub async fn build_custom_router() -> Router {
 }
 
 /// The same custom-tool scenario with its owning Host for scope-aware tests.
-pub async fn build_custom_router_and_host() -> (Router, Arc<SharedHost>) {
+pub async fn build_custom_router_and_host() -> (Router, Arc<ExecutorComponents>) {
     let client_tools = HashSet::from(["submit_answer".to_string()]);
     let (model, model_ref) = scenario_model(Arc::new(CustomToolModel), "custom");
     let host = resource_host(model, model_ref)

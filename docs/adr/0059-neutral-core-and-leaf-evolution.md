@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-18
-- Amended by: ADR-0091 (Proposed; §3 where a port trait lives, §6 the `awaken-session-executor` name)
+- Amended by: ADR-0091 (Proposed; §3 where a port trait lives, §6 the `awaken-runtime-host` name)
 - Builds on: the plane-aligned single workspace and inward dependency rule
   (`Cargo.toml` metadata, `scripts/ci/check_crate_boundaries.py`); the
   `X-contract` extraction convention that factored
@@ -33,7 +33,7 @@ reverse-depends on an adapter or a hub**:
    `Arc<dyn awaken_protocol_a2a::Transport>` for remote-agent delegation — the neutral
    substrate naming a concrete protocol.
 
-Underneath these: `awaken-session-executor` is a **god-hub** — the protocol-neutral session
+Underneath these: `awaken-runtime-host` is a **god-hub** — the protocol-neutral session
 substrate accreted roughly six bounded contexts (dispatch/durable, sandbox realization,
 ACP driving, per-plane HTTP routers, MCP) and ~36 first-party dependencies, and is
 depended on by control, server, and worker planes. It is the single largest structural
@@ -144,7 +144,7 @@ Verified state after the 2026-08-04 cut:
   `awaken-config-store`, `awaken-model-catalog-store`, and
   `awaken-credential-store` implement those ports. No application crate depends on an
   infrastructure crate, and no compatibility re-export preserves the former mixed path.
-- **Outermost host adapters** — `awaken-session-executor` and
+- **Outermost host adapters** — `awaken-runtime-host` and
   `awaken-acp-application` are classified as infrastructure because their authoritative
   responsibilities compose concrete execution/storage/process adapters. Their names are
   retained to avoid inventing duplicate host or ACP catalogs; metadata records the
@@ -166,7 +166,7 @@ Verified state after the 2026-08-04 cut:
 - **Coordinator runtime interface** — `awaken-dispatch-http` owns durable-operation
   HTTP routing. Neutral durable-control methods remain on `SharedHost` as its application API.
 - **Worker runtime interface** — `awaken-coordinator-client` owns registration, heartbeat,
-  drain, and claim-fenced Session-control clients. `awaken-session-executor` no longer exports
+  drain, and claim-fenced Session-control clients. `awaken-runtime-host` no longer exports
   those Worker transport adapters.
 - **Dispatch execution (2026-10-02)** — `awaken-dispatch-execution` owns the sole
   `DispatchWorker`, process `DispatchPool`, renewal guard, recovery projection,
@@ -228,7 +228,7 @@ reimplement that behavior.
 - The root disease cannot silently recur: a neutral port re-entering an adapter, a backend
   re-entering a contract leaf, or a new dependency on the god-hub each fail the build with
   a message naming the fix.
-- `awaken-session-executor` is shared host infrastructure rather than a
+- `awaken-runtime-host` is shared host infrastructure rather than a
   Coordinator/Worker facade. Role-specific interfaces can shrink independently without
   producing two Hosts.
 - Architecture enforcement has one source of truth: Cargo metadata interpreted by

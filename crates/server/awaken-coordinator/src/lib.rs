@@ -2,7 +2,7 @@
 // @formal entrypoint executable_projection.failed_refresh_never_enters_handler
 //! `awaken-coordinator` — the Coordinator application and protocol data plane.
 //!
-//! It owns one protocol-neutral [`SharedHost`] (from `awaken-session-executor`,
+//! It owns one protocol-neutral [`ExecutorComponents`] (from `awaken-session-executor`,
 //! the thread-keyed session substrate) and mounts public protocol adapters over
 //! it. Each adapter is a thin translator from its wire
 //! vocabulary to the host's neutral operations; because every adapter keys by the
@@ -101,12 +101,12 @@ pub use awaken_ext_skills::{SkillContext, SkillSpec, parse_skill_md};
 pub use awaken_protocol_managed::{ResourcesRouterInput, models_router, resources_router};
 
 pub use awaken_dispatch_http::durable_ops_router;
+pub use awaken_sandbox_local::content_fingerprint;
 use awaken_session_executor::HostDependencies;
 pub use awaken_session_executor::{
-    HostResume, NoModelConfiguredExecutor, SharedHost, ThreadEvent, ThreadEventHub,
+    ExecutorComponents, HostResume, NoModelConfiguredExecutor, ThreadEvent, ThreadEventHub,
     UNCONFIGURED_MODEL_REF, advertised_tools,
 };
-pub use awaken_sandbox_local::content_fingerprint;
 pub use awaken_session_mcp::ExtMcpProbe;
 pub use awaken_worker_registry::{WorkerDirectory, WorkerObservationSource};
 pub use worker_registry::WorkerDirectoryHandle;
@@ -136,7 +136,9 @@ enum PlatformMemoryProjection {
     CopyOnly,
 }
 
-fn platform_memory_projection(tier: awaken_session_executor::SandboxTier) -> PlatformMemoryProjection {
+fn platform_memory_projection(
+    tier: awaken_session_executor::SandboxTier,
+) -> PlatformMemoryProjection {
     use awaken_session_executor::SandboxTier;
 
     match tier {
@@ -367,7 +369,7 @@ pub fn a2a_attempt_executor(
 #[cfg(feature = "test-support")]
 #[derive(Clone)]
 pub struct ScenarioManagedState {
-    pub host: Arc<SharedHost>,
+    pub host: Arc<ExecutorComponents>,
     pub managed: Arc<ManagedState>,
     pub sessions: Arc<awaken_session_application::SessionApplication>,
 }
@@ -662,7 +664,7 @@ async fn local_managed_state_over(
 /// 3); every other mode goes through [`mount`], whose state is the plain host.
 #[cfg(feature = "test-support")]
 pub async fn mount_with_managed(
-    host: Arc<SharedHost>,
+    host: Arc<ExecutorComponents>,
     managed_state: ScenarioManagedState,
     resources: awaken_resource_application::ResourcesApplication,
 ) -> Router {
@@ -680,7 +682,7 @@ pub async fn mount_with_managed(
 
 #[cfg(feature = "test-support")]
 async fn scenario_dream_process_store(
-    host: &SharedHost,
+    host: &ExecutorComponents,
 ) -> Arc<dyn awaken_session_dream_contract::DreamProcessStore> {
     match host.storage_dir() {
         Some(root) => {
@@ -701,7 +703,7 @@ async fn scenario_dream_process_store(
 async fn with_scenario_session_lifecycle(
     router: Router,
     managed_state: ScenarioManagedState,
-    host: Arc<SharedHost>,
+    host: Arc<ExecutorComponents>,
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
     dreams: &Arc<awaken_dream_application::DreamApplication>,
 ) -> Router {
@@ -743,7 +745,7 @@ fn with_scenario_worker_transport(
 /// this only shares resource identity/configuration/lifecycle truth.
 #[cfg(feature = "test-support")]
 pub async fn mount_with_managed_and_resource_registry(
-    host: Arc<SharedHost>,
+    host: Arc<ExecutorComponents>,
     managed_state: ScenarioManagedState,
     resources: awaken_resource_application::ResourcesApplication,
 ) -> Router {
@@ -775,7 +777,7 @@ pub type ScenarioDreamExecutorDecorator = Arc<
 /// builds rather than by a second runtime implementation.
 #[cfg(feature = "test-support")]
 pub async fn mount_with_managed_and_resource_registry_and_dreams(
-    host: Arc<SharedHost>,
+    host: Arc<ExecutorComponents>,
     managed_state: ScenarioManagedState,
     resources: awaken_resource_application::ResourcesApplication,
     dream_executor_decorator: Option<ScenarioDreamExecutorDecorator>,
@@ -795,7 +797,7 @@ pub async fn mount_with_managed_and_resource_registry_and_dreams(
 /// Session supervisors and Runtime background work mounted in the Router.
 #[cfg(feature = "test-support")]
 pub async fn mount_with_managed_and_resource_registry_and_dreams_on_lifecycle(
-    host: Arc<SharedHost>,
+    host: Arc<ExecutorComponents>,
     managed_state: ScenarioManagedState,
     resources: awaken_resource_application::ResourcesApplication,
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
@@ -823,7 +825,7 @@ pub async fn mount_with_managed_and_resource_registry_and_dreams_on_lifecycle(
 /// AI SDK and AG-UI routes. Product startup uses the full dependency constructor.
 #[cfg(feature = "test-support")]
 pub async fn mount_with_managed_and_application_access(
-    host: Arc<SharedHost>,
+    host: Arc<ExecutorComponents>,
     managed_state: ScenarioManagedState,
     resources: awaken_resource_application::ResourcesApplication,
     application_access: Arc<application_access_store::ApplicationAccessStore>,
@@ -843,7 +845,7 @@ pub async fn mount_with_managed_and_application_access(
 /// Test-support data plane with a live executable model directory.
 #[cfg(feature = "test-support")]
 pub async fn mount_with_managed_and_application_access_and_models(
-    host: Arc<SharedHost>,
+    host: Arc<ExecutorComponents>,
     managed_state: ScenarioManagedState,
     resources: awaken_resource_application::ResourcesApplication,
     application_access: Arc<application_access_store::ApplicationAccessStore>,
@@ -1243,7 +1245,7 @@ mod worker_checkpoint_authority_tests {
 /// mounted in that same Router. Process startup uses the returned state for
 /// periodic policies instead of constructing a second scheduler.
 pub async fn mount_with_managed_application_access_models_and_dreams(
-    host: Arc<SharedHost>,
+    host: Arc<ExecutorComponents>,
     managed_state: Arc<ManagedState>,
     application_access: Arc<application_access_store::ApplicationAccessStore>,
     applications: ManagedApplicationServices,
@@ -1270,7 +1272,7 @@ pub async fn mount_with_managed_application_access_models_and_dreams(
 
 #[cfg(feature = "test-support")]
 async fn mount_with_managed_over(
-    host: Arc<SharedHost>,
+    host: Arc<ExecutorComponents>,
     managed_state: ScenarioManagedState,
     resources: awaken_resource_application::ResourcesApplication,
     application_access: ApplicationAccessMount,
@@ -1377,7 +1379,7 @@ fn session_read_extensions() -> Router<Arc<ManagedState>> {
 }
 
 async fn mount_with_managed_over_and_models(
-    host: Arc<SharedHost>,
+    host: Arc<ExecutorComponents>,
     managed_state: Arc<ManagedState>,
     application_access: ApplicationAccessMount,
     applications: ManagedApplicationServices,

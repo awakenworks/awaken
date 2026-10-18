@@ -5,7 +5,7 @@ use super::*;
 use awaken_agent_contract::agent::{run::Id as RunId, thread::Id as ThreadId};
 use std::time::Duration;
 
-async fn remote_host(control: Arc<RemoteControl>) -> Arc<crate::SharedHost> {
+async fn remote_host(control: Arc<RemoteControl>) -> Arc<crate::ExecutorComponents> {
     let mut deps =
         crate::HostDependencies::ephemeral(Arc::new(crate::NoModelConfiguredExecutor), "stub")
             .await;

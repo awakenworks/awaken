@@ -19,7 +19,7 @@
   the [ADR-0088](0088-bounded-context-map-and-sdk-platform-contract.md) amendment of
   2026-10-07 (the sentence that the small Session contracts are not merged);
   [ADR-0059](0059-neutral-core-and-leaf-evolution.md) §3 (where a port trait lives) and
-  §6 (the `awaken-session-executor` name is retained);
+  §6 (the `awaken-runtime-host` name is retained);
   [ADR-0057](0057-unified-agent-configuration.md) "Assembly" (its enforcement);
   the `Coordinator` row of the naming table in
   [runtime-interface-boundaries.md](../design/runtime-interface-boundaries.md).
@@ -53,7 +53,7 @@ many ADRs, and some of them pull the code apart. Measured on main `14ef08382e`:
   are named with mechanism words (`Host` 7, `Wiring` 4, `Ports` 4, `Adapters` 3,
   `Dependencies` 3, …). A bare type named `Runtime` exists in six crates; `*Runtime`
   has three meanings, `*Coordinator` three (a process, a store committer, multi-agent
-  coordination), `*Provider` at least five. The crate `awaken-session-executor` is named
+  coordination), `*Provider` at least five. The crate `awaken-runtime-host` is named
   for where it runs, not for what it does. The run-loop vocabulary of ADR-0064 D1 is
   checked by nobody: a planning draft proposed a `SessionTurns` role.
 - **Composition is half-enforced.** ADR-0057 (Proposed) names a clippy rule that does
@@ -147,7 +147,7 @@ many ADRs, and some of them pull the code apart. Measured on main `14ef08382e`:
 9. **Renames follow the code.** A name changes when its code moves or its dependency
    bundle is split, not in a separate sweep. Renames visible to awaken-cloud are
    recorded in a dated ADR-0088 amendment with their awaken-cloud impact and made
-   together. `awaken-session-executor` becomes `awaken-session-executor` once realization,
+   together. `awaken-runtime-host` becomes `awaken-session-executor` once realization,
    dispatch hand-off and assembly have moved out (amends ADR-0059 §6).
 
 ## Alternatives

@@ -273,7 +273,7 @@ impl RunAttemptExecutor for CaptureContextAttemptExecutor {
 /// Host startup adapter for the ordinary `RunExecutor` port. It binds one
 /// Thread's backend routing, durable ingress, and live-context construction;
 /// Runtime extensions still submit an ordinary `RunActivation` and remain
-/// independent of `SharedHost`.
+/// independent of `ExecutorComponents`.
 pub(crate) struct BoundRunExecutor<'a> {
     host: &'a crate::SessionRuns,
     ctx: Arc<SessionCtx>,

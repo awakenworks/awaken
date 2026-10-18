@@ -1,7 +1,7 @@
 // @formal surface obligation=capture.persistence_redaction_selection_is_total_exact_and_non_widening
 // @formal reason: Holds the deployment capture ceiling derived by the redaction selector and the consent port;
 // @formal reason: per-request consent may only narrow it.
-//! CAPTURE capability of [`SharedHost`] (ADR-0050): the Host-owned
+//! CAPTURE capability of [`ExecutorComponents`] (ADR-0050): the Host-owned
 //! subject-tagged content sink, the deployment-resolved capture ceiling, and
 //! the Control consent and Workspace-narrowing read ports.
 
@@ -32,7 +32,7 @@ impl ContentCaptureCapability {
     }
 }
 
-impl SharedHost {
+impl ExecutorComponents {
     /// The deployment-resolved capture ceiling and the policy sources this
     /// Host's Run boundary decides with, for protocol decision projections
     /// (the Session `content_capture`) that must report the same decision.

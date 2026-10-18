@@ -3,7 +3,7 @@
 // @formal entrypoint memory.recall_config_contributes_authority_exactly_when_enabled
 // @formal entrypoint session_run.reservation_never_executes
 // @formal evidence session_run.execution_requires_dispatch_work_and_realization_owner
-//! Session/context management for [`SharedHost`]: building a thread's commit
+//! Session/context management for [`ExecutorComponents`]: building a thread's commit
 //! boundary, stream-checkpoint store, run-delivery ingress, and `ctx_for`.
 
 mod child_substrate;

@@ -50,7 +50,7 @@ awaken-session-environment-contract.workspace = true
 awaken-execution-composition.workspace = true
 awaken-container-contract.workspace = true
 awaken-protocol-mcp.workspace = true
-# The neutral host substrate: SharedHost, the dispatch pool, and the worker dispatch
+# The neutral host substrate: ExecutorComponents, the dispatch pool, and the worker dispatch
 # store that routes the drain over HTTP to the cell server.
 awaken-dispatch-execution.workspace = true
 awaken-session-executor = { workspace = true, default-features = false }
@@ -99,7 +99,7 @@ tracing = "0.1"
 
 [dev-dependencies]
 awaken-lease-testkit.workspace = true
-awaken-runtime-host-testkit.workspace = true
+awaken-session-executor-testkit.workspace = true
 awaken-reliability-testkit = { workspace = true, features = ["tracing"] }
 # The admin router tests drive the axum router directly (oneshot).
 tower = { version = "0.5", features = ["util"] }

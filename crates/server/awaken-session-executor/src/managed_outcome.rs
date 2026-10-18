@@ -2,7 +2,7 @@
 // @formal owner crates/server/awaken-session-executor/src/outcome_controller.rs
 // @formal reason: Static owner: field-preserving adapter between Session outcome ports and the Host
 // @formal reason: outcome controller. Dynamic path: define and resume calls
-// @formal reason: delegate to SharedHost and project the existing controller result without choosing
+// @formal reason: delegate to ExecutorComponents and project the existing controller result without choosing
 // @formal reason: outcome transitions. Evidence:
 // @formal reason: crates/server/awaken-session-executor/src/outcome_controller.rs.
 //! Managed Session projection for the Host-owned Outcome controller.

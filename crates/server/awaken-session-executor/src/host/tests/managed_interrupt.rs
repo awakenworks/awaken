@@ -67,7 +67,7 @@ impl RunAttemptExecutor for BlockingManagedAttempt {
 }
 
 struct InterruptedManagedRun {
-    host: Arc<SharedHost>,
+    host: Arc<ExecutorComponents>,
     dispatch: Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>,
     attempt: Arc<BlockingManagedAttempt>,
     thread: &'static str,

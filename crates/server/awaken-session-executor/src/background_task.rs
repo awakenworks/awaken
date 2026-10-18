@@ -1131,7 +1131,7 @@ mod tests {
     async fn session_background_application_composition_is_single_assignment_and_weak() {
         // Cause/effect decision table: R8 vacant slot + application -> one weak
         // executable edge; R9 occupied slot + another install -> reject without
-        // replacement; R10 all external strong owners drop -> SharedHost does
+        // replacement; R10 all external strong owners drop -> ExecutorComponents does
         // not retain the Session application. This prevents both a second Run
         // admission owner and an Arc ownership cycle.
         // Startup connection rules: R11 unbound/dead Weak => typed Unavailable;

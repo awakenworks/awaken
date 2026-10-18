@@ -652,7 +652,7 @@ pub async fn assert_atomic_report_continuation_conformance_with_clock(
     let primary = thread_id(ns, "report-primary");
     let message_id = format!("{ns}-terminal-report");
     // A Session primary has the established canonical self-affinity written by
-    // SharedHost::resolved_dispatch; Root admission must preserve that shape.
+    // ExecutorComponents::resolved_dispatch; Root admission must preserve that shape.
     let mut root = dispatch(ns, "report-root", "report-primary")
         .for_session(primary.clone())
         .with_session_activity_epoch(1);

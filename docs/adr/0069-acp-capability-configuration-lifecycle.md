@@ -668,7 +668,7 @@ Ownership is deliberately split:
 | ACP wire sequencing | ACP executor/protocol | Run lifecycle | discovery inventory, repositories, placement or fallback |
 | authorization | Awaken policy and realized environment | Runtime/ACP permission handling | delegation to an ACP preference |
 
-`awaken-run-executor-acp` and `awaken-session-executor` therefore **use** discovery
+`awaken-run-executor-acp` and `awaken-runtime-host` therefore **use** discovery
 evidence but do not own discovery. Runtime Host is allowed to revalidate the
 exact evidence frozen by publication and claim because that is an execution
 fence, not a new selection operation. The executor receives only

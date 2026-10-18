@@ -101,7 +101,7 @@ awaken-protocol-ag-ui = { path = "crates/server/awaken-protocol-ag-ui" }
 awaken-protocol-ai-sdk = { path = "crates/server/awaken-protocol-ai-sdk" }
 awaken-protocol-managed = { path = "crates/server/awaken-protocol-managed" }
 awaken-protocol-managed-testkit = { path = "crates/devtools/awaken-protocol-managed-testkit" }
-awaken-runtime-host-testkit = { path = "crates/devtools/awaken-runtime-host-testkit" }
+awaken-session-executor-testkit = { path = "crates/devtools/awaken-session-executor-testkit" }
 awaken-protocol-awaken = { path = "crates/server/awaken-protocol-awaken" }
 awaken-resource-reclaimer = { path = "crates/server/awaken-resource-reclaimer" }
 awaken-protocol-acp = { path = "crates/server/awaken-protocol-acp" }

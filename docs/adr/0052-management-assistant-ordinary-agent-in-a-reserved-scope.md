@@ -48,7 +48,7 @@ How the reference implementation does it, and why we should *not* copy it verbat
 - This branch already carries a *different* bypass of its own: the built-in agents
   (`assistant`, `compactor`, `judge`, memory extractor/selector, native delegate) are
   each hardcoded as `RunnableConfig::builder(...)` in host/ext crates
-  (`awaken-session-executor/src/config.rs:182`, `awaken-ext-compact/src/agent.rs:23`, …),
+  (`awaken-runtime-host/src/config.rs:182`, `awaken-ext-compact/src/agent.rs:23`, …),
   never expressed as an `AgentConfig`, never compiled or content-addressed. The
   config store serves only user configs.
 
@@ -64,7 +64,7 @@ untouched. Its execution still belongs to a real Workspace.
 Two facts about the current code make the mechanism concrete:
 
 - The tool catalog is **global**: `advertised_tools()`
-  (`awaken-session-executor/src/config.rs:137`) takes no scope; `ConfigService.tools` is a
+  (`awaken-runtime-host/src/config.rs:137`) takes no scope; `ConfigService.tools` is a
   single `Vec<ToolDescriptor>` and `installed` is keyed by `agent_id` only
   (`config_plane.rs:31-35`). `compile` lets any config name any tool in that global
   slice (`awaken-agent-config/src/compile.rs`), and errors `UnknownTool` on a

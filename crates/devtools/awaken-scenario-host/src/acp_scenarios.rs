@@ -775,15 +775,16 @@ pub async fn build_acp_container_router() -> Router {
             .is_ok_and(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"));
     deployment.sandbox.package_registry_auth_file =
         std::env::var_os("AWAKEN_PACKAGE_REGISTRY_AUTH_FILE").map(std::path::PathBuf::from);
-    deployment.sandbox.package_image_builder = match std::env::var("AWAKEN_PACKAGE_IMAGE_BUILDER")
-        .as_deref()
-    {
-        Ok("docker") => Some(awaken_session_executor::PackageImageBuilder::Docker),
-        Ok("podman") => Some(awaken_session_executor::PackageImageBuilder::Podman),
-        Ok("k8s") | Ok("kubernetes") => Some(awaken_session_executor::PackageImageBuilder::Kubernetes),
-        Ok(other) => panic!("unsupported scenario package image builder: {other}"),
-        Err(_) => None,
-    };
+    deployment.sandbox.package_image_builder =
+        match std::env::var("AWAKEN_PACKAGE_IMAGE_BUILDER").as_deref() {
+            Ok("docker") => Some(awaken_session_executor::PackageImageBuilder::Docker),
+            Ok("podman") => Some(awaken_session_executor::PackageImageBuilder::Podman),
+            Ok("k8s") | Ok("kubernetes") => {
+                Some(awaken_session_executor::PackageImageBuilder::Kubernetes)
+            }
+            Ok(other) => panic!("unsupported scenario package image builder: {other}"),
+            Err(_) => None,
+        };
     let delivered_skill_name = match deployment.sandbox_tier {
         awaken_session_executor::SandboxTier::Docker
         | awaken_session_executor::SandboxTier::Podman

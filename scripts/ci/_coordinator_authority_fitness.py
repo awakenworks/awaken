@@ -73,7 +73,7 @@ def dispatch_handoff_violations(relative: str, production: str) -> list[str]:
     ):
         errors.append(f"{relative}: Session dispatch routing belongs to awaken-dispatch-execution")
     if relative.startswith("crates/shared/awaken-dispatch-execution/src/") and re.search(
-        r"\bawaken_runtime_host\s*::", syntax
+        r"\bawaken_session_executor\s*::", syntax
     ):
         errors.append(f"{relative}: dispatch execution must consume its Run factory, never Runtime Host")
     return errors

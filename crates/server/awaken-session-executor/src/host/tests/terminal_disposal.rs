@@ -1084,7 +1084,7 @@ async fn terminal_physical_claim_fixture(
     label: &str,
     ttl_ms: u64,
 ) -> (
-    Arc<SharedHost>,
+    Arc<ExecutorComponents>,
     Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>,
     Arc<awaken_lease_testkit::ManualClock>,
     ThreadId,

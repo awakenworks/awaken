@@ -2,7 +2,7 @@
 //!
 //! The store-level dispatch state machine (manual quarantine / supersede) is proven
 //! in `awaken-dispatch`; this pins the **host routing layer** — that
-//! `SharedHost::{list_dispatches, quarantine_retry_exhausted, dead_letters, requeue_dead_letter,
+//! `ExecutorComponents::{list_dispatches, quarantine_retry_exhausted, dead_letters, requeue_dead_letter,
 //! purge_dead_letters, superseded}`
 //! reach the process-shared dispatch queue and project it onto the wire shape the
 //! `durable_ops_router` returns.
@@ -112,7 +112,7 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
     let mem = Arc::new(MemoryDispatchStore::new(clock.clock()));
     let any =
         Arc::new(awaken_dispatch::AnyCoordinatorDispatch::from_durable_dispatch(mem.clone()));
-    let host = (awaken_runtime_host_testkit::volatile_dependencies(Arc::new(OkModel), "stub")
+    let host = (awaken_session_executor_testkit::volatile_dependencies(Arc::new(OkModel), "stub")
         .await
         .with_ephemeral_dispatch(any))
     .build()
@@ -264,7 +264,7 @@ async fn monitoring_reads_committed_dispatches_without_materializing_a_session()
     let mem = Arc::new(MemoryDispatchStore::new(clock.clock()));
     let any =
         Arc::new(awaken_dispatch::AnyCoordinatorDispatch::from_durable_dispatch(mem.clone()));
-    let host = (awaken_runtime_host_testkit::volatile_dependencies(Arc::new(OkModel), "stub")
+    let host = (awaken_session_executor_testkit::volatile_dependencies(Arc::new(OkModel), "stub")
         .await
         .with_ephemeral_dispatch(any))
     .build()
@@ -328,7 +328,7 @@ async fn every_dispatch_read_and_repair_verb_requires_the_one_durable_capability
      * C1=F,C2=repair=>E2. This prevents monitoring from becoming a parallel
      * authority/capability path. */
     let router = durable_ops_router(
-        awaken_runtime_host_testkit::volatile_host(Arc::new(OkModel), "stub")
+        awaken_session_executor_testkit::volatile_host(Arc::new(OkModel), "stub")
             .await
             .session_runs()
             .clone(),

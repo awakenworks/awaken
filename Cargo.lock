@@ -526,7 +526,6 @@ dependencies = [
  "awaken-run-executor-acp",
  "awaken-runtime",
  "awaken-runtime-contract",
- "awaken-runtime-host-testkit",
  "awaken-sandbox-container",
  "awaken-sandbox-kubernetes",
  "awaken-sandbox-memoryd",
@@ -542,6 +541,7 @@ dependencies = [
  "awaken-session-dream-contract",
  "awaken-session-environment-contract",
  "awaken-session-executor",
+ "awaken-session-executor-testkit",
  "awaken-session-mcp",
  "awaken-session-realization-contract",
  "awaken-session-repository-contract",
@@ -825,7 +825,6 @@ dependencies = [
  "awaken-run-executor-acp",
  "awaken-runtime",
  "awaken-runtime-contract",
- "awaken-runtime-host-testkit",
  "awaken-sandbox-container",
  "awaken-sandbox-kubernetes",
  "awaken-sandbox-local",
@@ -842,6 +841,7 @@ dependencies = [
  "awaken-session-event-contract",
  "awaken-session-execution-contract",
  "awaken-session-executor",
+ "awaken-session-executor-testkit",
  "awaken-session-mcp",
  "awaken-session-realization-contract",
  "awaken-session-repository-contract",
@@ -1229,11 +1229,11 @@ dependencies = [
  "awaken-resource-store",
  "awaken-runtime",
  "awaken-runtime-contract",
- "awaken-runtime-host-testkit",
  "awaken-session-application-contract",
  "awaken-session-configuration-contract",
  "awaken-session-execution-contract",
  "awaken-session-executor",
+ "awaken-session-executor-testkit",
  "awaken-session-realization-contract",
  "awaken-session-state-contract",
  "awaken-session-types",
@@ -1512,13 +1512,13 @@ dependencies = [
  "awaken-provisioning-contract",
  "awaken-run-executor-acp",
  "awaken-runtime-contract",
- "awaken-runtime-host-testkit",
  "awaken-sandbox-container",
  "awaken-sandbox-kubernetes",
  "awaken-sandbox-local",
  "awaken-session-environment",
  "awaken-session-environment-contract",
  "awaken-session-executor",
+ "awaken-session-executor-testkit",
  "awaken-time",
  "awaken-tool-contract",
  "serde_json",
@@ -2554,26 +2554,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "awaken-runtime-host-testkit"
-version = "1.0.0"
-dependencies = [
- "awaken-dispatch",
- "awaken-ext-memory",
- "awaken-file-store",
- "awaken-memory-store",
- "awaken-resource-application",
- "awaken-resource-contract",
- "awaken-resource-persistence",
- "awaken-runtime-contract",
- "awaken-session-environment",
- "awaken-session-executor",
- "awaken-session-store",
- "awaken-time",
- "tempfile",
- "tokio",
-]
-
-[[package]]
 name = "awaken-sandbox"
 version = "1.0.0"
 dependencies = [
@@ -2857,13 +2837,13 @@ dependencies = [
  "awaken-resource-store",
  "awaken-run-executor-acp",
  "awaken-runtime-contract",
- "awaken-runtime-host-testkit",
  "awaken-sandbox-local",
  "awaken-sandbox-memoryd",
  "awaken-service-lifecycle",
  "awaken-session-budget-contract",
  "awaken-session-configuration-contract",
  "awaken-session-executor",
+ "awaken-session-executor-testkit",
  "awaken-session-mcp",
  "awaken-session-realization-contract",
  "awaken-session-types",
@@ -3189,6 +3169,26 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "awaken-session-executor-testkit"
+version = "1.0.0"
+dependencies = [
+ "awaken-dispatch",
+ "awaken-ext-memory",
+ "awaken-file-store",
+ "awaken-memory-store",
+ "awaken-resource-application",
+ "awaken-resource-contract",
+ "awaken-resource-persistence",
+ "awaken-runtime-contract",
+ "awaken-session-environment",
+ "awaken-session-executor",
+ "awaken-session-store",
+ "awaken-time",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -3698,7 +3698,6 @@ dependencies = [
  "awaken-resource-worker-http",
  "awaken-run-executor-acp",
  "awaken-runtime-contract",
- "awaken-runtime-host-testkit",
  "awaken-sandbox-container",
  "awaken-sandbox-kubernetes",
  "awaken-sandbox-memoryd",
@@ -3707,6 +3706,7 @@ dependencies = [
  "awaken-session-environment-contract",
  "awaken-session-execution-contract",
  "awaken-session-executor",
+ "awaken-session-executor-testkit",
  "awaken-session-mcp",
  "awaken-session-realization-contract",
  "awaken-time",

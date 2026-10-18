@@ -24,7 +24,7 @@
 - Preserves: [ADR-0056](0056-sandbox-reuse-two-orthogonal-volumes.md) amendment item 3
   (provisioning-contract slimming keeps the `lease` pure functions and the
   `select_provider*` kernels).
-- Affects: `awaken-session-executor`, `awaken-session-realization-driver`,
+- Affects: `awaken-runtime-host`, `awaken-session-realization-driver`,
   `awaken-session-application`, `awaken-session-realization-contract`,
   `awaken-session-state-contract`, `awaken-provisioning-contract`; awaken-cloud only
   through later renames.
@@ -43,7 +43,7 @@ lines in eight crates across four contexts:
 
 | Crate | Lines | Role today |
 |---|---:|---|
-| `awaken-session-executor` | 14,264 | decides transitions and executes effects inside `SharedHost` (113 `SharedHost` methods in realization modules, 43 upward module edges into host modules) |
+| `awaken-runtime-host` | 14,264 | decides transitions and executes effects inside `SharedHost` (113 `SharedHost` methods in realization modules, 43 upward module edges into host modules) |
 | `awaken-provisioning-contract` | 12,833 | provider port plus lease, spec and preparation vocabulary |
 | `awaken-sandbox-local` | 3,805 | provider |
 | `awaken-session-application` | 3,790 | decides realization control (`realization`, `realization/control`) |
@@ -100,7 +100,7 @@ crates.
    contract, and code named for realization outside the realization executor, its contract and the
    providers, may only shrink.
 
-7. **Order.** In the split of `awaken-session-executor`, this move follows the layering of
+7. **Order.** In the split of `awaken-runtime-host`, this move follows the layering of
    the per-Session slot into frozen, realization and run parts, so the realization
    state is one type when it moves. The environment part of ADR-0090's transition
    function lands with it.

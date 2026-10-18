@@ -885,7 +885,7 @@ impl awaken_session_realization_contract::ClaimedSessionRealizationControl
     }
 }
 
-impl SharedHost {
+impl ExecutorComponents {
     /// The Workdir provider rooted where this Host's Session provider realizes
     /// sandboxes, carrying the installed Memory mounter: the fixture a test
     /// uses to pre-create a physical Session sandbox.
@@ -1000,7 +1000,7 @@ pub(crate) async fn with_test_memory_history(
 /// The Session application's executor over one test Host, with every role
 /// served by the component that owns it.
 pub(crate) fn session_executor(
-    host: &Arc<SharedHost>,
+    host: &Arc<ExecutorComponents>,
 ) -> awaken_session_execution_contract::SessionExecutor {
     host.session_execution_roles().into()
 }

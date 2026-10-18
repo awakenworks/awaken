@@ -4,7 +4,7 @@
 //! share it without the authoring/authz plane (`awaken-control`) depending on the
 //! execution host — preserving the **control ⊥ execution** invariant. This crate is
 //! pure config-plane logic: the config application service, required tool
-//! compiler port, model-binding resolver, and scoped tool catalog. It references neither `SharedHost` nor run execution.
+//! compiler port, model-binding resolver, and scoped tool catalog. It references neither `ExecutorComponents` nor run execution.
 //!
 //! Composition roots and `awaken-control` depend on this authoritative owner
 //! directly; the Runtime Host does not act as a public facade.

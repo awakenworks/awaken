@@ -86,7 +86,7 @@ async fn destination_boundary_requires_exact_auth_root_registry_and_pod() {
     // Earlier refusal rows never call the Pod port. The test composes the same
     // Session application/repository and Registry owners as product startup.
     let clock = Arc::new(awaken_lease_testkit::ManualClock::new(100));
-    let host = awaken_runtime_host_testkit::volatile_dependencies(
+    let host = awaken_session_executor_testkit::volatile_dependencies(
         Arc::new(awaken_scenario_host::EchoModel),
         "relay-test",
     )
