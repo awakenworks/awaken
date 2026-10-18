@@ -745,27 +745,27 @@ impl PersistedSession {
 
     /// Normalize one complete historical receipt set and retire the Resource
     /// projection atomically. Current callers cannot supply or manufacture
-    /// one-stage evidence through this compatibility boundary.
+    /// one-stage evidence through this compatibility boundary. The
+    /// Environment retires only as `LegacyCleanupNormalized` decides: a
+    /// terminal root, fenced or never leased; Restoring is refused because
+    /// historical evidence predates its exact physical target, so both
+    /// authorities stay with the current two-stage reconciler.
     pub fn normalize_legacy_terminal_cleanup(
         &mut self,
         release_reason: impl Into<String>,
     ) -> Result<bool, crate::SessionCleanupError> {
-        if matches!(
-            self.environment,
-            crate::SessionEnvironmentState::Restoring { .. }
-        ) {
-            // Historical one-stage evidence predates the exact physical target
-            // carried by Restoring. It cannot prove that unpublished target was
-            // disposed, so retain both authorities for the current two-stage
-            // reconciler instead of normalizing target-free completion bytes.
-            return Err(crate::SessionCleanupError::ReceiptMismatch);
-        }
+        let retirement = decide_terminal_cleanup(
+            self,
+            crate::SessionEnvironmentEvent::LegacyCleanupNormalized,
+        )?;
         let changed = self
             .terminal_cleanup
             .normalize_legacy_completion(self.session_id.as_str())?;
         if changed {
             self.resources.complete_terminal_release(release_reason);
-            self.environment = crate::SessionEnvironmentState::Unmaterialized;
+            if retirement.next() == crate::SessionEnvironmentStep::Unmaterialized {
+                self.environment = crate::SessionEnvironmentState::Unmaterialized;
+            }
         }
         Ok(changed)
     }
@@ -1519,8 +1519,8 @@ impl PersistedSession {
     }
 }
 
-/// Decide one terminal cleanup event (`RetireForCleanup`, `CleanedUp`)
-/// through the Environment transition function. The event asserts no lease:
+/// Decide one terminal cleanup event (`RetireForCleanup`, `CleanedUp`,
+/// `LegacyCleanupNormalized`) through the Environment transition function. The event asserts no lease:
 /// callers have already checked the exact lease generation, so the root's own
 /// lease stands.
 fn decide_terminal_cleanup(

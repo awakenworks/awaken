@@ -37,7 +37,10 @@ pub(super) async fn construct_claimed_child(
     let commit = substrate.commit;
     let adapters = host
         .capabilities
-        .child_execution_adapters(&session_thread_id.0, environment.clone());
+        .child_execution_adapters(&session_thread_id.0, environment.clone())
+        .map_err(|error| {
+            awaken_dispatch_execution::session_execution::execution_error(error.to_string())
+        })?;
     let mut runtime = crate::agent_runner::configure_child_native_runtime(
         runtime,
         snapshot,

@@ -398,7 +398,10 @@ async fn automatic_memory_requires_one_explicit_existing_binding() {
             .await
             .unwrap();
         assert!(
-            host.run_assembly.memory_for_thread(&thread).is_none(),
+            host.run_assembly
+                .memory_for_thread(&thread)
+                .expect("healthy registry")
+                .is_none(),
             "{rule} precondition"
         );
 
@@ -411,13 +414,19 @@ async fn automatic_memory_requires_one_explicit_existing_binding() {
                 };
                 assert!(error.to_string().contains(fragment), "{rule}: {error}");
                 assert!(
-                    host.run_assembly.memory_for_thread(&thread).is_none(),
+                    host.run_assembly
+                        .memory_for_thread(&thread)
+                        .expect("healthy registry")
+                        .is_none(),
                     "{rule} E1"
                 );
             }
             None => {
                 result.unwrap_or_else(|error| panic!("{rule}: {error}"));
-                let selected = host.run_assembly.memory_for_thread(&thread);
+                let selected = host
+                    .run_assembly
+                    .memory_for_thread(&thread)
+                    .expect("healthy registry");
                 match expected_index {
                     Some(index) => assert_eq!(
                         selected

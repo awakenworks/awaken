@@ -742,12 +742,15 @@ impl awaken_session_execution_contract::OutcomeRuntime for QueueFake {
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::LiveInboxRuntime for QueueFake {
-    async fn live_inbox_snapshot(&self, _thread: &str) -> LiveInboxSnapshot {
+    async fn live_inbox_snapshot(
+        &self,
+        _thread: &str,
+    ) -> Result<LiveInboxSnapshot, LiveInboxError> {
         if !self.active.load(Ordering::SeqCst) {
-            return LiveInboxSnapshot::inactive();
+            return Ok(LiveInboxSnapshot::inactive());
         }
         let queue = self.queue.lock().unwrap();
-        LiveInboxSnapshot {
+        Ok(LiveInboxSnapshot {
             active: true,
             version: queue.version,
             messages: queue
@@ -758,7 +761,7 @@ impl awaken_session_execution_contract::LiveInboxRuntime for QueueFake {
                     content: content.clone(),
                 })
                 .collect(),
-        }
+        })
     }
 
     async fn live_inbox_queue(
@@ -1421,7 +1424,7 @@ async fn app_with_session_application(
 
     #[async_trait::async_trait]
     impl awaken_session_execution_contract::LiveInboxRuntime for Shared {
-        async fn live_inbox_snapshot(&self, t: &str) -> LiveInboxSnapshot {
+        async fn live_inbox_snapshot(&self, t: &str) -> Result<LiveInboxSnapshot, LiveInboxError> {
             self.0.live_inbox_snapshot(t).await
         }
 

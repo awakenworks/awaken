@@ -803,8 +803,8 @@ async fn authenticated_protocol_scope_survives_a_cold_replica_and_replays_one_ac
     let protocol = SessionRunApplication::new(
         Arc::new(ProtocolProjectionRuntime),
         sessions,
-        |_| "wrong-local-workspace".into(),
-        |_| Some("agent".into()),
+        |_| Ok("wrong-local-workspace".into()),
+        |_| Ok(Some("agent".into())),
     );
     let message = || {
         vec![awaken_agent_contract::agent::message::Message::text(
@@ -938,8 +938,8 @@ async fn background_attention_uses_canonical_session_admission_without_observing
     let protocol = SessionRunApplication::new(
         Arc::new(ProtocolProjectionRuntime),
         sessions,
-        |_| "workspace".into(),
-        |_| Some("agent".into()),
+        |_| Ok("workspace".into()),
+        |_| Ok(Some("agent".into())),
     );
     let run_id =
         awaken_session_application_contract::SessionRunBackgroundApplication::submit_session_run_background(
@@ -1027,8 +1027,8 @@ async fn public_run_reserves_then_restores_and_projects_before_activation() {
     let protocol = SessionRunApplication::new(
         Arc::new(ProtocolProjectionRuntime),
         sessions,
-        |_| "workspace".into(),
-        |_| Some("agent".into()),
+        |_| Ok("workspace".into()),
+        |_| Ok(Some("agent".into())),
     );
 
     awaken_session_application_contract::RunApplication::run(
@@ -1882,8 +1882,8 @@ async fn public_protocol_run_projects_durable_running_until_runtime_settles() {
     let protocol = SessionRunApplication::new(
         Arc::new(ProtocolProjectionRuntime),
         application.clone(),
-        |_| "workspace".into(),
-        |_| Some("agent".into()),
+        |_| Ok("workspace".into()),
+        |_| Ok(Some("agent".into())),
     );
 
     let drive = tokio::spawn(async move {
@@ -1930,8 +1930,8 @@ async fn public_protocol_run_projects_durable_running_until_runtime_settles() {
     let foreign = SessionRunApplication::new(
         Arc::new(ProtocolProjectionRuntime),
         application,
-        |_| "foreign-workspace".into(),
-        |_| Some("agent".into()),
+        |_| Ok("foreign-workspace".into()),
+        |_| Ok(Some("agent".into())),
     );
     assert!(
         awaken_session_application_contract::RunApplication::run(
@@ -1949,4 +1949,86 @@ async fn public_protocol_run_projects_durable_running_until_runtime_settles() {
         .is_err(),
         "P3/E3 a receipt never bypasses owner authorization"
     );
+}
+
+#[tokio::test]
+async fn unreadable_admission_scope_refuses_the_run_before_any_reservation() {
+    // SessionRunApplication's resolvers read the Runtime's installed Session.
+    // | Rule | requested Agent | Agent resolver | Workspace resolver | effect |
+    // | U1   | none            | readable       | unreadable         | refused, nothing reserved |
+    // | U2   | none            | unreadable     | readable           | refused, nothing reserved |
+    // | U3   | named           | unreadable     | unreadable         | the Agent resolver is never read |
+    // The refusal keeps the resolver's typed class; no default Workspace or
+    // default Agent replaces an unreadable Session.
+    let poisoned = || {
+        RunError::unavailable_classified(
+            "session_realization_lock_poisoned",
+            "installed Sessions lock poisoned",
+        )
+    };
+    for (rule, requested_agent, agent_readable, workspace_readable) in [
+        ("U1", None, true, false),
+        ("U2", None, false, true),
+        ("U3", Some("named"), false, false),
+    ] {
+        let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .expect("session repository"),
+        );
+        let runtime = Arc::new(ActivationOnlySessionRunRuntime::default());
+        let sessions = Arc::new(application_with_runtime(
+            runtime.clone(),
+            repository,
+            Arc::new(RecordingEnvironmentSource::default()),
+        ));
+        let agent_reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = agent_reads.clone();
+        let protocol = SessionRunApplication::new(
+            Arc::new(ProtocolProjectionRuntime),
+            sessions,
+            move |_| {
+                if workspace_readable {
+                    Ok("workspace".into())
+                } else {
+                    Err(poisoned())
+                }
+            },
+            move |_| {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if agent_readable {
+                    Ok(Some("agent".into()))
+                } else {
+                    Err(poisoned())
+                }
+            },
+        );
+        let error =
+            awaken_session_application_contract::SessionRunBackgroundApplication::submit_session_run_background(
+                &protocol,
+                "unreadable-operation",
+                "unreadable-session",
+                requested_agent.map(str::to_owned),
+                vec![awaken_agent_contract::agent::message::Message::text(
+                    awaken_agent_contract::agent::message::Id("unreadable-input".into()),
+                    awaken_agent_contract::agent::message::Role::User,
+                    "hello",
+                )],
+                None,
+            )
+            .await
+            .expect_err(rule);
+        assert_eq!(error.code, "session_realization_lock_poisoned", "{rule}");
+        assert!(
+            runtime.reservations.lock().unwrap().is_empty(),
+            "{rule} nothing reserved"
+        );
+        if rule == "U3" {
+            assert_eq!(
+                agent_reads.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "U3 a named Agent never reads the projection"
+            );
+        }
+    }
 }

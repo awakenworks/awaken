@@ -37,7 +37,10 @@ impl LiveInboxApplication for SessionApplication {
 
         self.require_live_inbox_owner(workspace_id, session_id)
             .await?;
-        Ok(inbox_runtime.live_inbox_snapshot(session_id.as_str()).await)
+        inbox_runtime
+            .live_inbox_snapshot(session_id.as_str())
+            .await
+            .map_err(Into::into)
     }
 
     async fn queue(

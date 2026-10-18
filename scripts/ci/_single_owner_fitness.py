@@ -26,6 +26,17 @@ below `single_owner_baseline.json`:
   through the transition function (such as `deliver_legacy_binding`) and the
   aggregate's `SessionEnvironmentOperations` (`session.environment().law(..)`)
   are the sanctioned ways to change the state.
+* `terminal-cleanup-orchestration`: a production function outside the
+  realization driver (`awaken-session-realization-driver`) that orchestrates
+  terminal cleanup, per crate. A function orchestrates when it calls two or
+  more distinct terminal cleanup steps -- the terminal cleanup Control
+  operations (`TERMINAL_CLEANUP_CONTROL_STEPS`) and the driver's entry points
+  (`TERMINAL_CLEANUP_DRIVER_ENTRIES`) -- or calls a selection read
+  (`claim_next_terminal_cleanup`, `terminal_cleanup_work`) inside a loop (a
+  recovery sweep). A transport route or a forwarding implementation calls one
+  step; a scheduler calls one driver entry. ADR-0089 D1: terminal cleanup
+  orchestration (absence handling, retirement, revocation, the recovery sweep)
+  exists once, in the driver.
 * `realization-code`: production lines (non-blank, comments excluded) in modules
   named for realization -- a module path segment in `REALIZATION_MODULES`, or one
   whose words include one of `REALIZATION_WORDS` -- per crate, outside the
@@ -70,12 +81,27 @@ REALIZATION_MODULES = frozenset({
     "provisioning", "environment_lifecycle", "environment_continuation", "terminal_reconciliation",
 })
 REALIZATION_WORDS = frozenset({"realization", "realizer", "realized", "realize"})
+DRIVER_CRATE = "awaken-session-realization-driver"
+TERMINAL_CLEANUP_SELECTION_READS = frozenset({"claim_next_terminal_cleanup", "terminal_cleanup_work"})
+# The Control's preparation authorization and the preparation and disposal
+# records share their names with the aggregate laws a Control implementation
+# calls; they are left out so a law call is never read as a Control step.
+TERMINAL_CLEANUP_CONTROL_STEPS = TERMINAL_CLEANUP_SELECTION_READS | frozenset({
+    "terminal_repository_publication_command", "record_terminal_repository_publication_receipt",
+    "record_terminal_repository_publication_rejection", "authorize_terminal_cleanup_disposal",
+})
+TERMINAL_CLEANUP_DRIVER_ENTRIES = frozenset({
+    "drive_session_terminal_cleanup", "reconcile_terminal_cleanup", "recover_terminal_cleanup_assignments",
+})
 
 RULES = (
     Rule("state-construction", "construct the state through the Session aggregate's transition in the state contract "
          "(ADR-0090 D7), or map the observation in the realization (ADR-0089 D6)"),
     Rule("environment-rewrite", "change the Environment state through a law that decides through "
          "transition_environment, or through the aggregate's SessionEnvironmentOperations (ADR-0089 D1)"),
+    Rule("terminal-cleanup-orchestration", "orchestrate terminal cleanup only in awaken-session-realization-driver "
+         "(reconcile_terminal_cleanup / recover_terminal_cleanup_assignments); elsewhere call one driver entry or "
+         "serve one Control step (ADR-0089 D1)"),
     Rule("realization-code", "put realization behaviour in awaken-session-realization, its contract or a sandbox "
          "provider (ADR-0089 D6), not in a module named for realization elsewhere", slack=LINE_SLACK),
 )
@@ -188,6 +214,55 @@ def environment_rewrites(syntax: str, laws: frozenset[str]) -> list[int]:
     return sorted(found)
 
 
+_FUNCTION = re.compile(r"\bfn\s+(\w+)\s*(?:<[^{;]*?>)?\s*\(")
+_STEP_CALL = re.compile(r"(?:\.|::|\b)\s*(" + "|".join(sorted(TERMINAL_CLEANUP_CONTROL_STEPS
+                                                              | TERMINAL_CLEANUP_DRIVER_ENTRIES)) + r")\s*\(")
+_LOOP = re.compile(r"\b(?:loop|while|for)\b")
+
+
+def _function_bodies(syntax: str) -> list[tuple[str, int, int]]:
+    """(name, body start, body end) of every function with a body in one file's code."""
+    found = []
+    for match in _FUNCTION.finditer(syntax):
+        signature_end = _crate_boundary_workspace._balanced_end(syntax, match.end() - 1, "(", ")")
+        if signature_end is None:
+            continue
+        opening = signature_end
+        while opening < len(syntax) and syntax[opening] not in "{;":
+            opening += 1
+        if opening >= len(syntax) or syntax[opening] == ";":
+            continue
+        closing = _crate_boundary_workspace._balanced_end(syntax, opening, "{", "}") or len(syntax)
+        found.append((match.group(1), opening, closing))
+    return found
+
+
+def _loop_spans(syntax: str, start: int, end: int) -> list[tuple[int, int]]:
+    spans = []
+    for match in _LOOP.finditer(syntax, start, end):
+        opening = syntax.find("{", match.end(), end)
+        if opening < 0:
+            continue
+        closing = _crate_boundary_workspace._balanced_end(syntax, opening, "{", "}") or end
+        spans.append((opening, closing))
+    return spans
+
+
+def terminal_cleanup_orchestrations(syntax: str) -> list[int]:
+    """Offsets of every function in one file's code that orchestrates terminal cleanup."""
+    found = []
+    for name, start, end in _function_bodies(syntax):
+        calls = [(match.group(1), match.start(1)) for match in _STEP_CALL.finditer(syntax, start, end)
+                 if not syntax[max(0, match.start(1) - 3):match.start(1)].rstrip().endswith("fn")]
+        steps = {step for step, _ in calls}
+        loops = _loop_spans(syntax, start, end)
+        swept = any(step in TERMINAL_CLEANUP_SELECTION_READS and any(low < offset < high for low, high in loops)
+                    for step, offset in calls)
+        if len(steps) >= 2 or swept:
+            found.append(start)
+    return found
+
+
 def is_realization_module(relative: Path) -> bool:
     parts = [part for part in relative.with_suffix("").parts if part not in {"mod", "lib", "main"}]
     return any(part in REALIZATION_MODULES or REALIZATION_WORDS & set(part.split("_")) for part in parts)
@@ -215,9 +290,9 @@ def realization_owner(name: str, metadata: dict) -> bool:
 
 def measure(sources: tuple[_architecture_ratchet.CrateSource, ...], root: Path) -> tuple[Counts, Places]:
     counts: Counts = {"state-construction": Counter(), "environment-rewrite": Counter(),
-                      "realization-code": Counter()}
+                      "terminal-cleanup-orchestration": Counter(), "realization-code": Counter()}
     places: Places = {"state-construction": defaultdict(list), "environment-rewrite": defaultdict(list),
-                      "realization-code": defaultdict(list)}
+                      "terminal-cleanup-orchestration": defaultdict(list), "realization-code": defaultdict(list)}
     laws = frozenset().union(*(undecided_environment_laws(crate.syntax)
                                for crate in sources if crate.name == STATE_CONTRACT))
     for crate in sources:
@@ -235,6 +310,11 @@ def measure(sources: tuple[_architecture_ratchet.CrateSource, ...], root: Path) 
                 for offset in environment_rewrites(syntax, laws):
                     counts["environment-rewrite"][crate.name] += 1
                     places["environment-rewrite"][crate.name].append(
+                        f"{relative}:{_architecture_ratchet.line_of(syntax, offset)}")
+            if crate.name != DRIVER_CRATE:
+                for offset in terminal_cleanup_orchestrations(syntax):
+                    counts["terminal-cleanup-orchestration"][crate.name] += 1
+                    places["terminal-cleanup-orchestration"][crate.name].append(
                         f"{relative}:{_architecture_ratchet.line_of(syntax, offset)}")
             source_root = crate.directory / "src"
             if (not owner and source_root in path.parents
@@ -281,6 +361,15 @@ def selftest() -> None:
     | W5   | the aggregate wrapper `session.environment().law(..)`, a read, `&SessionEnvironmentState` | not counted |
     | W6   | `.environment = <non-state value>` (another type's field), `==` comparison | not counted |
     | W7   | the state contract itself                                              | not counted |
+
+    | Rule | terminal-cleanup-orchestration cause                                   | effect |
+    | O1   | one function: a work read, then a driver entry (the old executor reconcile) | counted |
+    | O2   | a claim read inside `loop`/`while`/`for` (a recovery sweep)            | counted |
+    | O3   | one function: two distinct Control steps (claim, then work read)       | counted |
+    | O4   | a transport route or forwarder calling one Control step                | not counted |
+    | O5   | a scheduler calling one driver entry, also inside a loop               | not counted |
+    | O6   | a step declaration (`fn terminal_cleanup_work(`) or a same-named aggregate law | not counted |
+    | O7   | the realization driver crate                                           | not counted |
     """
     both = set(STATE_ENUMS)
     code = (
@@ -338,6 +427,27 @@ def selftest() -> None:
         "fn k(a: &S, b: &S) -> bool { a.environment == b.environment }\n"                 # W6
     )
     assert environment_rewrites(_crate_boundary_workspace.rust_syntax(allowed), laws) == [], "W4-W6"
+    orchestration = _crate_boundary_workspace.rust_syntax(
+        "async fn reconcile(c: &C) {\n"                                                  # O1
+        "    match c.terminal_cleanup_work(s, l).await { Ok(Some(_)) => driver::drive_session_terminal_cleanup(s).await, _ => {} }\n"
+        "}\n"
+        "async fn sweep(c: &C) {\n"                                                      # O2
+        "    loop { let next = c.claim_next_terminal_cleanup(t, after).await; reconcile(next).await; }\n"
+        "}\n"
+        "async fn both(c: &C) { c.claim_next_terminal_cleanup(t, None).await; c.terminal_cleanup_work(s, l).await; }\n"  # O3
+        "async fn route(c: &C) { c.terminal_cleanup_work(s, l).await }\n"                # O4
+        "async fn terminal_cleanup_work(&self) { self.client.terminal_cleanup_work(s, l).await }\n"  # O4/O6
+        "async fn schedule(c: &C) { for t in targets { recover_terminal_cleanup_assignments(t, c).await; } }\n"  # O5
+        "async fn law(s: &mut S) { s.authorize_terminal_cleanup_effect(e); s.cleanup().record_terminal_cleanup_preparation(p); }\n"  # O6
+    )
+    found = [orchestration.count("\n", 0, offset) + 1 for offset in terminal_cleanup_orchestrations(orchestration)]
+    assert found == [1, 4, 7], f"O1-O6 {found}"
+    driver = _architecture_ratchet.CrateSource(
+        DRIVER_CRATE, {}, Path("/w/d"),
+        {Path("/w/d/src/recovery.rs"): "async fn sweep(c: &C) { loop { c.claim_next_terminal_cleanup(t, a).await; } }\n"},
+    )
+    driven, _ = measure((driver,), Path("/w"))
+    assert driven["terminal-cleanup-orchestration"] == {}, f"O7 {driven}"
     assert is_realization_module(Path("host/session/environment_lifecycle/renewal.rs")), "S6 named"
     assert is_realization_module(Path("provisioning.rs")) and is_realization_module(Path("k8s/realization/mod.rs")), \
         "S6 word"
@@ -380,6 +490,7 @@ def selftest() -> None:
     counts, places = measure((source, contract, realization), Path("/w"))
     assert counts == {"state-construction": {"awaken-x::SessionExecutionState": 1},
                       "environment-rewrite": {REALIZATION_CRATE: 1},
+                      "terminal-cleanup-orchestration": {},
                       "realization-code": {"awaken-x": 3, STATE_CONTRACT: 1}}, f"measure W2/W7 {counts}"
     assert places["state-construction"]["awaken-x::SessionExecutionState"] == ["x/src/realization.rs:2"], "places"
     print("_single_owner_fitness selftest: the decision tables hold")

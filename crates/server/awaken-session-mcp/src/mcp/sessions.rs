@@ -14,6 +14,7 @@ use crate::mcp_material::{
     McpGenerationProjection, McpProjectionState, McpWiring, SessionMcpState,
 };
 use crate::mcp_relay::{McpRelay, McpRelayOutboundProxy};
+use awaken_session_types::RunError;
 
 const MCP_GENERATION_CALL_QUIESCENCE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -94,12 +95,14 @@ pub trait SessionMcpStates: Send + Sync + 'static {
 
 /// The Runtime Host's root realization authority over one exact MCP
 /// generation. Absence is explicit: it is never a live lease or proof of
-/// renewal.
+/// renewal. An authority that cannot be read (a poisoned installed-Session
+/// registry) is an error, never absence or refusal, so every caller decides
+/// its own fail-closed answer and reports the fault.
 pub trait McpGenerationAuthority: Send + Sync {
     fn mcp_generation_root_authority(
         &self,
         generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
-    ) -> Option<bool>;
+    ) -> Result<Option<bool>, RunError>;
 }
 
 /// The Session MCP lifecycle and the Worker relay it owns. Cloning shares the

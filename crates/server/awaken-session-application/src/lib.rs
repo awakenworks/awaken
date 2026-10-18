@@ -88,6 +88,7 @@ struct SessionRecoveryInterests {
     resource_activation: bool,
     event_batches: bool,
     environment_continuation: bool,
+    continuation_rejection: Option<awaken_session_state_contract::SessionEnvironmentRejection>,
     local_realization: bool,
     dispatch_projection: bool,
 }
@@ -99,6 +100,7 @@ impl Default for SessionRecoveryInterests {
             resource_activation: true,
             event_batches: true,
             environment_continuation: true,
+            continuation_rejection: None,
             local_realization: true,
             dispatch_projection: true,
         }
@@ -113,7 +115,16 @@ impl SessionRecoveryInterests {
     /// The continuation hint is the aggregate's `AdvanceContinuation`
     /// decision at the scan's `now`.
     fn from_session(session: &PersistedSession, audit_resource_references: bool, now: u64) -> Self {
-        let environment_continuation = SessionEnvironmentFacts::continuation_due(session, now);
+        let continuation = awaken_session_state_contract::transition_environment(
+            SessionEnvironmentFacts::project_continuation(session, now),
+            awaken_session_state_contract::SessionEnvironmentEvent::AdvanceContinuation,
+        );
+        let environment_continuation =
+            continuation.is_ok_and(|decision| decision.instruction().is_some());
+        let continuation_rejection = continuation.err().filter(|rejection| {
+            rejection.recovery_action()
+                == awaken_session_state_contract::SessionEnvironmentReceiptRecoveryAction::Reject
+        });
         let local_realization = !session.is_terminal()
             && session.environment.admits_realization_effects()
             && !session.requires_external_environment_owner();
@@ -126,6 +137,7 @@ impl SessionRecoveryInterests {
             resource_activation: !session.is_terminal() && session.resources.needs_reconciliation(),
             event_batches: session.needs_event_reconciliation(),
             environment_continuation,
+            continuation_rejection,
             local_realization,
             dispatch_projection,
         }
@@ -206,6 +218,7 @@ pub use awaken_session_execution_contract::{
     CommittedSessionFacts, ProjectionThreadSnapshots, SessionProjectionReadTimings,
 };
 pub use credentials::SessionPreparationError;
+mod lifecycle_supervisor;
 mod mcp;
 mod realization;
 mod resource_reconciliation;

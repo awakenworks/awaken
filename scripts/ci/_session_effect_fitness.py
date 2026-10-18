@@ -18,6 +18,9 @@ SESSION_REPOSITORY_PUBLICATION = (
 SESSION_CLEANUP_DRIVER = (
     "crates/server/awaken-session-realization-driver/src/terminal_cleanup_driver.rs"
 )
+SESSION_CLEANUP_RECOVERY = (
+    "crates/server/awaken-session-realization-driver/src/terminal_cleanup_recovery.rs"
+)
 SESSION_CLEANUP_EFFECTS = (
     "crates/contract/awaken-session-state-contract/src/terminal_cleanup/effects.rs"
 )
@@ -290,7 +293,7 @@ REQUIRED = {
         "async fn acknowledge_completed_terminal_cleanup",
     ),
     REALIZATION_EFFECTS_ROLE: ("async fn dispose_terminal_cleanup_for_effect",),
-    RUNTIME_HOST_APPLICATION: ("drive_session_terminal_cleanup(",),
+    SESSION_CLEANUP_RECOVERY: ("drive_session_terminal_cleanup(",),
     SESSION_REALIZATION_CONTROL_DEADLINE: (
         "async fn renew_session_realization(",
         ".renew_session_realization(",
@@ -859,8 +862,8 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
     errors.extend(
         _require_ordered_function(
             sources,
-            RUNTIME_HOST_APPLICATION,
-            "reconcile_terminal_cleanup_for_lease",
+            SESSION_CLEANUP_RECOVERY,
+            "reconcile_terminal_cleanup",
             ("drive_session_terminal_cleanup(",),
             "shared topology-neutral terminal driver",
         )
@@ -1293,9 +1296,9 @@ pub async fn delete_session(
 SessionDeleteLifecycleFactPlan
 event_type: "session.deleted"
 """
-    canonical[RUNTIME_HOST_APPLICATION] = """
-fn reconcile_terminal_cleanup_for_lease() {
-    drive_session_terminal_cleanup(session_id, lease, control, runtime);
+    canonical[SESSION_CLEANUP_RECOVERY] = """
+pub async fn reconcile_terminal_cleanup() {
+    crate::drive_session_terminal_cleanup(session_id, lease, control, runtime);
 }
 """
     canonical[WORKER_PUBLICATION_ROUTE] = """

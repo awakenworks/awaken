@@ -17,6 +17,8 @@
 //! while the latter is reconstructed from the canonical commit.
 
 use std::collections::HashMap;
+
+use crate::host_error::ExecutorLock;
 use std::sync::Mutex;
 
 use awaken_agent_contract::agent::message::Message;
@@ -62,25 +64,45 @@ impl ThreadEventHub {
         Self::default()
     }
 
-    fn sender(&self, thread_key: &str) -> broadcast::Sender<ThreadEvent> {
-        self.channels
+    /// The thread's channel. The hub carries only best-effort live deltas;
+    /// committed truth is always read back from the Thread store, so:
+    ///
+    /// | Rule | channel map lock | `subscribe`                   | `publish` |
+    /// |---|---|---|---|
+    /// | H1 | healthy  | a receiver of later events   | delivered to attached receivers |
+    /// | H2 | poisoned | refused (`session_executor_lock_poisoned`) | dropped and reported |
+    fn sender(&self, thread_key: &str) -> Result<broadcast::Sender<ThreadEvent>, ExecutorLock> {
+        Ok(self
+            .channels
             .lock()
-            .expect("hub channel lock")
+            .map_err(|_| ExecutorLock::ThreadEventHub)?
             .entry(thread_key.to_string())
             .or_insert_with(|| broadcast::channel(HUB_CAPACITY).0)
-            .clone()
+            .clone())
     }
 
     /// Subscribe to a thread's live deltas. Only events published after this call
     /// are delivered, so an observer must subscribe before the Run it wants to
     /// watch is submitted.
-    pub fn subscribe(&self, thread_key: &str) -> broadcast::Receiver<ThreadEvent> {
-        self.sender(thread_key).subscribe()
+    pub fn subscribe(
+        &self,
+        thread_key: &str,
+    ) -> Result<broadcast::Receiver<ThreadEvent>, ExecutorLock> {
+        Ok(self.sender(thread_key)?.subscribe())
     }
 
     /// Publish one event to a thread's observers (a no-op if none are attached).
     pub fn publish(&self, thread_key: &str, event: ThreadEvent) {
-        let _ = self.sender(thread_key).send(event);
+        match self.sender(thread_key) {
+            Ok(sender) => {
+                let _ = sender.send(event);
+            }
+            Err(error) => tracing::error!(
+                code = crate::host_error::EXECUTOR_LOCK_POISONED_CODE,
+                %error,
+                "live Thread event dropped"
+            ),
+        }
     }
 
     /// Open the neutral Session-contract view over this same channel. This is a
@@ -89,10 +111,11 @@ impl ThreadEventHub {
     pub(crate) fn live_subscription(
         &self,
         thread_key: &str,
-    ) -> Box<dyn awaken_session_execution_contract::SessionThreadLiveSubscription> {
-        Box::new(HubLiveSubscription {
-            receiver: self.subscribe(thread_key),
-        })
+    ) -> Result<Box<dyn awaken_session_execution_contract::SessionThreadLiveSubscription>, ExecutorLock>
+    {
+        Ok(Box::new(HubLiveSubscription {
+            receiver: self.subscribe(thread_key)?,
+        }))
     }
 }
 
@@ -133,10 +156,29 @@ mod tests {
         Message::text(Id(text.to_string()), Role::Assistant, text)
     }
 
+    #[test]
+    fn a_poisoned_channel_map_refuses_subscribers_and_drops_publications() {
+        // Row H2 of `ThreadEventHub::sender`.
+        let hub = ThreadEventHub::new();
+        crate::host_error::poison_for_test(&hub.channels);
+        assert!(
+            matches!(hub.subscribe("t1"), Err(ExecutorLock::ThreadEventHub)),
+            "H2 subscribe"
+        );
+        assert!(
+            matches!(
+                hub.live_subscription("t1"),
+                Err(ExecutorLock::ThreadEventHub)
+            ),
+            "H2 live subscription"
+        );
+        hub.publish("t1", ThreadEvent::StepEnded { awaiting: false });
+    }
+
     #[tokio::test]
     async fn observer_sees_published_delta() {
         let hub = ThreadEventHub::new();
-        let mut observer = hub.subscribe("t1");
+        let mut observer = hub.subscribe("t1").expect("healthy hub");
         hub.publish("t1", ThreadEvent::Committed(vec![msg("hi")]));
         match tokio::time::timeout(std::time::Duration::from_secs(30), observer.recv())
             .await
@@ -151,8 +193,8 @@ mod tests {
     #[tokio::test]
     async fn subscribe_is_per_thread() {
         let hub = ThreadEventHub::new();
-        let mut a = hub.subscribe("a");
-        let mut b = hub.subscribe("b");
+        let mut a = hub.subscribe("a").expect("healthy hub");
+        let mut b = hub.subscribe("b").expect("healthy hub");
         hub.publish("a", ThreadEvent::StepEnded { awaiting: false });
         assert!(a.try_recv().is_ok());
         assert!(b.try_recv().is_err());
@@ -163,8 +205,8 @@ mod tests {
         // The whole point of the hub: a non-submitting adapter observes the same
         // thread's committed deltas. Two observers on one thread must BOTH receive.
         let hub = ThreadEventHub::new();
-        let mut o1 = hub.subscribe("t1");
-        let mut o2 = hub.subscribe("t1");
+        let mut o1 = hub.subscribe("t1").expect("healthy hub");
+        let mut o2 = hub.subscribe("t1").expect("healthy hub");
         hub.publish("t1", ThreadEvent::Committed(vec![msg("hi")]));
         assert!(matches!(o1.try_recv(), Ok(ThreadEvent::Committed(_))));
         assert!(matches!(o2.try_recv(), Ok(ThreadEvent::Committed(_))));
@@ -177,7 +219,7 @@ mod tests {
         // publish before the (first ever) subscribe is not replayed to the newcomer.
         let hub = ThreadEventHub::new();
         hub.publish("t1", ThreadEvent::StepEnded { awaiting: false });
-        let mut late = hub.subscribe("t1");
+        let mut late = hub.subscribe("t1").expect("healthy hub");
         assert!(
             late.try_recv().is_err(),
             "a subscriber attached after the publish sees nothing buffered for it"

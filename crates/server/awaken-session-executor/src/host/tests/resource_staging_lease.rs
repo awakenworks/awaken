@@ -358,6 +358,7 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                 assert!(
                     host.run_assembly
                         .mcp_generation_is_authorized_at(&generation, now)
+                        .expect("healthy registry")
                 );
                 let h = host.clone();
                 let renewal = tokio::spawn(async move {
@@ -444,14 +445,17 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                     "E1 closed is not an unowned/direct Environment fallback"
                 );
                 assert_eq!(
-                    host.run_assembly.mcp_generation_root_authority(&generation),
+                    host.run_assembly
+                        .mcp_generation_root_authority(&generation)
+                        .expect("healthy registry"),
                     Some(false),
                     "E2"
                 );
                 assert!(
                     !host
                         .run_assembly
-                        .mcp_generation_is_authorized_at(&generation, now),
+                        .mcp_generation_is_authorized_at(&generation, now)
+                        .expect("healthy registry"),
                     "E2"
                 );
                 gate.add_permits(1);
@@ -1661,7 +1665,8 @@ async fn obsolete_resource_preparation_cannot_publish_or_erase_a_successor() {
             "invalidate" => f
                 .host
                 .run_assembly
-                .invalidate_session_realization_lease(SESSION, &f.lease),
+                .invalidate_session_realization_lease(SESSION, &f.lease)
+                .expect("healthy registry"),
             _ => {
                 f.host.run_assembly.installed_sessions.remove(SESSION);
             }
@@ -1694,7 +1699,8 @@ async fn obsolete_resource_preparation_cannot_publish_or_erase_a_successor() {
             assert!(!f.host.run_assembly.installed_sessions.contains(SESSION));
             f.host
                 .run_assembly
-                .invalidate_session_realization_lease(SESSION, &f.lease);
+                .invalidate_session_realization_lease(SESSION, &f.lease)
+                .expect("healthy registry");
             assert!(
                 !f.host.run_assembly.installed_sessions.contains(SESSION),
                 "invalidation cannot resurrect a removed slot"

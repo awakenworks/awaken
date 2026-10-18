@@ -75,7 +75,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for ChildRunCoordina
                 .capabilities
                 .agent
                 .inference_routing
-                .override_for(command.session_id.as_str());
+                .override_for(command.session_id.as_str())?;
             activation.data_subject_id = command
                 .data_subject_id
                 .map(awaken_runtime_contract::DataSubjectId);
@@ -192,7 +192,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for ChildRunCoordina
         RunError,
     > {
         if thread_id == session_id {
-            return Ok(Some(self.hub.live_subscription(thread_id)));
+            return Ok(Some(self.hub.live_subscription(thread_id)?));
         }
         let links = self
             .thread_reads
@@ -207,7 +207,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for ChildRunCoordina
                 "live observer target is not a coordinated Session Thread",
             ));
         }
-        Ok(Some(self.hub.live_subscription(thread_id)))
+        Ok(Some(self.hub.live_subscription(thread_id)?))
     }
 
     async fn continue_session_agent_report(

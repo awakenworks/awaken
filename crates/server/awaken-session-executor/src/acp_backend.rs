@@ -341,7 +341,7 @@ mod tests {
         let observer = dependencies.acp_launch_observer();
         let host = (dependencies).build().expect("validated Host dependencies");
         // A UI-facing observer subscribes to the thread before the agent starts.
-        let mut sub = host.hub().subscribe("thread-42");
+        let mut sub = host.hub().subscribe("thread-42").expect("healthy hub");
 
         observer.on_launch(
             "thread-42",

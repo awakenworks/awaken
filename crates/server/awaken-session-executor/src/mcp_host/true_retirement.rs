@@ -473,7 +473,8 @@ async fn successful_retirement_cannot_remove_a_successor_session_relay_route() {
         };
         assert_eq!(
             host.run_assembly
-                .mcp_generation_root_authority(&generation_b),
+                .mcp_generation_root_authority(&generation_b)
+                .expect("healthy registry"),
             Some(true)
         );
         assert!(relay.stage_route(&generation_b, &material));
@@ -510,7 +511,8 @@ async fn successful_retirement_cannot_remove_a_successor_session_relay_route() {
         assert_eq!(gate.actual_true.load(Ordering::SeqCst), 1);
         assert_eq!(
             host.run_assembly
-                .mcp_generation_root_authority(&generation_b),
+                .mcp_generation_root_authority(&generation_b)
+                .expect("healthy registry"),
             Some(true)
         );
         assert!(Arc::ptr_eq(
@@ -584,12 +586,12 @@ async fn absent_component_retirement_cannot_close_or_remove_a_later_session() {
         let generation = crate::test_mcp::mcp_fence(
             session, "docs", 1, &lease.runtime_incarnation, lease.epoch, lease.expires_at_unix_ms,
         );
-        assert_eq!(host.run_assembly.mcp_generation_root_authority(&generation), Some(true));
+        assert_eq!(host.run_assembly.mcp_generation_root_authority(&generation).expect("healthy registry"), Some(true));
         drop(release);
         let retired = tokio::time::timeout(std::time::Duration::from_secs(5), finish)
             .await.expect("absence gate released").unwrap().unwrap();
         let remains = canonical.read(session, |slot| Arc::ptr_eq(&successor, &slot.realization.execution().phase)).expect("installed Sessions").unwrap_or(false);
-        let authority = host.run_assembly.mcp_generation_root_authority(&generation);
+        let authority = host.run_assembly.mcp_generation_root_authority(&generation).expect("healthy registry");
         assert!(remains && authority == Some(true),
             "retirement that observed actual absence selected the later Session: remains={remains}, authority={authority:?}");
         assert!(!retired, "absence contributes no successful retirement");

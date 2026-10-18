@@ -1209,7 +1209,9 @@ mod tests {
         // linearization point; otherwise two R1 arrivals can both observe an
         // empty set and violate R2.
         let background = BackgroundRuns::new();
-        let admission = background.tool_execution_admission("session", "generation");
+        let admission = background
+            .tool_execution_admission("session", "generation")
+            .expect("healthy registry");
         let first = admission.clone().acquire(write_claim("a")).await.unwrap();
 
         let mut conflicting = {
@@ -1243,7 +1245,9 @@ mod tests {
         // regression case for the former check-unlock-insert TOCTOU; the
         // sequential-owner test above covers blocking and wake behavior.
         let background = BackgroundRuns::new();
-        let admission = background.tool_execution_admission("session", "generation");
+        let admission = background
+            .tool_execution_admission("session", "generation")
+            .expect("healthy registry");
         let barrier = Arc::new(tokio::sync::Barrier::new(17));
         let active = Arc::new(AtomicUsize::new(0));
         let maximum = Arc::new(AtomicUsize::new(0));

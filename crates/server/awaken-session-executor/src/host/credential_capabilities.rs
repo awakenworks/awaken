@@ -56,8 +56,11 @@ impl crate::RunCapabilities {
         &self,
         thread: &str,
         environment: Arc<crate::session_environment::SessionEnvironment>,
-    ) -> crate::agent_runner::ChildExecutionAdapters {
-        crate::agent_runner::ChildExecutionAdapters {
+    ) -> Result<
+        crate::agent_runner::ChildExecutionAdapters,
+        crate::realization_error::RealizationError,
+    > {
+        Ok(crate::agent_runner::ChildExecutionAdapters {
             acp: self.exec.acp.as_ref().map(|acp| {
                 let acp = acp.clone();
                 let process = environment.agent_process().clone();
@@ -75,11 +78,11 @@ impl crate::RunCapabilities {
             }),
             remote: self.agent.remote_attempt_executor.clone(),
             credential_capabilities: self.local_credential_realization_capabilities(),
-            web_search: Some(self.web_search_plugin(thread, None)),
-            web_fetch: Some(self.web_fetch_plugin(thread, None)),
+            web_search: Some(self.web_search_plugin(thread, None)?),
+            web_fetch: Some(self.web_fetch_plugin(thread, None)?),
             clock: Some(self.clock.clone()),
             background_supervisor: Some(self.background_supervisor.clone()),
-        }
+        })
     }
 
     /// Exact independent credential-adapter profiles installed in this process.
@@ -287,7 +290,8 @@ mod tests {
                     let adapters = host
                         .run_assembly
                         .capabilities
-                        .child_execution_adapters("profiles", environment.clone());
+                        .child_execution_adapters("profiles", environment.clone())
+                        .expect("installed Sessions");
                     assert_eq!(
                         adapters.credential_capabilities,
                         host.run_assembly

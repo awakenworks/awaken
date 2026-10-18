@@ -319,7 +319,8 @@ impl ManagedState {
                         .roles
                         .events
                         .supports_mid_conversation_system(session_id)
-                        .await =>
+                        .await
+                        .map_err(StateError::Run)? =>
                 {
                     return Err(StateError::Run(RunError::bad_request(
                         "model_does_not_support_mid_conversation_system",

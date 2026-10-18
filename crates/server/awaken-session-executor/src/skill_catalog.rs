@@ -209,31 +209,48 @@ impl SkillCatalog {
         let loaded = application.snapshot_latest(workspace).await;
         match loaded {
             Ok(snapshot) => {
-                self.cache
-                    .lock()
-                    .expect("skill cache poisoned")
-                    .insert(workspace.to_string(), snapshot);
+                self.cache_mut()?.insert(workspace.to_string(), snapshot);
                 Ok(())
             }
             Err(error) => {
-                self.cache
-                    .lock()
-                    .expect("skill cache poisoned")
-                    .remove(workspace);
+                self.cache_mut()?.remove(workspace);
                 Err(error)
             }
         }
     }
 
-    /// A clone of the cached latest versions — the synchronous read
-    /// the host's `SkillSource` bridge scans (the run-loop scan cannot await).
-    pub(crate) fn cache_snapshot_in(&self, workspace: &str) -> Vec<SkillVersion> {
+    /// The writable cache. A poisoned cache cannot be refreshed, so the
+    /// refresh fails as an unavailable Skill authority.
+    fn cache_mut(
+        &self,
+    ) -> Result<
+        std::sync::MutexGuard<'_, std::collections::BTreeMap<String, Vec<SkillVersion>>>,
+        SkillStoreError,
+    > {
         self.cache
             .lock()
-            .expect("skill cache poisoned")
+            .map_err(|_| SkillStoreError::AuthorityUnavailable {
+                detail: crate::host_error::ExecutorLock::SkillCatalogCache.to_string(),
+            })
+    }
+
+    /// A clone of the cached latest versions — the synchronous read
+    /// the host's `SkillSource` bridge scans (the run-loop scan cannot await).
+    ///
+    /// A poisoned cache is refused, never read as an empty catalog: every
+    /// reader (advertisement, Environment requirement, direct delivery) would
+    /// otherwise drop Skills silently.
+    pub(crate) fn cache_snapshot_in(
+        &self,
+        workspace: &str,
+    ) -> Result<Vec<SkillVersion>, crate::host_error::ExecutorLock> {
+        Ok(self
+            .cache
+            .lock()
+            .map_err(|_| crate::host_error::ExecutorLock::SkillCatalogCache)?
             .get(workspace)
             .cloned()
-            .unwrap_or_default()
+            .unwrap_or_default())
     }
 
     /// Whether the exact Skill surface visible to a Session needs a physical
@@ -243,16 +260,16 @@ impl SkillCatalog {
         &self,
         workspace: &str,
         selected: Option<&std::collections::BTreeSet<String>>,
-    ) -> bool {
+    ) -> Result<bool, crate::host_error::ExecutorLock> {
         let is_selected = |id: &str| selected.is_none_or(|ids| ids.contains(id));
-        self.specs.iter().any(|skill| {
+        Ok(self.specs.iter().any(|skill| {
             is_selected(&skill.id)
                 && (skill.environment != awaken_ext_skills::SkillEnvironment::InstructionOnly
                     || skill.context != awaken_ext_skills::SkillContext::Inline)
-        }) || self.cache_snapshot_in(workspace).iter().any(|version| {
+        }) || self.cache_snapshot_in(workspace)?.iter().any(|version| {
             is_selected(version.skill_id.as_str())
                 && crate::skills::version_requires_environment(version)
-        })
+        }))
     }
 
     /// Whether the exact Session selection contains any Skill. Filesystem
@@ -263,38 +280,88 @@ impl SkillCatalog {
         &self,
         workspace: &str,
         selected: Option<&std::collections::BTreeSet<String>>,
-    ) -> bool {
-        self.direct_ids_in(workspace)
+    ) -> Result<bool, crate::host_error::ExecutorLock> {
+        Ok(self
+            .direct_ids_in(workspace)?
             .iter()
-            .any(|id| selected.is_none_or(|ids| ids.contains(id)))
+            .any(|id| selected.is_none_or(|ids| ids.contains(id))))
     }
 
     /// Direct compatibility ids combine host-static specs and the durable
     /// catalog. This is intentionally private so Managed advertisement cannot
     /// accidentally regain the unversioned source.
-    fn direct_ids_in(&self, workspace: &str) -> Vec<String> {
+    fn direct_ids_in(
+        &self,
+        workspace: &str,
+    ) -> Result<Vec<String>, crate::host_error::ExecutorLock> {
         let mut ids: Vec<String> = self.specs.iter().map(|s| s.id.clone()).collect();
         // The durable catalog is read from the sync cache (refreshed on write and at
         // session setup); a network-DB store cannot be awaited from this sync path.
         // A durable skill is advertised by its tagged catalog id (not its name) so the
         // official worker can download it — `/v1/skills` resolves the same id.
-        for id in self.managed_ids_in(workspace) {
+        for id in self.managed_ids_in(workspace)? {
             if !ids.contains(&id) {
                 ids.push(id);
             }
         }
-        ids
+        Ok(ids)
     }
 
     /// Skill ids safe to advertise through the Managed API: every id is backed
     /// by an immutable catalog version that `resolve` can pin and `load_pinned`
     /// can reproduce. Host-static specs are deliberately excluded.
-    pub(crate) fn managed_ids_in(&self, workspace: &str) -> Vec<String> {
-        self.cache_snapshot_in(workspace)
+    pub(crate) fn managed_ids_in(
+        &self,
+        workspace: &str,
+    ) -> Result<Vec<String>, crate::host_error::ExecutorLock> {
+        Ok(self
+            .cache_snapshot_in(workspace)?
             .into_iter()
             .map(|version| version.skill_id.to_string())
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
-            .collect()
+            .collect())
+    }
+}
+
+#[cfg(test)]
+mod poisoned_cache_tests {
+    use super::*;
+
+    #[test]
+    fn a_poisoned_skill_cache_is_refused_never_read_as_an_empty_catalog() {
+        // Cause/effect table: healthy empty cache -> ordinary empty reads;
+        // poisoned cache -> typed SkillCatalogCache refusal for every read or
+        // update, preserving the fault instead of substituting an empty cache.
+        let catalog = SkillCatalog::new();
+        assert_eq!(
+            catalog.managed_ids_in("w").expect("healthy cache"),
+            Vec::<String>::new()
+        );
+        crate::host_error::poison_for_test(&catalog.cache);
+        let poisoned = crate::host_error::ExecutorLock::SkillCatalogCache;
+        assert_eq!(
+            catalog.cache_snapshot_in("w").map(|_| ()).unwrap_err(),
+            poisoned,
+            "snapshot"
+        );
+        assert_eq!(
+            catalog.managed_ids_in("w").map(|_| ()).unwrap_err(),
+            poisoned,
+            "advertisement"
+        );
+        assert_eq!(
+            catalog.has_selected_in("w", None).map(|_| ()).unwrap_err(),
+            poisoned,
+            "selection"
+        );
+        assert_eq!(
+            catalog
+                .requires_environment_in("w", None)
+                .map(|_| ())
+                .unwrap_err(),
+            poisoned,
+            "Environment requirement"
+        );
     }
 }

@@ -29,25 +29,44 @@ impl LiveInboxes {
 
     /// The in-flight live inbox for `thread`, if an attempt is currently owned
     /// by this process. A pure lookup — never materializes a Session — so wire
-    /// handlers can probe without side effects. An unreadable registry exposes
-    /// no inbox, so every queue or edit through it is refused as inactive.
-    pub async fn live_inbox(&self, thread: &str) -> Option<LiveInbox> {
-        let ctx = self
+    /// handlers can probe without side effects.
+    ///
+    /// | Rule | installed-Session registry | resident context | attempt inbox | result |
+    /// |---|---|---|---|---|
+    /// | L1 | readable | none               | -             | `Ok(None)` |
+    /// | L2 | readable | present            | none / fenced | `Ok(None)` |
+    /// | L3 | readable | present            | live          | `Ok(Some(inbox))` |
+    /// | L4 | poisoned | -                  | -             | `Err(Unavailable)` |
+    ///
+    /// L4 is a fault, not an inactive queue: `Inactive` tells the caller to
+    /// send a normal event instead, which a process that cannot read its own
+    /// attempts must not claim.
+    pub async fn live_inbox(&self, thread: &str) -> Result<Option<LiveInbox>, LiveInboxError> {
+        let Some(ctx) = self
             .installed_sessions
             .read_run(thread, |run| run.context.clone())
-            .ok()?
-            .flatten()?;
+            .map_err(|_| LiveInboxError::Unavailable)?
+            .flatten()
+        else {
+            return Ok(None);
+        };
         // Runtime execution and Worker RAII both install their exact attempt
         // bundle here. The generation and ownership fences make deployment
         // topology irrelevant and make remote, idle and stale attempts fail closed.
-        ctx.runtime.active_attempt_live_inbox(&ctx.thread_id).await
+        Ok(ctx.runtime.active_attempt_live_inbox(&ctx.thread_id).await)
+    }
+
+    async fn active_inbox(&self, thread: &str) -> Result<LiveInbox, LiveInboxError> {
+        self.live_inbox(thread)
+            .await?
+            .ok_or(LiveInboxError::Inactive)
     }
 }
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::LiveInboxRuntime for LiveInboxes {
-    async fn live_inbox_snapshot(&self, thread: &str) -> LiveInboxSnapshot {
-        match self.live_inbox(thread).await {
+    async fn live_inbox_snapshot(&self, thread: &str) -> Result<LiveInboxSnapshot, LiveInboxError> {
+        Ok(match self.live_inbox(thread).await? {
             Some(inbox) => LiveInboxSnapshot {
                 active: true,
                 version: inbox.version(),
@@ -61,7 +80,7 @@ impl awaken_session_execution_contract::LiveInboxRuntime for LiveInboxes {
                     .collect(),
             },
             None => LiveInboxSnapshot::inactive(),
-        }
+        })
     }
 
     async fn live_inbox_queue(
@@ -69,10 +88,7 @@ impl awaken_session_execution_contract::LiveInboxRuntime for LiveInboxes {
         thread: &str,
         content: Vec<ContentBlock>,
     ) -> Result<u64, LiveInboxError> {
-        let inbox = self
-            .live_inbox(thread)
-            .await
-            .ok_or(LiveInboxError::Inactive)?;
+        let inbox = self.active_inbox(thread).await?;
         // Queued through the wire surface — an out-of-band injection into a live
         // run, so it is tagged External (what a product maps operator steering onto).
         match inbox.offer_as(MessageOrigin::External, user_message(content)) {
@@ -84,10 +100,7 @@ impl awaken_session_execution_contract::LiveInboxRuntime for LiveInboxes {
     }
 
     async fn live_inbox_remove(&self, thread: &str, id: u64) -> Result<(), LiveInboxError> {
-        let inbox = self
-            .live_inbox(thread)
-            .await
-            .ok_or(LiveInboxError::Inactive)?;
+        let inbox = self.active_inbox(thread).await?;
         inbox
             .remove(LiveInboxMessageId(id))
             .map(|_| ())
@@ -100,10 +113,7 @@ impl awaken_session_execution_contract::LiveInboxRuntime for LiveInboxes {
         id: u64,
         content: Vec<ContentBlock>,
     ) -> Result<(), LiveInboxError> {
-        let inbox = self
-            .live_inbox(thread)
-            .await
-            .ok_or(LiveInboxError::Inactive)?;
+        let inbox = self.active_inbox(thread).await?;
         inbox
             .replace(LiveInboxMessageId(id), user_message(content))
             .map_err(to_live_inbox_error)
@@ -114,10 +124,7 @@ impl awaken_session_execution_contract::LiveInboxRuntime for LiveInboxes {
         thread: &str,
         order: Vec<u64>,
     ) -> Result<(), LiveInboxError> {
-        let inbox = self
-            .live_inbox(thread)
-            .await
-            .ok_or(LiveInboxError::Inactive)?;
+        let inbox = self.active_inbox(thread).await?;
         let order: Vec<LiveInboxMessageId> = order.into_iter().map(LiveInboxMessageId).collect();
         inbox.reorder(&order).map_err(to_live_inbox_error)
     }

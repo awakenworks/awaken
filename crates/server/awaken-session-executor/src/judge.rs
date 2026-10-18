@@ -39,11 +39,13 @@ impl Grader for HostAgentGrader<'_> {
         let workspace = self
             .host
             .capabilities
-            .thread_workspace(&input.transcript_snapshot.thread_id.0);
+            .thread_workspace(&input.transcript_snapshot.thread_id.0)
+            .map_err(|error| GraderError::Execution(error.to_string()))?;
         if self
             .host
             .capabilities
             .registered_thread_workspace(&thread.0)
+            .map_err(|error| GraderError::Execution(error.to_string()))?
             .is_some_and(|existing| existing != workspace)
         {
             return Err(GraderError::Execution(
@@ -304,6 +306,7 @@ mod tests {
         assert_eq!(
             host.capabilities
                 .registered_thread_workspace(&thread.0)
+                .expect("healthy registry")
                 .as_deref(),
             Some("workspace-judge-source")
         );
@@ -368,6 +371,7 @@ mod tests {
         assert_eq!(
             host.capabilities
                 .registered_thread_workspace(&thread.0)
+                .expect("healthy registry")
                 .as_deref(),
             Some("workspace-b")
         );

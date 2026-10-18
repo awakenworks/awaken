@@ -617,8 +617,11 @@ impl $crate::SessionCoordinationReads for $ty {
             /// Whether the thread's selected model accepts a system message after the
             /// conversation has started. Runtimes whose models do not support this can
             /// fail admission before the Managed adapter persists the inbound event.
-            async fn supports_mid_conversation_system(&self, _thread: &str) -> bool {
-                true
+            async fn supports_mid_conversation_system(
+                &self,
+                _thread: &str,
+            ) -> Result<bool, $crate::__macro_support::RunError> {
+                Ok(true)
             }
 
             /// The tool currently blocking `thread`, if any. Admission uses this
@@ -913,8 +916,11 @@ impl $crate::SessionCoordinationReads for $ty {
         impl $crate::LiveInboxRuntime for $ty {
             /// The live-inbox queue on `thread`'s in-flight Run. The default reports
             /// an inactive queue, so a host without live-inbox wiring is unaffected.
-            async fn live_inbox_snapshot(&self, _thread: &str) -> $crate::LiveInboxSnapshot {
-                $crate::LiveInboxSnapshot::inactive()
+            async fn live_inbox_snapshot(
+                &self,
+                _thread: &str,
+            ) -> Result<$crate::LiveInboxSnapshot, $crate::LiveInboxError> {
+                Ok($crate::LiveInboxSnapshot::inactive())
             }
 
             /// Queue a message onto `thread`'s in-flight Run; it is folded into the
@@ -967,14 +973,23 @@ impl $crate::SessionCoordinationReads for $ty {
             /// The advertised capability surface echoed in the session's agent object. The
             /// default reports nothing; a real host overrides it with its built-in tools,
             /// custom tools, skills, and delegate roster so the session enumerates what it does.
-            fn capabilities(&self) -> $crate::__macro_support::AgentCapabilities {
-                $crate::__macro_support::AgentCapabilities::default()
+            fn capabilities(
+                &self,
+            ) -> Result<$crate::__macro_support::AgentCapabilities, $crate::__macro_support::RunError>
+            {
+                Ok($crate::__macro_support::AgentCapabilities::default())
             }
 
             /// The capability surface visible to one prepared session. Runtimes whose
             /// catalogs are workspace-scoped override this; simple runtimes inherit the
             /// process-wide view for backwards compatibility.
-            fn capabilities_for(&self, _thread: &str) -> $crate::__macro_support::AgentCapabilities {
+            fn capabilities_for(
+                &self,
+                _thread: &str,
+            ) -> Result<
+                $crate::__macro_support::AgentCapabilities,
+                $crate::__macro_support::RunError,
+            > {
                 $crate::CapabilityRuntime::capabilities(self)
             }
         }

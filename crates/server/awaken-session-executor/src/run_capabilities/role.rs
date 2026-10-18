@@ -6,11 +6,13 @@
 
 use awaken_session_configuration_contract::{AgentCapabilities, BuiltinTool, CustomTool};
 
+use awaken_session_types::RunError;
+
 use super::RunCapabilities;
 
 impl RunCapabilities {
-    fn capabilities_for_workspace(&self, workspace: &str) -> AgentCapabilities {
-        AgentCapabilities {
+    fn capabilities_for_workspace(&self, workspace: &str) -> Result<AgentCapabilities, RunError> {
+        Ok(AgentCapabilities {
             builtin_tools: self
                 .builtin_tools()
                 .into_iter()
@@ -32,9 +34,9 @@ impl RunCapabilities {
             // catalog versions. Host-static SkillSpec values belong to the
             // direct compatibility adapter and cannot truthfully satisfy a
             // Managed AgentSkillBinding.
-            skills: self.tools.skills.managed_ids_in(workspace),
+            skills: self.tools.skills.managed_ids_in(workspace)?,
             delegates: self.delegate_ids_in(workspace),
-        }
+        })
     }
 }
 
@@ -44,17 +46,25 @@ impl awaken_session_execution_contract::CapabilityRuntime for RunCapabilities {
     /// tools (folded into the agent toolset by the adapter), client tools, offered
     /// skills, and delegate roster. (MCP servers and file resources are not advertised
     /// — the local host wires no MCP capability and has no Files-API resource yet.)
-    fn capabilities(&self) -> AgentCapabilities {
+    fn capabilities(&self) -> Result<AgentCapabilities, RunError> {
         self.capabilities_for_workspace(&self.local_workspace)
     }
 
-    fn capabilities_for(&self, thread: &str) -> AgentCapabilities {
-        let workspace = self.thread_workspace(thread);
-        let mut capabilities = self.capabilities_for_workspace(&workspace);
-        // An unreadable registry advertises no delegate it cannot read.
-        if let Some(delegate_ids) = self.thread_delegate_ids(thread).ok().flatten() {
+    /// | Rule | registry | Session delegates bound | advertised delegates |
+    /// |---|---|---|---|
+    /// | C1 | readable | yes | the Session's own roster |
+    /// | C2 | readable | no  | the Workspace default Agent's roster |
+    /// | C3 | poisoned | -   | refused (`session_realization_lock_poisoned`) |
+    /// | C4 | readable, Skill cache poisoned | - | refused (`session_executor_lock_poisoned`) |
+    fn capabilities_for(&self, thread: &str) -> Result<AgentCapabilities, RunError> {
+        let workspace = self.thread_workspace(thread)?;
+        let mut capabilities = self.capabilities_for_workspace(&workspace)?;
+        if let Some(delegate_ids) = self
+            .thread_delegate_ids(thread)
+            .map_err(crate::installed_session::registry_run_error)?
+        {
             capabilities.delegates = delegate_ids;
         }
-        capabilities
+        Ok(capabilities)
     }
 }

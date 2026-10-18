@@ -507,8 +507,8 @@ impl SessionProjectionExecution for crate::RunAssembly {
         &self,
         session: &str,
         lease: &crate::session_resource::SessionRealizationLease,
-    ) {
-        self.invalidate_session_realization_lease(session, lease);
+    ) -> Result<(), RealizationError> {
+        self.invalidate_session_realization_lease(session, lease)
     }
     fn mcp_effects(&self) -> &dyn awaken_session_execution_contract::McpAttachmentRealizer {
         self.session_mcp_realizer()

@@ -1478,7 +1478,8 @@ async fn a_durable_skill_is_advertised_by_a_resolvable_catalog_id() {
         host.capabilities
             .tools
             .skills
-            .managed_ids_in(host.run_assembly.local_workspace()),
+            .managed_ids_in(host.run_assembly.local_workspace())
+            .expect("healthy registry"),
         vec![cid.clone()],
         "Managed advertisement contains only the version-backed catalog id"
     );
@@ -1488,6 +1489,7 @@ async fn a_durable_skill_is_advertised_by_a_resolvable_catalog_id() {
         .tools
         .skills
         .cache_snapshot_in(host.run_assembly.local_workspace())
+        .expect("healthy registry")
         .into_iter()
         .find(|version| version.skill_id.as_str() == cid)
         .expect("the advertised resource id must resolve to the Skill version");
@@ -1497,6 +1499,7 @@ async fn a_durable_skill_is_advertised_by_a_resolvable_catalog_id() {
             .tools
             .skills
             .cache_snapshot_in(host.run_assembly.local_workspace())
+            .expect("healthy registry")
             .into_iter()
             .find(|version| version.skill_id.as_str() == "skill_deadbeefdeadbeef")
             .is_none()

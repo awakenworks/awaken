@@ -6,4 +6,4 @@ evidence = []
 production_entrypoints = []
 
 [[bounds]]
-text = '''Every step change decided by the production transition_environment kernel over its complete closed fact and event domain is one declared edge, and Resident is entered only from Unmaterialized by a materialization receipt or the legacy claim binding, or from Restoring by its restore receipt; Suspending and Hibernated never reach Resident without Restoring. Receipt identity and generation checks remain with the existing receipt-admission proofs.'''
+text = '''Every step change decided by the production transition_environment kernel over its complete closed fact and event domain is one declared edge, and Resident is entered only from Unmaterialized by a materialization receipt or the legacy claim binding, or from Restoring by its restore receipt; Suspending and Hibernated never reach Resident without Restoring, and Unmaterialized is re-entered only by an expired-checkpoint deletion from Hibernated, terminal disposal (CleanedUp) or the legacy one-stage normalization (LegacyCleanupNormalized). Receipt identity and generation checks remain with the existing receipt-admission proofs.'''

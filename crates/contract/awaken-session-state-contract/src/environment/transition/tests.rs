@@ -29,6 +29,7 @@ const RS: S = S::Restoring;
 
 fn ready(step: S) -> SessionEnvironmentFacts {
     SessionEnvironmentFacts {
+        root_present: true,
         step,
         terminality: SessionTerminality::Active,
         execution_idle: true,
@@ -110,7 +111,7 @@ fn t1_every_step_and_event_under_ready_facts() {
     // Columns: U, R, Suspending{Quiescing, Uploading, ReadyToDispose,
     // Disposing}, Hibernated, Restoring. Sources per row are named in the
     // transition module; this table is the complete closed cell set.
-    let rows: [(&str, E, [Cell; 8]); 31] = [
+    let rows: [(&str, E, [Cell; 8]); 32] = [
         (
             "begin",
             E::BeginRealization,
@@ -374,6 +375,11 @@ fn t1_every_step_and_event_under_ready_facts() {
             },
             [No(X::NotTerminal); 8],
         ),
+        (
+            "legacy cleanup normalized",
+            E::LegacyCleanupNormalized,
+            [No(X::NotTerminal); 8],
+        ),
         ("effect failed", E::EffectFailed, [Stay; 8]),
     ];
     // Every event value appears exactly once.
@@ -435,6 +441,16 @@ fn t2_terminal_session_retires_and_joins_only() {
                 already_recorded: true,
             };
             check_row("T2 cleaned up replay", facts, replay, Stay);
+            check_row(
+                "T2 legacy cleanup normalized",
+                facts,
+                E::LegacyCleanupNormalized,
+                if step == RS {
+                    No(X::InvalidTransition)
+                } else {
+                    Go(U)
+                },
+            );
             check_row("T2 effect failed", facts, E::EffectFailed, Stay);
             let receipt = materialized(K::Create, false);
             let legacy = E::LegacyBindingDelivered;
@@ -583,6 +599,12 @@ fn t3_lease_standing_fences_every_effect() {
         };
         check_row("L cleaned up replay", terminal(R, lease), replay, Stay);
         check_row(
+            "L legacy cleanup normalized",
+            terminal(R, lease),
+            E::LegacyCleanupNormalized,
+            if stale { lease_lost } else { Go(U) },
+        );
+        check_row(
             "L renew terminal",
             terminal(SQ, lease),
             E::RenewRealization,
@@ -717,8 +739,9 @@ fn t8_complete_domain_satisfies_the_safety_laws() {
     for step in STEPS {
         for terminality in terminalities {
             for lease in leases {
-                for bits in 0_u16..512 {
+                for bits in 0_u16..1024 {
                     let facts = SessionEnvironmentFacts {
+                        root_present: bits & 512 != 0,
                         step,
                         terminality,
                         lease,
@@ -753,7 +776,7 @@ fn t8_complete_domain_satisfies_the_safety_laws() {
             }
         }
     }
-    assert_eq!(cases, 8 * 3 * 3 * 512 * EVENT_COUNT);
+    assert_eq!(cases, 8 * 3 * 3 * 1024 * EVENT_COUNT);
 }
 
 #[test]
@@ -881,11 +904,12 @@ fn t11_terminal_cleanup_events_read_only_terminality_and_lease() {
     // projects without a clock. Causes: every step, terminality and lease
     // standing (the facts the two rows read) × every value of the remaining
     // facts (time, execution, activity, evidence, placement and Memory).
-    // Effect: `RetireForCleanup` and `CleanedUp` decide the same outcome for
-    // every value of the remaining facts, so no clock reading can change a
-    // terminal cleanup decision.
+    // Effect: `RetireForCleanup`, `CleanedUp` and `LegacyCleanupNormalized`
+    // decide the same outcome for every value of the remaining facts, so no
+    // clock reading can change a terminal cleanup decision.
     let events = [
         E::RetireForCleanup,
+        E::LegacyCleanupNormalized,
         E::CleanedUp {
             already_recorded: false,
         },
@@ -933,5 +957,73 @@ fn t11_terminal_cleanup_events_read_only_terminality_and_lease() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn t12_legacy_normalization_retires_a_terminal_root_on_its_historical_receipts() {
+    // Cause/effect table of `LegacyCleanupNormalized` (the historical one-stage
+    // receipt set proves disposal). Causes: C1 terminality, C2 lease standing,
+    // C3 step. Effects: E1 retire to Unmaterialized, E2 refuse.
+    // | Rule | C1 | C2 | C3 | Effect |
+    // | N1 | Active | any | any | E2 NotTerminal |
+    // | N2 | Terminal / CleanupJoining | Stale | any | E2 LeaseNotCurrent |
+    // | N3 | Terminal / CleanupJoining | Fenced / Unfenced | Restoring | E2 InvalidTransition |
+    // | N4 | Terminal / CleanupJoining | Fenced / Unfenced | every other step | E1, no instruction |
+    // N4 with Unfenced is the row no `CleanedUp` cell expresses: no lease
+    // existed when the historical receipts were written.
+    for step in STEPS {
+        for terminality in [
+            SessionTerminality::Active,
+            SessionTerminality::CleanupJoining,
+            SessionTerminality::Terminal,
+        ] {
+            for lease in [
+                RealizationLeaseStanding::Fenced,
+                RealizationLeaseStanding::Unfenced,
+                RealizationLeaseStanding::Stale,
+            ] {
+                let facts = SessionEnvironmentFacts {
+                    terminality,
+                    lease,
+                    ..ready(step)
+                };
+                let cell = if terminality == SessionTerminality::Active {
+                    No(X::NotTerminal)
+                } else if lease == RealizationLeaseStanding::Stale {
+                    No(X::LeaseNotCurrent)
+                } else if step == RS {
+                    No(X::InvalidTransition)
+                } else {
+                    Go(U)
+                };
+                check_row("T12", facts, E::LegacyCleanupNormalized, cell);
+            }
+        }
+    }
+}
+
+#[test]
+fn absent_root_facts_never_admit_another_session_event() {
+    // U4: absence is usable only for AdmitMaterialization. Sweep all closed
+    // events so it cannot fabricate a Session, continue, retire, or accept a
+    // durable receipt; neither asserted lease nor materialization kind widens
+    // that authority. U1/U2 above own the one admitted event's table.
+    let intent = crate::SessionEnvironmentEffectIntent::new(
+        "session",
+        crate::SessionEnvironmentEffectKind::Create,
+        None,
+    );
+    let facts = SessionEnvironmentFacts::project_unowned(&intent);
+    for index in 0..laws::EVENT_COUNT {
+        let event = laws::event(index);
+        if matches!(event, SessionEnvironmentEvent::AdmitMaterialization { .. }) {
+            continue;
+        }
+        assert_eq!(
+            transition_environment(facts, event),
+            Err(SessionEnvironmentRejection::RequiresResident),
+            "U4 {event:?}"
+        );
     }
 }

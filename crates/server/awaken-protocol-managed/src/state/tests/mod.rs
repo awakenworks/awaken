@@ -644,7 +644,10 @@ impl awaken_session_execution_contract::StreamingRunRuntime for EndSessionRecord
     /// Whether the thread's selected model accepts a system message after the
     /// conversation has started. Runtimes whose models do not support this can
     /// fail admission before the Managed adapter persists the inbound event.
-    async fn supports_mid_conversation_system(&self, thread: &str) -> bool {
+    async fn supports_mid_conversation_system(
+        &self,
+        thread: &str,
+    ) -> Result<bool, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .supports_mid_conversation_system(thread)
             .await
