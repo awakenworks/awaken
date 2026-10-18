@@ -16,16 +16,6 @@ use awaken_dispatch_contract::{
 
 use crate::{ExecutorComponents, FileContentSource};
 
-/// Recovery of a claimed Run from committed Thread truth, read through the
-/// parent Session's partition.
-struct ThreadRecoverySource(Arc<crate::ThreadReads>);
-
-pub(crate) fn thread_recovery_source(
-    thread_reads: Arc<crate::ThreadReads>,
-) -> Arc<dyn RunRecoverySource> {
-    Arc::new(ThreadRecoverySource(thread_reads))
-}
-
 /// Coordinator-side Memory observation at the registered-Worker settlement
 /// boundary. The Worker already owns Session-coordination settlement; keeping
 /// this adapter Memory-only prevents the two processes from delivering the
@@ -33,7 +23,7 @@ pub(crate) fn thread_recovery_source(
 struct HostMemoryDispatchSettlementObserver(Arc<crate::RunAssembly>);
 
 #[async_trait::async_trait]
-impl RunRecoverySource for ThreadRecoverySource {
+impl RunRecoverySource for crate::ThreadReads {
     async fn recovery_snapshot(
         &self,
         thread_id: &awaken_agent_contract::agent::thread::Id,
@@ -49,8 +39,7 @@ impl RunRecoverySource for ThreadRecoverySource {
         thread_id: &awaken_agent_contract::agent::thread::Id,
         claimed_run_id: &RunId,
     ) -> Result<RunRecoverySnapshot, RecoveryError> {
-        self.0
-            .session_thread_run_recovery_snapshot(&session_thread_id.0, thread_id, claimed_run_id)
+        self.session_thread_run_recovery_snapshot(&session_thread_id.0, thread_id, claimed_run_id)
             .await
             .map_err(|error| RecoveryError::Rejected(error.to_string()))
     }
@@ -58,7 +47,7 @@ impl RunRecoverySource for ThreadRecoverySource {
 
 impl ExecutorComponents {
     pub fn worker_recovery_source(&self) -> Arc<dyn RunRecoverySource> {
-        thread_recovery_source(self.thread_reads.clone())
+        self.thread_reads.clone()
     }
 
     pub fn worker_memory_settlement_observer(&self) -> Arc<dyn DispatchSettlementObserver> {
