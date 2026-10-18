@@ -12,6 +12,7 @@ Decision table (--self-test):
 | L2   | creation (old is zero, main absent)    | allowed |
 | L10  | old not stated (zero) while main exists| judged against main's current value |
 | L3   | deletion (new is zero)                 | refused |
+| L11  | `pack-refs` pruning the loose copy: new is zero, no `packed-refs.lock` is held and `packed-refs` already records main at old | allowed (main keeps its value) |
 | L4   | new does not descend from old          | refused |
 | L5   | fast-forward adding a merge commit     | refused |
 | L6   | fast-forward of single-parent commits  | allowed |
@@ -48,8 +49,30 @@ def current_main() -> str:
     return out or ZERO
 
 
+def packed_main() -> str | None:
+    """main's value in `packed-refs` when no packed transaction holds the lock, else None.
+
+    `pack-refs` (also run by `gc --auto`) first writes main into `packed-refs`, releases the
+    lock, then deletes the loose copy, which the hook sees as `old -> zero`. A real deletion
+    always holds `packed-refs.lock` while it reports `old -> zero`.
+    """
+    common = git("rev-parse", "--git-common-dir").stdout.strip()
+    if not common or os.path.exists(os.path.join(common, "packed-refs.lock")):
+        return None
+    try:
+        with open(os.path.join(common, "packed-refs"), encoding="utf-8") as packed:
+            for line in packed:
+                parts = line.split()
+                if len(parts) == 2 and parts[1] == MAIN:
+                    return parts[0]
+    except FileNotFoundError:
+        pass
+    return None
+
+
 def violations(lines: list[str], ancestor: Callable[[str, str], bool],
-               merges: Callable[[str, str], list[str]], current: Callable[[], str]) -> list[str]:
+               merges: Callable[[str, str], list[str]], current: Callable[[], str],
+               packed: Callable[[], str | None] = lambda: None) -> list[str]:
     found = []
     for line in lines:
         parts = line.split()
@@ -64,7 +87,8 @@ def violations(lines: list[str], ancestor: Callable[[str, str], bool],
         if old == ZERO:
             continue
         if new == ZERO:
-            found.append("main may not be deleted")
+            if packed() != old:
+                found.append("main may not be deleted")
         elif not ancestor(old, new):
             found.append(f"main {old[:10]} -> {new[:10]} is not a fast-forward; rebase onto main instead")
         else:
@@ -85,7 +109,7 @@ def main(argv: list[str]) -> int:
         return 0
     if argv[1] != "prepared":
         return 0
-    errors = violations(sys.stdin.read().splitlines(), is_ancestor, merges_between, current_main)
+    errors = violations(sys.stdin.read().splitlines(), is_ancestor, merges_between, current_main, packed_main)
     if errors and os.environ.get("AWAKEN_ALLOW_MAIN_REWRITE") != "1":
         for error in errors:
             print(f"ERROR: {error} (deliberate rewrite: AWAKEN_ALLOW_MAIN_REWRITE=1)", file=sys.stderr)
@@ -102,6 +126,12 @@ def self_test() -> None:
     assert violations([f"{a} {b} refs/heads/feature"], ancestor, merges, absent) == [], "L1"
     assert violations([f"{ZERO} {b} {MAIN}"], ancestor, merges, absent) == [], "L2"
     assert "deleted" in violations([f"{a} {ZERO} {MAIN}"], ancestor, merges, absent)[0], "L3"
+    assert "deleted" in violations([f"{ZERO} {ZERO} {MAIN}"], ancestor, merges, lambda: a)[0], "L3 unstated old"
+    assert "deleted" in violations([f"{a} {ZERO} {MAIN}"], ancestor, merges, absent, lambda: None)[0], \
+        "L3 packed-refs locked or not recording main"
+    assert "deleted" in violations([f"{a} {ZERO} {MAIN}"], ancestor, merges, absent, lambda: b)[0], \
+        "L3 packed-refs records another value"
+    assert violations([f"{a} {ZERO} {MAIN}"], ancestor, merges, absent, lambda: a) == [], "L11"
     assert "fast-forward" in violations([f"{b} {a} {MAIN}"], ancestor, merges, absent)[0], "L4"
     assert "merge commit" in violations([f"{a} {c} {MAIN}"], ancestor, merges, absent)[0], "L5"
     assert violations([f"{a} {b} {MAIN}"], ancestor, merges, absent) == [], "L6"
