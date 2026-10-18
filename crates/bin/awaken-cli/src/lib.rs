@@ -40,7 +40,10 @@ mod runtime_process_router;
 mod service;
 mod web_search_publication;
 mod worker_observation_wiring;
+mod worker_transport;
 mod worker_transport_security;
+
+pub use worker_transport::WorkerTransport;
 
 use std::sync::Arc;
 

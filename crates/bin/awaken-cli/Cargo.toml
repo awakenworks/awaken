@@ -77,6 +77,10 @@ awaken-session-realization-contract.workspace = true
 awaken-work-store.workspace = true
 awaken-worker-transport-security.workspace = true
 awaken-worker-contract.workspace = true
+awaken-dispatch-http.workspace = true
+awaken-local-process.workspace = true
+awaken-fs-durability.workspace = true
+uuid = { version = "1", features = ["v7"] }
 awaken-sandbox-policy-store = { workspace = true }
 awaken-resource-reclaimer = { workspace = true }
 awaken-webhook = { workspace = true }
@@ -196,7 +200,6 @@ awaken-container-contract.workspace = true
 sha2 = "0.10"
 awaken-ext-goal.workspace = true
 k8s-openapi = { workspace = true }
-awaken-dispatch-http.workspace = true
 awaken-coordinator-client.workspace = true
 awaken-dispatch-testkit.workspace = true
 awaken-worker-registry = { workspace = true, features = ["test-support"] }
@@ -231,6 +234,7 @@ awaken-ext-mcp = { workspace = true }
 awaken-iam-contract = { workspace = true }
 awaken-iam-core = { workspace = true }
 awaken-lease-testkit.workspace = true
+awaken-tool-relay = { workspace = true, features = ["test-support"] }
 awaken-session-executor-testkit.workspace = true
 # sqlite_process_store_contract holds an independent writer on the shared file.
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }

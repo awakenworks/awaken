@@ -52,7 +52,7 @@ pub(crate) struct DomainState {
     pub(crate) environments:
         Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
     pub(crate) sessions: Arc<awaken_session_application::SessionApplication>,
-    pub(crate) relay_targets: Option<Arc<dyn crate::WorkerRelayTargetObserver>>,
+    pub(crate) relay_targets: Option<Arc<dyn awaken_worker_contract::WorkerRelayTargetObserver>>,
     pub(crate) bindings: Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
     pub(crate) clock: Arc<dyn awaken_time::WallClock>,
     pub(crate) authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
@@ -256,10 +256,10 @@ async fn handle_relay_destination(
     };
     let ip = match targets.ip_for(&registered.snapshot.identity).await {
         Ok(ip) => ip,
-        Err(crate::WorkerRelayTargetError::InvalidIdentity) => {
+        Err(awaken_worker_contract::WorkerRelayTargetError::InvalidIdentity) => {
             return StatusCode::NOT_FOUND.into_response();
         }
-        Err(crate::WorkerRelayTargetError::Unavailable) => {
+        Err(awaken_worker_contract::WorkerRelayTargetError::Unavailable) => {
             return StatusCode::SERVICE_UNAVAILABLE.into_response();
         }
     };

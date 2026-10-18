@@ -16,7 +16,7 @@ pub(super) struct RuntimeStartup {
     pub(super) process: ProcessStartup,
     pub(super) worker_directory: awaken_coordinator::WorkerDirectoryHandle,
     pub(super) worker_observation_wiring: WorkerObservationWiring,
-    pub(super) worker_transport: awaken_coordinator::WorkerTransport,
+    pub(super) worker_transport: crate::WorkerTransport,
     pub(super) executable_agent_wiring: ExecutableAgentWiring,
     pub(super) executable_environment_wiring: ExecutableEnvironmentWiring,
     pub(super) enrollment_signing_key: [u8; 32],

@@ -59,12 +59,13 @@ mod runtime_authority;
 mod session_commit_owner;
 pub use session_commit_owner::SessionCommitOwner;
 pub mod webhooks;
+#[cfg(feature = "container-k8s")]
+pub mod worker_create_broker;
 pub mod worker_fleet;
+mod worker_memory;
 pub mod worker_observation_boundary;
 pub mod worker_placement;
 mod worker_registry;
-mod worker_transport;
-pub use worker_transport::{WorkerRelayTargetError, WorkerRelayTargetObserver, WorkerTransport};
 pub mod workspace_path;
 
 pub use artifact_publication::ClaimFencedArtifactPublisher;
@@ -1678,7 +1679,7 @@ async fn mount_with_managed_over_and_models(
             )
             .with_session_control(session_application.clone()),
         ));
-    let memory = worker_transport::memory_router(
+    let memory = worker_memory::memory_router(
         &resource_authorities,
         resource_registry.clone(),
         dispatch.clone() as Arc<dyn awaken_dispatch_http::WorkerDispatchAuthority>,

@@ -4,7 +4,6 @@ use awaken_dispatch::{
     AttemptExecutionBinding, DispatchClaims, DispatchControlReads, DispatchEnqueue,
     DispatchExecution, WorkerDirectory,
 };
-use awaken_sandbox_kubernetes::{PodProcessObserver, PodProcessStopper};
 use awaken_worker_contract::WorkerProcessExit;
 
 #[tokio::test]
@@ -33,14 +32,14 @@ async fn closed_worker_create_fence_survives_missing_process_history() {
         let record = f.directory.incarnation(&f.identity).await.unwrap().unwrap();
         let source = source(&f);
         awaken_dispatch::WorkerExecutionStopSource::seal_closed_worker_admission(
-            &source,
+            source.as_ref(),
             &f.identity,
             record.create_ledger.as_ref(),
         )
         .await
         .unwrap();
         let result = awaken_dispatch::WorkerExecutionStopSource::observe_closed_idle_worker(
-            &source,
+            source.as_ref(),
             &f.identity,
             false,
             record.create_ledger.as_ref(),
@@ -239,7 +238,7 @@ async fn closed_idle_worker_uses_the_same_original_creator_seal() {
         awaken_dispatch::release_closed_idle_worker_evidence(
             &store,
             f.directory.as_ref(),
-            &source,
+            source.as_ref(),
             &f.identity,
             200,
         )
@@ -268,14 +267,22 @@ fn original_process() -> String {
     .to_string()
 }
 
-fn source(f: &fixture::BrokerFixture) -> super::super::super::KubernetesWorkerStops {
-    let observer = PodProcessObserver::new(f.broker.api_client.clone(), "sandbox-ns").unwrap();
-    super::super::super::KubernetesWorkerStops {
-        stopper: PodProcessStopper::new(observer),
-        create_ledger: f.broker.ledger.clone(),
-        namespace: "sandbox-ns".into(),
-        provider_id: "provider-a".into(),
-    }
+fn source(f: &fixture::BrokerFixture) -> Arc<dyn awaken_dispatch::WorkerExecutionStopSource> {
+    // The existing process root selects the real stop adapter over this same
+    // client, control namespace and provider fingerprint. All M/CW/CI rows
+    // above keep their original Registry, ledger, exit and no-Create effects;
+    // the fixture no longer reaches through a foreign private implementation.
+    awaken_cli::WorkerTransport::kubernetes(
+        f.broker.api_client.clone(),
+        "sandbox-ns",
+        "worker",
+        "awaken-worker",
+        "provider-a",
+        f.broker.ledger.control_namespace(),
+    )
+    .unwrap()
+    .stop_source()
+    .unwrap()
 }
 
 #[tokio::test]
@@ -366,7 +373,7 @@ async fn exited_worker_closes_its_original_create_ledger_before_releasing_eviden
         let result = awaken_dispatch::stop_expired_predecessor(
             &store,
             f.directory.as_ref(),
-            &source,
+            source.as_ref(),
             None,
             &next,
             200,
@@ -387,7 +394,7 @@ async fn exited_worker_closes_its_original_create_ledger_before_releasing_eviden
         awaken_dispatch::stop_expired_predecessor(
             &store,
             f.directory.as_ref(),
-            &source,
+            source.as_ref(),
             None,
             &next,
             200,

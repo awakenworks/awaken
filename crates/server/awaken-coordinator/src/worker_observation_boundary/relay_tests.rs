@@ -50,17 +50,17 @@ impl awaken_service_auth_contract::ServiceRequestAuthenticator for BootstrapPerm
 }
 
 #[async_trait]
-impl crate::WorkerRelayTargetObserver for ExactPod {
+impl awaken_worker_contract::WorkerRelayTargetObserver for ExactPod {
     async fn ip_for(
         &self,
         worker: &awaken_worker_contract::WorkerIdentity,
-    ) -> Result<std::net::IpAddr, crate::WorkerRelayTargetError> {
+    ) -> Result<std::net::IpAddr, awaken_worker_contract::WorkerRelayTargetError> {
         self.reads.fetch_add(1, Ordering::SeqCst);
         if worker != &self.identity || self.mode.load(Ordering::SeqCst) == 1 {
-            return Err(crate::WorkerRelayTargetError::InvalidIdentity);
+            return Err(awaken_worker_contract::WorkerRelayTargetError::InvalidIdentity);
         }
         if self.mode.load(Ordering::SeqCst) == 2 {
-            return Err(crate::WorkerRelayTargetError::Unavailable);
+            return Err(awaken_worker_contract::WorkerRelayTargetError::Unavailable);
         }
         Ok("10.1.2.3".parse().unwrap())
     }

@@ -1032,15 +1032,15 @@ log "11/11 hard-crash a Pod-bound Native Worker and recover without model replay
 # Rules K1 C1+C2+C3=>E1; K2 C4+C5+C6=>E2; K3 E2+C6=>E3+E4. Missing evidence,
 # stale UID, opaque execution history or response timeout must retain the slot.
 TRANSPORT_TEST=worker_transport::kubernetes::tests::live::real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_attempt
-# T1 shared transport moved from CLI to Coordinator; a stale filter otherwise
+# T1 physical transport lives in the process composition; a stale filter otherwise
 # exits successfully with zero tests. Enumerate this exact feature/target first;
 # only the one current test enters the existing real Kubernetes qualification.
-TRANSPORT_TESTS=$(cargo test --locked -p awaken-coordinator --features container-k8s --lib \
+TRANSPORT_TESTS=$(cargo test --locked -p awaken-cli --features container-k8s --lib \
   "$TRANSPORT_TEST" -- --list --exact)
 grep -Fqx "$TRANSPORT_TEST: test" <<<"$TRANSPORT_TESTS" \
   || { err "exact Kubernetes transport qualification test was not selected"; exit 1; }
 AWAKEN_K8S_E2E=1 AWAKEN_K3D_CLUSTER="$CLUSTER" AWAKEN_K8S_FIXTURE_IMAGE="$IMAGE" \
-  cargo test --locked -p awaken-coordinator --features container-k8s --lib \
+  cargo test --locked -p awaken-cli --features container-k8s --lib \
   "$TRANSPORT_TEST" -- --exact --nocapture
 kubectl -n "$NS" scale statefulset/worker --replicas=0 >/dev/null
 kubectl -n "$NS" wait --for=delete pod/worker-0 pod/worker-1 --timeout=180s

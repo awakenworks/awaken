@@ -50,7 +50,7 @@ const SEAL_PATH: &str = "/v1/worker/k8s/create/seal";
 const REALIZATION_DIGEST: &str = "awaken.dev/realization-digest";
 
 #[derive(Clone)]
-pub(in crate::worker_transport) struct K8sCreateBroker {
+pub struct K8sCreateBroker {
     api_client: Client,
     ledger: K8sWorkerCreateLedger,
     sandbox_namespace: String,
@@ -331,7 +331,7 @@ fn binding<'a>(
 
 /// One original-anchor seal/join used by terminal recovery and both Worker
 /// evidence-release purposes. Complete admission fencing is not disposal.
-pub(super) async fn seal_worker_requests<'a>(
+pub async fn seal_worker_requests<'a>(
     ledger: &K8sWorkerCreateLedger,
     anchor: &'a WorkerCreateLedger,
     pod: &'a KubernetesPodIdentity,
@@ -379,7 +379,7 @@ async fn verify_request(
 }
 
 impl K8sCreateBroker {
-    pub(super) fn new(
+    pub fn new(
         api_client: Client,
         ledger: K8sWorkerCreateLedger,
         sandbox_namespace: &str,
@@ -393,7 +393,7 @@ impl K8sCreateBroker {
         }
     }
 
-    pub(in crate::worker_transport) fn router(
+    pub fn router(
         self: Arc<Self>,
         directory: Arc<dyn WorkerDirectory>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
