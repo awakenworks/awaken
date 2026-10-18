@@ -69,6 +69,8 @@ impl crate::environment_holding::EnvironmentHolding {
             peers
                 .authority
                 .bind(thread, installed.realization, &candidate.environment)?;
+            #[cfg(not(target_os = "linux"))]
+            let _ = peers;
             Ok(candidate)
         })?
     }
