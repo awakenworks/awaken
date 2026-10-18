@@ -202,7 +202,7 @@ impl SessionApplication {
         session_id: &str,
         layout: &awaken_session_configuration_contract::SessionSandboxLayout,
     ) -> Result<(), RunError> {
-        let realization_runtime = self.runtime().realization();
+        let effects = self.runtime().realization_effects();
 
         validate_environment_continuation_topology(
             awaken_session_state_contract::SessionPlacementClass::new(
@@ -211,7 +211,7 @@ impl SessionApplication {
             ),
             &layout.environment.idle_retention,
         )?;
-        realization_runtime.validate_session_sandbox_layout(session_id, layout)
+        effects.validate_session_sandbox_layout(session_id, layout)
     }
 
     /// Revalidate a proposed complete Resource manifest against the immutable

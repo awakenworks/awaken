@@ -3,6 +3,7 @@
 use super::*;
 use awaken_dispatch_execution::DEFAULT_LEASE_MS;
 use awaken_session_environment::test_support::SandboxEnvironmentAccess;
+use awaken_session_execution_contract::RealizationEffects as _;
 use awaken_time::system_clock;
 
 #[tokio::test]
@@ -220,7 +221,7 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
 }
 
 use awaken_sandbox_container::ContainerHandleCodec as _;
-use awaken_session_execution_contract::{EnvironmentRuntime, TerminalCleanupRuntime};
+use awaken_session_execution_contract::TerminalCleanupRuntime;
 use awaken_session_types::SessionId;
 mod claimed_dispatch;
 mod managed_root;
@@ -497,7 +498,7 @@ async fn install_pinned_managed_skill_session_with_tools(
     init.tools = tools;
     install_complete_test_session_for_realization(managed, thread, init).await?;
     managed
-        .run_assembly
+        .realization_executor
         .apply_session_inputs(
             thread,
             &resource_transition(&workspace, 0, Default::default(), 0, resources),
@@ -848,7 +849,10 @@ pub(crate) fn bind_test_memory(host: &SharedHost, thread: &str, store_id: &str, 
         store_id.to_string(),
         writable,
     ));
-    host.run_assembly.installed_sessions.install(thread);
+    host.run_assembly
+        .installed_sessions
+        .install(thread)
+        .expect("installed Sessions");
     host.realization_executor
         .staging()
         .register_thread_memory(

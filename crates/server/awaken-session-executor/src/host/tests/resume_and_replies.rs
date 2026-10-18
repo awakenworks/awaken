@@ -383,7 +383,8 @@ async fn durable_foreground_run_relays_live_progress_before_committed_completion
     .build()
     .expect("validated Host dependencies");
     let _managed = install_test_dispatch_runtime(&host);
-    host.ensure_dispatch_pool()
+    crate::CoordinatorRoles::of(&host)
+        .start_local_pool()
         .expect("valid test dispatch composition");
     let sink = Arc::new(awaken_store_inmem::MemoryStreamSink::new());
 
@@ -2097,7 +2098,8 @@ async fn durable_client_result_settles_the_authoritative_dispatch() {
     .build()
     .expect("validated Host dependencies");
     let _managed = install_test_dispatch_runtime(&host);
-    host.ensure_dispatch_pool()
+    crate::CoordinatorRoles::of(&host)
+        .start_local_pool()
         .expect("valid test dispatch composition");
 
     let first = bounded_stage(
@@ -2173,7 +2175,8 @@ async fn coordinator_only_foreground_admission_survives_request_drop_without_a_p
     .build()
     .expect("validated Host dependencies");
     let _managed = install_test_dispatch_runtime(&host);
-    host.ensure_dispatch_pool()
+    crate::CoordinatorRoles::of(&host)
+        .start_local_pool()
         .expect("valid test dispatch composition");
     assert!(host.dispatch.pool().is_none(), "Q2/E2");
 
@@ -2358,7 +2361,7 @@ async fn managed_session_root_rejects_legacy_host_run_ingress() {
     .expect("validated Host dependencies");
     host.run_assembly
         .installed_sessions
-        .update_run("managed-root", |run| run.session_dispatch = true);
+        .install_run("managed-root", |run| run.session_dispatch = true);
 
     for result in [
         host.session_runs

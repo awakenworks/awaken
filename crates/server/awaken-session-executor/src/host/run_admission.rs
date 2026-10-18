@@ -21,14 +21,16 @@ impl crate::RunAssembly {
     pub(crate) fn bind_fresh_root_tool_configuration(
         &self,
         activation: RunActivation,
-    ) -> RunActivation {
+    ) -> Result<RunActivation, HostError> {
         let is_session_dispatch = self
             .installed_sessions
-            .read_run(&activation.thread_id.0, |run| run.session_dispatch)
+            .read_run(&activation.thread_id.0, |run| run.session_dispatch)?
             .unwrap_or(false);
-        awaken_dispatch_execution::placement::bind_root_tool_configuration_format(
-            activation,
-            is_session_dispatch,
+        Ok(
+            awaken_dispatch_execution::placement::bind_root_tool_configuration_format(
+                activation,
+                is_session_dispatch,
+            ),
         )
     }
 
@@ -83,7 +85,8 @@ mod tests {
                     let poison = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         host.run_assembly
                             .installed_sessions
-                            .update("admission-order", |_| panic!("fixture poison"));
+                            .install_with("admission-order", |_| panic!("fixture poison"))
+                            .expect("installed Sessions");
                     }));
                     assert!(poison.is_err(), "C2 uses the original registry lock");
                 }
@@ -160,7 +163,7 @@ mod tests {
                 .expect("validated Host dependencies");
         host.run_assembly
             .installed_sessions
-            .update_run("format-root", |run| run.session_dispatch = true);
+            .install_run("format-root", |run| run.session_dispatch = true);
         let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("assistant")
             .model(ModelBinding::parse("test", "model", "native").expect("valid fixture"))
             .build();
@@ -172,7 +175,8 @@ mod tests {
         );
         let direct = host
             .run_assembly
-            .bind_fresh_root_tool_configuration(activation.clone());
+            .bind_fresh_root_tool_configuration(activation.clone())
+            .expect("installed Sessions");
         let queued = host
             .run_assembly
             .prepare_dispatch(activation.clone())

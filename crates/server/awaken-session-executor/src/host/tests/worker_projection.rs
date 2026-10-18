@@ -159,16 +159,20 @@ async fn missing_projection_admits_only_the_direct_empty_revision_zero_noop() {
                     slot.inputs.baseline.is_some(),
                     slot.run.session_dispatch
                 ))
+                .expect("installed Sessions")
                 .unwrap_or((false, false)),
             (false, false),
             "{} keeps C2+C3 fixed",
             rule.id
         );
 
-        host.run_assembly.installed_sessions.install(&thread);
+        host.run_assembly
+            .installed_sessions
+            .install(&thread)
+            .expect("installed Sessions");
         let result = host
             .realization_executor
-            .apply_session_inputs(&thread, &transition, claim.as_ref(), None)
+            .apply_session_inputs_with_context(&thread, &transition, claim.as_ref(), None)
             .await;
         if rule.accepted {
             result.unwrap_or_else(|error| panic!("{} must admit E1: {error}", rule.id));
@@ -400,15 +404,19 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                 .read("local-baseline", |slot| {
                     slot.inputs.baseline.is_some() && slot.run.session_dispatch
                 })
+                .expect("installed Sessions")
                 .unwrap_or(false),
             "B1/E1 frozen baseline and Managed execution marker publish atomically on a cold Worker"
         );
         assert_eq!(
-            baseline_host.run_assembly.session_skill_source_roots(
-                "local-baseline",
-                None,
-                crate::skills::MANAGED_SKILLS_SUBDIR,
-            ),
+            baseline_host
+                .run_assembly
+                .session_skill_source_roots(
+                    "local-baseline",
+                    None,
+                    crate::skills::MANAGED_SKILLS_SUBDIR,
+                )
+                .expect("installed Sessions"),
             None,
             "B1/E1 no direct live-authored Skill source is registered"
         );
@@ -469,7 +477,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             "B5"
         );
         install_test_session_application(&baseline_host);
-        baseline_host.run_assembly.installed_sessions.update_run(
+        baseline_host.run_assembly.installed_sessions.install_run(
             "coordinator-before-baseline",
             |run| {
                 run.session_dispatch = true;
@@ -503,10 +511,11 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                 .read("coordinator-before-baseline", |slot| {
                     slot.inputs.baseline.is_some() && slot.run.context.is_none()
                 })
+                .expect("installed Sessions")
                 .unwrap_or(false),
             "B6/E4 baseline is installed and stale coordination cache is gone"
         );
-        baseline_host.run_assembly.installed_sessions.update_run(
+        baseline_host.run_assembly.installed_sessions.install_run(
             "dispatch-before-baseline",
             |run| {
                 run.session_dispatch = true;
@@ -533,6 +542,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                 .read("dispatch-before-baseline", |slot| {
                     slot.inputs.baseline.is_some() && slot.run.context.is_none()
                 })
+                .expect("installed Sessions")
                 .unwrap_or(false),
             "B6/E4 Dispatch also clears the stale reservation envelope"
         );
@@ -592,6 +602,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                         && slot.realization.execution().authority.lease().is_none()
                         && !slot.run.session_dispatch
                 })
+                .expect("installed Sessions")
                 .unwrap_or(true),
             "B6 failed preparation cannot publish partial Session truth"
         );
@@ -671,6 +682,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                             },
                         )
                 })
+                .expect("installed Sessions")
                 .unwrap_or(false),
             "A0/E0 complete projection stages one transition without forging physical completion"
         );
@@ -791,6 +803,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                 .read("prospective-layout-conflict", |slot| {
                     slot.inputs.baseline.is_none() && slot.inputs.environment_projection.is_none()
                 })
+                .expect("installed Sessions")
                 .unwrap_or(true),
             "F1 no partial frozen projection"
         );
@@ -1300,6 +1313,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         host.run_assembly
             .installed_sessions
             .read_run(thread, |run| run.context.clone())
+            .expect("installed Sessions")
             .flatten()
             .is_none(),
         "R1/E3"
@@ -1925,7 +1939,8 @@ async fn claimed_inference_only_context_keeps_scope_without_a_resource_transitio
     let _managed = install_test_dispatch_runtime(&host);
     let thread = "inference-only-claimed";
     host.capabilities
-        .register_thread_workspace(thread, "workspace-inference");
+        .register_thread_workspace(thread, "workspace-inference")
+        .expect("installed Sessions");
     let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("judge")
         .model(test_model_binding())
         .build();

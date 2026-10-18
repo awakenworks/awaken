@@ -28,7 +28,9 @@ use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::recovery::{RunRecoverySnapshot, RunRecoverySource};
 use awaken_dispatch_erasure::AnyDispatchStore;
-use awaken_dispatch_execution::{CompletionSink, WorkerResolver};
+use awaken_dispatch_execution::CompletionSink;
+#[cfg(test)]
+use awaken_dispatch_execution::WorkerResolver;
 use awaken_ext_skills::{SkillRegistry, SkillSpec};
 #[cfg(any(test, feature = "test-support"))]
 use awaken_resource_contract::{FileCatalog, FileStore};
@@ -151,11 +153,6 @@ pub struct SharedHost {
     /// `store_dir/<thread>.db`, so an awaiting run survives a process restart. When
     /// `None`, sessions use an in-memory coordinator (ephemeral).
     pub(crate) store_dir: Option<PathBuf>,
-    /// Where Session truth lives: the Coordinator-owned durable capability
-    /// ([`crate::LocalAuthority`]) or a database-less Worker's claim-fenced
-    /// upstream transports ([`crate::UpstreamAuthority`]). Every role-dependent
-    /// decision is asked of it; the Host never asks which role it plays.
-    pub(crate) authority: Arc<dyn crate::SessionAuthority>,
     /// The process's one wall clock, chosen by the composition that builds this
     /// Host. The dispatch pool, the reconciler, recovery drives and child
     /// schedulers all drive their Workers on it, so every time the attempt

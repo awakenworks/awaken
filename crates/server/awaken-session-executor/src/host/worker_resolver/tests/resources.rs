@@ -246,6 +246,7 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
                 slot.run.context.is_none(),
             )
         })
+        .expect("installed Sessions")
         .expect("F4 canonical Session slot");
     assert_eq!(
         empty_projection,

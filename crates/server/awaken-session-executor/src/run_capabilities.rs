@@ -32,15 +32,23 @@ pub struct RunCapabilities {
 }
 
 impl RunCapabilities {
-    pub(crate) fn register_thread_workspace(&self, thread: &str, workspace: &str) {
+    pub(crate) fn register_thread_workspace(
+        &self,
+        thread: &str,
+        workspace: &str,
+    ) -> Result<(), crate::realization_error::RealizationLock> {
         self.installed_sessions
-            .replace_frozen_with(thread, |next| next.workspace = Some(workspace.to_string()));
+            .replace_frozen_with(thread, |next| next.workspace = Some(workspace.to_string()))
     }
 
     #[cfg(test)]
-    pub(crate) fn register_thread_agent_projection(&self, thread: &str, agent_id: &str) {
+    pub(crate) fn register_thread_agent_projection(
+        &self,
+        thread: &str,
+        agent_id: &str,
+    ) -> Result<(), crate::realization_error::RealizationLock> {
         self.installed_sessions
-            .replace_frozen_with(thread, |next| next.agent_id = Some(agent_id.to_string()));
+            .replace_frozen_with(thread, |next| next.agent_id = Some(agent_id.to_string()))
     }
 
     /// Rebuildable Agent projection used only as input to Session admission.
@@ -73,19 +81,30 @@ impl RunCapabilities {
     }
 
     /// Bind the exact published delegation targets to a prepared Session.
-    pub fn register_thread_delegates(&self, thread: &str, delegates: Vec<String>) {
+    pub fn register_thread_delegates(
+        &self,
+        thread: &str,
+        delegates: Vec<String>,
+    ) -> Result<(), crate::realization_error::RealizationLock> {
         self.installed_sessions
-            .replace_frozen_with(thread, |next| next.delegates = delegates);
+            .replace_frozen_with(thread, |next| next.delegates = delegates)
     }
 
-    pub(crate) fn thread_delegate_ids(&self, thread: &str) -> Option<Vec<String>> {
+    pub(crate) fn thread_delegate_ids(
+        &self,
+        thread: &str,
+    ) -> Result<Option<Vec<String>>, crate::realization_error::RealizationLock> {
         self.installed_sessions
             .read(thread, |slot| slot.inputs.delegates.clone())
     }
 
     /// Bind `model_ref` to `thread` (R2/R5), staged before its first Run.
-    pub fn register_thread_model(&self, thread: &str, model_ref: impl Into<String>) {
-        self.agent.inference_routing.register(thread, model_ref);
+    pub fn register_thread_model(
+        &self,
+        thread: &str,
+        model_ref: impl Into<String>,
+    ) -> Result<(), crate::realization_error::RealizationLock> {
+        self.agent.inference_routing.register(thread, model_ref)
     }
 
     /// Read-only provider discovery for an embedding capability endpoint. The
@@ -175,8 +194,10 @@ impl RunCapabilities {
 
     #[cfg(test)]
     pub(crate) fn register_thread_backend_projection(&self, thread: &str, backend_ref: &str) {
-        self.installed_sessions.replace_frozen_with(thread, |next| {
-            next.backend_ref = crate::frozen_inputs::backend_projection(backend_ref);
-        });
+        self.installed_sessions
+            .replace_frozen_with(thread, |next| {
+                next.backend_ref = crate::frozen_inputs::backend_projection(backend_ref);
+            })
+            .expect("installed Sessions");
     }
 }

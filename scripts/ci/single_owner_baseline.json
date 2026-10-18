@@ -11,7 +11,7 @@
     "awaken-executable-environment-contract": 327,
     "awaken-protocol-managed": 32,
     "awaken-dispatch-http": 793,
-    "awaken-session-executor": 274,
+    "awaken-session-executor": 284,
     "awaken-scenario-host": 78,
     "awaken-session-application": 2929,
     "awaken-session-configuration-contract": 84,
@@ -28,7 +28,7 @@
       "awaken-store-conformance": "store conformance fixtures write arbitrary persisted Environment rows (bound, Restoring, worker-owned) to exercise the store contract; test-support crate outside every production closure"
     },
     "realization-code": {
-      "awaken-session-executor": "session executor components combined with the Environment terminal-effect decisions and the provisioning deadline"
+      "awaken-session-executor": "session executor components combined with the Environment terminal-effect decisions and the provisioning deadline; then: installed-Session poison denial (plan v4 P1 leftover, P4): the registry's own reads, changes, installs and realization permit refuse a poisoned lock with the typed RealizationLock and callers propagate it instead of panicking, so error propagation lines grow"
     }
   }
 }

@@ -137,7 +137,8 @@ async fn provider_fence_source_decision_table_preserves_exact_live_authority() {
                 "closed" => {
                     host.run_assembly
                         .installed_sessions
-                        .close_realization("session", None);
+                        .close_realization("session", None)
+                        .expect("installed Sessions");
                 }
                 "uninstalled" => host
                     .run_assembly
@@ -283,6 +284,7 @@ async fn provider_fence_source_capture_rejects_absent_slot_and_invalid_identity(
         host.run_assembly
             .installed_sessions
             .read("session", |_| ())
+            .expect("installed Sessions")
             .is_none()
     );
     // An effect fence with an incomplete identity never reaches capture: the
@@ -320,7 +322,8 @@ async fn provider_fence_source_capture_rejects_absent_slot_and_invalid_identity(
             "closed" => {
                 host.run_assembly
                     .installed_sessions
-                    .close_realization("session", None);
+                    .close_realization("session", None)
+                    .expect("installed Sessions");
             }
             "owner" => initial.tamper(|w| w.owner.push_str("-other")),
             "incarnation" => initial.tamper(|w| w.runtime_incarnation.push_str("-other")),
@@ -408,7 +411,8 @@ async fn provider_fence_source_waiting_for_worker_rechecks_slot_after_revocation
                 "closed" => {
                     host.run_assembly
                         .installed_sessions
-                        .close_realization("session", None);
+                        .close_realization("session", None)
+                        .expect("installed Sessions");
                 }
                 "slot_aba" => {
                     let old = host
@@ -689,7 +693,8 @@ async fn adoption_forwards_original_authority_across_observation_and_provider_wa
                         "closed" => {
                             host.run_assembly
                                 .installed_sessions
-                                .close_realization("session", None);
+                                .close_realization("session", None)
+                                .expect("installed Sessions");
                         }
                         "aba" => {
                             let old = host
@@ -802,7 +807,8 @@ async fn provider_fence_source_is_wired_across_preparation_and_provider_awaits()
         if rule == "initial_closed" {
             host.run_assembly
                 .installed_sessions
-                .close_realization("session", None);
+                .close_realization("session", None)
+                .expect("installed Sessions");
         }
         let create = awaken_session_realization::test_support::create_session_environment(
             &host.realization_executor,
@@ -827,7 +833,8 @@ async fn provider_fence_source_is_wired_across_preparation_and_provider_awaits()
             if rule.ends_with("_closed") {
                 host.run_assembly
                     .installed_sessions
-                    .close_realization("session", None);
+                    .close_realization("session", None)
+                    .expect("installed Sessions");
             } else if rule.ends_with("_aba") {
                 let old = host
                     .run_assembly
@@ -970,7 +977,8 @@ async fn environment_receipt_refreshes_only_the_captured_live_generation() {
                 "closed" => {
                     host.run_assembly
                         .installed_sessions
-                        .close_realization("session", None);
+                        .close_realization("session", None)
+                        .expect("installed Sessions");
                 }
                 "removed" => {
                     host.run_assembly.installed_sessions.remove("session");

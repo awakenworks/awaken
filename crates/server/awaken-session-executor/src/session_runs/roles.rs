@@ -152,7 +152,9 @@ impl awaken_session_execution_contract::StreamingRunRuntime for SessionRuns {
         // R5: re-stage the thread's model and evict its cached context so the next
         // Run rebuilds with the newly resolved executor (native switch is O(1); an
         // ACP thread's cached context relaunches its CLI on rebuild).
-        self.capabilities.register_thread_model(thread, model);
+        self.capabilities
+            .register_thread_model(thread, model)
+            .map_err(crate::installed_session::registry_run_error)?;
         self.run_assembly
             .realization_executor
             .environments()

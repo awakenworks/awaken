@@ -30,6 +30,7 @@ async fn failed_context_assembly_retains_one_environment_for_retry() {
         host.run_assembly
             .installed_sessions
             .read_run(thread, |run| run.context.is_none())
+            .expect("installed Sessions")
             .unwrap()
     );
     let retained = host
@@ -55,6 +56,7 @@ async fn failed_context_assembly_retains_one_environment_for_retry() {
         host.run_assembly
             .installed_sessions
             .read_run(thread, |run| run.context.is_none())
+            .expect("installed Sessions")
             .unwrap()
     );
     assert!(
@@ -270,6 +272,7 @@ async fn acp_context_failure_releases_exports_and_reuses_environment() {
             host.run_assembly
                 .installed_sessions
                 .read_run(thread, |run| run.context.is_none())
+                .expect("installed Sessions")
                 .unwrap(),
             "E1"
         );
@@ -340,6 +343,7 @@ async fn cancelled_context_construction_releases_lock_and_partial_export() {
         host.run_assembly
             .installed_sessions
             .read_run(thread, |run| run.context.is_none())
+            .expect("installed Sessions")
             .unwrap(),
         "E1"
     );

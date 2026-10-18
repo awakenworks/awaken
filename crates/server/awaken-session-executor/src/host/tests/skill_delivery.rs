@@ -340,30 +340,33 @@ async fn direct_on_tool_use_brain_skill_adapter_keeps_the_environment_absent() {
             Arc::downgrade(&host.realization_executor),
             thread,
         ));
-    host.run_assembly.installed_sessions.update(thread, |slot| {
-        slot.replace_frozen_with(|next| {
-            next.tools = Some(
-                awaken_session_configuration_contract::SessionToolConfiguration {
-                    toolsets: vec![ToolsetPolicy {
-                        source: ToolsetSource::Agent,
-                        default: ToolExecutionPolicy {
-                            enabled: false,
-                            permission: ToolPermissionRequirement::AlwaysAllow,
-                        },
-                        overrides: vec![ToolPolicyOverride::new(
-                            "web_fetch",
-                            ToolExecutionPolicy {
-                                enabled: true,
+    host.run_assembly
+        .installed_sessions
+        .install_with(thread, |slot| {
+            slot.replace_frozen_with(|next| {
+                next.tools = Some(
+                    awaken_session_configuration_contract::SessionToolConfiguration {
+                        toolsets: vec![ToolsetPolicy {
+                            source: ToolsetSource::Agent,
+                            default: ToolExecutionPolicy {
+                                enabled: false,
                                 permission: ToolPermissionRequirement::AlwaysAllow,
                             },
-                        )],
-                    }],
-                    client_tools: Vec::new(),
-                },
-            )
-        });
-        slot.run.deferred_executor = Some(deferred);
-    });
+                            overrides: vec![ToolPolicyOverride::new(
+                                "web_fetch",
+                                ToolExecutionPolicy {
+                                    enabled: true,
+                                    permission: ToolPermissionRequirement::AlwaysAllow,
+                                },
+                            )],
+                        }],
+                        client_tools: Vec::new(),
+                    },
+                )
+            });
+            slot.run.deferred_executor = Some(deferred);
+        })
+        .expect("installed Sessions");
 
     let result = host
         .session_runs
@@ -702,6 +705,7 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         .read_run("deferred-managed-filesystem-skill", |run| {
             run.deferred_executor.clone()
         })
+        .expect("installed Sessions")
         .flatten()
         .unwrap();
     let read = deferred
@@ -800,7 +804,7 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         .expect("installed Sessions")
         .unwrap();
     managed
-        .run_assembly
+        .realization_executor
         .apply_session_inputs(
             "deferred-managed-filesystem-skill",
             &resource_transition(

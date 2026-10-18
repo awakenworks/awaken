@@ -698,6 +698,7 @@ mod tests {
                     .installed_sessions
                     .read(thread, |slot| slot.run.context.is_none()
                         && !slot.realization.environment().owner.is_resident())
+                    .expect("installed Sessions")
                     .unwrap_or(false),
             "DH1/C2 revocation clears R1 and hides Retiring A"
         );
@@ -707,6 +708,7 @@ mod tests {
         // bypass the deferred binding fence when the slot had no claim.
 
         let dispatch = host
+            .run_assembly
             .authority
             .dispatch_binding()
             .map(|binding| binding.queue())
@@ -1145,6 +1147,7 @@ mod tests {
                             && slot.realization.environment().owner.is_resident()
                     }
                 ))
+                .expect("installed Sessions")
                 .unwrap_or(false),
             "DH1/E4 fresh Runtime and Resident are published together"
         );
@@ -1330,6 +1333,7 @@ mod tests {
         let (original, raw_binding, retired_sentinel) =
             revoked_legacy_v1_environment(host.as_ref(), thread).await;
         let dispatch = host
+            .run_assembly
             .authority
             .dispatch_binding()
             .map(|binding| binding.queue())
@@ -1462,7 +1466,8 @@ mod tests {
             .install_test_environment_binding_sink(sink.clone());
         let snapshot = test_activation(thread, run).snapshot;
         host.capabilities
-            .register_thread_agent_projection(thread, snapshot.root_agent_id.0.as_str());
+            .register_thread_agent_projection(thread, snapshot.root_agent_id.0.as_str())
+            .expect("installed Sessions");
         host.realization_executor
             .environments()
             .publication()
@@ -1510,7 +1515,7 @@ mod tests {
         );
         host.run_assembly
             .installed_sessions
-            .update_run(thread, |state| state.dispatch_claim = Some(claim));
+            .install_run(thread, |state| state.dispatch_claim = Some(claim));
         let resumed = host
             .run_assembly
             .ctx_for_resume(thread)
@@ -1631,6 +1636,7 @@ mod tests {
                     slot.realization.staging().mcp.projection_count(),
                 )
             })
+            .expect("installed Sessions")
             .expect("RA1 retained slot caches");
         let cached_resources = host
             .realization_executor
@@ -1713,17 +1719,20 @@ mod tests {
             "RA1/E2 exact Retiring owner remains fenced"
         );
         assert_eq!(
-            host.run_assembly.installed_sessions.read(thread, |slot| {
-                (
-                    slot.inputs.published_snapshot.clone(),
-                    slot.realization.execution().authority.lease().cloned(),
-                    slot.inputs
-                        .environment_projection
-                        .as_ref()
-                        .map(|projection| projection.fingerprint.clone()),
-                    slot.realization.staging().mcp.projection_count(),
-                )
-            }),
+            host.run_assembly
+                .installed_sessions
+                .read(thread, |slot| {
+                    (
+                        slot.inputs.published_snapshot.clone(),
+                        slot.realization.execution().authority.lease().cloned(),
+                        slot.inputs
+                            .environment_projection
+                            .as_ref()
+                            .map(|projection| projection.fingerprint.clone()),
+                        slot.realization.staging().mcp.projection_count(),
+                    )
+                })
+                .expect("installed Sessions"),
             Some(cached),
             "RA1/E2 publication, lease, Environment, and MCP caches are unchanged"
         );

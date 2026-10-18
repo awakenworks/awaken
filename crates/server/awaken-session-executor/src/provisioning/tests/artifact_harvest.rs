@@ -2,6 +2,7 @@
 //! capture failures that must not publish partial sets.
 
 use super::*;
+use awaken_session_execution_contract::RealizationEffects as _;
 
 struct BatchArtifactContainerProvider {
     files: Vec<awaken_container_contract::EnvironmentFile>,
@@ -331,7 +332,8 @@ impl BatchArtifactContainer {
 
 async fn install_batch_artifact_environment(host: &SharedHost, thread: &str, workspace: &str) {
     host.capabilities
-        .register_thread_workspace(thread, workspace);
+        .register_thread_workspace(thread, workspace)
+        .expect("installed Sessions");
     let spec = host.realization_executor.sandbox_spec(thread);
     let environment = Arc::new(
         host.realization_executor
@@ -445,7 +447,8 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         .build()
         .expect("validated Host dependencies");
     host.capabilities
-        .register_thread_workspace("session-artifacts", "workspace-a");
+        .register_thread_workspace("session-artifacts", "workspace-a")
+        .expect("installed Sessions");
     install_terminal_artifact_projection_before_environment(
         host.as_ref(),
         "session-artifacts",
@@ -563,7 +566,7 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         effect.lease,
     );
     managed
-        .run_assembly
+        .realization_executor
         .dispose_terminal_cleanup_for_effect(disposal)
         .await
         .unwrap();
@@ -609,7 +612,8 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
         .build()
         .expect("validated Host dependencies");
     host.capabilities
-        .register_thread_workspace("artifact-response-loss", "workspace-a");
+        .register_thread_workspace("artifact-response-loss", "workspace-a")
+        .expect("installed Sessions");
     install_terminal_artifact_projection_before_environment(
         host.as_ref(),
         "artifact-response-loss",
@@ -997,7 +1001,8 @@ async fn retained_artifact_harvester_observes_late_realization_without_retaining
     );
 
     host.capabilities
-        .register_thread_workspace("late-output", "workspace-late");
+        .register_thread_workspace("late-output", "workspace-late")
+        .expect("installed Sessions");
     let spec = agent_run_sandbox_spec("late-output");
     let environment = Arc::new(
         awaken_session_environment::SandboxEnvironment::workdir(
@@ -1054,7 +1059,8 @@ async fn artifact_harvest_has_one_file_authority_and_no_magic_bundle_gate() {
         .build()
         .expect("validated Host dependencies");
     host.capabilities
-        .register_thread_workspace("plain-files", "workspace-a");
+        .register_thread_workspace("plain-files", "workspace-a")
+        .expect("installed Sessions");
     let spec = agent_run_sandbox_spec("plain-files");
     let environment = Arc::new(
         awaken_session_environment::SandboxEnvironment::workdir(
@@ -1266,7 +1272,8 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
     );
     let host = (raw_host).build().expect("validated Host dependencies");
     host.capabilities
-        .register_thread_workspace("session-harvest-failure", "test");
+        .register_thread_workspace("session-harvest-failure", "test")
+        .expect("installed Sessions");
     install_terminal_artifact_projection_before_environment(
         host.as_ref(),
         "session-harvest-failure",

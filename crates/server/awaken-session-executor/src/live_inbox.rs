@@ -29,11 +29,13 @@ impl LiveInboxes {
 
     /// The in-flight live inbox for `thread`, if an attempt is currently owned
     /// by this process. A pure lookup — never materializes a Session — so wire
-    /// handlers can probe without side effects.
+    /// handlers can probe without side effects. An unreadable registry exposes
+    /// no inbox, so every queue or edit through it is refused as inactive.
     pub async fn live_inbox(&self, thread: &str) -> Option<LiveInbox> {
         let ctx = self
             .installed_sessions
             .read_run(thread, |run| run.context.clone())
+            .ok()?
             .flatten()?;
         // Runtime execution and Worker RAII both install their exact attempt
         // bundle here. The generation and ownership fences make deployment

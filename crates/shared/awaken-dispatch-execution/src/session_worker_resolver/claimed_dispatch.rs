@@ -228,7 +228,10 @@ impl SessionWorkerResolver {
     ) -> Result<(), Error> {
         let thread_id = claimed.request.session_thread_id();
         let run_thread_id = claimed.request.thread_id();
-        execution.preparation.bind_deferred_executor(&thread_id.0);
+        execution
+            .preparation
+            .bind_deferred_executor(&thread_id.0)
+            .map_err(map_admission_error)?;
         // The Control synchronizer merged projection + claim binding before
         // applying the Resource transition. Re-adopting the stale claim handle
         // here would create a second owner and rejects a legitimate

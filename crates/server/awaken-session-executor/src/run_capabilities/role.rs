@@ -51,7 +51,8 @@ impl awaken_session_execution_contract::CapabilityRuntime for RunCapabilities {
     fn capabilities_for(&self, thread: &str) -> AgentCapabilities {
         let workspace = self.thread_workspace(thread);
         let mut capabilities = self.capabilities_for_workspace(&workspace);
-        if let Some(delegate_ids) = self.thread_delegate_ids(thread) {
+        // An unreadable registry advertises no delegate it cannot read.
+        if let Some(delegate_ids) = self.thread_delegate_ids(thread).ok().flatten() {
             capabilities.delegates = delegate_ids;
         }
         capabilities

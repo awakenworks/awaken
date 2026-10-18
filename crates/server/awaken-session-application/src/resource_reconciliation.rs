@@ -1310,7 +1310,7 @@ impl SessionApplication {
         owner_scope: &str,
         mut session: SessionAggregate,
     ) -> Result<SessionAggregate, SessionPreparationError> {
-        let environment_runtime = self.runtime().environment();
+        let effects_runtime = self.runtime().realization_effects();
 
         if !session.is_terminal() && session.requires_external_environment_owner() {
             return if session.resources.pending.is_none()
@@ -1350,11 +1350,11 @@ impl SessionApplication {
                 session = self
                     .start_resource_reconciliation(owner_scope, session, &desired)
                     .await?;
-                if let Err(error) = environment_runtime
+                if let Err(error) = effects_runtime
                     .apply_session_inputs(session_id.as_str(), &transition)
                     .await
                 {
-                    let settlement = match environment_runtime
+                    let settlement = match effects_runtime
                         .apply_session_inputs(session_id.as_str(), &transition.reversed())
                         .await
                     {
@@ -1427,7 +1427,7 @@ impl SessionApplication {
             let transition =
                 crate::session_resource::SessionResourceTransition::new(active.clone(), active)
                     .map_err(internal)?;
-            environment_runtime
+            effects_runtime
                 .apply_session_inputs(session_id.as_str(), &transition)
                 .await
                 .map_err(SessionPreparationError::Rejected)?;

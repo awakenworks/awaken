@@ -12,9 +12,15 @@ use crate::frozen_inputs::FrozenSessionInputs;
 use crate::realization_error::{RealizationError, RealizationLock};
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use crate::realization_state::SessionRealization;
+/// A poisoned installed-Session registry, as the neutral Run failure a
+/// Session role returns.
+pub(crate) fn registry_run_error(error: RealizationLock) -> awaken_session_types::RunError {
+    awaken_session_types::RunError::from(RealizationError::from(error))
+}
+
 /// The exclusion every realization phase driver must hold is contract-owned
 /// (`SessionRealizationPermit`); this crate only supplies the Session slot
 /// allocation as its identity.
@@ -118,7 +124,7 @@ impl crate::session_realizations::SessionRealizationSource for InstalledSessions
                 ),
     ) -> futures_util::future::BoxFuture<
         'a,
-        awaken_session_realization_contract::SessionRealizationPermit,
+        Result<awaken_session_realization_contract::SessionRealizationPermit, RealizationLock>,
     > {
         Box::pin(async move {
             self.acquire_realization_with(session, |slot| {
@@ -129,7 +135,7 @@ impl crate::session_realizations::SessionRealizationSource for InstalledSessions
                 })
             })
             .await
-            .0
+            .map(|(permit, ())| permit)
         })
     }
 
@@ -242,11 +248,8 @@ impl crate::session_realizations::SessionRealizationSource for InstalledSessions
             slot.realization
                 .validate_preparation_publication(asserted)?;
             slot.replace_frozen_with(|next| next.workspace = Some(workspace.to_owned()));
-            slot.realization.staging_mut().resources = compiled.staged;
-            slot.realization.staging_mut().memory_bindings = compiled.memory_bindings;
-            slot.realization.staging_mut().memory = None;
-            slot.realization.staging_mut().skills = Some(versions);
-            slot.realization.staging_mut().effect_key = Some(effect_key);
+            slot.realization
+                .publish_compiled_inputs(compiled, versions, effect_key);
             Ok::<_, RealizationError>(())
         })
         .map_err(|_| RealizationLock::InstalledSessions)?
@@ -363,8 +366,11 @@ impl InstalledSessions {
         session: &str,
         create: bool,
         f: impl FnOnce(&mut InstalledSession) -> R,
-    ) -> Result<Option<R>, PoisonError<()>> {
-        let mut slots = self.slots.lock().map_err(|_| PoisonError::new(()))?;
+    ) -> Result<Option<R>, RealizationLock> {
+        let mut slots = self
+            .slots
+            .lock()
+            .map_err(|_| RealizationLock::InstalledSessions)?;
         let slot = if create {
             Some(slots.entry(session.to_string()).or_default())
         } else {
@@ -377,15 +383,16 @@ impl InstalledSessions {
     #[cfg(target_os = "linux")]
     pub(crate) fn execution_environments(
         &self,
-    ) -> Vec<Arc<crate::session_environment::SessionEnvironment>> {
-        self.slots
+    ) -> Result<Vec<Arc<crate::session_environment::SessionEnvironment>>, RealizationLock> {
+        Ok(self
+            .slots
             .lock()
-            .expect("session runtime slots mutex poisoned")
+            .map_err(|_| RealizationLock::InstalledSessions)?
             .values()
             .filter_map(|slot| slot.realization.environment().owner.execution_environment())
             .filter(|environment| environment.scoped_execution().is_some())
             .cloned()
-            .collect()
+            .collect())
     }
 
     /// The registry itself, for tests that hold or poison its lock.
@@ -408,21 +415,22 @@ impl InstalledSessions {
             &crate::session_resource::SessionRealizationLease,
             &Arc<tokio::sync::Mutex<()>>,
         )>,
-    ) -> Option<ClosedSessionRealization> {
-        self.modify(session, |slot| {
-            if expected.is_some_and(|(_, realization)| {
-                !Arc::ptr_eq(&slot.realization.execution().phase, realization)
-            }) {
-                return None;
-            }
-            ClosedSessionRealization::select(slot, |realization| {
-                crate::session_realizations::SessionRealizationRevocationSelection::close(
-                    realization,
-                    expected.map(|(lease, _)| lease),
-                )
-            })
-        })
-        .flatten()
+    ) -> Result<Option<ClosedSessionRealization>, RealizationLock> {
+        Ok(self
+            .modify(session, |slot| {
+                if expected.is_some_and(|(_, realization)| {
+                    !Arc::ptr_eq(&slot.realization.execution().phase, realization)
+                }) {
+                    return None;
+                }
+                ClosedSessionRealization::select(slot, |realization| {
+                    crate::session_realizations::SessionRealizationRevocationSelection::close(
+                        realization,
+                        expected.map(|(lease, _)| lease),
+                    )
+                })
+            })?
+            .flatten())
     }
 
     /// Close this original root's generation through the realization's own
@@ -433,25 +441,29 @@ impl InstalledSessions {
         session: &str,
         lease: &crate::session_resource::SessionRealizationLease,
         phase: &Arc<tokio::sync::Mutex<()>>,
-    ) -> Option<ClosedSessionRealization> {
-        self.modify(session, |slot| {
-            ClosedSessionRealization::select(slot, |realization| {
-                crate::session_realizations::SessionRealizationRevocationSelection::close_generation(
-                    realization,
-                    lease,
-                    phase,
-                )
-            })
-        })
-        .flatten()
+    ) -> Result<Option<ClosedSessionRealization>, RealizationLock> {
+        Ok(self
+            .modify(session, |slot| {
+                ClosedSessionRealization::select(slot, |realization| {
+                    crate::session_realizations::SessionRealizationRevocationSelection::close_generation(
+                        realization,
+                        lease,
+                        phase,
+                    )
+                })
+            })?
+            .flatten())
     }
 
     /// One linearization point closes every currently installed projection
     /// before any caller may wait for an async lifecycle lock or drain.
-    pub(crate) fn close_all_realizations(&self) -> Vec<(String, ClosedSessionRealization)> {
-        self.slots
+    pub(crate) fn close_all_realizations(
+        &self,
+    ) -> Result<Vec<(String, ClosedSessionRealization)>, RealizationLock> {
+        Ok(self
+            .slots
             .lock()
-            .expect("session runtime slots mutex poisoned")
+            .map_err(|_| RealizationLock::InstalledSessions)?
             .iter_mut()
             .map(|(id, slot)| {
                 (
@@ -465,7 +477,7 @@ impl InstalledSessions {
                     .expect("unconditional close always selects the current slot"),
                 )
             })
-            .collect()
+            .collect())
     }
 
     /// Test set-up: install the Session and change its realization layer.
@@ -475,42 +487,67 @@ impl InstalledSessions {
         session: &str,
         f: impl FnOnce(&mut SessionRealization) -> R,
     ) -> R {
-        self.update(session, |slot| f(&mut slot.realization))
+        self.install_with(session, |slot| f(&mut slot.realization))
+            .expect("test registry is healthy")
+    }
+
+    /// Test set-up: install the Session and change its run layer.
+    #[cfg(test)]
+    pub(crate) fn install_run<R>(
+        &self,
+        session: &str,
+        f: impl FnOnce(&mut SessionRunBinding) -> R,
+    ) -> R {
+        self.install_with(session, |slot| f(&mut slot.run))
+            .expect("test registry is healthy")
     }
 
     /// The host's install path: install an empty Session slot when absent.
     /// Realization reads, writes and lock acquisitions never install one.
-    pub(crate) fn install(&self, session: &str) {
-        self.update(session, |_| ());
+    pub(crate) fn install(&self, session: &str) -> Result<(), RealizationLock> {
+        self.install_with(session, |_| ())
     }
 
-    /// Publish a replacement of one Session's frozen inputs, creating its slot.
+    /// The install path with a change in the same slot lock: install the
+    /// Session slot when absent, then apply `f`. Only installation creates a
+    /// slot; every read and every other change visits an existing one.
+    pub(crate) fn install_with<R>(
+        &self,
+        session: &str,
+        f: impl FnOnce(&mut InstalledSession) -> R,
+    ) -> Result<R, RealizationLock> {
+        Ok(self
+            .visit_slot(session, true, f)?
+            .expect("installation always visits the slot it creates"))
+    }
+
+    /// Publish a replacement of one Session's frozen inputs on the install
+    /// path, creating its slot.
     pub(crate) fn replace_frozen_with(
         &self,
         session: &str,
         build: impl FnOnce(&mut FrozenSessionInputs),
-    ) {
-        self.update(session, |slot| slot.replace_frozen_with(build));
+    ) -> Result<(), RealizationLock> {
+        self.install_with(session, |slot| slot.replace_frozen_with(build))
     }
 
-    pub fn read<R>(&self, session: &str, f: impl FnOnce(&InstalledSession) -> R) -> Option<R> {
+    /// Read one installed Session; `None` when it is not installed. A
+    /// poisoned registry is refused, never read through or recreated.
+    pub fn read<R>(
+        &self,
+        session: &str,
+        f: impl FnOnce(&InstalledSession) -> R,
+    ) -> Result<Option<R>, RealizationLock> {
         self.visit_slot(session, false, |slot| f(slot))
-            .expect("session runtime slots mutex poisoned")
     }
 
-    pub fn update<R>(&self, session: &str, f: impl FnOnce(&mut InstalledSession) -> R) -> R {
-        self.visit_slot(session, true, f)
-            .expect("session runtime slots mutex poisoned")
-            .expect("an installed Session is always visited")
-    }
-
+    /// Change one installed Session; `None` when it is not installed.
     pub fn modify<R>(
         &self,
         session: &str,
         f: impl FnOnce(&mut InstalledSession) -> R,
-    ) -> Option<R> {
+    ) -> Result<Option<R>, RealizationLock> {
         self.visit_slot(session, false, f)
-            .expect("session runtime slots mutex poisoned")
     }
 
     /// Read only the run layer of one Session's slot.
@@ -518,17 +555,8 @@ impl InstalledSessions {
         &self,
         session: &str,
         f: impl FnOnce(&SessionRunBinding) -> R,
-    ) -> Option<R> {
+    ) -> Result<Option<R>, RealizationLock> {
         self.read(session, |slot| f(&slot.run))
-    }
-
-    /// Change only the run layer, creating the Session's slot.
-    pub(crate) fn update_run<R>(
-        &self,
-        session: &str,
-        f: impl FnOnce(&mut SessionRunBinding) -> R,
-    ) -> R {
-        self.update(session, |slot| f(&mut slot.run))
     }
 
     /// Change only the run layer of an existing slot.
@@ -536,7 +564,7 @@ impl InstalledSessions {
         &self,
         session: &str,
         f: impl FnOnce(&mut SessionRunBinding) -> R,
-    ) -> Option<R> {
+    ) -> Result<Option<R>, RealizationLock> {
         self.modify(session, |slot| f(&mut slot.run))
     }
 
@@ -546,11 +574,11 @@ impl InstalledSessions {
             .expect("session runtime slots mutex poisoned")
     }
 
-    fn try_remove(&self, session: &str) -> Result<Option<InstalledSession>, PoisonError<()>> {
+    fn try_remove(&self, session: &str) -> Result<Option<InstalledSession>, RealizationLock> {
         let removed = self
             .slots
             .lock()
-            .map_err(|_| PoisonError::new(()))?
+            .map_err(|_| RealizationLock::InstalledSessions)?
             .remove(session);
         if let Some(slot) = &removed {
             slot.cancel_preparation_and_notify_removal();
@@ -560,13 +588,17 @@ impl InstalledSessions {
 
     pub fn realization_leases(
         &self,
-    ) -> Vec<(
-        String,
-        awaken_session_realization_contract::ObservedSessionRealizationLease,
-    )> {
-        self.slots
+    ) -> Result<
+        Vec<(
+            String,
+            awaken_session_realization_contract::ObservedSessionRealizationLease,
+        )>,
+        RealizationLock,
+    > {
+        Ok(self
+            .slots
             .lock()
-            .expect("session runtime slots mutex poisoned")
+            .map_err(|_| RealizationLock::InstalledSessions)?
             .iter()
             .filter_map(|(session_id, slot)| {
                 slot.realization
@@ -576,16 +608,17 @@ impl InstalledSessions {
                     .cloned()
                     .map(|lease| (session_id.clone(), lease))
             })
-            .collect()
+            .collect())
     }
 
-    pub fn session_ids(&self) -> Vec<String> {
-        self.slots
+    pub fn session_ids(&self) -> Result<Vec<String>, RealizationLock> {
+        Ok(self
+            .slots
             .lock()
-            .expect("session runtime slots mutex poisoned")
+            .map_err(|_| RealizationLock::InstalledSessions)?
             .keys()
             .cloned()
-            .collect()
+            .collect())
     }
 
     #[cfg(test)]

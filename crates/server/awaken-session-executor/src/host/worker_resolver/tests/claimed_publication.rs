@@ -69,6 +69,7 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
         .await
         .expect("R1 queue root continuation");
     let ephemeral_store = ephemeral
+        .run_assembly
         .authority
         .dispatch_binding()
         .map(|binding| binding.queue())
@@ -94,6 +95,7 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
         .run_assembly
         .installed_sessions
         .read_run(session_id, |run| run.context.clone())
+        .expect("installed Sessions")
         .flatten()
         .expect("R1 resident Session context");
     assert!(Arc::ptr_eq(&worker, &resident.claimed_worker), "R1/E2");
@@ -183,6 +185,7 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
             .run_assembly
             .installed_sessions
             .read_run(coordinator_thread, |run| run.context.is_none())
+            .expect("installed Sessions")
             .unwrap_or(true),
         "R3/E4 rejects before context construction"
     );
@@ -473,6 +476,7 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
         .run_assembly
         .installed_sessions
         .read_run("claimed-cache", |run| run.context.clone())
+        .expect("installed Sessions")
         .flatten()
         .expect("K1 claimed context resident");
     assert!(!Arc::ptr_eq(&warm, &claimed_ctx), "K1/E1");
@@ -495,6 +499,7 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
         .run_assembly
         .installed_sessions
         .read_run("claimed-cache", |run| run.context.clone())
+        .expect("installed Sessions")
         .flatten()
         .expect("K2 context resident");
     assert!(Arc::ptr_eq(&claimed_ctx, &retried), "K2/E3");
@@ -529,6 +534,7 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
         .run_assembly
         .installed_sessions
         .read_run("claimed-cache", |run| run.context.clone())
+        .expect("installed Sessions")
         .flatten()
         .expect("K3 context resident");
     assert!(!Arc::ptr_eq(&retried, &model_changed_ctx), "K3/E4");

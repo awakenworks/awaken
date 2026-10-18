@@ -99,6 +99,7 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
     assert!(
         host.run_assembly
             .active_mcp_projections("mcp-parity")
+            .expect("registry and projection are healthy")
             .is_empty(),
         "P1"
     );
@@ -107,7 +108,10 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
         .publish_mcp_projection(&generation(1))
         .await
         .unwrap();
-    let visible = host.run_assembly.active_mcp_projections("mcp-parity");
+    let visible = host
+        .run_assembly
+        .active_mcp_projections("mcp-parity")
+        .expect("installed Sessions");
     assert_eq!(
         visible[0].native_wiring.as_ref().unwrap().tool_ids[0],
         "docs-generation-1",
@@ -133,7 +137,9 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
     let staged = host.run_assembly.mcp_projection(&generation(2)).unwrap();
     relay.set_route(&staged.request.generation, staged.server.as_ref().unwrap());
     assert_eq!(
-        host.run_assembly.active_mcp_projections("mcp-parity")[0]
+        host.run_assembly
+            .active_mcp_projections("mcp-parity")
+            .expect("installed Sessions")[0]
             .request
             .generation
             .generation()
@@ -146,7 +152,10 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
         .publish_mcp_projection(&generation(2))
         .await
         .unwrap();
-    let visible = host.run_assembly.active_mcp_projections("mcp-parity");
+    let visible = host
+        .run_assembly
+        .active_mcp_projections("mcp-parity")
+        .expect("installed Sessions");
     assert_eq!(visible.len(), 1, "P4");
     assert_eq!(
         visible[0].native_wiring.as_ref().unwrap().tool_ids[0],
@@ -175,7 +184,9 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
         .await
         .unwrap();
     assert_eq!(
-        host.run_assembly.active_mcp_projections("mcp-parity")[0]
+        host.run_assembly
+            .active_mcp_projections("mcp-parity")
+            .expect("installed Sessions")[0]
             .request
             .generation
             .generation()
@@ -682,13 +693,15 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
             .run_assembly
             .installed_sessions
             .read("mcp-missing-query", |_| ())
+            .expect("installed Sessions")
             .is_none(),
         "RQ0 never creates a slot"
     );
     runtime_host
         .run_assembly
         .installed_sessions
-        .update("mcp-empty-query", |_| ());
+        .install_with("mcp-empty-query", |_| ())
+        .expect("installed Sessions");
     assert_eq!(query("mcp-empty-query"), Some((false, false)), "RQ1");
     let runtime = runtime_host
         .run_assembly
@@ -750,6 +763,7 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
                 .context
                 .as_ref()
                 .is_some_and(|owner| Arc::ptr_eq(owner, &runtime)))
+            .expect("installed Sessions")
             .unwrap_or(false),
         "P2 retains the exact Runtime owner"
     );
@@ -782,6 +796,7 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
                 .context
                 .as_ref()
                 .is_some_and(|owner| Arc::ptr_eq(owner, &runtime)))
+            .expect("installed Sessions")
             .unwrap_or(false),
         "P3 retains the exact Runtime owner"
     );
@@ -829,6 +844,7 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
                 .context
                 .as_ref()
                 .is_some_and(|owner| Arc::ptr_eq(owner, &runtime)))
+            .expect("installed Sessions")
             .unwrap_or(false),
         "P4 leaves Runtime removal to the outer quiesce owner"
     );
@@ -1546,6 +1562,7 @@ async fn authenticated_acp_publication_requires_the_exact_staged_relay_route() {
     assert!(
         host.run_assembly
             .active_mcp_projections(generation.session_id().as_str())
+            .expect("registry and projection are healthy")
             .is_empty(),
         "S1"
     );
@@ -1565,6 +1582,7 @@ async fn authenticated_acp_publication_requires_the_exact_staged_relay_route() {
     assert!(
         host.run_assembly
             .active_mcp_projections(generation.session_id().as_str())
+            .expect("registry and projection are healthy")
             .is_empty(),
         "S2"
     );
@@ -1577,6 +1595,7 @@ async fn authenticated_acp_publication_requires_the_exact_staged_relay_route() {
     assert_eq!(
         host.run_assembly
             .active_mcp_projections(generation.session_id().as_str())
+            .expect("registry and projection are healthy")
             .len(),
         1,
         "S3"
@@ -1766,7 +1785,10 @@ async fn a_github_repository_resource_does_not_create_a_parallel_mcp_projection(
         "the activation retains only the exact secret-free source pin"
     );
     assert!(
-        host.run_assembly.active_mcp_projections("t-gh").is_empty(),
+        host.run_assembly
+            .active_mcp_projections("t-gh")
+            .expect("registry and projection are healthy")
+            .is_empty(),
         "Repository realization cannot manufacture Session MCP authority"
     );
 }

@@ -78,6 +78,7 @@ impl CoordinationEndpoint {
         })?;
         let claim = slots
             .read_run(session_id, |run| run.dispatch_claim.clone())
+            .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?
             .flatten()
             .ok_or_else(|| {
                 ToolError::DefinitiveFailure(
@@ -831,7 +832,7 @@ mod tests {
             slots: Arc::downgrade(&slots),
         };
         let factory = claimed_model_request_gate_factory(endpoint.clone(), "session");
-        slots.update_run("session", |run| run.dispatch_claim = Some(parent.clone()));
+        slots.install_run("session", |run| run.dispatch_claim = Some(parent.clone()));
         assert_eq!(
             factory(&child)
                 .admit_model_request(ModelRequestAdmissionRequest {
@@ -843,7 +844,7 @@ mod tests {
             ModelRequestAdmission::Admit,
             "R1 child ignores parent slot"
         );
-        slots.update_run("session", |run| run.dispatch_claim = Some(child.clone()));
+        slots.install_run("session", |run| run.dispatch_claim = Some(child.clone()));
         assert_eq!(
             factory(&parent)
                 .admit_model_request(ModelRequestAdmissionRequest {

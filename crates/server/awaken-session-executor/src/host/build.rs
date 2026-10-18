@@ -214,7 +214,6 @@ fn assemble_host(dependencies: HostDependencies) -> SharedHost {
         local_workspace,
         hub,
         store_dir,
-        authority,
         clock,
         completion,
         session_application,
@@ -500,12 +499,13 @@ impl SharedHost {
     /// The Session application's executor roles: each role is served by the
     /// component that owns it.
     #[must_use]
-    pub fn session_execution_roles(
+    pub(crate) fn session_execution_roles(
         &self,
     ) -> awaken_session_execution_contract::SessionExecutionRoles {
         awaken_session_execution_contract::SessionExecutionRoles {
             core: self.session_runs.clone(),
             realization: self.run_assembly.clone(),
+            realization_effects: self.realization_executor.clone(),
             coordination: self.coordination.clone(),
             coordination_reads: self.coordination.clone(),
             budget: self.budget.clone(),
@@ -690,21 +690,36 @@ mod startup_tests {
         .expect("validated Host dependencies");
         assert!(
             matches!(
-                worker.authority.open_commit("role").await,
+                worker.run_assembly.authority.open_commit("role").await,
                 Ok(crate::store::HostCommit::Remote(_))
             ),
             "R1 remote commit boundary"
         );
         assert!(
-            worker.authority.claimed_commit().unwrap().is_some(),
+            worker
+                .run_assembly
+                .authority
+                .claimed_commit()
+                .unwrap()
+                .is_some(),
             "R1 selected required port"
         );
         assert!(
-            coordinator.authority.open_commit("role").await.is_ok(),
+            coordinator
+                .run_assembly
+                .authority
+                .open_commit("role")
+                .await
+                .is_ok(),
             "R2 selected local commit boundary"
         );
         assert!(
-            coordinator.authority.claimed_commit().unwrap().is_none(),
+            coordinator
+                .run_assembly
+                .authority
+                .claimed_commit()
+                .unwrap()
+                .is_none(),
             "R2"
         );
         let worker_dependencies = HostDependencies::for_worker(

@@ -153,6 +153,7 @@ async fn ephemeral_parent_routes_a_coordinated_child_through_the_boundary_worker
         .expect("E1 direct parent context");
     assert!(!parent_ctx.delivery.is_durable(), "E1 precondition");
     let store = host
+        .run_assembly
         .authority
         .dispatch_binding()
         .map(|binding| binding.queue())
@@ -193,6 +194,7 @@ async fn ephemeral_parent_routes_a_coordinated_child_through_the_boundary_worker
                 .context
                 .as_ref()
                 .is_some_and(|context| Arc::ptr_eq(context, &parent_ctx)))
+            .expect("installed Sessions")
             .unwrap(),
         "E1/E2 boundary reuses the parent Runtime without rebuilding plugins"
     );
@@ -200,6 +202,7 @@ async fn ephemeral_parent_routes_a_coordinated_child_through_the_boundary_worker
         host.run_assembly
             .installed_sessions
             .read(&child.0, |_| ())
+            .expect("installed Sessions")
             .is_none(),
         "E1/E2 no child Session slot or Root is constructed"
     );
@@ -261,6 +264,7 @@ async fn durable_deferred_sandbox_publication_decision_table() {
         .run_assembly
         .installed_sessions
         .read_run("durable-lazy", |run| run.deferred_executor.clone())
+        .expect("installed Sessions")
         .flatten()
         .expect("deferred executor");
     let error = deferred
@@ -328,6 +332,7 @@ async fn durable_deferred_sandbox_publication_decision_table() {
         .run_assembly
         .installed_sessions
         .read_run("durable-loss", |run| run.deferred_executor.clone())
+        .expect("installed Sessions")
         .flatten()
         .expect("D4 deferred executor");
     let error = loss_deferred
@@ -412,6 +417,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for RecordingMcpRe
                         slot.realization.environment().owner.is_resident()
                             && slot.run.context.is_none()
                     })
+                    .expect("installed Sessions")
                     .unwrap_or(false)
             });
             if !physical_only {
@@ -575,6 +581,7 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
         host.run_assembly
             .installed_sessions
             .read_run(thread, |run| run.context.is_some())
+            .expect("installed Sessions")
             .unwrap_or(false),
         "S1/E3"
     );
@@ -850,7 +857,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
     };
     host.run_assembly
         .installed_sessions
-        .update("ordinary-remote", |slot| {
+        .install_with("ordinary-remote", |slot| {
             slot.run.dispatch_claim = Some(predecessor.clone());
             slot.realization.execution_mut().authority =
                 crate::realization_state::SessionRealizationAuthority::Live(
@@ -863,7 +870,8 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
                         },
                     ),
                 );
-        });
+        })
+        .expect("installed Sessions");
     let frozen = projection.lock().unwrap().take();
     for _ in 0..2 {
         assert!(
@@ -878,6 +886,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
             host.run_assembly
                 .installed_sessions
                 .read_run("ordinary-remote", |run| run.dispatch_claim.clone())
+                .expect("installed Sessions")
                 .flatten(),
             Some(predecessor.clone()),
             "CR1 failed request cannot publish its claim"
@@ -903,6 +912,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
             );
             slot.realization.execution().authority.lease().cloned()
         })
+        .expect("installed Sessions")
         .flatten()
         .expect("CR2 installed lease");
     crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
@@ -931,6 +941,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
                                 && lease.epoch == claimed.lease.epoch()
                         })
             })
+            .expect("installed Sessions")
             .unwrap_or(false),
         "O1/E1-E2"
     );
@@ -1198,7 +1209,10 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
         );
     }
     let active_thread = "active-previous-transition";
-    host.run_assembly.installed_sessions.install(active_thread);
+    host.run_assembly
+        .installed_sessions
+        .install(active_thread)
+        .expect("installed Sessions");
     host.realization_executor
         .staging()
         .register_thread_resource_manifest(active_thread, revision_one.clone())
@@ -1290,6 +1304,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
                 slot.realization.staging().manifest.clone(),
             )
         })
+        .expect("installed Sessions")
         .expect("R3 producer slot");
     let error = host
         .realization_executor
@@ -1307,7 +1322,8 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
                     slot.inputs.workspace.clone(),
                     slot.realization.staging().manifest.clone(),
                 )
-            }),
+            })
+            .expect("installed Sessions"),
         Some(before_mismatch),
         "R3/E2 rejects without mutating correlated Resource state"
     );
@@ -1331,7 +1347,10 @@ async fn complete_projection_resource_guard_excludes_desired_only_staging() {
         host.run_assembly.local_workspace(),
         crate::session_resource::ResolvedSessionResources::default(),
     );
-    host.run_assembly.installed_sessions.install(thread);
+    host.run_assembly
+        .installed_sessions
+        .install(thread)
+        .expect("installed Sessions");
     let guard = host
         .run_assembly
         .installed_sessions
@@ -1476,17 +1495,21 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
         9,
         Default::default(),
     );
-    host.run_assembly.installed_sessions.install(foreign_thread);
+    host.run_assembly
+        .installed_sessions
+        .install(foreign_thread)
+        .expect("installed Sessions");
     host.realization_executor
         .staging()
         .register_thread_resource_manifest(foreign_thread, foreign.clone())
         .unwrap();
     host.run_assembly
         .installed_sessions
-        .update(foreign_thread, |slot| {
+        .install_with(foreign_thread, |slot| {
             slot.replace_frozen_with(|next| next.workspace = Some("sentinel-workspace".into()));
             slot.realization.staging_mut().effect_key = Some("sentinel-key".into());
-        });
+        })
+        .expect("installed Sessions");
     let _guard = host
         .run_assembly
         .installed_sessions
@@ -1518,13 +1541,17 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
                     && slot.realization.staging().effect_key.as_deref() == Some("sentinel-key")
                     && slot.realization.staging().resources.mounts.is_empty()
             })
+            .expect("installed Sessions")
             .unwrap_or(false),
         "P1 rejects before compilation or any correlated slot write"
     );
     drop(_guard);
 
     let bound_thread = "prospective-bound-resource";
-    host.run_assembly.installed_sessions.install(bound_thread);
+    host.run_assembly
+        .installed_sessions
+        .install(bound_thread)
+        .expect("installed Sessions");
     let _guard = host
         .run_assembly
         .installed_sessions
@@ -2136,6 +2163,7 @@ async fn a_dead_resident_environment_fails_continuity_and_is_fenced_before_rebui
             .run_assembly
             .installed_sessions
             .read_run(thread, |run| run.context.is_some())
+            .expect("installed Sessions")
             .unwrap_or(false)
     );
 }
@@ -2186,6 +2214,7 @@ async fn a_stale_binding_cannot_evict_a_different_resident_environment() {
         host.run_assembly
             .installed_sessions
             .read_run(thread, |run| run.context.is_some())
+            .expect("installed Sessions")
             .unwrap_or(false)
     );
 }
@@ -2398,6 +2427,7 @@ async fn cancellation_resolution_does_not_touch_an_invalid_sandbox_binding() {
             .run_assembly
             .installed_sessions
             .read_run(&thread.0, |run| run.context.is_some())
+            .expect("installed Sessions")
             .unwrap_or(false)
     );
 }
@@ -2487,6 +2517,7 @@ async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session
                 .installed_sessions
                 .read(&thread, |slot| slot.inputs.baseline.is_some()
                     && slot.run.context.is_some())
+                .expect("installed Sessions")
                 .unwrap_or(false)
         );
         assert!(

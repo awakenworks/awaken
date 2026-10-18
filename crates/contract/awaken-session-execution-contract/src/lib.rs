@@ -77,7 +77,7 @@ pub use session::{
     EnvironmentRuntime, LiveInboxApplication, LiveInboxApplicationError, LiveInboxEntry,
     LiveInboxError, LiveInboxRuntime, LiveInboxSnapshot, McpAttachmentRealizer, NeutralRuntime,
     OutcomeDrive, OutcomeFailure, OutcomeIteration, OutcomeReport, OutcomeRuntime,
-    ProjectionThreadSnapshots, RealizationRuntime, SessionCoordinationReads,
+    ProjectionThreadSnapshots, RealizationEffects, RealizationRuntime, SessionCoordinationReads,
     SessionEnvironmentBindingSink, SessionExecutionClosureReference, SessionExecutionObservation,
     SessionExecutionOperationFootprint, SessionExecutionRecoveryGap,
     SessionExecutionRecoveryObservation, SessionExecutionRoles, SessionExecutor,

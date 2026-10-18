@@ -110,6 +110,14 @@ impl From<awaken_session_realization::realization_error::RealizationError> for H
     }
 }
 
+/// A poisoned installed-Sessions registry is refused as the realization
+/// failure it is, never read through or recreated.
+impl From<awaken_session_realization::realization_error::RealizationLock> for HostError {
+    fn from(error: awaken_session_realization::realization_error::RealizationLock) -> Self {
+        Self::from(awaken_session_realization::realization_error::RealizationError::from(error))
+    }
+}
+
 /// An executor failure inside a realization port (substrate, frozen
 /// projection install) keeps its neutral Run class.
 impl From<HostError> for awaken_session_realization::realization_error::RealizationError {

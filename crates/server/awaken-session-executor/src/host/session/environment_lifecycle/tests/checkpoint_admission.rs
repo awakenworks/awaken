@@ -2,7 +2,7 @@
 
 use super::*;
 use awaken_session_configuration_contract::resource as session_resource;
-use awaken_session_execution_contract::EnvironmentRuntime as _;
+use awaken_session_execution_contract::RealizationEffects as _;
 
 struct PendingUploadStore {
     puts: std::sync::atomic::AtomicUsize,
@@ -145,7 +145,7 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                 };
                 let mut pending = Box::pin(
                     managed
-                        .run_assembly
+                        .realization_executor
                         .checkpoint_session_environment(thread, request.clone()),
                 );
                 std::future::poll_fn(|cx| {
@@ -222,7 +222,7 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                     *worker.current.lock().unwrap() = Some((fence, Duration::from_secs(1)));
                 }
                 managed
-                    .run_assembly
+                    .realization_executor
                     .checkpoint_session_environment(thread, request)
                     .await
                     .unwrap();

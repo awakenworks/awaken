@@ -182,13 +182,13 @@ pub(crate) fn register_session_lifecycle(
 /// lifecycle's outer shared deadline remains the sole shutdown timeout owner.
 pub(crate) fn register_runtime_background_drain(
     service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
-    host: Arc<SharedHost>,
+    roles: awaken_session_executor::CoordinatorRoles,
 ) {
     service_lifecycle.spawn(
         "coordinator-runtime-background-drain",
         move |cancel| async move {
             cancel.cancelled().await;
-            while !host.drain_runtime(RUNTIME_BACKGROUND_DRAIN_SLICE).await {
+            while !roles.drain(RUNTIME_BACKGROUND_DRAIN_SLICE).await {
                 tokio::task::yield_now().await;
             }
             Ok(())
@@ -198,12 +198,13 @@ pub(crate) fn register_runtime_background_drain(
 
 /// Start the existing Runtime/Dream services after application composition.
 pub(crate) async fn start_runtime_services(
-    host: &Arc<SharedHost>,
+    roles: &awaken_session_executor::CoordinatorRoles,
     dreams: &Arc<awaken_dream_application::DreamApplication>,
 ) -> Result<(), CoordinatorBuildError> {
-    host.ensure_dispatch_pool()
+    roles
+        .start_local_pool()
         .map_err(|error| CoordinatorBuildError::DispatchPool(error.to_string()))?;
-    host.ensure_terminal_dispatch_reconciliation();
+    roles.start_terminal_reconciliation();
     dreams.resume_incomplete().await;
     Ok(())
 }
@@ -478,9 +479,10 @@ async fn start_coordinator_services(
     clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<(), CoordinatorBuildError> {
     lifecycle_delivery.start(service_lifecycle);
-    start_runtime_services(&host, &dream_application).await?;
+    let roles = awaken_session_executor::CoordinatorRoles::of(&host);
+    start_runtime_services(&roles, &dream_application).await?;
     register_session_lifecycle(service_lifecycle, session_application);
-    register_runtime_background_drain(service_lifecycle, host);
+    register_runtime_background_drain(service_lifecycle, roles);
 
     // One timer drives the exact DeploymentApplication and DreamApplication mounted above;
     // no scheduler may reconstruct either aggregate beside this component.

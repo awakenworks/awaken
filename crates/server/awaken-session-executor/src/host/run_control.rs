@@ -62,7 +62,7 @@ impl DurableRunCancellation {
     pub(crate) async fn cancel(&self, thread: &str, run: &str) -> Result<(), HostError> {
         let resident = self
             .installed_sessions
-            .read_run(thread, |run| run.context.clone())
+            .read_run(thread, |run| run.context.clone())?
             .flatten();
         let (owner, claimer) = match &self.control {
             DurableCancellationControl::NoLocalClaimer => {
@@ -227,8 +227,8 @@ impl crate::SessionRuns {
     /// Worker authority loss must stop in-flight tool processes before local
     /// realization revocation detaches their process bindings. Otherwise a native
     /// process can continue writing after this Worker has dropped authority.
-    pub async fn interrupt_all_session_runs(&self) -> usize {
-        let session_ids = self.installed_sessions.session_ids();
+    pub async fn interrupt_all_session_runs(&self) -> Result<usize, HostError> {
+        let session_ids = self.installed_sessions.session_ids()?;
         let mut interrupted = 0;
         for session_id in session_ids {
             match self.interrupt(&session_id).await {
@@ -237,13 +237,14 @@ impl crate::SessionRuns {
                     "Worker could not request Session interruption before local revocation"),
             }
         }
-        interrupted
+        Ok(interrupted)
     }
 
-    fn resident_context(&self, thread: &str) -> Option<Arc<SessionCtx>> {
-        self.installed_sessions
-            .read_run(thread, |run| run.context.clone())
-            .flatten()
+    fn resident_context(&self, thread: &str) -> Result<Option<Arc<SessionCtx>>, HostError> {
+        Ok(self
+            .installed_sessions
+            .read_run(thread, |run| run.context.clone())?
+            .flatten())
     }
 
     /// The canonical durable control owner over this process's dispatch queue and pool.
@@ -265,7 +266,7 @@ impl crate::SessionRuns {
     pub async fn wake_durable(&self, thread: &str, run: &str) -> Result<(), HostError> {
         self.require_durable_delivery()?;
         let runtime = self
-            .resident_context(thread)
+            .resident_context(thread)?
             .filter(|ctx| ctx.delivery.is_durable())
             .map(|ctx| ctx.claimed_worker.runtime().clone())
             .ok_or_else(|| {
@@ -284,7 +285,7 @@ impl crate::SessionRuns {
         run: Option<&str>,
     ) -> Result<String, HostError> {
         self.require_durable_delivery()?;
-        let resident = self.resident_context(thread);
+        let resident = self.resident_context(thread)?;
         let no_active = || AdmissionError::rejected("thread has no locally owned active run");
         let runtime = resident
             .as_ref()

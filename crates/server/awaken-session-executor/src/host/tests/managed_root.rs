@@ -374,7 +374,7 @@ impl ManagedSessionRootFixture {
         )?;
         managed
             .realization_executor
-            .apply_session_inputs(thread, &transition, None, Some(lease))
+            .apply_session_inputs_with_context(thread, &transition, None, Some(lease))
             .await?;
         self.settle_resource_stage(managed, thread, installed.clone())
             .await?;

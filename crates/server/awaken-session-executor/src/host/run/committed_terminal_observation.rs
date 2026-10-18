@@ -71,7 +71,7 @@ impl crate::RunAssembly {
             || !self.authority.observes_terminal_memory_locally()
             || self
                 .installed_sessions
-                .read_run(thread, |run| run.context.is_some())
+                .read_run(thread, |run| run.context.is_some())?
                 .unwrap_or(false)
         {
             return Ok(false);
@@ -485,6 +485,7 @@ mod tests {
             true,
         );
         let commit = host
+            .run_assembly
             .authority
             .open_commit("direct-terminal-observer-failure")
             .await

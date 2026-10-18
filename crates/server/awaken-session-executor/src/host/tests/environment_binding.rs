@@ -117,18 +117,21 @@ async fn managed_projection_without_a_lease_never_falls_back_to_unowned() {
             .await
             .build()
             .unwrap();
-        host.run_assembly.installed_sessions.update(thread, |slot| {
-            slot.run.session_dispatch = marker;
-            if baseline {
-                slot.replace_frozen_with(|next| {
-                    next.baseline = Some(remote_terminal_cleanup_projection().baseline)
-                });
-            }
-            if closed {
-                slot.realization.execution_mut().authority =
-                    crate::realization_state::SessionRealizationAuthority::Closed(None);
-            }
-        });
+        host.run_assembly
+            .installed_sessions
+            .install_with(thread, |slot| {
+                slot.run.session_dispatch = marker;
+                if baseline {
+                    slot.replace_frozen_with(|next| {
+                        next.baseline = Some(remote_terminal_cleanup_projection().baseline)
+                    });
+                }
+                if closed {
+                    slot.realization.execution_mut().authority =
+                        crate::realization_state::SessionRealizationAuthority::Closed(None);
+                }
+            })
+            .expect("installed Sessions");
         let intent = host
             .realization_executor
             .authority()
@@ -369,7 +372,7 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
     let thread = "claimed-ordinary-environment-authority";
     host.run_assembly
         .installed_sessions
-        .update_run(thread, |run| {
+        .install_run(thread, |run| {
             run.dispatch_claim = Some(awaken_dispatch_contract::RunClaim {
                 run_id: RunId("claimed-ordinary-run".into()),
                 owner: "worker-a".into(),
@@ -406,7 +409,7 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
 
     host.run_assembly
         .installed_sessions
-        .update_run(thread, |run| run.session_dispatch = true);
+        .install_run(thread, |run| run.session_dispatch = true);
     let managed = host
         .realization_executor
         .environments()
@@ -655,8 +658,8 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
         !ephemeral.dispatch.topology().ingress.is_durable(),
         "T1 precondition"
     );
-    ephemeral
-        .ensure_dispatch_pool()
+    crate::CoordinatorRoles::of(&ephemeral)
+        .start_local_pool()
         .expect("valid test dispatch composition");
     assert!(ephemeral.dispatch.pool().is_some(), "T1/E1");
 
@@ -685,8 +688,8 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
         "T2 Host reads the sole authority"
     );
     assert!(local.run_assembly.runs_local_dispatch_pool(), "local");
-    local
-        .ensure_dispatch_pool()
+    crate::CoordinatorRoles::of(&local)
+        .start_local_pool()
         .expect("valid test dispatch composition");
     assert!(local.dispatch.pool().is_some(), "T2/E1");
 
@@ -711,8 +714,8 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
         !coordinator.run_assembly.runs_local_dispatch_pool(),
         "coordinator"
     );
-    coordinator
-        .ensure_dispatch_pool()
+    crate::CoordinatorRoles::of(&coordinator)
+        .start_local_pool()
         .expect("valid test dispatch composition");
     assert!(coordinator.dispatch.pool().is_none(), "T3/E2");
 }
@@ -779,8 +782,8 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
         .unwrap())
         .build()
         .unwrap();
-        worker
-            .ensure_dispatch_pool()
+        crate::WorkerRoles::of(&worker)
+            .start_pool()
             .expect("valid test dispatch composition");
         assert_eq!(
             worker.dispatch.pool().unwrap().concurrency(),
@@ -809,8 +812,9 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
                     }
                 },
                 coordinator_only,
-                crate::host::test_upstream_authority()
-                    .with_dispatch_binding(worker.authority.dispatch_binding().unwrap()),
+                crate::host::test_upstream_authority().with_dispatch_binding(
+                    worker.run_assembly.authority.dispatch_binding().unwrap()
+                ),
                 awaken_dispatch_contract::RegisteredCapacity::of(&manifest).unwrap(),
             )
             .is_err(),

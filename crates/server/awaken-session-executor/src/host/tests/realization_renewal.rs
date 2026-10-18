@@ -349,12 +349,13 @@ async fn late_renewal_response_cannot_mutate_a_replacement_projection() {
                     .unwrap();
                 host.run_assembly
                     .installed_sessions
-                    .update("renew-race", |slot| {
+                    .install_with("renew-race", |slot| {
                         slot.run.dispatch_claim = Some(claim.clone());
                         slot.replace_frozen_with(|next| {
                             next.workspace = Some("new-workspace".into())
                         });
-                    });
+                    })
+                    .expect("installed Sessions");
             }
             gate.add_permits(1);
             drop(guard);
@@ -377,7 +378,8 @@ async fn late_renewal_response_cannot_mutate_a_replacement_projection() {
                             slot.realization.execution().authority.lease().cloned(),
                             slot.run.dispatch_claim.clone(),
                             slot.inputs.workspace.clone()
-                        )),
+                        ))
+                        .expect("installed Sessions"),
                     Some((Some(replacement), Some(claim), Some("new-workspace".into()))),
                     "R1 {failure:?}/{changed}"
                 );
@@ -863,6 +865,7 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
                             "M4 cancellation cannot revoke a waiting projection"
                         );
                     })
+                    .expect("installed Sessions")
                     .expect("M4 no queued cleanup removes its Session");
             }
             observations.push(serde_json::json!({"rule":"cancel-joined",
@@ -1046,7 +1049,7 @@ async fn delayed_realization_renewal_cannot_replace_or_revoke_new_projection() {
                 .unwrap();
             host.run_assembly
                 .installed_sessions
-                .update_run(rule, |run| run.dispatch_claim = Some(claim.clone()));
+                .install_run(rule, |run| run.dispatch_claim = Some(claim.clone()));
         }
         if installation.is_none() {
             gate.add_permits(1);
@@ -1056,12 +1059,16 @@ async fn delayed_realization_renewal_cannot_replace_or_revoke_new_projection() {
             .await
             .expect("old completion does not hang")
             .expect("renewal task did not panic");
-        let observed = host.run_assembly.installed_sessions.read(rule, |slot| {
-            (
-                slot.realization.execution().authority.lease().cloned(),
-                slot.run.dispatch_claim.clone(),
-            )
-        });
+        let observed = host
+            .run_assembly
+            .installed_sessions
+            .read(rule, |slot| {
+                (
+                    slot.realization.execution().authority.lease().cloned(),
+                    slot.run.dispatch_claim.clone(),
+                )
+            })
+            .expect("installed Sessions");
         let preserved = if replacement == "removed" {
             observed.is_none()
         } else {

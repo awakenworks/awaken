@@ -18,51 +18,65 @@ use awaken_session_mcp::{
 };
 use awaken_session_mcp::{McpGenerationProjection, SessionMcpState};
 
+/// A poisoned installed-Session registry refuses every MCP operation.
+fn registry_unavailable(error: crate::realization_error::RealizationLock) -> McpError {
+    McpError::unavailable_classified(
+        awaken_session_realization::realization_error::POISONED_CODE,
+        error.to_string(),
+    )
+}
+
 impl SessionMcpStates for InstalledSessions {
     type Runtime = Arc<crate::host::SessionCtx>;
 
-    fn read_mcp<R>(&self, session: &str, read: impl FnOnce(&SessionMcpState) -> R) -> Option<R> {
+    fn read_mcp<R>(
+        &self,
+        session: &str,
+        read: impl FnOnce(&SessionMcpState) -> R,
+    ) -> Result<Option<R>, McpError> {
         self.read(session, |slot| read(&slot.realization.staging().mcp))
+            .map_err(registry_unavailable)
     }
 
-    fn update_mcp<R>(&self, session: &str, update: impl FnOnce(&mut SessionMcpState) -> R) -> R {
-        self.update(session, |slot| {
-            update(&mut slot.realization.staging_mut().mcp)
-        })
+    fn update_mcp<R>(
+        &self,
+        session: &str,
+        update: impl FnOnce(&mut SessionMcpState) -> R,
+    ) -> Result<R, McpError> {
+        self.install_with(session, |slot| update(slot.realization.session_mcp_mut()))
+            .map_err(registry_unavailable)
     }
 
     fn modify_mcp<R>(
         &self,
         session: &str,
         modify: impl FnOnce(&mut SessionMcpState) -> R,
-    ) -> Option<R> {
-        self.modify(session, |slot| {
-            modify(&mut slot.realization.staging_mut().mcp)
-        })
+    ) -> Result<Option<R>, McpError> {
+        self.modify(session, |slot| modify(slot.realization.session_mcp_mut()))
+            .map_err(registry_unavailable)
     }
 
     fn modify_mcp_and_runtime<R>(
         &self,
         session: &str,
         modify: impl FnOnce(&mut SessionMcpState, &mut Option<Self::Runtime>) -> R,
-    ) -> Option<R> {
+    ) -> Result<Option<R>, McpError> {
         self.modify(session, |slot| {
-            modify(
-                &mut slot.realization.staging_mut().mcp,
-                &mut slot.run.context,
-            )
+            modify(slot.realization.session_mcp_mut(), &mut slot.run.context)
         })
+        .map_err(registry_unavailable)
     }
 
     fn modify_mcp_with_root<R>(
         &self,
         generation: &crate::session_mcp::McpGenerationRef,
         modify: impl FnOnce(&mut SessionMcpState, Option<bool>) -> R,
-    ) -> Option<R> {
+    ) -> Result<Option<R>, McpError> {
         self.modify(generation.session_id().as_str(), |slot| {
             let root = slot.realization.mcp_generation_root_authority(generation);
-            modify(&mut slot.realization.staging_mut().mcp, root)
+            modify(slot.realization.session_mcp_mut(), root)
         })
+        .map_err(registry_unavailable)
     }
 
     /// An unreadable foreground record signals nothing; `runtime_has_active_run`
@@ -103,10 +117,13 @@ impl McpGenerationAuthority for McpRootAuthority {
         &self,
         generation: &crate::session_mcp::McpGenerationRef,
     ) -> Option<bool> {
+        // A poisoned registry proves no root: it answers the explicit refusal,
+        // never absence, so neither admission nor the relay can fall back.
         self.installed_sessions
             .read(generation.session_id().as_str(), |slot| {
                 slot.realization.mcp_generation_root_authority(generation)
             })
+            .unwrap_or(Some(Some(false)))
             .flatten()
     }
 }
@@ -149,8 +166,10 @@ impl McpGenerationAuthority for McpApplicationInputs {
 #[async_trait::async_trait]
 impl McpInputHost for McpApplicationInputs {
     fn active_mcp_projections(&self, session: &str) -> Vec<McpGenerationProjection> {
+        // An unreadable registry names no recipient: every input is refused.
         self.mcp
             .active_projections(self.installed_sessions.as_ref(), session)
+            .unwrap_or_default()
     }
 
     async fn cancel_durable_run(&self, session: &str, run_id: &str) -> bool {
@@ -159,9 +178,13 @@ impl McpInputHost for McpApplicationInputs {
 }
 
 impl crate::RunAssembly {
-    pub(crate) fn active_mcp_projections(&self, thread: &str) -> Vec<McpGenerationProjection> {
-        self.mcp
-            .active_projections(self.installed_sessions.as_ref(), thread)
+    pub(crate) fn active_mcp_projections(
+        &self,
+        thread: &str,
+    ) -> Result<Vec<McpGenerationProjection>, HostError> {
+        Ok(self
+            .mcp
+            .active_projections(self.installed_sessions.as_ref(), thread)?)
     }
 
     #[cfg(test)]
@@ -171,6 +194,7 @@ impl crate::RunAssembly {
     ) -> Option<McpGenerationProjection> {
         self.mcp
             .projection(self.installed_sessions.as_ref(), generation)
+            .expect("test registry is healthy")
     }
 
     #[cfg(test)]
@@ -229,6 +253,7 @@ impl crate::RunAssembly {
     ) -> bool {
         self.mcp
             .forget_replayable_removed_projection(self.installed_sessions.as_ref(), request)
+            .expect("test registry is healthy")
     }
 
     #[cfg(test)]

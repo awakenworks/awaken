@@ -27,17 +27,6 @@ pub trait RealizationRuntime: Send + Sync {
         timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
     ) -> Result<usize, RunError>;
 
-    /// Validate the exact provider-effective Sandbox layout without publishing
-    /// process-local state or performing provider, cache, Skill, File, Vault,
-    /// Repository, or Git I/O. Session creation and Resource mutation call this
-    /// before their durable/effect boundaries; Runtime repeats it at the final
-    /// realization edge as defense in depth.
-    fn validate_session_sandbox_layout(
-        &self,
-        thread: &str,
-        layout: &crate::SessionSandboxLayout,
-    ) -> Result<(), RunError>;
-
     /// Install one complete Control-frozen Session projection. Dispatch and
     /// realization are explicit modes of this single port; callers must never
     /// lower publication, baseline, request context, Environment, or lease
@@ -67,6 +56,101 @@ pub trait RealizationRuntime: Send + Sync {
         thread: &str,
         lease: &crate::SessionRealizationLease,
     ) -> Result<(), RunError>;
+}
+
+/// The realization effects a Session application asks the realization executor
+/// for directly: the provider-effective layout check, Environment continuation
+/// checkpoints and restore, Resource input application, and the terminal
+/// Repository publication and disposal effects. No Session context, Memory,
+/// MCP or delegated-Run fact takes part, so the realization executor serves
+/// this role itself; the executor's realization, Environment and terminal
+/// cleanup roles keep only the operations that compose those facts.
+///
+/// Every method is required. Composition supplies this role before its caller runs.
+#[async_trait]
+pub trait RealizationEffects: Send + Sync {
+    /// Validate the exact provider-effective Sandbox layout without publishing
+    /// process-local state or performing provider, cache, Skill, File, Vault,
+    /// Repository, or Git I/O. Session creation and Resource mutation call this
+    /// before their durable/effect boundaries; Runtime repeats it at the final
+    /// realization edge as defense in depth.
+    fn validate_session_sandbox_layout(
+        &self,
+        thread: &str,
+        layout: &crate::SessionSandboxLayout,
+    ) -> Result<(), RunError>;
+
+    /// Persist one verified filesystem checkpoint. Replays with the same
+    /// operation id must return the same authoritative object receipt.
+    async fn checkpoint_session_environment(
+        &self,
+        thread: &str,
+        request: crate::SandboxCheckpointRequest,
+    ) -> Result<crate::CheckpointReceipt, RunError>;
+
+    /// Complete every live source-durability effect without deleting the
+    /// source. The aggregate must durably admit the returned receipt before it
+    /// invokes physical disposal.
+    async fn prepare_checkpoint_source_disposal(
+        &self,
+        thread: &str,
+        preparation: &crate::SourceReleasePreparationEffect,
+        generation: &crate::SandboxGeneration,
+        source_binding: &str,
+    ) -> Result<crate::SourceReleasePreparedReceipt, RunError>;
+
+    /// Physically dispose the source only after the aggregate has durably
+    /// committed the exact source-release preparation receipt.
+    async fn dispose_prepared_checkpoint_source(
+        &self,
+        thread: &str,
+        disposal: &crate::SourceReleaseDisposal,
+    ) -> Result<crate::SourceDisposedReceipt, RunError>;
+
+    /// Restore a distinct environment from the exact durable checkpoint.
+    async fn restore_checkpointed_session_environment(
+        &self,
+        request: crate::SandboxRestoreRequest,
+    ) -> Result<crate::RestoreReceipt, RunError>;
+
+    /// Idempotently delete checkpoint bytes at a terminal edge. It never
+    /// restores the Environment merely to clean it up.
+    async fn delete_session_checkpoint(
+        &self,
+        thread: &str,
+        checkpoint: &crate::SandboxCheckpointRef,
+    ) -> Result<(), RunError>;
+
+    /// Apply one complete, aggregate-authored Resource transition. Live
+    /// add/update/delete, rollback, and restart restoration converge here;
+    /// Runtime never guesses the prior generation from a process-local cache or
+    /// re-resolves Agent defaults/current Resource configuration.
+    async fn apply_session_inputs(
+        &self,
+        thread: &str,
+        transition: &crate::SessionResourceTransition,
+    ) -> Result<(), RunError>;
+
+    /// Execute terminal Repository publication under the same realization
+    /// generation that owns the cleanup command set and return either its
+    /// secret-free receipt or one permanent compare-and-swap rejection. The
+    /// caller verifies and durably records that outcome before ordinary root
+    /// cleanup may dispose the shared environment. Runtimes must override this
+    /// edge and carry the lease to the Repository transport boundary; falling
+    /// back would erase the terminal ownership proof.
+    async fn execute_terminal_repository_publication_for_lease(
+        &self,
+        command: crate::SessionRepositoryPublicationCommand,
+        lease: &crate::SessionRealizationLease,
+    ) -> Result<crate::SessionRepositoryPublicationEffect, RunError>;
+
+    /// Execute the one aggregate-wide physical disposal after every
+    /// preparation is durable. The typed effect carries the exact prepared
+    /// predecessor plus the current live successor lease.
+    async fn dispose_terminal_cleanup_for_effect(
+        &self,
+        effect: crate::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<crate::SessionCleanupDisposalReceipt, RunError>;
 }
 
 /// Session Run coordination: reservations, activation, child threads (including their archive), tool replies and delegation quiescence.
@@ -400,47 +484,6 @@ pub trait EnvironmentRuntime: Send + Sync {
         expected_mcp_generations: &[crate::McpGenerationRef],
     ) -> Result<crate::QuiescenceReceipt, RunError>;
 
-    /// Persist one verified filesystem checkpoint. Replays with the same
-    /// operation id must return the same authoritative object receipt.
-    async fn checkpoint_session_environment(
-        &self,
-        thread: &str,
-        request: crate::SandboxCheckpointRequest,
-    ) -> Result<crate::CheckpointReceipt, RunError>;
-
-    /// Complete every live source-durability effect without deleting the
-    /// source. The aggregate must durably admit the returned receipt before it
-    /// invokes physical disposal.
-    async fn prepare_checkpoint_source_disposal(
-        &self,
-        thread: &str,
-        preparation: &crate::SourceReleasePreparationEffect,
-        generation: &crate::SandboxGeneration,
-        source_binding: &str,
-    ) -> Result<crate::SourceReleasePreparedReceipt, RunError>;
-
-    /// Physically dispose the source only after the aggregate has durably
-    /// committed the exact source-release preparation receipt.
-    async fn dispose_prepared_checkpoint_source(
-        &self,
-        thread: &str,
-        disposal: &crate::SourceReleaseDisposal,
-    ) -> Result<crate::SourceDisposedReceipt, RunError>;
-
-    /// Restore a distinct environment from the exact durable checkpoint.
-    async fn restore_checkpointed_session_environment(
-        &self,
-        request: crate::SandboxRestoreRequest,
-    ) -> Result<crate::RestoreReceipt, RunError>;
-
-    /// Idempotently delete checkpoint bytes at a terminal edge. It never
-    /// restores the Environment merely to clean it up.
-    async fn delete_session_checkpoint(
-        &self,
-        thread: &str,
-        checkpoint: &crate::SandboxCheckpointRef,
-    ) -> Result<(), RunError>;
-
     /// Resolve the current versions of already-authorized Skill resource ids once
     /// at Session creation. The implementation receives only a trusted Workspace
     /// and resource ids; it performs no principal/role/policy decision.
@@ -449,16 +492,6 @@ pub trait EnvironmentRuntime: Send + Sync {
         workspace_id: &str,
         skills: &[awaken_agent_contract::AgentSkillBinding],
     ) -> Result<Vec<crate::ResolvedSkillBinding>, RunError>;
-
-    /// Apply one complete, aggregate-authored Resource transition. Live
-    /// add/update/delete, rollback, and restart restoration converge here;
-    /// Runtime never guesses the prior generation from a process-local cache or
-    /// re-resolves Agent defaults/current Resource configuration.
-    async fn apply_session_inputs(
-        &self,
-        thread: &str,
-        transition: &crate::SessionResourceTransition,
-    ) -> Result<(), RunError>;
 }
 
 /// Committed thread readback: messages, recovery snapshots, run lifecycle, disposition and outcome projections.
@@ -534,19 +567,6 @@ pub trait ThreadReadRuntime: Send + Sync {
 /// Every method is required. Composition supplies this role before its caller runs.
 #[async_trait]
 pub trait TerminalCleanupRuntime: Send + Sync {
-    /// Execute terminal Repository publication under the same realization
-    /// generation that owns the cleanup command set and return either its
-    /// secret-free receipt or one permanent compare-and-swap rejection. The
-    /// caller verifies and durably records that outcome before ordinary root
-    /// cleanup may dispose the shared environment. Runtimes must override this
-    /// edge and carry the lease to the Repository transport boundary; falling
-    /// back would erase the terminal ownership proof.
-    async fn execute_terminal_repository_publication_for_lease(
-        &self,
-        command: crate::SessionRepositoryPublicationCommand,
-        lease: &crate::SessionRealizationLease,
-    ) -> Result<crate::SessionRepositoryPublicationEffect, RunError>;
-
     /// Make every source-dependent effect durable under the exact aggregate
     /// preparation fence without deleting the physical realization.
     async fn prepare_terminal_cleanup_for_effect(
@@ -562,14 +582,6 @@ pub trait TerminalCleanupRuntime: Send + Sync {
         &self,
         effect: &crate::SessionTerminalCleanupEffect,
     );
-
-    /// Execute the one aggregate-wide physical disposal after every
-    /// preparation is durable. The typed effect carries the exact prepared
-    /// predecessor plus the current live successor lease.
-    async fn dispose_terminal_cleanup_for_effect(
-        &self,
-        effect: crate::SessionTerminalCleanupDisposalEffect,
-    ) -> Result<crate::SessionCleanupDisposalReceipt, RunError>;
 
     /// Retire only the process-local teardown projection after Control has
     /// durably accepted the exact disposal receipt. No provider or Resource

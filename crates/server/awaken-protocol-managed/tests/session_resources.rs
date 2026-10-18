@@ -1870,18 +1870,6 @@ impl awaken_session_execution_contract::RealizationRuntime for AcceptingFake {
             .await
     }
 
-    fn validate_session_sandbox_layout(
-        &self,
-        _thread: &str,
-        _layout: &awaken_session_configuration_contract::SessionSandboxLayout,
-    ) -> Result<(), RunError> {
-        // Managed adapter decision rule: C1 these contract tests install an
-        // accepting Runtime; C2 a manifest may include Repository. E1 the fake
-        // explicitly supplies the pure provider-layout port; absent that port,
-        // the production default rejects C2 before any adapter effect.
-        Ok(())
-    }
-
     async fn install_session_projection(
         &self,
         thread: &str,
@@ -2346,6 +2334,40 @@ impl awaken_session_execution_contract::EnvironmentRuntime for AcceptingFake {
             .await
     }
 
+    async fn resolve_session_skills(
+        &self,
+        _workspace_id: &str,
+        skills: &[awaken_agent_contract::AgentSkillBinding],
+    ) -> Result<Vec<awaken_session_configuration_contract::resource::ResolvedSkillBinding>, RunError>
+    {
+        Ok(skills
+            .iter()
+            .map(
+                |skill| awaken_session_configuration_contract::resource::ResolvedSkillBinding {
+                    kind: skill.kind,
+                    skill_id: skill.skill_id.clone(),
+                    version: 1,
+                    bundle_sha256: format!("sha256:{}", skill.skill_id),
+                },
+            )
+            .collect())
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_execution_contract::RealizationEffects for AcceptingFake {
+    fn validate_session_sandbox_layout(
+        &self,
+        _thread: &str,
+        _layout: &awaken_session_configuration_contract::SessionSandboxLayout,
+    ) -> Result<(), RunError> {
+        // Managed adapter decision rule: C1 these contract tests install an
+        // accepting Runtime; C2 a manifest may include Repository. E1 the fake
+        // explicitly supplies the pure provider-layout port; absent that port,
+        // the production default rejects C2 before any adapter effect.
+        Ok(())
+    }
+
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one verified filesystem checkpoint. Replays with the same
@@ -2422,25 +2444,6 @@ impl awaken_session_execution_contract::EnvironmentRuntime for AcceptingFake {
             .await
     }
 
-    async fn resolve_session_skills(
-        &self,
-        _workspace_id: &str,
-        skills: &[awaken_agent_contract::AgentSkillBinding],
-    ) -> Result<Vec<awaken_session_configuration_contract::resource::ResolvedSkillBinding>, RunError>
-    {
-        Ok(skills
-            .iter()
-            .map(
-                |skill| awaken_session_configuration_contract::resource::ResolvedSkillBinding {
-                    kind: skill.kind,
-                    skill_id: skill.skill_id.clone(),
-                    version: 1,
-                    bundle_sha256: format!("sha256:{}", skill.skill_id),
-                },
-            )
-            .collect())
-    }
-
     async fn apply_session_inputs(
         &self,
         _thread: &str,
@@ -2465,6 +2468,27 @@ impl awaken_session_execution_contract::EnvironmentRuntime for AcceptingFake {
             return Err(RunError::internal("injected activation failure"));
         }
         Ok(())
+    }
+
+    async fn execute_terminal_repository_publication_for_lease(
+        &self,
+        command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
+        _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
+    ) -> Result<awaken_session_state_contract::SessionRepositoryPublicationEffect, RunError> {
+        // Cause/effect fixture rule: C1 application has already verified the
+        // exact aggregate lease before entering this Runtime port; C2 the
+        // command names one Repository. E1 this accepting fake records one
+        // receipt on the same lease-fenced edge as production. The trait has no
+        // command-only fallback that could hide a missing ownership proof.
+        self.record_terminal_repository_publication(command)
+            .map(awaken_session_state_contract::SessionRepositoryPublicationEffect::Published)
+    }
+
+    async fn dispose_terminal_cleanup_for_effect(
+        &self,
+        effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<awaken_session_state_contract::SessionCleanupDisposalReceipt, RunError> {
+        Ok(awaken_protocol_managed_testkit::complete_terminal_cleanup_disposal(&effect))
     }
 }
 
@@ -2587,20 +2611,6 @@ impl awaken_session_execution_contract::ThreadReadRuntime for AcceptingFake {
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::TerminalCleanupRuntime for AcceptingFake {
-    async fn execute_terminal_repository_publication_for_lease(
-        &self,
-        command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
-        _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
-    ) -> Result<awaken_session_state_contract::SessionRepositoryPublicationEffect, RunError> {
-        // Cause/effect fixture rule: C1 application has already verified the
-        // exact aggregate lease before entering this Runtime port; C2 the
-        // command names one Repository. E1 this accepting fake records one
-        // receipt on the same lease-fenced edge as production. The trait has no
-        // command-only fallback that could hide a missing ownership proof.
-        self.record_terminal_repository_publication(command)
-            .map(awaken_session_state_contract::SessionRepositoryPublicationEffect::Published)
-    }
-
     async fn prepare_terminal_cleanup_for_effect(
         &self,
         effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
@@ -2624,13 +2634,6 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for AcceptingFake
         awaken_session_execution_contract::NeutralRuntime
             .acknowledge_terminal_cleanup_preparation(effect)
             .await
-    }
-
-    async fn dispose_terminal_cleanup_for_effect(
-        &self,
-        effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
-    ) -> Result<awaken_session_state_contract::SessionCleanupDisposalReceipt, RunError> {
-        Ok(awaken_protocol_managed_testkit::complete_terminal_cleanup_disposal(&effect))
     }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never

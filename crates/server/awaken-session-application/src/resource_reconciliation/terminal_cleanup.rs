@@ -224,6 +224,7 @@ impl SessionApplication {
         assignment: &SessionTerminalCleanupAssignment,
     ) -> Result<SessionTerminalCleanupDriveOutcome, SessionRealizationDriveError> {
         let realization_runtime = self.runtime().realization();
+        let effects = self.runtime().realization_effects();
         let cleanup_runtime = self.runtime().terminal_cleanup();
 
         let session_id = assignment.session_id.as_str();
@@ -236,8 +237,9 @@ impl SessionApplication {
                 &awaken_session_types::SessionId::from(session_id),
                 &assignment.authority.lease,
                 self,
-            realization_runtime,
-            cleanup_runtime,
+                realization_runtime,
+                effects,
+                cleanup_runtime,
             ),
             |command| async move {
                 let lease =
@@ -625,22 +627,6 @@ mod tests {
 
         // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
-        /// Validate the exact provider-effective Sandbox layout without publishing
-        /// process-local state or performing provider, cache, Skill, File, Vault,
-        /// Repository, or Git I/O. Session creation and Resource mutation call this
-        /// before their durable/effect boundaries; Runtime repeats it at the final
-        /// realization edge as defense in depth.
-        fn validate_session_sandbox_layout(
-            &self,
-            thread: &str,
-            layout: &awaken_session_configuration_contract::SessionSandboxLayout,
-        ) -> Result<(), awaken_session_types::RunError> {
-            awaken_session_execution_contract::NeutralRuntime
-                .validate_session_sandbox_layout(thread, layout)
-        }
-
-        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-        // answered this role method with anything but the refusal below.
         /// Install one complete Control-frozen Session projection. Dispatch and
         /// realization are explicit modes of this single port; callers must never
         /// lower publication, baseline, request context, Environment, or lease
@@ -688,32 +674,12 @@ mod tests {
         }
     }
 
+    awaken_session_execution_contract::neutral_role!(RealizationEffects for RecordingTerminalProjectionRuntime);
+
     #[async_trait::async_trait]
     impl awaken_session_execution_contract::TerminalCleanupRuntime
         for RecordingTerminalProjectionRuntime
     {
-        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-        // answered this role method with anything but the refusal below.
-        /// Execute terminal Repository publication under the same realization
-        /// generation that owns the cleanup command set and return either its
-        /// secret-free receipt or one permanent compare-and-swap rejection. The
-        /// caller verifies and durably records that outcome before ordinary root
-        /// cleanup may dispose the shared environment. Runtimes must override this
-        /// edge and carry the lease to the Repository transport boundary; falling
-        /// back would erase the terminal ownership proof.
-        async fn execute_terminal_repository_publication_for_lease(
-            &self,
-            command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
-            lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
-        ) -> Result<
-            awaken_session_state_contract::SessionRepositoryPublicationEffect,
-            awaken_session_types::RunError,
-        > {
-            awaken_session_execution_contract::NeutralRuntime
-                .execute_terminal_repository_publication_for_lease(command, lease)
-                .await
-        }
-
         // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Make every source-dependent effect durable under the exact aggregate
@@ -742,23 +708,6 @@ mod tests {
         ) {
             awaken_session_execution_contract::NeutralRuntime
                 .acknowledge_terminal_cleanup_preparation(effect)
-                .await
-        }
-
-        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-        // answered this role method with anything but the refusal below.
-        /// Execute the one aggregate-wide physical disposal after every
-        /// preparation is durable. The typed effect carries the exact prepared
-        /// predecessor plus the current live successor lease.
-        async fn dispose_terminal_cleanup_for_effect(
-            &self,
-            effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
-        ) -> Result<
-            awaken_session_state_contract::SessionCleanupDisposalReceipt,
-            awaken_session_types::RunError,
-        > {
-            awaken_session_execution_contract::NeutralRuntime
-                .dispose_terminal_cleanup_for_effect(effect)
                 .await
         }
 

@@ -187,6 +187,7 @@ impl SessionApplication {
             _ if decision.next() == session.environment.step() => {
                 carry_out_effect(
                     environment,
+                    self.runtime().realization_effects(),
                     &owner_scope,
                     &mut session,
                     instruction,
@@ -290,6 +291,7 @@ struct ContinuationStep {
 /// to the candidate; returns the commit reason.
 async fn carry_out_effect(
     runtime: &dyn EnvironmentRuntime,
+    effects: &dyn awaken_session_execution_contract::RealizationEffects,
     owner_scope: &str,
     session: &mut SessionAggregate,
     instruction: SessionEnvironmentInstruction,
@@ -354,7 +356,7 @@ async fn carry_out_effect(
             let bound = std::time::Duration::from_secs(policy.max_checkpoint_duration_secs);
             let receipt = tokio::time::timeout(
                 bound,
-                runtime.checkpoint_session_environment(thread, request),
+                effects.checkpoint_session_environment(thread, request),
             )
             .await
             .map_err(|_| {
@@ -373,7 +375,7 @@ async fn carry_out_effect(
                 .map_err(|error| {
                     unavailable("session_environment_source_preparation_unauthorized", error)
                 })?;
-            let receipt = runtime
+            let receipt = effects
                 .prepare_checkpoint_source_disposal(
                     thread,
                     &preparation,
@@ -393,7 +395,7 @@ async fn carry_out_effect(
             let disposal = session.source_release_disposal().map_err(|error| {
                 unavailable("session_environment_source_disposal_unauthorized", error)
             })?;
-            let receipt = runtime
+            let receipt = effects
                 .dispose_prepared_checkpoint_source(thread, &disposal)
                 .await?;
             session.environment().complete_suspend(&receipt, now)?;
@@ -404,7 +406,7 @@ async fn carry_out_effect(
                 .environment
                 .restoring_request(owner_scope, &session_id)
                 .ok_or_else(SessionContinuationError::step_moved)?;
-            let receipt = runtime
+            let receipt = effects
                 .restore_checkpointed_session_environment(request)
                 .await?;
             session.environment().complete_restore(&receipt, now)?;
@@ -419,7 +421,7 @@ async fn carry_out_effect(
                 .checkpoint()
                 .cloned()
                 .ok_or_else(SessionContinuationError::step_moved)?;
-            runtime
+            effects
                 .delete_session_checkpoint(thread, &checkpoint)
                 .await?;
             session.environment().discard_expired_checkpoint(now)?;

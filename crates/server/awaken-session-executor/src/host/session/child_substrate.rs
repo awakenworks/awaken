@@ -20,7 +20,7 @@ impl crate::RunAssembly {
             .await?;
         let warm_context = self
             .installed_sessions
-            .read_run(thread, |run| run.context.clone())
+            .read_run(thread, |run| run.context.clone())?
             .flatten();
         let retained = realizations
             .read_realization(thread, |r| r.environment().owner.resident())?
@@ -30,11 +30,10 @@ impl crate::RunAssembly {
             None => {
                 let parent = frozen_parent
                     .cloned()
-                    .or_else(|| {
-                        realizations
-                            .published_snapshot(thread)
-                            .expect("session runtime slots mutex poisoned")
-                    })
+                    .map_or_else(
+                        || realizations.published_snapshot(thread),
+                        |parent| Ok(Some(parent)),
+                    )?
                     .ok_or_else(|| {
                         HostError::internal(
                             "a cold child requires the frozen parent Session publication",
@@ -109,7 +108,7 @@ impl crate::RunAssembly {
                             environment.clone(),
                         ),
                     ));
-                for projection in self.active_mcp_projections(thread) {
+                for projection in self.active_mcp_projections(thread)? {
                     if let Some(wiring) = projection.native_wiring {
                         for plugin in wiring.plugins {
                             context = context.with_session_plugin(plugin);
@@ -118,7 +117,7 @@ impl crate::RunAssembly {
                 }
                 if self
                     .installed_sessions
-                    .read_run(thread, |run| run.session_dispatch)
+                    .read_run(thread, |run| run.session_dispatch)?
                     .unwrap_or(false)
                     && let Some(endpoint) = self.capabilities.coordination_endpoint()
                 {
@@ -242,12 +241,14 @@ mod tests {
                     slot.run.context.is_some(),
                 )
             })
+            .expect("installed Sessions")
             .expect("S1 parent physical slot");
         assert_eq!(physical, (true, false), "S1/E2,E3");
         assert!(
             host.run_assembly
                 .installed_sessions
                 .read(child_thread, |_| ())
+                .expect("installed Sessions")
                 .is_none(),
             "S1/E3"
         );
