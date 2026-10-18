@@ -9,12 +9,23 @@ below `single_owner_baseline.json`:
 
 * `state-construction`: a site outside the state contract that constructs a
   `SessionExecutionState` or `SessionEnvironmentState` variant, per
-  `crate::Enum`. The realization's observation mapping may also construct the
-  environment sub-state. Reading a state is not constructing one: a pattern (a
+  `crate::Enum`. No other crate may construct either: the realization reports
+  observations and the aggregate's transition builds the state (ADR-0089 D1).
+  Reading a state is not constructing one: a pattern (a
   `match` arm, `if let`/`let ... else`, the pattern of `matches!`) and an
   `==`/`!=` comparison are not counted. Importing the variants
   (`use Enum::*` or `use Enum::{..}`) is counted, because every later bare
   variant would be a construction this rule cannot see.
+* `environment-rewrite`: a site outside the state contract that rewrites an
+  existing `SessionEnvironmentState`, per crate: a mutable borrow of the type
+  (`&mut SessionEnvironmentState`), a call of one of its undecided data laws
+  on an `.environment` value (a `&mut self` method of `impl
+  SessionEnvironmentState` in the state contract whose body does not decide
+  through `transition_environment`; the list is read from the contract), or an
+  assignment to `.environment` of another state value. A law that decides
+  through the transition function (such as `deliver_legacy_binding`) and the
+  aggregate's `SessionEnvironmentOperations` (`session.environment().law(..)`)
+  are the sanctioned ways to change the state.
 * `realization-code`: production lines (non-blank, comments excluded) in modules
   named for realization -- a module path segment in `REALIZATION_MODULES`, or one
   whose words include one of `REALIZATION_WORDS` -- per crate, outside the
@@ -50,8 +61,9 @@ REALIZATION_CRATE = "awaken-session-realization"
 # Enum -> crates allowed to construct its variants besides the state contract.
 STATE_ENUMS = {
     "SessionExecutionState": frozenset(),
-    "SessionEnvironmentState": frozenset({REALIZATION_CRATE}),
+    "SessionEnvironmentState": frozenset(),
 }
+ENVIRONMENT_STATE = "SessionEnvironmentState"
 REALIZATION_OWNERS = frozenset({REALIZATION_CRATE, "awaken-session-realization-contract", "awaken-provisioning-contract"})
 PROVIDER_CONTEXT = "sandbox"
 REALIZATION_MODULES = frozenset({
@@ -62,6 +74,8 @@ REALIZATION_WORDS = frozenset({"realization", "realizer", "realized", "realize"}
 RULES = (
     Rule("state-construction", "construct the state through the Session aggregate's transition in the state contract "
          "(ADR-0090 D7), or map the observation in the realization (ADR-0089 D6)"),
+    Rule("environment-rewrite", "change the Environment state through a law that decides through "
+         "transition_environment, or through the aggregate's SessionEnvironmentOperations (ADR-0089 D1)"),
     Rule("realization-code", "put realization behaviour in awaken-session-realization, its contract or a sandbox "
          "provider (ADR-0089 D6), not in a module named for realization elsewhere", slack=LINE_SLACK),
 )
@@ -141,6 +155,39 @@ def state_constructions(syntax: str, allowed_enums: set[str]) -> list[tuple[str,
     return found
 
 
+_MUTABLE_ENVIRONMENT = re.compile(r"&\s*mut\s+(?:\w+\s*::\s*)*" + ENVIRONMENT_STATE + r"\b")
+_ENVIRONMENT_ASSIGNMENT = re.compile(r"\.\s*environment\s*=(?![=>])([^;]*);")
+_COPIED_STATE = re.compile(r"^\s*[\w.()&*\s]*\.\s*environment\s*(?:\.\s*clone\s*\(\s*\)\s*)?$")
+
+
+def undecided_environment_laws(contract_syntax: dict[Path, str]) -> frozenset[str]:
+    """`&mut self` methods of `impl SessionEnvironmentState` that do not decide through the transition."""
+    laws = set()
+    for syntax in contract_syntax.values():
+        for block in re.finditer(r"\bimpl\s+" + ENVIRONMENT_STATE + r"\s*\{", syntax):
+            end = _crate_boundary_workspace._balanced_end(syntax, block.end() - 1, "{", "}") or len(syntax)
+            body = syntax[block.end():end]
+            for method in re.finditer(r"\bfn\s+(\w+)\s*(?:<[^>]*>)?\s*\(\s*&\s*mut\s+self\b", body):
+                opening = body.find("{", method.end())
+                closing = _crate_boundary_workspace._balanced_end(body, opening, "{", "}") or len(body)
+                if "transition_environment" not in body[opening:closing]:
+                    laws.add(method.group(1))
+    return frozenset(laws)
+
+
+def environment_rewrites(syntax: str, laws: frozenset[str]) -> list[int]:
+    """Offsets of every Environment-state rewrite in one file's code (literals already blanked)."""
+    found = [match.start() for match in _MUTABLE_ENVIRONMENT.finditer(syntax)]
+    if laws:
+        law_call = re.compile(r"\.\s*environment\s*\.\s*(?:" + "|".join(sorted(laws)) + r")\s*\(")
+        found += [match.start() for match in law_call.finditer(syntax)]
+    for match in _ENVIRONMENT_ASSIGNMENT.finditer(syntax):
+        value = match.group(1)
+        if ENVIRONMENT_STATE in value or _COPIED_STATE.match(value):
+            found.append(match.start())
+    return sorted(found)
+
+
 def is_realization_module(relative: Path) -> bool:
     parts = [part for part in relative.with_suffix("").parts if part not in {"mod", "lib", "main"}]
     return any(part in REALIZATION_MODULES or REALIZATION_WORDS & set(part.split("_")) for part in parts)
@@ -167,8 +214,12 @@ def realization_owner(name: str, metadata: dict) -> bool:
 
 
 def measure(sources: tuple[_architecture_ratchet.CrateSource, ...], root: Path) -> tuple[Counts, Places]:
-    counts: Counts = {"state-construction": Counter(), "realization-code": Counter()}
-    places: Places = {"state-construction": defaultdict(list), "realization-code": defaultdict(list)}
+    counts: Counts = {"state-construction": Counter(), "environment-rewrite": Counter(),
+                      "realization-code": Counter()}
+    places: Places = {"state-construction": defaultdict(list), "environment-rewrite": defaultdict(list),
+                      "realization-code": defaultdict(list)}
+    laws = frozenset().union(*(undecided_environment_laws(crate.syntax)
+                               for crate in sources if crate.name == STATE_CONTRACT))
     for crate in sources:
         enums = {enum for enum, allowed in STATE_ENUMS.items() if crate.name != STATE_CONTRACT
                  and crate.name not in allowed}
@@ -180,6 +231,11 @@ def measure(sources: tuple[_architecture_ratchet.CrateSource, ...], root: Path) 
                 key = f"{crate.name}::{enum}"
                 counts["state-construction"][key] += 1
                 places["state-construction"][key].append(f"{relative}:{_architecture_ratchet.line_of(syntax, offset)}")
+            if crate.name != STATE_CONTRACT:
+                for offset in environment_rewrites(syntax, laws):
+                    counts["environment-rewrite"][crate.name] += 1
+                    places["environment-rewrite"][crate.name].append(
+                        f"{relative}:{_architecture_ratchet.line_of(syntax, offset)}")
             source_root = crate.directory / "src"
             if (not owner and source_root in path.parents
                     and is_realization_module(path.relative_to(source_root))
@@ -212,10 +268,19 @@ def selftest() -> None:
     | S2   | variant in a match arm, `|` alternative, guard, `if let`, `let..else`, `matches!` pattern | not counted |
     | S3   | `==` / `!=` operand on either side, qualified path                     | not counted |
     | S4   | `use Enum as Alias` then `Alias::Variant`; `use Enum::*` / `use Enum::{..}` | counted |
-    | S5   | the state contract; the realization for the environment enum              | not counted |
+    | S5   | the state contract (no other crate, the realization included, is exempt) | not counted |
     | S6   | module path segment `provisioning`, or a word `realization` in a segment | realization-named |
     | S7   | `unrealized_x` style segment without the word, `lib.rs`                 | not realization-named |
     | S8   | realization module in the realization contract / a sandbox provider    | not counted |
+
+    | Rule | environment-rewrite cause                                              | effect |
+    | W1   | `&mut SessionEnvironmentState` (qualified or not)                      | counted |
+    | W2   | an undecided `&mut self` law called on an `.environment` value         | counted |
+    | W3   | `.environment = <SessionEnvironmentState value>` or `= other.environment(.clone())` | counted |
+    | W4   | a law whose body decides through `transition_environment`, called on `.environment` | not counted |
+    | W5   | the aggregate wrapper `session.environment().law(..)`, a read, `&SessionEnvironmentState` | not counted |
+    | W6   | `.environment = <non-state value>` (another type's field), `==` comparison | not counted |
+    | W7   | the state contract itself                                              | not counted |
     """
     both = set(STATE_ENUMS)
     code = (
@@ -241,6 +306,38 @@ def selftest() -> None:
     glob = "use awaken_session_state_contract::SessionEnvironmentState::*;\nuse x::SessionExecutionState::{Idle};\n"
     assert len(state_constructions(glob, both)) == 2, "S4 glob"
     assert state_constructions("fn f() { g(SessionExecutionState::Idle); }", set()) == [], "S5"
+    assert all(not allowed for allowed in STATE_ENUMS.values()), "S5 no crate besides the contract is exempt"
+
+    contract_code = _crate_boundary_workspace.rust_syntax(
+        "impl SessionEnvironmentState {\n"
+        "    pub fn set_resident(&mut self, binding: String) { *self = Self::Unmaterialized; }\n"
+        "    pub fn deliver_legacy_binding(&mut self, b: Option<&str>) -> bool {\n"
+        "        transition_environment(f, e).is_ok()\n"
+        "    }\n"
+        "    pub fn binding(&self) -> Option<&str> { None }\n"
+        "}\n"
+        "impl Other { pub fn mark_idle(&mut self) {} }\n"
+    )
+    laws = undecided_environment_laws({Path("environment.rs"): contract_code})
+    assert laws == {"set_resident"}, f"W2/W4 law list {laws}"
+    rewrites = (
+        "fn a(e: &mut SessionEnvironmentState) {}\n"                                     # W1
+        "fn b(e: &mut awaken_session_state_contract::SessionEnvironmentState) {}\n"      # W1
+        "fn c(s: &mut S) { s.environment.set_resident(x); }\n"                           # W2
+        "fn d(s: &mut S) { s.environment = SessionEnvironmentState::from_legacy_binding(None); }\n"  # W3
+        "fn e(s: &mut S, o: &S) { s.environment = o.environment.clone(); }\n"            # W3
+    )
+    found = environment_rewrites(_crate_boundary_workspace.rust_syntax(rewrites), laws)
+    assert [rewrites.count("\n", 0, offset) + 1 for offset in found] == [1, 2, 3, 4, 5], f"W1-W3 {found}"
+    allowed = (
+        "fn f(p: &mut P) { p.environment.deliver_legacy_binding(b); }\n"                 # W4
+        "fn g(s: &mut A) { s.environment().record_checkpoint(r, now); }\n"               # W5
+        "fn h(e: &SessionEnvironmentState) -> bool { e.binding().is_some() }\n"           # W5
+        "fn i(p: &mut Q) { p.environment = p.environment.with_preparation_authorization(a); }\n"  # W6
+        "fn j(s: &mut Spec) { s.environment = Some(kind); }\n"                           # W6
+        "fn k(a: &S, b: &S) -> bool { a.environment == b.environment }\n"                 # W6
+    )
+    assert environment_rewrites(_crate_boundary_workspace.rust_syntax(allowed), laws) == [], "W4-W6"
     assert is_realization_module(Path("host/session/environment_lifecycle/renewal.rs")), "S6 named"
     assert is_realization_module(Path("provisioning.rs")) and is_realization_module(Path("k8s/realization/mod.rs")), \
         "S6 word"
@@ -271,11 +368,19 @@ def selftest() -> None:
          Path("/w/x/src/other.rs"): "fn h() {}\n"},
     )
     contract = _architecture_ratchet.CrateSource(
-        STATE_CONTRACT, {}, Path("/w/c"), {Path("/w/c/src/realization.rs"): "fn f() { g(SessionExecutionState::Idle) }\n"},
+        STATE_CONTRACT, {}, Path("/w/c"),
+        {Path("/w/c/src/realization.rs"): "fn f() { g(SessionExecutionState::Idle) }\n",
+         Path("/w/c/src/environment.rs"): contract_code
+         + "fn own(s: &mut SessionEnvironmentState) { s.set_resident(b); }\n"},
     )
-    counts, places = measure((source, contract), Path("/w"))
+    realization = _architecture_ratchet.CrateSource(
+        REALIZATION_CRATE, {}, Path("/w/r"),
+        {Path("/w/r/src/sync.rs"): "fn s(p: &mut P) { p.environment.set_resident(b); }\n"},
+    )
+    counts, places = measure((source, contract, realization), Path("/w"))
     assert counts == {"state-construction": {"awaken-x::SessionExecutionState": 1},
-                      "realization-code": {"awaken-x": 3, STATE_CONTRACT: 1}}, f"measure {counts}"
+                      "environment-rewrite": {REALIZATION_CRATE: 1},
+                      "realization-code": {"awaken-x": 3, STATE_CONTRACT: 1}}, f"measure W2/W7 {counts}"
     assert places["state-construction"]["awaken-x::SessionExecutionState"] == ["x/src/realization.rs:2"], "places"
     print("_single_owner_fitness selftest: the decision tables hold")
 

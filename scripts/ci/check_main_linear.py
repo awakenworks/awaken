@@ -17,7 +17,7 @@ Decision table (--self-test):
 | L5   | fast-forward adding a merge commit     | refused |
 | L6   | fast-forward of single-parent commits  | allowed |
 | L7   | refused case with the explicit override| allowed |
-| L8   | state `committed` / `aborted`          | ignored |
+| L8   | state `preparing` / `committed` / `aborted` | ignored |
 | L9   | any other argument                     | usage error |
 """
 from __future__ import annotations
@@ -100,7 +100,7 @@ def violations(lines: list[str], ancestor: Callable[[str, str], bool],
 
 
 def main(argv: list[str]) -> int:
-    states = ("prepared", "committed", "aborted")
+    states = ("preparing", "prepared", "committed", "aborted")
     if len(argv) != 2 or argv[1] not in (*states, "--self-test"):
         print(f"usage: {argv[0]} {{{'|'.join(states)}|--self-test}}", file=sys.stderr)
         return 2
@@ -141,6 +141,7 @@ def self_test() -> None:
     os.environ["AWAKEN_ALLOW_MAIN_REWRITE"] = "1"
     try:
         assert main(["x", "committed"]) == 0, "L8"
+        assert main(["x", "preparing"]) == 0, "L8 Git 2.48+ announces the transaction first"
         assert main(["x", "--unknown"]) == 2, "L9 unknown argument is refused"
     finally:
         os.environ.pop("AWAKEN_ALLOW_MAIN_REWRITE")
