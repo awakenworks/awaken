@@ -376,10 +376,10 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     let disposal_effect = terminal_disposal_effect(archive, lease, &terminal_projection);
     let (archive, recovery) = tokio::join!(
         managed
-            .run_assembly
+            .realization_executor
             .dispose_terminal_cleanup_for_effect(disposal_effect.clone()),
         managed
-            .run_assembly
+            .realization_executor
             .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
     );
     let archive = archive.expect("archive terminal disposal");
@@ -639,7 +639,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         *worker.current.lock().unwrap() = None;
         assert!(
             managed
-                .run_assembly
+                .realization_executor
                 .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
                 .await
                 .is_err(),
@@ -650,7 +650,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
             Some((worker_fence.clone(), std::time::Duration::from_secs(60)));
         let mut pending = Box::pin(
             managed
-                .run_assembly
+                .realization_executor
                 .dispose_terminal_cleanup_for_effect(disposal_effect.clone()),
         );
         tokio::select! {
@@ -739,13 +739,13 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
             .expect("installed Sessions");
         probe.restored_release.notify_one();
         let first = managed
-            .run_assembly
+            .realization_executor
             .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
             .await
             .expect("TR2 dispose exact restore target");
         probe.restored_release.notify_one();
         let replay = managed
-            .run_assembly
+            .realization_executor
             .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
             .await
             .expect("TR2 replay after disposal receipt loss");
@@ -1448,7 +1448,6 @@ async fn checkpoint_source_disposal_separates_preparation_and_current_authority(
     };
     use crate::realization_state::SessionRealizationAuthority as Authority;
     use awaken_session_realization_contract::SessionRealizationLeaseReceipt;
-    use awaken_session_runtime_contract::EnvironmentRuntime as _;
 
     // D1 durable preparation A has expired, but aggregate-current successor B
     // (higher epoch and different Worker/incarnation) may finish the same source.
@@ -1663,7 +1662,7 @@ async fn checkpoint_source_disposal_separates_preparation_and_current_authority(
             None
         };
         let pending = managed
-            .run_assembly
+            .realization_executor
             .dispose_prepared_checkpoint_source(thread, &disposal);
         let mut pending = std::pin::pin!(pending);
         if held.is_some() {

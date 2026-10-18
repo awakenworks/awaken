@@ -201,6 +201,7 @@ pub trait SessionRuntime: Send + Sync {
 pub trait CompleteSessionRuntime:
     SessionRuntime
     + RealizationRuntime
+    + RealizationEffects
     + CoordinationRuntime
     + SessionCoordinationReads
     + BudgetRuntime
@@ -218,6 +219,7 @@ pub trait CompleteSessionRuntime:
 impl<T> CompleteSessionRuntime for T where
     T: SessionRuntime
         + RealizationRuntime
+        + RealizationEffects
         + CoordinationRuntime
         + SessionCoordinationReads
         + BudgetRuntime
@@ -399,6 +401,8 @@ mod tests {
     }
 
     crate::neutral_role!(RealizationRuntime for MinimalRuntime);
+
+    crate::neutral_role!(RealizationEffects for MinimalRuntime);
 
     crate::neutral_role!(CoordinationRuntime for MinimalRuntime);
 

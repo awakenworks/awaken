@@ -287,7 +287,7 @@ async fn cold_resource_replacement_and_revocation_never_return_old_skill_bytes()
         .unwrap();
     let resources = pinned_skill_resources(&v2);
     managed
-        .run_assembly
+        .realization_executor
         .apply_session_inputs(
             "skill-change",
             &resource_transition(
@@ -310,7 +310,7 @@ async fn cold_resource_replacement_and_revocation_never_return_old_skill_bytes()
         "B3 exact replacement"
     );
     managed
-        .run_assembly
+        .realization_executor
         .apply_session_inputs(
             "skill-change",
             &resource_transition(
@@ -589,7 +589,7 @@ async fn failed_skill_file_write_blocks_tools_and_repaired_pin_reuses_environmen
         .unwrap()
         .unwrap();
     managed
-        .run_assembly
+        .realization_executor
         .apply_session_inputs(
             "skill-write-fault",
             &resource_transition(

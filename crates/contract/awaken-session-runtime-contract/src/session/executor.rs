@@ -11,9 +11,9 @@
 
 use crate::{
     BudgetRuntime, CapabilityRuntime, CommittedSessionProjection, CompleteSessionRuntime,
-    CoordinationRuntime, EnvironmentRuntime, LiveInboxRuntime, OutcomeRuntime, RealizationRuntime,
-    SessionCoordinationReads, SessionProjectionSource, SessionRuntime, StreamingRunRuntime,
-    TerminalCleanupRuntime, ThreadReadRuntime,
+    CoordinationRuntime, EnvironmentRuntime, LiveInboxRuntime, OutcomeRuntime, RealizationEffects,
+    RealizationRuntime, SessionCoordinationReads, SessionProjectionSource, SessionRuntime,
+    StreamingRunRuntime, TerminalCleanupRuntime, ThreadReadRuntime,
 };
 use std::sync::Arc;
 
@@ -54,6 +54,7 @@ pub struct SessionExecutor {
 pub struct SessionExecutionRoles {
     pub core: Arc<dyn SessionRuntime>,
     pub realization: Arc<dyn RealizationRuntime>,
+    pub realization_effects: Arc<dyn RealizationEffects>,
     pub coordination: Arc<dyn CoordinationRuntime>,
     pub coordination_reads: Arc<dyn SessionCoordinationReads>,
     pub budget: Arc<dyn BudgetRuntime>,
@@ -87,6 +88,11 @@ impl SessionExecutor {
     /// The required `RealizationRuntime` selected at construction.
     pub fn realization(&self) -> &dyn RealizationRuntime {
         self.realization.as_ref()
+    }
+
+    /// The required `RealizationEffects` selected at construction.
+    pub fn realization_effects(&self) -> &dyn RealizationEffects {
+        self.realization_effects.as_ref()
     }
 
     /// The required `CoordinationRuntime` selected at construction.
@@ -165,6 +171,7 @@ impl From<Arc<dyn CompleteSessionRuntime>> for SessionExecutor {
         Self::from(SessionExecutionRoles {
             core: runtime.clone(),
             realization: runtime.clone(),
+            realization_effects: runtime.clone(),
             coordination: runtime.clone(),
             coordination_reads: runtime.clone(),
             budget: runtime.clone(),
@@ -282,6 +289,7 @@ mod tests {
         let selected = SessionExecutor::from(SessionExecutionRoles {
             core: neutral.clone(),
             realization: neutral.clone(),
+            realization_effects: neutral.clone(),
             coordination: neutral.clone(),
             coordination_reads: neutral.clone(),
             budget: neutral.clone(),

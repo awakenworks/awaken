@@ -800,7 +800,7 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         .expect("installed Sessions")
         .unwrap();
     managed
-        .run_assembly
+        .realization_executor
         .apply_session_inputs(
             "deferred-managed-filesystem-skill",
             &resource_transition(

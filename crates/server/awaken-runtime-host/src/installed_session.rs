@@ -242,11 +242,8 @@ impl crate::session_realizations::SessionRealizationSource for InstalledSessions
             slot.realization
                 .validate_preparation_publication(asserted)?;
             slot.replace_frozen_with(|next| next.workspace = Some(workspace.to_owned()));
-            slot.realization.staging_mut().resources = compiled.staged;
-            slot.realization.staging_mut().memory_bindings = compiled.memory_bindings;
-            slot.realization.staging_mut().memory = None;
-            slot.realization.staging_mut().skills = Some(versions);
-            slot.realization.staging_mut().effect_key = Some(effect_key);
+            slot.realization
+                .publish_compiled_inputs(compiled, versions, effect_key);
             Ok::<_, RealizationError>(())
         })
         .map_err(|_| RealizationLock::InstalledSessions)?

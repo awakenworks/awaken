@@ -295,9 +295,7 @@ impl crate::RunAssembly {
                 ));
             }
         }
-        realizations.update_realization(thread, |r| {
-            r.staging_mut().content_delivery = Some(delivery)
-        })?;
+        realizations.update_realization(thread, |r| r.select_content_delivery(delivery))?;
         Ok(delivery)
     }
 

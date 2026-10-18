@@ -109,11 +109,8 @@ pub(super) async fn prepare(
         let transition =
             crate::session_resource::SessionResourceTransition::new(empty.clone(), empty)
                 .map_err(|error| HostError::internal(error.to_string()))?;
-        realizations.update_realization(thread, |r| {
-            if r.staging().transition.is_none() {
-                r.staging_mut().transition = Some(transition);
-            }
-        })?;
+        realizations
+            .update_realization(thread, |r| r.stage_initial_resource_transition(transition))?;
     }
     // Legacy direct Session manifests carry no frozen Skill list. Refresh
     // their canonical delivered catalog before deciding whether

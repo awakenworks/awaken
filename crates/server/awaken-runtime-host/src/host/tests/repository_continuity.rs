@@ -226,7 +226,7 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
             .unwrap();
     managed
         .realization_executor
-        .apply_session_inputs(thread, &transition, None, Some(&lease))
+        .apply_session_inputs_with_context(thread, &transition, None, Some(&lease))
         .await
         .expect("R1 adoption must not replay the main-branch initialization");
     let status = environment.sandbox_environment().run_test_command(pc::Command::new([

@@ -26,9 +26,7 @@ impl SessionMcpStates for InstalledSessions {
     }
 
     fn update_mcp<R>(&self, session: &str, update: impl FnOnce(&mut SessionMcpState) -> R) -> R {
-        self.update(session, |slot| {
-            update(&mut slot.realization.staging_mut().mcp)
-        })
+        self.update(session, |slot| update(slot.realization.session_mcp_mut()))
     }
 
     fn modify_mcp<R>(
@@ -36,9 +34,7 @@ impl SessionMcpStates for InstalledSessions {
         session: &str,
         modify: impl FnOnce(&mut SessionMcpState) -> R,
     ) -> Option<R> {
-        self.modify(session, |slot| {
-            modify(&mut slot.realization.staging_mut().mcp)
-        })
+        self.modify(session, |slot| modify(slot.realization.session_mcp_mut()))
     }
 
     fn modify_mcp_and_runtime<R>(
@@ -47,10 +43,7 @@ impl SessionMcpStates for InstalledSessions {
         modify: impl FnOnce(&mut SessionMcpState, &mut Option<Self::Runtime>) -> R,
     ) -> Option<R> {
         self.modify(session, |slot| {
-            modify(
-                &mut slot.realization.staging_mut().mcp,
-                &mut slot.run.context,
-            )
+            modify(slot.realization.session_mcp_mut(), &mut slot.run.context)
         })
     }
 
@@ -61,7 +54,7 @@ impl SessionMcpStates for InstalledSessions {
     ) -> Option<R> {
         self.modify(generation.session_id().as_str(), |slot| {
             let root = slot.realization.mcp_generation_root_authority(generation);
-            modify(&mut slot.realization.staging_mut().mcp, root)
+            modify(slot.realization.session_mcp_mut(), root)
         })
     }
 

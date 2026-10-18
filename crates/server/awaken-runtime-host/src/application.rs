@@ -293,7 +293,12 @@ impl crate::RunAssembly {
                 // of installation, effect ordering, receipt admission, retry,
                 // and process-local acknowledgement for warm and cold slots.
                 awaken_session_realization_driver::drive_session_terminal_cleanup(
-                    session_id, lease, control, self, self,
+                    session_id,
+                    lease,
+                    control,
+                    self,
+                    self.realization_executor.as_ref(),
+                    self,
                 )
                 .await
                 .map_err(|error| terminal_cleanup_drive_error(session_id.as_str(), error))?;
@@ -941,10 +946,14 @@ impl crate::RunAssembly {
                 if let Some(claim) = claim {
                     slot.run.dispatch_claim = Some(claim.clone());
                 }
-                let holds_context = slot.run.context.is_some();
-                slot.realization
-                    .install_owner(owner, &projection.environment, holds_context);
-                slot.realization.execution_mut().frozen_receipt = Some(receipt);
+                slot.realization.publish_frozen_projection(
+                    owner,
+                    &projection.environment,
+                    slot.run.context.is_some(),
+                    receipt,
+                    has_mcp_projection,
+                    resource_transition,
+                );
                 // A cold Coordinator may have opened a metadata-only
                 // reservation envelope before this complete projection.
                 // Rebuild it against the newly frozen baseline on its next
@@ -971,9 +980,6 @@ impl crate::RunAssembly {
                 // remains authorized to clear it with the rest of live execution
                 // state.
                 slot.run.session_dispatch = true;
-                let staging = &mut slot.realization.staging_mut();
-                staging.mcp.set_has_frozen_attachment(has_mcp_projection);
-                staging.transition = Some(resource_transition);
                 Ok::<_, crate::HostError>(())
             })?;
             Ok(())
@@ -1024,7 +1030,7 @@ impl crate::RunAssembly {
         )
         .await?;
         realizations.update_realization(assignment.session_id.as_str(), |r| {
-            r.effects_mut().assignment = Some(assignment.clone());
+            r.assign_terminal_cleanup(assignment.clone());
         })?;
         Ok(())
     }

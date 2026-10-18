@@ -168,7 +168,7 @@ async fn missing_projection_admits_only_the_direct_empty_revision_zero_noop() {
         host.run_assembly.installed_sessions.install(&thread);
         let result = host
             .realization_executor
-            .apply_session_inputs(&thread, &transition, claim.as_ref(), None)
+            .apply_session_inputs_with_context(&thread, &transition, claim.as_ref(), None)
             .await;
         if rule.accepted {
             result.unwrap_or_else(|error| panic!("{} must admit E1: {error}", rule.id));

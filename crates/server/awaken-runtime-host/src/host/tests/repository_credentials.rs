@@ -1185,7 +1185,7 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
         .await
         .unwrap();
     managed
-        .run_assembly
+        .realization_executor
         .apply_session_inputs(
             "t-rot",
             &resource_transition(
@@ -1245,7 +1245,7 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
     // The Managed adapter stores the supplied credential in the Vault and publishes a
     // new Repository config before invoking this complete-manifest runtime port.
     managed
-        .run_assembly
+        .realization_executor
         .apply_session_inputs(
             "t-rot",
             &resource_transition(

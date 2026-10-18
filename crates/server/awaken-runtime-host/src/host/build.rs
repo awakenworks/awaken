@@ -505,6 +505,7 @@ impl SharedHost {
         awaken_session_runtime_contract::SessionExecutionRoles {
             core: self.session_runs.clone(),
             realization: self.run_assembly.clone(),
+            realization_effects: self.realization_executor.clone(),
             coordination: self.coordination.clone(),
             coordination_reads: self.coordination.clone(),
             budget: self.budget.clone(),

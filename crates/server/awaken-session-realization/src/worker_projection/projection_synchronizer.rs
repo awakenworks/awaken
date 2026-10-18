@@ -316,7 +316,7 @@ where
         if synchronize_resources && !reconciled_by_substrate {
             self.execution
                 .realization_executor()
-                .apply_session_inputs(
+                .apply_session_inputs_with_context(
                     session_id.as_str(),
                     &projection.resource_transition(
                         awaken_session_realization_contract::FrozenResourceTransitionUse::ApplyEffects,

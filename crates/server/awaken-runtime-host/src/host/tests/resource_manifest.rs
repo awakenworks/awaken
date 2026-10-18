@@ -213,7 +213,7 @@ async fn managed_multi_memory_mounts_are_backend_neutral_pairwise() {
             .await
             .unwrap_or_else(|error| panic!("{}: {error}", case.rule));
         managed
-            .run_assembly
+            .realization_executor
             .apply_session_inputs(
                 &thread,
                 &resource_transition(
@@ -744,7 +744,7 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
         .await
         .expect("prepare pinned Skill");
     managed
-        .run_assembly
+        .realization_executor
         .apply_session_inputs(
             "skill-revoke",
             &resource_transition(&workspace, 0, Default::default(), 0, resources),
@@ -785,7 +785,7 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
         .expect("installed manifest");
 
     managed
-        .run_assembly
+        .realization_executor
         .apply_session_inputs(
             "skill-revoke",
             &resource_transition(

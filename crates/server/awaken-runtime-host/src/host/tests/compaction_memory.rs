@@ -82,8 +82,8 @@ async fn install_complete_memory_test_session(
         projection.resource_revision,
         resources.clone(),
     );
-    awaken_session_runtime_contract::EnvironmentRuntime::apply_session_inputs(
-        &*managed.run_assembly,
+    awaken_session_runtime_contract::RealizationEffects::apply_session_inputs(
+        &*managed.realization_executor,
         thread,
         &resource_transition(
             managed.run_assembly.local_workspace(),
@@ -1171,10 +1171,10 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     );
     let (left, right) = tokio::join!(
         managed
-            .run_assembly
+            .realization_executor
             .apply_session_inputs("memory-replay", &unacknowledged),
         managed
-            .run_assembly
+            .realization_executor
             .apply_session_inputs("memory-replay", &unacknowledged),
     );
     left.expect("original command replay after local completion");
@@ -1206,17 +1206,17 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         resources.clone(),
     );
     managed
-        .run_assembly
+        .realization_executor
         .apply_session_inputs("memory-replay", &replay)
         .await
         .expect("cold durable generation installs beside the adopted Environment");
 
     let (left, right) = tokio::join!(
         managed
-            .run_assembly
+            .realization_executor
             .apply_session_inputs("memory-replay", &replay),
         managed
-            .run_assembly
+            .realization_executor
             .apply_session_inputs("memory-replay", &replay),
     );
     left.expect("first exact durable replay");
@@ -1292,7 +1292,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         // Memory pin; compare the completed projection, not command equality.
         for previous in [resources.clone(), changed.clone()] {
             let error = managed
-                .run_assembly
+                .realization_executor
                 .apply_session_inputs(
                     "memory-replay",
                     &resource_transition(
@@ -1326,7 +1326,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         );
     }
     let error = managed
-        .run_assembly
+        .realization_executor
         .apply_session_inputs(
             "memory-replay",
             &resource_transition(

@@ -3,7 +3,6 @@
 //! Session environment projection, live resource replacement, and eager/lazy realization.
 
 use super::*;
-use awaken_session_runtime_contract::RealizationRuntime as _;
 
 fn carried_mount_bytes(mount: &awaken_provisioning_contract::MountRequirement) -> Vec<u8> {
     let awaken_provisioning_contract::MountSource::InlineBytes { contents, .. } = &mount.source
@@ -133,7 +132,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     };
     let attached = effective_resources(vec![res.clone()]);
     managed
-        .run_assembly
+        .realization_executor
         .apply_session_inputs(
             "t-attach",
             &resource_transition(
@@ -219,7 +218,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
 
     // Detach removes exactly that mount again.
     managed
-        .run_assembly
+        .realization_executor
         .apply_session_inputs(
             "t-attach",
             &resource_transition(
@@ -364,7 +363,7 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
     durable["inputs"][0]["mount_path"] = serde_json::Value::String("/repo".into());
     let invalid = serde_json::from_value(durable).expect("decode historical Resource manifest");
     let error = managed
-        .run_assembly
+        .realization_executor
         .apply_session_inputs(
             "invalid-live-repository",
             &resource_transition(
@@ -565,7 +564,7 @@ async fn applying_repository_detach_removes_the_resident_namespace_checkout() {
     );
 
     managed
-        .run_assembly
+        .realization_executor
         .apply_session_inputs(
             "t-repo-detach",
             &resource_transition(
@@ -660,7 +659,7 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
     }]);
 
     let error = managed
-        .run_assembly
+        .realization_executor
         .apply_session_inputs(
             "t-local-attach",
             &resource_transition(
@@ -1354,7 +1353,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
     };
     let managed = host.clone();
     managed
-        .run_assembly
+        .realization_executor
         .validate_session_sandbox_layout(
             "worker-prospective-valid",
             &layout(
@@ -1365,7 +1364,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
         )
         .expect("P1 Worker admission needs no Coordinator provider");
     let conflict = managed
-        .run_assembly
+        .realization_executor
         .validate_session_sandbox_layout(
             "worker-prospective-conflict",
             &layout(
@@ -1377,7 +1376,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
         .expect_err("P2 structural conflict remains fail-closed");
     assert!(conflict.to_string().contains("overlaps"), "P2: {conflict}");
     let local_error = managed
-        .run_assembly
+        .realization_executor
         .validate_session_sandbox_layout(
             "local-prospective-valid",
             &layout(

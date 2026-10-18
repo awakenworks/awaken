@@ -32,7 +32,11 @@ impl crate::terminal_effects::TerminalEffects {
         mcp: (&awaken_session_mcp::McpSessions, &S),
     ) -> Result<awaken_session_state_contract::SessionCleanupPreparation, RealizationError>
     where
-        D: FnOnce(String) -> DF + Send,
+        D: for<'held> FnOnce(
+                String,
+                Option<crate::session_realizations::LifecycleHeld<'held>>,
+            ) -> DF
+            + Send,
         DF: std::future::Future<
                 Output = Result<
                     Vec<awaken_session_application_contract::DelegatedRun>,
@@ -139,7 +143,12 @@ impl crate::terminal_effects::TerminalEffects {
                     .modify_session(session, |installed| installed.run.has_active_run())?
                     .unwrap_or(false))
             },
-            delegated(effect.command.thread_id.to_string()),
+            delegated(
+                effect.command.thread_id.to_string(),
+                lifecycle
+                    .as_ref()
+                    .map(crate::session_realizations::LifecycleGuard::held),
+            ),
         )
         .await?
         {

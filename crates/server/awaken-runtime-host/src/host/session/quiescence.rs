@@ -25,7 +25,7 @@ impl crate::RunAssembly {
         self.realization_executor
             .continuation_effect_fence(thread, operation)?;
         let _realization = sessions.acquire_realization_with(thread, |_| ()).await.0;
-        let _lifecycle = realization_view.lock_lifecycle(thread).await?;
+        let lifecycle = realization_view.lock_lifecycle(thread).await?;
         let environment = self
             .realization_executor
             .environments()
@@ -59,7 +59,8 @@ impl crate::RunAssembly {
                     })
                     .unwrap_or(false))
             },
-            self.thread_reads.delegated_runs_under_lifecycle(thread),
+            self.thread_reads
+                .delegated_runs_under_lifecycle(lifecycle.held()),
         )
         .await
         .map_err(to_run_error)?

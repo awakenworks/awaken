@@ -2,6 +2,7 @@
 //! capture failures that must not publish partial sets.
 
 use super::*;
+use awaken_session_runtime_contract::RealizationEffects as _;
 
 struct BatchArtifactContainerProvider {
     files: Vec<awaken_container_contract::EnvironmentFile>,
@@ -563,7 +564,7 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         effect.lease,
     );
     managed
-        .run_assembly
+        .realization_executor
         .dispose_terminal_cleanup_for_effect(disposal)
         .await
         .unwrap();
