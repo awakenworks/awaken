@@ -40,22 +40,17 @@ pub(super) async fn assemble(
     // Resolving per Run — not once at Session build — means a per-Run model
     // switch needs no session rebuild, and a database-less worker runs the
     // configured model without a session-level registry.
-    let mut runtime = match env.as_ref() {
-        Some(env) => build_runtime_with_authorization(
-            host.capabilities.agent.llm.clone(),
-            host.clock.clone(),
-            env.as_ref(),
-            authorization,
-            Some(host.capabilities.background_supervisor.clone()),
-        ),
-        None => build_runtime_with_authorization(
-            host.capabilities.agent.llm.clone(),
-            host.clock.clone(),
-            &crate::config::DeferredHandToolSource,
-            authorization,
-            Some(host.capabilities.background_supervisor.clone()),
-        ),
+    let tool_source: &dyn crate::config::RuntimeToolSource = match env.as_ref() {
+        Some(environment) => environment.as_ref(),
+        None => &crate::config::DeferredHandToolSource,
     };
+    let mut runtime = build_runtime_with_authorization(
+        host.capabilities.agent.llm.clone(),
+        host.clock.clone(),
+        tool_source,
+        authorization,
+        Some(host.capabilities.background_supervisor.clone()),
+    );
     // Register the management tool executables globally (ADR-0052 D3): the
     // registry stays global, the compile-time scope fence is what restricts them.
     for tool in &host.capabilities.tools.admin_tools {
@@ -366,17 +361,19 @@ pub(super) async fn assemble(
     let mut terminal_observers: Vec<_> = if !host.authority.observes_terminal_memory_locally() {
         Vec::new()
     } else {
-        host.memory_terminal_observer(
-            thread,
-            &config,
-            &fallback_model_ref,
-            None,
-            publication_source.as_ref(),
-            commit.clone(),
-        )
-        .await?
-        .into_iter()
-        .collect()
+        host.resources
+            .memory_terminal_observers
+            .for_published_run(
+                thread,
+                &config,
+                &fallback_model_ref,
+                None,
+                publication_source.as_ref(),
+                commit.clone(),
+            )
+            .await?
+            .into_iter()
+            .collect()
     };
     let tool_executor = if a2a_only {
         None

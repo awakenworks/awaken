@@ -155,56 +155,9 @@ impl ResourceStaging {
         input: &session_resource::ResolvedInput,
         materialization_reference: Option<String>,
     ) -> Result<Option<(String, Arc<crate::memory_binding::MemoryBinding>)>, RunError> {
-        let session_resource::ResolvedInputSource::MemoryStore {
-            memory_store_id,
-            config,
-        } = &input.source
-        else {
-            return Ok(None);
-        };
-        let writable = input.access == awaken_resource_contract::ResourceAccess::ReadWrite;
-        if let Some(reference) = &materialization_reference {
-            // Remote Memory claim decision table: active + exact config =>
-            // snapshot preflight succeeds; archived/config-changed/stale claim
-            // fails before the mounter reuses a prior projection.
-            self.memory
-                .snapshots()
-                .snapshot_heads(reference)
-                .await
-                .map_err(|error| RunError::bad_request(error.to_string()))?;
-        }
-        let handle = Arc::new(crate::memory_binding::PlatformMemoryHandle::from_roles(
-            self.memory.clone(),
-            materialization_reference
-                .clone()
-                .unwrap_or_else(|| memory_store_id.to_string()),
-            writable,
-        ));
-        let resource_validator = if materialization_reference.is_some() {
-            None
-        } else {
-            Some(
-                self.resource_validator
-                    .as_ref()
-                    .ok_or_else(|| {
-                        RunError::bad_request(
-                            "Memory extraction requires a configured resource binding validator",
-                        )
-                    })?
-                    .clone(),
-            )
-        };
-        Ok(Some((
-            input.binding_id.to_string(),
-            Arc::new(crate::memory_binding::MemoryBinding::new(
-                session_thread,
-                workspace,
-                handle,
-                resource_validator,
-                config,
-                writable,
-            )),
-        )))
+        self.memory_binding_compiler()
+            .compile(session_thread, workspace, input, materialization_reference)
+            .await
     }
     pub async fn stage_resource_requirements(
         &self,
