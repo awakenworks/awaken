@@ -2,7 +2,6 @@
 // @formal entrypoint plugin_activation.identity_dependencies_capabilities_and_uniqueness_are_exact
 // @formal entrypoint tool.session_thread_composition
 use std::collections::HashMap;
-use std::num::NonZeroUsize;
 use std::sync::{Arc, Weak};
 
 use crate::ConfigurationError;
@@ -26,28 +25,6 @@ use awaken_runtime_contract::{AttemptOwnershipVerifier, RuntimeRunContext};
 use awaken_tool_contract::tool::{RawTool, RawToolRegistry};
 use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
-
-/// The run-ending consecutive-failure ceiling, guaranteed `>= 1` by construction:
-/// a 0 would mean "never terminal", which the loop must never allow. The clamp
-/// lives here (once, at the type boundary) instead of at every read, so the stored
-/// value is always valid and `Default` is a meaningful `1`.
-#[derive(Debug, Clone, Copy)]
-struct FailureCeiling(NonZeroUsize);
-
-impl FailureCeiling {
-    fn from_usize(n: usize) -> Self {
-        Self(NonZeroUsize::new(n).unwrap_or(NonZeroUsize::MIN))
-    }
-    fn get(self) -> usize {
-        self.0.get()
-    }
-}
-
-impl Default for FailureCeiling {
-    fn default() -> Self {
-        Self(NonZeroUsize::MIN)
-    }
-}
 
 /// Opaque identity for one process-local attempt-control registration.
 ///
@@ -271,12 +248,6 @@ pub struct Runtime {
     /// per step before the last partial is committed with an explicit terminal
     /// incomplete-output failure.
     max_continuation_retries: usize,
-    /// The nth consecutive failed inference step ends the run. 1 (the default)
-    /// means a single failure is terminal; a higher value absorbs failures at
-    /// step granularity so a long-lived agent can ride out a provider outage.
-    /// A `NonZeroUsize` by construction, so a derived-default 0 can never mean
-    /// "never terminal".
-    max_consecutive_inference_failures: FailureCeiling,
     /// Per-model circuit breaker shared by every run on this runtime.
     circuit_breaker: crate::circuit_breaker::CircuitBreaker,
     /// Structure-only metrics sink for the model/tool chokepoints (#2). Absent
@@ -304,7 +275,6 @@ impl Default for Runtime {
             thread_execution: Default::default(),
             retry_policy: Default::default(),
             max_continuation_retries: 2,
-            max_consecutive_inference_failures: Default::default(),
             circuit_breaker: Default::default(),
             metrics: None,
         }
@@ -402,18 +372,6 @@ impl Runtime {
         self
     }
 
-    /// Set how many consecutive failed inference steps end the run. The
-    /// default 1 makes a single (post-retry) failure terminal; `n` lets the
-    /// loop absorb `n - 1` consecutive failures, retrying at step granularity,
-    /// and end with the nth failure's classification. A success resets the
-    /// count.
-    #[must_use]
-    pub fn with_max_consecutive_inference_failures(mut self, max: usize) -> Self {
-        // Clamp once, here at the type boundary: a 0 would mean "never terminal".
-        self.max_consecutive_inference_failures = FailureCeiling::from_usize(max);
-        self
-    }
-
     /// Replace the per-model circuit breaker's tuning (threshold, cooldown,
     /// half-open probes).
     #[must_use]
@@ -431,11 +389,6 @@ impl Runtime {
 
     pub(crate) fn max_continuation_retries(&self) -> usize {
         self.max_continuation_retries
-    }
-
-    pub(crate) fn max_consecutive_inference_failures(&self) -> usize {
-        // Valid by construction (>= 1): the ceiling owns its own invariant.
-        self.max_consecutive_inference_failures.get()
     }
 
     pub(crate) fn circuit_breaker(&self) -> &crate::circuit_breaker::CircuitBreaker {

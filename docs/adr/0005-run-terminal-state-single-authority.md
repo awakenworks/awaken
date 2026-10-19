@@ -131,3 +131,13 @@ closed sets in code are now (`crates/contract/awaken-agent-contract/src/agent/ru
   determined; never projected as success) is used by [ADR-0015](0015-crash-retry-budget-and-dead-letter.md),
   [ADR-0024](0024-daemon-lease-renewal.md) and [ADR-0044](0044-remote-hand-tool-executor-over-a-channel.md); no ADR introduced it on its own.
 - `Failure = Inference { code, message } | CapabilityBound | StateConflict`.
+
+## Amendment 2026-10-20: one inference retry budget
+
+The existing `RetryPolicy` owns attempts and backoff for one logical inference
+request. A permanent refusal or exhausted request ends the Run through the
+same terminal commit. A second failed-step tolerance cannot restart that
+budget or absorb a permanent refusal into a later natural success. Its Runtime
+builder setting is removed rather than retained as an inert compatibility
+path. Successful `MaxTokens` continuation retains its separate protocol budget;
+unproven physical execution retains its independent recovery veto.

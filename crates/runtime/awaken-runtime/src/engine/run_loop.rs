@@ -666,9 +666,6 @@ pub(super) async fn drive(
     let mut live_env = LiveEnv::new(
         runtime.active_live_version_with(&resolved.spec.plugin_ids, &context.session_plugins),
     );
-    // Failed inference steps in a row (post-retry). The runtime's tolerance
-    // decides when the streak is terminal; a success resets it.
-    let mut consecutive_inference_failures = 0usize;
     // Deferred tools (ADR-0053) the model has discovered via `tool_search` this run, by
     // canonical id: once revealed, a tool's full schema is sent on subsequent steps.
     let mut discovery =
@@ -813,10 +810,7 @@ pub(super) async fn drive(
             Ok(InferStepOutcome::Response {
                 response,
                 model_ref,
-            }) => {
-                consecutive_inference_failures = 0;
-                (response, model_ref)
-            }
+            }) => (response, model_ref),
             Ok(InferStepOutcome::Await(reason)) => {
                 disposition = Some(RunDisposition::awaiting(pause_ticket(
                     context,
@@ -836,14 +830,6 @@ pub(super) async fn drive(
                 break;
             }
             Err(err) => {
-                // Below the tolerance the failed step is absorbed and the next
-                // step re-infers; each absorbed failure still consumes a step,
-                // so `max_steps` stays the runaway backstop. At the tolerance
-                // the streak ends the run with the last error's classification.
-                consecutive_inference_failures += 1;
-                if consecutive_inference_failures < runtime.max_consecutive_inference_failures() {
-                    continue;
-                }
                 disposition = Some(RunDisposition::ended(
                     run_id.clone(),
                     EndCause::Error(Failure::Inference {

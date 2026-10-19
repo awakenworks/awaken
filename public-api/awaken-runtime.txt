@@ -184,7 +184,6 @@ pub fn awaken_runtime::Runtime::with_clock(self, alloc::sync::Arc<dyn awaken_tim
 pub fn awaken_runtime::Runtime::with_gate(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>) -> Self
 pub fn awaken_runtime::Runtime::with_infer_retries(self, usize) -> Self
 pub fn awaken_runtime::Runtime::with_llm(self, alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>) -> Self
-pub fn awaken_runtime::Runtime::with_max_consecutive_inference_failures(self, usize) -> Self
 pub fn awaken_runtime::Runtime::with_max_continuation_retries(self, usize) -> Self
 pub fn awaken_runtime::Runtime::with_metrics(self, alloc::sync::Arc<dyn awaken_runtime_contract::metrics::MetricsRecorder>) -> Self
 pub fn awaken_runtime::Runtime::with_plugin(self, alloc::sync::Arc<dyn awaken_runtime_contract::plugin::contributions::Plugin>) -> Self

@@ -29,6 +29,9 @@
     "managed_host_owns_every_session_runtime_role": "executor_components_supply_every_session_role",
     "dispatch_session_runtime_is_constructed_once_with_weak_host_ownership": "session_mcp_realizer_is_constructed_once_without_a_host_cycle",
     "runtime_drain_fence_obeys_the_callers_absolute_deadline": "drain_fence_obeys_the_callers_absolute_deadline",
-    "legacy_session_and_conversation_share_run_identity_and_recovery": "conversation_bindings_share_run_identity_and_recovery"
+    "legacy_session_and_conversation_share_run_identity_and_recovery": "conversation_bindings_share_run_identity_and_recovery",
+    "consecutive_failure_tolerance_absorbs_a_failed_step_until_success": "inference_retry_owner_stops_permanent_refusal_before_another_step",
+    "consecutive_failure_tolerance_exhausted_ends_with_the_last_error": "inference_retry_owner_does_not_restart_the_request_budget",
+    "returned_unknown_model_error_blocks_retry_failover_and_outer_tolerance": "returned_unknown_model_error_blocks_retry_failover_and_another_step"
   }
 }
