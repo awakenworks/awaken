@@ -10,15 +10,12 @@
 //! replacement process must never initialize a missing ledger to claim proof.
 
 use awaken_container_contract::RuntimeError;
-use awaken_container_contract::{
-    CreateReplyProfile, CreateTicket, CreateTicketRequest, K8sLedgerBinding, RequestJoin,
-    TicketAdmission, TicketResult, TicketStatus,
-};
+use awaken_container_contract::{CreateReplyProfile, K8sLedgerBinding, RequestJoin, TicketStatus};
+mod broker_effects;
 mod capacity;
 mod capture;
 mod isolation;
 mod state;
-pub use capture::collect_create_body;
 pub(crate) use isolation::original_guard_release_required;
 pub(crate) use isolation::release_original_guard;
 pub(crate) use isolation::verify_reservation as verify_pod_isolation;
@@ -95,16 +92,8 @@ impl K8sWorkerCreateLedger {
         })
     }
 
-    pub fn control_namespace(&self) -> &str {
-        &self.control_namespace
-    }
-
     pub fn provider_id(&self) -> &str {
         &self.provider_id
-    }
-
-    pub fn configuration_fingerprint(&self) -> &str {
-        &self.configuration_fingerprint
     }
 
     fn ledger_name(worker_namespace: &str, worker_name: &str, worker_uid: &str) -> String {
@@ -405,41 +394,6 @@ impl K8sWorkerCreateLedger {
         Ok(Some(process))
     }
 
-    /// Only `Forward` means this exact request won durable admission; the
-    /// caller must then own an independent API request lifetime.
-    pub async fn admit_request(
-        &self,
-        binding: K8sLedgerBinding<'_>,
-        request: &CreateTicketRequest,
-    ) -> Result<(TicketAdmission, CreateReplyProfile), RuntimeError> {
-        // One candidate per caller, reused across resourceVersion CAS retries.
-        // A losing caller reads the winner's retained identity and cannot
-        // replace it with its own nonce.
-        let isolation_id = uuid::Uuid::new_v4().simple().to_string();
-        self.mutate(binding, |state| {
-            let admission = state.admit(request, &isolation_id)?;
-            if state.reply_profile() == CreateReplyProfile::LegacyRetainedCreate
-                && admission == TicketAdmission::Forward
-            {
-                return Err(backend(
-                    "historical Create ledger cannot admit a new unreserved request",
-                ));
-            }
-            let changed = admission == TicketAdmission::Forward;
-            Ok(((admission, state.reply_profile()), changed))
-        })
-        .await
-    }
-
-    pub async fn ticket_for(
-        &self,
-        binding: K8sLedgerBinding<'_>,
-        request: &CreateTicketRequest,
-    ) -> Result<Option<CreateTicket>, RuntimeError> {
-        let (_, state) = self.load_exact(binding).await?;
-        Ok(state.ticket(request).cloned())
-    }
-
     /// Read only the original ledger's already sealed Worker group. Missing,
     /// foreign or corrupt physical evidence is never initialized or repaired.
     /// The result joins admitted Creates only: it grants no execution stop,
@@ -451,33 +405,6 @@ impl K8sWorkerCreateLedger {
     ) -> Result<RequestJoin, RuntimeError> {
         let (_, state) = self.load_exact(binding).await?;
         Ok(state.join_sealed_worker_group(group))
-    }
-
-    pub async fn finish_request(
-        &self,
-        binding: K8sLedgerBinding<'_>,
-        request: &CreateTicketRequest,
-        result: &TicketResult,
-    ) -> Result<(), RuntimeError> {
-        self.mutate(binding, |state| {
-            let changed = state.finish(request, result.clone())?;
-            Ok(((), changed))
-        })
-        .await
-    }
-
-    pub async fn seal_group_and_join(
-        &self,
-        binding: K8sLedgerBinding<'_>,
-        group: &str,
-    ) -> Result<RequestJoin, RuntimeError> {
-        self.mutate(binding, |state| {
-            let changed = state.seal_group(group)?;
-            Ok(((), changed))
-        })
-        .await?;
-        let (_, state) = self.load_exact(binding).await?;
-        Ok(state.join_group(group))
     }
 
     /// The existing sealed ledger is the only request authority. After the
@@ -524,81 +451,6 @@ impl K8sWorkerCreateLedger {
         self.read_sealed_worker_group(binding, group).await
     }
 
-    /// Retain the original claim's Pod name in this same ledger when an exact
-    /// closed Worker created its canonical PVC but no original Pod survives.
-    /// The reservation is a physical participant, never a cleanup receipt.
-    pub async fn reserve_terminal_claim_pod_and_join(
-        &self,
-        binding: K8sLedgerBinding<'_>,
-        group: &str,
-        scope: &str,
-        expected_pod_name: &str,
-    ) -> Result<RequestJoin, RuntimeError> {
-        let joined = self.isolate_sealed_group_and_join(binding, group).await?;
-        let RequestJoin::Complete(tickets) = &joined else {
-            return Ok(RequestJoin::Unknown);
-        };
-        // Runtime owns the realization-namespace projection. Re-encoding raw
-        // scope here would target another Pod/PVC name after process loss.
-        let claim_name = super::names::continuation_claim_for_pod(expected_pod_name)?;
-        let mut claim_uid = None;
-        for ticket in tickets {
-            match &ticket.status {
-                TicketStatus::Finished(TicketResult::Created { uid })
-                    if ticket.request.resource == "persistentvolumeclaims"
-                        && ticket.request.namespace == self.sandbox_namespace
-                        && ticket.request.name == claim_name
-                        && claim_uid.is_none() =>
-                {
-                    claim_uid = Some(uid.clone());
-                }
-                TicketStatus::Finished(
-                    TicketResult::Created { .. } | TicketResult::Isolated { .. },
-                ) => {
-                    // The ordinary Pod/PVC owner or an unclassified participant
-                    // must decide its own cleanup. Never fabricate a guard for it.
-                    return Ok(joined.clone());
-                }
-                TicketStatus::Finished(TicketResult::RejectedNoEffect { .. }) => {}
-                TicketStatus::InFlight => return Ok(RequestJoin::Unknown),
-            }
-        }
-        let Some(claim_uid) = claim_uid else {
-            return Ok(joined);
-        };
-        let digest = blake3::hash(
-            &serde_json::to_vec(&(
-                "k8s-terminal-claim-pod-v1",
-                group,
-                scope,
-                expected_pod_name,
-                &claim_uid,
-            ))
-            .map_err(backend)?,
-        )
-        .to_hex()
-        .to_string();
-        let request = CreateTicketRequest::new(
-            group,
-            "pods",
-            &self.sandbox_namespace,
-            expected_pod_name,
-            digest,
-        )?;
-        let isolation_id = uuid::Uuid::new_v4().simple().to_string();
-        self.mutate(binding, |state| {
-            let changed = state.admit_terminal_pod_guard(&request, &isolation_id)?;
-            Ok(((), changed))
-        })
-        .await?;
-        self.isolate_sealed_group_and_join(binding, group).await
-    }
-
-    pub async fn seal_worker(&self, binding: K8sLedgerBinding<'_>) -> Result<(), RuntimeError> {
-        self.mutate(binding, |state| Ok(((), state.seal_worker())))
-            .await
-    }
-
     /// Deny future first process binding and Create entry in one original
     /// ConfigMap CAS. This never initializes a missing ledger and does not
     /// assert Registry absence, physical exit or Session cleanup completion.
@@ -626,6 +478,9 @@ impl K8sWorkerCreateLedger {
 mod tests {
     mod finite_policy;
     use super::*;
+    use awaken_container_contract::{
+        CreateTicketRequest, K8sCreateBrokerEffects, TicketAdmission, TicketResult,
+    };
     use http::{Request, Response};
     use kube::client::Body;
     use serde_json::{Value, json};

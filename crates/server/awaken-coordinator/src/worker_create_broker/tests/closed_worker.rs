@@ -21,10 +21,9 @@ async fn closed_worker_create_fence_survives_missing_process_history() {
             let record = f.directory.incarnation(&f.identity).await.unwrap().unwrap();
             let pod = KubernetesPodIdentity::from_worker_id(&f.identity.worker_id).unwrap();
             let anchor = record.create_ledger.as_ref().unwrap();
-            let exact = binding(&f.broker.ledger, anchor, &pod, "provider-a").unwrap();
+            let exact = binding(f.ledger.as_ref(), anchor, &pod, "provider-a").unwrap();
             let process = serde_json::from_str(&original_process()).unwrap();
-            f.broker
-                .ledger
+            f.ledger
                 .retain_process_binding(exact, &process)
                 .await
                 .unwrap();
@@ -144,7 +143,7 @@ async fn create_seal_uses_closed_registry_and_original_ledger_without_process_ex
             let record = f.directory.incarnation(&f.identity).await.unwrap().unwrap();
             let pod = KubernetesPodIdentity::from_worker_id(&f.identity.worker_id).unwrap();
             let anchor = record.create_ledger.as_ref().unwrap();
-            let exact = binding(&f.broker.ledger, anchor, &pod, "provider-a").unwrap();
+            let exact = binding(f.ledger.as_ref(), anchor, &pod, "provider-a").unwrap();
             let late = CreateTicketRequest::new(
                 group_for(&f.identity),
                 "pods",
@@ -274,12 +273,12 @@ fn source(f: &fixture::BrokerFixture) -> Arc<dyn awaken_dispatch::WorkerExecutio
     // above keep their original Registry, ledger, exit and no-Create effects;
     // the fixture no longer reaches through a foreign private implementation.
     awaken_cli::WorkerTransport::kubernetes(
-        f.broker.api_client.clone(),
+        f.api_client.clone(),
         "sandbox-ns",
         "worker",
         "awaken-worker",
         "provider-a",
-        f.broker.ledger.control_namespace(),
+        f.ledger.control_namespace(),
     )
     .unwrap()
     .stop_source()

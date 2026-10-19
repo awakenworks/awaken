@@ -36,7 +36,7 @@ pub(super) fn validate_fresh_result(result: &TicketResult) -> Result<(), Runtime
 
 /// Reuse the same library limiter as Axum's bounded body reader. This helper
 /// adapts kube's body only and has no buffer, retry, ticket or permission owner.
-pub async fn collect_create_body(
+pub(super) async fn collect_create_body(
     body: Body,
     profile: CreateReplyProfile,
 ) -> Result<Vec<u8>, RuntimeError> {
